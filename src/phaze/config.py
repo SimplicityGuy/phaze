@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"  # noqa: S104  # nosec B104
     api_port: int = 8000
 
+    # File discovery
+    scan_path: str = "/data/music"
+
     # Future: LLM API keys
     openai_api_key: SecretStr | None = None
 
