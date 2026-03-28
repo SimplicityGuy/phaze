@@ -42,4 +42,5 @@ class FileRecord(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_files_state", "state"),
         Index("ix_files_sha256_hash", "sha256_hash"),
+        Index("uq_files_original_path", "original_path", unique=True),
     )
