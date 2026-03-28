@@ -1,0 +1,52 @@
+---
+name: Tests
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phaze
+          POSTGRES_PASSWORD: phaze
+          POSTGRES_DB: phaze_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phaze"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test
+    steps:
+      - name: "\U0001F4E5 Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "\U0001F4E6 Install uv"
+        uses: astral-sh/setup-uv@v4
+
+      - name: "\U0001F40D Set up Python 3.13"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: "\U0001F4E6 Install dependencies"
+        run: uv sync
+
+      - name: "\U0001F9EA Run tests with coverage"
+        run: uv run pytest --cov=phaze --cov-report=xml --cov-report=term-missing
+
+      - name: "\U0001F4CA Upload coverage to Codecov"
+        uses: codecov/codecov-action@v4
+        with:
+          flags: unittests
+          disable_search: true
+          file: ./coverage.xml
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

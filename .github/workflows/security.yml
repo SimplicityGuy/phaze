@@ -1,0 +1,42 @@
+---
+name: Security
+
+on:
+  workflow_call:
+
+jobs:
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: "\U0001F4E5 Checkout code"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "\U0001F4E6 Install uv"
+        uses: astral-sh/setup-uv@v4
+
+      - name: "\U0001F40D Set up Python 3.13"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: "\U0001F4E6 Install dependencies"
+        run: uv sync
+
+      - name: "\U0001F50D Run pip-audit"
+        run: uvx pip-audit
+
+      - name: "\U0001F6E1\uFE0F Run bandit"
+        run: uv run bandit -r src/ -x tests -s B608
+
+      - name: "\U0001F50E Run Semgrep"
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: auto
+
+      - name: "\U0001F575\uFE0F Run TruffleHog"
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
