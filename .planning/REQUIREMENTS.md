@@ -9,11 +9,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Ingestion
 
-- [ ] **ING-01**: System can scan directories recursively to discover music files (mp3, m4a, ogg), video files, and companion files (cue, nfo, txt, jpg, png, m3u, pls)
-- [ ] **ING-02**: System extracts sha256 hash for every discovered file
-- [ ] **ING-03**: System records original filename and original path for every file in PostgreSQL
+- [x] **ING-01**: System can scan directories recursively to discover music files (mp3, m4a, ogg), video files, and companion files (cue, nfo, txt, jpg, png, m3u, pls)
+- [x] **ING-02**: System extracts sha256 hash for every discovered file
+- [x] **ING-03**: System records original filename and original path for every file in PostgreSQL
 - [ ] **ING-04**: System detects exact duplicates via sha256 and flags them for review
-- [ ] **ING-05**: System classifies each file by type (music, video, companion) and stores the classification
+- [x] **ING-05**: System classifies each file by type (music, video, companion) and stores the classification
 - [ ] **ING-06**: System associates companion files with nearby music/video files using directory proximity heuristics
 
 ### Analysis
@@ -96,11 +96,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| ING-01 | Phase 2: File Discovery & Ingestion | Pending |
-| ING-02 | Phase 2: File Discovery & Ingestion | Pending |
-| ING-03 | Phase 2: File Discovery & Ingestion | Pending |
+| ING-01 | Phase 2: File Discovery & Ingestion | Complete |
+| ING-02 | Phase 2: File Discovery & Ingestion | Complete |
+| ING-03 | Phase 2: File Discovery & Ingestion | Complete |
 | ING-04 | Phase 3: Companion Files & Deduplication | Pending |
-| ING-05 | Phase 2: File Discovery & Ingestion | Pending |
+| ING-05 | Phase 2: File Discovery & Ingestion | Complete |
 | ING-06 | Phase 3: Companion Files & Deduplication | Pending |
 | ANL-01 | Phase 5: Audio Analysis Pipeline | Pending |
 | ANL-02 | Phase 5: Audio Analysis Pipeline | Pending |

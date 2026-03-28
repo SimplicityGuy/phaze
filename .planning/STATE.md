@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-03-PLAN.md
-last_updated: "2026-03-28T02:01:56.194Z"
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-03-28T04:01:56.433Z"
 last_activity: 2026-03-28
 progress:
   total_phases: 8
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
-  percent: 0
+  completed_phases: 2
+  total_plans: 6
+  completed_plans: 6
+  percent: 17
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 01 — infrastructure-project-setup
+**Current focus:** Phase 02 — file-discovery-ingestion
 
 ## Current Position
 
-Phase: 2
+Phase: 3
 Plan: Not started
 Status: Ready to execute
 Last activity: 2026-03-28
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 17%
 
 ## Performance Metrics
 
@@ -54,6 +54,9 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01 P01 | 6min | 3 tasks | 9 files |
 | Phase 01 P03 | 3min | 1 tasks | 5 files |
+| Phase 02 P01 | 4min | 3 tasks | 8 files |
+| Phase 02 P02 | 8min | 2 tasks | 4 files |
+| Phase 02 P03 | 9min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -67,6 +70,13 @@ Recent decisions affecting current work:
 - [Phase 01]: Used check-github-workflows/check-github-actions hook IDs (renamed from validate-* in check-jsonschema 0.31.3)
 - [Phase 01]: Updated pre-commit hooks to latest versions with frozen 40-char SHA revisions
 - [Phase 01]: Used pre-commit/action@v3.0.1 for CI code quality instead of manual pre-commit run
+- [Phase 02]: Used StrEnum for FileCategory and ScanStatus to match existing FileState pattern
+- [Phase 02]: Set HASH_CHUNK_SIZE to 64KB per design decision D-07
+- [Phase 02]: Read-only Docker volume mount for scan directory safety
+- [Phase 02]: Used pg_insert ON CONFLICT DO UPDATE with unique index on original_path for resumable upserts
+- [Phase 02]: Added unique index uq_files_original_path to support ON CONFLICT clause
+- [Phase 02]: Background tasks stored in module-level set to prevent GC (RUF006 pattern)
+- [Phase 02]: Pydantic schemas use runtime imports for uuid/datetime (not TYPE_CHECKING) for model resolution
 
 ### Pending Todos
 
@@ -80,6 +90,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T01:42:37.969Z
-Stopped at: Completed 01-03-PLAN.md
+Last session: 2026-03-28T03:56:39.409Z
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None

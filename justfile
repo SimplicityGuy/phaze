@@ -66,6 +66,16 @@ pre-commit:
 # Run all quality checks (lint + typecheck + test)
 check: lint typecheck test
 
+# === Scan ===
+
+# Trigger a file scan (requires running services)
+scan:
+    curl -s -X POST http://localhost:8000/api/v1/scan | python -m json.tool
+
+# Check scan status by batch ID
+scan-status BATCH_ID:
+    curl -s http://localhost:8000/api/v1/scan/{{BATCH_ID}} | python -m json.tool
+
 # === Security ===
 
 # Run pip-audit for dependency vulnerability scanning
