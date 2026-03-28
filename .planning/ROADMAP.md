@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 2: File Discovery & Ingestion** - Recursive scanning, SHA256 hashing, file classification, database persistence
 - [ ] **Phase 3: Companion Files & Deduplication** - Associate companion files with media, detect and flag hash duplicates
 - [ ] **Phase 4: Task Queue & Worker Infrastructure** - arq + Redis worker pool with bounded parallelism
-- [x] **Phase 5: Audio Analysis Pipeline** - BPM detection, mood/style classification via worker pool (completed 2026-03-28)
+- [ ] **Phase 5: Audio Analysis Pipeline** - BPM detection, mood/style classification via worker pool
 - [ ] **Phase 6: AI Proposal Generation** - LLM-powered filename proposals stored as immutable records
 - [ ] **Phase 7: Approval Workflow UI** - Web-based review interface for approving/rejecting proposals
 - [ ] **Phase 8: Safe File Execution & Audit** - Copy-verify-delete file operations with append-only audit log
@@ -78,19 +78,15 @@ Plans:
 - [x] 04-02-PLAN.md -- Redis Docker, enqueue API, integration testing
 
 ### Phase 5: Audio Analysis Pipeline
-**Goal**: Music files are analyzed for BPM, mood, and style using essentia with existing prototype models running through the worker pool
+**Goal**: Music files are analyzed for BPM, mood, and style using existing prototypes running through the worker pool
 **Depends on**: Phase 2, Phase 4
 **Requirements**: ANL-01, ANL-02
 **Success Criteria** (what must be TRUE):
-  1. BPM is detected for music files using essentia RhythmExtractor2013 and stored in the analysis table
-  2. Mood and style are classified for music files using essentia TF models (33 models + discogs-effnet) and stored in the analysis table
+  1. BPM is detected for music files using librosa and stored in the analysis table
+  2. Mood and style are classified for music files using existing prototype code and stored in the analysis table
   3. Analysis results are linked to their source file records in PostgreSQL
   4. Analysis runs through the arq worker pool and can process files in parallel
-**Plans**: 2 plans
-
-Plans:
-- [x] 05-01-PLAN.md — essentia-tensorflow dependency, model download script, Dockerfile and Docker Compose updates
-- [x] 05-02-PLAN.md — Analysis service (model registry, analyze_file), process_file wiring, tests
+**Plans**: TBD
 
 ### Phase 6: AI Proposal Generation
 **Goal**: The system uses an LLM to propose new filenames for files, storing proposals as immutable records
@@ -101,11 +97,9 @@ Plans:
   2. Each proposal is stored as an immutable record in PostgreSQL (not regenerated on the fly)
   3. Proposals include the original filename, proposed filename, and the metadata context used to generate them
   4. Batch prompting processes multiple files per LLM call for cost efficiency
-**Plans**: 2 plans
-
-Plans:
-- [ ] 06-01-PLAN.md — litellm dependency, Settings config, Pydantic response models, prompt template, helpers
-- [ ] 06-02-PLAN.md — ProposalService LLM calling, rate limiting, arq batch job, proposal storage
+**Plans**: 2 total, 1 complete
+  - Plan 01: LLM contracts, data structures, prompt template (COMPLETE)
+  - Plan 02: LLM calling, batch processing, proposal storage (PENDING)
 
 ### Phase 7: Approval Workflow UI
 **Goal**: An admin can review all proposed renames in a web interface and approve or reject them
@@ -142,7 +136,7 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 2. File Discovery & Ingestion | 0/TBD | Not started | - |
 | 3. Companion Files & Deduplication | 0/TBD | Not started | - |
 | 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
-| 5. Audio Analysis Pipeline | 2/2 | Complete   | 2026-03-28 |
-| 6. AI Proposal Generation | 0/2 | Planning | - |
+| 5. Audio Analysis Pipeline | 0/TBD | Not started | - |
+| 6. AI Proposal Generation | 0/TBD | Not started | - |
 | 7. Approval Workflow UI | 0/TBD | Not started | - |
 | 8. Safe File Execution & Audit | 0/TBD | Not started | - |
