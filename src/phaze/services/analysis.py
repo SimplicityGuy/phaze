@@ -157,15 +157,17 @@ def _predict_single(audio_16k: Any, model: ModelConfig, models_dir: str) -> Any:
 # Mood / style derivation
 # ---------------------------------------------------------------------------
 
-_MOOD_SET_NAMES = frozenset({
-    "mood_acoustic",
-    "mood_electronic",
-    "mood_aggressive",
-    "mood_relaxed",
-    "mood_happy",
-    "mood_sad",
-    "mood_party",
-})
+_MOOD_SET_NAMES = frozenset(
+    {
+        "mood_acoustic",
+        "mood_electronic",
+        "mood_aggressive",
+        "mood_relaxed",
+        "mood_happy",
+        "mood_sad",
+        "mood_party",
+    }
+)
 
 
 def derive_mood(features: dict[str, Any]) -> str:
@@ -249,9 +251,7 @@ def analyze_file(file_path: str, models_dir: str) -> dict[str, Any]:
         for model in model_set.models:
             predictions = _predict_single(audio_16k, model, models_dir)
             labels = _get_labels(model.filename, models_dir)
-            set_data[model.variant] = [
-                {"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)
-            ]
+            set_data[model.variant] = [{"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)]
         features[model_set.name] = set_data
 
     # 6. Run genre model
