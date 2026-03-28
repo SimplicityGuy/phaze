@@ -69,7 +69,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md -- FileCompanion model, migration, companion association and dedup service functions with tests
-- [ ] 03-02-PLAN.md -- Pydantic schemas, API endpoints (POST /associate, GET /duplicates), router wiring, integration tests
+- [x] 03-02-PLAN.md -- Pydantic schemas, API endpoints (POST /associate, GET /duplicates), router wiring, integration tests
 
 ### Phase 4: Task Queue & Worker Infrastructure
 **Goal**: An arq + Redis task queue distributes work to a bounded worker pool with backpressure and resumability
