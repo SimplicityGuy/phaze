@@ -1,46 +1,171 @@
 """Tests for task functions."""
 
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
+
 from arq import Retry
 import pytest
 
 from phaze.tasks.functions import process_file
 
 
-async def test_process_file_returns_result() -> None:
-    """process_file returns correct result dict for valid file_id."""
-    ctx: dict = {"job_try": 1}
-    result = await process_file(ctx, file_id=42)
-    assert result == {"file_id": 42, "status": "processed"}
+MOCK_ANALYSIS: dict[str, Any] = {
+    "bpm": 128.0,
+    "musical_key": "C minor",
+    "mood": "happy",
+    "style": "Electronic/House",
+    "features": {"mood_acoustic": {}, "genre": {"predictions": []}},
+}
 
 
-async def test_process_file_raises_retry_on_exception() -> None:
-    """process_file raises arq.Retry when an exception occurs."""
+def _make_ctx(job_try: int = 1) -> dict[str, Any]:
+    """Create a minimal arq context dict."""
+    return {"job_try": job_try, "process_pool": MagicMock()}
 
-    async def _failing(ctx: dict) -> None:
-        """Simulate process_file where the try block raises."""
-        try:
-            raise ValueError("simulated failure")
-        except Exception as exc:
-            raise Retry(defer=ctx["job_try"] * 5) from exc
 
-    ctx: dict = {"job_try": 1}
+def _make_file_record(
+    file_id: uuid.UUID | None = None,
+    file_type: str = "mp3",
+    state: str = "discovered",
+    current_path: str = "/music/track.mp3",
+) -> MagicMock:
+    """Create a mock FileRecord."""
+    record = MagicMock()
+    record.id = file_id or uuid.uuid4()
+    record.file_type = file_type
+    record.state = state
+    record.current_path = current_path
+    return record
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+async def test_process_file_calls_analyze(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
+    """process_file calls run_in_process_pool with analyze_file, file's current_path, and models_path."""
+    file_id = uuid.uuid4()
+    file_record = _make_file_record(file_id=file_id)
+
+    mock_session = AsyncMock()
+    mock_get_session.return_value = mock_session
+
+    # First execute returns FileRecord, second returns None (no existing AnalysisResult)
+    mock_result_1 = MagicMock()
+    mock_result_1.scalar_one_or_none.return_value = file_record
+    mock_result_2 = MagicMock()
+    mock_result_2.scalar_one_or_none.return_value = None
+    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
+
+    mock_pool.return_value = MOCK_ANALYSIS
+
+    ctx = _make_ctx()
+    await process_file(ctx, str(file_id))
+
+    mock_pool.assert_called_once()
+    call_args = mock_pool.call_args
+    # First positional arg is ctx, second is analyze_file function, third is path, fourth is models_path
+    assert call_args[0][2] == "/music/track.mp3"
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+async def test_process_file_skips_non_music(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
+    """process_file for a file with file_type not music returns status 'skipped' without calling analyze."""
+    file_id = uuid.uuid4()
+    file_record = _make_file_record(file_id=file_id, file_type="jpg")
+
+    mock_session = AsyncMock()
+    mock_get_session.return_value = mock_session
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = file_record
+    mock_session.execute.return_value = mock_result
+
+    ctx = _make_ctx()
+    result = await process_file(ctx, str(file_id))
+
+    assert result["status"] == "skipped"
+    mock_pool.assert_not_called()
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+async def test_process_file_stores_analysis_result(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
+    """process_file upserts AnalysisResult with bpm, mood, style, musical_key, features from analyze_file return value."""
+    file_id = uuid.uuid4()
+    file_record = _make_file_record(file_id=file_id)
+
+    mock_session = AsyncMock()
+    mock_get_session.return_value = mock_session
+
+    mock_result_1 = MagicMock()
+    mock_result_1.scalar_one_or_none.return_value = file_record
+    mock_result_2 = MagicMock()
+    mock_result_2.scalar_one_or_none.return_value = None  # No existing analysis
+    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
+
+    mock_pool.return_value = MOCK_ANALYSIS
+
+    ctx = _make_ctx()
+    result = await process_file(ctx, str(file_id))
+
+    assert result["status"] == "analyzed"
+    # Verify session.add was called (new AnalysisResult created)
+    mock_session.add.assert_called_once()
+    added_obj = mock_session.add.call_args[0][0]
+    assert added_obj.bpm == 128.0
+    assert added_obj.musical_key == "C minor"
+    assert added_obj.mood == "happy"
+    assert added_obj.style == "Electronic/House"
+    assert added_obj.features == MOCK_ANALYSIS["features"]
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+async def test_process_file_updates_file_state(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
+    """process_file updates FileRecord.state to FileState.ANALYZED after successful analysis."""
+    file_id = uuid.uuid4()
+    file_record = _make_file_record(file_id=file_id)
+
+    mock_session = AsyncMock()
+    mock_get_session.return_value = mock_session
+
+    mock_result_1 = MagicMock()
+    mock_result_1.scalar_one_or_none.return_value = file_record
+    mock_result_2 = MagicMock()
+    mock_result_2.scalar_one_or_none.return_value = None
+    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
+
+    mock_pool.return_value = MOCK_ANALYSIS
+
+    ctx = _make_ctx()
+    await process_file(ctx, str(file_id))
+
+    assert file_record.state == "analyzed"
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+async def test_process_file_raises_retry_on_failure(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
+    """process_file raises arq Retry when analyze_file raises an exception."""
+    mock_session = AsyncMock()
+    mock_get_session.return_value = mock_session
+
+    file_record = _make_file_record()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = file_record
+    mock_session.execute.return_value = mock_result
+
+    mock_pool.side_effect = RuntimeError("analysis failed")
+
+    ctx = _make_ctx(job_try=1)
     with pytest.raises(Retry):
-        await _failing(ctx)
+        await process_file(ctx, str(uuid.uuid4()))
 
 
-async def test_process_file_retry_defer_job_try_1() -> None:
-    """Retry defer is 5 seconds on first try (job_try=1)."""
-    retry = Retry(defer=1 * 5)
-    assert retry.defer_score == 5_000  # 5 seconds in ms
-
-
-async def test_process_file_retry_defer_job_try_2() -> None:
-    """Retry defer is 10 seconds on second try (job_try=2)."""
-    retry = Retry(defer=2 * 5)
-    assert retry.defer_score == 10_000  # 10 seconds in ms
-
-
-async def test_process_file_retry_defer_job_try_3() -> None:
-    """Retry defer is 15 seconds on third try (job_try=3)."""
-    retry = Retry(defer=3 * 5)
-    assert retry.defer_score == 15_000  # 15 seconds in ms
+def test_process_file_retry_backoff() -> None:
+    """Retry defer is job_try * 5 seconds."""
+    for job_try in (1, 2, 3):
+        retry = Retry(defer=job_try * 5)
+        assert retry.defer_score == job_try * 5 * 1000
