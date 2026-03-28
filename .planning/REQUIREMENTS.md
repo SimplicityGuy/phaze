@@ -20,7 +20,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [ ] **ANL-01**: System detects BPM for music files using librosa/existing prototypes
 - [ ] **ANL-02**: System classifies mood and style for music files using existing prototypes
-- [ ] **ANL-03**: Analysis runs in parallel across worker pool for throughput at scale
+- [x] **ANL-03**: Analysis runs in parallel across worker pool for throughput at scale
 
 ### AI Proposals
 
@@ -41,7 +41,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Infrastructure
 
 - [x] **INF-01**: All services run via Docker Compose (API, workers, PostgreSQL, Redis)
-- [ ] **INF-02**: Task queue (arq + Redis) manages parallel worker processing
+- [x] **INF-02**: Task queue (arq + Redis) manages parallel worker processing
 - [ ] **INF-03**: Database migrations managed via Alembic
 
 ## v2 Requirements
@@ -104,7 +104,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ING-06 | Phase 3: Companion Files & Deduplication | Complete |
 | ANL-01 | Phase 5: Audio Analysis Pipeline | Pending |
 | ANL-02 | Phase 5: Audio Analysis Pipeline | Pending |
-| ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Pending |
+| ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Complete |
 | AIP-01 | Phase 6: AI Proposal Generation | Pending |
 | AIP-02 | Phase 6: AI Proposal Generation | Pending |
 | APR-01 | Phase 7: Approval Workflow UI | Pending |
@@ -113,7 +113,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EXE-01 | Phase 8: Safe File Execution & Audit | Pending |
 | EXE-02 | Phase 8: Safe File Execution & Audit | Pending |
 | INF-01 | Phase 1: Infrastructure & Project Setup | Complete |
-| INF-02 | Phase 4: Task Queue & Worker Infrastructure | Pending |
+| INF-02 | Phase 4: Task Queue & Worker Infrastructure | Complete |
 | INF-03 | Phase 1: Infrastructure & Project Setup | Pending |
 
 **Coverage:**

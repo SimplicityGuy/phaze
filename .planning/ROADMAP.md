@@ -50,12 +50,7 @@ Plans:
   3. Every discovered file has its original filename and original absolute path recorded in PostgreSQL
   4. Every file is classified as music, video, or companion and that classification is stored
   5. Paths containing Unicode characters (accented, CJK) are normalized to NFC and stored correctly
-**Plans**: 3 plans
-
-Plans:
-- [x] 02-01-PLAN.md -- Ingestion foundation: constants, ScanBatch model, migration, config, Docker volume
-- [x] 02-02-PLAN.md -- File discovery scanner service
-- [x] 02-03-PLAN.md -- SHA256 hashing and database persistence
+**Plans**: TBD
 
 ### Phase 3: Companion Files & Deduplication
 **Goal**: Companion files are linked to their nearby media files and exact duplicates are flagged for review
@@ -65,11 +60,7 @@ Plans:
   1. Companion files (cue, nfo, txt, jpg, etc.) are associated with music/video files in the same or parent directory
   2. Files sharing the same SHA256 hash are identified as exact duplicates and flagged in the database
   3. A user can query the database to see all duplicate groups and their file locations
-**Plans**: 2 plans
-
-Plans:
-- [x] 03-01-PLAN.md -- FileCompanion model, migration, companion association and dedup service functions with tests
-- [x] 03-02-PLAN.md -- Pydantic schemas, API endpoints (POST /associate, GET /duplicates), router wiring, integration tests
+**Plans**: TBD
 
 ### Phase 4: Task Queue & Worker Infrastructure
 **Goal**: An arq + Redis task queue distributes work to a bounded worker pool with backpressure and resumability
@@ -83,8 +74,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md -- arq dependency, worker settings, tasks package (WorkerSettings, functions, pool), tests
-- [ ] 04-02-PLAN.md -- FastAPI lifespan ArqRedis pool, docker-compose worker command, justfile worker commands
+- [x] 04-01-PLAN.md -- arq dependency, worker config, WorkerSettings, task functions, process pool
+- [ ] 04-02-PLAN.md -- Redis Docker, enqueue API, integration testing
 
 ### Phase 5: Audio Analysis Pipeline
 **Goal**: Music files are analyzed for BPM, mood, and style using existing prototypes running through the worker pool
@@ -140,9 +131,9 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Infrastructure & Project Setup | 0/3 | Planning | - |
-| 2. File Discovery & Ingestion | 1/3 | In Progress | - |
-| 3. Companion Files & Deduplication | 1/2 | In Progress|  |
-| 4. Task Queue & Worker Infrastructure | 0/2 | Planning | - |
+| 2. File Discovery & Ingestion | 0/TBD | Not started | - |
+| 3. Companion Files & Deduplication | 0/TBD | Not started | - |
+| 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
 | 5. Audio Analysis Pipeline | 0/TBD | Not started | - |
 | 6. AI Proposal Generation | 0/TBD | Not started | - |
 | 7. Approval Workflow UI | 0/TBD | Not started | - |
