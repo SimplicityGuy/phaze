@@ -12,7 +12,8 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Containerized backend services running via Docker Compose — Phase 1
+- ✓ PostgreSQL database for all metadata and state — Phase 1
 
 ### Active
 
@@ -23,8 +24,6 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - [ ] Deduplicate files using sha256 hashes
 - [ ] Admin web UI to review and approve/reject proposed renames and file moves
 - [ ] Execute approved renames and file moves safely
-- [ ] Containerized backend services running via Docker Compose
-- [ ] PostgreSQL database for all metadata and state
 
 ### Out of Scope
 
@@ -81,4 +80,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-27 after initialization*
+*Last updated: 2026-03-28 after Phase 1 completion*
