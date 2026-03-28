@@ -61,7 +61,7 @@ typecheck:
 
 # Run all pre-commit hooks
 pre-commit:
-    pre-commit run --all-files
+    uv run pre-commit run --all-files
 
 # Run all quality checks (lint + typecheck + test)
 check: lint typecheck test
@@ -130,7 +130,7 @@ db-history:
 
 # Update pre-commit hooks (with frozen SHAs)
 update-hooks:
-    pre-commit autoupdate --freeze
+    uv run pre-commit autoupdate --freeze
 
 # Lock and upgrade all dependencies
 lock-upgrade:

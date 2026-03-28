@@ -7,9 +7,16 @@ on:
   pull_request:
     branches: ["**"]
 
+env:
+  CI: true
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  security-events: write
 
 jobs:
   quality:
@@ -18,6 +25,10 @@ jobs:
   test:
     needs: quality
     uses: ./.github/workflows/tests.yml
+    secrets: inherit
 
   security:
     uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      security-events: write
