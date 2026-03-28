@@ -37,3 +37,9 @@ def test_worker_keep_result_default() -> None:
     """Worker keep_result defaults to 3600 seconds."""
     s = Settings()
     assert s.worker_keep_result == 3600
+
+
+def test_models_path_default() -> None:
+    """models_path defaults to /models."""
+    s = Settings()
+    assert s.models_path == "/models"
