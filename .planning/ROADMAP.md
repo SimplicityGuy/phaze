@@ -53,9 +53,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Foundation: constants, ScanBatch model, migration, config, Docker volume mount
-- [ ] 02-02-PLAN.md — Ingestion service: directory scanning, SHA256 hashing, bulk upsert, tests
-- [ ] 02-03-PLAN.md — Scan API endpoints, schemas, router wiring, README/justfile updates
+- [x] 02-01-PLAN.md -- Ingestion foundation: constants, ScanBatch model, migration, config, Docker volume
+- [ ] 02-02-PLAN.md -- File discovery scanner service
+- [ ] 02-03-PLAN.md -- SHA256 hashing and database persistence
 
 ### Phase 3: Companion Files & Deduplication
 **Goal**: Companion files are linked to their nearby media files and exact duplicates are flagged for review
@@ -132,7 +132,7 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Infrastructure & Project Setup | 0/3 | Planning | - |
-| 2. File Discovery & Ingestion | 0/3 | Planning | - |
+| 2. File Discovery & Ingestion | 1/3 | In Progress | - |
 | 3. Companion Files & Deduplication | 0/TBD | Not started | - |
 | 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
 | 5. Audio Analysis Pipeline | 0/TBD | Not started | - |
