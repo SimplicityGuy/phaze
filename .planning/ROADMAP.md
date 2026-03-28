@@ -78,15 +78,19 @@ Plans:
 - [x] 04-02-PLAN.md -- Redis Docker, enqueue API, integration testing
 
 ### Phase 5: Audio Analysis Pipeline
-**Goal**: Music files are analyzed for BPM, mood, and style using existing prototypes running through the worker pool
+**Goal**: Music files are analyzed for BPM, mood, and style using essentia with existing prototype models running through the worker pool
 **Depends on**: Phase 2, Phase 4
 **Requirements**: ANL-01, ANL-02
 **Success Criteria** (what must be TRUE):
-  1. BPM is detected for music files using librosa and stored in the analysis table
-  2. Mood and style are classified for music files using existing prototype code and stored in the analysis table
+  1. BPM is detected for music files using essentia RhythmExtractor2013 and stored in the analysis table
+  2. Mood and style are classified for music files using essentia TF models (33 models + discogs-effnet) and stored in the analysis table
   3. Analysis results are linked to their source file records in PostgreSQL
   4. Analysis runs through the arq worker pool and can process files in parallel
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — essentia-tensorflow dependency, model download script, Dockerfile and Docker Compose updates
+- [ ] 05-02-PLAN.md — Analysis service (model registry, analyze_file), process_file wiring, tests
 
 ### Phase 6: AI Proposal Generation
 **Goal**: The system uses an LLM to propose new filenames for files, storing proposals as immutable records
@@ -134,7 +138,7 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 2. File Discovery & Ingestion | 0/TBD | Not started | - |
 | 3. Companion Files & Deduplication | 0/TBD | Not started | - |
 | 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
-| 5. Audio Analysis Pipeline | 0/TBD | Not started | - |
+| 5. Audio Analysis Pipeline | 0/2 | Planning | - |
 | 6. AI Proposal Generation | 0/TBD | Not started | - |
 | 7. Approval Workflow UI | 0/TBD | Not started | - |
 | 8. Safe File Execution & Audit | 0/TBD | Not started | - |
