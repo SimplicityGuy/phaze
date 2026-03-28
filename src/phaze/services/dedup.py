@@ -16,12 +16,7 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset:
     """
     # Subquery: hashes that appear more than once
     dup_hashes = (
-        select(FileRecord.sha256_hash)
-        .group_by(FileRecord.sha256_hash)
-        .having(func.count(FileRecord.id) > 1)
-        .limit(limit)
-        .offset(offset)
-        .subquery()
+        select(FileRecord.sha256_hash).group_by(FileRecord.sha256_hash).having(func.count(FileRecord.id) > 1).limit(limit).offset(offset).subquery()
     )
 
     # Main query: all files matching those hashes
@@ -60,12 +55,7 @@ async def count_duplicate_groups(session: AsyncSession) -> int:
 
     Returns the number of distinct SHA256 hashes that have more than one file.
     """
-    subq = (
-        select(FileRecord.sha256_hash)
-        .group_by(FileRecord.sha256_hash)
-        .having(func.count(FileRecord.id) > 1)
-        .subquery()
-    )
+    subq = select(FileRecord.sha256_hash).group_by(FileRecord.sha256_hash).having(func.count(FileRecord.id) > 1).subquery()
     stmt = select(func.count()).select_from(subq)
     result = await session.execute(stmt)
     return result.scalar_one()
