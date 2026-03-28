@@ -5,9 +5,9 @@ from phaze.models.base import Base
 
 
 def test_all_tables_defined() -> None:
-    """All 5 expected tables should be defined in metadata."""
+    """All 6 expected tables should be defined in metadata."""
     table_names = set(Base.metadata.tables.keys())
-    expected = {"files", "metadata", "analysis", "proposals", "execution_log"}
+    expected = {"files", "metadata", "analysis", "proposals", "execution_log", "scan_batches"}
     assert expected == table_names
 
 
@@ -70,5 +70,5 @@ async def test_tables_created_in_database(async_engine) -> None:  # type: ignore
 
     async with async_engine.connect() as conn:
         table_names = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
-    expected = {"files", "metadata", "analysis", "proposals", "execution_log"}
+    expected = {"files", "metadata", "analysis", "proposals", "execution_log", "scan_batches"}
     assert expected.issubset(set(table_names))

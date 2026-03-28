@@ -54,6 +54,38 @@ Phaze ingests music files (mp3, m4a, ogg) and concert videos, analyzes them for 
    # Expected: {"status": "ok"}
    ```
 
+## Scanning Files
+
+Phaze scans mounted directories to discover music, video, and companion files.
+
+### Configuration
+
+Set `SCAN_PATH` in `.env` to the directory containing music files. In Docker, this is mounted read-only at `/data/music`.
+
+### Triggering a Scan
+
+```bash
+curl -X POST http://localhost:8000/api/v1/scan
+# Or with a custom path:
+curl -X POST http://localhost:8000/api/v1/scan \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/data/music/subset"}'
+```
+
+### Checking Scan Status
+
+```bash
+curl http://localhost:8000/api/v1/scan/{batch_id}
+```
+
+### Supported File Types
+
+| Category   | Extensions                                                  |
+|------------|-------------------------------------------------------------|
+| Music      | mp3, m4a, ogg, flac, wav, aiff, wma, aac                   |
+| Video      | mp4, mkv, avi, webm, mov, wmv, flv                         |
+| Companion  | cue, nfo, txt, jpg, jpeg, png, gif, m3u, m3u8, pls, sfv, md5 |
+
 ## Development
 
 ### Common Commands
@@ -70,6 +102,8 @@ Using `just` (recommended):
 | `just fmt` | Format code |
 | `just typecheck` | Run mypy |
 | `just check` | Run lint + typecheck + test |
+| `just scan` | Trigger a file scan |
+| `just scan-status ID` | Check scan status by batch ID |
 | `just db-upgrade` | Apply migrations |
 | `just db-revision "msg"` | Create new migration |
 
@@ -118,19 +152,27 @@ pre-commit run --all-files
 
 ```
 phaze/
-├── src/phaze/           # Application package
-│   ├── config.py        # Settings (pydantic-settings)
-│   ├── database.py      # Async SQLAlchemy engine
-│   ├── main.py          # FastAPI app factory
-│   ├── models/          # SQLAlchemy ORM models
-│   ├── routers/         # API route handlers
-│   └── services/        # Business logic
-├── tests/               # Test suite
-├── alembic/             # Database migrations
-├── docker-compose.yml   # Service orchestration
-├── Dockerfile           # Container image
-├── justfile             # Developer commands
-└── pyproject.toml       # Project configuration
+├── src/phaze/               # Application package
+│   ├── config.py            # Settings (pydantic-settings)
+│   ├── constants.py         # File categories, extension map, tuning constants
+│   ├── database.py          # Async SQLAlchemy engine
+│   ├── main.py              # FastAPI app factory
+│   ├── models/              # SQLAlchemy ORM models
+│   │   ├── scan_batch.py    # Scan batch tracking
+│   │   └── file.py          # File record model
+│   ├── routers/             # API route handlers
+│   │   ├── health.py        # Health check endpoint
+│   │   └── scan.py          # Scan trigger and status endpoints
+│   ├── schemas/             # Pydantic request/response models
+│   │   └── scan.py          # Scan API schemas
+│   └── services/            # Business logic
+│       └── ingestion.py     # File discovery, hashing, and bulk upsert
+├── tests/                   # Test suite
+├── alembic/                 # Database migrations
+├── docker-compose.yml       # Service orchestration
+├── Dockerfile               # Container image
+├── justfile                 # Developer commands
+└── pyproject.toml           # Project configuration
 ```
 
 ## License

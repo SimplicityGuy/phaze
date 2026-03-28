@@ -57,7 +57,7 @@ async def test_trigger_scan_invalid_path(client: AsyncClient, monkeypatch: pytes
 
 
 @pytest.mark.asyncio
-async def test_trigger_scan_path_traversal(client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_trigger_scan_path_traversal(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /api/v1/scan with path traversal should return 400."""
     monkeypatch.setattr("phaze.routers.scan.run_scan", AsyncMock())
 
