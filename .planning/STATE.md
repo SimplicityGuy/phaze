@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-03-PLAN.md
-last_updated: "2026-03-28T02:01:56.194Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-28T03:44:09.004Z"
 last_activity: 2026-03-28
 progress:
   total_phases: 8
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
-  percent: 0
+  total_plans: 6
+  completed_plans: 5
+  percent: 17
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 ## Current Position
 
 Phase: 2 (file-discovery-ingestion)
-Plan: 1 of 3 -- COMPLETED
-Status: Executing Phase 02
-Last activity: 2026-03-28 -- Completed 02-01-PLAN.md
+Plan: 2 of 3 -- COMPLETED
+Status: Ready to execute
+Last activity: 2026-03-28
 
 Progress: [██░░░░░░░░] 17%
 
@@ -55,6 +55,7 @@ Progress: [██░░░░░░░░] 17%
 | Phase 01 P01 | 6min | 3 tasks | 9 files |
 | Phase 01 P03 | 3min | 1 tasks | 5 files |
 | Phase 02 P01 | 4min | 3 tasks | 8 files |
+| Phase 02 P02 | 8min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Used StrEnum for FileCategory and ScanStatus to match existing FileState pattern
 - [Phase 02]: Set HASH_CHUNK_SIZE to 64KB per design decision D-07
 - [Phase 02]: Read-only Docker volume mount for scan directory safety
+- [Phase 02]: Used pg_insert ON CONFLICT DO UPDATE with unique index on original_path for resumable upserts
+- [Phase 02]: Added unique index uq_files_original_path to support ON CONFLICT clause
 
 ### Pending Todos
 
@@ -84,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T03:30:23Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-03-28T03:44:09.001Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
