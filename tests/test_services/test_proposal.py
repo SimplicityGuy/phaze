@@ -482,7 +482,7 @@ class TestStoreProposals:
         )
         files_context = [{"original_filename": "test.mp3"}]
 
-        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+        with patch("phaze.services.proposal.RenameProposal"):
             count = await store_proposals(session, [file_id], batch, files_context)
 
         assert count == 1

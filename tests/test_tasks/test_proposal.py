@@ -110,9 +110,9 @@ async def test_generate_proposals_happy_path(
 @patch("phaze.tasks.proposal._get_session", new_callable=AsyncMock)
 async def test_generate_proposals_file_not_found(
     mock_get_session: AsyncMock,
-    mock_companions: AsyncMock,
-    mock_rate_limit: AsyncMock,
-    mock_store: AsyncMock,
+    _mock_companions: AsyncMock,
+    _mock_rate_limit: AsyncMock,
+    _mock_store: AsyncMock,
 ) -> None:
     """generate_proposals returns empty status when no files found in DB."""
     from phaze.tasks.proposal import generate_proposals
@@ -129,7 +129,7 @@ async def test_generate_proposals_file_not_found(
 
     assert result["status"] == "empty"
     assert result["count"] == 0
-    mock_rate_limit.assert_not_called()
+    _mock_rate_limit.assert_not_called()
 
 
 @patch("phaze.tasks.proposal._get_session", new_callable=AsyncMock)
