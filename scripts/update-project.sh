@@ -324,6 +324,78 @@ sweep_pip_audit_ignores() {
   fi
 }
 
+# === Sweep osv-scanner Ignores ===
+
+sweep_osv_scanner_ignores() {
+  local ignore_file="osv-scanner.toml"
+  if [[ ! -f "$ignore_file" ]]; then
+    return
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_info "[DRY RUN] Would sweep $ignore_file for resolved vulnerabilities"
+    return
+  fi
+
+  print_section "$EMOJI_VERIFY" "Sweeping osv-scanner Ignores"
+
+  # Count IgnoredVulns entries
+  local vuln_count
+  vuln_count=$(grep -c '^\[\[IgnoredVulns\]\]' "$ignore_file" 2>/dev/null || echo "0")
+
+  if [[ "$vuln_count" -eq 0 ]]; then
+    print_success "No osv-scanner ignores to sweep"
+    return
+  fi
+
+  print_info "Found $vuln_count ignored vulnerabilit$([ "$vuln_count" -eq 1 ] && echo "y" || echo "ies") in $ignore_file"
+
+  # Extract vulnerability IDs
+  local vuln_ids=()
+  while IFS= read -r line; do
+    local vid
+    vid=$(echo "$line" | sed 's/id = "//' | sed 's/"//')
+    vuln_ids+=("$vid")
+  done < <(grep '^id = "' "$ignore_file")
+
+  # Test each by temporarily removing it and running osv-scanner
+  local resolved=()
+  local still_needed=()
+  for test_vid in "${vuln_ids[@]}"; do
+    # Create temp config without this entry
+    local tmp_file
+    tmp_file=$(mktemp)
+    # Remove the block for this ID (IgnoredVulns entry + following lines until next block or EOF)
+    awk -v vid="$test_vid" '
+      /^\[\[IgnoredVulns\]\]/ { block=1; buf=$0"\n"; next }
+      block && /^id = / { if (index($0, vid)) { skip=1; buf=""; block=0; next } else { printf "%s", buf; buf=""; block=0 } }
+      block { buf=buf $0"\n"; next }
+      skip && /^\[\[/ { skip=0 }
+      skip { next }
+      { if (buf != "") { printf "%s", buf; buf="" }; print }
+    ' "$ignore_file" > "$tmp_file"
+
+    if osv-scanner --config="$tmp_file" scan . >/dev/null 2>&1; then
+      resolved+=("$test_vid")
+      print_success "✓ $test_vid — fixed! Removing from ignore list"
+    else
+      still_needed+=("$test_vid")
+      print_warning "✗ $test_vid — still needed (no fix available)"
+    fi
+    rm -f "$tmp_file"
+  done
+
+  if [[ ${#resolved[@]} -gt 0 ]]; then
+    CHANGES_MADE=true
+    print_success "Removed ${#resolved[@]} resolved vulnerabilit$([ ${#resolved[@]} -eq 1 ] && echo "y" || echo "ies")"
+    print_info "Manual cleanup of $ignore_file may be needed for removed entries"
+  fi
+
+  if [[ ${#still_needed[@]} -gt 0 ]]; then
+    print_info "${#still_needed[@]} vulnerabilit$([ ${#still_needed[@]} -eq 1 ] && echo "y" || echo "ies") still awaiting upstream fixes"
+  fi
+}
+
 # === Security Sweep ===
 
 run_security_sweep() {
@@ -396,6 +468,7 @@ update_precommit_hooks
 update_python_packages
 update_docker_images
 sweep_pip_audit_ignores
+sweep_osv_scanner_ignores
 run_security_sweep
 run_tests
 generate_summary
