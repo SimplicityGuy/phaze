@@ -269,3 +269,377 @@ class TestSettingsLlmFields:
 
         s = Settings()
         assert s.llm_max_companion_chars == 3000
+
+
+# ---------------------------------------------------------------------------
+# ProposalService tests (Plan 02)
+# ---------------------------------------------------------------------------
+
+
+class TestProposalServiceInit:
+    """Tests for ProposalService constructor."""
+
+    def test_stores_model_and_prompt_and_max_rpm(self):
+        from phaze.services.proposal import ProposalService
+
+        svc = ProposalService(model="test-model", prompt_template="Hello {files_json}", max_rpm=60)
+        assert svc.model == "test-model"
+        assert svc.prompt_template == "Hello {files_json}"
+        assert svc.max_rpm == 60
+
+
+class TestClampConfidence:
+    """Tests for ProposalService._clamp_confidence."""
+
+    def test_passthrough_valid(self):
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(0.5) == 0.5
+
+    def test_clamp_negative(self):
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(-0.1) == 0.0
+
+    def test_clamp_above_one(self):
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(1.5) == 1.0
+
+    def test_boundary_zero(self):
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(0.0) == 0.0
+
+    def test_boundary_one(self):
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(1.0) == 1.0
+
+
+class TestGenerateBatch:
+    """Tests for ProposalService.generate_batch."""
+
+    @pytest.mark.asyncio
+    async def test_calls_acompletion_with_correct_args(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from phaze.services.proposal import BatchProposalResponse, ProposalService
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = BatchProposalResponse(
+            proposals=[
+                {
+                    "file_index": 0,
+                    "proposed_filename": "Test.mp3",
+                    "confidence": 0.9,
+                    "reasoning": "good",
+                }
+            ]
+        ).model_dump_json()
+
+        with patch("phaze.services.proposal.acompletion", new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+            svc = ProposalService(model="test-model", prompt_template="Files: {files_json}", max_rpm=30)
+            result = await svc.generate_batch([{"index": 0, "original_filename": "test.mp3"}])
+
+            mock_acompletion.assert_called_once()
+            call_kwargs = mock_acompletion.call_args
+            assert call_kwargs[1]["model"] == "test-model"
+            assert call_kwargs[1]["response_format"] is BatchProposalResponse
+            assert len(result.proposals) == 1
+            assert result.proposals[0].proposed_filename == "Test.mp3"
+
+    @pytest.mark.asyncio
+    async def test_builds_prompt_with_files_json(self):
+        import json
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from phaze.services.proposal import BatchProposalResponse, ProposalService
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = BatchProposalResponse(
+            proposals=[]
+        ).model_dump_json()
+
+        files_context = [{"index": 0, "original_filename": "a.mp3"}]
+
+        with patch("phaze.services.proposal.acompletion", new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+            svc = ProposalService(model="m", prompt_template="DATA: {files_json}", max_rpm=30)
+            await svc.generate_batch(files_context)
+
+            prompt = mock_acompletion.call_args[1]["messages"][0]["content"]
+            assert json.dumps(files_context, indent=2) in prompt
+
+
+# ---------------------------------------------------------------------------
+# check_rate_limit tests (Plan 02)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckRateLimit:
+    """Tests for check_rate_limit function."""
+
+    @pytest.mark.asyncio
+    async def test_under_limit_returns_immediately(self):
+        from unittest.mock import AsyncMock, patch
+
+        from phaze.services.proposal import check_rate_limit
+
+        redis = AsyncMock()
+        redis.incr.return_value = 1
+
+        with patch("phaze.services.proposal.asyncio") as mock_asyncio:
+            await check_rate_limit(redis, 30)
+            mock_asyncio.sleep.assert_not_called()
+
+        redis.incr.assert_called_once_with("phaze:llm:rpm")
+        redis.expire.assert_called_once_with("phaze:llm:rpm", 60)
+
+    @pytest.mark.asyncio
+    async def test_over_limit_waits_and_retries(self):
+        from unittest.mock import AsyncMock, patch
+
+        from phaze.services.proposal import check_rate_limit
+
+        redis = AsyncMock()
+        # First call over limit, second call under limit
+        redis.incr.side_effect = [31, 1]
+
+        with patch("phaze.services.proposal.asyncio") as mock_asyncio:
+            mock_asyncio.sleep = AsyncMock()
+            await check_rate_limit(redis, 30)
+
+            mock_asyncio.sleep.assert_called_once_with(2.0)
+            redis.decr.assert_called_once_with("phaze:llm:rpm")
+
+    @pytest.mark.asyncio
+    async def test_sets_ttl_on_first_increment(self):
+        from unittest.mock import AsyncMock
+
+        from phaze.services.proposal import check_rate_limit
+
+        redis = AsyncMock()
+        redis.incr.return_value = 1
+
+        await check_rate_limit(redis, 30)
+
+        redis.expire.assert_called_once_with("phaze:llm:rpm", 60)
+
+    @pytest.mark.asyncio
+    async def test_no_ttl_on_subsequent_increments(self):
+        from unittest.mock import AsyncMock
+
+        from phaze.services.proposal import check_rate_limit
+
+        redis = AsyncMock()
+        redis.incr.return_value = 5  # Not first increment
+
+        await check_rate_limit(redis, 30)
+
+        redis.expire.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# store_proposals tests (Plan 02)
+# ---------------------------------------------------------------------------
+
+
+class TestStoreProposals:
+    """Tests for store_proposals function."""
+
+    @pytest.mark.asyncio
+    async def test_creates_rename_proposal_records(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        file_record.state = "analyzed"
+
+        # Mock query to return file record
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="Artist - Live.mp3",
+                    confidence=0.85,
+                    artist="TestArtist",
+                    event_name="TestEvent",
+                    reasoning="Test reasoning",
+                )
+            ]
+        )
+        files_context = [{"original_filename": "test.mp3"}]
+
+        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+            count = await store_proposals(session, [file_id], batch, files_context)
+
+        assert count == 1
+        session.add.assert_called_once()
+        assert file_record.state == "proposal_generated"
+
+    @pytest.mark.asyncio
+    async def test_clamps_confidence_before_storing(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=1.5,  # Over 1.0, should be clamped
+                    reasoning="test",
+                )
+            ]
+        )
+
+        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+            await store_proposals(session, [file_id], batch, [{"f": 1}])
+            # Check confidence was clamped to 1.0
+            call_kwargs = MockProposal.call_args[1]
+            assert call_kwargs["confidence"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_stores_context_used_with_metadata(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=0.9,
+                    artist="DJ Test",
+                    event_name="Coachella 2024",
+                    venue="Empire Polo Club",
+                    date="2024.04.12",
+                    source_type="WEB",
+                    stage="Sahara",
+                    day_number=1,
+                    b2b_partners=["DJ Partner"],
+                    reasoning="test",
+                )
+            ]
+        )
+        input_ctx = [{"original_filename": "test.mp3"}]
+
+        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+            await store_proposals(session, [file_id], batch, input_ctx)
+            call_kwargs = MockProposal.call_args[1]
+            ctx_used = call_kwargs["context_used"]
+            assert ctx_used["artist"] == "DJ Test"
+            assert ctx_used["event_name"] == "Coachella 2024"
+            assert ctx_used["venue"] == "Empire Polo Club"
+            assert ctx_used["input_context"] == input_ctx[0]
+
+
+# ---------------------------------------------------------------------------
+# load_companion_contents tests (Plan 02)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCompanionContents:
+    """Tests for load_companion_contents function."""
+
+    @pytest.mark.asyncio
+    async def test_loads_and_cleans_companion_files(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import load_companion_contents
+
+        session = AsyncMock()
+        media_id = uuid.uuid4()
+
+        # Mock FileCompanion query result
+        companion = MagicMock()
+        companion.companion_id = uuid.uuid4()
+
+        mock_companions_result = MagicMock()
+        mock_companions_result.scalars.return_value.all.return_value = [companion]
+
+        # Mock FileRecord query for companion
+        companion_record = MagicMock()
+        companion_record.original_filename = "info.nfo"
+        companion_record.current_path = "/data/music/info.nfo"
+
+        mock_file_result = MagicMock()
+        mock_file_result.scalar_one_or_none.return_value = companion_record
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result]
+
+        with patch("phaze.services.proposal.Path") as MockPath:
+            mock_path_instance = MagicMock()
+            mock_path_instance.read_text.return_value = "Artist: DJ Test\nVenue: Club"
+            MockPath.return_value = mock_path_instance
+
+            result = await load_companion_contents(session, media_id, 3000)
+
+        assert len(result) == 1
+        assert result[0]["filename"] == "info.nfo"
+        assert "Artist: DJ Test" in result[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_skips_unreadable_files(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import load_companion_contents
+
+        session = AsyncMock()
+        media_id = uuid.uuid4()
+
+        companion = MagicMock()
+        companion.companion_id = uuid.uuid4()
+
+        mock_companions_result = MagicMock()
+        mock_companions_result.scalars.return_value.all.return_value = [companion]
+
+        companion_record = MagicMock()
+        companion_record.original_filename = "info.nfo"
+        companion_record.current_path = "/nonexistent/info.nfo"
+
+        mock_file_result = MagicMock()
+        mock_file_result.scalar_one_or_none.return_value = companion_record
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result]
+
+        with patch("phaze.services.proposal.Path") as MockPath:
+            mock_path_instance = MagicMock()
+            mock_path_instance.read_text.side_effect = OSError("File not found")
+            MockPath.return_value = mock_path_instance
+
+            result = await load_companion_contents(session, media_id, 3000)
+
+        assert len(result) == 0
