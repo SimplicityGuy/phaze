@@ -14,6 +14,8 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 - ✓ Containerized backend services running via Docker Compose — Phase 1
 - ✓ PostgreSQL database for all metadata and state — Phase 1
+- ✓ Companion files linked to media files via directory proximity — Phase 3
+- ✓ Exact duplicate detection via SHA256 hash grouping, flagged for human review — Phase 3
 
 ### Active
 
@@ -21,7 +23,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - [ ] Analyze music files for style, BPM, mood, and other characteristics using existing prototype code (per-file, parallelizable)
 - [ ] Use AI to propose new filenames for all files (naming format TBD)
 - [ ] Use AI to propose destination paths for file organization
-- [ ] Deduplicate files using sha256 hashes
+- [ ] Resolve duplicate files (human decision via approval UI, detection done in Phase 3)
 - [ ] Admin web UI to review and approve/reject proposed renames and file moves
 - [ ] Execute approved renames and file moves safely
 
@@ -80,4 +82,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-28 after Phase 1 completion*
+*Last updated: 2026-03-28 after Phase 3 completion*

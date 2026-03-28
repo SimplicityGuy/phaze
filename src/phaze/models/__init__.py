@@ -3,9 +3,10 @@
 from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
+from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 
 
-__all__ = ["AnalysisResult", "ExecutionLog", "FileMetadata", "FileRecord", "RenameProposal", "ScanBatch", "ScanStatus"]
+__all__ = ["AnalysisResult", "ExecutionLog", "FileCompanion", "FileMetadata", "FileRecord", "RenameProposal", "ScanBatch", "ScanStatus"]
