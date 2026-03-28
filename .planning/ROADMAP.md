@@ -65,7 +65,11 @@ Plans:
   1. Companion files (cue, nfo, txt, jpg, etc.) are associated with music/video files in the same or parent directory
   2. Files sharing the same SHA256 hash are identified as exact duplicates and flagged in the database
   3. A user can query the database to see all duplicate groups and their file locations
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 03-01-PLAN.md -- FileCompanion model, migration, companion association and dedup service functions with tests
+- [ ] 03-02-PLAN.md -- Pydantic schemas, API endpoints (POST /associate, GET /duplicates), router wiring, integration tests
 
 ### Phase 4: Task Queue & Worker Infrastructure
 **Goal**: An arq + Redis task queue distributes work to a bounded worker pool with backpressure and resumability
@@ -133,7 +137,7 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 |-------|----------------|--------|-----------|
 | 1. Infrastructure & Project Setup | 0/3 | Planning | - |
 | 2. File Discovery & Ingestion | 1/3 | In Progress | - |
-| 3. Companion Files & Deduplication | 0/TBD | Not started | - |
+| 3. Companion Files & Deduplication | 0/2 | Planned | - |
 | 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
 | 5. Audio Analysis Pipeline | 0/TBD | Not started | - |
 | 6. AI Proposal Generation | 0/TBD | Not started | - |
