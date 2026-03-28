@@ -40,7 +40,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Infrastructure
 
-- [ ] **INF-01**: All services run via Docker Compose (API, workers, PostgreSQL, Redis)
+- [x] **INF-01**: All services run via Docker Compose (API, workers, PostgreSQL, Redis)
 - [ ] **INF-02**: Task queue (arq + Redis) manages parallel worker processing
 - [ ] **INF-03**: Database migrations managed via Alembic
 
@@ -112,7 +112,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | APR-03 | Phase 7: Approval Workflow UI | Pending |
 | EXE-01 | Phase 8: Safe File Execution & Audit | Pending |
 | EXE-02 | Phase 8: Safe File Execution & Audit | Pending |
-| INF-01 | Phase 1: Infrastructure & Project Setup | Pending |
+| INF-01 | Phase 1: Infrastructure & Project Setup | Complete |
 | INF-02 | Phase 4: Task Queue & Worker Infrastructure | Pending |
 | INF-03 | Phase 1: Infrastructure & Project Setup | Pending |
 

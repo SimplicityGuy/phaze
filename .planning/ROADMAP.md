@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Project skeleton, tooling config, Docker infrastructure, justfile
+- [x] 01-01-PLAN.md — Project skeleton, tooling config, Docker infrastructure, justfile
 - [ ] 01-02-PLAN.md — Application code (models, config, database, routers, Alembic), tests, README
 - [ ] 01-03-PLAN.md — GitHub Actions CI workflows (code quality, tests, security) and Codecov config
 
