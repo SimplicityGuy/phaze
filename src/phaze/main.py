@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from phaze.database import engine
-from phaze.routers import health
+from phaze.routers import health, scan
 
 
 @asynccontextmanager
@@ -23,6 +23,7 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(title="Phaze", version="0.1.0", lifespan=lifespan)
     app.include_router(health.router)
+    app.include_router(scan.router)
     return app
 
 
