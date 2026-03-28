@@ -100,6 +100,20 @@ security:
 # Run all security checks
 security-all: pip-audit security
 
+# === Worker ===
+
+# View worker logs (follow mode)
+worker-logs:
+    docker compose logs -f worker
+
+# Restart worker service
+worker-restart:
+    docker compose restart worker
+
+# Check arq worker health
+worker-health:
+    docker compose exec worker uv run arq phaze.tasks.worker.WorkerSettings --check
+
 # === Docker ===
 
 # Build Docker image
