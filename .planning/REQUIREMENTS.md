@@ -96,13 +96,31 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| — | — | — |
+| ING-01 | Phase 2: File Discovery & Ingestion | Pending |
+| ING-02 | Phase 2: File Discovery & Ingestion | Pending |
+| ING-03 | Phase 2: File Discovery & Ingestion | Pending |
+| ING-04 | Phase 3: Companion Files & Deduplication | Pending |
+| ING-05 | Phase 2: File Discovery & Ingestion | Pending |
+| ING-06 | Phase 3: Companion Files & Deduplication | Pending |
+| ANL-01 | Phase 5: Audio Analysis Pipeline | Pending |
+| ANL-02 | Phase 5: Audio Analysis Pipeline | Pending |
+| ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Pending |
+| AIP-01 | Phase 6: AI Proposal Generation | Pending |
+| AIP-02 | Phase 6: AI Proposal Generation | Pending |
+| APR-01 | Phase 7: Approval Workflow UI | Pending |
+| APR-02 | Phase 7: Approval Workflow UI | Pending |
+| APR-03 | Phase 7: Approval Workflow UI | Pending |
+| EXE-01 | Phase 8: Safe File Execution & Audit | Pending |
+| EXE-02 | Phase 8: Safe File Execution & Audit | Pending |
+| INF-01 | Phase 1: Infrastructure & Project Setup | Pending |
+| INF-02 | Phase 4: Task Queue & Worker Infrastructure | Pending |
+| INF-03 | Phase 1: Infrastructure & Project Setup | Pending |
 
 **Coverage:**
 - v1 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17 ⚠️
+- Mapped to phases: 17
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-27*
-*Last updated: 2026-03-27 after initial definition*
+*Last updated: 2026-03-27 after roadmap creation*
