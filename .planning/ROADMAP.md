@@ -55,7 +55,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md -- Ingestion foundation: constants, ScanBatch model, migration, config, Docker volume
 - [x] 02-02-PLAN.md -- File discovery scanner service
-- [ ] 02-03-PLAN.md -- SHA256 hashing and database persistence
+- [x] 02-03-PLAN.md -- SHA256 hashing and database persistence
 
 ### Phase 3: Companion Files & Deduplication
 **Goal**: Companion files are linked to their nearby media files and exact duplicates are flagged for review
