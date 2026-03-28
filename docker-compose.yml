@@ -20,7 +20,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: echo "Worker placeholder - arq added in Phase 4"
+    command: uv run arq phaze.tasks.worker.WorkerSettings
     env_file: .env
     volumes:
       - "${SCAN_PATH:-/data/music}:/data/music:ro"

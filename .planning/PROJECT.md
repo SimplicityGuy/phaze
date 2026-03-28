@@ -16,6 +16,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - ✓ PostgreSQL database for all metadata and state — Phase 1
 - ✓ Companion files linked to media files via directory proximity — Phase 3
 - ✓ Exact duplicate detection via SHA256 hash grouping, flagged for human review — Phase 3
+- ✓ arq + Redis task queue with bounded worker pool, retry with backoff, and process pool for CPU-bound work — Phase 4
 
 ### Active
 
@@ -82,4 +83,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-28 after Phase 3 completion*
+*Last updated: 2026-03-28 after Phase 4 completion*
