@@ -82,6 +82,7 @@ show_missing = true
 [dependency-groups]
 dev = [
     "bandit>=1.8",
+    "greenlet>=3.3.2",
     "httpx>=0.28.1",
     "mypy>=1.15",
     "pip-audit>=2.9",
