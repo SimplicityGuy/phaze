@@ -32,7 +32,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Alembic migrations apply cleanly to create the initial database schema (files, metadata, analysis, proposals, execution_log tables)
   3. FastAPI health endpoint returns 200 OK confirming database connectivity
   4. Project structure follows the async monolith pattern (separate router/service/worker layers)
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Project skeleton, tooling config, Docker infrastructure, justfile
+- [ ] 01-02-PLAN.md — Application code (models, config, database, routers, Alembic), tests, README
 
 ### Phase 2: File Discovery & Ingestion
 **Goal**: The system can scan a directory tree and populate PostgreSQL with every discovered file's hash, path, name, and type classification
@@ -120,7 +124,7 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Infrastructure & Project Setup | 0/TBD | Not started | - |
+| 1. Infrastructure & Project Setup | 0/2 | Planning | - |
 | 2. File Discovery & Ingestion | 0/TBD | Not started | - |
 | 3. Companion Files & Deduplication | 0/TBD | Not started | - |
 | 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
