@@ -1,0 +1,11 @@
+services:
+  api:
+    command: uv run uvicorn phaze.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./src:/app/src
+    environment:
+      - PHAZE_DEBUG=true
+
+  worker:
+    volumes:
+      - ./src:/app/src
