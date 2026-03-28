@@ -8,7 +8,8 @@ import uuid
 import pytest
 
 from phaze.constants import HASH_CHUNK_SIZE, FileCategory
-from phaze.services.ingestion import classify_file, compute_sha256, discover_and_hash_files, normalize_path
+from phaze.models.file import FileRecord, FileState
+from phaze.services.ingestion import bulk_upsert_files, classify_file, compute_sha256, discover_and_hash_files, normalize_path
 
 
 # --- normalize_path tests ---
@@ -177,3 +178,109 @@ def test_discover_files_file_type_no_dot(tmp_path: Path) -> None:
     (tmp_path / "song.mp3").write_bytes(b"data")
     results = discover_and_hash_files(str(tmp_path), batch_id)
     assert results[0]["file_type"] == "mp3"
+
+
+def test_discover_files_includes_metadata(tmp_path: Path) -> None:
+    """Each record includes correct metadata values."""
+    batch_id = uuid.uuid4()
+    content = b"test content for metadata"
+    (tmp_path / "track.mp3").write_bytes(content)
+    results = discover_and_hash_files(str(tmp_path), batch_id)
+    assert len(results) == 1
+    record = results[0]
+    assert record["file_size"] == len(content)
+    assert record["state"] == FileState.DISCOVERED
+    assert record["batch_id"] == batch_id
+    assert record["original_filename"] == "track.mp3"
+    assert record["original_path"] == record["current_path"]
+
+
+# --- Integration tests (require PostgreSQL + greenlet) ---
+
+_has_greenlet = True
+try:
+    import greenlet  # noqa: F401
+except ImportError:
+    _has_greenlet = False
+
+_skip_no_db = pytest.mark.skipif(not _has_greenlet, reason="greenlet not installed (required for async SQLAlchemy integration tests)")
+
+
+@_skip_no_db
+@pytest.mark.asyncio
+async def test_bulk_upsert_stores_paths(session) -> None:  # type: ignore[no-untyped-def]
+    """Records are persisted with correct original_path values."""
+    from sqlalchemy import select
+
+    batch_id = uuid.uuid4()
+    records = [
+        {
+            "id": uuid.uuid4(),
+            "sha256_hash": f"{'a' * 63}{i}",
+            "original_path": f"/music/song{i}.mp3",
+            "original_filename": f"song{i}.mp3",
+            "current_path": f"/music/song{i}.mp3",
+            "file_type": "mp3",
+            "file_size": 1000 + i,
+            "state": FileState.DISCOVERED,
+            "batch_id": batch_id,
+        }
+        for i in range(5)
+    ]
+
+    count = await bulk_upsert_files(session, records, batch_size=10)
+    assert count == 5
+
+    result = await session.execute(select(FileRecord).where(FileRecord.batch_id == batch_id))
+    rows = result.scalars().all()
+    assert len(rows) == 5
+    stored_paths = {r.original_path for r in rows}
+    for i in range(5):
+        assert f"/music/song{i}.mp3" in stored_paths
+
+
+@_skip_no_db
+@pytest.mark.asyncio
+async def test_bulk_upsert_handles_duplicates(session) -> None:  # type: ignore[no-untyped-def]
+    """Re-inserting same original_path updates sha256_hash instead of creating duplicates."""
+    from sqlalchemy import func, select
+
+    batch_id = uuid.uuid4()
+    original_record = {
+        "id": uuid.uuid4(),
+        "sha256_hash": "a" * 64,
+        "original_path": "/music/duplicate.mp3",
+        "original_filename": "duplicate.mp3",
+        "current_path": "/music/duplicate.mp3",
+        "file_type": "mp3",
+        "file_size": 5000,
+        "state": FileState.DISCOVERED,
+        "batch_id": batch_id,
+    }
+
+    # First insert
+    await bulk_upsert_files(session, [original_record], batch_size=10)
+
+    # Second insert with same path but different hash
+    updated_record = {
+        "id": uuid.uuid4(),
+        "sha256_hash": "b" * 64,
+        "original_path": "/music/duplicate.mp3",
+        "original_filename": "duplicate.mp3",
+        "current_path": "/music/duplicate.mp3",
+        "file_type": "mp3",
+        "file_size": 6000,
+        "state": FileState.DISCOVERED,
+        "batch_id": batch_id,
+    }
+    await bulk_upsert_files(session, [updated_record], batch_size=10)
+
+    # Should have exactly 1 row, not 2
+    count_result = await session.execute(select(func.count()).select_from(FileRecord).where(FileRecord.original_path == "/music/duplicate.mp3"))
+    assert count_result.scalar() == 1
+
+    # Hash should be updated
+    row_result = await session.execute(select(FileRecord).where(FileRecord.original_path == "/music/duplicate.mp3"))
+    row = row_result.scalar_one()
+    assert row.sha256_hash == "b" * 64
+    assert row.file_size == 6000
