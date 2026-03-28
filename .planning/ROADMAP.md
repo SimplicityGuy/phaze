@@ -101,7 +101,11 @@ Plans:
   2. Each proposal is stored as an immutable record in PostgreSQL (not regenerated on the fly)
   3. Proposals include the original filename, proposed filename, and the metadata context used to generate them
   4. Batch prompting processes multiple files per LLM call for cost efficiency
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — litellm dependency, Settings config, Pydantic response models, prompt template, helpers
+- [ ] 06-02-PLAN.md — ProposalService LLM calling, rate limiting, arq batch job, proposal storage
 
 ### Phase 7: Approval Workflow UI
 **Goal**: An admin can review all proposed renames in a web interface and approve or reject them
@@ -139,6 +143,6 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 3. Companion Files & Deduplication | 0/TBD | Not started | - |
 | 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
 | 5. Audio Analysis Pipeline | 2/2 | Complete   | 2026-03-28 |
-| 6. AI Proposal Generation | 0/TBD | Not started | - |
+| 6. AI Proposal Generation | 0/2 | Planning | - |
 | 7. Approval Workflow UI | 0/TBD | Not started | - |
 | 8. Safe File Execution & Audit | 0/TBD | Not started | - |
