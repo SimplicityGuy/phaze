@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 01 — infrastructure-project-setup
+**Current focus:** Phase 02 — file-discovery-ingestion
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-03-28
+Phase: 2 (file-discovery-ingestion)
+Plan: 1 of 3 -- COMPLETED
+Status: Executing Phase 02
+Last activity: 2026-03-28 -- Completed 02-01-PLAN.md
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 17%
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01 P01 | 6min | 3 tasks | 9 files |
 | Phase 01 P03 | 3min | 1 tasks | 5 files |
+| Phase 02 P01 | 4min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,9 @@ Recent decisions affecting current work:
 - [Phase 01]: Used check-github-workflows/check-github-actions hook IDs (renamed from validate-* in check-jsonschema 0.31.3)
 - [Phase 01]: Updated pre-commit hooks to latest versions with frozen 40-char SHA revisions
 - [Phase 01]: Used pre-commit/action@v3.0.1 for CI code quality instead of manual pre-commit run
+- [Phase 02]: Used StrEnum for FileCategory and ScanStatus to match existing FileState pattern
+- [Phase 02]: Set HASH_CHUNK_SIZE to 64KB per design decision D-07
+- [Phase 02]: Read-only Docker volume mount for scan directory safety
 
 ### Pending Todos
 
@@ -80,6 +84,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T01:42:37.969Z
-Stopped at: Completed 01-03-PLAN.md
+Last session: 2026-03-28T03:30:23Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None
