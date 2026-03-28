@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # File discovery
     scan_path: str = "/data/music"
 
+    # Audio analysis models (per Phase 5)
+    models_path: str = "/models"
+
     # Worker / task queue (per Phase 4 decisions D-01 through D-04)
     worker_max_jobs: int = 8  # D-01: concurrent jobs per worker
     worker_job_timeout: int = 600  # 10 min per file (generous for audio)

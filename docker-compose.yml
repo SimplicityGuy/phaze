@@ -22,6 +22,8 @@ services:
       dockerfile: Dockerfile
     command: uv run arq phaze.tasks.worker.WorkerSettings
     env_file: .env
+    environment:
+      - MODELS_PATH=/models
     volumes:
       - "${SCAN_PATH:-/data/music}:/data/music:ro"
     depends_on:

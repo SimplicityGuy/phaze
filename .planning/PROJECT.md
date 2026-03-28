@@ -17,11 +17,11 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - ✓ Companion files linked to media files via directory proximity — Phase 3
 - ✓ Exact duplicate detection via SHA256 hash grouping, flagged for human review — Phase 3
 - ✓ arq + Redis task queue with bounded worker pool, retry with backoff, and process pool for CPU-bound work — Phase 4
+- ✓ Audio analysis for BPM, mood, style, and musical key using essentia-tensorflow with 34 pre-trained models, running through arq worker pool via ProcessPoolExecutor — Phase 5
 
 ### Active
 
 - [ ] Ingest music files and video streams, extract sha256 hash, original name, and original path into Postgres
-- [ ] Analyze music files for style, BPM, mood, and other characteristics using existing prototype code (per-file, parallelizable)
 - [ ] Use AI to propose new filenames for all files (naming format TBD)
 - [ ] Use AI to propose destination paths for file organization
 - [ ] Resolve duplicate files (human decision via approval UI, detection done in Phase 3)
@@ -83,4 +83,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-28 after Phase 4 completion*
+*Last updated: 2026-03-28 after Phase 5 completion*
