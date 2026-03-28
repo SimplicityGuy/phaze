@@ -138,44 +138,48 @@ async def test_duplicates_pagination(client: AsyncClient, session: AsyncSession)
     """GET /api/v1/duplicates with limit=1 should return 1 group with correct total."""
     # Group 1: two files with same hash
     hash_a = "a" * 64
-    session.add_all([
-        FileRecord(
-            sha256_hash=hash_a,
-            original_path="/music/g1/file1.mp3",
-            original_filename="file1.mp3",
-            current_path="/music/g1/file1.mp3",
-            file_type="mp3",
-            file_size=1000000,
-        ),
-        FileRecord(
-            sha256_hash=hash_a,
-            original_path="/music/g1/file1_dup.mp3",
-            original_filename="file1_dup.mp3",
-            current_path="/music/g1/file1_dup.mp3",
-            file_type="mp3",
-            file_size=1000000,
-        ),
-    ])
+    session.add_all(
+        [
+            FileRecord(
+                sha256_hash=hash_a,
+                original_path="/music/g1/file1.mp3",
+                original_filename="file1.mp3",
+                current_path="/music/g1/file1.mp3",
+                file_type="mp3",
+                file_size=1000000,
+            ),
+            FileRecord(
+                sha256_hash=hash_a,
+                original_path="/music/g1/file1_dup.mp3",
+                original_filename="file1_dup.mp3",
+                current_path="/music/g1/file1_dup.mp3",
+                file_type="mp3",
+                file_size=1000000,
+            ),
+        ]
+    )
     # Group 2: two files with different same hash
     hash_b = "b" * 64
-    session.add_all([
-        FileRecord(
-            sha256_hash=hash_b,
-            original_path="/music/g2/file2.mp3",
-            original_filename="file2.mp3",
-            current_path="/music/g2/file2.mp3",
-            file_type="mp3",
-            file_size=2000000,
-        ),
-        FileRecord(
-            sha256_hash=hash_b,
-            original_path="/music/g2/file2_dup.mp3",
-            original_filename="file2_dup.mp3",
-            current_path="/music/g2/file2_dup.mp3",
-            file_type="mp3",
-            file_size=2000000,
-        ),
-    ])
+    session.add_all(
+        [
+            FileRecord(
+                sha256_hash=hash_b,
+                original_path="/music/g2/file2.mp3",
+                original_filename="file2.mp3",
+                current_path="/music/g2/file2.mp3",
+                file_type="mp3",
+                file_size=2000000,
+            ),
+            FileRecord(
+                sha256_hash=hash_b,
+                original_path="/music/g2/file2_dup.mp3",
+                original_filename="file2_dup.mp3",
+                current_path="/music/g2/file2_dup.mp3",
+                file_type="mp3",
+                file_size=2000000,
+            ),
+        ]
+    )
     await session.commit()
 
     response = await client.get("/api/v1/duplicates?limit=1")
