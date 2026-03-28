@@ -251,6 +251,79 @@ update_docker_images() {
   print_info "Check open PRs for image update proposals"
 }
 
+# === Sweep pip-audit Ignores ===
+
+sweep_pip_audit_ignores() {
+  local ignore_file=".pip-audit-ignores"
+  if [[ ! -f "$ignore_file" ]]; then
+    return
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_info "[DRY RUN] Would sweep $ignore_file for resolved vulnerabilities"
+    return
+  fi
+
+  print_section "$EMOJI_VERIFY" "Sweeping pip-audit Ignores"
+
+  # Collect vulnerability IDs from the ignore file
+  local vuln_ids=()
+  while IFS= read -r line; do
+    local vuln_id
+    vuln_id=$(echo "$line" | sed 's/#.*//' | tr -d '[:space:]')
+    [[ -z "$vuln_id" ]] && continue
+    vuln_ids+=("$vuln_id")
+  done <"$ignore_file"
+
+  if [[ ${#vuln_ids[@]} -eq 0 ]]; then
+    print_success "No vulnerability ignores to sweep"
+    return
+  fi
+
+  print_info "Testing ${#vuln_ids[@]} ignored vulnerabilit$([ ${#vuln_ids[@]} -eq 1 ] && echo "y" || echo "ies")..."
+
+  # Test each entry: run pip-audit with all OTHER ignores but NOT this one.
+  # If pip-audit passes, the vulnerability is fixed and the ignore can go.
+  local resolved=()
+  local still_needed=()
+  for test_vid in "${vuln_ids[@]}"; do
+    local other_args=""
+    for vid in "${vuln_ids[@]}"; do
+      [[ "$vid" == "$test_vid" ]] && continue
+      other_args="$other_args --ignore-vuln $vid"
+    done
+
+    # shellcheck disable=SC2086
+    if uv run pip-audit --desc $other_args >/dev/null 2>&1; then
+      resolved+=("$test_vid")
+      print_success "✓ $test_vid — fixed! Removing from ignore list"
+    else
+      still_needed+=("$test_vid")
+      print_warning "✗ $test_vid — still needed (no fix available)"
+    fi
+  done
+
+  # Rewrite the ignore file without resolved entries
+  if [[ ${#resolved[@]} -gt 0 ]]; then
+    CHANGES_MADE=true
+    for rid in "${resolved[@]}"; do
+      sed -i.bak "/^${rid}[[:space:]]/d;/^${rid}$/d" "$ignore_file"
+    done
+    rm -f "${ignore_file}.bak"
+    print_success "Removed ${#resolved[@]} resolved vulnerabilit$([ ${#resolved[@]} -eq 1 ] && echo "y" || echo "ies") from $ignore_file"
+  fi
+
+  if [[ ${#still_needed[@]} -gt 0 ]]; then
+    print_info "${#still_needed[@]} vulnerabilit$([ ${#still_needed[@]} -eq 1 ] && echo "y" || echo "ies") still awaiting upstream fixes"
+  else
+    local remaining
+    remaining=$(grep -cv '^\s*#\|^\s*$' "$ignore_file" 2>/dev/null || echo "0")
+    if [[ "$remaining" -eq 0 ]]; then
+      print_success "All vulnerabilities resolved! $ignore_file has no active ignores"
+    fi
+  fi
+}
+
 # === Security Sweep ===
 
 run_security_sweep() {
@@ -322,6 +395,7 @@ update_uv_version
 update_precommit_hooks
 update_python_packages
 update_docker_images
+sweep_pip_audit_ignores
 run_security_sweep
 run_tests
 generate_summary

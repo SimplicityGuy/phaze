@@ -1,0 +1,10 @@
+# pip-audit vulnerability ignore list
+#
+# Each non-blank, non-comment line is a vulnerability ID (CVE/PYSEC/GHSA)
+# passed to pip-audit via --ignore-vuln during CI.
+#
+# The update-project.sh script automatically sweeps this file after dependency
+# upgrades: it re-tests each entry, removes any that are now fixed, and reports
+# which remain. Only add entries here when no fix is available upstream.
+#
+# Format: VULN-ID  # package==version — short description (date added)

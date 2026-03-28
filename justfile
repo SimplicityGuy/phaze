@@ -70,7 +70,18 @@ check: lint typecheck test
 
 # Run pip-audit for dependency vulnerability scanning
 pip-audit:
-    uvx pip-audit -r <(uv pip freeze)
+    #!/usr/bin/env bash
+    set -e
+    IGNORE_ARGS=""
+    if [[ -f .pip-audit-ignores ]]; then
+        while IFS= read -r line; do
+            vuln_id=$(echo "$line" | sed 's/#.*//' | tr -d '[:space:]')
+            [[ -z "$vuln_id" ]] && continue
+            IGNORE_ARGS="$IGNORE_ARGS --ignore-vuln $vuln_id"
+        done < .pip-audit-ignores
+    fi
+    # shellcheck disable=SC2086
+    uv run pip-audit --desc $IGNORE_ARGS
 
 # Run bandit for Python SAST
 security:
