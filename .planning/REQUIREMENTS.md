@@ -18,8 +18,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Analysis
 
-- [ ] **ANL-01**: System detects BPM for music files using librosa/existing prototypes
-- [ ] **ANL-02**: System classifies mood and style for music files using existing prototypes
+- [x] **ANL-01**: System detects BPM for music files using librosa/existing prototypes
+- [x] **ANL-02**: System classifies mood and style for music files using existing prototypes
 - [x] **ANL-03**: Analysis runs in parallel across worker pool for throughput at scale
 
 ### AI Proposals
@@ -102,8 +102,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ING-04 | Phase 3: Companion Files & Deduplication | Complete |
 | ING-05 | Phase 2: File Discovery & Ingestion | Complete |
 | ING-06 | Phase 3: Companion Files & Deduplication | Complete |
-| ANL-01 | Phase 5: Audio Analysis Pipeline | Pending |
-| ANL-02 | Phase 5: Audio Analysis Pipeline | Pending |
+| ANL-01 | Phase 5: Audio Analysis Pipeline | Complete |
+| ANL-02 | Phase 5: Audio Analysis Pipeline | Complete |
 | ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Complete |
 | AIP-01 | Phase 6: AI Proposal Generation | Pending |
 | AIP-02 | Phase 6: AI Proposal Generation | Pending |
