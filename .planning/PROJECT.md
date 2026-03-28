@@ -1,0 +1,84 @@
+# Phaze
+
+## What This Is
+
+A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and concert video streams, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
+
+## Core Value
+
+Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
+
+## Requirements
+
+### Validated
+
+(None yet — ship to validate)
+
+### Active
+
+- [ ] Ingest music files and video streams, extract sha256 hash, original name, and original path into Postgres
+- [ ] Analyze music files for style, BPM, mood, and other characteristics using existing prototype code (per-file, parallelizable)
+- [ ] Use AI to propose new filenames for all files (naming format TBD)
+- [ ] Use AI to propose destination paths for file organization
+- [ ] Deduplicate files using sha256 hashes
+- [ ] Admin web UI to review and approve/reject proposed renames and file moves
+- [ ] Execute approved renames and file moves safely
+- [ ] Containerized backend services running via Docker Compose
+- [ ] PostgreSQL database for all metadata and state
+
+### Out of Scope
+
+- Search frontend — deferred to post-v1
+- Natural language querying across services — deferred to post-v1
+- 1001tracklists integration/scraping — deferred to post-v1
+- Discogsography cross-service linking — deferred to post-v1
+- Public network access — private network only
+
+## Context
+
+- Files are mostly messy/chaotic — inconsistent naming, scattered across locations, minimal existing organization
+- ~200K files total, mix of music files and full concert video streams
+- Concert videos are primarily recordings of live streams (YouTube streams from festivals, etc.)
+- Existing Python prototypes for music analysis (style/BPM/mood) — process one file at a time, designed to be parallelized
+- Existing scraping code from earlier project iteration for 1001tracklists (future use)
+- Discogsography is a separate project deployed locally with an accessible API (future integration)
+- This is a personal tool running on a home server, not a multi-user SaaS
+
+## Constraints
+
+- **Language**: Python 3.13 exclusively
+- **Package manager**: uv only
+- **Deployment**: Docker Compose on home server, private network
+- **Database**: PostgreSQL
+- **Scale**: Must handle ~200K files efficiently — batch processing and parallelization required
+- **Existing code**: Must integrate with provided analysis prototypes and respect their per-file interface
+- **Naming format**: AI filename proposals — specific format TBD (will be provided later)
+
+## Key Decisions
+
+| Decision | Rationale | Outcome |
+|----------|-----------|---------|
+| PostgreSQL over SQLite | 200K files with complex metadata, relationships, and future cross-service queries need a real RDBMS | — Pending |
+| Organization before search | Getting files organized is the primary win; search/NLQ is a follow-on | — Pending |
+| Human-in-the-loop approval | No file moves without admin review — safety for a large, irreplaceable collection | — Pending |
+| Containerized services | Clean separation of concerns, reproducible deployment on home server | — Pending |
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd:transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd:complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
+---
+*Last updated: 2026-03-27 after initialization*
