@@ -150,6 +150,12 @@ db-downgrade:
 db-history:
     uv run alembic history
 
+# === Models ===
+
+# Download essentia ML models for audio analysis
+download-models:
+    bash scripts/download_models.sh models
+
 # === Maintenance ===
 
 # Update pre-commit hooks (with frozen SHAs)
