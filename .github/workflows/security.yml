@@ -4,39 +4,117 @@ name: Security
 on:
   workflow_call:
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
-  security:
-    name: Security Scanning
+  python-security:
+    name: Python Security
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: "\U0001F4E5 Checkout code"
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@v6
 
-      - name: "\U0001F4E6 Install uv"
-        uses: astral-sh/setup-uv@v4
+      - name: 📦 Install uv
+        uses: astral-sh/setup-uv@v6
 
-      - name: "\U0001F40D Set up Python 3.13"
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: "\U0001F4E6 Install dependencies"
-        run: uv sync
-
-      - name: "\U0001F50D Run pip-audit"
-        run: uvx pip-audit
-
-      - name: "\U0001F6E1\uFE0F Run bandit"
-        run: uv run bandit -r src/ -x tests -s B608
-
-      - name: "\U0001F50E Run Semgrep"
-        uses: semgrep/semgrep-action@v1
+      - name: 🔧 Setup Just
+        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b  # v3
         with:
-          config: auto
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "\U0001F575\uFE0F Run TruffleHog"
-        uses: trufflesecurity/trufflehog@main
+      - name: 📦 Install dependencies
+        run: just install
+
+      - name: 🔍 Run pip-audit
+        run: just pip-audit
+
+      - name: 🛡️ Run bandit
+        run: just security
+
+      - name: 🌐 Run osv-scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.3
+
+  semgrep:
+    name: Semgrep CE Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@v6
+
+      - name: 🔬 Run semgrep scan
+        run: >-
+          semgrep scan --config auto --error
+          --sarif --output semgrep.sarif
+
+      - name: 🧹 Remove nosemgrep-suppressed findings
+        run: |
+          python3 - <<'EOF'
+          import json
+          with open("semgrep.sarif") as f:
+              sarif = json.load(f)
+          for run in sarif.get("runs", []):
+              run["results"] = [
+                  r for r in run.get("results", [])
+                  if not r.get("suppressions")
+              ]
+          with open("semgrep.sarif", "w") as f:
+              json.dump(sarif, f)
+          EOF
+        if: always()
+
+      - name: 📤 Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
         with:
+          sarif_file: semgrep.sarif
+        if: always()
+
+  secret-scanning:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 🔑 Run TruffleHog
+        uses: trufflesecurity/trufflehog@v3.94.0
+        with:
+          path: ./
           extra_args: --only-verified
+
+  container-scanning:
+    name: Container Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@v6
+
+      - name: 🛡️ Run trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+
+      - name: 📤 Upload trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif

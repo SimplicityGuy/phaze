@@ -3,6 +3,10 @@
 
 # === Dev ===
 
+# Install all dependencies
+install:
+    uv sync
+
 # Start all services in Docker
 up:
     docker compose up -d
@@ -28,6 +32,10 @@ test:
 # Run tests with coverage report
 test-cov:
     uv run pytest --cov=phaze --cov-report=term-missing
+
+# Run tests with coverage XML output (for CI)
+test-ci:
+    uv run pytest --cov=phaze --cov-report=xml --cov-report=term-missing
 
 # Run a specific test file
 test-file FILE:
@@ -57,6 +65,19 @@ pre-commit:
 
 # Run all quality checks (lint + typecheck + test)
 check: lint typecheck test
+
+# === Security ===
+
+# Run pip-audit for dependency vulnerability scanning
+pip-audit:
+    uvx pip-audit -r <(uv pip freeze)
+
+# Run bandit for Python SAST
+security:
+    uv run bandit -r src/ -x tests -s B608
+
+# Run all security checks
+security-all: pip-audit security
 
 # === Docker ===
 
@@ -93,3 +114,17 @@ db-downgrade:
 # Show migration history
 db-history:
     uv run alembic history
+
+# === Maintenance ===
+
+# Update pre-commit hooks (with frozen SHAs)
+update-hooks:
+    pre-commit autoupdate --freeze
+
+# Lock and upgrade all dependencies
+lock-upgrade:
+    uv lock --upgrade
+
+# Sync after lock upgrade
+sync:
+    uv sync
