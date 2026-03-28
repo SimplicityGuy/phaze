@@ -80,7 +80,11 @@ Plans:
   2. Multiple workers process tasks in parallel up to a configurable concurrency limit
   3. Failed tasks are retried with backoff and do not block the queue
   4. CPU-bound work (audio analysis) runs in a process pool without blocking the async event loop
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md -- arq dependency, worker settings, tasks package (WorkerSettings, functions, pool), tests
+- [ ] 04-02-PLAN.md -- FastAPI lifespan ArqRedis pool, docker-compose worker command, justfile worker commands
 
 ### Phase 5: Audio Analysis Pipeline
 **Goal**: Music files are analyzed for BPM, mood, and style using existing prototypes running through the worker pool
@@ -138,7 +142,7 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 1. Infrastructure & Project Setup | 0/3 | Planning | - |
 | 2. File Discovery & Ingestion | 1/3 | In Progress | - |
 | 3. Companion Files & Deduplication | 1/2 | In Progress|  |
-| 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
+| 4. Task Queue & Worker Infrastructure | 0/2 | Planning | - |
 | 5. Audio Analysis Pipeline | 0/TBD | Not started | - |
 | 6. AI Proposal Generation | 0/TBD | Not started | - |
 | 7. Approval Workflow UI | 0/TBD | Not started | - |
