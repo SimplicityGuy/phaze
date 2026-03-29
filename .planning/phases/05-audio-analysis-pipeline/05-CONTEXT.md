@@ -1,40 +1,41 @@
 # Phase 5: Audio Analysis Pipeline - Context
 
 **Gathered:** 2026-03-28
+**Updated:** 2026-03-28
 **Status:** Ready for planning
 
 <domain>
 ## Phase Boundary
 
-Implement audio analysis for music files: BPM detection, mood classification, style/genre classification. Uses essentia (not librosa) with TensorFlow pre-trained models from the existing prototypes. Analysis runs through the arq worker pool (Phase 4) via ProcessPoolExecutor. Results stored in the existing AnalysisResult model.
+Implement audio analysis for music files: BPM detection, mood classification, style/genre classification, musical key detection. Uses essentia-tensorflow (not librosa) with 34 pre-trained models from the existing prototypes. Analysis runs through the arq worker pool (Phase 4) via ProcessPoolExecutor. Results stored in the existing AnalysisResult model.
 
 </domain>
 
 <decisions>
 ## Implementation Decisions
 
-### Analysis Library
-- **D-01:** Use **essentia** for all analysis — BPM, mood, style, genre. No librosa. This deviates from CLAUDE.md's recommendation but aligns with the existing prototype code which is entirely essentia-based. Essentia can handle BPM via its `RhythmExtractor2013` algorithm.
+### Analysis Library & Model Scope
+- **D-01:** Use essentia-tensorflow for all analysis — BPM, mood, style, genre, key. No librosa. This overrides CLAUDE.md recommendation to match existing prototype code which is entirely essentia-based.
+- **D-02:** Run all 34 models (33 characteristic + 1 discogs-effnet genre). Full prototype coverage. BPM via RhythmExtractor2013, key via KeyExtractor with EDMA profile.
 
-### Model Scope
-- **D-02:** Run all 33 models from the prototype (11 model sets x 3 models each): mood_acoustic, mood_electronic, mood_aggressive, mood_relaxed, mood_happy, mood_sad, mood_party, danceability, gender, tonality, voice_instrumental, plus discogs-effnet genre classification. Full prototype coverage — no subset.
-
-### Result Storage
-- **D-03:** Store the top-level summary in AnalysisResult columns (bpm, mood, style) and all raw model predictions in the `features` JSONB column. This preserves all 33-model outputs for later use while keeping the most useful fields queryable as typed columns.
+### Result Storage & Derivation
+- **D-03:** Single mood/style summary columns for quick access. Mood derived by averaging positive-class confidence across 7 mood model variants. Style from top genre prediction in discogs-effnet.
+- **D-04:** All raw predictions (all 34 models) stored in features JSONB column. Top-3 moods/styles available in JSONB — no need for additional columns since Phase 6 reads from features JSONB for proposal context.
 
 ### Model File Management
-- **D-04:** Claude's discretion on how to manage the ~33 .pb model files and their JSON metadata. Options include: Docker volume mount, download at build time, or bundled in image. The models are publicly available from essentia.upf.edu.
+- **D-05:** **Runtime volume mount** — models NOT baked into Docker image. Download script (`just download-models`) populates a host directory, Docker Compose mounts it into the worker container. Smaller Docker image.
+- **D-06:** Worker checks models exist on startup. Fails fast with clear error if models directory is missing or incomplete.
+- **D-07:** Flat directory structure matching prototype pattern. 68 files (34 .pb + 34 .json) from essentia.upf.edu.
 
 ### Worker Integration
-- **D-05:** Analysis logic runs through the existing `process_file` function in `tasks/functions.py`, using `run_in_process_pool` for CPU-bound essentia work. One job per file (Phase 4 D-02).
+- **D-08:** Analysis runs through process_file in tasks/functions.py via run_in_process_pool. One job per file. 3 retries with job_try*5s backoff.
+- **D-09:** Non-music files skipped (extension set check). Corrupt/unreadable files trigger retry then permanent failure.
 
 ### Claude's Discretion
-- How to derive the single `mood` and `style` string values from the multi-model outputs (e.g., highest-confidence label across mood models, highest-confidence genre from discogs)
-- Essentia installation approach in Docker (pip vs system packages vs C++ compilation)
-- Whether to add essentia to pyproject.toml or treat as a system dependency
-- Model download script or Dockerfile RUN step
-- How to handle files that essentia can't process (unsupported format, corrupt audio)
-- Whether to add `musical_key` detection via essentia's `KeyExtractor`
+- Mood/style derivation algorithm details
+- Essentia installation approach in Docker
+- Model download script implementation
+- Error handling for corrupt audio files
 
 </decisions>
 
@@ -44,25 +45,22 @@ Implement audio analysis for music files: BPM detection, mood classification, st
 **Downstream agents MUST read these before planning or implementing.**
 
 ### Project Configuration
-- `CLAUDE.md` — Development setup, code quality rules (NOTE: librosa recommendation overridden by D-01)
-- `.planning/PROJECT.md` — Project vision, constraints
+- `CLAUDE.md` — Development setup (NOTE: librosa recommendation overridden by D-01)
 - `.planning/REQUIREMENTS.md` — ANL-01 (BPM detection), ANL-02 (mood/style classification)
 
 ### Existing Code
-- `src/phaze/models/analysis.py` — AnalysisResult model (bpm, musical_key, mood, style, fingerprint, features JSONB)
-- `src/phaze/tasks/functions.py` — process_file skeleton (Phase 4), ready for analysis logic
-- `src/phaze/tasks/pool.py` — ProcessPoolExecutor helper for CPU-bound work
+- `src/phaze/models/analysis.py` — AnalysisResult model (bpm, musical_key, mood, style, features JSONB)
+- `src/phaze/tasks/functions.py` — process_file skeleton
+- `src/phaze/tasks/pool.py` — ProcessPoolExecutor helper
 - `src/phaze/tasks/worker.py` — WorkerSettings with on_startup/on_shutdown hooks
-- `src/phaze/config.py` — Settings with worker_* fields
 
 ### Prototype Code (MUST READ)
-- `prototype/code/bpm-genre.py` — Essentia discogs-effnet genre classification per minute
-- `prototype/code/characteristics.py` — Essentia mood/style classification with 11 ModelSets (33 models total)
-- `prototype/code/genre.py` — Essentia TensorflowPredictMusiCNN genre extraction
-- `prototype/code/models.txt` — URLs for all 33 TensorFlow model files (.pb + .json)
+- `prototype/code/characteristics.py` — Essentia mood/style classification with 11 ModelSets
+- `prototype/code/bpm-genre.py` — Essentia discogs-effnet genre classification
+- `prototype/code/models.txt` — URLs for all model files
 
 ### Prior Phase Context
-- `.planning/phases/04-task-queue-worker-infrastructure/04-CONTEXT.md` — Worker decisions (D-01 through D-04)
+- `.planning/phases/04-task-queue-worker-infrastructure/04-CONTEXT.md` — Worker decisions
 
 </canonical_refs>
 
@@ -70,34 +68,30 @@ Implement audio analysis for music files: BPM detection, mood classification, st
 ## Existing Code Insights
 
 ### Reusable Assets
-- `AnalysisResult` model — already has all needed columns (bpm, mood, style, features JSONB)
-- `process_file` skeleton — ready for analysis logic injection
-- `run_in_process_pool` — async wrapper for CPU-bound essentia work
-- ProcessPoolExecutor lifecycle in worker startup/shutdown hooks
-- Prototype `Predictor` class and `ModelSet`/`Model` dataclasses — can be adapted directly
+- AnalysisResult model with all needed columns
+- process_file skeleton ready for analysis logic
+- run_in_process_pool async wrapper
+- Prototype Predictor class and ModelSet dataclasses
 
 ### Established Patterns
-- arq job functions in `tasks/functions.py`
-- Retry with exponential backoff via `arq.Retry`
-- Async session access via `get_session` dependency
-- SQLAlchemy 2.0 async queries
+- arq job functions, retry with backoff
+- Async session access, SQLAlchemy 2.0 queries
 
 ### Integration Points
-- Fill in `process_file` body with real analysis logic
-- Add essentia dependency (pyproject.toml or Dockerfile)
-- Download/mount model files in Docker
-- New `src/phaze/services/analysis.py` for analysis business logic
-- New API endpoint for triggering analysis jobs (optional, could reuse scan pattern)
+- New src/phaze/services/analysis.py for analysis business logic
+- Fill in process_file body with real analysis
+- Download script and Docker volume mount for models
+- Models path configuration in Settings
 
 </code_context>
 
 <specifics>
 ## Specific Ideas
 
-- Prototype `characteristics.py` has a clean `Predictor` context manager pattern — adapt this for the service layer
-- 11 model sets with 3 model variants each (MusiCNN MSD, MusiCNN MTT, VGGish) — average predictions across variants for robustness
-- BPM detection via essentia's `RhythmExtractor2013` — well-established algorithm
-- Model files are ~5-10MB each, ~33 files total = ~200-300MB — significant Docker image consideration
+- Prototype characteristics.py has clean Predictor context manager — adapt for service layer
+- 11 model sets with 3 variants each — average predictions across variants
+- Model files ~5-10MB each, 68 files total = ~200-300MB
+- **CHANGE FROM ORIGINAL:** Models via volume mount, not baked into image
 
 </specifics>
 
@@ -112,3 +106,4 @@ None — discussion stayed within phase scope.
 
 *Phase: 05-audio-analysis-pipeline*
 *Context gathered: 2026-03-28*
+*Context updated: 2026-03-28*

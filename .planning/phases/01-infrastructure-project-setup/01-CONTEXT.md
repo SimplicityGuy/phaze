@@ -1,6 +1,7 @@
 # Phase 1: Infrastructure & Project Setup - Context
 
 **Gathered:** 2026-03-27
+**Updated:** 2026-03-28
 **Status:** Ready for planning
 
 <domain>
@@ -13,23 +14,25 @@ Stand up the foundational development environment: Docker Compose with PostgreSQ
 <decisions>
 ## Implementation Decisions
 
-### Project Structure
-- **D-01:** Use `src/` layout with `src/phaze/` as the main package. Modern Python convention, works well with uv, Docker, and editable installs.
-- **D-02:** Separate router/service/worker layers within the package (async monolith pattern per research).
+### Docker Architecture
+- **D-01:** 4-service Docker Compose layout: api, worker, postgres, redis. Each with health checks. Dev override file adds volume mounts and hot reload.
+- **D-02:** Named volumes for PostgreSQL data persistence. No backup service needed for now — single-user home server.
+- **D-03:** Scan path as read-only bind mount for safety.
 
 ### Database Schema
-- **D-03:** Full schema in the initial migration — all tables (files, metadata, analysis, proposals, execution_log, audit) since they're known from requirements. Easier to develop against than incremental migrations.
-- **D-04:** PostgreSQL 16+ as specified in research. Use JSONB columns for flexible metadata storage.
+- **D-04:** Big-bang initial migration for known tables (files, metadata, analysis, proposals, execution_log), incremental migrations for new tables added per phase. This "big bang + incremental" approach is confirmed working well across 7 tables in 3 migrations.
+- **D-05:** PostgreSQL 16+ with JSONB columns for flexible metadata (raw_tags, features, context_used). Structured columns for known fields, JSONB for variable/extensible data.
 
-### Configuration
-- **D-05:** Use pydantic-settings with `.env` file for configuration. `SecretStr` for API keys and sensitive values.
-- **D-06:** Docker Compose profiles for dev vs prod differentiation.
+### CI/CD Pipeline
+- **D-06:** 3 reusable workflows via workflow_call: code-quality (pre-commit), tests (pytest + Codecov), security (pip-audit, bandit, Semgrep, TruffleHog).
+- **D-07:** Tests depend on quality passing first — no point running tests if code doesn't lint. Security runs independently.
 
-### Development Workflow
-- **D-07:** Everything runs in Docker — FastAPI, workers, PostgreSQL, Redis all in Docker Compose. Volume mounts for source code + uvicorn `--reload` for hot reload during development.
+### Project Conventions
+- **D-08:** `src/phaze/` layout with layer-based subdirectories: routers/, services/, models/, tasks/, schemas/. Not feature-based.
+- **D-09:** pydantic-settings with `.env` file for configuration. `SecretStr` for API keys.
+- **D-10:** justfile grouped by category (Dev, Test, Lint/Format, Docker, Database/Migrations, Worker). New commands added to appropriate groups as features grow.
 
 ### Claude's Discretion
-- Project file layout within `src/phaze/` (routers, services, models, workers subdirectories)
 - Alembic configuration details (async template, naming conventions)
 - Docker base image selection (python:3.13-slim or similar)
 - uvicorn configuration (port, workers, reload settings)
@@ -58,11 +61,12 @@ Stand up the foundational development environment: Docker Compose with PostgreSQ
 ## Existing Code Insights
 
 ### Reusable Assets
-- None — greenfield project. Only CLAUDE.md, LICENSE, and README.md exist.
+- None at phase start — greenfield project.
 
 ### Established Patterns
 - CLAUDE.md defines: ruff config (line length 150, double quotes), mypy strict mode, pre-commit hooks with frozen SHAs, 85% test coverage minimum
 - pyproject.toml section ordering specified in CLAUDE.md
+- essentia module needs mypy override (`ignore_missing_imports = true`) due to CI/local environment differences
 
 ### Integration Points
 - This phase creates the foundation all other phases connect to
@@ -73,7 +77,7 @@ Stand up the foundational development environment: Docker Compose with PostgreSQ
 <specifics>
 ## Specific Ideas
 
-No specific requirements — open to standard approaches. User deferred most infrastructure decisions to Claude's discretion, indicating trust in conventional Python/Docker patterns.
+No specific requirements — user confirmed all recommended approaches. Infrastructure decisions deferred to Claude's discretion where noted, indicating trust in conventional Python/Docker patterns.
 
 </specifics>
 
@@ -88,3 +92,4 @@ None — discussion stayed within phase scope.
 
 *Phase: 01-infrastructure-project-setup*
 *Context gathered: 2026-03-27*
+*Context updated: 2026-03-28*

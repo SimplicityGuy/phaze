@@ -198,3 +198,92 @@ def test_analyze_file_raises_on_corrupt_file(mock_es: MagicMock) -> None:
 
     with pytest.raises(RuntimeError, match="Corrupt audio file"):
         analyze_file("/fake/corrupt.mp3", "/fake/models")
+
+
+# ---------------------------------------------------------------------------
+# VALIDATION.md named tests — ANL-01 and ANL-02 behavioral coverage
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_detect_bpm(_mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
+    """ANL-01: analyze_file detects BPM and returns it as a float in the result dict."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    assert "bpm" in result
+    assert isinstance(result["bpm"], float)
+    assert result["bpm"] == 128.0
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_bpm_stored(_mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
+    """ANL-01: analyze_file returns bpm value that can be stored in AnalysisResult.bpm (Float column)."""
+    from phaze.models.analysis import AnalysisResult
+
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    # Construct an AnalysisResult with the returned bpm — verify it accepts the value
+    import uuid
+
+    ar = AnalysisResult(file_id=uuid.uuid4(), bpm=result["bpm"], musical_key=result["musical_key"])
+    assert ar.bpm == 128.0
+    assert ar.musical_key == "C minor"
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_classify_mood(_mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
+    """ANL-02: analyze_file classifies mood using all 7 mood model sets and returns non-empty string."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    assert "mood" in result
+    assert isinstance(result["mood"], str)
+    assert len(result["mood"]) > 0
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_classify_style(_mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
+    """ANL-02: analyze_file derives style from the discogs-effnet genre model and returns non-empty string."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    assert "style" in result
+    assert isinstance(result["style"], str)
+    assert len(result["style"]) > 0
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
+    """ANL-02: analyze_file returns mood, style, features that can be stored in AnalysisResult (JSONB)."""
+    from phaze.models.analysis import AnalysisResult
+
+    mock_get_labels.side_effect = _mock_labels_file
+
+    import uuid
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    ar = AnalysisResult(
+        file_id=uuid.uuid4(),
+        mood=result["mood"],
+        style=result["style"],
+        features=result["features"],
+    )
+    assert isinstance(ar.mood, str) and len(ar.mood) > 0
+    assert isinstance(ar.style, str) and len(ar.style) > 0
+    # features is a dict with all 11 model set names plus genre
+    assert isinstance(ar.features, dict)
+    assert "genre" in ar.features
+    for model_set in MODEL_SETS:
+        assert model_set.name in ar.features

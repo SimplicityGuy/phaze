@@ -1,5 +1,7 @@
 """arq WorkerSettings -- the entry point for ``arq phaze.tasks.worker.WorkerSettings``."""
 
+import logging
+from pathlib import Path
 from typing import Any, ClassVar
 
 from arq.connections import RedisSettings
@@ -11,8 +13,22 @@ from phaze.tasks.pool import create_process_pool
 from phaze.tasks.proposal import generate_proposals
 
 
+logger = logging.getLogger(__name__)
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     """Initialize shared resources for all jobs (arq on_startup hook)."""
+    # Check that ML models are available (volume mount)
+    models_dir = Path(settings.models_path)
+    if not models_dir.is_dir():
+        msg = f"Models directory not found: {settings.models_path}. Run 'just download-models' to populate it."
+        raise RuntimeError(msg)
+    pb_files = list(models_dir.glob("*.pb"))
+    if not pb_files:
+        msg = f"No .pb model files found in {settings.models_path}. Run 'just download-models' to populate it."
+        raise RuntimeError(msg)
+    logger.info("Found %d model files in %s", len(pb_files), settings.models_path)
+
     ctx["process_pool"] = create_process_pool()
 
     # Phase 6: AI proposal generation

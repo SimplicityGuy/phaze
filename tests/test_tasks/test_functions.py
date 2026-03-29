@@ -169,3 +169,64 @@ def test_process_file_retry_backoff() -> None:
     for job_try in (1, 2, 3):
         retry = Retry(defer=job_try * 5)
         assert retry.defer_score == job_try * 5 * 1000
+
+
+# ---------------------------------------------------------------------------
+# VALIDATION.md named tests — ANL-01+02 pipeline integration coverage
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+async def test_process_file_analysis(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
+    """ANL-01+02: process_file calls analysis via run_in_process_pool and returns 'analyzed' status."""
+    file_id = uuid.uuid4()
+    file_record = _make_file_record(file_id=file_id)
+
+    mock_session = AsyncMock()
+    mock_get_session.return_value = mock_session
+
+    mock_result_1 = MagicMock()
+    mock_result_1.scalar_one_or_none.return_value = file_record
+    mock_result_2 = MagicMock()
+    mock_result_2.scalar_one_or_none.return_value = None
+    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
+
+    mock_pool.return_value = MOCK_ANALYSIS
+
+    ctx = _make_ctx()
+    result = await process_file(ctx, str(file_id))
+
+    # Pool was called with analyze_file and correct path
+    mock_pool.assert_called_once()
+    call_args = mock_pool.call_args[0]
+    assert call_args[2] == "/music/track.mp3"
+
+    # Result bpm and mood stored
+    added_obj = mock_session.add.call_args[0][0]
+    assert added_obj.bpm == 128.0
+    assert added_obj.mood == "happy"
+    assert result["status"] == "analyzed"
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+async def test_process_file_retry(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
+    """ANL-01+02: process_file raises arq.Retry when analysis fails, with backoff scaled by job_try."""
+    mock_session = AsyncMock()
+    mock_get_session.return_value = mock_session
+
+    file_record = _make_file_record()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = file_record
+    mock_session.execute.return_value = mock_result
+
+    mock_pool.side_effect = RuntimeError("process pool crashed")
+
+    # job_try=2 → defer should be 10 seconds
+    ctx = _make_ctx(job_try=2)
+    with pytest.raises(Retry) as exc_info:
+        await process_file(ctx, str(uuid.uuid4()))
+
+    # defer_score is in milliseconds in arq
+    assert exc_info.value.defer_score == 2 * 5 * 1000

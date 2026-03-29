@@ -1,6 +1,7 @@
 # Phase 3: Companion Files & Deduplication - Context
 
 **Gathered:** 2026-03-28
+**Updated:** 2026-03-28
 **Status:** Ready for planning
 
 <domain>
@@ -14,21 +15,21 @@ Link companion files (cue sheets, NFO files, cover art, playlists) to their near
 ## Implementation Decisions
 
 ### Companion Association
-- **D-01:** Add a `file_companions` join table (many-to-many) linking companion FileRecords to media FileRecords. A companion in a directory associates with all media files in the same directory. This handles the case where a cue sheet or cover art applies to multiple tracks in a folder.
-- **D-02:** Association is computed as a post-processing step after ingestion — a service function scans for companions without a parent link and associates them based on directory path matching (`Path(companion.original_path).parent == Path(media.original_path).parent`).
-- **D-03:** Association is triggered via API (`POST /api/v1/associate`) or automatically after a scan completes. Returns count of newly linked companions.
+- **D-01:** file_companions join table (many-to-many) linking companion FileRecords to media FileRecords.
+- **D-02:** Same-directory matching only — a companion in /album/ associates with all media files in /album/. No parent/child directory traversal.
+- **D-03:** Association computed as post-processing step. Service function scans for unlinked companions and associates by directory path matching. Idempotent via NOT IN subquery.
+- **D-04:** Triggered via POST /api/v1/associate or after scan completion. Returns count of newly linked companions.
 
 ### Duplicate Detection
-- **D-04:** Duplicates are detected by grouping FileRecords with the same `sha256_hash` where the group has more than one member. No new column needed — query-time grouping is sufficient.
-- **D-05:** Duplicates are exposed via `GET /api/v1/duplicates` endpoint returning grouped duplicate sets with file paths, sizes, and types. No auto-resolution — duplicates are flagged for human review (deferred to Phase 7 approval UI).
-- **D-06:** A dedicated service function identifies duplicate groups and returns them structured for the API.
+- **D-05:** Query-time detection via GROUP BY sha256_hash HAVING COUNT > 1. No pre-computed groups.
+- **D-06:** Exposed via GET /api/v1/duplicates with pagination (limit/offset). Returns grouped duplicate sets with file paths, sizes, types.
+- **D-07:** No auto-resolution — duplicates flagged for human review in Phase 7 approval UI.
 
 ### Claude's Discretion
-- Join table schema details (composite PK, FK constraints, indexes)
-- Alembic migration structure for the join table
-- Whether to cache duplicate groups or compute on demand
-- Test strategy for association logic (mock filesystem with known directory structure)
-- API response pagination for large duplicate sets
+- Join table schema details (composite PK, FK constraints, indexes, CASCADE behavior)
+- Alembic migration structure
+- Pagination defaults for duplicate groups endpoint
+- Test strategy
 
 </decisions>
 
@@ -39,16 +40,13 @@ Link companion files (cue sheets, NFO files, cover art, playlists) to their near
 
 ### Project Configuration
 - `CLAUDE.md` — Development setup, code quality rules
-- `.planning/PROJECT.md` — Project vision, constraints
 - `.planning/REQUIREMENTS.md` — ING-04 (dedup), ING-06 (companion association)
 
 ### Existing Code
 - `src/phaze/models/file.py` — FileRecord model (sha256_hash, original_path, file_type)
-- `src/phaze/constants.py` — FileCategory enum (MUSIC, VIDEO, COMPANION)
-- `src/phaze/services/ingestion.py` — Ingestion service with discover/hash/classify functions
-- `src/phaze/routers/scan.py` — Scan API pattern to follow
-- `src/phaze/schemas/scan.py` — Pydantic schema pattern to follow
-- `src/phaze/database.py` — Async engine, session factory
+- `src/phaze/constants.py` — FileCategory enum, EXTENSION_MAP
+- `src/phaze/routers/scan.py` — Router pattern to follow
+- `src/phaze/schemas/scan.py` — Schema pattern to follow
 
 ### Prior Phase Context
 - `.planning/phases/02-file-discovery-ingestion/02-CONTEXT.md` — Ingestion decisions
@@ -59,31 +57,27 @@ Link companion files (cue sheets, NFO files, cover art, playlists) to their near
 ## Existing Code Insights
 
 ### Reusable Assets
-- `FileRecord` model with `sha256_hash`, `original_path`, `file_type` — all needed for both features
-- `FileCategory.COMPANION` — identifies companion files
-- `get_session` dependency — async DB access
-- Scan router/schema pattern for creating new endpoints
+- FileRecord with sha256_hash, original_path, file_type
+- FileCategory.COMPANION for identifying companion files
+- get_session dependency, router/schema patterns
 
 ### Established Patterns
-- SQLAlchemy 2.0 async queries
-- Pydantic schemas for API request/response
-- FastAPI router with dependency injection
-- Alembic migrations for schema changes
+- SQLAlchemy 2.0 async queries, Pydantic schemas, FastAPI routers
+- ON CONFLICT pattern from ingestion service
 
 ### Integration Points
-- New `file_companions` table via Alembic migration
-- New service functions in `services/` (association + dedup)
-- New router endpoints wired into `main.py`
-- New schemas in `schemas/`
+- New file_companions table via Alembic migration
+- New services: companion.py, dedup.py
+- New router: companion.py with /associate and /duplicates endpoints
 
 </code_context>
 
 <specifics>
 ## Specific Ideas
 
-- ~30% of content has companion files (user estimate)
-- Companion files sit in the same or nearby directory as their media
-- Duplicates are common in the messy collection — same file in multiple locations
+- ~30% of content has companion files
+- Duplicates common in messy collection — same file in multiple locations
+- Companion files sit in same directory as their media
 
 </specifics>
 
@@ -98,3 +92,4 @@ None — discussion stayed within phase scope.
 
 *Phase: 03-companion-files-deduplication*
 *Context gathered: 2026-03-28*
+*Context updated: 2026-03-28*
