@@ -101,7 +101,9 @@ Plans:
   2. Each proposal is stored as an immutable record in PostgreSQL (not regenerated on the fly)
   3. Proposals include the original filename, proposed filename, and the metadata context used to generate them
   4. Batch prompting processes multiple files per LLM call for cost efficiency
-**Plans**: TBD
+**Plans**: 2 total, 1 complete
+  - Plan 01: LLM contracts, data structures, prompt template (COMPLETE)
+  - Plan 02: LLM calling, batch processing, proposal storage (PENDING)
 
 ### Phase 7: Approval Workflow UI
 **Goal**: An admin can review all proposed renames in a web interface and approve or reject them
