@@ -1,6 +1,6 @@
 <tr id="proposal-{{ proposal.id }}"
-    :class="{ 'bg-blue-100 ring-2 ring-blue-500': focusedRow === {{ loop.index0 }}, 'bg-blue-50': selectedRows.has('{{ proposal.id }}') }"
-    @click="focusedRow = {{ loop.index0 }}"
+    :class="{ 'bg-blue-100 ring-2 ring-blue-500': focusedRow === {{ loop.index0 if loop is defined else -1 }}, 'bg-blue-50': selectedRows.has('{{ proposal.id }}') }"
+    @click="focusedRow = {{ loop.index0 if loop is defined else -1 }}"
     class="border-b border-gray-100 hover:bg-gray-50 cursor-pointer">
     <td class="px-3 py-3">
         <input type="checkbox"

@@ -164,8 +164,11 @@ async def update_proposal_status(
         return None
     proposal.status = new_status.value
     await session.commit()
-    await session.refresh(proposal)
-    return proposal
+    # Re-fetch with selectinload to ensure file relationship is available
+    # (session.refresh does not honor selectinload on lazy='raise' relationships)
+    stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
+    result2 = await session.execute(stmt2)
+    return result2.scalar_one_or_none()
 
 
 async def bulk_update_status(
