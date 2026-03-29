@@ -229,3 +229,67 @@ async def test_sort_by_confidence(client: AsyncClient, session: AsyncSession) ->
     mid_pos = text.find("Mid Conf.mp3")
     high_pos = text.find("High Conf.mp3")
     assert low_pos < mid_pos < high_pos
+
+
+@pytest.mark.asyncio
+async def test_reject_not_found(client: AsyncClient) -> None:
+    """PATCH /proposals/{random_uuid}/reject returns 404."""
+    response = await client.patch(f"/proposals/{uuid.uuid4()}/reject")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_undo_not_found(client: AsyncClient) -> None:
+    """PATCH /proposals/{random_uuid}/undo returns 404."""
+    response = await client.patch(f"/proposals/{uuid.uuid4()}/undo")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_row_detail_not_found(client: AsyncClient) -> None:
+    """GET /proposals/{random_uuid}/detail returns 404."""
+    response = await client.get(f"/proposals/{uuid.uuid4()}/detail")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bulk_invalid_action(client: AsyncClient, session: AsyncSession) -> None:
+    """PATCH /proposals/bulk with invalid action returns 400."""
+    p = await create_test_proposal(session)
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "invalid", "proposal_ids": [str(p.id)]},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_bulk_reject(client: AsyncClient, session: AsyncSession) -> None:
+    """PATCH /proposals/bulk with action=reject updates proposals to rejected."""
+    p1 = await create_test_proposal(session, original_filename="br1.mp3")
+    p2 = await create_test_proposal(session, original_filename="br2.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "reject", "proposal_ids": [str(p1.id), str(p2.id)]},
+    )
+    assert response.status_code == 200
+
+    updated1 = await session.get(RenameProposal, p1.id)
+    updated2 = await session.get(RenameProposal, p2.id)
+    assert updated1 is not None
+    assert updated1.status == ProposalStatus.REJECTED
+    assert updated2 is not None
+    assert updated2.status == ProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_sort_by_original_filename(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /proposals/?sort=original_filename sorts by file's original name."""
+    await create_test_proposal(session, original_filename="zzz.mp3", proposed_filename="Z.mp3")
+    await create_test_proposal(session, original_filename="aaa.mp3", proposed_filename="A.mp3")
+
+    response = await client.get("/proposals/?status=all&sort=original_filename&order=asc")
+    assert response.status_code == 200
+    text = response.text
+    assert text.find("aaa.mp3") < text.find("zzz.mp3")
