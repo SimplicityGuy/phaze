@@ -1,14 +1,22 @@
 """Proposal review UI router -- serves the approval workflow pages."""
 
 from pathlib import Path
+import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
-from phaze.services.proposal_queries import get_proposal_stats, get_proposals_page
+from phaze.models.proposal import ProposalStatus
+from phaze.services.proposal_queries import (
+    bulk_update_status,
+    get_proposal_stats,
+    get_proposal_with_file,
+    get_proposals_page,
+    update_proposal_status,
+)
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -58,3 +66,121 @@ async def list_proposals(
         return templates.TemplateResponse(request=request, name="proposals/partials/proposal_table.html", context=context)
 
     return templates.TemplateResponse(request=request, name="proposals/list.html", context=context)
+
+
+@router.patch("/{proposal_id}/approve", response_class=HTMLResponse)
+async def approve_proposal(
+    request: Request,
+    proposal_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Approve a proposal and return the updated row with OOB stats and toast."""
+    proposal = await update_proposal_status(session, proposal_id, ProposalStatus.APPROVED)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    stats = await get_proposal_stats(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="proposals/partials/approve_response.html",
+        context={
+            "request": request,
+            "proposal": proposal,
+            "stats": stats,
+            "action_label": "approved",
+            "toast_message": "Proposal approved.",
+            "is_bulk": False,
+        },
+    )
+
+
+@router.patch("/{proposal_id}/reject", response_class=HTMLResponse)
+async def reject_proposal(
+    request: Request,
+    proposal_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Reject a proposal and return the updated row with OOB stats and toast."""
+    proposal = await update_proposal_status(session, proposal_id, ProposalStatus.REJECTED)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    stats = await get_proposal_stats(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="proposals/partials/approve_response.html",
+        context={
+            "request": request,
+            "proposal": proposal,
+            "stats": stats,
+            "action_label": "rejected",
+            "toast_message": "Proposal rejected.",
+            "is_bulk": False,
+        },
+    )
+
+
+@router.patch("/{proposal_id}/undo", response_class=HTMLResponse)
+async def undo_proposal(
+    request: Request,
+    proposal_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Revert a proposal to pending status and return updated row with OOB stats."""
+    proposal = await update_proposal_status(session, proposal_id, ProposalStatus.PENDING)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    stats = await get_proposal_stats(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="proposals/partials/undo_response.html",
+        context={
+            "request": request,
+            "proposal": proposal,
+            "stats": stats,
+        },
+    )
+
+
+@router.get("/{proposal_id}/detail", response_class=HTMLResponse)
+async def row_detail(
+    request: Request,
+    proposal_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return the expanded detail panel for a proposal row."""
+    proposal = await get_proposal_with_file(session, proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="proposals/partials/row_detail.html",
+        context={"request": request, "proposal": proposal},
+    )
+
+
+@router.patch("/bulk", response_class=HTMLResponse)
+async def bulk_action(
+    request: Request,
+    action: str = Form(...),
+    proposal_ids: list[str] = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Bulk approve or reject multiple proposals."""
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
+    status_map = {"approve": ProposalStatus.APPROVED, "reject": ProposalStatus.REJECTED}
+    uuids = [uuid.UUID(pid) for pid in proposal_ids]
+    count = await bulk_update_status(session, uuids, status_map[action])
+    stats = await get_proposal_stats(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="proposals/partials/approve_response.html",
+        context={
+            "request": request,
+            "proposal": None,
+            "stats": stats,
+            "action_label": action + "d",
+            "toast_message": f"{count} proposals {action}d.",
+            "is_bulk": True,
+            "bulk_ids": [str(uid) for uid in uuids],
+        },
+    )

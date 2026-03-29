@@ -6,13 +6,15 @@ from dataclasses import dataclass
 import math
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
 
 if TYPE_CHECKING:
+    import uuid as uuid_mod
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.file import FileRecord
@@ -147,3 +149,42 @@ async def get_proposals_page(
 
     pagination = Pagination(page=page, page_size=page_size, total=total)
     return proposals, pagination
+
+
+async def update_proposal_status(
+    session: AsyncSession,
+    proposal_id: uuid_mod.UUID,
+    new_status: ProposalStatus,
+) -> RenameProposal | None:
+    """Update a single proposal's status and return it with eagerly loaded file."""
+    stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
+    result = await session.execute(stmt)
+    proposal = result.scalar_one_or_none()
+    if proposal is None:
+        return None
+    proposal.status = new_status.value
+    await session.commit()
+    await session.refresh(proposal)
+    return proposal
+
+
+async def bulk_update_status(
+    session: AsyncSession,
+    proposal_ids: list[uuid_mod.UUID],
+    new_status: ProposalStatus,
+) -> int:
+    """Bulk-update status for multiple proposals. Returns number of rows updated."""
+    stmt = update(RenameProposal).where(RenameProposal.id.in_(proposal_ids)).values(status=new_status.value)
+    cursor_result: Any = await session.execute(stmt)
+    await session.commit()
+    return int(cursor_result.rowcount)
+
+
+async def get_proposal_with_file(
+    session: AsyncSession,
+    proposal_id: uuid_mod.UUID,
+) -> RenameProposal | None:
+    """Get a single proposal with its associated file record."""
+    stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
