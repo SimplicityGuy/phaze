@@ -1,0 +1,20 @@
+{% if stats.approved > 0 %}
+<button
+    hx-post="/execution/start"
+    hx-target="#execution-progress"
+    hx-swap="innerHTML"
+    hx-confirm="This will rename {{ stats.approved }} approved files using copy-verify-delete. Original files are preserved until verification succeeds. Continue?"
+    hx-disabled-elt="this"
+    class="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm px-4 py-2 rounded-md"
+    aria-label="Execute all approved proposals">
+    Execute Approved
+</button>
+{% else %}
+<button
+    disabled
+    class="bg-gray-300 text-gray-500 cursor-not-allowed font-semibold text-sm px-4 py-2 rounded-md"
+    aria-label="Execute all approved proposals"
+    title="No approved proposals to execute">
+    Execute Approved
+</button>
+{% endif %}

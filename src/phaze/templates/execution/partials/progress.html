@@ -1,0 +1,4 @@
+<div class="bg-gray-50 rounded-lg p-6" hx-ext="sse" sse-connect="/execution/progress/{{ batch_id }}" aria-live="polite">
+    <span class="text-gray-800 text-xl font-semibold" sse-swap="progress">Waiting for execution to start...</span>
+    <span sse-swap="complete" sse-close="complete"></span>
+</div>

@@ -27,7 +27,9 @@
         </span>
     </td>
     <td class="px-3 py-3">
-        {% if proposal.status == "approved" %}
+        {% if proposal.file.state == "executed" %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">Executed</span>
+        {% elif proposal.status == "approved" %}
             <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">Approved</span>
         {% elif proposal.status == "rejected" %}
             <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">Rejected</span>
