@@ -1,7 +1,7 @@
 """Tests for process pool lifecycle and helpers."""
 
 from concurrent.futures import ProcessPoolExecutor
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from phaze.config import settings
 from phaze.tasks.pool import create_process_pool, run_in_process_pool
@@ -18,10 +18,22 @@ def test_create_process_pool_returns_executor() -> None:
         pool.shutdown(wait=False)
 
 
-async def test_startup_creates_process_pool() -> None:
+async def test_startup_creates_process_pool(tmp_path) -> None:
     """startup(ctx) creates ctx['process_pool'] as a ProcessPoolExecutor."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "test.pb").write_bytes(b"fake")
+
     ctx: dict = {}
-    await startup(ctx)
+    with (
+        patch("phaze.tasks.worker.settings") as mock_settings,
+        patch("phaze.tasks.worker.load_prompt_template", return_value="t"),
+        patch("phaze.tasks.worker.ProposalService"),
+    ):
+        mock_settings.models_path = str(models_dir)
+        mock_settings.llm_model = "test"
+        mock_settings.llm_max_rpm = 30
+        await startup(ctx)
     try:
         assert "process_pool" in ctx
         assert isinstance(ctx["process_pool"], ProcessPoolExecutor)
