@@ -24,8 +24,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### AI Proposals
 
-- [ ] **AIP-01**: System uses LLM to propose a new filename for each file based on available metadata, analysis results, and companion file content where available
-- [ ] **AIP-02**: Proposals are stored as immutable records in PostgreSQL (not regenerated on the fly)
+- [x] **AIP-01**: System uses LLM to propose a new filename for each file based on available metadata, analysis results, and companion file content where available
+- [x] **AIP-02**: Proposals are stored as immutable records in PostgreSQL (not regenerated on the fly)
 
 ### Approval
 
@@ -105,8 +105,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ANL-01 | Phase 5: Audio Analysis Pipeline | Complete |
 | ANL-02 | Phase 5: Audio Analysis Pipeline | Complete |
 | ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Complete |
-| AIP-01 | Phase 6: AI Proposal Generation | Pending |
-| AIP-02 | Phase 6: AI Proposal Generation | Pending |
+| AIP-01 | Phase 6: AI Proposal Generation | Complete |
+| AIP-02 | Phase 6: AI Proposal Generation | Complete |
 | APR-01 | Phase 7: Approval Workflow UI | Complete |
 | APR-02 | Phase 7: Approval Workflow UI | Complete |
 | APR-03 | Phase 7: Approval Workflow UI | Complete |
