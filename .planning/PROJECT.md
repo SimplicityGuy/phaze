@@ -19,13 +19,13 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - ✓ arq + Redis task queue with bounded worker pool, retry with backoff, and process pool for CPU-bound work — Phase 4
 - ✓ Audio analysis for BPM, mood, style, and musical key using essentia-tensorflow with 34 pre-trained models, running through arq worker pool via ProcessPoolExecutor — Phase 5
 - ✓ AI-powered filename proposals via litellm (batch prompting, structured output) stored as immutable records with extracted metadata context — Phase 6
+- ✓ Admin web UI to review and approve/reject proposed renames with paginated table, status filtering, bulk actions, keyboard shortcuts, and undo — Phase 7
 
 ### Active
 
 - [ ] Ingest music files and video streams, extract sha256 hash, original name, and original path into Postgres
 - [ ] Use AI to propose destination paths for file organization
 - [ ] Resolve duplicate files (human decision via approval UI, detection done in Phase 3)
-- [ ] Admin web UI to review and approve/reject proposed renames and file moves
 - [ ] Execute approved renames and file moves safely
 
 ### Out of Scope
@@ -83,4 +83,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-28 after Phase 6 completion*
+*Last updated: 2026-03-29 after Phase 7 completion*
