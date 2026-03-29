@@ -35,8 +35,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Execution
 
-- [ ] **EXE-01**: System executes approved renames using copy-verify-delete protocol (never direct move)
-- [ ] **EXE-02**: System logs every file operation to an append-only audit table in PostgreSQL
+- [x] **EXE-01**: System executes approved renames using copy-verify-delete protocol (never direct move)
+- [x] **EXE-02**: System logs every file operation to an append-only audit table in PostgreSQL
 
 ### Infrastructure
 
@@ -110,8 +110,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | APR-01 | Phase 7: Approval Workflow UI | Complete |
 | APR-02 | Phase 7: Approval Workflow UI | Complete |
 | APR-03 | Phase 7: Approval Workflow UI | Complete |
-| EXE-01 | Phase 8: Safe File Execution & Audit | Pending |
-| EXE-02 | Phase 8: Safe File Execution & Audit | Pending |
+| EXE-01 | Phase 8: Safe File Execution & Audit | Complete |
+| EXE-02 | Phase 8: Safe File Execution & Audit | Complete |
 | INF-01 | Phase 1: Infrastructure & Project Setup | Complete |
 | INF-02 | Phase 4: Task Queue & Worker Infrastructure | Complete |
 | INF-03 | Phase 1: Infrastructure & Project Setup | Pending |
