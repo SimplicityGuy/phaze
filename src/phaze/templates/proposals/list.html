@@ -13,8 +13,12 @@
     {% include "proposals/partials/search_box.html" %}
 
     {% if proposals %}
-        <div id="proposal-list-container">
+        <div id="proposal-list-container"
+             x-data="proposalTable()"
+             @keydown.window="handleKeydown($event)"
+             @htmx:after-swap.window="$nextTick(() => { rowIds = Array.from(document.querySelectorAll('tr[id^=&quot;proposal-&quot;]')).filter(r => !r.id.startsWith('detail-')).map(r => r.id.replace('proposal-', '')); focusedRow = -1; selectedRows = new Set(); })">
             {% include "proposals/partials/proposal_table.html" %}
+            {% include "proposals/partials/bulk_actions.html" %}
         </div>
 
         {% include "proposals/partials/pagination.html" %}
@@ -35,4 +39,70 @@
 
     <p class="text-xs text-gray-400 mt-4">Keyboard: arrows to navigate, A approve, R reject, E expand</p>
 </div>
+
+<script>
+function proposalTable() {
+    return {
+        focusedRow: -1,
+        selectedRows: new Set(),
+        rowIds: [],
+        init() {
+            this.rowIds = Array.from(document.querySelectorAll('tr[id^="proposal-"]'))
+                .filter(r => !r.id.startsWith('detail-'))
+                .map(r => r.id.replace('proposal-', ''));
+        },
+        handleKeydown(e) {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            const maxRow = this.rowIds.length - 1;
+            switch(e.key) {
+                case 'ArrowDown':
+                    e.preventDefault();
+                    this.focusedRow = Math.min(this.focusedRow + 1, maxRow);
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    this.focusedRow = Math.max(this.focusedRow - 1, 0);
+                    break;
+                case 'a':
+                    if (this.focusedRow >= 0) {
+                        const row = document.getElementById('proposal-' + this.rowIds[this.focusedRow]);
+                        const btn = row?.querySelector('button[hx-patch*="approve"]');
+                        if (btn) btn.click();
+                    }
+                    break;
+                case 'r':
+                    if (this.focusedRow >= 0) {
+                        const row = document.getElementById('proposal-' + this.rowIds[this.focusedRow]);
+                        const btn = row?.querySelector('button[hx-patch*="reject"]');
+                        if (btn) btn.click();
+                    }
+                    break;
+                case 'e':
+                    if (this.focusedRow >= 0) {
+                        const row = document.getElementById('proposal-' + this.rowIds[this.focusedRow]);
+                        const btn = row?.querySelector('button[hx-get*="detail"]');
+                        if (btn) btn.click();
+                    }
+                    break;
+            }
+        },
+        toggleRow(id) {
+            if (this.selectedRows.has(id)) {
+                this.selectedRows.delete(id);
+            } else {
+                this.selectedRows.add(id);
+            }
+            this.selectedRows = new Set(this.selectedRows);
+        },
+        toggleAll(checked) {
+            if (checked) {
+                this.rowIds.forEach(id => this.selectedRows.add(id));
+            } else {
+                this.selectedRows.clear();
+            }
+            this.selectedRows = new Set(this.selectedRows);
+        }
+    }
+}
+</script>
 {% endblock %}

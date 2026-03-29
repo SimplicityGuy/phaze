@@ -1,0 +1,40 @@
+<td colspan="6" class="bg-gray-50 px-6 py-4">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
+        <div>
+            <h4 class="text-xs font-semibold text-gray-500 uppercase mb-2">AI Reasoning</h4>
+            <p class="text-gray-700">{{ proposal.reason or "No reasoning provided" }}</p>
+        </div>
+        <div>
+            <h4 class="text-xs font-semibold text-gray-500 uppercase mb-2">Extracted Metadata</h4>
+            {% if proposal.context_used %}
+            <dl class="space-y-1">
+                {% for key in ["artist", "event_name", "venue", "date", "source_type", "stage"] %}
+                    {% if proposal.context_used.get(key) %}
+                    <div class="flex">
+                        <dt class="text-gray-500 w-24">{{ key|replace("_", " ")|title }}:</dt>
+                        <dd class="text-gray-700">{{ proposal.context_used[key] }}</dd>
+                    </div>
+                    {% endif %}
+                {% endfor %}
+            </dl>
+            {% else %}
+            <p class="text-gray-400">No metadata available</p>
+            {% endif %}
+        </div>
+        <div>
+            <h4 class="text-xs font-semibold text-gray-500 uppercase mb-2">Original Path</h4>
+            <p class="text-gray-700 break-all font-mono text-xs">{{ proposal.file.original_path }}</p>
+        </div>
+    </div>
+</td>
+<script>
+    // Reveal the parent row when detail content is loaded
+    (function() {
+        var detailRows = document.querySelectorAll('tr[id^="detail-"]');
+        detailRows.forEach(function(row) {
+            if (row.children.length > 0 && row.children[0].tagName === 'TD') {
+                row.classList.remove('hidden');
+            }
+        });
+    })();
+</script>
