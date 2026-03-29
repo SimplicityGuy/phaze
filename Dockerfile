@@ -18,7 +18,7 @@ COPY alembic.ini ./
 RUN uv sync --frozen --no-dev
 
 # Non-root user
-RUN useradd -m -r phaze
+RUN useradd -m -r phaze && chown -R phaze:phaze /app/.venv
 USER phaze
 
 EXPOSE 8000
