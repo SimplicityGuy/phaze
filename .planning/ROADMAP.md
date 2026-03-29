@@ -101,9 +101,7 @@ Plans:
   2. Each proposal is stored as an immutable record in PostgreSQL (not regenerated on the fly)
   3. Proposals include the original filename, proposed filename, and the metadata context used to generate them
   4. Batch prompting processes multiple files per LLM call for cost efficiency
-**Plans**: 2 total, 1 complete
-  - Plan 01: LLM contracts, data structures, prompt template (COMPLETE)
-  - Plan 02: LLM calling, batch processing, proposal storage (PENDING)
+**Plans**: TBD
 
 ### Phase 7: Approval Workflow UI
 **Goal**: An admin can review all proposed renames in a web interface and approve or reject them
@@ -114,13 +112,8 @@ Plans:
   2. Admin can approve or reject individual proposals with a single click
   3. Admin can filter the proposal list by status (pending, approved, rejected)
   4. The UI updates without full page reloads (HTMX partial updates)
-**Plans**: 3 plans
+**Plans**: TBD
 **UI hint**: yes
-
-Plans:
-- [ ] 07-01-PLAN.md — Backend query service, proposal router, Jinja2 templates, paginated table with filtering and stats
-- [ ] 07-02-PLAN.md — Interactive approve/reject/undo, expandable details, bulk actions, keyboard shortcuts, toast notifications
-- [ ] 07-03-PLAN.md — Integration tests and human verification checkpoint
 
 ### Phase 8: Safe File Execution & Audit
 **Goal**: Approved renames execute safely using copy-verify-delete with every operation logged to an append-only audit trail
@@ -147,5 +140,5 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
 | 5. Audio Analysis Pipeline | 2/2 | Complete   | 2026-03-28 |
 | 6. AI Proposal Generation | 0/TBD | Not started | - |
-| 7. Approval Workflow UI | 0/3 | Planning | - |
+| 7. Approval Workflow UI | 1/3 | In Progress|  |
 | 8. Safe File Execution & Audit | 0/TBD | Not started | - |

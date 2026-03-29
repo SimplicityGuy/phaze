@@ -17,6 +17,7 @@ dependencies = [
     "litellm>=1.82.6,<1.82.7",
     "numpy>=1.26.0",
     "pydantic-settings>=2.13.1",
+    "python-multipart>=0.0.20",
     "sqlalchemy>=2.0.48",
     "uvicorn>=0.42.0",
 ]
