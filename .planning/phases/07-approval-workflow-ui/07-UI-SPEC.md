@@ -1,7 +1,7 @@
 ---
 phase: 7
 slug: approval-workflow-ui
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-03-28
@@ -99,8 +99,8 @@ Source: D-04 (confidence color-coding), D-05 (toast), D-07 (status badges), D-09
 | Page title | Proposal Review |
 | Primary CTA | Approve Selected |
 | Secondary CTA | Reject Selected |
-| Single approve button | Approve |
-| Single reject button | Reject |
+| Single approve button | Approve — `aria-label="Approve proposal for {proposed_filename}"` |
+| Single reject button | Reject — `aria-label="Reject proposal for {proposed_filename}"` |
 | Empty state heading | No proposals yet |
 | Empty state body | Run the AI proposal generation pipeline to get started. Proposals will appear here for your review. |
 | All-reviewed heading | All caught up! |
@@ -130,6 +130,14 @@ Source: D-05, D-06, D-08, D-09, D-10, D-11, D-13, D-14.
 | Bulk reject proposals | Instant action with 5-second undo toast showing count. No confirmation dialog. |
 
 Rationale: Reject is reversible (status change, not data deletion). Undo toast provides safety net without slowing the review workflow. Source: D-05.
+
+---
+
+## Visual Hierarchy
+
+**Primary visual anchor:** the proposal table (the work area where review happens).
+
+**Eye flow:** stats bar (overview at a glance) → filter tabs (scope the view) → search box (find specific files) → proposal table (review and act) → pagination (navigate) → bulk action bar (batch operations, appears on selection).
 
 ---
 
@@ -226,11 +234,11 @@ No shadcn. No third-party registries. No npm packages. All dependencies served v
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS (aria-labels added for single-row buttons)
+- [x] Dimension 2 Visuals: PASS (focal point and eye flow declared)
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** approved (2026-03-28)
