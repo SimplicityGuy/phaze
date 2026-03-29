@@ -17,8 +17,11 @@ COPY alembic.ini ./
 # Install project
 RUN uv sync --frozen --no-dev
 
+# Prevent uv run from re-syncing at runtime
+ENV UV_NO_SYNC=1
+
 # Non-root user
-RUN useradd -m -r phaze && chown -R phaze:phaze /app/.venv
+RUN useradd -m -r phaze
 USER phaze
 
 EXPOSE 8000
