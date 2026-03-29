@@ -29,9 +29,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Approval
 
-- [ ] **APR-01**: Admin can view paginated list of all proposed renames in a web UI
+- [x] **APR-01**: Admin can view paginated list of all proposed renames in a web UI
 - [ ] **APR-02**: Admin can approve or reject individual proposals
-- [ ] **APR-03**: Admin can filter proposals by status (pending, approved, rejected)
+- [x] **APR-03**: Admin can filter proposals by status (pending, approved, rejected)
 
 ### Execution
 
@@ -107,9 +107,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Complete |
 | AIP-01 | Phase 6: AI Proposal Generation | Pending |
 | AIP-02 | Phase 6: AI Proposal Generation | Pending |
-| APR-01 | Phase 7: Approval Workflow UI | Pending |
+| APR-01 | Phase 7: Approval Workflow UI | Complete |
 | APR-02 | Phase 7: Approval Workflow UI | Pending |
-| APR-03 | Phase 7: Approval Workflow UI | Pending |
+| APR-03 | Phase 7: Approval Workflow UI | Complete |
 | EXE-01 | Phase 8: Safe File Execution & Audit | Pending |
 | EXE-02 | Phase 8: Safe File Execution & Audit | Pending |
 | INF-01 | Phase 1: Infrastructure & Project Setup | Complete |
