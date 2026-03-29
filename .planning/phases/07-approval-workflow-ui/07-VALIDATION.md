@@ -19,7 +19,7 @@ created: 2026-03-28
 |----------|-------|
 | **Framework** | pytest 7.x with pytest-asyncio, httpx AsyncClient |
 | **Config file** | `pyproject.toml` (pytest section exists) |
-| **Quick run command** | `uv run pytest tests/test_proposals.py -x -q` |
+| **Quick run command** | `uv run pytest tests/test_routers/test_proposals.py -x -q` |
 | **Full suite command** | `uv run pytest --cov --cov-report=term-missing` |
 | **Estimated runtime** | ~15 seconds |
 
@@ -27,7 +27,7 @@ created: 2026-03-28
 
 ## Sampling Rate
 
-- **After every task commit:** Run `uv run pytest tests/test_proposals.py -x -q`
+- **After every task commit:** Run `uv run pytest tests/test_routers/test_proposals.py -x -q`
 - **After every plan wave:** Run `uv run pytest --cov --cov-report=term-missing`
 - **Before `/gsd:verify-work`:** Full suite must be green
 - **Max feedback latency:** 15 seconds
@@ -38,9 +38,9 @@ created: 2026-03-28
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 07-01-01 | 01 | 1 | APR-01 | integration | `uv run pytest tests/test_proposals.py::test_proposals_list` | ❌ W0 | ⬜ pending |
-| 07-01-02 | 01 | 1 | APR-02 | integration | `uv run pytest tests/test_proposals.py::test_approve_reject` | ❌ W0 | ⬜ pending |
-| 07-01-03 | 01 | 1 | APR-03 | integration | `uv run pytest tests/test_proposals.py::test_filter_by_status` | ❌ W0 | ⬜ pending |
+| 07-01-01 | 01 | 1 | APR-01 | integration | `uv run pytest tests/test_routers/test_proposals.py::test_proposals_list` | ❌ W0 | ⬜ pending |
+| 07-01-02 | 01 | 1 | APR-02 | integration | `uv run pytest tests/test_routers/test_proposals.py::test_approve_reject` | ❌ W0 | ⬜ pending |
+| 07-01-03 | 01 | 1 | APR-03 | integration | `uv run pytest tests/test_routers/test_proposals.py::test_filter_by_status` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -48,7 +48,7 @@ created: 2026-03-28
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_proposals.py` — stubs for APR-01, APR-02, APR-03
+- [ ] `tests/test_routers/test_proposals.py` — stubs for APR-01, APR-02, APR-03
 - [ ] `tests/conftest.py` — update with proposal factory fixtures
 
 *Existing test infrastructure (pytest, httpx, conftest) covers framework needs.*
