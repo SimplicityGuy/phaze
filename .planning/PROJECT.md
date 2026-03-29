@@ -18,11 +18,11 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - ✓ Exact duplicate detection via SHA256 hash grouping, flagged for human review — Phase 3
 - ✓ arq + Redis task queue with bounded worker pool, retry with backoff, and process pool for CPU-bound work — Phase 4
 - ✓ Audio analysis for BPM, mood, style, and musical key using essentia-tensorflow with 34 pre-trained models, running through arq worker pool via ProcessPoolExecutor — Phase 5
+- ✓ AI-powered filename proposals via litellm (batch prompting, structured output) stored as immutable records with extracted metadata context — Phase 6
 
 ### Active
 
 - [ ] Ingest music files and video streams, extract sha256 hash, original name, and original path into Postgres
-- [ ] Use AI to propose new filenames for all files (naming format TBD)
 - [ ] Use AI to propose destination paths for file organization
 - [ ] Resolve duplicate files (human decision via approval UI, detection done in Phase 3)
 - [ ] Admin web UI to review and approve/reject proposed renames and file moves
@@ -54,7 +54,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - **Database**: PostgreSQL
 - **Scale**: Must handle ~200K files efficiently — batch processing and parallelization required
 - **Existing code**: Must integrate with provided analysis prototypes and respect their per-file interface
-- **Naming format**: AI filename proposals — specific format TBD (will be provided later)
+- **Naming format**: Live sets: `{Artist} - Live @ {Venue|Event} {YYYY.MM.DD}.{ext}`, Album tracks: `{Artist} - {Track #} - {Track Title}.{ext}`
 
 ## Key Decisions
 
@@ -83,4 +83,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-28 after Phase 5 completion*
+*Last updated: 2026-03-28 after Phase 6 completion*

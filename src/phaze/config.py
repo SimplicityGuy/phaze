@@ -34,8 +34,15 @@ class Settings(BaseSettings):
     worker_health_check_interval: int = 60  # arq health check interval in seconds
     worker_keep_result: int = 3600  # keep job results in Redis for 1 hour
 
-    # Future: LLM API keys
+    # LLM API keys
     openai_api_key: SecretStr | None = None
+
+    # LLM configuration (Phase 6 -- per D-17, D-18, D-19)
+    llm_model: str = "claude-sonnet-4-20250514"
+    anthropic_api_key: SecretStr | None = None
+    llm_max_rpm: int = 30  # D-19: max LLM requests per minute
+    llm_batch_size: int = 10  # D-15: files per LLM call (research recommends 10)
+    llm_max_companion_chars: int = 3000  # Max chars per companion file content
 
 
 settings = Settings()

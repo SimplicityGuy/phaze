@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-03-28T19:13:29.654Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-03-28T23:12:22.588Z"
 last_activity: 2026-03-28
 progress:
   total_phases: 8
-  completed_phases: 5
-  total_plans: 12
-  completed_plans: 12
-  percent: 22
+  completed_phases: 6
+  total_plans: 14
+  completed_plans: 14
+  percent: 93
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 05 — audio-analysis-pipeline
+**Current focus:** Phase 06 — ai-proposal-generation
 
 ## Current Position
 
-Phase: 6
+Phase: 7
 Plan: Not started
 Status: Phase complete — ready for verification
 Last activity: 2026-03-28
 
-Progress: [██░░░░░░░░] 22%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -58,6 +58,8 @@ Progress: [██░░░░░░░░] 22%
 | Phase 04 P02 | 2min | 1 tasks | 3 files |
 | Phase 05 P01 | 5min | 2 tasks | 10 files |
 | Phase 05 P02 | 11min | 2 tasks | 4 files |
+| Phase 06 P01 | 5min | 1 tasks | 6 files |
+| Phase 06 P02 | 8min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -77,6 +79,13 @@ Recent decisions affecting current work:
 - [Phase 05]: Flat model directory structure matching prototype pattern
 - [Phase 05]: Models baked into Docker image at build time (no runtime volume)
 - [Phase 05]: Music file type detection uses extension set rather than category string
+- [Phase 06]: No Field(ge=, le=) on Pydantic confidence float due to litellm Anthropic bug
+- [Phase 06]: Prompt template as markdown at src/phaze/prompts/naming.md, loaded at runtime
+- [Phase 06]: Companion content truncated to 3000 chars with ASCII art stripping
+- [Phase 06]: Default LLM model set to claude-sonnet-4-20250514
+- [Phase 06]: FileRecord moved from TYPE_CHECKING to runtime import in proposal service for select() queries
+- [Phase 06]: arq provides ctx[redis] automatically as ArqRedis -- no extra pool creation needed
+- [Phase 06]: LLM retry backoff uses job_try*10 seconds (slower than analysis job_try*5 for rate limit recovery)
 
 ### Pending Todos
 
@@ -90,6 +99,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T19:08:41.378Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-03-28T23:06:50.535Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None

@@ -1,0 +1,91 @@
+"""Arq task function for AI proposal generation."""
+
+from __future__ import annotations
+
+from typing import Any
+import uuid
+
+from arq import Retry
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+from phaze.config import settings
+from phaze.models.analysis import AnalysisResult
+from phaze.models.file import FileRecord
+from phaze.services.proposal import (
+    ProposalService,
+    build_file_context,
+    check_rate_limit,
+    load_companion_contents,
+    store_proposals,
+)
+
+
+async def _get_session() -> AsyncSession:
+    """Create a one-off async session for task use."""
+    engine = create_async_engine(settings.database_url)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
+    session: AsyncSession = async_session()
+    return session
+
+
+async def generate_proposals(ctx: dict[str, Any], file_ids: list[str], batch_index: int) -> dict[str, Any]:
+    """Generate AI filename proposals for a batch of files.
+
+    Per D-14: Fixed-size batches.
+    Per D-16: Runs through arq worker pool.
+    Per D-19: Rate-limited via Redis counter.
+
+    Args:
+        ctx: arq job context (contains redis, proposal_service, job_try).
+        file_ids: List of file UUID strings to process in this batch.
+        batch_index: Index of this batch (for logging/tracking).
+
+    Returns:
+        Dict with batch index, count of proposals stored, and status.
+    """
+    session = await _get_session()
+    try:
+        # 1. Build context for each file
+        files_context: list[dict[str, Any]] = []
+        valid_file_ids: list[str] = []
+        for fid in file_ids:
+            uid = uuid.UUID(fid)
+            result = await session.execute(select(FileRecord).where(FileRecord.id == uid))
+            file_record = result.scalar_one_or_none()
+            if file_record is None:
+                continue
+
+            analysis_result_row = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == uid))
+            analysis = analysis_result_row.scalar_one_or_none()
+
+            companions = await load_companion_contents(session, uid, settings.llm_max_companion_chars)
+
+            ctx_dict = build_file_context(file_record, analysis, companions)
+            ctx_dict["index"] = len(files_context)
+            files_context.append(ctx_dict)
+            valid_file_ids.append(fid)
+
+        if not files_context:
+            return {"batch": batch_index, "count": 0, "status": "empty"}
+
+        # 2. Rate limit
+        await check_rate_limit(ctx["redis"], settings.llm_max_rpm)
+
+        # 3. Call LLM
+        proposal_service: ProposalService = ctx["proposal_service"]
+        batch_response = await proposal_service.generate_batch(files_context)
+
+        # 4. Store proposals
+        stored = await store_proposals(session, valid_file_ids, batch_response, files_context)
+        await session.commit()
+
+        return {"batch": batch_index, "count": stored, "status": "ok"}
+
+    except Exception as exc:
+        await session.rollback()
+        # Exponential backoff: 10s, 20s, 30s (per D-16, leverages Phase 4 retry)
+        raise Retry(defer=ctx["job_try"] * 10) from exc
+    finally:
+        await session.close()
