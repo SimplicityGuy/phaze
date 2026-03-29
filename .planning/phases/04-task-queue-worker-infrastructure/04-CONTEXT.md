@@ -1,6 +1,7 @@
 # Phase 4: Task Queue & Worker Infrastructure - Context
 
 **Gathered:** 2026-03-28
+**Updated:** 2026-03-28
 **Status:** Ready for planning
 
 <domain>
@@ -13,25 +14,23 @@ Set up arq + Redis as the task queue system with a bounded worker pool. Workers 
 <decisions>
 ## Implementation Decisions
 
-### Worker Concurrency Model
-- **D-01:** Claude's discretion on worker topology. Recommended approach: single arq worker process with configurable `max_jobs` setting (default 8). Scale by adjusting `max_jobs` or adding Docker container replicas. Keep docker-compose simple with one worker service.
+### Worker Concurrency & Topology
+- **D-01:** Single arq worker process with configurable max_jobs (default 8). Scale by adjusting max_jobs or adding Docker container replicas.
+- **D-02:** ProcessPoolExecutor created in on_startup hook, shut down in on_shutdown hook. CPU-bound work runs via asyncio run_in_executor.
+- **D-03:** ArqRedis connection pool wired into FastAPI lifespan for job enqueuing from API endpoints (app.state.arq_pool).
 
 ### Task Granularity
-- **D-02:** One arq job per file. Each file gets its own job for maximum parallelism, granular retry tracking, and simple progress visibility. ~200K jobs is well within arq + Redis capacity.
+- **D-04:** One arq job per file. ~200K jobs is within arq + Redis capacity. Provides granular retry and progress tracking.
 
 ### Retry & Failure Handling
-- **D-03:** 3 retries with exponential backoff using arq's built-in retry mechanism. After 3 failures, mark the job as permanently failed. Failed jobs are stored for human review via the future approval UI (Phase 7). No unlimited retries.
-
-### Process Pool for CPU Work
-- **D-04:** CPU-bound work (librosa audio analysis in Phase 5) must not block the async event loop. Use `asyncio.get_event_loop().run_in_executor(ProcessPoolExecutor)` inside arq job functions. ProcessPoolExecutor size configurable via settings.
+- **D-05:** 3 retries with exponential backoff. Analysis jobs: job_try * 5s. LLM proposal jobs: job_try * 10s (slower for rate limit recovery).
+- **D-06:** After 3 failures, job marked permanently failed. Failed files visible in DB via state field for manual review.
 
 ### Claude's Discretion
-- Worker topology details (single vs multiple containers)
-- arq WorkerSettings configuration (health_check_interval, job_timeout, queue names)
+- arq WorkerSettings configuration details (health_check_interval, job_timeout, queue names)
 - Redis connection pooling strategy
-- How backpressure is signaled (arq's max_jobs handles this naturally)
 - Settings additions to config.py for worker/queue tuning
-- Whether to add a lightweight job status tracking table or rely on arq's Redis-based job results
+- Docker compose worker service command
 
 </decisions>
 
@@ -41,18 +40,16 @@ Set up arq + Redis as the task queue system with a bounded worker pool. Workers 
 **Downstream agents MUST read these before planning or implementing.**
 
 ### Project Configuration
-- `CLAUDE.md` — Development setup, code quality rules, arq selected as task queue
-- `.planning/PROJECT.md` — Project vision, constraints (200K files, Docker Compose deployment)
+- `CLAUDE.md` — Development setup, arq selected as task queue
 - `.planning/REQUIREMENTS.md` — INF-02 (task queue), ANL-03 (parallel analysis)
 
 ### Existing Code
-- `src/phaze/config.py` — Settings with `redis_url` already configured
-- `src/phaze/database.py` — Async engine pattern to follow
-- `src/phaze/main.py` — FastAPI app (may need startup/shutdown hooks for worker)
-- `docker-compose.yml` — Worker service placeholder, Redis service already running
+- `src/phaze/config.py` — Settings with redis_url
+- `src/phaze/main.py` — FastAPI app lifespan (add ArqRedis pool)
+- `docker-compose.yml` — Worker service, Redis service
 
 ### Prior Phase Context
-- `.planning/phases/01-infrastructure-project-setup/01-CONTEXT.md` — D-02 (separate worker layer), D-07 (everything in Docker)
+- `.planning/phases/01-infrastructure-project-setup/01-CONTEXT.md` — D-01 (Docker services), D-08 (layer-based structure)
 
 </canonical_refs>
 
@@ -60,30 +57,28 @@ Set up arq + Redis as the task queue system with a bounded worker pool. Workers 
 ## Existing Code Insights
 
 ### Reusable Assets
-- `Settings` class in `config.py` — already has `redis_url`, extend with worker settings
-- `docker-compose.yml` — worker service stubbed (`echo "Worker placeholder - arq added in Phase 4"`), Redis with healthcheck
-- Async patterns throughout codebase (SQLAlchemy async, FastAPI async endpoints)
+- Settings class with redis_url
+- Docker Compose with Redis healthcheck
+- Async patterns throughout codebase
 
 ### Established Patterns
-- Pydantic settings for configuration (`pydantic_settings.BaseSettings`)
-- Service layer pattern (`src/phaze/services/`) for business logic
-- Alembic for database migrations
+- Pydantic settings for configuration
+- Service layer pattern
+- Lifespan context manager for startup/shutdown
 
 ### Integration Points
-- Replace worker placeholder command in docker-compose.yml with real arq worker
-- Add arq dependency to pyproject.toml
-- Add worker settings to config.py
-- Wire arq startup in FastAPI lifespan (for enqueuing jobs from API)
-- New `src/phaze/worker.py` or `src/phaze/tasks/` for task definitions
+- New tasks/ package with worker.py, functions.py, pool.py
+- ArqRedis pool on app.state for enqueuing
+- Worker service command in docker-compose.yml
 
 </code_context>
 
 <specifics>
 ## Specific Ideas
 
-- Worker must handle ~200K files — arq + Redis handles this volume fine with one-per-file jobs
-- CPU-bound audio analysis (Phase 5) needs process pool — infrastructure set up here, used there
-- Single-user system — no multi-tenancy concerns for queue isolation
+- Single-user system — no multi-tenancy or queue isolation needed
+- ~200K files for processing — one job per file
+- CPU-bound audio analysis needs process pool (Phase 5 uses it)
 
 </specifics>
 
@@ -98,3 +93,4 @@ None — discussion stayed within phase scope.
 
 *Phase: 04-task-queue-worker-infrastructure*
 *Context gathered: 2026-03-28*
+*Context updated: 2026-03-28*
