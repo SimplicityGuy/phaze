@@ -8,6 +8,7 @@ from arq.connections import RedisSettings
 
 from phaze.config import settings
 from phaze.services.proposal import ProposalService, load_prompt_template
+from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.functions import process_file
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.proposal import generate_proposals
@@ -53,7 +54,7 @@ class WorkerSettings:
     Run via: ``uv run arq phaze.tasks.worker.WorkerSettings``
     """
 
-    functions: ClassVar[list[Any]] = [process_file, generate_proposals]
+    functions: ClassVar[list[Any]] = [process_file, generate_proposals, execute_approved_batch]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
