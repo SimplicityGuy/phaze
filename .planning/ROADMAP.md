@@ -126,11 +126,7 @@ Plans:
   2. Every file operation (copy, verify, delete) is logged to an append-only audit table in PostgreSQL before the operation executes
   3. If hash verification fails after copy, the operation aborts and the original file remains untouched
   4. Execution status is tracked per-file (pending, in-progress, completed, failed) in the database
-**Plans**: 2 plans
-
-Plans:
-- [ ] 08-01-PLAN.md — Execution service (copy-verify-delete, audit logging), arq batch job, Alembic migration
-- [ ] 08-02-PLAN.md — Execution router, SSE progress, audit log page, UI modifications, human verification
+**Plans**: 2
 
 ## Progress
 
@@ -147,4 +143,4 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 5. Audio Analysis Pipeline | 2/2 | Complete   | 2026-03-28 |
 | 6. AI Proposal Generation | 0/TBD | Not started | - |
 | 7. Approval Workflow UI | 1/3 | In Progress|  |
-| 8. Safe File Execution & Audit | 0/2 | Planning | - |
+| 8. Safe File Execution & Audit | 1/2 | In Progress | - |
