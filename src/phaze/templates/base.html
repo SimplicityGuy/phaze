@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Phaze{% endblock %}</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4" integrity="sha384-qKt1F1k7v69ebd7q6Na1d2FGVMI+43GgA5hpfz7i+zDfrz8rIjXYu7majL1fXSeS" crossorigin="anonymous"></script>
+
+    <!-- Inter font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@2.0.7/dist/htmx.min.js" integrity="sha384-ZBXiYtYQ6hJ2Y0ZNoYuI+Nq5MqWBr+chMrS/RkXpNzQCApHEhOt2aY8EJgqwHLkJ" crossorigin="anonymous"></script>
+
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.9/dist/cdn.min.js" integrity="sha384-MEh8ZMZhsmD6/1Bd3kfTiGZoYIKR9u+BilQQWl5DOonh+pvKg6fP2AejtOozsZK8" crossorigin="anonymous"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .htmx-indicator { opacity: 0; transition: opacity 200ms; }
+        .htmx-request .htmx-indicator { opacity: 1; }
+    </style>
+</head>
+<body class="bg-white text-gray-900 min-h-screen">
+
+    <!-- Skip link -->
+    <a href="#proposals-table" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to proposals table</a>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Toast container -->
+    <div id="toast-container" aria-live="polite" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+
+</body>
+</html>

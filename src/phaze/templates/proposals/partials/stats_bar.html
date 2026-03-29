@@ -1,0 +1,24 @@
+<div id="stats-bar" class="bg-gray-50 rounded-lg p-6 mb-6">
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <div>
+            <span class="text-xs font-semibold text-gray-500 uppercase">Total</span>
+            <p class="text-xl font-semibold text-gray-900">{{ stats.total }}</p>
+        </div>
+        <div>
+            <span class="text-xs font-semibold text-yellow-600 uppercase">Pending</span>
+            <p class="text-xl font-semibold text-yellow-600">{{ stats.pending }}</p>
+        </div>
+        <div>
+            <span class="text-xs font-semibold text-green-600 uppercase">Approved</span>
+            <p class="text-xl font-semibold text-green-600">{{ stats.approved }}</p>
+        </div>
+        <div>
+            <span class="text-xs font-semibold text-red-600 uppercase">Rejected</span>
+            <p class="text-xl font-semibold text-red-600">{{ stats.rejected }}</p>
+        </div>
+        <div>
+            <span class="text-xs font-semibold text-gray-500 uppercase">Avg Confidence</span>
+            <p class="text-xl font-semibold text-gray-900">{{ "%.0f"|format((stats.avg_confidence or 0) * 100) }}%</p>
+        </div>
+    </div>
+</div>

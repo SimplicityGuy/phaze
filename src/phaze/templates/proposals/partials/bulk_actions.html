@@ -1,0 +1,25 @@
+<div x-show="selectedRows.size > 0"
+     x-transition
+     class="fixed bottom-16 left-1/2 -translate-x-1/2 bg-white shadow-xl rounded-lg border border-gray-200 px-6 py-3 flex items-center gap-4 z-40">
+    <span class="text-sm text-gray-600" x-text="selectedRows.size + ' selected'"></span>
+    <form hx-patch="/proposals/bulk" hx-target="#proposal-list-container" hx-swap="innerHTML">
+        <input type="hidden" name="action" value="approve">
+        <template x-for="id in Array.from(selectedRows)">
+            <input type="hidden" name="proposal_ids" :value="id">
+        </template>
+        <button type="submit"
+                class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-md">
+            Approve Selected
+        </button>
+    </form>
+    <form hx-patch="/proposals/bulk" hx-target="#proposal-list-container" hx-swap="innerHTML">
+        <input type="hidden" name="action" value="reject">
+        <template x-for="id in Array.from(selectedRows)">
+            <input type="hidden" name="proposal_ids" :value="id">
+        </template>
+        <button type="submit"
+                class="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-4 py-2 rounded-md">
+            Reject Selected
+        </button>
+    </form>
+</div>

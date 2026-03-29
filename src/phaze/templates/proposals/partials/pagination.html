@@ -1,0 +1,96 @@
+<div class="flex items-center justify-between mt-4 text-sm">
+    <!-- Left: showing range -->
+    <div class="text-gray-500">
+        Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} proposals
+    </div>
+
+    <!-- Center: page numbers -->
+    <div class="flex items-center gap-1">
+        {% if pagination.has_prev %}
+            <button
+                hx-get="/proposals/?page={{ pagination.page - 1 }}&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ pagination.page_size }}"
+                hx-target="#proposal-list-container"
+                hx-swap="innerHTML"
+                hx-push-url="true"
+                class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1"
+            >&laquo; Prev</button>
+        {% endif %}
+
+        {% set total_pages = pagination.total_pages %}
+        {% set current_page = pagination.page %}
+
+        {# Show max 7 page links with ellipsis #}
+        {% if total_pages <= 7 %}
+            {% for p in range(1, total_pages + 1) %}
+                <button
+                    hx-get="/proposals/?page={{ p }}&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ pagination.page_size }}"
+                    hx-target="#proposal-list-container"
+                    hx-swap="innerHTML"
+                    hx-push-url="true"
+                    class="{% if p == current_page %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                >{{ p }}</button>
+            {% endfor %}
+        {% else %}
+            {# Always show first page #}
+            <button
+                hx-get="/proposals/?page=1&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ pagination.page_size }}"
+                hx-target="#proposal-list-container"
+                hx-swap="innerHTML"
+                hx-push-url="true"
+                class="{% if current_page == 1 %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+            >1</button>
+
+            {% if current_page > 3 %}
+                <span class="px-2 text-gray-400">...</span>
+            {% endif %}
+
+            {# Pages around current #}
+            {% for p in range([current_page - 1, 2]|max, [current_page + 2, total_pages]|min + 1) %}
+                <button
+                    hx-get="/proposals/?page={{ p }}&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ pagination.page_size }}"
+                    hx-target="#proposal-list-container"
+                    hx-swap="innerHTML"
+                    hx-push-url="true"
+                    class="{% if p == current_page %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                >{{ p }}</button>
+            {% endfor %}
+
+            {% if current_page < total_pages - 2 %}
+                <span class="px-2 text-gray-400">...</span>
+            {% endif %}
+
+            {# Always show last page #}
+            <button
+                hx-get="/proposals/?page={{ total_pages }}&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ pagination.page_size }}"
+                hx-target="#proposal-list-container"
+                hx-swap="innerHTML"
+                hx-push-url="true"
+                class="{% if current_page == total_pages %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+            >{{ total_pages }}</button>
+        {% endif %}
+
+        {% if pagination.has_next %}
+            <button
+                hx-get="/proposals/?page={{ pagination.page + 1 }}&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ pagination.page_size }}"
+                hx-target="#proposal-list-container"
+                hx-swap="innerHTML"
+                hx-push-url="true"
+                class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1"
+            >Next &raquo;</button>
+        {% endif %}
+    </div>
+
+    <!-- Right: page size selector -->
+    <div class="flex items-center gap-2">
+        <span class="text-gray-500">Per page:</span>
+        {% for size in [25, 50, 100] %}
+            <button
+                hx-get="/proposals/?page=1&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ size }}"
+                hx-target="#proposal-list-container"
+                hx-swap="innerHTML"
+                hx-push-url="true"
+                class="{% if pagination.page_size == size %}font-semibold text-blue-600{% else %}text-gray-500 hover:text-gray-700{% endif %} px-1"
+            >{{ size }}</button>
+        {% endfor %}
+    </div>
+</div>

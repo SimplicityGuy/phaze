@@ -1,0 +1,14 @@
+{# Primary response: updated row (single action) or empty (bulk) #}
+{% if proposal %}
+{% include "proposals/partials/proposal_row.html" %}
+{% endif %}
+
+{# OOB: update stats bar #}
+<div id="stats-bar" hx-swap-oob="true">
+    {% include "proposals/partials/stats_bar.html" %}
+</div>
+
+{# OOB: inject toast #}
+<div hx-swap-oob="beforeend:#toast-container">
+    {% include "proposals/partials/toast.html" %}
+</div>

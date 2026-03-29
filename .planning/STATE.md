@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-03-28T23:12:22.588Z"
-last_activity: 2026-03-28
+status: executing
+stopped_at: Completed 07-02-PLAN.md
+last_updated: "2026-03-29T04:56:24.075Z"
+last_activity: 2026-03-29
 progress:
   total_phases: 8
-  completed_phases: 6
-  total_plans: 14
-  completed_plans: 14
-  percent: 93
+  completed_phases: 7
+  total_plans: 17
+  completed_plans: 17
+  percent: 94
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 06 — ai-proposal-generation
+**Current focus:** Phase 07 — approval-workflow-ui
 
 ## Current Position
 
-Phase: 7
+Phase: 8
 Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-03-28
+Status: Ready to execute
+Last activity: 2026-03-29
 
-Progress: [█████████░] 93%
+Progress: [█████████░] 94%
 
 ## Performance Metrics
 
@@ -58,8 +58,8 @@ Progress: [█████████░] 93%
 | Phase 04 P02 | 2min | 1 tasks | 3 files |
 | Phase 05 P01 | 5min | 2 tasks | 10 files |
 | Phase 05 P02 | 11min | 2 tasks | 4 files |
-| Phase 06 P01 | 5min | 1 tasks | 6 files |
-| Phase 06 P02 | 8min | 2 tasks | 5 files |
+| Phase 07 P01 | 11min | 2 tasks | 13 files |
+| Phase 07 P02 | 9min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -79,13 +79,12 @@ Recent decisions affecting current work:
 - [Phase 05]: Flat model directory structure matching prototype pattern
 - [Phase 05]: Models baked into Docker image at build time (no runtime volume)
 - [Phase 05]: Music file type detection uses extension set rather than category string
-- [Phase 06]: No Field(ge=, le=) on Pydantic confidence float due to litellm Anthropic bug
-- [Phase 06]: Prompt template as markdown at src/phaze/prompts/naming.md, loaded at runtime
-- [Phase 06]: Companion content truncated to 3000 chars with ASCII art stripping
-- [Phase 06]: Default LLM model set to claude-sonnet-4-20250514
-- [Phase 06]: FileRecord moved from TYPE_CHECKING to runtime import in proposal service for select() queries
-- [Phase 06]: arq provides ctx[redis] automatically as ArqRedis -- no extra pool creation needed
-- [Phase 06]: LLM retry backoff uses job_try*10 seconds (slower than analysis job_try*5 for rate limit recovery)
+- [Phase 07]: Used lazy=raise on FileRecord relationship to prevent accidental lazy loading in async
+- [Phase 07]: HTMX fragment detection via HX-Request header for partial vs full page responses
+- [Phase 07]: Default status filter is pending (D-09) to surface actionable items first
+- [Phase 07]: Template partials directory structure for composable HTMX fragments
+- [Phase 07]: Used Any type for bulk_update cursor result to work around SQLAlchemy async Result type
+- [Phase 07]: Alpine x-data on proposal-list-container (not table) to survive HTMX swaps
 
 ### Pending Todos
 
@@ -99,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T23:06:50.535Z
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-03-29T04:06:45.886Z
+Stopped at: Completed 07-02-PLAN.md
 Resume file: None
