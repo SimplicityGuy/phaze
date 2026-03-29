@@ -114,9 +114,7 @@ async def get_proposals_page(
         search_term = f"%{search.strip()}%"
         search_filter = or_(
             RenameProposal.proposed_filename.ilike(search_term),
-            RenameProposal.file_id.in_(
-                select(FileRecord.id).where(FileRecord.original_filename.ilike(search_term))
-            ),
+            RenameProposal.file_id.in_(select(FileRecord.id).where(FileRecord.original_filename.ilike(search_term))),
         )
         base = base.where(search_filter)
         count_base = count_base.where(search_filter)
