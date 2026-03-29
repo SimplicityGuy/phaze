@@ -275,9 +275,7 @@ async def store_proposals(
         session.add(record)
 
         # Update file state
-        result = await session.execute(
-            select(FileRecord).where(FileRecord.id == uuid.UUID(fid))
-        )
+        result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(fid)))
         file_record = result.scalar_one_or_none()
         if file_record is not None:
             file_record.state = FileState.PROPOSAL_GENERATED
@@ -309,16 +307,12 @@ async def load_companion_contents(
     Returns:
         List of dicts with ``"filename"`` and ``"content"`` keys.
     """
-    result = await session.execute(
-        select(FileCompanion).where(FileCompanion.media_id == media_file_id)
-    )
+    result = await session.execute(select(FileCompanion).where(FileCompanion.media_id == media_file_id))
     companions = result.scalars().all()
 
     contents: list[dict[str, str]] = []
     for comp in companions:
-        rec_result = await session.execute(
-            select(FileRecord).where(FileRecord.id == comp.companion_id)
-        )
+        rec_result = await session.execute(select(FileRecord).where(FileRecord.id == comp.companion_id))
         rec = rec_result.scalar_one_or_none()
         if rec is None:
             continue

@@ -56,6 +56,8 @@ Progress: [█████████░] 93%
 | Phase 01 P03 | 3min | 1 tasks | 5 files |
 | Phase 04 P01 | 7min | 2 tasks | 11 files |
 | Phase 04 P02 | 2min | 1 tasks | 3 files |
+| Phase 05 P01 | 5min | 2 tasks | 10 files |
+| Phase 05 P02 | 11min | 2 tasks | 4 files |
 | Phase 06 P01 | 5min | 1 tasks | 6 files |
 | Phase 06 P02 | 8min | 2 tasks | 5 files |
 
@@ -74,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 04]: Used ClassVar annotation on WorkerSettings.functions for ruff RUF012 compliance
 - [Phase 04]: arq Retry stores defer as defer_score in milliseconds
 - [Phase 04]: ASGITransport test client does not invoke lifespan — no Redis mock needed in conftest
+- [Phase 05]: Flat model directory structure matching prototype pattern
+- [Phase 05]: Models baked into Docker image at build time (no runtime volume)
+- [Phase 05]: Music file type detection uses extension set rather than category string
 - [Phase 06]: No Field(ge=, le=) on Pydantic confidence float due to litellm Anthropic bug
 - [Phase 06]: Prompt template as markdown at src/phaze/prompts/naming.md, loaded at runtime
 - [Phase 06]: Companion content truncated to 3000 chars with ASCII art stripping

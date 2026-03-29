@@ -360,9 +360,7 @@ class TestGenerateBatch:
 
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = BatchProposalResponse(
-            proposals=[]
-        ).model_dump_json()
+        mock_response.choices[0].message.content = BatchProposalResponse(proposals=[]).model_dump_json()
 
         files_context = [{"index": 0, "original_filename": "a.mp3"}]
 

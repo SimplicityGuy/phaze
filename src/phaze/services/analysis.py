@@ -14,8 +14,8 @@ import numpy as np
 # Suppress TF C++ logging before any essentia/TF import
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-import essentia  # type: ignore[import-untyped]
-import essentia.standard as es  # type: ignore[import-untyped]
+import essentia
+import essentia.standard as es
 
 
 # ---------------------------------------------------------------------------
