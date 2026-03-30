@@ -18,13 +18,13 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Analysis
 
-- [x] **ANL-01**: System detects BPM for music files using librosa/existing prototypes
-- [x] **ANL-02**: System classifies mood and style for music files using existing prototypes
+- [ ] **ANL-01**: System detects BPM for music files using librosa/existing prototypes
+- [ ] **ANL-02**: System classifies mood and style for music files using existing prototypes
 - [x] **ANL-03**: Analysis runs in parallel across worker pool for throughput at scale
 
 ### AI Proposals
 
-- [x] **AIP-01**: System uses LLM to propose a new filename for each file based on available metadata, analysis results, and companion file content where available
+- [ ] **AIP-01**: System uses LLM to propose a new filename for each file based on available metadata, analysis results, and companion file content where available
 - [x] **AIP-02**: Proposals are stored as immutable records in PostgreSQL (not regenerated on the fly)
 
 ### Approval
@@ -102,10 +102,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ING-04 | Phase 3: Companion Files & Deduplication | Complete |
 | ING-05 | Phase 2: File Discovery & Ingestion | Complete |
 | ING-06 | Phase 3: Companion Files & Deduplication | Complete |
-| ANL-01 | Phase 5: Audio Analysis Pipeline | Complete |
-| ANL-02 | Phase 5: Audio Analysis Pipeline | Complete |
+| ANL-01 | Phase 9: Pipeline Orchestration | Pending |
+| ANL-02 | Phase 9: Pipeline Orchestration | Pending |
 | ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Complete |
-| AIP-01 | Phase 6: AI Proposal Generation | Complete |
+| AIP-01 | Phase 9: Pipeline Orchestration | Pending |
 | AIP-02 | Phase 6: AI Proposal Generation | Complete |
 | APR-01 | Phase 7: Approval Workflow UI | Complete |
 | APR-02 | Phase 7: Approval Workflow UI | Complete |
@@ -114,7 +114,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EXE-02 | Phase 8: Safe File Execution & Audit | Complete |
 | INF-01 | Phase 1: Infrastructure & Project Setup | Complete |
 | INF-02 | Phase 4: Task Queue & Worker Infrastructure | Complete |
-| INF-03 | Phase 1: Infrastructure & Project Setup | Pending |
+| INF-03 | Phase 10: CI Config & Bug Fixes | Pending |
 
 **Coverage:**
 - v1 requirements: 17 total
