@@ -59,9 +59,12 @@ def test_execution_log_tablename() -> None:
 
 
 def test_file_record_has_batch_id() -> None:
-    """FileRecord should have an optional batch_id column."""
+    """FileRecord should have an optional batch_id column with ForeignKey to scan_batches."""
     col = FileRecord.__table__.columns["batch_id"]
     assert col.nullable is True
+    assert len(col.foreign_keys) == 1
+    fk = next(iter(col.foreign_keys))
+    assert fk.target_fullname == "scan_batches.id"
 
 
 async def test_tables_created_in_database(async_engine) -> None:  # type: ignore[no-untyped-def]

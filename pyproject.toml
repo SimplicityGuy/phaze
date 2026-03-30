@@ -83,6 +83,7 @@ ignore_missing_imports = true
 [tool.coverage.run]
 source = ["phaze"]
 omit = ["tests/*"]
+concurrency = ["greenlet", "thread"]
 
 [tool.coverage.report]
 fail_under = 85
