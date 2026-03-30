@@ -7,29 +7,16 @@ import uuid
 
 from arq import Retry
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 from phaze.config import settings
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.services.analysis import analyze_file
 from phaze.tasks.pool import run_in_process_pool
+from phaze.tasks.session import get_task_session
 
 
 _MUSIC_FILE_TYPES = frozenset({"mp3", "flac", "ogg", "m4a", "wav", "aiff", "wma", "aac", "opus"})
-
-
-async def _get_session() -> AsyncSession:
-    """Create a one-off async session for task use.
-
-    Workers don't share the FastAPI app's engine. Each task creates
-    its own lightweight session.
-    """
-    engine = create_async_engine(settings.database_url)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
-    session: AsyncSession = async_session()
-    return session
 
 
 async def process_file(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
@@ -39,7 +26,7 @@ async def process_file(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
     Per D-03: retries with exponential backoff.
     """
     try:
-        session = await _get_session()
+        session = await get_task_session()
         try:
             # 1. Fetch file record
             result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(file_id)))
