@@ -102,10 +102,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ING-04 | Phase 3: Companion Files & Deduplication | Complete |
 | ING-05 | Phase 2: File Discovery & Ingestion | Complete |
 | ING-06 | Phase 3: Companion Files & Deduplication | Complete |
-| ANL-01 | Phase 5: Audio Analysis Pipeline | Complete |
-| ANL-02 | Phase 5: Audio Analysis Pipeline | Complete |
+| ANL-01 | Phase 9: Pipeline Orchestration | Complete |
+| ANL-02 | Phase 9: Pipeline Orchestration | Complete |
 | ANL-03 | Phase 4: Task Queue & Worker Infrastructure | Complete |
-| AIP-01 | Phase 6: AI Proposal Generation | Complete |
+| AIP-01 | Phase 9: Pipeline Orchestration | Complete |
 | AIP-02 | Phase 6: AI Proposal Generation | Complete |
 | APR-01 | Phase 7: Approval Workflow UI | Complete |
 | APR-02 | Phase 7: Approval Workflow UI | Complete |
@@ -114,7 +114,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EXE-02 | Phase 8: Safe File Execution & Audit | Complete |
 | INF-01 | Phase 1: Infrastructure & Project Setup | Complete |
 | INF-02 | Phase 4: Task Queue & Worker Infrastructure | Complete |
-| INF-03 | Phase 1: Infrastructure & Project Setup | Pending |
+| INF-03 | Phase 10: CI Config & Bug Fixes | Pending |
 
 **Coverage:**
 - v1 requirements: 17 total

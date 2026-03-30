@@ -6,24 +6,13 @@ import logging
 from typing import Any
 import uuid
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-
-from phaze.config import settings
 from phaze.services.execution import execute_single_file, get_approved_proposals
+from phaze.tasks.session import get_task_session
 
 
 logger = logging.getLogger(__name__)
 
 _REDIS_KEY_TTL_SECONDS = 3600  # 1 hour
-
-
-async def _get_session() -> AsyncSession:
-    """Create a one-off async session for task use."""
-    engine = create_async_engine(settings.database_url)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
-    session: AsyncSession = async_session()
-    return session
 
 
 async def execute_approved_batch(ctx: dict[str, Any], batch_id: str | None = None) -> dict[str, Any]:
@@ -43,7 +32,7 @@ async def execute_approved_batch(ctx: dict[str, Any], batch_id: str | None = Non
         batch_id = uuid.uuid4().hex
 
     redis = ctx["redis"]
-    session = await _get_session()
+    session = await get_task_session()
 
     try:
         proposals = await get_approved_proposals(session)

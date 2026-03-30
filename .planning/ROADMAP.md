@@ -20,6 +20,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 6: AI Proposal Generation** - LLM-powered filename proposals stored as immutable records
 - [ ] **Phase 7: Approval Workflow UI** - Web-based review interface for approving/rejecting proposals
 - [ ] **Phase 8: Safe File Execution & Audit** - Copy-verify-delete file operations with append-only audit log
+- [ ] **Phase 9: Pipeline Orchestration** - Wire scan→analyze→propose pipeline triggers and fix execution volume mount
+- [ ] **Phase 10: CI Config & Bug Fixes** - Fix yamllint/mypy CI blockers and SSE math bug
 
 ## Phase Details
 
@@ -128,19 +130,48 @@ Plans:
   4. Execution status is tracked per-file (pending, in-progress, completed, failed) in the database
 **Plans**: 2
 
+### Phase 9: Pipeline Orchestration
+**Goal:** Wire the automated pipeline so that file discovery triggers analysis, and analysis completion triggers proposal generation — making the core E2E flow work without manual arq job injection
+**Depends on:** Phase 2, Phase 4, Phase 5, Phase 6, Phase 8
+**Requirements:** ANL-01, ANL-02, AIP-01
+**Gap Closure:** Closes scan→analysis and analysis→proposals integration gaps from v1.0 audit
+**Success Criteria** (what must be TRUE):
+  1. After a scan completes, all discovered files are automatically enqueued for analysis via process_file arq jobs
+  2. After analysis completes for a batch of files, they are automatically enqueued for proposal generation via generate_proposals arq jobs
+  3. The full pipeline (scan → analyze → propose) can run end-to-end without manual intervention
+  4. docker-compose.yml volume mount allows write access for file execution
+  5. _get_session helper is deduplicated across task modules
+**Plans**: 1 plan
+
+Plans:
+- [x] 09-01-PLAN.md — Pipeline wiring: session dedup, config, Docker volume, trigger endpoints, dashboard UI
+
+### Phase 10: CI Config & Bug Fixes
+**Goal:** Fix CI configuration blockers (yamllint, mypy) and the SSE completion message math bug so pre-commit passes cleanly and execution progress reporting is correct
+**Depends on:** Phase 1, Phase 8
+**Requirements:** INF-03
+**Gap Closure:** Closes Phase 1 yamllint/mypy gaps and Phase 8 SSE bug from v1.0 audit
+**Success Criteria** (what must be TRUE):
+  1. `pre-commit run --all-files` passes with zero failures (yamllint, mypy, all hooks green)
+  2. SSE completion message shows correct succeeded count (succeeded = completed, not completed - failed)
+  3. FileRecord.batch_id has proper ForeignKey annotation in ORM model
+**Plans**: TBD
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
-Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phase 5 depends on both 2 and 4.
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
+Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phase 5 depends on both 2 and 4. Phases 9 and 10 are gap closure phases from the v1.0 audit.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Infrastructure & Project Setup | 0/3 | Planning | - |
-| 2. File Discovery & Ingestion | 0/TBD | Not started | - |
-| 3. Companion Files & Deduplication | 0/TBD | Not started | - |
-| 4. Task Queue & Worker Infrastructure | 0/TBD | Not started | - |
-| 5. Audio Analysis Pipeline | 2/2 | Complete   | 2026-03-28 |
-| 6. AI Proposal Generation | 0/TBD | Not started | - |
-| 7. Approval Workflow UI | 1/3 | In Progress|  |
-| 8. Safe File Execution & Audit | 1/2 | In Progress | - |
+| 1. Infrastructure & Project Setup | 3/3 | Complete | 2026-03-27 |
+| 2. File Discovery & Ingestion | 3/3 | Complete | 2026-03-27 |
+| 3. Companion Files & Deduplication | 2/2 | Complete | 2026-03-27 |
+| 4. Task Queue & Worker Infrastructure | 2/2 | Complete | 2026-03-27 |
+| 5. Audio Analysis Pipeline | 2/2 | Complete | 2026-03-28 |
+| 6. AI Proposal Generation | 2/2 | Complete | 2026-03-28 |
+| 7. Approval Workflow UI | 3/3 | Complete | 2026-03-29 |
+| 8. Safe File Execution & Audit | 2/2 | Complete | 2026-03-29 |
+| 9. Pipeline Orchestration | 0/1 | Not started | - |
+| 10. CI Config & Bug Fixes | 0/TBD | Not started | - |
