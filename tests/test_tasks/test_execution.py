@@ -6,8 +6,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -191,7 +189,7 @@ async def test_redis_progress_updates(
 async def test_batch_generates_uuid_id(
     mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
-    mock_execute: AsyncMock,
+    _mock_execute: AsyncMock,
 ) -> None:
     """execute_approved_batch generates a UUID batch_id if not provided."""
     from phaze.tasks.execution import execute_approved_batch

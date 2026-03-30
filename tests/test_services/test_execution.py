@@ -5,10 +5,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
-
-import pytest
 
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileState
@@ -175,7 +173,7 @@ async def test_hash_mismatch_cleanup(tmp_path: Path) -> None:
     # Patch shutil.copy2 to create a corrupted copy
     dest = tmp_path / "renamed.mp3"
 
-    def corrupt_copy(src: Any, dst: Any) -> None:
+    def corrupt_copy(_src: Any, dst: Any) -> None:
         Path(dst).write_bytes(b"corrupted different content!!!")
 
     with patch("phaze.services.execution.shutil.copy2", side_effect=corrupt_copy):
