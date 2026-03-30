@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 import uuid
@@ -67,7 +67,7 @@ async def create_test_execution_log(
         sha256_verified=sha256_verified,
         status=status,
         error_message=error_message,
-        executed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        executed_at=datetime.now(UTC).replace(tzinfo=None),
     )
     session.add(log_entry)
     await session.commit()
