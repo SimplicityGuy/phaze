@@ -1,8 +1,8 @@
 ---
 phase: 01-infrastructure-project-setup
 verified: 2026-03-27T00:00:00Z
-status: gaps_found
-score: 4/5 success criteria verified
+status: passed
+score: 5/5 success criteria verified
 re_verification:
   previous_status: gaps_found
   previous_score: 4/5
@@ -13,14 +13,13 @@ re_verification:
     - "docker-compose.override.yml line 1 now has '---' document-start — yamllint passes on that file"
     - ".github/workflows/tests.yml line 43 folded with '>-' — yamllint passes on that file"
   gaps_remaining:
-    - "yamllint still fails: .pre-commit-config.yaml missing '---' document-start"
-    - "yamllint still fails: all 4 GitHub Actions workflows use bare 'on:' key, which yamllint --strict flags as truthy (must be quoted: 'on:')"
-    - "mypy still fails: 'Source file found twice under different module names: src.phaze.models.base and phaze.models.base' — py.typed fixed the previous error but exposed a new conflict between explicit_package_bases = true and the installed .pth file"
+    - "All gaps closed by Phase 10 — yamllint config added (.yamllint.yml), mypy_path fix applied, .pre-commit-config.yaml document-start added"
   regressions: []
 gaps:
   - truth: "Project structure follows the async monolith pattern (separate router/service/worker layers)"
-    status: failed
-    reason: "pre-commit run --all-files exits 1. yamllint fails on .pre-commit-config.yaml (missing '---') and all 4 GitHub Actions workflow files ('on:' is a truthy value in yamllint --strict). mypy fails with 'Source file found twice under different module names: src.phaze.models.base and phaze.models.base' — the py.typed fix resolved the previous error but created a new conflict because explicit_package_bases = true combined with the installed .pth file (which adds /path/to/phaze/src to sys.path) causes mypy to see the package at both src.phaze.* and phaze.*."
+    status: closed
+    closed_by: "Phase 10 — yamllint config, mypy path fix"
+    reason: "pre-commit run --all-files previously exited 1. yamllint failures fixed by adding .yamllint.yml with truthy allowlist and document-start on .pre-commit-config.yaml. mypy 'found twice' conflict fixed by replacing explicit_package_bases with mypy_path = ['src']. All issues resolved in Phase 10."
     artifacts:
       - path: ".pre-commit-config.yaml"
         issue: "Missing '---' document-start on line 1. yamllint --strict requires it on all YAML files."

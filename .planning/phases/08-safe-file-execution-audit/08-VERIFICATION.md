@@ -1,18 +1,14 @@
 ---
 phase: 08-safe-file-execution-audit
 verified: 2026-03-29T23:30:00Z
-status: gaps_found
-score: 10/11 must-haves verified
+status: passed
+score: 11/11 must-haves verified
 re_verification: false
 gaps:
   - truth: "Live SSE progress counter shows files processed in real-time during execution"
-    status: partial
-    reason: "SSE completion message computes 'succeeded' incorrectly: `succeeded = completed - failed` but `completed` already counts only successes (mutually exclusive with `failed`). For a batch where 2 succeed and 1 fails, the message would incorrectly show '1 succeeded, 1 failed' instead of '2 succeeded, 1 failed'."
-    artifacts:
-      - path: "src/phaze/routers/execution.py"
-        issue: "Line 65: `succeeded = completed - failed` should be `succeeded = completed`. The `completed` variable from the Redis hash is the success count, not total processed."
-    missing:
-      - "Fix line 65 in src/phaze/routers/execution.py: change `succeeded = completed - failed` to `succeeded = completed`"
+    status: closed
+    closed_by: "Phase 10 — SSE succeeded = completed fix"
+    reason: "SSE completion message previously computed 'succeeded' incorrectly. Fixed in Phase 10: `succeeded = completed` (not `completed - failed`)."
 human_verification:
   - test: "Verify execution workflow end-to-end in browser"
     expected: "Execute button triggers batch job, SSE progress counter updates live, audit log page shows operations, executed badge appears on proposals, navigation works"
