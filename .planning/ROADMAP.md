@@ -1,202 +1,42 @@
 # Roadmap: Phaze
 
-## Overview
+## Milestones
 
-Phaze transforms a chaotic collection of ~200K music and concert files into a properly named, organized archive through an eight-phase pipeline. We start with infrastructure and Docker environment, then build file discovery and ingestion, add companion file association and deduplication, stand up the parallel worker system, run audio analysis, generate AI-powered rename proposals, build the human-in-the-loop approval UI, and finally execute safe file operations with full audit trails. Each phase delivers a verifiable capability that the next phase depends on.
+- ✅ **v1.0 MVP** — Phases 1-11 (shipped 2026-03-30)
 
 ## Phases
 
-**Phase Numbering:**
-- Integer phases (1, 2, 3): Planned milestone work
-- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+<details>
+<summary>✅ v1.0 MVP (Phases 1-11) — SHIPPED 2026-03-30</summary>
 
-Decimal phases appear between their surrounding integers in numeric order.
+- [x] Phase 1: Infrastructure & Project Setup (3/3 plans) — completed 2026-03-27
+- [x] Phase 2: File Discovery & Ingestion (3/3 plans) — completed 2026-03-27
+- [x] Phase 3: Companion Files & Deduplication (2/2 plans) — completed 2026-03-27
+- [x] Phase 4: Task Queue & Worker Infrastructure (2/2 plans) — completed 2026-03-27
+- [x] Phase 5: Audio Analysis Pipeline (2/2 plans) — completed 2026-03-28
+- [x] Phase 6: AI Proposal Generation (2/2 plans) — completed 2026-03-28
+- [x] Phase 7: Approval Workflow UI (3/3 plans) — completed 2026-03-29
+- [x] Phase 8: Safe File Execution & Audit (2/2 plans) — completed 2026-03-29
+- [x] Phase 9: Pipeline Orchestration (1/1 plan) — completed 2026-03-30
+- [x] Phase 10: CI Config & Bug Fixes (1/1 plan) — completed 2026-03-30
+- [x] Phase 11: Polish & Cleanup (3/3 plans) — completed 2026-03-30
 
-- [ ] **Phase 1: Infrastructure & Project Setup** - Docker Compose environment, PostgreSQL, Alembic migrations, project skeleton
-- [ ] **Phase 2: File Discovery & Ingestion** - Recursive scanning, SHA256 hashing, file classification, database persistence
-- [ ] **Phase 3: Companion Files & Deduplication** - Associate companion files with media, detect and flag hash duplicates
-- [ ] **Phase 4: Task Queue & Worker Infrastructure** - arq + Redis worker pool with bounded parallelism
-- [x] **Phase 5: Audio Analysis Pipeline** - BPM detection, mood/style classification via worker pool (completed 2026-03-28)
-- [ ] **Phase 6: AI Proposal Generation** - LLM-powered filename proposals stored as immutable records
-- [ ] **Phase 7: Approval Workflow UI** - Web-based review interface for approving/rejecting proposals
-- [ ] **Phase 8: Safe File Execution & Audit** - Copy-verify-delete file operations with append-only audit log
-- [ ] **Phase 9: Pipeline Orchestration** - Wire scan→analyze→propose pipeline triggers and fix execution volume mount
-- [ ] **Phase 10: CI Config & Bug Fixes** - Fix yamllint/mypy CI blockers and SSE math bug
-- [x] **Phase 11: Polish & Cleanup** - Close tech debt: APPROVED state, .opus extension, proposed_path, docs sync, Nyquist validation (completed 2026-03-30)
+Full details: `.planning/milestones/v1.0-ROADMAP.md`
 
-## Phase Details
-
-### Phase 1: Infrastructure & Project Setup
-**Goal**: A running Docker Compose environment with PostgreSQL, Redis, Alembic migrations, and a FastAPI skeleton that responds to health checks
-**Depends on**: Nothing (first phase)
-**Requirements**: INF-01, INF-03
-**Success Criteria** (what must be TRUE):
-  1. Running `docker compose up` starts API server, worker, PostgreSQL, and Redis containers without errors
-  2. Alembic migrations apply cleanly to create the initial database schema (files, metadata, analysis, proposals, execution_log tables)
-  3. FastAPI health endpoint returns 200 OK confirming database connectivity
-  4. Project structure follows the async monolith pattern (separate router/service/worker layers)
-  5. GitHub Actions CI pipeline runs code quality, tests, and security checks on every push/PR
-**Plans**: 3 plans
-
-Plans:
-- [x] 01-01-PLAN.md — Project skeleton, tooling config, Docker infrastructure, justfile
-- [ ] 01-02-PLAN.md — Application code (models, config, database, routers, Alembic), tests, README
-- [ ] 01-03-PLAN.md — GitHub Actions CI workflows (code quality, tests, security) and Codecov config
-
-### Phase 2: File Discovery & Ingestion
-**Goal**: The system can scan a directory tree and populate PostgreSQL with every discovered file's hash, path, name, and type classification
-**Depends on**: Phase 1
-**Requirements**: ING-01, ING-02, ING-03, ING-05
-**Success Criteria** (what must be TRUE):
-  1. Pointing the system at a directory recursively discovers all music files (mp3, m4a, ogg), video files, and companion files (cue, nfo, txt, jpg, png, m3u, pls)
-  2. Every discovered file has its SHA256 hash computed and stored in PostgreSQL
-  3. Every discovered file has its original filename and original absolute path recorded in PostgreSQL
-  4. Every file is classified as music, video, or companion and that classification is stored
-  5. Paths containing Unicode characters (accented, CJK) are normalized to NFC and stored correctly
-**Plans**: TBD
-
-### Phase 3: Companion Files & Deduplication
-**Goal**: Companion files are linked to their nearby media files and exact duplicates are flagged for review
-**Depends on**: Phase 2
-**Requirements**: ING-04, ING-06
-**Success Criteria** (what must be TRUE):
-  1. Companion files (cue, nfo, txt, jpg, etc.) are associated with music/video files in the same or parent directory
-  2. Files sharing the same SHA256 hash are identified as exact duplicates and flagged in the database
-  3. A user can query the database to see all duplicate groups and their file locations
-**Plans**: TBD
-
-### Phase 4: Task Queue & Worker Infrastructure
-**Goal**: An arq + Redis task queue distributes work to a bounded worker pool with backpressure and resumability
-**Depends on**: Phase 1
-**Requirements**: INF-02, ANL-03
-**Success Criteria** (what must be TRUE):
-  1. arq workers connect to Redis and process enqueued tasks
-  2. Multiple workers process tasks in parallel up to a configurable concurrency limit
-  3. Failed tasks are retried with backoff and do not block the queue
-  4. CPU-bound work (audio analysis) runs in a process pool without blocking the async event loop
-**Plans**: 2 plans
-
-Plans:
-- [x] 04-01-PLAN.md -- arq dependency, worker config, WorkerSettings, task functions, process pool
-- [x] 04-02-PLAN.md -- Redis Docker, enqueue API, integration testing
-
-### Phase 5: Audio Analysis Pipeline
-**Goal**: Music files are analyzed for BPM, mood, and style using essentia with existing prototype models running through the worker pool
-**Depends on**: Phase 2, Phase 4
-**Requirements**: ANL-01, ANL-02
-**Success Criteria** (what must be TRUE):
-  1. BPM is detected for music files using essentia RhythmExtractor2013 and stored in the analysis table
-  2. Mood and style are classified for music files using essentia TF models (33 models + discogs-effnet) and stored in the analysis table
-  3. Analysis results are linked to their source file records in PostgreSQL
-  4. Analysis runs through the arq worker pool and can process files in parallel
-**Plans**: 2 plans
-
-Plans:
-- [x] 05-01-PLAN.md — essentia-tensorflow dependency, model download script, Dockerfile and Docker Compose updates
-- [x] 05-02-PLAN.md — Analysis service (model registry, analyze_file), process_file wiring, tests
-
-### Phase 6: AI Proposal Generation
-**Goal**: The system uses an LLM to propose new filenames for files, storing proposals as immutable records
-**Depends on**: Phase 5
-**Requirements**: AIP-01, AIP-02
-**Success Criteria** (what must be TRUE):
-  1. The system sends file metadata, analysis results, and companion file content to an LLM and receives proposed filenames
-  2. Each proposal is stored as an immutable record in PostgreSQL (not regenerated on the fly)
-  3. Proposals include the original filename, proposed filename, and the metadata context used to generate them
-  4. Batch prompting processes multiple files per LLM call for cost efficiency
-**Plans**: 2 total, 1 complete
-  - Plan 01: LLM contracts, data structures, prompt template (COMPLETE)
-  - Plan 02: LLM calling, batch processing, proposal storage (PENDING)
-
-### Phase 7: Approval Workflow UI
-**Goal**: An admin can review all proposed renames in a web interface and approve or reject them
-**Depends on**: Phase 6
-**Requirements**: APR-01, APR-02, APR-03
-**Success Criteria** (what must be TRUE):
-  1. Admin can view a paginated list of all proposed renames in a web browser
-  2. Admin can approve or reject individual proposals with a single click
-  3. Admin can filter the proposal list by status (pending, approved, rejected)
-  4. The UI updates without full page reloads (HTMX partial updates)
-**Plans**: TBD
-**UI hint**: yes
-
-### Phase 8: Safe File Execution & Audit
-**Goal**: Approved renames execute safely using copy-verify-delete with every operation logged to an append-only audit trail
-**Depends on**: Phase 7
-**Requirements**: EXE-01, EXE-02
-**Success Criteria** (what must be TRUE):
-  1. Executing an approved rename copies the file to the new path, verifies the SHA256 hash matches, then deletes the original
-  2. Every file operation (copy, verify, delete) is logged to an append-only audit table in PostgreSQL before the operation executes
-  3. If hash verification fails after copy, the operation aborts and the original file remains untouched
-  4. Execution status is tracked per-file (pending, in-progress, completed, failed) in the database
-**Plans**: 2
-
-### Phase 9: Pipeline Orchestration
-**Goal:** Wire the automated pipeline so that file discovery triggers analysis, and analysis completion triggers proposal generation — making the core E2E flow work without manual arq job injection
-**Depends on:** Phase 2, Phase 4, Phase 5, Phase 6, Phase 8
-**Requirements:** ANL-01, ANL-02, AIP-01
-**Gap Closure:** Closes scan→analysis and analysis→proposals integration gaps from v1.0 audit
-**Success Criteria** (what must be TRUE):
-  1. After a scan completes, all discovered files are automatically enqueued for analysis via process_file arq jobs
-  2. After analysis completes for a batch of files, they are automatically enqueued for proposal generation via generate_proposals arq jobs
-  3. The full pipeline (scan → analyze → propose) can run end-to-end without manual intervention
-  4. docker-compose.yml volume mount allows write access for file execution
-  5. _get_session helper is deduplicated across task modules
-**Plans**: 1 plan
-
-Plans:
-- [x] 09-01-PLAN.md — Pipeline wiring: session dedup, config, Docker volume, trigger endpoints, dashboard UI
-
-### Phase 10: CI Config & Bug Fixes
-**Goal:** Fix CI configuration blockers (yamllint, mypy) and the SSE completion message math bug so pre-commit passes cleanly and execution progress reporting is correct
-**Depends on:** Phase 1, Phase 8
-**Requirements:** INF-03
-**Gap Closure:** Closes Phase 1 yamllint/mypy gaps and Phase 8 SSE bug from v1.0 audit
-**Success Criteria** (what must be TRUE):
-  1. `pre-commit run --all-files` passes with zero failures (yamllint, mypy, all hooks green)
-  2. SSE completion message shows correct succeeded count (succeeded = completed, not completed - failed)
-  3. FileRecord.batch_id has proper ForeignKey annotation in ORM model
-**Plans**: TBD
-
-### Phase 11: Polish & Cleanup
-**Goal:** Close all remaining tech debt from v1.0 audit — fix code gaps (APPROVED state, .opus extension, proposed_path wiring), sync documentation, and complete Nyquist validation
-**Depends on:** Phase 7, Phase 8, Phase 9, Phase 10
-**Requirements:** APR-02 (partial fix), ING-05 (partial fix), EXE-01 (partial fix)
-**Gap Closure:** Closes tech debt items from v1.0 milestone audit
-**Success Criteria** (what must be TRUE):
-  1. Approving a proposal transitions FileRecord.state to APPROVED; pipeline dashboard shows correct APPROVED count
-  2. .opus extension is in EXTENSION_MAP so .opus files are discovered during scan
-  3. Execution uses proposed_path when set, falling back to source.parent; settings.output_path used as base for destination
-  4. REQUIREMENTS.md checkboxes for ANL-01, ANL-02, AIP-01 are checked
-  5. Pipeline dashboard injects settings_batch_size into template context
-  6. Phase 1/8 VERIFICATION.md status reflects gaps closed by Phase 10
-  7. All SUMMARY frontmatter requirements-completed fields are accurate
-  8. config.json has trailing newline
-  9. Phase 9 and 10 Nyquist validation complete
-  10. `pre-commit run --all-files` passes with zero failures
-**Plans**: 3 plans
-
-Plans:
-- [x] 11-01-PLAN.md — Code fixes: APPROVED state transition, .opus extension, proposed_path wiring, settings_batch_size injection
-- [x] 11-02-PLAN.md — Documentation sync: REQUIREMENTS.md checkboxes, VERIFICATION.md statuses, SUMMARY frontmatter, config.json EOF, Phase 9 Nyquist
-- [x] 11-03-PLAN.md — Phase 10 Nyquist validation and final pre-commit/test validation
+</details>
 
 ## Progress
 
-**Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11
-Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phase 5 depends on both 2 and 4. Phases 9-10 are gap closure phases from the v1.0 audit. Phase 11 closes remaining tech debt.
-
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Infrastructure & Project Setup | 3/3 | Complete | 2026-03-27 |
-| 2. File Discovery & Ingestion | 3/3 | Complete | 2026-03-27 |
-| 3. Companion Files & Deduplication | 2/2 | Complete | 2026-03-27 |
-| 4. Task Queue & Worker Infrastructure | 2/2 | Complete | 2026-03-27 |
-| 5. Audio Analysis Pipeline | 2/2 | Complete | 2026-03-28 |
-| 6. AI Proposal Generation | 2/2 | Complete | 2026-03-28 |
-| 7. Approval Workflow UI | 3/3 | Complete | 2026-03-29 |
-| 8. Safe File Execution & Audit | 2/2 | Complete | 2026-03-29 |
-| 9. Pipeline Orchestration | 1/1 | Complete | 2026-03-30 |
-| 10. CI Config & Bug Fixes | 1/1 | Complete | 2026-03-30 |
-| 11. Polish & Cleanup | 3/3 | Complete    | 2026-03-30 |
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1. Infrastructure & Project Setup | v1.0 | 3/3 | Complete | 2026-03-27 |
+| 2. File Discovery & Ingestion | v1.0 | 3/3 | Complete | 2026-03-27 |
+| 3. Companion Files & Deduplication | v1.0 | 2/2 | Complete | 2026-03-27 |
+| 4. Task Queue & Worker Infrastructure | v1.0 | 2/2 | Complete | 2026-03-27 |
+| 5. Audio Analysis Pipeline | v1.0 | 2/2 | Complete | 2026-03-28 |
+| 6. AI Proposal Generation | v1.0 | 2/2 | Complete | 2026-03-28 |
+| 7. Approval Workflow UI | v1.0 | 3/3 | Complete | 2026-03-29 |
+| 8. Safe File Execution & Audit | v1.0 | 2/2 | Complete | 2026-03-29 |
+| 9. Pipeline Orchestration | v1.0 | 1/1 | Complete | 2026-03-30 |
+| 10. CI Config & Bug Fixes | v1.0 | 1/1 | Complete | 2026-03-30 |
+| 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
