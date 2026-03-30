@@ -9,7 +9,7 @@
         {% for value, label, count in tabs %}
             <button
                 hx-get="/proposals/?status={{ value }}"
-                hx-target="#proposal-list-container"
+                hx-target="#proposal-content"
                 hx-swap="innerHTML"
                 hx-push-url="true"
                 class="px-3 py-2 text-sm transition-colors

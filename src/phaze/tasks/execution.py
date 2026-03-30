@@ -1,0 +1,107 @@
+"""arq job for batch execution of approved rename proposals."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+import uuid
+
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+from phaze.config import settings
+from phaze.services.execution import execute_single_file, get_approved_proposals
+
+
+logger = logging.getLogger(__name__)
+
+_REDIS_KEY_TTL_SECONDS = 3600  # 1 hour
+
+
+async def _get_session() -> AsyncSession:
+    """Create a one-off async session for task use."""
+    engine = create_async_engine(settings.database_url)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
+    session: AsyncSession = async_session()
+    return session
+
+
+async def execute_approved_batch(ctx: dict[str, Any], batch_id: str | None = None) -> dict[str, Any]:
+    """Execute all approved rename proposals sequentially.
+
+    Processes each approved proposal via copy-verify-delete, tracking progress
+    in Redis for SSE endpoint consumption.
+
+    Args:
+        ctx: arq context dict containing Redis connection.
+        batch_id: Optional batch ID. Generated if not provided.
+
+    Returns:
+        Dict with batch_id, total, completed, and failed counts.
+    """
+    if batch_id is None:
+        batch_id = uuid.uuid4().hex
+
+    redis = ctx["redis"]
+    session = await _get_session()
+
+    try:
+        proposals = await get_approved_proposals(session)
+        total = len(proposals)
+        completed = 0
+        failed = 0
+
+        # Store initial progress in Redis
+        await redis.hset(
+            f"exec:{batch_id}",
+            mapping={
+                "total": total,
+                "completed": "0",
+                "failed": "0",
+                "status": "running",
+            },
+        )
+
+        # Process each proposal sequentially (safer for single-drive disk I/O)
+        for proposal in proposals:
+            success = await execute_single_file(session, proposal, proposal.file)
+            if success:
+                completed += 1
+            else:
+                failed += 1
+
+            # Update Redis progress after each file
+            await redis.hset(
+                f"exec:{batch_id}",
+                mapping={
+                    "total": total,
+                    "completed": str(completed),
+                    "failed": str(failed),
+                    "status": "running",
+                },
+            )
+
+        # Mark batch as complete
+        await redis.hset(
+            f"exec:{batch_id}",
+            mapping={
+                "total": total,
+                "completed": str(completed),
+                "failed": str(failed),
+                "status": "complete",
+            },
+        )
+
+        # Set TTL for cleanup
+        await redis.expire(f"exec:{batch_id}", _REDIS_KEY_TTL_SECONDS)
+
+        logger.info("Batch %s complete: %d/%d succeeded, %d failed", batch_id, completed, total, failed)
+
+        return {
+            "batch_id": batch_id,
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+        }
+    finally:
+        await session.close()

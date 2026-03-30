@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Log - Phaze{% endblock %}
+
+{% block content %}
+<a href="#audit-table" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to audit table</a>
+
+<h1 class="text-2xl font-semibold leading-tight text-gray-900 mb-6">Audit Log</h1>
+
+<div id="audit-content">
+{% include "execution/partials/filter_tabs.html" %}
+{% include "execution/partials/audit_table.html" %}
+</div>
+{% endblock %}

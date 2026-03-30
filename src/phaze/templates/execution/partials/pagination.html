@@ -1,0 +1,41 @@
+{% if pagination.total > 0 %}
+<div class="flex items-center justify-between mt-4 px-4 py-3">
+    <span class="text-sm text-gray-500">
+        Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} operations
+    </span>
+    <div class="flex gap-1">
+        {% if pagination.has_prev %}
+        <button
+            hx-get="/audit/?status={{ current_status }}&page={{ pagination.page - 1 }}&page_size={{ pagination.page_size }}"
+            hx-target="#audit-content"
+            class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1 text-sm">
+            Previous
+        </button>
+        {% endif %}
+
+        {% for p in range(1, pagination.total_pages + 1) %}
+        <button
+            hx-get="/audit/?status={{ current_status }}&page={{ p }}&page_size={{ pagination.page_size }}"
+            hx-target="#audit-content"
+            class="rounded px-3 py-1 text-sm
+                {% if p == pagination.page %}
+                    bg-blue-600 text-white
+                {% else %}
+                    text-gray-600 hover:bg-gray-100
+                {% endif %}
+            ">
+            {{ p }}
+        </button>
+        {% endfor %}
+
+        {% if pagination.has_next %}
+        <button
+            hx-get="/audit/?status={{ current_status }}&page={{ pagination.page + 1 }}&page_size={{ pagination.page_size }}"
+            hx-target="#audit-content"
+            class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1 text-sm">
+            Next
+        </button>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
