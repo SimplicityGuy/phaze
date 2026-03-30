@@ -62,7 +62,7 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
                     if failed == 0:
                         msg = f'Execution complete. All {total} files renamed successfully. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
                     else:
-                        succeeded = completed - failed
+                        succeeded = completed
                         msg = f'Execution complete. {succeeded} succeeded, {failed} failed. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
                     yield {"event": "complete", "data": msg}
                     return
