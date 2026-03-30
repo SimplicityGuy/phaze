@@ -174,7 +174,12 @@ Plans:
   8. config.json has trailing newline
   9. Phase 9 and 10 Nyquist validation complete
   10. `pre-commit run --all-files` passes with zero failures
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 11-01-PLAN.md — Code fixes: APPROVED state transition, .opus extension, proposed_path wiring, settings_batch_size injection
+- [ ] 11-02-PLAN.md — Documentation sync: REQUIREMENTS.md checkboxes, VERIFICATION.md statuses, SUMMARY frontmatter, config.json EOF, Phase 9 Nyquist
+- [ ] 11-03-PLAN.md — Phase 10 Nyquist validation and final pre-commit/test validation
 
 ## Progress
 
@@ -194,4 +199,4 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 8. Safe File Execution & Audit | 2/2 | Complete | 2026-03-29 |
 | 9. Pipeline Orchestration | 1/1 | Complete | 2026-03-30 |
 | 10. CI Config & Bug Fixes | 1/1 | Complete | 2026-03-30 |
-| 11. Polish & Cleanup | 0/TBD | Not started | - |
+| 11. Polish & Cleanup | 0/3 | Not started | - |
