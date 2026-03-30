@@ -7,8 +7,6 @@ import uuid
 
 from arq import Retry
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 from phaze.config import settings
 from phaze.models.analysis import AnalysisResult
@@ -20,14 +18,7 @@ from phaze.services.proposal import (
     load_companion_contents,
     store_proposals,
 )
-
-
-async def _get_session() -> AsyncSession:
-    """Create a one-off async session for task use."""
-    engine = create_async_engine(settings.database_url)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
-    session: AsyncSession = async_session()
-    return session
+from phaze.tasks.session import get_task_session
 
 
 async def generate_proposals(ctx: dict[str, Any], file_ids: list[str], batch_index: int) -> dict[str, Any]:
@@ -45,7 +36,7 @@ async def generate_proposals(ctx: dict[str, Any], file_ids: list[str], batch_ind
     Returns:
         Dict with batch index, count of proposals stored, and status.
     """
-    session = await _get_session()
+    session = await get_task_session()
     try:
         # 1. Build context for each file
         files_context: list[dict[str, Any]] = []

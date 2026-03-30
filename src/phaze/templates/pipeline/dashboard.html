@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Pipeline Dashboard - Phaze{% endblock %}
+{% block skip_link %}
+<a href="#pipeline-stages" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to pipeline stages</a>
+{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-semibold leading-tight">Pipeline Dashboard</h1>
+
+    <!-- Stats bar (polled via HTMX every 5s) -->
+    <div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">
+        {% include "pipeline/partials/stats_bar.html" %}
+    </div>
+
+    <!-- Stage cards with trigger buttons -->
+    <div id="pipeline-stages">
+        {% include "pipeline/partials/stage_cards.html" %}
+    </div>
+</div>
+{% endblock %}

@@ -27,6 +27,7 @@ services:
     volumes:
       - "${SCAN_PATH:-/data/music}:/data/music:ro"
       - "${MODELS_PATH:-./models}:/models:ro"
+      - "${OUTPUT_PATH:-/data/output}:/data/output:rw"
     depends_on:
       postgres:
         condition: service_healthy

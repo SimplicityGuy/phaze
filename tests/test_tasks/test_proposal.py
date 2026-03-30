@@ -63,7 +63,7 @@ SAMPLE_BATCH_RESPONSE = BatchProposalResponse(
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
 async def test_generate_proposals_happy_path(
     mock_get_session: AsyncMock,
     mock_companions: AsyncMock,
@@ -107,7 +107,7 @@ async def test_generate_proposals_happy_path(
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
 async def test_generate_proposals_file_not_found(
     mock_get_session: AsyncMock,
     _mock_companions: AsyncMock,
@@ -132,7 +132,7 @@ async def test_generate_proposals_file_not_found(
     _mock_rate_limit.assert_not_called()
 
 
-@patch("phaze.tasks.proposal._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
 async def test_generate_proposals_retry_on_exception(mock_get_session: AsyncMock) -> None:
     """generate_proposals raises arq Retry with defer=job_try*10 on exception."""
     from phaze.tasks.proposal import generate_proposals
@@ -154,7 +154,7 @@ async def test_generate_proposals_retry_on_exception(mock_get_session: AsyncMock
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
 async def test_generate_proposals_calls_rate_limit(
     mock_get_session: AsyncMock,
     mock_companions: AsyncMock,
