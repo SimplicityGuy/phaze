@@ -144,7 +144,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 09-01-PLAN.md — Pipeline wiring: session dedup, config, Docker volume, trigger endpoints, dashboard UI
+- [x] 09-01-PLAN.md — Pipeline wiring: session dedup, config, Docker volume, trigger endpoints, dashboard UI
 
 ### Phase 10: CI Config & Bug Fixes
 **Goal:** Fix CI configuration blockers (yamllint, mypy) and the SSE completion message math bug so pre-commit passes cleanly and execution progress reporting is correct
