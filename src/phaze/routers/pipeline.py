@@ -106,6 +106,7 @@ async def dashboard(
         "request": request,
         "stats": stats,
         "current_page": "pipeline",
+        "settings_batch_size": settings.llm_batch_size,
     }
     return templates.TemplateResponse(request=request, name="pipeline/dashboard.html", context=context)
 
@@ -120,7 +121,7 @@ async def pipeline_stats_partial(
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
-        context={"request": request, "stats": stats},
+        context={"request": request, "stats": stats, "settings_batch_size": settings.llm_batch_size},
     )
 
 

@@ -35,11 +35,13 @@ def _make_proposal(
     proposal_id: uuid.UUID | None = None,
     file_record: MagicMock | None = None,
     proposed_filename: str = "new_name.mp3",
+    proposed_path: str | None = None,
     status: str = "approved",
 ) -> MagicMock:
     proposal = MagicMock()
     proposal.id = proposal_id or uuid.uuid4()
     proposal.proposed_filename = proposed_filename
+    proposal.proposed_path = proposed_path
     proposal.status = status
     proposal.file = file_record
     return proposal
@@ -383,8 +385,7 @@ async def test_proposed_path_used_for_destination(tmp_path: Path) -> None:
     file_hash = _sha256_of(content)
 
     file_record = _make_file_record(sha256_hash=file_hash, current_path=str(source))
-    proposal = _make_proposal(proposed_filename="new_name.mp3")
-    proposal.proposed_path = "Artist/Album"
+    proposal = _make_proposal(proposed_filename="new_name.mp3", proposed_path="Artist/Album")
 
     output_dir = tmp_path / "output"
     output_dir.mkdir()
@@ -412,8 +413,7 @@ async def test_no_proposed_path_uses_source_parent(tmp_path: Path) -> None:
     file_hash = _sha256_of(content)
 
     file_record = _make_file_record(sha256_hash=file_hash, current_path=str(source))
-    proposal = _make_proposal(proposed_filename="new_name.mp3")
-    proposal.proposed_path = None
+    proposal = _make_proposal(proposed_filename="new_name.mp3", proposed_path=None)
 
     session = AsyncMock()
     result = await execute_single_file(session, proposal, file_record)
