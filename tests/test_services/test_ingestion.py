@@ -212,7 +212,13 @@ async def test_bulk_upsert_stores_paths(session) -> None:  # type: ignore[no-unt
     """Records are persisted with correct original_path values."""
     from sqlalchemy import select
 
+    from phaze.models.scan_batch import ScanBatch, ScanStatus
+
     batch_id = uuid.uuid4()
+    scan_batch = ScanBatch(id=batch_id, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
+    session.add(scan_batch)
+    await session.commit()
+
     records = [
         {
             "id": uuid.uuid4(),
@@ -245,7 +251,13 @@ async def test_bulk_upsert_handles_duplicates(session) -> None:  # type: ignore[
     """Re-inserting same original_path updates sha256_hash instead of creating duplicates."""
     from sqlalchemy import func, select
 
+    from phaze.models.scan_batch import ScanBatch, ScanStatus
+
     batch_id = uuid.uuid4()
+    scan_batch = ScanBatch(id=batch_id, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
+    session.add(scan_batch)
+    await session.commit()
+
     original_record = {
         "id": uuid.uuid4(),
         "sha256_hash": "a" * 64,

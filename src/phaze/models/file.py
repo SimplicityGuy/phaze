@@ -3,7 +3,7 @@
 import enum
 import uuid
 
-from sqlalchemy import BigInteger, Index, String, Text
+from sqlalchemy import BigInteger, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,7 +37,7 @@ class FileRecord(TimestampMixin, Base):
     file_type: Mapped[str] = mapped_column(String(10), nullable=False)
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     state: Mapped[str] = mapped_column(String(30), nullable=False, default=FileState.DISCOVERED)
-    batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("scan_batches.id"), nullable=True)
 
     __table_args__ = (
         Index("ix_files_state", "state"),
