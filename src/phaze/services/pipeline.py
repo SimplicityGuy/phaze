@@ -31,7 +31,7 @@ async def get_pipeline_stats(session: AsyncSession) -> dict[str, int]:
     """
     stmt = select(FileRecord.state, func.count(FileRecord.id)).group_by(FileRecord.state)
     result = await session.execute(stmt)
-    counts: dict[str, int] = {row[0]: row[1] for row in result.all()}
+    counts = dict(result.all())
     # Ensure all stages are present (default 0)
     return {stage.value: counts.get(stage.value, 0) for stage in PIPELINE_STAGES}
 
