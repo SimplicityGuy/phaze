@@ -18,13 +18,13 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Analysis
 
-- [ ] **ANL-01**: System detects BPM for music files using librosa/existing prototypes
-- [ ] **ANL-02**: System classifies mood and style for music files using existing prototypes
+- [x] **ANL-01**: System detects BPM for music files using librosa/existing prototypes
+- [x] **ANL-02**: System classifies mood and style for music files using existing prototypes
 - [x] **ANL-03**: Analysis runs in parallel across worker pool for throughput at scale
 
 ### AI Proposals
 
-- [ ] **AIP-01**: System uses LLM to propose a new filename for each file based on available metadata, analysis results, and companion file content where available
+- [x] **AIP-01**: System uses LLM to propose a new filename for each file based on available metadata, analysis results, and companion file content where available
 - [x] **AIP-02**: Proposals are stored as immutable records in PostgreSQL (not regenerated on the fly)
 
 ### Approval
