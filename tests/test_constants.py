@@ -14,13 +14,19 @@ def test_file_category_values():
 
 
 def test_extension_map_completeness():
-    """EXTENSION_MAP contains exactly 27 entries (8 music + 7 video + 12 companion)."""
-    assert len(EXTENSION_MAP) == 27
+    """EXTENSION_MAP contains exactly 28 entries (9 music + 7 video + 12 companion)."""
+    assert len(EXTENSION_MAP) == 28
+
+
+def test_opus_extension_classified():
+    """The .opus extension maps to FileCategory.MUSIC (ING-05)."""
+    assert ".opus" in EXTENSION_MAP
+    assert EXTENSION_MAP[".opus"] == FileCategory.MUSIC
 
 
 def test_music_extensions_classified():
     """All music file extensions map to FileCategory.MUSIC."""
-    music_exts = [".mp3", ".m4a", ".ogg", ".flac", ".wav", ".aiff", ".wma", ".aac"]
+    music_exts = [".mp3", ".m4a", ".ogg", ".flac", ".wav", ".aiff", ".wma", ".aac", ".opus"]
     for ext in music_exts:
         assert EXTENSION_MAP[ext] == FileCategory.MUSIC, f"{ext} should be MUSIC"
 
