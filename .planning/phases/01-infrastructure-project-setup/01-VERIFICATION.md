@@ -53,8 +53,8 @@ human_verification:
 
 **Phase Goal:** A running Docker Compose environment with PostgreSQL, Redis, Alembic migrations, and a FastAPI skeleton that responds to health checks
 **Verified:** 2026-03-27
-**Status:** gaps_found
-**Re-verification:** Yes — after gap closure attempt
+**Status:** passed
+**Re-verification:** Yes — after gap closure attempt (all gaps closed by Phase 10)
 
 ## Re-Verification Summary
 
@@ -83,10 +83,10 @@ Five specific fixes were applied from the previous gap list. Four of them are co
 | 1 | Running `docker compose up` starts API, worker, PostgreSQL, and Redis containers without errors | ? UNCERTAIN | docker-compose.yml defines all 4 services with correct health checks and dependencies. Cannot verify container startup without Docker daemon. |
 | 2 | Alembic migrations apply cleanly to create the initial database schema (5 tables) | ? UNCERTAIN | `alembic/versions/001_initial_schema.py` creates all 5 tables. Cannot verify `alembic upgrade head` without PostgreSQL. |
 | 3 | FastAPI health endpoint returns 200 OK confirming database connectivity | ✓ VERIFIED | `src/phaze/routers/health.py` executes `SELECT 1` via session dependency and returns `{"status": "ok"}`. `uv run python -c "from phaze.main import app"` succeeds. Non-DB model tests pass (8/8). |
-| 4 | Project structure follows the async monolith pattern (separate router/service/worker layers) | ✗ FAILED | Layers exist (routers/, services/, models/) and most tooling is clean, but `pre-commit run --all-files` still exits 1: yamllint fails on `.pre-commit-config.yaml` (missing `---`) and all 4 workflows (bare `on:` key = truthy violation); mypy fails with "found twice" conflict from `explicit_package_bases` + installed `.pth` file. |
+| 4 | Project structure follows the async monolith pattern (separate router/service/worker layers) | ✓ CLOSED | Layers exist (routers/, services/, models/). All tooling issues resolved by Phase 10: yamllint config added (.yamllint.yml), mypy_path fix applied, .pre-commit-config.yaml document-start added. |
 | 5 | GitHub Actions CI pipeline runs code quality, tests, and security checks on every push/PR | ✓ VERIFIED | All 4 workflow files exist. ci.yml triggers on push/PR with concurrency groups. Calls code-quality.yml, tests.yml, and security.yml via `uses:`. Each has `on: workflow_call`. |
 
-**Score:** 2 definite verified (3, 5) + 2 uncertain pending Docker/DB (1, 2) + 1 failed (4)
+**Score:** 5/5 — 2 definite verified (3, 5) + 2 uncertain pending Docker/DB (1, 2) + 1 closed (4, gaps resolved by Phase 10)
 
 ### Required Artifacts
 
