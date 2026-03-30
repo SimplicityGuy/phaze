@@ -2,8 +2,8 @@
 phase: 09
 slug: pipeline-orchestration
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-30
 ---
 
@@ -38,10 +38,10 @@ created: 2026-03-30
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 09-01-01 | 01 | 1 | ANL-01 | unit | `uv run pytest tests/test_routers/test_pipeline.py -x -q` | ❌ W0 | ⬜ pending |
-| 09-01-02 | 01 | 1 | AIP-01 | unit | `uv run pytest tests/test_routers/test_pipeline.py -x -q` | ❌ W0 | ⬜ pending |
-| 09-02-01 | 02 | 2 | ANL-01 | unit | `uv run pytest tests/test_tasks/test_session.py -x -q` | ❌ W0 | ⬜ pending |
-| 09-03-01 | 03 | 3 | - | config | `docker compose config --quiet` | ✅ | ⬜ pending |
+| 09-01-01 | 01 | 1 | ANL-01 | unit | `uv run pytest tests/test_routers/test_pipeline.py -x -q` | ✅ | ✅ green |
+| 09-01-02 | 01 | 1 | AIP-01 | unit | `uv run pytest tests/test_routers/test_pipeline.py -x -q` | ✅ | ✅ green |
+| 09-02-01 | 02 | 2 | ANL-01 | unit | `uv run pytest tests/test_tasks/test_session.py -x -q` | ✅ | ✅ green |
+| 09-03-01 | 03 | 3 | - | config | `docker compose config --quiet` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -49,8 +49,8 @@ created: 2026-03-30
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_routers/test_pipeline.py` — stubs for pipeline trigger endpoints
-- [ ] `tests/test_tasks/test_session.py` — stubs for shared session module
+- [x] `tests/test_routers/test_pipeline.py` — stubs for pipeline trigger endpoints
+- [x] `tests/test_tasks/test_session.py` — stubs for shared session module
 
 *Existing infrastructure covers test framework and fixtures.*
 
@@ -67,11 +67,11 @@ created: 2026-03-30
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 10s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 10s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved
