@@ -41,6 +41,15 @@ async def test_dashboard_page(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dashboard_includes_settings_batch_size(client: AsyncClient) -> None:
+    """GET /pipeline/ dashboard context includes settings_batch_size (default 10)."""
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    # The batch size value (10) should appear in the rendered template
+    assert "10" in response.text
+
+
+@pytest.mark.asyncio
 async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/analyze with DISCOVERED files returns enqueue count > 0."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])

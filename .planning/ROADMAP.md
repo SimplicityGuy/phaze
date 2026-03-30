@@ -22,6 +22,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 8: Safe File Execution & Audit** - Copy-verify-delete file operations with append-only audit log
 - [ ] **Phase 9: Pipeline Orchestration** - Wire scan→analyze→propose pipeline triggers and fix execution volume mount
 - [ ] **Phase 10: CI Config & Bug Fixes** - Fix yamllint/mypy CI blockers and SSE math bug
+- [x] **Phase 11: Polish & Cleanup** - Close tech debt: APPROVED state, .opus extension, proposed_path, docs sync, Nyquist validation (completed 2026-03-30)
 
 ## Phase Details
 
@@ -157,11 +158,34 @@ Plans:
   3. FileRecord.batch_id has proper ForeignKey annotation in ORM model
 **Plans**: TBD
 
+### Phase 11: Polish & Cleanup
+**Goal:** Close all remaining tech debt from v1.0 audit — fix code gaps (APPROVED state, .opus extension, proposed_path wiring), sync documentation, and complete Nyquist validation
+**Depends on:** Phase 7, Phase 8, Phase 9, Phase 10
+**Requirements:** APR-02 (partial fix), ING-05 (partial fix), EXE-01 (partial fix)
+**Gap Closure:** Closes tech debt items from v1.0 milestone audit
+**Success Criteria** (what must be TRUE):
+  1. Approving a proposal transitions FileRecord.state to APPROVED; pipeline dashboard shows correct APPROVED count
+  2. .opus extension is in EXTENSION_MAP so .opus files are discovered during scan
+  3. Execution uses proposed_path when set, falling back to source.parent; settings.output_path used as base for destination
+  4. REQUIREMENTS.md checkboxes for ANL-01, ANL-02, AIP-01 are checked
+  5. Pipeline dashboard injects settings_batch_size into template context
+  6. Phase 1/8 VERIFICATION.md status reflects gaps closed by Phase 10
+  7. All SUMMARY frontmatter requirements-completed fields are accurate
+  8. config.json has trailing newline
+  9. Phase 9 and 10 Nyquist validation complete
+  10. `pre-commit run --all-files` passes with zero failures
+**Plans**: 3 plans
+
+Plans:
+- [x] 11-01-PLAN.md — Code fixes: APPROVED state transition, .opus extension, proposed_path wiring, settings_batch_size injection
+- [x] 11-02-PLAN.md — Documentation sync: REQUIREMENTS.md checkboxes, VERIFICATION.md statuses, SUMMARY frontmatter, config.json EOF, Phase 9 Nyquist
+- [x] 11-03-PLAN.md — Phase 10 Nyquist validation and final pre-commit/test validation
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
-Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phase 5 depends on both 2 and 4. Phases 9 and 10 are gap closure phases from the v1.0 audit.
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11
+Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phase 5 depends on both 2 and 4. Phases 9-10 are gap closure phases from the v1.0 audit. Phase 11 closes remaining tech debt.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -175,3 +199,4 @@ Note: Phases 2 and 4 can execute in parallel (both depend only on Phase 1). Phas
 | 8. Safe File Execution & Audit | 2/2 | Complete | 2026-03-29 |
 | 9. Pipeline Orchestration | 1/1 | Complete | 2026-03-30 |
 | 10. CI Config & Bug Fixes | 1/1 | Complete | 2026-03-30 |
+| 11. Polish & Cleanup | 3/3 | Complete    | 2026-03-30 |

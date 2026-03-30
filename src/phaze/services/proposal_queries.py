@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-from phaze.models.file import FileRecord
+from phaze.models.file import FileRecord, FileState
 
 
 @dataclass
@@ -161,6 +161,11 @@ async def update_proposal_status(
     if proposal is None:
         return None
     proposal.status = new_status.value
+    # Transition FileRecord.state alongside proposal status (APR-02)
+    if new_status == ProposalStatus.APPROVED:
+        proposal.file.state = FileState.APPROVED.value
+    elif new_status == ProposalStatus.REJECTED:
+        proposal.file.state = FileState.REJECTED.value
     await session.commit()
     # Re-fetch with selectinload to ensure file relationship is available
     # (session.refresh does not honor selectinload on lazy='raise' relationships)
@@ -177,6 +182,11 @@ async def bulk_update_status(
     """Bulk-update status for multiple proposals. Returns number of rows updated."""
     stmt = update(RenameProposal).where(RenameProposal.id.in_(proposal_ids)).values(status=new_status.value)
     cursor_result: Any = await session.execute(stmt)
+    # Transition FileRecord.state for all affected files (APR-02)
+    file_state = FileState.APPROVED.value if new_status == ProposalStatus.APPROVED else FileState.REJECTED.value
+    file_ids_stmt = select(RenameProposal.file_id).where(RenameProposal.id.in_(proposal_ids))
+    file_update = update(FileRecord).where(FileRecord.id.in_(file_ids_stmt)).values(state=file_state)
+    await session.execute(file_update)
     await session.commit()
     return int(cursor_result.rowcount)
 

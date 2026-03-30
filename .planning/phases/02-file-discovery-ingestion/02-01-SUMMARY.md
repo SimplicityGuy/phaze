@@ -25,6 +25,8 @@ decisions:
   - Used StrEnum for FileCategory and ScanStatus to match existing FileState pattern
   - Set HASH_CHUNK_SIZE to 64KB per design decision D-07
   - Read-only Docker volume mount for scan directory safety
+requirements-completed: [ING-05]
+
 metrics:
   duration: 4min
   completed: 2026-03-28T03:30:23Z

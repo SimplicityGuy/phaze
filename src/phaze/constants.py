@@ -22,6 +22,7 @@ EXTENSION_MAP: dict[str, FileCategory] = {
     ".aiff": FileCategory.MUSIC,
     ".wma": FileCategory.MUSIC,
     ".aac": FileCategory.MUSIC,
+    ".opus": FileCategory.MUSIC,
     # Video formats
     ".mp4": FileCategory.VIDEO,
     ".mkv": FileCategory.VIDEO,

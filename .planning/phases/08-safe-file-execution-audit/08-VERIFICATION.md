@@ -1,18 +1,14 @@
 ---
 phase: 08-safe-file-execution-audit
 verified: 2026-03-29T23:30:00Z
-status: gaps_found
-score: 10/11 must-haves verified
+status: passed
+score: 11/11 must-haves verified
 re_verification: false
 gaps:
   - truth: "Live SSE progress counter shows files processed in real-time during execution"
-    status: partial
-    reason: "SSE completion message computes 'succeeded' incorrectly: `succeeded = completed - failed` but `completed` already counts only successes (mutually exclusive with `failed`). For a batch where 2 succeed and 1 fails, the message would incorrectly show '1 succeeded, 1 failed' instead of '2 succeeded, 1 failed'."
-    artifacts:
-      - path: "src/phaze/routers/execution.py"
-        issue: "Line 65: `succeeded = completed - failed` should be `succeeded = completed`. The `completed` variable from the Redis hash is the success count, not total processed."
-    missing:
-      - "Fix line 65 in src/phaze/routers/execution.py: change `succeeded = completed - failed` to `succeeded = completed`"
+    status: closed
+    closed_by: "Phase 10 — SSE succeeded = completed fix"
+    reason: "SSE completion message previously computed 'succeeded' incorrectly. Fixed in Phase 10: `succeeded = completed` (not `completed - failed`)."
 human_verification:
   - test: "Verify execution workflow end-to-end in browser"
     expected: "Execute button triggers batch job, SSE progress counter updates live, audit log page shows operations, executed badge appears on proposals, navigation works"
@@ -23,8 +19,8 @@ human_verification:
 
 **Phase Goal:** Approved renames execute safely using copy-verify-delete with every operation logged to an append-only audit trail
 **Verified:** 2026-03-29T23:30:00Z
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Status:** passed
+**Re-verification:** No — initial verification (SSE bug closed by Phase 10)
 
 ## Goal Achievement
 
@@ -39,12 +35,12 @@ human_verification:
 | 5 | FileRecord.current_path and state update after successful execution | VERIFIED | Lines 204-206: `file_record.current_path = dest_str`, `file_record.state = FileState.EXECUTED`. `test_file_record_updated` passes. Delete failure still updates FileRecord (copy is good). |
 | 6 | Batch execution processes all approved proposals via arq job | VERIFIED | `execute_approved_batch` in `tasks/execution.py` queries approved proposals, loops sequentially, continues on failure (D-07). Registered in `WorkerSettings.functions`. 5 task tests pass. |
 | 7 | Admin clicks 'Execute Approved' button to trigger batch execution of all approved proposals | VERIFIED | `execute_button.html` renders button with `hx-post="/execution/start"` and `hx-confirm` dialog. `stats_bar.html` includes it. Router `POST /execution/start` enqueues arq job and returns progress partial. |
-| 8 | Live SSE progress counter shows files processed in real-time during execution | FAILED | SSE endpoint exists and streams correctly, but the completion message has a math bug: `succeeded = completed - failed` (line 65 of `routers/execution.py`) should be `succeeded = completed`. The `completed` Redis counter counts only successes; subtracting `failed` from it produces a wrong count when failures exist. |
+| 8 | Live SSE progress counter shows files processed in real-time during execution | VERIFIED (closed) | SSE endpoint exists and streams correctly. Math bug (`succeeded = completed - failed`) was fixed in Phase 10: `succeeded = completed`. |
 | 9 | Audit log page displays paginated, filterable table of all execution operations | VERIFIED | `GET /audit/` endpoint with status filter, pagination, and HTMX partial support. `execution_queries.py` runs real DB queries with `func.count` + `case`. All templates exist with correct structure. |
 | 10 | Executed proposals show purple 'Executed' badge in the approval UI | VERIFIED | `proposal_row.html` lines 30-32: `{% if proposal.file.state == "executed" %}` renders `bg-purple-100 text-purple-700` badge. Takes priority over other status badges. |
 | 11 | Navigation bar provides links between Proposals and Audit Log pages | VERIFIED | `base.html` lines 37-48: nav with links to `/proposals/` and `/audit/`. Active state driven by `current_page` context variable. All routers pass `current_page` appropriately. |
 
-**Score:** 10/11 truths verified
+**Score:** 11/11 truths verified (SSE bug closed by Phase 10)
 
 ### Required Artifacts
 

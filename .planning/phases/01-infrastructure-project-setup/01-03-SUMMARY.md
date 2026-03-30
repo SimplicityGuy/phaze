@@ -29,6 +29,8 @@ decisions:
   - Used trufflesecurity/trufflehog@main action for TruffleHog
   - Concurrency cancel-in-progress only on PRs, not push to main
 
+requirements-completed: [INF-03]
+
 metrics:
   duration: 3min
   completed: 2026-03-28T01:41:31Z

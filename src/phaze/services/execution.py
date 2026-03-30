@@ -20,6 +20,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from phaze.config import settings
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -155,7 +156,13 @@ async def execute_single_file(
         True if execution succeeded, False otherwise.
     """
     source = Path(file_record.current_path)
-    destination = source.parent / proposal.proposed_filename
+    if proposal.proposed_path:
+        base = Path(settings.output_path)
+        destination = base / proposal.proposed_path / proposal.proposed_filename
+        # Ensure parent directory exists
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        destination = source.parent / proposal.proposed_filename
 
     source_str = str(source)
     dest_str = str(destination)

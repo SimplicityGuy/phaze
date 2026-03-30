@@ -35,11 +35,13 @@ def _make_proposal(
     proposal_id: uuid.UUID | None = None,
     file_record: MagicMock | None = None,
     proposed_filename: str = "new_name.mp3",
+    proposed_path: str | None = None,
     status: str = "approved",
 ) -> MagicMock:
     proposal = MagicMock()
     proposal.id = proposal_id or uuid.uuid4()
     proposal.proposed_filename = proposed_filename
+    proposal.proposed_path = proposed_path
     proposal.status = status
     proposal.file = file_record
     return proposal
@@ -371,6 +373,55 @@ async def test_audit_log_created_before_operation(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # get_approved_proposals
 # ---------------------------------------------------------------------------
+
+
+async def test_proposed_path_used_for_destination(tmp_path: Path) -> None:
+    """When proposal.proposed_path is set, destination = output_path / proposed_path / proposed_filename."""
+    from phaze.services.execution import execute_single_file
+
+    content = b"audio content with proposed path"
+    source = tmp_path / "old_name.mp3"
+    source.write_bytes(content)
+    file_hash = _sha256_of(content)
+
+    file_record = _make_file_record(sha256_hash=file_hash, current_path=str(source))
+    proposal = _make_proposal(proposed_filename="new_name.mp3", proposed_path="Artist/Album")
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    session = AsyncMock()
+
+    with patch("phaze.services.execution.settings") as mock_settings:
+        mock_settings.output_path = str(output_dir)
+        result = await execute_single_file(session, proposal, file_record)
+
+    assert result is True
+    expected_dest = output_dir / "Artist" / "Album" / "new_name.mp3"
+    assert expected_dest.exists()
+    assert expected_dest.read_bytes() == content
+    assert file_record.current_path == str(expected_dest)
+
+
+async def test_no_proposed_path_uses_source_parent(tmp_path: Path) -> None:
+    """When proposal.proposed_path is None, destination = source.parent / proposed_filename (existing behavior)."""
+    from phaze.services.execution import execute_single_file
+
+    content = b"audio content no proposed path"
+    source = tmp_path / "old_name.mp3"
+    source.write_bytes(content)
+    file_hash = _sha256_of(content)
+
+    file_record = _make_file_record(sha256_hash=file_hash, current_path=str(source))
+    proposal = _make_proposal(proposed_filename="new_name.mp3", proposed_path=None)
+
+    session = AsyncMock()
+    result = await execute_single_file(session, proposal, file_record)
+
+    assert result is True
+    expected_dest = tmp_path / "new_name.mp3"
+    assert expected_dest.exists()
+    assert file_record.current_path == str(expected_dest)
 
 
 async def test_get_approved_proposals_with_files() -> None:

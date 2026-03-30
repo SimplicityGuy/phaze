@@ -1,3 +1,11 @@
+---
+phase: 07-approval-workflow-ui
+plan: 03
+subsystem: approval-tests
+tags: [testing, integration, proposals, approval-workflow]
+requirements-completed: [APR-01, APR-02, APR-03]
+---
+
 # Plan 07-03 Summary
 
 ## Objective

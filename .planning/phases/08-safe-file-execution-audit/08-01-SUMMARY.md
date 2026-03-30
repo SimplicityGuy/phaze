@@ -24,6 +24,7 @@ decisions:
   - "Sequential processing in batch job: safer for single-drive disk I/O than parallel"
   - "Delete failure still marks file as EXECUTED since the copy is verified good"
   - "FileRecord type annotation via TYPE_CHECKING for proper mypy support"
+requirements-completed: [EXE-01, EXE-02]
 metrics:
   duration: 8min
   completed: "2026-03-29"

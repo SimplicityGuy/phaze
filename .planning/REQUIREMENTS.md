@@ -117,8 +117,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INF-03 | Phase 10: CI Config & Bug Fixes | Complete |
 
 **Coverage:**
-- v1 requirements: 17 total
-- Mapped to phases: 17
+- v1 requirements: 19 total
+- Mapped to phases: 19
 - Unmapped: 0
 
 ---

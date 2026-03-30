@@ -1,13 +1,13 @@
 ---
-phase: 09
-slug: pipeline-orchestration
-status: draft
+phase: 10
+slug: ci-config-bug-fixes
+status: approved
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-03-30
 ---
 
-# Phase 09 — Validation Strategy
+# Phase 10 — Validation Strategy
 
 > Per-phase validation contract for feedback sampling during execution.
 
@@ -38,19 +38,18 @@ created: 2026-03-30
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 09-01-01 | 01 | 1 | ANL-01 | unit | `uv run pytest tests/test_routers/test_pipeline.py -x -q` | ✅ | ✅ green |
-| 09-01-02 | 01 | 1 | AIP-01 | unit | `uv run pytest tests/test_routers/test_pipeline.py -x -q` | ✅ | ✅ green |
-| 09-02-01 | 02 | 2 | ANL-01 | unit | `uv run pytest tests/test_tasks/test_session.py -x -q` | ✅ | ✅ green |
-| 09-03-01 | 03 | 3 | - | config | `docker compose config --quiet` | ✅ | ✅ green |
+| 10-01-01 | 01 | 1 | INF-03 | unit | `uv run pytest tests/test_models.py::test_file_record_has_batch_id -x -v` | yes | green |
+| 10-01-01 | 01 | 1 | INF-03 | integration | `uv run pytest tests/test_services/test_ingestion.py -x -q` | yes | green |
+| 10-01-01 | 01 | 1 | INF-03 | full | `uv run pytest tests/ -x -q` | yes | green |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*Status: pending / green / red / flaky*
 
 ---
 
 ## Wave 0 Requirements
 
-- [x] `tests/test_routers/test_pipeline.py` — stubs for pipeline trigger endpoints
-- [x] `tests/test_tasks/test_session.py` — stubs for shared session module
+- [x] `tests/test_models.py` — existing model tests covering FileRecord columns
+- [x] `tests/test_services/test_ingestion.py` — existing integration tests for bulk upsert
 
 *Existing infrastructure covers test framework and fixtures.*
 
@@ -60,8 +59,7 @@ created: 2026-03-30
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Dashboard renders with pipeline stats | ANL-01 | Requires running Docker + PostgreSQL + browser | Visit /dashboard/, verify stage counts display |
-| E2E pipeline flow | ANL-01, ANL-02, AIP-01 | Requires full Docker stack + real files + LLM key | POST /api/v1/scan, then /api/v1/analyze, then /api/v1/proposals/generate — verify files progress through states |
+| `pre-commit run --all-files` passes | INF-03 | Requires local environment with all pre-commit hooks installed | Run `pre-commit run --all-files` and verify zero failures |
 
 ---
 
