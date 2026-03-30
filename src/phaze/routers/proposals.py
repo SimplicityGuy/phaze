@@ -61,9 +61,9 @@ async def list_proposals(
         "current_order": order,
     }
 
-    # HTMX requests get fragment only
+    # HTMX requests get tabs + table fragment (so tab active state updates)
     if request.headers.get("HX-Request") == "true":
-        return templates.TemplateResponse(request=request, name="proposals/partials/proposal_table.html", context=context)
+        return templates.TemplateResponse(request=request, name="proposals/partials/proposal_content.html", context=context)
 
     return templates.TemplateResponse(request=request, name="proposals/list.html", context=context)
 

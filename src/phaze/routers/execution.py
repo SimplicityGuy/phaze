@@ -96,8 +96,8 @@ async def audit_log(
         "current_page": "audit",
     }
 
-    # HTMX requests get fragment only
+    # HTMX requests get tabs + table fragment (so tab active state updates)
     if request.headers.get("HX-Request") == "true":
-        return templates.TemplateResponse(request=request, name="execution/partials/audit_table.html", context=context)
+        return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
     return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)

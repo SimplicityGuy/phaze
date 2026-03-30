@@ -7,7 +7,7 @@
         {% if pagination.has_prev %}
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page - 1 }}&page_size={{ pagination.page_size }}"
-            hx-target="#audit-table-container"
+            hx-target="#audit-content"
             class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1 text-sm">
             Previous
         </button>
@@ -16,7 +16,7 @@
         {% for p in range(1, pagination.total_pages + 1) %}
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ p }}&page_size={{ pagination.page_size }}"
-            hx-target="#audit-table-container"
+            hx-target="#audit-content"
             class="rounded px-3 py-1 text-sm
                 {% if p == pagination.page %}
                     bg-blue-600 text-white
@@ -31,7 +31,7 @@
         {% if pagination.has_next %}
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page + 1 }}&page_size={{ pagination.page_size }}"
-            hx-target="#audit-table-container"
+            hx-target="#audit-content"
             class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1 text-sm">
             Next
         </button>

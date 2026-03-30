@@ -1,0 +1,26 @@
+{% include "proposals/partials/filter_tabs.html" %}
+
+{% include "proposals/partials/search_box.html" %}
+
+{% if proposals %}
+    <div id="proposal-list-container"
+         x-data="proposalTable()"
+         @keydown.window="handleKeydown($event)"
+         @htmx:after-swap.window="$nextTick(() => { rowIds = Array.from(document.querySelectorAll('tr[id^=&quot;proposal-&quot;]')).filter(r => !r.id.startsWith('detail-')).map(r => r.id.replace('proposal-', '')); focusedRow = -1; selectedRows = new Set(); })">
+        {% include "proposals/partials/proposal_table.html" %}
+        {% include "proposals/partials/bulk_actions.html" %}
+    </div>
+
+    {% include "proposals/partials/pagination.html" %}
+{% elif current_status == "pending" and stats.pending == 0 and stats.total > 0 %}
+    <div class="text-center py-16">
+        <h2 class="text-xl font-semibold text-gray-700 mb-2">All caught up!</h2>
+        <p class="text-gray-500">No pending proposals remaining. View approved or rejected proposals using the tabs above.</p>
+    </div>
+{% else %}
+    <div id="proposal-list-container"></div>
+    <div class="text-center py-16">
+        <h2 class="text-xl font-semibold text-gray-700 mb-2">No proposals yet</h2>
+        <p class="text-gray-500">Run the AI proposal generation pipeline to get started. Proposals will appear here for your review.</p>
+    </div>
+{% endif %}

@@ -9,7 +9,7 @@
         {% for value, label, count in tabs %}
         <button
             hx-get="/audit/?status={{ value }}"
-            hx-target="#audit-table-container"
+            hx-target="#audit-content"
             hx-push-url="true"
             class="px-3 py-2 text-sm font-semibold border-b-2 transition-colors
                 {% if current_status == value %}
