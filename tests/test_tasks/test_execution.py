@@ -33,7 +33,7 @@ def _make_ctx(redis: Any = None) -> dict[str, Any]:
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_execute_approved_batch_success(
     mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
@@ -69,7 +69,7 @@ async def test_execute_approved_batch_success(
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_execute_approved_batch_partial_failure(
     mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
@@ -103,7 +103,7 @@ async def test_execute_approved_batch_partial_failure(
 
 
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_execute_approved_batch_empty(
     mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
@@ -134,7 +134,7 @@ async def test_execute_approved_batch_empty(
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_redis_progress_updates(
     mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
@@ -185,7 +185,7 @@ async def test_redis_progress_updates(
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_batch_generates_uuid_id(
     mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,

@@ -42,7 +42,7 @@ def _make_file_record(
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.get_task_session", new_callable=AsyncMock)
 async def test_process_file_calls_analyze(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
     """process_file calls run_in_process_pool with analyze_file, file's current_path, and models_path."""
     file_id = uuid.uuid4()
@@ -70,7 +70,7 @@ async def test_process_file_calls_analyze(mock_get_session: AsyncMock, mock_pool
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.get_task_session", new_callable=AsyncMock)
 async def test_process_file_skips_non_music(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
     """process_file for a file with file_type not music returns status 'skipped' without calling analyze."""
     file_id = uuid.uuid4()
@@ -90,7 +90,7 @@ async def test_process_file_skips_non_music(mock_get_session: AsyncMock, mock_po
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.get_task_session", new_callable=AsyncMock)
 async def test_process_file_stores_analysis_result(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
     """process_file upserts AnalysisResult with bpm, mood, style, musical_key, features from analyze_file return value."""
     file_id = uuid.uuid4()
@@ -122,7 +122,7 @@ async def test_process_file_stores_analysis_result(mock_get_session: AsyncMock, 
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.get_task_session", new_callable=AsyncMock)
 async def test_process_file_updates_file_state(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
     """process_file updates FileRecord.state to FileState.ANALYZED after successful analysis."""
     file_id = uuid.uuid4()
@@ -146,7 +146,7 @@ async def test_process_file_updates_file_state(mock_get_session: AsyncMock, mock
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.get_task_session", new_callable=AsyncMock)
 async def test_process_file_raises_retry_on_failure(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
     """process_file raises arq Retry when analyze_file raises an exception."""
     mock_session = AsyncMock()
@@ -177,7 +177,7 @@ def test_process_file_retry_backoff() -> None:
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.get_task_session", new_callable=AsyncMock)
 async def test_process_file_analysis(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
     """ANL-01+02: process_file calls analysis via run_in_process_pool and returns 'analyzed' status."""
     file_id = uuid.uuid4()
@@ -210,7 +210,7 @@ async def test_process_file_analysis(mock_get_session: AsyncMock, mock_pool: Asy
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-@patch("phaze.tasks.functions._get_session", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.get_task_session", new_callable=AsyncMock)
 async def test_process_file_retry(mock_get_session: AsyncMock, mock_pool: AsyncMock) -> None:
     """ANL-01+02: process_file raises arq.Retry when analysis fails, with backoff scaled by job_try."""
     mock_session = AsyncMock()
