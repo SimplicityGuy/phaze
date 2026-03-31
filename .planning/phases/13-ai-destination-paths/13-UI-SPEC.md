@@ -157,7 +157,7 @@ Location: `templates/execution/partials/collision_block.html`, returned as HTMX 
 | Heading | `text-sm font-semibold text-orange-800` -- "Path collisions detected" |
 | Body | `text-sm text-orange-700 mt-1` -- lists collision paths with file counts |
 | Collision list | `<ul>` with `list-disc ml-4 mt-2`, each item shows `full_path (N files)` |
-| Action hint | `text-sm text-orange-600 mt-3` -- "Resolve collisions before executing." |
+| Action hint | `text-sm text-orange-600 mt-4` -- "Resolve collisions before executing." |
 
 ---
 
