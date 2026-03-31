@@ -80,12 +80,14 @@ async def test_generate_proposals_happy_path(
     session = AsyncMock()
     mock_get_session.return_value = session
 
-    # First execute: FileRecord, Second: AnalysisResult
+    # First execute: FileRecord, Second: AnalysisResult, Third: FileMetadata
     mock_result_file = MagicMock()
     mock_result_file.scalar_one_or_none.return_value = file_record
     mock_result_analysis = MagicMock()
     mock_result_analysis.scalar_one_or_none.return_value = analysis
-    session.execute.side_effect = [mock_result_file, mock_result_analysis]
+    mock_result_metadata = MagicMock()
+    mock_result_metadata.scalar_one_or_none.return_value = None
+    session.execute.side_effect = [mock_result_file, mock_result_analysis, mock_result_metadata]
 
     mock_companions.return_value = []
 
@@ -175,7 +177,9 @@ async def test_generate_proposals_calls_rate_limit(
     mock_result_file.scalar_one_or_none.return_value = file_record
     mock_result_analysis = MagicMock()
     mock_result_analysis.scalar_one_or_none.return_value = analysis
-    session.execute.side_effect = [mock_result_file, mock_result_analysis]
+    mock_result_metadata = MagicMock()
+    mock_result_metadata.scalar_one_or_none.return_value = None
+    session.execute.side_effect = [mock_result_file, mock_result_analysis, mock_result_metadata]
 
     mock_companions.return_value = []
 
