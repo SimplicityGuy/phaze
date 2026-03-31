@@ -10,7 +10,7 @@ import pytest
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.services.collision import TreeNode, build_tree
+from phaze.services.collision import build_tree
 
 
 if TYPE_CHECKING:

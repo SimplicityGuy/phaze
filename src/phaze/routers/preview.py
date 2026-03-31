@@ -39,11 +39,7 @@ async def tree_preview(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render the directory tree preview page for approved proposals."""
-    stmt = (
-        select(RenameProposal)
-        .where(RenameProposal.status == ProposalStatus.APPROVED)
-        .options(selectinload(RenameProposal.file))
-    )
+    stmt = select(RenameProposal).where(RenameProposal.status == ProposalStatus.APPROVED).options(selectinload(RenameProposal.file))
     result = await session.execute(stmt)
     proposals = list(result.scalars().all())
 

@@ -55,13 +55,10 @@ async def get_collision_ids(session: AsyncSession) -> set[str]:
 
     collision_paths = [path for path, _ in collisions]
     full_path = func.concat(RenameProposal.proposed_path, "/", RenameProposal.proposed_filename)
-    stmt = (
-        select(RenameProposal.id)
-        .where(
-            RenameProposal.status == ProposalStatus.APPROVED,
-            RenameProposal.proposed_path.isnot(None),
-            full_path.in_(collision_paths),
-        )
+    stmt = select(RenameProposal.id).where(
+        RenameProposal.status == ProposalStatus.APPROVED,
+        RenameProposal.proposed_path.isnot(None),
+        full_path.in_(collision_paths),
     )
     result = await session.execute(stmt)
     return {str(row[0]) for row in result.all()}
