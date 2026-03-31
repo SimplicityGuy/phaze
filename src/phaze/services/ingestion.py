@@ -137,6 +137,7 @@ async def run_scan(
     scan_path: str,
     batch_id: uuid.UUID,
     session_factory: async_sessionmaker[AsyncSession],
+    arq_pool: Any | None = None,
 ) -> None:
     """Top-level scan orchestrator: create batch, discover files, persist.
 
@@ -165,6 +166,16 @@ async def run_scan(
 
             # Bulk upsert discovered files
             upserted = await bulk_upsert_files(session, file_records)
+
+            # Auto-enqueue tag extraction for newly discovered files (per D-09)
+            if arq_pool is not None and file_records:
+                extractable_categories = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
+                for record in file_records:
+                    ext = "." + record.get("file_type", "").lower()
+                    category = EXTENSION_MAP.get(ext, FileCategory.UNKNOWN)
+                    if category in extractable_categories:
+                        await arq_pool.enqueue_job("extract_file_metadata", str(record["id"]))
+                logger.info("Auto-enqueued tag extraction for %d files in batch %s", len(file_records), batch_id)
 
             # Mark scan as completed
             await session.execute(

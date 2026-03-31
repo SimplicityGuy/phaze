@@ -3,6 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-11 (shipped 2026-03-30)
+- **v2.0 Metadata Enrichment & Tracklist Integration** — Phases 12-17 (in progress)
 
 ## Phases
 
@@ -25,10 +26,20 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 
 </details>
 
+### v2.0 Metadata Enrichment & Tracklist Integration
+
+- [x] Phase 12: Infrastructure & Audio Tag Extraction (1/3 plans) -- in progress (completed 2026-03-31)
+- [ ] Phase 13: AI Destination Path Proposals
+- [ ] Phase 14: Duplicate Resolution Workflow
+- [ ] Phase 15: 1001Tracklists Integration
+- [ ] Phase 16: Audio Fingerprinting Infrastructure
+- [ ] Phase 17: Cross-Service Linking & Polish
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
+| 12. Infrastructure & Audio Tag Extraction | v2.0 | 1/3 | Complete    | 2026-03-31 |
 | 1. Infrastructure & Project Setup | v1.0 | 3/3 | Complete | 2026-03-27 |
 | 2. File Discovery & Ingestion | v1.0 | 3/3 | Complete | 2026-03-27 |
 | 3. Companion Files & Deduplication | v1.0 | 2/2 | Complete | 2026-03-27 |
@@ -40,3 +51,4 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 | 9. Pipeline Orchestration | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 10. CI Config & Bug Fixes | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
+| 12. Infrastructure & Audio Tag Extraction | v2.0 | 1/3 | In Progress | — |

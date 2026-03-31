@@ -123,19 +123,27 @@ async def test_startup_succeeds_with_pb_files(tmp_path: Path) -> None:
     (models_dir / "mood_acoustic-musicnn-msd-1.pb").write_bytes(b"fake")
 
     ctx: dict[str, object] = {}
+    mock_engine = MagicMock()
+    mock_sessionmaker = MagicMock()
     with (
         patch("phaze.tasks.worker.settings") as mock_settings,
         patch("phaze.tasks.worker.create_process_pool") as mock_pool,
         patch("phaze.tasks.worker.load_prompt_template", return_value="template"),
         patch("phaze.tasks.worker.ProposalService"),
+        patch("phaze.tasks.worker.create_async_engine", return_value=mock_engine),
+        patch("phaze.tasks.worker.async_sessionmaker", return_value=mock_sessionmaker),
     ):
         mock_settings.models_path = str(models_dir)
         mock_settings.llm_model = "test-model"
         mock_settings.llm_max_rpm = 30
+        mock_settings.database_url = "postgresql+asyncpg://test:test@localhost/test"
+        mock_settings.debug = False
         await startup(ctx)
 
     mock_pool.assert_called_once()
     assert "process_pool" in ctx
+    assert "async_session" in ctx
+    assert "task_engine" in ctx
 
 
 # ---------------------------------------------------------------------------

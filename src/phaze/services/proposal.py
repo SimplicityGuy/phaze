@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.models.analysis import AnalysisResult
+    from phaze.models.metadata import FileMetadata
 
 
 # Module constant: max chars for companion file content sent to LLM
@@ -127,6 +128,7 @@ def build_file_context(
     file_record: FileRecord,
     analysis: AnalysisResult | None,
     companion_contents: list[dict[str, str]],
+    metadata: FileMetadata | None = None,
 ) -> dict[str, object]:
     """Assemble a context dict for a single file to be sent to the LLM.
 
@@ -135,6 +137,7 @@ def build_file_context(
         analysis: The associated ``AnalysisResult``, or ``None`` if not analyzed.
         companion_contents: List of dicts with ``"filename"`` and ``"content"`` keys
             for each companion file.
+        metadata: The associated ``FileMetadata``, or ``None`` if not extracted.
 
     Returns:
         A dict ready to be serialized to JSON for the LLM prompt.  The
@@ -151,12 +154,24 @@ def build_file_context(
             "features": analysis.features,
         }
 
+    tags_dict: dict[str, object] | None = None
+    if metadata is not None:
+        tags_dict = {
+            "artist": metadata.artist,
+            "title": metadata.title,
+            "album": metadata.album,
+            "year": metadata.year,
+            "genre": metadata.genre,
+            "raw_tags": metadata.raw_tags,
+        }
+
     return {
         "index": 0,
         "original_filename": file_record.original_filename,
         "original_path": file_record.original_path,
         "file_type": file_record.file_type,
         "analysis": analysis_dict,
+        "tags": tags_dict,
         "companions": companion_contents,
     }
 

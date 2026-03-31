@@ -231,6 +231,37 @@ class TestBuildFileContext:
         ctx = build_file_context(file_rec, analysis, [])
         assert ctx["companions"] == []
 
+    def test_builds_context_with_metadata(self):
+        """build_file_context includes tags dict when metadata provided."""
+        from phaze.services.proposal import build_file_context
+
+        file_rec = _make_file_record()
+        metadata = MagicMock()
+        metadata.artist = "Disclosure"
+        metadata.title = "Latch"
+        metadata.album = "Settle"
+        metadata.year = 2013
+        metadata.genre = "Electronic"
+        metadata.raw_tags = {"TPE1": "Disclosure"}
+
+        ctx = build_file_context(file_rec, None, [], metadata=metadata)
+        assert "tags" in ctx
+        assert ctx["tags"]["artist"] == "Disclosure"
+        assert ctx["tags"]["title"] == "Latch"
+        assert ctx["tags"]["album"] == "Settle"
+        assert ctx["tags"]["year"] == 2013
+        assert ctx["tags"]["genre"] == "Electronic"
+        assert ctx["tags"]["raw_tags"] == {"TPE1": "Disclosure"}
+
+    def test_builds_context_without_metadata(self):
+        """build_file_context returns tags=None when no metadata."""
+        from phaze.services.proposal import build_file_context
+
+        file_rec = _make_file_record()
+        ctx = build_file_context(file_rec, None, [])
+        assert "tags" in ctx
+        assert ctx["tags"] is None
+
 
 # ---------------------------------------------------------------------------
 # Settings LLM fields tests

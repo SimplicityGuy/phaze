@@ -1,182 +1,190 @@
 # Project Research Summary
 
-**Project:** Phaze
-**Domain:** Music file management, batch processing, and AI-powered organization
-**Researched:** 2026-03-27
-**Confidence:** HIGH
+**Project:** Phaze v2.0
+**Domain:** Music collection enrichment — audio metadata, fingerprinting, tracklist scraping, duplicate resolution
+**Researched:** 2026-03-30
+**Confidence:** MEDIUM
 
 ## Executive Summary
 
-Phaze is a music collection organizer for ~200K audio and video files that uses AI to propose standardized filenames and folder structures, with a human-in-the-loop approval workflow before any file operations execute. This class of tool (beets, MusicBrainz Picard, AudioRanger) is well-understood, but Phaze differentiates by replacing rigid template-based renaming with LLM-powered proposals and by providing a web-based batch approval UI instead of desktop-only or CLI interfaces. The recommended approach is an async Python monolith (FastAPI + arq workers) sharing a PostgreSQL database, with HTMX for the admin UI -- no SPA, no microservices, no build pipeline.
+Phaze v2.0 extends a completed v1.0 music organization system (FastAPI + arq + PostgreSQL + HTMX) with four new capability areas: audio tag extraction via mutagen, AI-generated destination path proposals, duplicate resolution UI, audio fingerprinting with an audfprint/Panako hybrid, and 1001Tracklists scraping. The existing architecture is well-suited to absorb these features with minimal disruption — the v1.0 state machine already declares `METADATA_EXTRACTED` and `FINGERPRINTED` states; the duplicate detection backend exists but has no UI; `RenameProposal.proposed_path` is wired but always NULL. v2.0 completes these unfinished threads while adding two genuinely new capabilities: fingerprint-based live set identification and external tracklist scraping.
 
-The architecture follows a pipeline state machine pattern: files progress through discrete states (discovered, metadata extracted, fingerprinted, analyzed, proposal generated, approved, executed) with each transition tracked in PostgreSQL. This enables resumability after crashes, parallel processing across workers, and per-file progress visibility. The stack is well-proven: every major component (FastAPI, SQLAlchemy, mutagen, librosa, arq) has verified Python 3.13 compatibility and extensive documentation.
+The recommended approach builds incrementally from least to most complex. Start with tag extraction (low complexity, unblocks everything else), then surface the dedup UI (backend exists, only frontend work needed), then integrate 1001Tracklists scraping (adds one new Docker dependency), then deploy the fingerprint service container (highest technical risk and longest calendar time). This ordering respects data dependencies — extracted tags feed LLM path proposals, 1001Tracklists search queries, and duplicate quality scoring — while deferring the two highest-risk items (fingerprinting and live set matching) until foundational work is stable and the library is de-duplicated.
 
-The dominant risk is data loss from irreversible file operations on an irreplaceable collection. This is mitigated by three non-negotiable design invariants: (1) an append-only operations journal in PostgreSQL written before any file move, (2) copy-verify-delete protocol with SHA256 verification, and (3) no file operation executes without explicit human approval. Secondary risks include Unicode path corruption (mitigate with NFC normalization at ingestion boundary), Docker volume permission mismatches (mitigate with parameterized UID/GID from day one), and LLM output inconsistency (mitigate with template-based naming where AI fills structured fields, not freeform filenames). The litellm supply chain incident (March 2026) requires exact version pinning with hash verification.
+The primary risks are: (1) the audfprint library dates from 2015 and must be vendored and modernized, with Python 3.13 compatibility unverified (MEDIUM confidence); (2) Panako's Javalin HTTP wrapper is custom work with no existing examples (LOW confidence); (3) live concert recordings — the majority of the Phaze corpus — are the hardest input for fingerprinting algorithms, with published research showing 60-70% of live music goes unidentified by standard landmark-based algorithms. Fingerprint match quality on live sets must be treated as a probabilistic aid requiring human review, not an authoritative identification. All three risks are manageable with the mitigations in PITFALLS.md but require staged validation and realistic expectations.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The stack is a fully async Python monolith deployed as two Docker Compose services (API server and worker) plus PostgreSQL and Redis. All libraries have been verified for Python 3.13 compatibility. See `.planning/research/STACK.md` for full version matrix and compatibility notes.
+The v1.0 stack (FastAPI, SQLAlchemy 2.x + asyncpg, arq/Redis, litellm, HTMX/Jinja2/Tailwind, Alembic, Docker Compose) is unchanged and fully validated. v2.0 adds only targeted new dependencies: **mutagen** (audio tag read/write), **beautifulsoup4 + lxml** (HTML scraping), **httpx** promoted from dev to production (scraping + fingerprint service HTTP calls), **joblib + scipy** (audfprint vendored dependency), and a new **fingerprint-service** Docker container running Python 3.13 + JDK 17 + Panako wrapped behind a thin FastAPI HTTP API.
 
-**Core technologies:**
-- **FastAPI + Jinja2 + HTMX**: Async API with server-rendered admin UI -- no SPA build pipeline, no JS framework
-- **SQLAlchemy 2.0 + asyncpg + Alembic**: Async ORM with migration support for 200K+ record workload
-- **arq + Redis**: Lightweight async task queue for parallel file analysis (replaces Celery complexity)
-- **mutagen**: Audio metadata read/write across all formats (ID3, Vorbis, MP4, FLAC)
-- **librosa**: BPM detection, key estimation, spectral features (requires `standard-aifc` + `standard-sunau` on Python 3.13)
-- **pyacoustid + chromaprint**: Audio fingerprinting for AcoustID identification and acoustic dedup
-- **litellm**: Unified LLM API client -- pin to >=1.82.6,<1.82.7 due to supply chain attack on later versions
+The critical stack decision for v2.0 is the fingerprint service architecture. Running Panako via subprocess-per-call is prohibitive (2-5 second JVM startup x 200K files). The correct design is a long-running container with its own HTTP API (POST /ingest, POST /query, POST /compare, GET /stats, GET /health) at port 8001, keeping the JVM alive and LMDB open between requests. audfprint is vendored as a Python module (`src/phaze/fingerprint/audfprint/`) rather than installed from its unmaintained 2015 GitHub repo.
+
+**Core new technologies:**
+- **mutagen >=1.47.0**: Audio tag read/write — the only Python library with both capabilities across all formats (ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF). Zero dependencies.
+- **beautifulsoup4 >=4.14.3 + lxml >=5.3.0**: HTML scraping — battle-tested for malformed HTML; lxml backend provides 5-10x parse speed over html.parser.
+- **httpx >=0.28.1** (promote from dev): Async HTTP — already validated in test suite; used for 1001tracklists POST requests and fingerprint service calls.
+- **audfprint (vendored)**: Landmark-based fingerprinting — vendor core classes from 2015 repo, strip CLI layer, modernize to Python 3.13. Fast for exact/near-exact matches.
+- **Panako 2.1 (Docker container + Javalin wrapper)**: Tempo-robust fingerprinting — handles up to 10% tempo/pitch shifts common in DJ sets. Runs as long-lived JVM service with custom HTTP wrapper.
+- **joblib >=1.4.0**: Parallel processing — lightweight library used by audfprint vendored code.
+
+**What to avoid:** Selenium/Playwright for scraping (POST endpoints confirmed to work without headless browser); Scrapy (full framework overkill for one site); subprocess-per-call Panako (JVM startup penalty makes this prohibitive); dejavu (MySQL dependency, abandoned 2021); LMDB Python bindings for direct Panako DB access (single-writer corruption risk); litellm >=1.82.7 (supply chain attack March 2026 — remain pinned at <1.82.7).
 
 ### Expected Features
 
+v2.0 research identified five feature areas with a clear dependency order.
+
 **Must have (table stakes):**
-- File ingestion with SHA256 hash dedup (~200K files, batch processing)
-- Metadata extraction from embedded tags (ID3, Vorbis, MP4)
-- Audio fingerprinting via AcoustID
-- BPM detection via librosa
-- AI-generated filename and path proposals (core differentiator)
-- Human approval workflow UI with batch operations
-- Safe file rename/move with copy-verify-delete protocol
-- Video stream metadata extraction via ffprobe
-- Progress tracking for long-running batch operations
-- Docker Compose deployment
+- Audio tag extraction for all formats (MP3/M4A/OGG/FLAC/OPUS) via mutagen — populates the existing but empty `FileMetadata` table; feeds LLM context for all downstream features
+- AI destination path proposals — `RenameProposal.proposed_path` column exists but is always NULL; extend the LLM prompt to fill it; add path display and collision detection to the approval UI
+- Duplicate resolution UI — `find_duplicate_groups()` service exists; build the review page with side-by-side metadata comparison and "keep this, delete rest" workflow
+- Fingerprint service container — run audfprint + Panako as a long-lived HTTP sidecar; ingest all music files; match live set audio against the resulting library
+- Live set tracklist matching with admin review UI — proposed tracklists from fingerprint matches, ordered by timestamp, pending human confirmation
 
 **Should have (differentiators):**
-- Acoustic duplicate detection (cross-encoding dedup via fingerprint similarity)
-- Batch approval with smart grouping (by album, artist, confidence score)
-- Concert/event auto-detection from filenames and metadata
-- Undo/rollback for executed moves via operations journal
+- 1001Tracklists search, scraping, and storage — fuzzy-match tracklists to files; cross-reference with fingerprint matches for high-confidence identification
+- Periodic tracklist refresh via arq cron — monthly re-scrape with randomized jitter for unresolved tracklists
+- Quality-based duplicate auto-suggestion — pre-select keeper by bitrate + tag completeness + path length
+- Acoustic near-duplicate detection — fingerprint similarity groups to complement SHA256 exact dedup
 
-**Defer (v2+):**
-- Mood/style classification (depends on prototype maturity)
-- MusicBrainz metadata enrichment (rate-limited: 55+ hours for 200K files)
-- Full-text search UI (requires clean metadata first)
-- Natural language querying, 1001tracklists, Discogsography integration
+**Defer to v3+:**
+- Tag writing back to audio files after rename (destructive; Postgres is the metadata store)
+- Album art extraction and display in UI (binary blob complexity, scope creep)
+- User-editable path templates (single-user tool; edit the prompt text directly)
+- Real-time fingerprinting during playback (Shazam architecture; out of scope)
+- Bulk scraping of 1001tracklists database (abusive, IP-ban risk)
 
 ### Architecture Approach
 
-Async monolith with two runtime modes from one codebase: FastAPI API server and arq background workers. Files progress through a state machine (DISCOVERED through EXECUTED) tracked in PostgreSQL. Fan-out batch processing distributes individual file tasks to a bounded worker pool. Services contain business logic; routers and workers are thin wrappers. See `.planning/research/ARCHITECTURE.md` for full system diagram, project structure, and database schema.
+v2.0 follows the established v1.0 pattern: thin arq task wrappers calling service classes, CPU-bound work via `run_in_process_pool`, per-task sessions initialized in arq `on_startup`. The additions are six new service classes, four new routers, six new arq task functions, one new Docker container (fingerprint-service), and one Alembic migration adding four tables and two columns to existing tables. The fingerprint service is intentionally domain-ignorant — it accepts file paths and returns match scores; all Phaze business logic stays in the main codebase.
 
 **Major components:**
-1. **API Server (FastAPI)** -- HTTP endpoints, HTMX admin UI, job submission, SSE progress updates
-2. **Worker Process (arq)** -- Audio analysis, metadata extraction, fingerprinting, LLM calls, file operations
-3. **PostgreSQL** -- All persistent state: files, metadata, analysis, proposals, approval status, execution log
-4. **Redis** -- Job queue broker for arq, optional result caching
-5. **Filesystem (Docker volumes)** -- Source music (read-only) and organized output (write by worker only)
+1. **MetadataExtractService** — reads audio tags with mutagen, normalizes to typed FileMetadata columns, stores raw dump in `raw_tags` JSONB; runs at `DISCOVERED -> METADATA_EXTRACTED` transition
+2. **Fingerprint Service Container** — Python 3.13 + JDK 17 image; audfprint (imported directly) + Panako (subprocess to long-running JVM); exposes POST /ingest, POST /query, POST /compare, GET /stats, GET /health at :8001; two named Docker volumes (`/data/audfprint`, `/data/panako`)
+3. **TracklistScraper** — httpx + BeautifulSoup; POST-based requests to 1001tracklists.com; 3-5 second randomized delay; raw HTML cached alongside parsed data; versioned scrape snapshots
+4. **DedupResolutionService** — surfaces SHA256 duplicate groups (existing) plus acoustic near-duplicates from FingerprintMatch table; all deletions require human approval
+5. **New SQLAlchemy Models** — `Tracklist`, `TracklistEntry`, `FingerprintMatch`, `TracklistFileLink`; `FileMetadata` gains `duration_seconds` and `track_number` columns
+
+**Critical design decisions:**
+- Tag extraction inserts a new step at the front of the pipeline; the state machine transition `process_file` must check for `METADATA_EXTRACTED` state, not `DISCOVERED`
+- Fingerprinting is additive enrichment, not a pipeline prerequisite — track status in `AnalysisResult.features` JSONB rather than blocking the critical path
+- Periodic tracklist refresh uses Redis SETNX as a distributed lock to prevent double-execution across workers
+- Panako gets higher combined score weight (0.6) than audfprint (0.4) because the primary use case — DJ sets — inherently involves tempo adjustment
 
 ### Critical Pitfalls
 
-See `.planning/research/PITFALLS.md` for the complete list with recovery strategies.
+1. **State machine expansion breaks existing pipeline** — `process_file` transitions directly `DISCOVERED -> ANALYZED`; inserting intermediate states requires updating `PIPELINE_STAGES`, all UI templates, and the dashboard in the same PR. Write an Alembic data migration to backfill existing `ANALYZED+` files. Make new stages non-blocking so existing files remain processable.
 
-1. **Irreversible file operations without transaction log** -- Implement an append-only operations journal in PostgreSQL (WAL pattern) before any file move; use copy-verify-delete protocol; commit state per-file, not per-batch
-2. **Unicode filename corruption** -- Normalize all paths to NFC at the ingestion boundary; store as UTF-8 TEXT in PostgreSQL; test with non-ASCII filenames (accented, CJK, emoji)
-3. **Docker volume permission mismatch** -- Parameterize UID/GID in docker-compose.yml from day one; mount music source as read-only on all services except the file-mover
-4. **Blocking async event loop with CPU-bound work** -- Wrap librosa and chromaprint calls in `asyncio.to_thread()` or `ProcessPoolExecutor`; bound the worker pool
-5. **litellm supply chain risk** -- Pin exact version with verified hash; run pip-audit in CI; consider network-isolating LLM containers from file-access containers
+2. **Task session engine leak exhausts PostgreSQL connections** — v1.0's `get_task_session()` creates a new `AsyncEngine` per invocation. With 3-4 concurrent task types in v2.0, connection exhaustion (`asyncpg.TooManyConnectionsError`) cascades. Refactor to a module-level engine with connection pooling (`pool_size=5, max_overflow=10`) initialized in arq `on_startup` — do this before adding any new task type.
+
+3. **Panako LMDB corruption in Docker** — LMDB uses memory-mapped I/O with POSIX locks that can break on bind mounts. Use Docker named volumes only. Run exactly one Panako container instance. Add stale-reader check on startup. Implement SIGTERM trap for graceful LMDB close.
+
+4. **Fingerprinting live concert recordings produces mostly noise** — Landmark-based algorithms fail on live recordings with crowd noise, reverb, and tempo shifts. Published research shows 60-70% of live material goes unidentified. Design the UI around probabilistic confidence scores and mandatory human review from day one. Never auto-apply fingerprint matches.
+
+5. **audfprint hash table bucket overflow at 200K files** — Default hash table (2^20 bins, 100 entries/bin) silently drops entries when full. Long concert recordings generate 10-100x more landmarks than studio tracks. Use `--density 7.0`, shard by file type (studio vs. live), and monitor bucket fill statistics after the first 10K files before proceeding to full ingestion.
+
+6. **1001Tracklists scraping overwrites good data with bad** — Unofficial endpoints change without notice. Cache raw HTTP responses. Version every scrape as a snapshot. Validate parsed structure before promoting to active. Surface validation failures as admin UI alerts, not silent corruption.
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure:
+Based on research, suggested phase structure (7 phases total):
 
-### Phase 1: Foundation (Database, Config, Docker, Ingestion)
-**Rationale:** Everything depends on the database schema, Docker environment, and file ingestion pipeline. The operations journal, state machine, and NFC normalization must be foundational -- retrofitting any of these is extremely expensive.
-**Delivers:** Working Docker Compose environment (API + worker + Postgres + Redis), database schema with all core tables (files, metadata, analysis, proposals, execution_log), Alembic migrations, file ingestion with SHA256 hashing, hash-based dedup detection, pipeline state machine.
-**Addresses:** File ingestion, hash dedup, database schema, Docker deployment, progress tracking foundation.
-**Avoids:** Irreversible file ops (journal table exists from start), Unicode corruption (NFC normalization from start), Docker permissions (UID/GID parameterized from start), bulk insert performance (COPY/batch strategy from start), supply chain risk (CI security scanning from start).
+### Phase 1: Audio Tag Extraction + Path Proposals + Session Refactor
+**Rationale:** Lowest complexity, highest leverage. Tags feed every other v2.0 feature: path proposals, duplicate quality comparison, and tracklist search queries all depend on extracted artist, title, event, duration, and bitrate. `proposed_path` is already wired in `RenameProposal` — this completes v1.0 unfinished work. The `get_task_session()` connection pooling refactor (Pitfall 2) is a prerequisite for all new task types and must happen in Phase 1.
+**Delivers:** Populated `FileMetadata` table; LLM proposals with destination paths; path collision detection in approval UI; connection-pooled arq session management.
+**Addresses:** Audio tag extraction (all table-stakes items), AI destination path proposals.
+**Avoids:** Task session engine leak (Pitfall 2), state machine disruption (Pitfall 1) — establish the expanded state machine pattern here with non-blocking transitions.
+**Research flag:** Standard patterns. mutagen is thoroughly documented; LLM prompt extension follows v1.0 patterns.
 
-### Phase 2: Metadata and Analysis Pipeline
-**Rationale:** AI proposals need rich metadata context to be useful. Metadata extraction and audio analysis are independent of each other and can be parallelized, but both must complete before proposal generation.
-**Delivers:** Mutagen-based metadata extraction, librosa BPM/key detection, pyacoustid fingerprinting, AcoustID identification, worker pipeline with bounded parallelism.
-**Addresses:** Metadata extraction, BPM detection, audio fingerprinting, video metadata (ffprobe).
-**Avoids:** Event loop blocking (CPU work in process pool), unbounded memory (chunked reads), worker starvation (bounded pool + backpressure).
+### Phase 2: Duplicate Resolution UI
+**Rationale:** Backend fully exists (`find_duplicate_groups()`, SHA256 dedup). Tag extraction from Phase 1 enables bitrate and format comparison in the side-by-side view. Resolving duplicates before fingerprint ingestion keeps the audfprint hash table from filling prematurely with redundant audio.
+**Delivers:** `/duplicates/` page with duplicate groups, side-by-side metadata comparison including bitrate, "keep this / delete rest" workflow, quality-based auto-suggestion, bulk resolution actions.
+**Addresses:** Duplicate resolution workflow (all table-stakes items).
+**Avoids:** UX pitfall of showing only filenames — side-by-side comparison uses bitrate and tag completeness data from Phase 1.
+**Research flag:** Standard patterns. HTMX table + comparison view follows established v1.0 approval UI patterns.
 
-### Phase 3: AI Proposal Generation
-**Rationale:** Depends on Phase 2 (metadata + analysis results). This is the core differentiator. Prompt engineering and structured output validation are the main challenges.
-**Delivers:** LLM-powered filename and path proposals with confidence scores, batch prompting (20-50 files per call), Pydantic validation of all proposals, collision detection across proposal batch.
-**Addresses:** AI filename proposals, AI path proposals, concert/event detection (as LLM classification).
-**Avoids:** AI inconsistency (template-based naming, prompt versioning, model version tracking), cost explosion (batch prompting), supply chain risk (pinned litellm).
+### Phase 3: 1001Tracklists Integration
+**Rationale:** Depends on Phase 1 (artist/event metadata drives search queries). Can be built before fingerprinting since scraped tracklist data will be used to cross-reference fingerprint matches in Phase 5. httpx is already in the stack; BeautifulSoup is the only new dependency.
+**Delivers:** `Tracklist` + `TracklistEntry` tables populated; fuzzy file-to-tracklist linking via rapidfuzz; admin UI for tracklist browsing; periodic refresh cron job with distributed locking.
+**Addresses:** 1001Tracklists search and scraping (all table-stakes items), periodic refresh.
+**Avoids:** Scraping without rate limiting (Pitfall 5), silent data corruption — versioned snapshots and structural validation built into initial implementation.
+**Research flag:** Needs phase-level research. The 1001tracklists POST endpoints are undocumented and subject to change. Validate endpoint behavior and HTML structure before building the parser.
 
-### Phase 4: Approval Workflow UI
-**Rationale:** No file operations happen without approval. The UI is the gateway between proposals and execution. Depends on proposals existing in the database (Phase 3).
-**Delivers:** HTMX-powered approval interface with pagination, filtering, bulk approve/reject, inline editing of proposed names, grouping by album/artist/confidence.
-**Addresses:** Approval workflow UI, batch approval with smart grouping, progress tracking UI.
-**Avoids:** Overwhelming UI (pagination + grouping), concurrent session conflicts (optimistic locking).
+### Phase 4: Fingerprint Service Container
+**Rationale:** Largest workstream with the highest technical risk. Isolated behind an HTTP API so discovery work does not affect the main codebase. Phase 2 produces a cleaner library (fewer duplicates) before bulk ingestion, reducing wasted CPU and hash table pressure.
+**Delivers:** `fingerprint-service` Docker container with Dockerfile; audfprint vendored module modernized to Python 3.13; Panako + Javalin HTTP wrapper; POST /ingest /query /compare /health endpoints; bulk ingestion of studio files with staged validation.
+**Addresses:** Fingerprint service container (all table-stakes items), persistent fingerprint databases.
+**Avoids:** JVM startup overhead (long-running container not subprocess-per-call), LMDB corruption (named volumes, single-writer, SIGTERM trap), audfprint bucket overflow (density tuning, staged ingestion with validation after 10K files).
+**Research flag:** Needs phase-level research. Two unknowns at LOW confidence: (1) audfprint Python 3.13 compatibility — run the vendored module against Python 3.13 before committing to the architecture; (2) Panako Java API accessibility — verify Panako exposes usable Java classes beyond CLI `main()` before designing the Javalin wrapper. Also validate ARM64 Docker compatibility if home server is ARM-based.
 
-### Phase 5: Safe File Execution and Audit
-**Rationale:** Final pipeline step. Only processes approved proposals. Must be bulletproof -- this is the irreversible action on irreplaceable files.
-**Delivers:** Copy-verify-delete file operations, per-file journal entries, execution status tracking, undo/rollback capability, disk space pre-check.
-**Addresses:** Safe file rename/move, undo/rollback, audit trail.
-**Avoids:** Data loss (copy-verify-delete), partial batch corruption (per-file commits), permission issues (least-privilege volume mounts).
-
-### Phase 6: Refinements and Differentiators
-**Rationale:** Post-core-pipeline features that add value but are not required for the primary workflow to function.
-**Delivers:** Acoustic duplicate detection, MusicBrainz enrichment, mood/style classification, dashboard with collection statistics.
-**Addresses:** Acoustic dedup, MusicBrainz enrichment, mood classification.
+### Phase 5: Live Set Fingerprint Matching + Tracklist Cross-Reference
+**Rationale:** Depends on both the fingerprint database (Phase 4) and scraped tracklists (Phase 3). This phase produces the "killer feature" — automated setlist identification with cross-validated confidence from two independent sources (acoustic fingerprint + human-curated tracklist).
+**Delivers:** `FingerprintMatch` table; batch live set querying against fingerprint DB; proposed tracklist UI for admin review with confidence scores; cross-reference of fingerprint matches against 1001Tracklists data; `TracklistFileLink` table.
+**Addresses:** Live set tracklist matching (all table-stakes items), acoustic near-duplicate detection.
+**Avoids:** False positive matches auto-applied (Pitfall 4) — all matches routed through review UI; fingerprint matching on live sets treated as probabilistic aid requiring calibration.
+**Research flag:** Needs phase-level research. The hybrid audfprint + Panako scoring weights (0.4/0.6) are a design decision, not a proven pattern. Requires calibration against real concert recordings from the actual corpus. Build scoring as a configurable parameter from day one.
 
 ### Phase Ordering Rationale
 
-- **Phase 1 before everything:** The database schema, Docker environment, and ingestion pipeline are dependencies for all subsequent work. 7 of 11 pitfalls map to Phase 1.
-- **Phase 2 before Phase 3:** AI proposals without metadata produce garbage. The analysis pipeline must populate the database before LLM calls make sense.
-- **Phase 3 before Phase 4:** The approval UI needs proposals to display. Building UI before proposals exist means designing against an imagined data shape.
-- **Phase 4 before Phase 5:** The human-in-the-loop constraint means execution cannot be built before the approval gate exists.
-- **Phase 6 is independent:** Enrichment features run against existing data and can be added incrementally.
+- **Tags before everything:** Mutagen extraction is the foundation. Path proposals, duplicate quality comparison, and 1001tracklists search all depend on extracted metadata. No other phase delivers full value without it.
+- **Session refactor in Phase 1:** The `get_task_session()` engine leak is a prerequisite for every subsequent phase that adds new task types. Fixing it first prevents cascading connection exhaustion.
+- **Dedup before fingerprinting:** Running fingerprint ingestion on a de-duplicated library avoids wasting CPU on redundant files and keeps the audfprint hash table from filling prematurely with duplicate landmarks.
+- **Tracklists before fingerprint matching:** Scraped tracklist data is needed for Phase 5's cross-reference validation. Building it independently in Phase 3 also validates the httpx + BeautifulSoup stack before fingerprint integration.
+- **Container setup before live matching:** The fingerprint service must exist and be populated before the main codebase can query it. Phase 4 and Phase 3 can run in parallel if resourcing allows — they have no direct dependency on each other.
 
 ### Research Flags
 
-Phases likely needing deeper research during planning:
-- **Phase 3 (AI Proposals):** Prompt engineering for music file naming is novel territory. No established patterns. Batch prompting strategy, template design, and confidence scoring all need experimentation.
-- **Phase 4 (Approval UI):** HTMX patterns for complex batch approval workflows with inline editing are less documented than standard CRUD. May need prototyping.
+Phases needing deeper research during planning:
+- **Phase 3 (1001Tracklists):** Validate the undocumented POST endpoints and current HTML structure before building the parser. One-time manual investigation to confirm endpoints still work.
+- **Phase 4 (Fingerprint Service):** Two unknowns at LOW confidence require spikes: (1) audfprint Python 3.13 compatibility with vendored module; (2) Panako Java API class structure for Javalin integration. Also confirm server architecture (x86 vs. ARM64) for Docker platform targeting.
+- **Phase 5 (Live Set Matching):** The hybrid scoring formula requires calibration against real live recordings from the corpus. Plan for an iteration cycle; do not treat initial weights as final.
 
 Phases with standard patterns (skip research-phase):
-- **Phase 1 (Foundation):** FastAPI + SQLAlchemy + Alembic + Docker Compose is an extremely well-documented stack. Many production references available.
-- **Phase 2 (Analysis Pipeline):** mutagen, librosa, and pyacoustid have straightforward APIs. arq worker patterns are well-documented.
-- **Phase 5 (File Execution):** Copy-verify-delete is a simple pattern. The complexity is in the safety invariants, not the technology.
+- **Phase 1 (Tag Extraction + Path Proposals):** mutagen is thoroughly documented; LLM prompt extension follows v1.0 patterns; arq session pooling is straightforward.
+- **Phase 2 (Duplicate Resolution UI):** HTMX bulk-action table view follows the existing v1.0 proposals UI pattern exactly.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All versions verified on PyPI. Python 3.13 compatibility confirmed. Known workarounds documented. |
-| Features | HIGH | Domain well-understood. Competitor analysis (beets, Picard, AudioRanger) validates feature set. Clear MVP vs. defer boundaries. |
-| Architecture | HIGH | Async monolith + workers is a battle-tested pattern. Database schema covers all identified use cases. |
-| Pitfalls | HIGH | Multiple sources per pitfall (beets blog posts, PostgreSQL docs, Docker community). Recovery strategies documented. |
+| Stack | MEDIUM | New prod dependencies (mutagen, BS4, lxml, httpx) are HIGH. audfprint vendoring is MEDIUM (Python 3.13 unverified). Javalin/Panako HTTP wrapper is LOW (no existing examples). |
+| Features | HIGH | All five feature areas have clear scope, dependency order, and existing v1.0 hooks to build on. Anti-features are explicitly out of scope. |
+| Architecture | MEDIUM | Main codebase integration is HIGH confidence following v1.0 patterns. Fingerprint service container design is MEDIUM (Panako Java API structure unverified). Hybrid scoring weights are LOW (calibration required). |
+| Pitfalls | HIGH | Most pitfalls derive from v1.0 codebase analysis, documented library issues (mutagen GitHub issues), and established domain knowledge. Recovery strategies defined for all major risks. |
 
-**Overall confidence:** HIGH
+**Overall confidence:** MEDIUM
 
 ### Gaps to Address
 
-- **Prompt engineering for music file naming:** No existing reference for LLM-based music file renaming. Will need iterative experimentation during Phase 3. Start with a small test batch (~100 files) before scaling.
-- **Naming format template:** The filename format is TBD per project requirements. Must be decided before Phase 3 can be fully specified. Recommend defining a structured template (e.g., `{artist} - {title} [{bpm}bpm] [{key}].{ext}`) with AI filling fields, not generating freeform names.
-- **arq long-term maintenance status:** arq is in maintenance-only mode. If it becomes abandoned, taskiq is the most likely migration target. Monitor before Phase 2.
-- **pyacoustid last release 2023:** Functionally stable but no recent releases. If AcoustID API changes, may need to fork or find alternative. Low risk but monitor.
-- **librosa Python 3.13 extras:** The `standard-aifc` and `standard-sunau` workaround is documented but not in librosa's official install guide. Verify during Phase 2 setup.
-- **LLM cost estimation:** Batch prompting 200K files at 20-50 per prompt = 4,000-10,000 API calls. Cost depends heavily on model choice. Budget estimation needed during Phase 3 planning.
-- **Existing prototype integration:** Need to examine actual prototype code for BPM/style/mood analysis to understand its interface and dependencies. Affects Phase 2 architecture.
+- **audfprint Python 3.13 compatibility:** The library uses numpy/scipy patterns from 2015. Before Phase 4 planning, vendor the module and run its test suite under Python 3.13. Document any failures before committing to the architecture.
+- **Panako Java API accessibility:** Research confirms Panako is CLI-only at the user level, but does not verify whether its core Java classes are importable by Javalin without going through `main()`. Inspect the panako.jar class structure as a Phase 4 spike before designing the wrapper.
+- **Hybrid scoring calibration:** The 0.4/0.6 weighting between audfprint and Panako is a starting hypothesis. Real validation requires testing against known live recordings from the actual corpus. Build scoring as a configurable parameter and plan a calibration iteration.
+- **1001tracklists endpoint stability:** Undocumented POST endpoints are the foundation of Phase 3. Manual validation before Phase 3 kickoff; if endpoints have changed, adjust the scraping strategy before building the parser.
+- **ARM64 Panako Docker:** If the home server runs on Apple Silicon or ARM64, Panako's LMDB and JGaborator native libraries require platform-specific builds. Confirm server architecture before Phase 4 planning.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [FastAPI releases](https://github.com/fastapi/fastapi/releases) -- version verification
-- [SQLAlchemy PyPI](https://pypi.org/project/SQLAlchemy/) -- async support confirmed
-- [mutagen PyPI](https://pypi.org/project/mutagen/) -- format support verified
-- [librosa PyPI + GitHub #1883](https://github.com/librosa/librosa/issues/1883) -- Python 3.13 compatibility
-- [PostgreSQL bulk loading](https://www.cybertec-postgresql.com/en/postgresql-bulk-loading-huge-amounts-of-data/) -- COPY performance
-- [beets path encoding blog](https://beets.io/blog/paths.html) -- Unicode pitfalls
-- [Docker Compose permissions](https://dev.to/visuellverstehen/docker-docker-compose-and-permissions-2fih) -- UID/GID patterns
-- [FastAPI best practices](https://github.com/zhanymkanov/fastapi-best-practices) -- project structure patterns
+- [mutagen 1.47.0 — PyPI, GitHub, readthedocs](https://pypi.org/project/mutagen/) — tag formats, EasyID3/EasyMP4 API, error taxonomy (ID3NoHeaderError, HeaderNotFoundError)
+- [beautifulsoup4 4.14.3 — PyPI](https://pypi.org/project/beautifulsoup4/) — HTML parsing, lxml backend performance
+- [httpx 0.28.1 — PyPI, v1.0 test suite](https://pypi.org/project/httpx/) — already validated in project
+- [LMDB documentation](http://www.lmdb.tech/doc/) — file locking, multi-process caveats, Docker volume requirements
+- [v1.0 codebase — tasks/session.py, models/file.py, services/pipeline.py, services/dedup.py] — engine-per-call pattern, unused FileState values, hardcoded PIPELINE_STAGES
 
 ### Secondary (MEDIUM confidence)
-- [arq PyPI](https://pypi.org/project/arq/) -- maintenance mode status
-- [pyacoustid PyPI](https://pypi.org/project/pyacoustid/) -- last release 2023
-- [litellm security incident](https://docs.litellm.ai/blog/security-update-march-2026) -- supply chain attack details
-- [HTMX + FastAPI patterns](https://johal.in/htmx-fastapi-patterns-hypermedia-driven-single-page-applications-2025/) -- UI architecture
-- [Python task queue benchmarks](https://stevenyue.com/blogs/exploring-python-task-queue-libraries-with-load-test) -- arq performance
-- [beets large library discussion](https://discourse.beets.io/t/using-beets-to-manage-huge-music-libraries-best-practices-and-suggestions/2598) -- scale pitfalls
+- [audfprint GitHub (dpwe/audfprint)](https://github.com/dpwe/audfprint) — landmark algorithm, hash table design, density settings — last commit 2015
+- [Panako 2.1 GitHub + documentation](https://github.com/JorenSix/Panako) — tempo-robust fingerprinting, CLI-only interface, LMDB storage, Docker support
+- [Panako ISMIR 2014 + JOSS papers](https://archives.ismir.net/ismir2014/paper/000122.pdf) — handles time-scale and pitch modification up to 10%
+- [Docker Panako community container](https://github.com/Pixelartist/docker-panako) — confirms Docker feasibility
+- [leandertolksdorf/1001-tracklists-api + GodLesZ/1001tracklists-scraper](https://github.com/leandertolksdorf/1001-tracklists-api) — confirms POST endpoints, BeautifulSoup approach; both evaluated and rejected as libraries
+- [Landmark-based fingerprinting for DJ mix monitoring (ISMIR/ResearchGate)](https://www.researchgate.net/publication/307547659_LANDMARK-BASED_AUDIO_FINGERPRINTING_FOR_DJ_MIX_MONITORING) — live recording matching challenges
+- [Accuracy comparisons of fingerprint-based song recognition (PMC)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10028751/) — 60-70% unidentified live music statistic
 
 ### Tertiary (LOW confidence)
-- LLM-based music file naming -- no established patterns found; approach is novel and needs validation
+- Javalin 6.x wrapping Panako core Java API — technically plausible but no existing examples; needs spike to verify class structure
+- Hybrid audfprint + Panako scoring weights (0.4/0.6) — design decision, not proven pattern; needs calibration with real corpus data
 
 ---
-*Research completed: 2026-03-27*
+*Research completed: 2026-03-30*
 *Ready for roadmap: yes*

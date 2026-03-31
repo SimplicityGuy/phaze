@@ -11,6 +11,7 @@ from sqlalchemy import select
 from phaze.config import settings
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.services.proposal import (
     ProposalService,
     build_file_context,
@@ -18,7 +19,6 @@ from phaze.services.proposal import (
     load_companion_contents,
     store_proposals,
 )
-from phaze.tasks.session import get_task_session
 
 
 async def generate_proposals(ctx: dict[str, Any], file_ids: list[str], batch_index: int) -> dict[str, Any]:
@@ -36,47 +36,48 @@ async def generate_proposals(ctx: dict[str, Any], file_ids: list[str], batch_ind
     Returns:
         Dict with batch index, count of proposals stored, and status.
     """
-    session = await get_task_session()
-    try:
-        # 1. Build context for each file
-        files_context: list[dict[str, Any]] = []
-        valid_file_ids: list[str] = []
-        for fid in file_ids:
-            uid = uuid.UUID(fid)
-            result = await session.execute(select(FileRecord).where(FileRecord.id == uid))
-            file_record = result.scalar_one_or_none()
-            if file_record is None:
-                continue
+    async with ctx["async_session"]() as session:
+        try:
+            # 1. Build context for each file
+            files_context: list[dict[str, Any]] = []
+            valid_file_ids: list[str] = []
+            for fid in file_ids:
+                uid = uuid.UUID(fid)
+                result = await session.execute(select(FileRecord).where(FileRecord.id == uid))
+                file_record = result.scalar_one_or_none()
+                if file_record is None:
+                    continue
 
-            analysis_result_row = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == uid))
-            analysis = analysis_result_row.scalar_one_or_none()
+                analysis_result_row = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == uid))
+                analysis = analysis_result_row.scalar_one_or_none()
 
-            companions = await load_companion_contents(session, uid, settings.llm_max_companion_chars)
+                metadata_row = await session.execute(select(FileMetadata).where(FileMetadata.file_id == uid))
+                metadata = metadata_row.scalar_one_or_none()
 
-            ctx_dict = build_file_context(file_record, analysis, companions)
-            ctx_dict["index"] = len(files_context)
-            files_context.append(ctx_dict)
-            valid_file_ids.append(fid)
+                companions = await load_companion_contents(session, uid, settings.llm_max_companion_chars)
 
-        if not files_context:
-            return {"batch": batch_index, "count": 0, "status": "empty"}
+                ctx_dict = build_file_context(file_record, analysis, companions, metadata=metadata)
+                ctx_dict["index"] = len(files_context)
+                files_context.append(ctx_dict)
+                valid_file_ids.append(fid)
 
-        # 2. Rate limit
-        await check_rate_limit(ctx["redis"], settings.llm_max_rpm)
+            if not files_context:
+                return {"batch": batch_index, "count": 0, "status": "empty"}
 
-        # 3. Call LLM
-        proposal_service: ProposalService = ctx["proposal_service"]
-        batch_response = await proposal_service.generate_batch(files_context)
+            # 2. Rate limit
+            await check_rate_limit(ctx["redis"], settings.llm_max_rpm)
 
-        # 4. Store proposals
-        stored = await store_proposals(session, valid_file_ids, batch_response, files_context)
-        await session.commit()
+            # 3. Call LLM
+            proposal_service: ProposalService = ctx["proposal_service"]
+            batch_response = await proposal_service.generate_batch(files_context)
 
-        return {"batch": batch_index, "count": stored, "status": "ok"}
+            # 4. Store proposals
+            stored = await store_proposals(session, valid_file_ids, batch_response, files_context)
+            await session.commit()
 
-    except Exception as exc:
-        await session.rollback()
-        # Exponential backoff: 10s, 20s, 30s (per D-16, leverages Phase 4 retry)
-        raise Retry(defer=ctx["job_try"] * 10) from exc
-    finally:
-        await session.close()
+            return {"batch": batch_index, "count": stored, "status": "ok"}
+
+        except Exception as exc:
+            await session.rollback()
+            # Exponential backoff: 10s, 20s, 30s (per D-16, leverages Phase 4 retry)
+            raise Retry(defer=ctx["job_try"] * 10) from exc

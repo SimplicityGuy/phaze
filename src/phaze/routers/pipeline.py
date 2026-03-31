@@ -9,10 +9,14 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import exists, select
 
 from phaze.config import settings
+from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
-from phaze.models.file import FileState
+from phaze.models.analysis import AnalysisResult
+from phaze.models.file import FileRecord, FileState
+from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
 
@@ -71,13 +75,28 @@ async def trigger_proposals(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Enqueue generate_proposals jobs for all ANALYZED files in batches (per D-01, D-05).
+    """Enqueue generate_proposals jobs for files with both metadata and analysis (per D-02 convergence gate).
 
     Uses settings.llm_batch_size (default 10) for batch chunking.
     """
-    files = await get_files_by_state(session, FileState.ANALYZED)
+    # Per D-02: convergence gate -- only propose for files with BOTH metadata AND analysis
+    stmt = (
+        select(FileRecord)
+        .where(
+            FileRecord.state.in_(
+                [
+                    FileState.ANALYZED,
+                    FileState.METADATA_EXTRACTED,
+                ]
+            )
+        )
+        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
+        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+    )
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
     if not files:
-        return {"enqueued_batches": 0, "total_files": 0, "message": "No files in ANALYZED state"}
+        return {"enqueued_batches": 0, "total_files": 0, "message": "No files ready for proposals (need both metadata and analysis)"}
 
     file_ids = [str(f.id) for f in files]
     batch_size = settings.llm_batch_size
@@ -154,7 +173,22 @@ async def trigger_proposals_ui(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """HTMX endpoint: trigger proposal generation and return response fragment."""
-    files = await get_files_by_state(session, FileState.ANALYZED)
+    # Per D-02: convergence gate -- only propose for files with BOTH metadata AND analysis
+    stmt = (
+        select(FileRecord)
+        .where(
+            FileRecord.state.in_(
+                [
+                    FileState.ANALYZED,
+                    FileState.METADATA_EXTRACTED,
+                ]
+            )
+        )
+        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
+        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+    )
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
     count = len(files)
     batches_count = 0
 
@@ -172,4 +206,64 @@ async def trigger_proposals_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "proposal generation", "count": count, "batches": batches_count},
+    )
+
+
+async def _enqueue_extraction_jobs(arq_pool: Any, file_ids: list[str]) -> None:
+    """Background coroutine to enqueue extract_file_metadata jobs."""
+    for fid in file_ids:
+        await arq_pool.enqueue_job("extract_file_metadata", fid)
+
+
+@router.post("/api/v1/extract-metadata")
+async def trigger_metadata_extraction(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Enqueue extract_file_metadata jobs for all music/video files.
+
+    Per D-04: queues all files regardless of state for backfill.
+    Per D-09: manual API endpoint for re-extraction.
+    """
+    music_video_types = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
+    stmt = select(FileRecord).where(FileRecord.file_type.in_(music_video_types))
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
+
+    if not files:
+        return {"enqueued": 0, "message": "No music/video files found"}
+
+    arq_pool = request.app.state.arq_pool
+    file_ids = [str(f.id) for f in files]
+
+    task = asyncio.create_task(_enqueue_extraction_jobs(arq_pool, file_ids))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return {"enqueued": len(file_ids), "message": f"Enqueued {len(file_ids)} files for metadata extraction"}
+
+
+@router.post("/pipeline/extract-metadata", response_class=HTMLResponse)
+async def trigger_extraction_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: trigger metadata extraction and return response fragment."""
+    music_video_types = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
+    stmt = select(FileRecord).where(FileRecord.file_type.in_(music_video_types))
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
+    count = len(files)
+
+    if count > 0:
+        arq_pool = request.app.state.arq_pool
+        file_ids = [str(f.id) for f in files]
+        task = asyncio.create_task(_enqueue_extraction_jobs(arq_pool, file_ids))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/trigger_response.html",
+        context={"request": request, "action": "metadata extraction", "count": count},
     )

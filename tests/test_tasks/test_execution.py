@@ -20,10 +20,17 @@ def _make_proposal(proposal_id: uuid.UUID | None = None) -> MagicMock:
 
 
 def _make_ctx(redis: Any = None) -> dict[str, Any]:
-    """Create a minimal arq context dict with Redis mock."""
+    """Create a minimal arq context dict with Redis mock and async_session."""
     if redis is None:
         redis = AsyncMock()
-    return {"redis": redis}
+    mock_session = AsyncMock()
+    # async_sessionmaker() returns an AsyncSession context manager
+    mock_session_factory = MagicMock()
+    mock_session_cm = AsyncMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_session_factory.return_value = mock_session_cm
+    return {"redis": redis, "async_session": mock_session_factory, "_mock_session": mock_session}
 
 
 # ---------------------------------------------------------------------------
@@ -33,9 +40,7 @@ def _make_ctx(redis: Any = None) -> dict[str, Any]:
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_execute_approved_batch_success(
-    mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
     mock_execute: AsyncMock,
 ) -> None:
@@ -45,9 +50,6 @@ async def test_execute_approved_batch_success(
     proposals = [_make_proposal(), _make_proposal()]
     mock_get_proposals.return_value = proposals
     mock_execute.return_value = True
-
-    mock_session = AsyncMock()
-    mock_get_session.return_value = mock_session
 
     redis = AsyncMock()
     ctx = _make_ctx(redis)
@@ -59,7 +61,6 @@ async def test_execute_approved_batch_success(
     assert result["total"] == 2
     assert "batch_id" in result
     assert mock_execute.call_count == 2
-    mock_session.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -69,9 +70,7 @@ async def test_execute_approved_batch_success(
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_execute_approved_batch_partial_failure(
-    mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
     mock_execute: AsyncMock,
 ) -> None:
@@ -81,9 +80,6 @@ async def test_execute_approved_batch_partial_failure(
     proposals = [_make_proposal(), _make_proposal(), _make_proposal()]
     mock_get_proposals.return_value = proposals
     mock_execute.side_effect = [True, False, True]
-
-    mock_session = AsyncMock()
-    mock_get_session.return_value = mock_session
 
     redis = AsyncMock()
     ctx = _make_ctx(redis)
@@ -103,18 +99,13 @@ async def test_execute_approved_batch_partial_failure(
 
 
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_execute_approved_batch_empty(
-    mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
 ) -> None:
     """No approved proposals. Returns completed=0, failed=0 immediately."""
     from phaze.tasks.execution import execute_approved_batch
 
     mock_get_proposals.return_value = []
-
-    mock_session = AsyncMock()
-    mock_get_session.return_value = mock_session
 
     redis = AsyncMock()
     ctx = _make_ctx(redis)
@@ -124,7 +115,6 @@ async def test_execute_approved_batch_empty(
     assert result["completed"] == 0
     assert result["failed"] == 0
     assert result["total"] == 0
-    mock_session.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -134,9 +124,7 @@ async def test_execute_approved_batch_empty(
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_redis_progress_updates(
-    mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
     mock_execute: AsyncMock,
 ) -> None:
@@ -146,9 +134,6 @@ async def test_redis_progress_updates(
     proposals = [_make_proposal(), _make_proposal()]
     mock_get_proposals.return_value = proposals
     mock_execute.return_value = True
-
-    mock_session = AsyncMock()
-    mock_get_session.return_value = mock_session
 
     redis = AsyncMock()
     ctx = _make_ctx(redis)
@@ -167,7 +152,6 @@ async def test_redis_progress_updates(
     assert initial_mapping["status"] == "running"
 
     # Final status should be "complete"
-    # The last hset call should set status to complete
     last_call = hset_calls[-1]
     last_mapping = last_call[1]["mapping"]
     assert last_mapping["status"] == "complete"
@@ -185,9 +169,7 @@ async def test_redis_progress_updates(
 
 @patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
 @patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_task_session", new_callable=AsyncMock)
 async def test_batch_generates_uuid_id(
-    mock_get_session: AsyncMock,
     mock_get_proposals: AsyncMock,
     _mock_execute: AsyncMock,
 ) -> None:
@@ -195,8 +177,6 @@ async def test_batch_generates_uuid_id(
     from phaze.tasks.execution import execute_approved_batch
 
     mock_get_proposals.return_value = []
-    mock_session = AsyncMock()
-    mock_get_session.return_value = mock_session
 
     redis = AsyncMock()
     ctx = _make_ctx(redis)

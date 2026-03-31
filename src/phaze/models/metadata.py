@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import ForeignKey, Integer, Text
+from sqlalchemy import Float, ForeignKey, Integer, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,4 +21,7 @@ class FileMetadata(TimestampMixin, Base):
     album: Mapped[str | None] = mapped_column(Text, nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     genre: Mapped[str | None] = mapped_column(Text, nullable=True)
+    track_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bitrate: Mapped[int | None] = mapped_column(Integer, nullable=True)
     raw_tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
