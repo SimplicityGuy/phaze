@@ -8,7 +8,20 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
 
-## Current State
+## Current Milestone: v2.0 Metadata Enrichment & Tracklist Integration
+
+**Goal:** Enrich the file corpus with audio tags, tracklist data, and audio fingerprinting — building queryable infrastructure for cross-service linking and automated track identification.
+
+**Target features:**
+- Audio tag extraction (mutagen) → populate FileMetadata → richer LLM context
+- AI destination path proposals using v1.0 naming format
+- Duplicate resolution workflow in admin UI
+- 1001tracklists integration (search, scrape, fuzzy-match, store)
+- Periodic tracklist refresh for unresolved IDs (randomized, monthly minimum)
+- Audio fingerprinting (audfprint + Panako hybrid) → fingerprint all files during ingestion, scan live sets to generate proposed tracklists for review
+- Fingerprint service as a long-running container with API/message interface
+
+## Previous State
 
 **v1.0 shipped 2026-03-30.** Full pipeline operational: scan → analyze → propose → approve → execute.
 
@@ -51,10 +64,9 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 ### Out of Scope
 
-- Search frontend — deferred to post-v1
-- Natural language querying across services — deferred to post-v1
-- 1001tracklists integration/scraping — deferred to post-v1
-- Discogsography cross-service linking — deferred to post-v1
+- Search frontend — deferred to post-v2
+- Natural language querying across services — deferred to post-v2
+- Discogsography cross-service linking — deferred to v3 (tracklist infrastructure built in v2.0)
 - Public network access — private network only
 - Offline mode — real-time server tool, not a desktop app
 
@@ -63,9 +75,12 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - v1.0 shipped with full pipeline: scan → analyze → propose → approve → execute
 - ~200K files total, mix of music files and full concert video streams
 - Concert videos are primarily recordings of live streams (YouTube streams from festivals, etc.)
-- FileMetadata model and table exist but are unpopulated (mutagen integration deferred to v2)
+- FileMetadata model and table exist but are unpopulated (mutagen integration in v2.0)
 - Task session creates new engine per invocation — acceptable for v1 but worth pooling for v2 scale
 - This is a personal tool running on a home server, not a multi-user SaaS
+- 1001tracklists.com has documented HTTP endpoints for search (POST) and detail pages (POST) — no headless browser needed
+- Audio fingerprinting: audfprint (Python-native, landmark-based) and Panako (Java, tempo-robust) as hybrid approach with weighted scoring
+- Fingerprint service runs as a long-running container with API/message interface, not subprocess calls
 
 ## Constraints
 
@@ -109,4 +124,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-30 after v1.0 milestone completion*
+*Last updated: 2026-03-30 after v2.0 milestone start*

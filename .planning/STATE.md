@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: MVP
-status: complete
-stopped_at: v1.0 milestone completed
-last_updated: "2026-03-30T21:30:00.000Z"
-last_activity: 2026-03-30 -- v1.0 milestone archived
+milestone: v2.0
+milestone_name: Metadata Enrichment & Tracklist Integration
+status: active
+stopped_at: null
+last_updated: "2026-03-30T22:00:00.000Z"
+last_activity: 2026-03-30 -- Milestone v2.0 started
 progress:
-  total_phases: 11
-  completed_phases: 11
-  total_plans: 24
-  completed_plans: 24
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,18 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** v1.0 complete — planning next milestone
+**Current focus:** Defining requirements for v2.0
 
 ## Current Position
 
-Milestone: v1.0 MVP — COMPLETE (shipped 2026-03-30)
-Status: Milestone archived, ready for next milestone
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-30 — Milestone v2.0 started
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
-**Velocity:**
+**v1.0 Velocity:**
 
 - Total plans completed: 24
 - Total phases: 11
@@ -52,10 +54,10 @@ None.
 
 ### Blockers/Concerns
 
-None — v1.0 milestone complete.
+None.
 
 ## Session Continuity
 
 Last session: 2026-03-30
-Stopped at: v1.0 milestone completed
+Stopped at: Defining v2.0 requirements
 Resume file: None
