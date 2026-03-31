@@ -12,12 +12,26 @@ import pytest
 from phaze.services.proposal import BatchProposalResponse, FileProposalResponse
 
 
-def _make_ctx(job_try: int = 1) -> dict[str, Any]:
+def _make_session_factory(mock_session: AsyncMock) -> MagicMock:
+    """Create a mock async_sessionmaker that returns a context manager yielding mock_session."""
+    factory = MagicMock()
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    factory.return_value = cm
+    return factory
+
+
+def _make_ctx(job_try: int = 1, mock_session: AsyncMock | None = None) -> dict[str, Any]:
     """Create a minimal arq context dict with mocked services."""
+    if mock_session is None:
+        mock_session = AsyncMock()
     return {
         "job_try": job_try,
         "redis": AsyncMock(),
         "proposal_service": AsyncMock(),
+        "async_session": _make_session_factory(mock_session),
+        "_mock_session": mock_session,
     }
 
 
@@ -63,9 +77,7 @@ SAMPLE_BATCH_RESPONSE = BatchProposalResponse(
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
 async def test_generate_proposals_happy_path(
-    mock_get_session: AsyncMock,
     mock_companions: AsyncMock,
     mock_rate_limit: AsyncMock,
     mock_store: AsyncMock,
@@ -78,7 +90,6 @@ async def test_generate_proposals_happy_path(
     analysis = _make_analysis()
 
     session = AsyncMock()
-    mock_get_session.return_value = session
 
     # First execute: FileRecord, Second: AnalysisResult
     mock_result_file = MagicMock()
@@ -89,7 +100,7 @@ async def test_generate_proposals_happy_path(
 
     mock_companions.return_value = []
 
-    ctx = _make_ctx()
+    ctx = _make_ctx(mock_session=session)
     ctx["proposal_service"].generate_batch.return_value = SAMPLE_BATCH_RESPONSE
     mock_store.return_value = 1
 
@@ -107,9 +118,7 @@ async def test_generate_proposals_happy_path(
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
 async def test_generate_proposals_file_not_found(
-    mock_get_session: AsyncMock,
     _mock_companions: AsyncMock,
     _mock_rate_limit: AsyncMock,
     _mock_store: AsyncMock,
@@ -118,13 +127,12 @@ async def test_generate_proposals_file_not_found(
     from phaze.tasks.proposal import generate_proposals
 
     session = AsyncMock()
-    mock_get_session.return_value = session
 
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     session.execute.return_value = mock_result
 
-    ctx = _make_ctx()
+    ctx = _make_ctx(mock_session=session)
     result = await generate_proposals(ctx, [str(uuid.uuid4())], batch_index=0)
 
     assert result["status"] == "empty"
@@ -132,31 +140,26 @@ async def test_generate_proposals_file_not_found(
     _mock_rate_limit.assert_not_called()
 
 
-@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
-async def test_generate_proposals_retry_on_exception(mock_get_session: AsyncMock) -> None:
+async def test_generate_proposals_retry_on_exception() -> None:
     """generate_proposals raises arq Retry with defer=job_try*10 on exception."""
     from phaze.tasks.proposal import generate_proposals
 
     session = AsyncMock()
-    mock_get_session.return_value = session
     session.execute.side_effect = RuntimeError("DB connection failed")
 
-    ctx = _make_ctx(job_try=2)
+    ctx = _make_ctx(job_try=2, mock_session=session)
     with pytest.raises(Retry) as exc_info:
         await generate_proposals(ctx, [str(uuid.uuid4())], batch_index=0)
 
     # arq stores defer as defer_score in milliseconds
     assert exc_info.value.defer_score == 2 * 10 * 1000
     session.rollback.assert_called_once()
-    session.close.assert_called_once()
 
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal.get_task_session", new_callable=AsyncMock)
 async def test_generate_proposals_calls_rate_limit(
-    mock_get_session: AsyncMock,
     mock_companions: AsyncMock,
     mock_rate_limit: AsyncMock,
     mock_store: AsyncMock,
@@ -169,7 +172,6 @@ async def test_generate_proposals_calls_rate_limit(
     analysis = _make_analysis()
 
     session = AsyncMock()
-    mock_get_session.return_value = session
 
     mock_result_file = MagicMock()
     mock_result_file.scalar_one_or_none.return_value = file_record
@@ -179,7 +181,7 @@ async def test_generate_proposals_calls_rate_limit(
 
     mock_companions.return_value = []
 
-    ctx = _make_ctx()
+    ctx = _make_ctx(mock_session=session)
     ctx["proposal_service"].generate_batch.return_value = SAMPLE_BATCH_RESPONSE
     mock_store.return_value = 1
 

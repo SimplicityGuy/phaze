@@ -13,7 +13,6 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.services.analysis import analyze_file
 from phaze.tasks.pool import run_in_process_pool
-from phaze.tasks.session import get_task_session
 
 
 _MUSIC_FILE_TYPES = frozenset({"mp3", "flac", "ogg", "m4a", "wav", "aiff", "wma", "aac", "opus"})
@@ -26,8 +25,7 @@ async def process_file(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
     Per D-03: retries with exponential backoff.
     """
     try:
-        session = await get_task_session()
-        try:
+        async with ctx["async_session"]() as session:
             # 1. Fetch file record
             result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(file_id)))
             file_record = result.scalar_one_or_none()
@@ -59,8 +57,6 @@ async def process_file(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
 
             await session.commit()
             return {"file_id": file_id, "status": "analyzed"}
-        finally:
-            await session.close()
 
     except Exception as exc:
         # Exponential backoff: 5s, 10s, 15s (job_try is 1-indexed)

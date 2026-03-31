@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from arq.connections import RedisSettings
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.config import settings
 from phaze.services.proposal import ProposalService, load_prompt_template
@@ -40,12 +41,28 @@ async def startup(ctx: dict[str, Any]) -> None:
         max_rpm=settings.llm_max_rpm,
     )
 
+    # Shared async engine pool for all task functions (INFRA-01)
+    task_engine = create_async_engine(
+        str(settings.database_url),
+        echo=settings.debug,
+        pool_size=10,
+        max_overflow=5,
+    )
+    ctx["async_session"] = async_sessionmaker(
+        task_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    ctx["task_engine"] = task_engine
+
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Clean up shared resources (arq on_shutdown hook)."""
     pool = ctx.get("process_pool")
     if pool is not None:
         pool.shutdown(wait=True)
+
+    task_engine = ctx.get("task_engine")
+    if task_engine is not None:
+        await task_engine.dispose()
 
 
 class WorkerSettings:
