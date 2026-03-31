@@ -31,7 +31,7 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 **Milestone Goal:** Enrich the file corpus with audio tags, tracklist data, and audio fingerprinting -- building queryable infrastructure for cross-service linking and automated track identification.
 
 - [ ] **Phase 12: Infrastructure & Audio Tag Extraction** - Shared engine pool, expanded state machine, and mutagen-based tag extraction feeding richer LLM context
-- [ ] **Phase 13: AI Destination Paths** - LLM-generated destination paths with collision detection and directory tree preview in approval UI
+- [x] **Phase 13: AI Destination Paths** - LLM-generated destination paths with collision detection and directory tree preview in approval UI (completed 2026-03-31)
 - [ ] **Phase 14: Duplicate Resolution UI** - Admin page for reviewing, comparing, and resolving SHA256 duplicate groups
 - [ ] **Phase 15: 1001Tracklists Integration** - Search, scrape, fuzzy-match, and periodically refresh tracklists from 1001tracklists.com
 - [ ] **Phase 16: Fingerprint Service & Batch Ingestion** - Long-running fingerprint container with audfprint/Panako hybrid and batch ingestion of all music files
@@ -60,11 +60,11 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
   2. Proposed destination path is visible in the approval UI next to the filename proposal
   3. When two approved files would land at the same destination path, a collision warning is displayed before execution
   4. User can view a directory tree preview showing where all approved files will land
-**Plans:** 1/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
-- [ ] 13-01-PLAN.md -- Extend LLM prompt and Pydantic model with proposed_path
+- [x] 13-01-PLAN.md -- Extend LLM prompt and Pydantic model with proposed_path
 - [x] 13-02-PLAN.md -- Collision detection service, tree builder, preview route and templates
-- [ ] 13-03-PLAN.md -- Wire destination column, collision UI, execution gate, and visual verification
+- [x] 13-03-PLAN.md -- Wire destination column, collision UI, execution gate, and visual verification
 **UI hint**: yes
 
 ### Phase 14: Duplicate Resolution UI
@@ -130,7 +130,7 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 10. CI Config & Bug Fixes | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
 | 12. Infrastructure & Audio Tag Extraction | v2.0 | 0/0 | Not started | - |
-| 13. AI Destination Paths | v2.0 | 1/3 | In Progress|  |
+| 13. AI Destination Paths | v2.0 | 3/3 | Complete   | 2026-03-31 |
 | 14. Duplicate Resolution UI | v2.0 | 0/0 | Not started | - |
 | 15. 1001Tracklists Integration | v2.0 | 0/0 | Not started | - |
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 0/0 | Not started | - |

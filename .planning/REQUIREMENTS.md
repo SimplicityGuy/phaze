@@ -23,7 +23,7 @@ Requirements for Metadata Enrichment & Tracklist Integration. Each maps to roadm
 ### AI Destination Paths
 
 - [x] **PATH-01**: LLM prompt generates proposed_path alongside proposed_filename using v1.0 naming format
-- [ ] **PATH-02**: Proposed destination path displayed in approval UI alongside filename
+- [x] **PATH-02**: Proposed destination path displayed in approval UI alongside filename
 - [x] **PATH-03**: Path collisions detected and flagged when two files would land at the same destination
 - [x] **PATH-04**: User can view a directory tree preview of where approved files will land
 
@@ -99,7 +99,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TAGS-04 | Phase 12 | Pending |
 | TAGS-05 | Phase 12 | Pending |
 | PATH-01 | Phase 13 | Complete |
-| PATH-02 | Phase 13 | Pending |
+| PATH-02 | Phase 13 | Complete |
 | PATH-03 | Phase 13 | Complete |
 | PATH-04 | Phase 13 | Complete |
 | DEDUP-01 | Phase 14 | Pending |
