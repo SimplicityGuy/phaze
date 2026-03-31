@@ -31,9 +31,7 @@ async def extract_file_metadata(ctx: dict[str, Any], file_id: str) -> dict[str, 
     try:
         async with ctx["async_session"]() as session:
             # 1. Fetch file record
-            result = await session.execute(
-                select(FileRecord).where(FileRecord.id == uuid.UUID(file_id))
-            )
+            result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(file_id)))
             file_record = result.scalar_one_or_none()
             if file_record is None:
                 return {"file_id": file_id, "status": "not_found"}
@@ -48,9 +46,7 @@ async def extract_file_metadata(ctx: dict[str, Any], file_id: str) -> dict[str, 
             tags = extract_tags(file_record.current_path)
 
             # 4. Upsert FileMetadata row
-            existing = await session.execute(
-                select(FileMetadata).where(FileMetadata.file_id == file_record.id)
-            )
+            existing = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_record.id))
             metadata = existing.scalar_one_or_none()
             if metadata is None:
                 metadata = FileMetadata(file_id=file_record.id)
