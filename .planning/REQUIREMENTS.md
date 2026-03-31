@@ -91,35 +91,35 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INFRA-01 | Phase 12 | Pending |
-| INFRA-02 | Phase 12 | Pending |
-| TAGS-01 | Phase 12 | Pending |
-| TAGS-02 | Phase 12 | Pending |
-| TAGS-03 | Phase 12 | Pending |
-| TAGS-04 | Phase 12 | Pending |
-| TAGS-05 | Phase 12 | Pending |
-| PATH-01 | Phase 13 | Pending |
-| PATH-02 | Phase 13 | Pending |
-| PATH-03 | Phase 13 | Pending |
-| PATH-04 | Phase 13 | Pending |
-| DEDUP-01 | Phase 14 | Pending |
-| DEDUP-02 | Phase 14 | Pending |
-| DEDUP-03 | Phase 14 | Pending |
-| DEDUP-04 | Phase 14 | Pending |
-| FPRINT-01 | Phase 16 | Pending |
-| FPRINT-02 | Phase 16 | Pending |
-| FPRINT-03 | Phase 17 | Pending |
-| FPRINT-04 | Phase 17 | Pending |
-| TL-01 | Phase 15 | Pending |
-| TL-02 | Phase 15 | Pending |
-| TL-03 | Phase 15 | Pending |
-| TL-04 | Phase 15 | Pending |
+| INFRA-01 | — | Pending |
+| INFRA-02 | — | Pending |
+| TAGS-01 | — | Pending |
+| TAGS-02 | — | Pending |
+| TAGS-03 | — | Pending |
+| TAGS-04 | — | Pending |
+| TAGS-05 | — | Pending |
+| PATH-01 | — | Pending |
+| PATH-02 | — | Pending |
+| PATH-03 | — | Pending |
+| PATH-04 | — | Pending |
+| DEDUP-01 | — | Pending |
+| DEDUP-02 | — | Pending |
+| DEDUP-03 | — | Pending |
+| DEDUP-04 | — | Pending |
+| FPRINT-01 | — | Pending |
+| FPRINT-02 | — | Pending |
+| FPRINT-03 | — | Pending |
+| FPRINT-04 | — | Pending |
+| TL-01 | — | Pending |
+| TL-02 | — | Pending |
+| TL-03 | — | Pending |
+| TL-04 | — | Pending |
 
 **Coverage:**
 - v2.0 requirements: 23 total
-- Mapped to phases: 23
-- Unmapped: 0
+- Mapped to phases: 0
+- Unmapped: 23
 
 ---
 *Requirements defined: 2026-03-30*
-*Last updated: 2026-03-30 after roadmap creation*
+*Last updated: 2026-03-30 after initial definition*
