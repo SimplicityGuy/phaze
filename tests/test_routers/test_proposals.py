@@ -24,6 +24,7 @@ async def create_test_proposal(
     confidence: float = 0.85,
     status: str = ProposalStatus.PENDING,
     reason: str = "Test reasoning",
+    proposed_path: str | None = None,
 ) -> RenameProposal:
     """Create a FileRecord + RenameProposal pair for testing."""
     file_id = uuid.uuid4()
@@ -44,6 +45,7 @@ async def create_test_proposal(
         id=uuid.uuid4(),
         file_id=file_id,
         proposed_filename=proposed_filename,
+        proposed_path=proposed_path,
         confidence=confidence,
         status=status,
         context_used={"artist": "Test Artist", "event_name": "Test Event"},
@@ -293,3 +295,34 @@ async def test_sort_by_original_filename(client: AsyncClient, session: AsyncSess
     assert response.status_code == 200
     text = response.text
     assert text.find("aaa.mp3") < text.find("zzz.mp3")
+
+
+@pytest.mark.asyncio
+async def test_destination_column_header(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /proposals/ renders a Destination column header in the table."""
+    await create_test_proposal(session)
+    response = await client.get("/proposals/")
+    assert response.status_code == 200
+    assert "Destination" in response.text
+
+
+@pytest.mark.asyncio
+async def test_destination_path_displayed(client: AsyncClient, session: AsyncSession) -> None:
+    """Proposal with proposed_path renders the path text in the table row."""
+    await create_test_proposal(
+        session,
+        proposed_path="performances/artists/Disclosure",
+        proposed_filename="Disclosure - Live @ Coachella 2025.mp3",
+    )
+    response = await client.get("/proposals/")
+    assert response.status_code == 200
+    assert "performances/artists/Disclosure" in response.text
+
+
+@pytest.mark.asyncio
+async def test_destination_null_path_badge(client: AsyncClient, session: AsyncSession) -> None:
+    """Proposal with null proposed_path renders 'No path' badge."""
+    await create_test_proposal(session, proposed_path=None)
+    response = await client.get("/proposals/")
+    assert response.status_code == 200
+    assert "No path" in response.text

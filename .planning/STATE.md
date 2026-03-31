@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
-status: completed
-stopped_at: Completed 12-03-PLAN.md
-last_updated: "2026-03-31T15:00:11.746Z"
+status: executing
+stopped_at: Completed 13-03-PLAN.md
+last_updated: "2026-03-31T21:31:15.222Z"
 last_activity: 2026-03-31
 progress:
-  total_phases: 12
-  completed_phases: 12
-  total_plans: 27
-  completed_plans: 27
-  percent: 100
+  total_phases: 6
+  completed_phases: 2
+  total_plans: 6
+  completed_plans: 6
+  percent: 66
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 12 -- infrastructure-audio-tag-extraction
+**Current focus:** Phase 13 -- ai-destination-paths
 
 ## Current Position
 
-Phase: 12
+Phase: 14
 Plan: Not started
-Status: Phase 12 plans complete
+Status: Ready to execute
 Last activity: 2026-03-31
 
-Progress: [██████████] 100%
+Progress: [██████░░░░] 66%
 
 ## Performance Metrics
 
@@ -44,7 +44,7 @@ Progress: [██████████] 100%
 
 **v2.0 Velocity:**
 
-- Total plans completed: 3
+- Total plans completed: 4
 - Average duration: --
 
 ## Accumulated Context
@@ -53,6 +53,10 @@ Progress: [██████████] 100%
 
 - Used 6 tag fields matching actual FileMetadata model instead of 9 planned fields (track_number, duration, bitrate not on model)
 - Convergence gate uses exists() subqueries for both FileMetadata and AnalysisResult
+- Path normalization applied in store_proposals (not Pydantic validator) to keep LLM structured output model simple
+- proposed_path placed between proposed_filename and confidence in FileProposalResponse field order
+- [Phase 13-ai-destination-paths]: collision_ids passed as set of string UUIDs in template context rather than embedding collision logic in templates
+- [Phase 13-ai-destination-paths]: Execution gate returns HTMX partial (collision_block.html) rather than HTTP error code, preserving inline feedback UX
 
 ### Pending Todos
 
@@ -64,6 +68,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-31T06:55:07.366Z
-Stopped at: Completed 12-03-PLAN.md
-Resume file: .planning/phases/12-infrastructure-audio-tag-extraction/12-03-SUMMARY.md
+Last session: 2026-03-31T21:22:16.224Z
+Stopped at: Completed 13-03-PLAN.md
+Resume file: None

@@ -55,6 +55,34 @@ Rate your confidence in the proposed filename:
 - **Medium confidence (0.4 - 0.8):** Some metadata available -- partial filename info, some analysis data, but gaps in artist name, date, or event details.
 - **Low confidence (0.0 - 0.4):** Very little metadata -- only a vague or generic filename, no companion files, minimal analysis data. Flag these for manual review.
 
+## Directory Path Rules
+
+For each file, also propose a destination directory path. Use this 3-step decision tree:
+
+### Step 1: Determine Category
+- Album tracks (identified by track number, album name, or studio recording indicators) -> `music/`
+- DJ sets, live performances, festival recordings, concert bootlegs, radio shows -> `performances/`
+
+### Step 2: Determine Subcategory
+
+For `performances/`:
+- Artist DJ sets and live sets -> `performances/artists/{Artist Name}/`
+- Festival recordings -> `performances/festivals/{Festival Name} {Year}/`
+- Concert recordings -> `performances/concerts/{Concert Name} {Year}/`
+- Radio shows -> `performances/radioshows/{Radioshow Name}/`
+
+For `music/`:
+- Album tracks -> `music/{Artist}/{Album}/`
+
+### Step 3: Year Handling (festivals and concerts only)
+- If year is known, include in the directory name: `performances/festivals/Coachella 2024/`
+- If year is unknown, omit it: `performances/festivals/Coachella/`
+
+### Path Confidence
+- If you cannot determine a reasonable path from available metadata, set `proposed_path` to null.
+- A null path means the file stays in its current location during execution.
+- It is better to leave the path null than to guess incorrectly.
+
 ## Metadata Extraction
 
 For each file, extract as much structured metadata as possible alongside the filename proposal:
@@ -88,6 +116,7 @@ Return one proposal per input file, matched by `file_index`. Your response must 
 For each file, provide:
 - `file_index`: The index from the input (echo it back for matching)
 - `proposed_filename`: The new filename including extension
+- `proposed_path`: The destination directory path (e.g. "performances/artists/Disclosure") or null if uncertain
 - `confidence`: Your confidence score (0.0 to 1.0)
 - `artist`, `event_name`, `venue`, `date`, `source_type`, `stage`, `day_number`, `b2b_partners`: Extracted metadata (null/empty if not applicable)
 - `reasoning`: Brief explanation of why you chose this filename and confidence level

@@ -1,0 +1,15 @@
+<div role="alert" class="bg-orange-50 border border-orange-200 rounded-lg p-4">
+    <div class="flex items-center gap-2">
+        <span class="text-orange-600">&#9888;</span>
+        <h3 class="text-sm font-semibold text-orange-800">Path collisions detected</h3>
+    </div>
+    <p class="text-sm text-orange-700 mt-1">
+        {{ collisions|length }} destination paths have multiple approved files targeting them. Resolve collisions before executing.
+    </p>
+    <ul class="list-disc ml-4 mt-2">
+        {% for path, count in collisions %}
+        <li class="text-sm text-orange-700">{{ path }} -- {{ count }} files</li>
+        {% endfor %}
+    </ul>
+    <p class="text-sm text-orange-600 mt-4">Reject or re-propose conflicting files, then retry execution.</p>
+</div>

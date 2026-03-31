@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
 from phaze.database import get_session
+from phaze.services.collision import detect_collisions
 from phaze.services.execution_queries import get_execution_logs_page, get_execution_stats
 
 
@@ -28,8 +29,20 @@ router = APIRouter(tags=["execution"])
 
 
 @router.post("/execution/start", response_class=HTMLResponse)
-async def start_execution(request: Request) -> HTMLResponse:
-    """Trigger batch execution of all approved proposals via arq."""
+async def start_execution(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Trigger batch execution of all approved proposals via arq.
+
+    Returns a collision block if duplicate destination paths exist among
+    approved proposals, preventing execution until collisions are resolved.
+    """
+    collisions = await detect_collisions(session)
+    if collisions:
+        return templates.TemplateResponse(
+            request=request,
+            name="execution/partials/collision_block.html",
+            context={"request": request, "collisions": collisions},
+        )
+
     arq_pool = request.app.state.arq_pool
     batch_id = uuid4().hex
     await arq_pool.enqueue_job("execute_approved_batch", batch_id)

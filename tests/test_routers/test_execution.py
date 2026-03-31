@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
@@ -174,3 +174,36 @@ async def test_audit_log_stats_in_filter_tabs(client: AsyncClient, session: Asyn
     assert "All (3)" in response.text
     assert "Completed (2)" in response.text
     assert "Failed (1)" in response.text
+
+
+@pytest.mark.asyncio
+async def test_collision_gate_blocks_execution(client: AsyncClient) -> None:
+    """POST /execution/start returns collision block HTML when collisions exist."""
+    mock_pool = AsyncMock()
+    mock_pool.enqueue_job = AsyncMock()
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    with patch("phaze.routers.execution.detect_collisions", new_callable=AsyncMock) as mock_detect:
+        mock_detect.return_value = [("performances/artists/Disclosure/file.mp3", 2)]
+        response = await client.post("/execution/start")
+
+    assert response.status_code == 200
+    assert "Path collisions detected" in response.text
+    assert "performances/artists/Disclosure/file.mp3" in response.text
+    mock_pool.enqueue_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
+    """POST /execution/start proceeds with execution when no collisions detected."""
+    mock_pool = AsyncMock()
+    mock_pool.enqueue_job = AsyncMock()
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    with patch("phaze.routers.execution.detect_collisions", new_callable=AsyncMock) as mock_detect:
+        mock_detect.return_value = []
+        response = await client.post("/execution/start")
+
+    assert response.status_code == 200
+    assert "sse-connect" in response.text
+    mock_pool.enqueue_job.assert_called_once()
