@@ -60,7 +60,11 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
   2. Proposed destination path is visible in the approval UI next to the filename proposal
   3. When two approved files would land at the same destination path, a collision warning is displayed before execution
   4. User can view a directory tree preview showing where all approved files will land
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 13-01-PLAN.md -- Extend LLM prompt and Pydantic model with proposed_path
+- [ ] 13-02-PLAN.md -- Collision detection service, tree builder, preview route and templates
+- [ ] 13-03-PLAN.md -- Wire destination column, collision UI, execution gate, and visual verification
 **UI hint**: yes
 
 ### Phase 14: Duplicate Resolution UI
@@ -126,7 +130,7 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 10. CI Config & Bug Fixes | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
 | 12. Infrastructure & Audio Tag Extraction | v2.0 | 0/0 | Not started | - |
-| 13. AI Destination Paths | v2.0 | 0/0 | Not started | - |
+| 13. AI Destination Paths | v2.0 | 0/3 | Planning complete | - |
 | 14. Duplicate Resolution UI | v2.0 | 0/0 | Not started | - |
 | 15. 1001Tracklists Integration | v2.0 | 0/0 | Not started | - |
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 0/0 | Not started | - |
