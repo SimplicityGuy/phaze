@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Directory Preview - Phaze{% endblock %}
+
+{% block skip_link %}
+<a href="#tree-container" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to directory tree</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div>
+        <h1 class="text-xl font-semibold text-gray-900">Directory Preview</h1>
+        <p class="text-sm text-gray-500">{{ total_files }} approved files in {{ total_dirs }} directories</p>
+    </div>
+
+    {% if total_files == 0 %}
+    <div class="text-center py-8">
+        <h2 class="text-lg font-semibold text-gray-700">No approved proposals</h2>
+        <p class="text-sm text-gray-500 mt-2">Approve proposals on the <a href="/proposals/" class="text-blue-600 hover:text-blue-800 underline">Proposals page</a> first, then return here to preview the directory structure.</p>
+    </div>
+    {% else %}
+    <div class="flex gap-2">
+        <button @click="document.querySelectorAll('details').forEach(d => d.open = true)" class="text-sm text-gray-600 hover:text-gray-900 px-2 py-1">Expand All</button>
+        <button @click="document.querySelectorAll('details').forEach(d => d.open = false)" class="text-sm text-gray-600 hover:text-gray-900 px-2 py-1">Collapse All</button>
+    </div>
+
+    <div id="tree-container" class="mt-6">
+        {% import "preview/partials/tree_node.html" as tree_macros %}
+        {{ tree_macros.render_node(tree) }}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

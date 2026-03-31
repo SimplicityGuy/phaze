@@ -1,0 +1,20 @@
+{% macro render_node(node, depth=0) %}
+<details {% if depth < 2 %}open{% endif %} class="ml-4">
+    <summary class="cursor-pointer hover:bg-gray-50 py-1 flex items-center gap-2">
+        <span class="text-gray-400">&#128193;</span>
+        <span class="font-semibold text-sm text-gray-900">{{ node.name }}</span>
+        <span class="text-xs text-gray-400">({{ node.file_count }} files)</span>
+    </summary>
+    <div class="ml-4">
+        {% for child_name in node.children|sort %}
+            {{ render_node(node.children[child_name], depth + 1) }}
+        {% endfor %}
+        {% for filename in node.files|sort %}
+            <div class="py-1 text-sm text-gray-600 flex items-center gap-2">
+                <span class="text-gray-300">&#128196;</span>
+                {{ filename }}
+            </div>
+        {% endfor %}
+    </div>
+</details>
+{% endmacro %}
