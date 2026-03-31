@@ -33,7 +33,7 @@ Declared values (must be multiples of 4):
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| xs | 4px | Icon gaps (`gap-1`), inline badge padding (`py-0.5`) |
+| xs | 4px | Icon gaps (`gap-1`), inline badge padding (`py-1`) |
 | sm | 8px | Compact element spacing (`gap-2`, `px-2`) |
 | md | 16px | Default cell padding (`px-3 py-3` = 12px/12px -- closest to md), page horizontal padding (`px-4`) |
 | lg | 24px | Not used in this phase |
@@ -52,7 +52,7 @@ Exceptions: Tree indentation uses `ml-4` (16px) per depth level for nested `<det
 | Body | 14px (`text-sm`) | 400 (regular) | 1.43 (Tailwind default for text-sm) |
 | Label | 12px (`text-xs`) | 600 (semibold) | 1.33 (Tailwind default for text-xs) |
 | Heading | 20px (`text-xl`) | 600 (semibold) | 1.4 |
-| Tree folder name | 14px (`text-sm`) | 500 (medium) | 1.43 |
+| Tree folder name | 14px (`text-sm`) | 600 (semibold) | 1.43 |
 
 Source: Existing proposal table uses `text-sm` for body, `text-xs font-semibold uppercase` for column headers, `text-xs` for badges. Phase 13 follows the same scale.
 
@@ -91,8 +91,8 @@ Location: `proposals/partials/proposal_row.html`, inserted after Proposed Filena
 | State | Rendering |
 |-------|-----------|
 | Path present | `text-sm text-gray-700`, truncated at 40 characters, full path in `title` tooltip |
-| Path null | Badge: `text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded` with text "No path" |
-| Path with collision | Path text + inline collision badge: `text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700` with text "Collision" |
+| Path null | Badge: `text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded` with text "No path" |
+| Path with collision | Path text + inline collision badge: `text-xs font-semibold px-2 py-1 rounded-full bg-orange-100 text-orange-700` with text "Collision" |
 
 Column header: "Destination", same style as existing headers (`text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3`). Not sortable in this phase.
 
@@ -141,9 +141,9 @@ Location: `templates/preview/partials/tree_node.html`, rendered via Jinja2 macro
 | Indentation | `ml-4` (16px) per depth level |
 | Folder row | `cursor-pointer hover:bg-gray-50 py-1 flex items-center gap-2` |
 | Folder icon | Unicode folder glyph (&#128193;), `text-gray-400` |
-| Folder name | `font-medium text-sm text-gray-900` |
+| Folder name | `font-semibold text-sm text-gray-900` |
 | File count | `text-xs text-gray-400` -- "(N files)" after folder name |
-| File row | `py-0.5 text-sm text-gray-600 flex items-center gap-2` |
+| File row | `py-1 text-sm text-gray-600 flex items-center gap-2` |
 | File icon | Unicode file glyph (&#128196;), `text-gray-300` |
 
 ### New: Collision Block (execution gate)
