@@ -15,6 +15,22 @@
     <td class="px-3 py-3" title="{{ proposal.proposed_filename }}">
         {{ proposal.proposed_filename|truncate(60) }}
     </td>
+    <td class="px-3 py-3 max-w-48">
+        {% set collision_ids = collision_ids|default({}) %}
+        {% if proposal.proposed_path %}
+            <span class="text-sm text-gray-700 truncate block" title="{{ proposal.proposed_path }}">
+                {{ proposal.proposed_path|truncate(40) }}
+            </span>
+            {% if proposal.id|string in collision_ids %}
+                <span role="status" class="text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 ml-1"
+                      title="Another approved file targets this same destination">
+                    Collision
+                </span>
+            {% endif %}
+        {% else %}
+            <span class="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">No path</span>
+        {% endif %}
+    </td>
     <td class="px-3 py-3">
         {% set conf = proposal.confidence or 0 %}
         <span class="font-semibold

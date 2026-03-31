@@ -30,6 +30,7 @@
                     {% endif %}
                 </button>
             </th>
+            <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">Destination</th>
             <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">
                 <button
                     hx-get="/proposals/?status={{ current_status }}&q={{ search_query }}&sort=confidence&order={% if current_sort == 'confidence' and current_order == 'asc' %}desc{% else %}asc{% endif %}&page_size={{ pagination.page_size }}"

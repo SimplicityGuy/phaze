@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.proposal import ProposalStatus
+from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
     bulk_update_status,
     get_proposal_stats,
@@ -49,16 +50,19 @@ async def list_proposals(
         sort_order=order,
     )
     stats = await get_proposal_stats(session)
+    collision_ids = await get_collision_ids(session)
 
     context = {
         "request": request,
         "proposals": proposals,
         "pagination": pagination,
         "stats": stats,
+        "collision_ids": collision_ids,
         "current_status": effective_status,
         "search_query": q or "",
         "current_sort": sort,
         "current_order": order,
+        "current_page": "proposals",
     }
 
     # HTMX requests get tabs + table fragment (so tab active state updates)
