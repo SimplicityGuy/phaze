@@ -29,7 +29,7 @@ async def test_startup_creates_process_pool(tmp_path) -> None:
         patch("phaze.tasks.worker.settings") as mock_settings,
         patch("phaze.tasks.worker.load_prompt_template", return_value="t"),
         patch("phaze.tasks.worker.ProposalService"),
-        patch("phaze.tasks.worker.create_async_engine") as mock_engine,
+        patch("phaze.tasks.worker.create_async_engine"),
     ):
         mock_settings.models_path = str(models_dir)
         mock_settings.llm_model = "test"

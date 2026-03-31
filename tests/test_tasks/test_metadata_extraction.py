@@ -126,7 +126,7 @@ async def test_no_tags_creates_empty_metadata_row(mock_extract: MagicMock) -> No
 
 
 @patch("phaze.tasks.metadata_extraction.extract_tags")
-async def test_exception_triggers_retry(mock_extract: MagicMock) -> None:
+async def test_exception_triggers_retry(_mock_extract: MagicMock) -> None:
     """Exception during processing triggers arq Retry with exponential backoff."""
     ctx = _make_ctx(job_try=2)
     session = ctx["_mock_session"]
@@ -152,9 +152,39 @@ async def test_run_scan_auto_enqueues_extraction() -> None:
     file_id_3 = uuid.uuid4()
 
     mock_records = [
-        {"id": file_id_1, "file_type": "mp3", "sha256_hash": "a" * 64, "original_path": "/a.mp3", "original_filename": "a.mp3", "current_path": "/a.mp3", "file_size": 100, "state": "discovered", "batch_id": None},
-        {"id": file_id_2, "file_type": "mp4", "sha256_hash": "b" * 64, "original_path": "/b.mp4", "original_filename": "b.mp4", "current_path": "/b.mp4", "file_size": 200, "state": "discovered", "batch_id": None},
-        {"id": file_id_3, "file_type": "txt", "sha256_hash": "c" * 64, "original_path": "/c.txt", "original_filename": "c.txt", "current_path": "/c.txt", "file_size": 50, "state": "discovered", "batch_id": None},
+        {
+            "id": file_id_1,
+            "file_type": "mp3",
+            "sha256_hash": "a" * 64,
+            "original_path": "/a.mp3",
+            "original_filename": "a.mp3",
+            "current_path": "/a.mp3",
+            "file_size": 100,
+            "state": "discovered",
+            "batch_id": None,
+        },
+        {
+            "id": file_id_2,
+            "file_type": "mp4",
+            "sha256_hash": "b" * 64,
+            "original_path": "/b.mp4",
+            "original_filename": "b.mp4",
+            "current_path": "/b.mp4",
+            "file_size": 200,
+            "state": "discovered",
+            "batch_id": None,
+        },
+        {
+            "id": file_id_3,
+            "file_type": "txt",
+            "sha256_hash": "c" * 64,
+            "original_path": "/c.txt",
+            "original_filename": "c.txt",
+            "current_path": "/c.txt",
+            "file_size": 50,
+            "state": "discovered",
+            "batch_id": None,
+        },
     ]
 
     batch_id = uuid.uuid4()
