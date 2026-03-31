@@ -4,10 +4,10 @@ milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
 status: active
 stopped_at: null
-last_updated: "2026-03-30T22:00:00.000Z"
-last_activity: 2026-03-30 -- Milestone v2.0 started
+last_updated: "2026-03-30T23:00:00.000Z"
+last_activity: 2026-03-30 -- Roadmap created for v2.0
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Defining requirements for v2.0
+**Current focus:** Phase 12 - Infrastructure & Audio Tag Extraction
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-03-30 — Milestone v2.0 started
+Phase: 12 of 17 (Infrastructure & Audio Tag Extraction)
+Plan: --
+Status: Ready to plan
+Last activity: 2026-03-30 -- Roadmap created for v2.0
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -38,9 +38,14 @@ Progress: [░░░░░░░░░░] 0%
 
 - Total plans completed: 24
 - Total phases: 11
-- Timeline: 4 days (2026-03-27 → 2026-03-30)
+- Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
 - LOC: 7,975 Python
+
+**v2.0 Velocity:**
+
+- Total plans completed: 0
+- Average duration: --
 
 ## Accumulated Context
 
@@ -54,10 +59,10 @@ None.
 
 ### Blockers/Concerns
 
-None.
+- Research flags: Phase 15 (1001Tracklists) needs endpoint validation; Phase 16 (Fingerprint) needs audfprint Python 3.13 compatibility spike and Panako API verification.
 
 ## Session Continuity
 
 Last session: 2026-03-30
-Stopped at: Defining v2.0 requirements
+Stopped at: Roadmap created for v2.0
 Resume file: None
