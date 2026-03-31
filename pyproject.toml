@@ -15,6 +15,7 @@ dependencies = [
     "essentia-tensorflow>=2.1b6.dev1389; sys_platform != 'linux' or platform_machine == 'x86_64'",
     "fastapi>=0.135.2",
     "litellm>=1.82.6,<1.82.7",
+    "mutagen>=1.47.0",
     "numpy>=1.26.0",
     "pydantic-settings>=2.13.1",
     "python-multipart>=0.0.20",
@@ -78,6 +79,10 @@ disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
 module = ["essentia", "essentia.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mutagen", "mutagen.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
