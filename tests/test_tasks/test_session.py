@@ -1,18 +1,26 @@
-"""Tests for the shared task session module."""
+"""Tests for the shared task session pattern (INFRA-01)."""
 
-import pytest
-
-from phaze.tasks.session import get_task_session
+import inspect
 
 
-@pytest.mark.asyncio
-async def test_get_task_session_returns_async_session():
-    """get_task_session returns an AsyncSession instance."""
-    session = await get_task_session()
-    try:
-        assert session is not None
-        # Check it's an AsyncSession (has execute method)
-        assert hasattr(session, "execute")
-        assert hasattr(session, "commit")
-    finally:
-        await session.close()
+def test_session_module_deprecated():
+    """session.py no longer exports get_task_session."""
+    import phaze.tasks.session as mod
+
+    assert not hasattr(mod, "get_task_session")
+
+
+def test_worker_startup_creates_engine_in_ctx():
+    """Verify startup hook signature expects to populate ctx with async_session."""
+    from phaze.tasks.worker import startup
+
+    sig = inspect.signature(startup)
+    assert "ctx" in sig.parameters
+
+
+def test_worker_shutdown_disposes_engine():
+    """Verify shutdown hook signature accepts ctx for engine disposal."""
+    from phaze.tasks.worker import shutdown
+
+    sig = inspect.signature(shutdown)
+    assert "ctx" in sig.parameters

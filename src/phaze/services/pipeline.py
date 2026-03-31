@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 # The pipeline stages in order, for display
 PIPELINE_STAGES = [
     FileState.DISCOVERED,
+    FileState.METADATA_EXTRACTED,
     FileState.ANALYZED,
     FileState.PROPOSAL_GENERATED,
     FileState.APPROVED,

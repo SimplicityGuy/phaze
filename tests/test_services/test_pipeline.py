@@ -20,6 +20,7 @@ async def test_get_pipeline_stats_empty(session: AsyncSession):
     """Empty database returns zero counts for all stages."""
     stats = await get_pipeline_stats(session)
     assert stats["discovered"] == 0
+    assert stats["metadata_extracted"] == 0
     assert stats["analyzed"] == 0
     assert stats["proposal_generated"] == 0
     assert stats["approved"] == 0
@@ -57,6 +58,25 @@ async def test_get_pipeline_stats_counts(session: AsyncSession):
     stats = await get_pipeline_stats(session)
     assert stats["discovered"] == 3
     assert stats["analyzed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_pipeline_stats_includes_metadata_extracted(session: AsyncSession):
+    """Stats include METADATA_EXTRACTED state count."""
+    f = FileRecord(
+        id=uuid.uuid4(),
+        sha256_hash="m" * 64,
+        original_path="/music/tagged.mp3",
+        original_filename="tagged.mp3",
+        current_path="/music/tagged.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=FileState.METADATA_EXTRACTED,
+    )
+    session.add(f)
+    await session.commit()
+    stats = await get_pipeline_stats(session)
+    assert stats["metadata_extracted"] == 1
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,6 @@ from typing import Any
 import uuid
 
 from phaze.services.execution import execute_single_file, get_approved_proposals
-from phaze.tasks.session import get_task_session
 
 
 logger = logging.getLogger(__name__)
@@ -32,9 +31,8 @@ async def execute_approved_batch(ctx: dict[str, Any], batch_id: str | None = Non
         batch_id = uuid.uuid4().hex
 
     redis = ctx["redis"]
-    session = await get_task_session()
 
-    try:
+    async with ctx["async_session"]() as session:
         proposals = await get_approved_proposals(session)
         total = len(proposals)
         completed = 0
@@ -92,5 +90,3 @@ async def execute_approved_batch(ctx: dict[str, Any], batch_id: str | None = Non
             "completed": completed,
             "failed": failed,
         }
-    finally:
-        await session.close()

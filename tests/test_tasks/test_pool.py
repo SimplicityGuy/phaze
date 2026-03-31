@@ -1,7 +1,7 @@
 """Tests for process pool lifecycle and helpers."""
 
 from concurrent.futures import ProcessPoolExecutor
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from phaze.config import settings
 from phaze.tasks.pool import create_process_pool, run_in_process_pool
@@ -29,24 +29,31 @@ async def test_startup_creates_process_pool(tmp_path) -> None:
         patch("phaze.tasks.worker.settings") as mock_settings,
         patch("phaze.tasks.worker.load_prompt_template", return_value="t"),
         patch("phaze.tasks.worker.ProposalService"),
+        patch("phaze.tasks.worker.create_async_engine") as mock_engine,
     ):
         mock_settings.models_path = str(models_dir)
         mock_settings.llm_model = "test"
         mock_settings.llm_max_rpm = 30
+        mock_settings.database_url = "postgresql+asyncpg://test:test@localhost/test"
+        mock_settings.debug = False
         await startup(ctx)
     try:
         assert "process_pool" in ctx
         assert isinstance(ctx["process_pool"], ProcessPoolExecutor)
+        assert "async_session" in ctx
+        assert "task_engine" in ctx
     finally:
         ctx["process_pool"].shutdown(wait=False)
 
 
 async def test_shutdown_calls_pool_shutdown() -> None:
-    """shutdown(ctx) calls process_pool.shutdown(wait=True)."""
+    """shutdown(ctx) calls process_pool.shutdown(wait=True) and disposes task_engine."""
     mock_pool = MagicMock(spec=ProcessPoolExecutor)
-    ctx: dict = {"process_pool": mock_pool}
+    mock_engine = AsyncMock()
+    ctx: dict = {"process_pool": mock_pool, "task_engine": mock_engine}
     await shutdown(ctx)
     mock_pool.shutdown.assert_called_once_with(wait=True)
+    mock_engine.dispose.assert_awaited_once()
 
 
 async def test_run_in_process_pool_executes_function() -> None:
