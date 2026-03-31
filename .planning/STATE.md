@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
-status: completed
-stopped_at: Completed 12-03-PLAN.md
-last_updated: "2026-03-31T15:00:11.746Z"
-last_activity: 2026-03-31
+status: active
+stopped_at: null
+last_updated: "2026-03-30T22:00:00.000Z"
+last_activity: 2026-03-30 -- Milestone v2.0 started
 progress:
-  total_phases: 12
-  completed_phases: 12
-  total_plans: 27
-  completed_plans: 27
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 12 -- infrastructure-audio-tag-extraction
+**Current focus:** Defining requirements for v2.0
 
 ## Current Position
 
-Phase: 12
-Plan: Not started
-Status: Phase 12 plans complete
-Last activity: 2026-03-31
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-30 — Milestone v2.0 started
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -38,21 +38,15 @@ Progress: [██████████] 100%
 
 - Total plans completed: 24
 - Total phases: 11
-- Timeline: 4 days (2026-03-27 -> 2026-03-30)
+- Timeline: 4 days (2026-03-27 → 2026-03-30)
 - Tests: 282 passing
 - LOC: 7,975 Python
-
-**v2.0 Velocity:**
-
-- Total plans completed: 3
-- Average duration: --
 
 ## Accumulated Context
 
 ### Decisions
 
-- Used 6 tag fields matching actual FileMetadata model instead of 9 planned fields (track_number, duration, bitrate not on model)
-- Convergence gate uses exists() subqueries for both FileMetadata and AnalysisResult
+Decisions logged in PROJECT.md Key Decisions table.
 
 ### Pending Todos
 
@@ -60,10 +54,10 @@ None.
 
 ### Blockers/Concerns
 
-- Research flags: Phase 15 (1001Tracklists) needs endpoint validation; Phase 16 (Fingerprint) needs audfprint Python 3.13 compatibility spike and Panako API verification.
+None.
 
 ## Session Continuity
 
-Last session: 2026-03-31T06:55:07.366Z
-Stopped at: Completed 12-03-PLAN.md
-Resume file: .planning/phases/12-infrastructure-audio-tag-extraction/12-03-SUMMARY.md
+Last session: 2026-03-30
+Stopped at: Defining v2.0 requirements
+Resume file: None
