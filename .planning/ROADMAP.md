@@ -49,7 +49,11 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
   3. User can trigger tag extraction that reads ID3/Vorbis/MP4/FLAC/OPUS tags from music files and see artist, title, album, year, genre, track number, duration, and bitrate in FileMetadata
   4. Full raw tag dump is stored in FileMetadata.raw_tags JSONB column and is queryable
   5. LLM proposal prompts include extracted tag data, producing noticeably richer filename and path proposals
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 12-01-PLAN.md -- Infrastructure: shared engine pool, model expansion, pipeline stages
+- [ ] 12-02-PLAN.md -- Tag extraction service, arq task, manual API endpoint
+- [ ] 12-03-PLAN.md -- LLM context integration, convergence gate for proposal generation
 
 ### Phase 13: AI Destination Paths
 **Goal**: Users can review and approve AI-proposed destination paths alongside filenames, with collision warnings and a preview of the resulting directory structure
@@ -125,7 +129,7 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 9. Pipeline Orchestration | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 10. CI Config & Bug Fixes | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
-| 12. Infrastructure & Audio Tag Extraction | v2.0 | 0/0 | Not started | - |
+| 12. Infrastructure & Audio Tag Extraction | v2.0 | 0/3 | In progress | - |
 | 13. AI Destination Paths | v2.0 | 0/0 | Not started | - |
 | 14. Duplicate Resolution UI | v2.0 | 0/0 | Not started | - |
 | 15. 1001Tracklists Integration | v2.0 | 0/0 | Not started | - |
