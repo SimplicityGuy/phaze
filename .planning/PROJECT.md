@@ -60,7 +60,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 - [ ] Use AI to propose destination paths for file organization (proposed_path wiring exists, LLM prompt needs path generation)
 - [ ] Resolve duplicate files (human decision via approval UI, detection done in v1.0 Phase 3)
-- [ ] Extract and use existing audio tags (ID3, Vorbis, MP4) for richer LLM context (FileMetadata model scaffolded)
+- [x] Extract and use existing audio tags (ID3, Vorbis, MP4) for richer LLM context — v2.0 Phase 12
 
 ### Out of Scope
 
@@ -75,8 +75,8 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - v1.0 shipped with full pipeline: scan → analyze → propose → approve → execute
 - ~200K files total, mix of music files and full concert video streams
 - Concert videos are primarily recordings of live streams (YouTube streams from festivals, etc.)
-- FileMetadata model and table exist but are unpopulated (mutagen integration in v2.0)
-- Task session creates new engine per invocation — acceptable for v1 but worth pooling for v2 scale
+- FileMetadata populated via mutagen-based tag extraction (Phase 12 complete) — artist, title, album, year, genre, track_number, duration, bitrate, raw_tags
+- Worker tasks share a pooled async engine (Phase 12 INFRA-01) — no per-invocation engine creation
 - This is a personal tool running on a home server, not a multi-user SaaS
 - 1001tracklists.com has documented HTTP endpoints for search (POST) and detail pages (POST) — no headless browser needed
 - Audio fingerprinting: audfprint (Python-native, landmark-based) and Panako (Java, tempo-robust) as hybrid approach with weighted scoring
@@ -124,4 +124,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-30 after v2.0 milestone start*
+*Last updated: 2026-03-31 after Phase 12 completion*
