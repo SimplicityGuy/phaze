@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 
 from phaze.config import settings
@@ -28,7 +28,7 @@ _background_tasks: set[asyncio.Task[None]] = set()
 
 
 @router.post("/scan")
-async def trigger_scan(request: ScanRequest) -> ScanResponse:
+async def trigger_scan(request: ScanRequest, http_request: Request) -> ScanResponse:
     """Trigger a file discovery scan.
 
     Accepts an optional path override; defaults to the configured SCAN_PATH.
@@ -46,7 +46,8 @@ async def trigger_scan(request: ScanRequest) -> ScanResponse:
         raise HTTPException(status_code=400, detail=f"Scan path is not a valid directory: {scan_path}")
 
     batch_id = uuid.uuid4()
-    task = asyncio.create_task(run_scan(scan_path, batch_id, async_session))
+    arq_pool = http_request.app.state.arq_pool
+    task = asyncio.create_task(run_scan(scan_path, batch_id, async_session, arq_pool=arq_pool))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 

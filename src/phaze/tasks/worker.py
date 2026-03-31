@@ -11,6 +11,7 @@ from phaze.config import settings
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.functions import process_file
+from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.proposal import generate_proposals
 
@@ -48,9 +49,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         pool_size=10,
         max_overflow=5,
     )
-    ctx["async_session"] = async_sessionmaker(
-        task_engine, class_=AsyncSession, expire_on_commit=False
-    )
+    ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
 
 
@@ -71,7 +70,7 @@ class WorkerSettings:
     Run via: ``uv run arq phaze.tasks.worker.WorkerSettings``
     """
 
-    functions: ClassVar[list[Any]] = [process_file, generate_proposals, execute_approved_batch]
+    functions: ClassVar[list[Any]] = [process_file, generate_proposals, execute_approved_batch, extract_file_metadata]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)

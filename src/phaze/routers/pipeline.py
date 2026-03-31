@@ -9,10 +9,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 
 from phaze.config import settings
+from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
-from phaze.models.file import FileState
+from phaze.models.file import FileRecord, FileState
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
 
@@ -172,4 +174,64 @@ async def trigger_proposals_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "proposal generation", "count": count, "batches": batches_count},
+    )
+
+
+async def _enqueue_extraction_jobs(arq_pool: Any, file_ids: list[str]) -> None:
+    """Background coroutine to enqueue extract_file_metadata jobs."""
+    for fid in file_ids:
+        await arq_pool.enqueue_job("extract_file_metadata", fid)
+
+
+@router.post("/api/v1/extract-metadata")
+async def trigger_metadata_extraction(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Enqueue extract_file_metadata jobs for all music/video files.
+
+    Per D-04: queues all files regardless of state for backfill.
+    Per D-09: manual API endpoint for re-extraction.
+    """
+    music_video_types = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
+    stmt = select(FileRecord).where(FileRecord.file_type.in_(music_video_types))
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
+
+    if not files:
+        return {"enqueued": 0, "message": "No music/video files found"}
+
+    arq_pool = request.app.state.arq_pool
+    file_ids = [str(f.id) for f in files]
+
+    task = asyncio.create_task(_enqueue_extraction_jobs(arq_pool, file_ids))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return {"enqueued": len(file_ids), "message": f"Enqueued {len(file_ids)} files for metadata extraction"}
+
+
+@router.post("/pipeline/extract-metadata", response_class=HTMLResponse)
+async def trigger_extraction_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: trigger metadata extraction and return response fragment."""
+    music_video_types = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
+    stmt = select(FileRecord).where(FileRecord.file_type.in_(music_video_types))
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
+    count = len(files)
+
+    if count > 0:
+        arq_pool = request.app.state.arq_pool
+        file_ids = [str(f.id) for f in files]
+        task = asyncio.create_task(_enqueue_extraction_jobs(arq_pool, file_ids))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/trigger_response.html",
+        context={"request": request, "action": "metadata extraction", "count": count},
     )

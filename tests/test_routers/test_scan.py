@@ -23,6 +23,7 @@ async def test_trigger_scan_returns_batch_id(client: AsyncClient, tmp_path: Path
     """POST /api/v1/scan should return 200 with batch_id and message."""
     monkeypatch.setattr("phaze.routers.scan.settings.scan_path", str(tmp_path))
     monkeypatch.setattr("phaze.routers.scan.run_scan", AsyncMock())
+    client._transport.app.state.arq_pool = AsyncMock()  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/scan", json={})
 
@@ -37,6 +38,7 @@ async def test_trigger_scan_returns_batch_id(client: AsyncClient, tmp_path: Path
 async def test_trigger_scan_with_path_override(client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /api/v1/scan with path override should use the provided path."""
     monkeypatch.setattr("phaze.routers.scan.run_scan", AsyncMock())
+    client._transport.app.state.arq_pool = AsyncMock()  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/scan", json={"path": str(tmp_path)})
 
