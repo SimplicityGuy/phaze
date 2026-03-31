@@ -8,7 +8,9 @@ import uuid
 
 import pytest
 
+from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
+from phaze.models.metadata import FileMetadata
 
 
 if TYPE_CHECKING:
@@ -29,6 +31,24 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
         file_size=1000,
         state=state,
     )
+
+
+def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[FileRecord, AnalysisResult, FileMetadata]:
+    """Create a FileRecord with both AnalysisResult and FileMetadata for convergence gate."""
+    uid = uuid.uuid4()
+    file_rec = FileRecord(
+        id=uid,
+        sha256_hash=uid.hex,
+        original_path=f"/music/{uid.hex}.mp3",
+        original_filename=f"{uid.hex}.mp3",
+        current_path=f"/music/{uid.hex}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=state,
+    )
+    analysis = AnalysisResult(file_id=uid, bpm=128.0, musical_key="Cm")
+    metadata = FileMetadata(file_id=uid, artist="Test", title="Track")
+    return file_rec, analysis, metadata
 
 
 @pytest.mark.asyncio
@@ -76,8 +96,16 @@ async def test_analyze_no_files(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /api/v1/proposals/generate with ANALYZED files returns batch counts."""
-    session.add_all([_make_file(state=FileState.ANALYZED) for _ in range(15)])
+    """POST /api/v1/proposals/generate with convergence-ready files returns batch counts."""
+    files = []
+    related = []
+    for _ in range(15):
+        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        files.append(file_rec)
+        related.extend([analysis, metadata])
+    session.add_all(files)
+    await session.flush()
+    session.add_all(related)
     await session.commit()
 
     mock_pool = AsyncMock()
@@ -144,8 +172,16 @@ async def test_trigger_analysis_ui_no_files(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/proposals with ANALYZED files returns HTML response fragment."""
-    session.add_all([_make_file(state=FileState.ANALYZED) for _ in range(5)])
+    """POST /pipeline/proposals with convergence-ready files returns HTML response fragment."""
+    files = []
+    related = []
+    for _ in range(5):
+        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        files.append(file_rec)
+        related.extend([analysis, metadata])
+    session.add_all(files)
+    await session.flush()
+    session.add_all(related)
     await session.commit()
 
     mock_pool = AsyncMock()
@@ -188,7 +224,15 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
 @pytest.mark.asyncio
 async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/proposals/generate enqueues batched jobs in background."""
-    session.add_all([_make_file(state=FileState.ANALYZED) for _ in range(5)])
+    files = []
+    related = []
+    for _ in range(5):
+        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        files.append(file_rec)
+        related.extend([analysis, metadata])
+    session.add_all(files)
+    await session.flush()
+    session.add_all(related)
     await session.commit()
 
     mock_pool = AsyncMock()

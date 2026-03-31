@@ -11,6 +11,7 @@ from sqlalchemy import select
 from phaze.config import settings
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.services.proposal import (
     ProposalService,
     build_file_context,
@@ -50,9 +51,12 @@ async def generate_proposals(ctx: dict[str, Any], file_ids: list[str], batch_ind
                 analysis_result_row = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == uid))
                 analysis = analysis_result_row.scalar_one_or_none()
 
+                metadata_row = await session.execute(select(FileMetadata).where(FileMetadata.file_id == uid))
+                metadata = metadata_row.scalar_one_or_none()
+
                 companions = await load_companion_contents(session, uid, settings.llm_max_companion_chars)
 
-                ctx_dict = build_file_context(file_record, analysis, companions)
+                ctx_dict = build_file_context(file_record, analysis, companions, metadata=metadata)
                 ctx_dict["index"] = len(files_context)
                 files_context.append(ctx_dict)
                 valid_file_ids.append(fid)

@@ -9,12 +9,14 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from phaze.config import settings
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
+from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
+from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
 
@@ -73,13 +75,28 @@ async def trigger_proposals(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Enqueue generate_proposals jobs for all ANALYZED files in batches (per D-01, D-05).
+    """Enqueue generate_proposals jobs for files with both metadata and analysis (per D-02 convergence gate).
 
     Uses settings.llm_batch_size (default 10) for batch chunking.
     """
-    files = await get_files_by_state(session, FileState.ANALYZED)
+    # Per D-02: convergence gate -- only propose for files with BOTH metadata AND analysis
+    stmt = (
+        select(FileRecord)
+        .where(
+            FileRecord.state.in_(
+                [
+                    FileState.ANALYZED,
+                    FileState.METADATA_EXTRACTED,
+                ]
+            )
+        )
+        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
+        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+    )
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
     if not files:
-        return {"enqueued_batches": 0, "total_files": 0, "message": "No files in ANALYZED state"}
+        return {"enqueued_batches": 0, "total_files": 0, "message": "No files ready for proposals (need both metadata and analysis)"}
 
     file_ids = [str(f.id) for f in files]
     batch_size = settings.llm_batch_size
@@ -156,7 +173,22 @@ async def trigger_proposals_ui(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """HTMX endpoint: trigger proposal generation and return response fragment."""
-    files = await get_files_by_state(session, FileState.ANALYZED)
+    # Per D-02: convergence gate -- only propose for files with BOTH metadata AND analysis
+    stmt = (
+        select(FileRecord)
+        .where(
+            FileRecord.state.in_(
+                [
+                    FileState.ANALYZED,
+                    FileState.METADATA_EXTRACTED,
+                ]
+            )
+        )
+        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
+        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+    )
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
     count = len(files)
     batches_count = 0
 
