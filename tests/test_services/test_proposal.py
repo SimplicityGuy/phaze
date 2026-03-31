@@ -477,6 +477,160 @@ class TestCheckRateLimit:
 # ---------------------------------------------------------------------------
 
 
+class TestFileProposalResponsePath:
+    """Tests for proposed_path field on FileProposalResponse."""
+
+    def test_accepts_proposed_path(self):
+        from phaze.services.proposal import FileProposalResponse
+
+        resp = FileProposalResponse(
+            file_index=0,
+            proposed_filename="test.mp3",
+            confidence=0.9,
+            reasoning="test",
+            proposed_path="performances/artists/Disclosure",
+        )
+        assert resp.proposed_path == "performances/artists/Disclosure"
+
+    def test_defaults_proposed_path_to_none(self):
+        from phaze.services.proposal import FileProposalResponse
+
+        resp = FileProposalResponse(
+            file_index=0,
+            proposed_filename="test.mp3",
+            confidence=0.9,
+            reasoning="test",
+        )
+        assert resp.proposed_path is None
+
+
+class TestStoreProposalsPath:
+    """Tests for proposed_path handling in store_proposals."""
+
+    @pytest.mark.asyncio
+    async def test_persists_proposed_path(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=0.9,
+                    reasoning="test",
+                    proposed_path="performances/artists/Disclosure",
+                )
+            ]
+        )
+
+        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+            await store_proposals(session, [file_id], batch, [{"f": 1}])
+            call_kwargs = MockProposal.call_args[1]
+            assert call_kwargs["proposed_path"] == "performances/artists/Disclosure"
+
+    @pytest.mark.asyncio
+    async def test_normalizes_leading_trailing_slashes(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=0.9,
+                    reasoning="test",
+                    proposed_path="/performances/artists/Disclosure/",
+                )
+            ]
+        )
+
+        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+            await store_proposals(session, [file_id], batch, [{"f": 1}])
+            call_kwargs = MockProposal.call_args[1]
+            assert call_kwargs["proposed_path"] == "performances/artists/Disclosure"
+
+    @pytest.mark.asyncio
+    async def test_collapses_double_slashes(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=0.9,
+                    reasoning="test",
+                    proposed_path="performances//artists//Disclosure",
+                )
+            ]
+        )
+
+        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+            await store_proposals(session, [file_id], batch, [{"f": 1}])
+            call_kwargs = MockProposal.call_args[1]
+            assert call_kwargs["proposed_path"] == "performances/artists/Disclosure"
+
+    @pytest.mark.asyncio
+    async def test_leaves_none_path_as_none(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        file_record = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = file_record
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="test.mp3",
+                    confidence=0.9,
+                    reasoning="test",
+                )
+            ]
+        )
+
+        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+            await store_proposals(session, [file_id], batch, [{"f": 1}])
+            call_kwargs = MockProposal.call_args[1]
+            assert call_kwargs["proposed_path"] is None
+
+
 class TestStoreProposals:
     """Tests for store_proposals function."""
 

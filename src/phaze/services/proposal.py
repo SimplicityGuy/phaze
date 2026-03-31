@@ -50,6 +50,7 @@ class FileProposalResponse(BaseModel):
 
     file_index: int
     proposed_filename: str
+    proposed_path: str | None = None
     confidence: float
     artist: str | None = None
     event_name: str | None = None
@@ -279,9 +280,16 @@ async def store_proposals(
             "b2b_partners": proposal.b2b_partners,
             "input_context": files_context[proposal.file_index],
         }
+        path_raw = proposal.proposed_path
+        if path_raw:
+            path_raw = path_raw.strip("/")
+            while "//" in path_raw:
+                path_raw = path_raw.replace("//", "/")
+
         record = RenameProposal(
             file_id=uuid.UUID(fid),
             proposed_filename=proposal.proposed_filename,
+            proposed_path=path_raw,
             confidence=confidence,
             status=ProposalStatus.PENDING,
             context_used=context_used,
