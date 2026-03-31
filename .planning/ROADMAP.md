@@ -3,6 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-11 (shipped 2026-03-30)
+- **v2.0 Metadata Enrichment & Tracklist Integration** — Phases 12-17 (in progress)
 
 ## Phases
 
@@ -40,3 +41,4 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 | 9. Pipeline Orchestration | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 10. CI Config & Bug Fixes | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
+| 12. Infrastructure & Audio Tag Extraction | v2.0 | 1/3 | In Progress | — |
