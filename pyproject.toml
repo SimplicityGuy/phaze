@@ -46,7 +46,7 @@ ignore = ["B008", "C901", "E501", "S101"]
 [tool.ruff.lint.per-file-ignores]
 "src/phaze/main.py" = ["T201"]
 "src/phaze/cli/**" = ["T201"]
-"tests/**" = ["T201", "PLC", "S105"]
+"tests/**" = ["T201", "PLC", "S105", "ARG001"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2

@@ -72,7 +72,14 @@ class WorkerSettings:
     Run via: ``uv run arq phaze.tasks.worker.WorkerSettings``
     """
 
-    functions: ClassVar[list[Any]] = [process_file, generate_proposals, execute_approved_batch, extract_file_metadata, search_tracklist, scrape_and_store_tracklist]
+    functions: ClassVar[list[Any]] = [
+        process_file,
+        generate_proposals,
+        execute_approved_batch,
+        extract_file_metadata,
+        search_tracklist,
+        scrape_and_store_tracklist,
+    ]
     cron_jobs: ClassVar[list[Any]] = [
         cron(refresh_tracklists, month={1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, day=1, hour=3, minute=0, run_at_startup=False),
     ]

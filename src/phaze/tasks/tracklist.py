@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 import logging
 import random
-from datetime import datetime, timedelta, timezone
 from typing import Any
 import uuid
 
@@ -14,7 +14,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from phaze.models.file import FileRecord
-from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.tracklist_matcher import compute_match_confidence, parse_live_set_filename, should_auto_link
 from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistScraper
@@ -46,7 +45,7 @@ async def _store_scraped_tracklist(
             # Try common date formats
             for fmt in ("%Y-%m-%d", "%d %b %Y", "%B %d, %Y", "%m/%d/%Y"):
                 try:
-                    tracklist_date = datetime.strptime(scraped.date, fmt).date()  # noqa: DTZ007
+                    tracklist_date = datetime.strptime(scraped.date, fmt).date()
                     break
                 except ValueError:
                     continue
@@ -227,17 +226,13 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
     Per D-10: find tracklists where file_id IS NULL (unresolved) or updated_at < 90 days ago (stale).
     Per TL-04: add randomized jitter between scrapes (60-300 seconds).
     """
-    stale_threshold = datetime.now(tz=timezone.utc) - timedelta(days=90)
+    stale_threshold = datetime.now(tz=UTC) - timedelta(days=90)
     refreshed = 0
     errors = 0
 
     try:
         async with ctx["async_session"]() as session:
-            result = await session.execute(
-                select(Tracklist).where(
-                    (Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold)
-                )
-            )
+            result = await session.execute(select(Tracklist).where((Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold)))
             tracklists = list(result.scalars().all())
 
         for tl in tracklists:
@@ -249,7 +244,7 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
                 errors += 1
 
             # Randomized jitter between scrapes (per D-10, TL-04)
-            await asyncio.sleep(random.uniform(60, 300))  # noqa: S311
+            await asyncio.sleep(random.uniform(60, 300))  # noqa: S311  # nosec B311
 
     except Exception:
         logger.exception("Error during tracklist refresh")

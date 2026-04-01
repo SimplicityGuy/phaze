@@ -8,8 +8,16 @@ def test_all_tables_defined() -> None:
     """All 10 expected tables should be defined in metadata."""
     table_names = set(Base.metadata.tables.keys())
     expected = {
-        "files", "metadata", "analysis", "proposals", "execution_log", "scan_batches", "file_companions",
-        "tracklists", "tracklist_versions", "tracklist_tracks",
+        "files",
+        "metadata",
+        "analysis",
+        "proposals",
+        "execution_log",
+        "scan_batches",
+        "file_companions",
+        "tracklists",
+        "tracklist_versions",
+        "tracklist_tracks",
     }
     assert expected == table_names
 

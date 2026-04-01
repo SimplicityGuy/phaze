@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 import logging
 import random
 import re
-from dataclasses import dataclass, field
+from typing import ClassVar
 
-import httpx
 from bs4 import BeautifulSoup, Tag
+import httpx
 
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class TracklistScraper:
     _META_EVENT_SELECTOR = ".evtName"
     _META_DATE_SELECTOR = ".evtDate"
 
-    _DEFAULT_HEADERS = {
+    _DEFAULT_HEADERS: ClassVar[dict[str, str]] = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
@@ -94,7 +95,7 @@ class TracklistScraper:
 
     async def _rate_limit(self) -> None:
         """Apply rate limiting delay between requests."""
-        delay = random.uniform(self.MIN_DELAY, self.MAX_DELAY)  # noqa: S311
+        delay = random.uniform(self.MIN_DELAY, self.MAX_DELAY)  # noqa: S311  # nosec B311
         await asyncio.sleep(delay)
 
     async def search(self, query: str) -> list[TracklistSearchResult]:
