@@ -10,8 +10,8 @@ progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 10
-  completed_plans: 10
-  percent: 66
+  completed_plans: 11
+  percent: 70
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 15 — 1001tracklists-integration
+**Current focus:** Phase 16 — fingerprint-service-batch-ingestion
 
 ## Current Position
 
 Phase: 16
-Plan: Not started
-Status: Ready to execute
+Plan: 2 of 3
+Status: Executing
 Last activity: 2026-04-01
 
-Progress: [██████░░░░] 66%
+Progress: [███████░░░] 70%
 
 ## Performance Metrics
 
@@ -64,6 +64,9 @@ Progress: [██████░░░░] 66%
 - [Phase 14-duplicate-resolution-ui]: Undo toast uses 10-second timeout (not 5-second) per D-07 locked decision in duplicate resolution UI
 - [Phase 15]: arq cron job runs 1st of month at 03:00 UTC, run_at_startup=False to avoid refresh storms
 - [Phase 15]: Search endpoint uses synchronous-ish search (2-5s) rather than polling/SSE for manual user action
+- [Phase 16]: FingerprintEngine Protocol uses runtime_checkable for isinstance() adapter validation
+- [Phase 16]: AsyncSession import in TYPE_CHECKING block per ruff TC002 rule
+- [Phase 16]: PanakoAdapter mirrors AudfprintAdapter structure; factory could DRY later
 
 ### Pending Todos
 
@@ -75,6 +78,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-01T20:32:13.973Z
-Stopped at: Completed 15-02-PLAN.md
+Last session: 2026-04-01T23:29:01Z
+Stopped at: Completed 16-02-PLAN.md
 Resume file: None

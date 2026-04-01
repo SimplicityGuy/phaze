@@ -104,11 +104,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. Fingerprint service runs as a long-lived Docker container with HTTP API endpoints (ingest, query, health) accessible from the main application
   2. Batch job fingerprints all music files through the worker pool, with progress tracking, and results persist in the fingerprint database across container restarts
-**Plans:** 3 plans
-Plans:
-- [x] 16-01-PLAN.md -- Fingerprint containers (audfprint + Panako Dockerfiles, FastAPI APIs, Docker Compose)
-- [ ] 16-02-PLAN.md -- Main app service layer (Protocol, adapters, orchestrator, model, migration, tests)
-- [ ] 16-03-PLAN.md -- Integration (arq task, pipeline router, worker registration, justfile)
+**Plans**: TBD
 
 ### Phase 17: Live Set Matching & Tracklist Review
 **Goal**: Users can scan live set recordings against the fingerprint database and review proposed tracklists with confidence scores before accepting them
@@ -143,5 +139,5 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 13. AI Destination Paths | v2.0 | 3/3 | Complete    | 2026-03-31 |
 | 14. Duplicate Resolution UI | v2.0 | 2/2 | Complete    | 2026-04-01 |
 | 15. 1001Tracklists Integration | v2.0 | 2/2 | Complete    | 2026-04-01 |
-| 16. Fingerprint Service & Batch Ingestion | v2.0 | 1/3 | In Progress | - |
+| 16. Fingerprint Service & Batch Ingestion | v2.0 | 1/3 | In Progress|  |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 0/0 | Not started | - |

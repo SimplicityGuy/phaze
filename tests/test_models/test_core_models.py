@@ -5,7 +5,7 @@ from phaze.models.base import Base
 
 
 def test_all_tables_defined() -> None:
-    """All 10 expected tables should be defined in metadata."""
+    """All 11 expected tables should be defined in metadata."""
     table_names = set(Base.metadata.tables.keys())
     expected = {
         "files",
@@ -15,6 +15,7 @@ def test_all_tables_defined() -> None:
         "execution_log",
         "scan_batches",
         "file_companions",
+        "fingerprint_results",
         "tracklists",
         "tracklist_versions",
         "tracklist_tracks",
