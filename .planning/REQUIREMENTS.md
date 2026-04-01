@@ -36,8 +36,8 @@ Requirements for Metadata Enrichment & Tracklist Integration. Each maps to roadm
 
 ### Audio Fingerprinting
 
-- [ ] **FPRINT-01**: Fingerprint service runs as a long-running Docker container with API/message interface
-- [ ] **FPRINT-02**: Batch job fingerprints all music files via worker pool with persistent fingerprint database
+- [x] **FPRINT-01**: Fingerprint service runs as a long-running Docker container with API/message interface
+- [x] **FPRINT-02**: Batch job fingerprints all music files via worker pool with persistent fingerprint database
 - [ ] **FPRINT-03**: User can scan a live set recording against the fingerprint DB to identify tracks with timestamps
 - [ ] **FPRINT-04**: Proposed tracklists from fingerprint matches displayed in admin UI for review and approval
 
@@ -106,8 +106,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DEDUP-02 | Phase 14 | Complete |
 | DEDUP-03 | Phase 14 | Complete |
 | DEDUP-04 | Phase 14 | Complete |
-| FPRINT-01 | Phase 16 | Pending |
-| FPRINT-02 | Phase 16 | Pending |
+| FPRINT-01 | Phase 16 | Complete |
+| FPRINT-02 | Phase 16 | Complete |
 | FPRINT-03 | Phase 17 | Pending |
 | FPRINT-04 | Phase 17 | Pending |
 | TL-01 | Phase 15 | Complete |
