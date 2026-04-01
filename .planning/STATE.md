@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
-status: executing
-stopped_at: Completed 13-03-PLAN.md
-last_updated: "2026-03-31T21:31:15.222Z"
-last_activity: 2026-03-31
+status: verifying
+stopped_at: Completed 14-02-PLAN.md
+last_updated: "2026-04-01T02:27:59.613Z"
+last_activity: 2026-04-01
 progress:
   total_phases: 6
-  completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  completed_phases: 3
+  total_plans: 8
+  completed_plans: 8
   percent: 66
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 13 -- ai-destination-paths
+**Current focus:** Phase 14 — duplicate-resolution-ui
 
 ## Current Position
 
-Phase: 14
+Phase: 15
 Plan: Not started
-Status: Ready to execute
-Last activity: 2026-03-31
+Status: Phase complete — ready for verification
+Last activity: 2026-04-01
 
 Progress: [██████░░░░] 66%
 
@@ -57,6 +57,11 @@ Progress: [██████░░░░] 66%
 - proposed_path placed between proposed_filename and confidence in FileProposalResponse field order
 - [Phase 13-ai-destination-paths]: collision_ids passed as set of string UUIDs in template context rather than embedding collision logic in templates
 - [Phase 13-ai-destination-paths]: Execution gate returns HTMX partial (collision_block.html) rather than HTTP error code, preserving inline feedback UX
+- [Phase 14]: Used file_metadata instead of metadata for relationship name (metadata is reserved by SQLAlchemy DeclarativeBase)
+- [Phase 14]: Scoring rationale reflects the actual differentiator between winner and runner-up, not just the winner's best attribute
+- [Phase 14-duplicate-resolution-ui]: filesizeformat Jinja2 filter registered on duplicates router templates environment for bytes-to-human conversion
+- [Phase 14-duplicate-resolution-ui]: Alpine.js x-data on form tracks selected radio value for row highlighting without server round-trip
+- [Phase 14-duplicate-resolution-ui]: Undo toast uses 10-second timeout (not 5-second) per D-07 locked decision in duplicate resolution UI
 
 ### Pending Todos
 
@@ -68,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-31T21:22:16.224Z
-Stopped at: Completed 13-03-PLAN.md
+Last session: 2026-04-01T02:21:00.929Z
+Stopped at: Completed 14-02-PLAN.md
 Resume file: None

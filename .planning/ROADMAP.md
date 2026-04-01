@@ -32,7 +32,7 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 
 - [ ] **Phase 12: Infrastructure & Audio Tag Extraction** - Shared engine pool, expanded state machine, and mutagen-based tag extraction feeding richer LLM context
 - [x] **Phase 13: AI Destination Paths** - LLM-generated destination paths with collision detection and directory tree preview in approval UI (completed 2026-03-31)
-- [ ] **Phase 14: Duplicate Resolution UI** - Admin page for reviewing, comparing, and resolving SHA256 duplicate groups
+- [x] **Phase 14: Duplicate Resolution UI** - Admin page for reviewing, comparing, and resolving SHA256 duplicate groups (completed 2026-04-01)
 - [ ] **Phase 15: 1001Tracklists Integration** - Search, scrape, fuzzy-match, and periodically refresh tracklists from 1001tracklists.com
 - [ ] **Phase 16: Fingerprint Service & Batch Ingestion** - Long-running fingerprint container with audfprint/Panako hybrid and batch ingestion of all music files
 - [ ] **Phase 17: Live Set Matching & Tracklist Review** - Scan live sets against fingerprint DB and display proposed tracklists for human review
@@ -76,7 +76,10 @@ Plans:
   2. User can select the canonical file in each group and mark the rest for deletion
   3. User can compare duplicates side-by-side showing path, size, bitrate, tags, and analysis results
   4. System pre-selects the best duplicate per group based on bitrate, tag completeness, and path length
-**Plans**: TBD
+**Plans:** 2/2 plans complete
+Plans:
+- [x] 14-01-PLAN.md -- Backend: model changes, scoring logic, enriched queries, resolve/undo service
+- [x] 14-02-PLAN.md -- Router, templates, integration tests, and visual verification
 **UI hint**: yes
 
 ### Phase 15: 1001Tracklists Integration
@@ -131,7 +134,7 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
 | 12. Infrastructure & Audio Tag Extraction | v2.0 | 0/0 | Not started | - |
 | 13. AI Destination Paths | v2.0 | 3/3 | Complete    | 2026-03-31 |
-| 14. Duplicate Resolution UI | v2.0 | 0/0 | Not started | - |
+| 14. Duplicate Resolution UI | v2.0 | 2/2 | Complete    | 2026-04-01 |
 | 15. 1001Tracklists Integration | v2.0 | 0/0 | Not started | - |
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 0/0 | Not started | - |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 0/0 | Not started | - |

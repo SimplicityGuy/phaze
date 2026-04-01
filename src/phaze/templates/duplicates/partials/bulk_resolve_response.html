@@ -1,0 +1,17 @@
+{# Primary response: empty group list with empty state #}
+<div class="py-12 text-center">
+    <h2 class="text-xl font-semibold text-gray-500">All groups on this page resolved</h2>
+    <p class="text-sm text-gray-400 mt-2">Use the undo toast to reverse, or navigate to the next page.</p>
+</div>
+
+{# OOB: update stats header #}
+<div id="stats-header" hx-swap-oob="true">
+    {% include "duplicates/partials/stats_header.html" %}
+</div>
+
+{# OOB: inject bulk toast #}
+<div hx-swap-oob="beforeend:#toast-container">
+    {% with toast_message="Resolved " ~ resolved_groups ~ " groups using auto-selected files", is_bulk=True, undo_file_states=all_file_states %}
+    {% include "duplicates/partials/toast.html" %}
+    {% endwith %}
+</div>

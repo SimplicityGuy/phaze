@@ -29,10 +29,10 @@ Requirements for Metadata Enrichment & Tracklist Integration. Each maps to roadm
 
 ### Duplicate Resolution
 
-- [ ] **DEDUP-01**: Admin UI page displays SHA256 duplicate groups with file details, paginated
-- [ ] **DEDUP-02**: User can select the canonical file per duplicate group and mark others for deletion
-- [ ] **DEDUP-03**: User can compare duplicates side-by-side (path, size, bitrate, tags, analysis)
-- [ ] **DEDUP-04**: System pre-selects the best duplicate based on bitrate, tag completeness, and path length
+- [x] **DEDUP-01**: Admin UI page displays SHA256 duplicate groups with file details, paginated
+- [x] **DEDUP-02**: User can select the canonical file per duplicate group and mark others for deletion
+- [x] **DEDUP-03**: User can compare duplicates side-by-side (path, size, bitrate, tags, analysis)
+- [x] **DEDUP-04**: System pre-selects the best duplicate based on bitrate, tag completeness, and path length
 
 ### Audio Fingerprinting
 
@@ -102,10 +102,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PATH-02 | Phase 13 | Complete |
 | PATH-03 | Phase 13 | Complete |
 | PATH-04 | Phase 13 | Complete |
-| DEDUP-01 | Phase 14 | Pending |
-| DEDUP-02 | Phase 14 | Pending |
-| DEDUP-03 | Phase 14 | Pending |
-| DEDUP-04 | Phase 14 | Pending |
+| DEDUP-01 | Phase 14 | Complete |
+| DEDUP-02 | Phase 14 | Complete |
+| DEDUP-03 | Phase 14 | Complete |
+| DEDUP-04 | Phase 14 | Complete |
 | FPRINT-01 | Phase 16 | Pending |
 | FPRINT-02 | Phase 16 | Pending |
 | FPRINT-03 | Phase 17 | Pending |

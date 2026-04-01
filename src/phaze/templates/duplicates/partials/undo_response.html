@@ -1,0 +1,9 @@
+{# Primary response: restored group card #}
+{% if group %}
+    {% include "duplicates/partials/group_card.html" %}
+{% endif %}
+
+{# OOB: update stats header #}
+<div id="stats-header" hx-swap-oob="true">
+    {% include "duplicates/partials/stats_header.html" %}
+</div>
