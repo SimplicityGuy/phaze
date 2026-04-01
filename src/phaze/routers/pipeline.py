@@ -16,7 +16,9 @@ from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
+from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
 
@@ -266,4 +268,86 @@ async def trigger_extraction_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "metadata extraction", "count": count},
+    )
+
+
+# --- Fingerprint endpoints (Phase 16, D-14, D-15) ---
+
+
+async def _enqueue_fingerprint_jobs(arq_pool: Any, file_ids: list[str]) -> None:
+    """Background coroutine to enqueue fingerprint_file jobs."""
+    for fid in file_ids:
+        await arq_pool.enqueue_job("fingerprint_file", fid)
+
+
+@router.post("/api/v1/fingerprint")
+async def trigger_fingerprint(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Enqueue fingerprint_file jobs for eligible files (per D-14).
+
+    Eligible: files in METADATA_EXTRACTED state, plus files with failed fingerprint results for retry.
+    """
+    # Files in METADATA_EXTRACTED state (ready for fingerprinting)
+    files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
+
+    # Also include files with failed fingerprint results (retry per D-16)
+    failed_stmt = (
+        select(FileRecord)
+        .join(FingerprintResult, FingerprintResult.file_id == FileRecord.id)
+        .where(FingerprintResult.status == "failed")
+        .where(FileRecord.state != FileState.FINGERPRINTED)
+    )
+    failed_result = await session.execute(failed_stmt)
+    failed_files = list(failed_result.scalars().all())
+
+    # Deduplicate by ID
+    seen_ids: set[str] = set()
+    all_file_ids: list[str] = []
+    for f in [*files, *failed_files]:
+        fid = str(f.id)
+        if fid not in seen_ids:
+            seen_ids.add(fid)
+            all_file_ids.append(fid)
+
+    if not all_file_ids:
+        return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
+
+    arq_pool = request.app.state.arq_pool
+    task = asyncio.create_task(_enqueue_fingerprint_jobs(arq_pool, all_file_ids))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return {"enqueued": len(all_file_ids), "message": f"Enqueued {len(all_file_ids)} files for fingerprinting"}
+
+
+@router.get("/api/v1/fingerprint/progress")
+async def fingerprint_progress(
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, int]:
+    """Return fingerprint progress counts (per D-15)."""
+    return await get_fingerprint_progress(session)
+
+
+@router.post("/pipeline/fingerprint", response_class=HTMLResponse)
+async def trigger_fingerprint_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: trigger fingerprinting and return response fragment."""
+    files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
+    count = len(files)
+
+    if count > 0:
+        arq_pool = request.app.state.arq_pool
+        file_ids = [str(f.id) for f in files]
+        task = asyncio.create_task(_enqueue_fingerprint_jobs(arq_pool, file_ids))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/trigger_response.html",
+        context={"request": request, "action": "fingerprinting", "count": count},
     )

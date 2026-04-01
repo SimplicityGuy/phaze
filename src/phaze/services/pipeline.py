@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 PIPELINE_STAGES = [
     FileState.DISCOVERED,
     FileState.METADATA_EXTRACTED,
+    FileState.FINGERPRINTED,
     FileState.ANALYZED,
     FileState.PROPOSAL_GENERATED,
     FileState.APPROVED,

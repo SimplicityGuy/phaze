@@ -36,6 +36,8 @@ async def test_startup_creates_process_pool(tmp_path) -> None:
         mock_settings.llm_max_rpm = 30
         mock_settings.database_url = "postgresql+asyncpg://test:test@localhost/test"
         mock_settings.debug = False
+        mock_settings.audfprint_url = "http://audfprint:8001"
+        mock_settings.panako_url = "http://panako:8002"
         await startup(ctx)
     try:
         assert "process_pool" in ctx
