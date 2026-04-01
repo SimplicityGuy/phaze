@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
 status: executing
-stopped_at: Phase 14 plans created
-last_updated: "2026-04-01T01:48:01.372Z"
-last_activity: 2026-03-31
+stopped_at: Completed 14-01-PLAN.md
+last_updated: "2026-04-01T02:01:07.358Z"
+last_activity: 2026-04-01
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 8
-  completed_plans: 6
+  completed_plans: 7
   percent: 66
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 13 -- ai-destination-paths
+**Current focus:** Phase 14 — duplicate-resolution-ui
 
 ## Current Position
 
-Phase: 14
-Plan: Not started
+Phase: 14 (duplicate-resolution-ui) — EXECUTING
+Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-03-31
+Last activity: 2026-04-01
 
 Progress: [██████░░░░] 66%
 
@@ -57,6 +57,8 @@ Progress: [██████░░░░] 66%
 - proposed_path placed between proposed_filename and confidence in FileProposalResponse field order
 - [Phase 13-ai-destination-paths]: collision_ids passed as set of string UUIDs in template context rather than embedding collision logic in templates
 - [Phase 13-ai-destination-paths]: Execution gate returns HTMX partial (collision_block.html) rather than HTTP error code, preserving inline feedback UX
+- [Phase 14]: Used file_metadata instead of metadata for relationship name (metadata is reserved by SQLAlchemy DeclarativeBase)
+- [Phase 14]: Scoring rationale reflects the actual differentiator between winner and runner-up, not just the winner's best attribute
 
 ### Pending Todos
 
@@ -68,6 +70,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-01T01:48:01.368Z
-Stopped at: Phase 14 plans created
-Resume file: .planning/phases/14-duplicate-resolution-ui/14-01-PLAN.md
+Last session: 2026-04-01T02:01:07.355Z
+Stopped at: Completed 14-01-PLAN.md
+Resume file: None
