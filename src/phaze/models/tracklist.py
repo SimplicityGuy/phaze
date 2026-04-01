@@ -1,0 +1,76 @@
+"""Tracklist models for 1001Tracklists integration."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import TYPE_CHECKING
+import uuid
+
+from sqlalchemy import Boolean, Date, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from phaze.models.base import Base, TimestampMixin
+
+
+if TYPE_CHECKING:
+    from phaze.models.file import FileRecord
+
+
+class Tracklist(TimestampMixin, Base):
+    """A tracklist from 1001Tracklists linked to a file."""
+
+    __tablename__ = "tracklists"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    external_id: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=True)
+    match_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_linked: Mapped[bool] = mapped_column(Boolean, default=False)
+    artist: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event: Mapped[str | None] = mapped_column(Text, nullable=True)
+    date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    latest_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    file: Mapped[FileRecord | None] = relationship("FileRecord", foreign_keys=[file_id], lazy="noload")
+    versions: Mapped[list[TracklistVersion]] = relationship("TracklistVersion", back_populates="tracklist", lazy="noload")
+
+    __table_args__ = (
+        Index("ix_tracklists_file_id", "file_id"),
+        Index("ix_tracklists_external_id", "external_id", unique=True),
+    )
+
+
+class TracklistVersion(TimestampMixin, Base):
+    """A versioned snapshot of a tracklist's track data."""
+
+    __tablename__ = "tracklist_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tracklist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklists.id"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    scraped_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    tracklist: Mapped[Tracklist] = relationship("Tracklist", back_populates="versions", lazy="noload")
+    tracks: Mapped[list[TracklistTrack]] = relationship("TracklistTrack", back_populates="version", lazy="noload")
+
+
+class TracklistTrack(TimestampMixin, Base):
+    """An individual track within a tracklist version."""
+
+    __tablename__ = "tracklist_tracks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklist_versions.id"), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    artist: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_mashup: Mapped[bool] = mapped_column(Boolean, default=False)
+    remix_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    version: Mapped[TracklistVersion] = relationship("TracklistVersion", back_populates="tracks", lazy="noload")
+
+    __table_args__ = (Index("ix_tracklist_tracks_version_id", "version_id"),)
