@@ -33,7 +33,7 @@ Declared values (must be multiples of 4):
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| xs | 4px | Inline gaps between badge text and container, icon spacing |
+| xs | 4px | Inline gaps between badge text and container, icon spacing, badge vertical padding |
 | sm | 8px | Gap between action buttons (gap-2), compact padding |
 | md | 16px | Card padding (px-4 py-4), element spacing, default gaps |
 | lg | 24px | Section spacing (space-y-6), stats header padding (p-6) |
@@ -71,7 +71,7 @@ Source: `duplicates/list.html` uses `text-2xl font-semibold leading-tight` for p
 
 Accent reserved for:
 - "Search Tracklists" primary CTA button (bg-blue-600)
-- "Search" button on unmatched file rows (bg-blue-600)
+- "Search 1001Tracklists" button on unmatched file rows (bg-blue-600)
 - Active navigation link text (text-blue-600)
 - Undo link in toast (text-blue-300)
 - High confidence score indicator (text-green-600 for 90%+, NOT accent blue)
@@ -83,6 +83,14 @@ Additional semantic colors (from existing patterns):
 - `#1E293B` (bg-slate-800): Toast background
 
 Source: `group_card.html` uses bg-white cards with border-gray-200. `stats_header.html` uses bg-gray-50. `toast.html` uses bg-slate-800. RESEARCH.md Pattern 4 (HTMX Card) uses green/yellow/red for confidence tiers.
+
+---
+
+## Focal Point
+
+| Screen | Primary Focal Point | Secondary Focal Point |
+|--------|--------------------|-----------------------|
+| Tracklists list | Tracklist card list -- first visible card row | Stats header counters (total, matched, unmatched) |
 
 ---
 
@@ -100,7 +108,7 @@ Extends `base.html`. Structure mirrors `duplicates/list.html` exactly.
 | Track detail | `tracklists/partials/track_detail.html` | HTMX GET on expand; shows numbered track list with artist, title, label, timestamp |
 | Card list | `tracklists/partials/tracklist_list.html` | HTMX target for pagination and filter swaps |
 | Pagination | `tracklists/partials/pagination.html` | HTMX GET swaps card list; follow proposals pattern |
-| Search results panel | `tracklists/partials/search_results.html` | HTMX response to manual search; ranked results with "Link" button per result (D-09) |
+| Search results panel | `tracklists/partials/search_results.html` | HTMX response to manual search; ranked results with "Link Tracklist" button per result (D-09) |
 | Undo toast | `tracklists/partials/toast.html` | Alpine.js 10-second auto-dismiss; "Undo" link (D-14, D-23) |
 
 ### Tracklist Card Layout (D-20)
@@ -158,16 +166,16 @@ Appears inline below the triggering card or as a separate panel when searching f
 +-------------------------------------------------------------------+
 | Search results for "Artist Name @ Festival"          [Dismiss All] |
 +-------------------------------------------------------------------+
-| 1. Artist - Live @ Festival 2025.04.12  (85%)           [Link]    |
-| 2. Artist - Live @ Festival 2024.04.13  (72%)           [Link]    |
-| 3. Artist B2B Other - Live @ Festival 2025.04.12 (61%)  [Link]    |
+| 1. Artist - Live @ Festival 2025.04.12  (85%)  [Link Tracklist]   |
+| 2. Artist - Live @ Festival 2024.04.13  (72%)  [Link Tracklist]   |
+| 3. Artist B2B Other - Live @ Festival 2025.04.12 (61%) [Link Tracklist] |
 +-------------------------------------------------------------------+
 ```
 
 - Result row: `px-4 py-3 border-b border-gray-100 flex items-center justify-between hover:bg-gray-50`
 - Result text: `text-sm text-gray-900`
 - Confidence: `text-sm` with color tier
-- Link button: `text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1 rounded-md`
+- Link Tracklist button: `text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1 rounded-md`
 - Dismiss: `text-xs text-gray-500 hover:text-gray-700`
 
 ### Tracklist Badge on Other Pages (D-18)
@@ -178,7 +186,7 @@ Small inline badge shown on file cards in proposals/duplicates pages when a trac
 [TL: 14 tracks]
 ```
 
-- Badge: `text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700`
+- Badge: `text-xs px-2 py-1 rounded-full bg-blue-50 text-blue-700`
 - Links to `/tracklists/?highlight={tracklist_id}` (optional, low priority)
 
 ---
@@ -195,7 +203,7 @@ Small inline badge shown on file cards in proposals/duplicates pages when a trac
 | Link search result | POST | `/tracklists/{id}/link` | `#tracklists-list` | innerHTML |
 | Unlink tracklist | POST | `/tracklists/{id}/unlink` | `#tracklists-list` | innerHTML |
 | Re-scrape tracklist | POST | `/tracklists/{id}/rescrape` | `#tracklist-{id}` | outerHTML |
-| Search for match | GET | `/tracklists/{id}/search` | `#search-panel-{id}` | innerHTML |
+| Search 1001Tracklists | GET | `/tracklists/{id}/search` | `#search-panel-{id}` | innerHTML |
 | Manual search (unmatched) | POST | `/tracklists/search?file_id={id}` | `#search-panel-{id}` | innerHTML |
 | Undo auto-link | POST | `/tracklists/{id}/undo-link` | `#tracklists-list` | innerHTML |
 
@@ -211,8 +219,8 @@ Small inline badge shown on file cards in proposals/duplicates pages when a trac
 
 | User Action | Visual Feedback | Backend Effect |
 |-------------|----------------|----------------|
-| Click "Search" on unmatched file | Loading indicator; search results panel appears | arq task enqueued for 1001tracklists search |
-| Click "Link" on search result | Card updates with linked tracklist; success toast | Tracklist linked to file, confidence stored |
+| Click "Search 1001Tracklists" on unmatched file | Loading indicator; search results panel appears | arq task enqueued for 1001tracklists search |
+| Click "Link Tracklist" on search result | Card updates with linked tracklist; success toast | Tracklist linked to file, confidence stored |
 | Auto-link fires (90%+ match) | Undo toast appears for 10 seconds (D-14, D-23) | Tracklist auto-linked, `auto_linked=True` |
 | Click "Undo" on toast | Toast dismissed; card reverts to unlinked state | Link removed, file_id set to NULL |
 | Click "Unlink" | Card updates to show unlinked state | file_id cleared on tracklist |
@@ -228,7 +236,9 @@ Small inline badge shown on file cards in proposals/duplicates pages when a trac
 |---------|------|
 | Page heading | Tracklists |
 | Primary CTA | Search Tracklists |
-| Empty state heading | No tracklists found |
+| Search button (unmatched rows) | Search 1001Tracklists |
+| Link button (search results) | Link Tracklist |
+| Empty state heading | Tracklist search hasn't run yet |
 | Empty state body | Run the pipeline to extract audio tags, then tracklist search will start automatically. You can also search manually from the Proposals page. |
 | Error state | Search unavailable. 1001tracklists.com may be temporarily blocking requests. The system will retry automatically on the next refresh cycle. |
 | Unlink confirmation | Unlink: Are you sure? This tracklist will no longer be associated with this file. |
