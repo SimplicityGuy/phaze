@@ -76,7 +76,10 @@ Plans:
   2. User can select the canonical file in each group and mark the rest for deletion
   3. User can compare duplicates side-by-side showing path, size, bitrate, tags, and analysis results
   4. System pre-selects the best duplicate per group based on bitrate, tag completeness, and path length
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 14-01-PLAN.md -- Backend: model changes, scoring logic, enriched queries, resolve/undo service
+- [ ] 14-02-PLAN.md -- Router, templates, integration tests, and visual verification
 **UI hint**: yes
 
 ### Phase 15: 1001Tracklists Integration
@@ -131,7 +134,7 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
 | 12. Infrastructure & Audio Tag Extraction | v2.0 | 0/0 | Not started | - |
 | 13. AI Destination Paths | v2.0 | 3/3 | Complete    | 2026-03-31 |
-| 14. Duplicate Resolution UI | v2.0 | 0/0 | Not started | - |
+| 14. Duplicate Resolution UI | v2.0 | 0/2 | Planned | - |
 | 15. 1001Tracklists Integration | v2.0 | 0/0 | Not started | - |
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 0/0 | Not started | - |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 0/0 | Not started | - |
