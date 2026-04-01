@@ -33,6 +33,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      audfprint:
+        condition: service_healthy
+      panako:
+        condition: service_healthy
 
   postgres:
     image: postgres:18-alpine
@@ -60,5 +64,35 @@ services:
       timeout: 5s
       retries: 5
 
+  audfprint:
+    build:
+      context: .
+      dockerfile: services/audfprint/Dockerfile.audfprint
+    volumes:
+      - "${SCAN_PATH:-/data/music}:/data/music:ro"
+      - audfprint_data:/data/fprint
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  panako:
+    build:
+      context: .
+      dockerfile: services/panako/Dockerfile.panako
+    volumes:
+      - "${SCAN_PATH:-/data/music}:/data/music:ro"
+      - panako_data:/data/fprint
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  audfprint_data:
+  panako_data:
