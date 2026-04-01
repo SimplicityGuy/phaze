@@ -1,0 +1,17 @@
+{% if tracklists %}
+<div class="space-y-3">
+    {% for tracklist in tracklists %}
+    {% include "tracklists/partials/tracklist_card.html" %}
+    {% endfor %}
+</div>
+
+{% include "tracklists/partials/pagination.html" %}
+{% else %}
+<div class="text-center py-12">
+    <h2 class="text-lg font-semibold text-gray-900 mb-2">Tracklist search hasn't run yet</h2>
+    <p class="text-sm text-gray-500 max-w-md mx-auto">
+        Run the pipeline to extract audio tags, then tracklist search will start automatically.
+        You can also search manually from the Proposals page.
+    </p>
+</div>
+{% endif %}

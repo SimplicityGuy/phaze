@@ -1,0 +1,41 @@
+<div class="border border-gray-200 rounded-lg mt-2 mx-4 mb-4">
+    {% if loading is defined and loading %}
+    <div class="px-4 py-6 text-center">
+        <p class="text-sm text-gray-500">Searching 1001tracklists.com...</p>
+        <div class="mt-2 animate-pulse h-2 bg-gray-200 rounded w-1/3 mx-auto"></div>
+    </div>
+    {% elif results %}
+    <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+        <span class="text-sm font-semibold text-gray-900">Search results{% if query %} for "{{ query }}"{% endif %}</span>
+        <button onclick="this.closest('.border').remove()"
+                class="text-xs text-gray-500 hover:text-gray-700">
+            Dismiss
+        </button>
+    </div>
+    {% for result in results %}
+    <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between hover:bg-gray-50">
+        <div class="flex items-center gap-3 min-w-0">
+            <span class="text-sm text-gray-900 truncate">{{ result.title }}</span>
+            <span class="text-sm {% if result.confidence >= 90 %}text-green-600{% elif result.confidence >= 70 %}text-yellow-600{% else %}text-red-600{% endif %}">
+                {{ result.confidence }}%
+            </span>
+        </div>
+        <form hx-post="/tracklists/{{ result.tracklist_id }}/link"
+              hx-target="#tracklists-list"
+              hx-swap="innerHTML"
+              class="inline">
+            <input type="hidden" name="file_id" value="{{ file_id }}">
+            <input type="hidden" name="confidence" value="{{ result.confidence }}">
+            <button type="submit"
+                    class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1 rounded-md">
+                Link Tracklist
+            </button>
+        </form>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="px-4 py-6 text-center">
+        <p class="text-sm text-gray-500">No matching tracklists found on 1001tracklists.com.</p>
+    </div>
+    {% endif %}
+</div>
