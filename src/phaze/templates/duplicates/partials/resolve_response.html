@@ -1,0 +1,14 @@
+{# Primary response: empty div removes the card #}
+<div id="group-{{ group_hash }}" style="display:none;"></div>
+
+{# OOB: update stats header #}
+<div id="stats-header" hx-swap-oob="true">
+    {% include "duplicates/partials/stats_header.html" %}
+</div>
+
+{# OOB: inject toast #}
+<div hx-swap-oob="beforeend:#toast-container">
+    {% with toast_message="Group resolved -- " ~ resolved_count ~ " files marked as duplicates", undo_url="/duplicates/" ~ group_hash ~ "/undo", undo_file_states=resolved_file_states, is_bulk=False %}
+    {% include "duplicates/partials/toast.html" %}
+    {% endwith %}
+</div>

@@ -1,0 +1,74 @@
+<div class="px-4 pb-4">
+    <form hx-post="/duplicates/{{ group.sha256_hash }}/resolve"
+          hx-target="#group-{{ group.sha256_hash }}"
+          hx-swap="outerHTML"
+          x-data="{ selected: '{{ group.canonical_id }}' }">
+        <fieldset>
+            <legend class="sr-only">Select canonical file for group {{ group.sha256_hash[:12] }}</legend>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase">
+                            <th class="w-8 px-3 py-3"></th>
+                            <th class="px-3 py-3">Original Path</th>
+                            <th class="px-3 py-3">Size</th>
+                            <th class="px-3 py-3">Type</th>
+                            <th class="px-3 py-3">Bitrate</th>
+                            <th class="px-3 py-3">Duration</th>
+                            <th class="px-3 py-3">Tags</th>
+                            <th class="px-3 py-3">Artist</th>
+                            <th class="px-3 py-3">Title</th>
+                            <th class="px-3 py-3">Album</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for file in group.files %}
+                        <tr :class="selected === '{{ file.id }}' ? 'bg-blue-50 ring-2 ring-blue-500' : 'hover:bg-gray-50'"
+                            class="border-t border-gray-100">
+                            <td class="px-3 py-3">
+                                <input type="radio"
+                                       name="canonical_id"
+                                       value="{{ file.id }}"
+                                       {% if file.id == group.canonical_id %}checked{% endif %}
+                                       @change="selected = '{{ file.id }}'"
+                                       aria-label="Select {{ file.original_path | truncate(40) }} as canonical">
+                            </td>
+                            <td class="px-3 py-3 max-w-64 truncate" title="{{ file.original_path }}">
+                                {{ file.original_path }}
+                            </td>
+                            <td class="px-3 py-3 {% if best_values.get('file_size') == file.id %}text-green-700 font-semibold{% endif %}">
+                                {{ file.file_size | filesizeformat }}
+                            </td>
+                            <td class="px-3 py-3">
+                                {{ file.file_type }}
+                            </td>
+                            <td class="px-3 py-3 {% if best_values.get('bitrate') == file.id %}text-green-700 font-semibold{% endif %}">
+                                {% if file.bitrate %}{{ file.bitrate }}kbps{% else %}-{% endif %}
+                            </td>
+                            <td class="px-3 py-3 {% if best_values.get('duration') == file.id %}text-green-700 font-semibold{% endif %}">
+                                {% if file.duration %}{{ "%.1f" | format(file.duration) }}s{% else %}-{% endif %}
+                            </td>
+                            <td class="px-3 py-3">
+                                {% if file.tag_label == 'Full' %}
+                                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-green-100 text-green-700">Full</span>
+                                {% elif file.tag_label == 'Partial' %}
+                                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-yellow-100 text-yellow-700">Partial</span>
+                                {% else %}
+                                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-400">None</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-3 py-3">{{ file.artist or '-' }}</td>
+                            <td class="px-3 py-3">{{ file.title or '-' }}</td>
+                            <td class="px-3 py-3">{{ file.album or '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </fieldset>
+        <button type="submit"
+                class="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold px-4 py-2 rounded-md mt-4">
+            Resolve Group
+        </button>
+    </form>
+</div>
