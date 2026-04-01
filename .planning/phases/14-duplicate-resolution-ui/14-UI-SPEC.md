@@ -120,7 +120,7 @@ Per D-01, D-09. One card per duplicate group.
 | Container | `bg-white border border-gray-200 rounded-lg` |
 | Card header | `px-4 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50` |
 | SHA256 hash | `text-sm font-mono text-gray-500` -- first 12 characters + "..." |
-| File count badge | `text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-600` -- "{N} files" |
+| File count badge | `text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-600` -- "{N} files" |
 | Pre-selected label | `text-sm text-gray-700` -- "Best: {rationale}" per D-09 (e.g., "Best: highest bitrate (320kbps)") |
 | Expand button | `text-gray-500 hover:text-gray-700 text-xs px-2 py-1` -- "Compare" / "Collapse" toggle |
 | Expand mechanism | HTMX `hx-get` to load comparison partial inline, Alpine.js toggle for show/hide |
