@@ -124,4 +124,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-31 after Phase 13 complete — AI destination paths with collision detection and directory tree preview*
+*Last updated: 2026-04-01 after Phase 14 complete — Duplicate resolution UI with card-per-group layout, scoring, and resolve/undo workflow*
