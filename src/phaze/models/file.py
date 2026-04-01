@@ -1,13 +1,20 @@
 """FileRecord model - central file record with state machine."""
 
+from __future__ import annotations
+
 import enum
+from typing import TYPE_CHECKING
 import uuid
 
 from sqlalchemy import BigInteger, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from phaze.models.base import Base, TimestampMixin
+
+
+if TYPE_CHECKING:
+    from phaze.models.metadata import FileMetadata
 
 
 class FileState(enum.StrEnum):
@@ -22,6 +29,7 @@ class FileState(enum.StrEnum):
     REJECTED = "rejected"
     EXECUTED = "executed"
     FAILED = "failed"
+    DUPLICATE_RESOLVED = "duplicate_resolved"
 
 
 class FileRecord(TimestampMixin, Base):
@@ -38,6 +46,8 @@ class FileRecord(TimestampMixin, Base):
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     state: Mapped[str] = mapped_column(String(30), nullable=False, default=FileState.DISCOVERED)
     batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("scan_batches.id"), nullable=True)
+
+    file_metadata: Mapped[FileMetadata | None] = relationship("FileMetadata", foreign_keys="FileMetadata.file_id", uselist=False, lazy="noload")
 
     __table_args__ = (
         Index("ix_files_state", "state"),
