@@ -317,7 +317,7 @@ sweep_pip_audit_ignores() {
     print_info "${#still_needed[@]} vulnerabilit$([ ${#still_needed[@]} -eq 1 ] && echo "y" || echo "ies") still awaiting upstream fixes"
   else
     local remaining
-    remaining=$(grep -cv '^\s*#\|^\s*$' "$ignore_file" 2>/dev/null || echo "0")
+    remaining=$(grep -cv '^\s*#\|^\s*$' "$ignore_file" 2>/dev/null) || remaining=0
     if [[ "$remaining" -eq 0 ]]; then
       print_success "All vulnerabilities resolved! $ignore_file has no active ignores"
     fi

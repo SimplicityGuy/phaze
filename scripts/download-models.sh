@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Download essentia ML models for audio analysis.
-# Usage: bash scripts/download_models.sh [output_dir]
+# Usage: bash scripts/download-models.sh [output_dir]
 #   output_dir defaults to ./models
 
 set -euo pipefail

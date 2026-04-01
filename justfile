@@ -154,7 +154,7 @@ db-history:
 
 # Download essentia ML models for audio analysis
 download-models:
-    bash scripts/download_models.sh models
+    bash scripts/download-models.sh models
 
 # === Maintenance ===
 
