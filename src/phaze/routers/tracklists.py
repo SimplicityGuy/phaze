@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from phaze.database import get_session
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.proposal_queries import Pagination
-from phaze.services.tracklist_matcher import parse_live_set_filename
+from phaze.services.tracklist_matcher import compute_match_confidence
 from phaze.services.tracklist_scraper import TracklistScraper
 
 
@@ -74,9 +74,7 @@ async def list_tracklists(
     # Load track counts for each tracklist via latest version
     for tl in tracklists:
         if tl.latest_version_id:
-            count_result = await session.execute(
-                select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id)
-            )
+            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
             tl._track_count = count_result.scalar() or 0  # type: ignore[attr-defined]
         else:
             tl._track_count = 0  # type: ignore[attr-defined]
@@ -208,8 +206,6 @@ async def search_better_match(
             scraper = TracklistScraper()
             try:
                 raw_results = await scraper.search(query)
-                from phaze.services.tracklist_matcher import compute_match_confidence
-
                 for r in raw_results:
                     conf = compute_match_confidence(
                         tracklist_artist=r.artist,
@@ -219,14 +215,16 @@ async def search_better_match(
                         file_event=tracklist.event,
                         file_date=tracklist.date,
                     )
-                    search_results.append({
-                        "external_id": r.external_id,
-                        "title": r.title,
-                        "url": r.url,
-                        "artist": r.artist,
-                        "confidence": conf,
-                        "tracklist_id": tracklist_id,
-                    })
+                    search_results.append(
+                        {
+                            "external_id": r.external_id,
+                            "title": r.title,
+                            "url": r.url,
+                            "artist": r.artist,
+                            "confidence": conf,
+                            "tracklist_id": tracklist_id,
+                        }
+                    )
                 search_results.sort(key=lambda x: x["confidence"], reverse=True)
             finally:
                 await scraper.close()
@@ -242,7 +240,6 @@ async def search_better_match(
 async def manual_search(
     request: Request,
     file_id: uuid.UUID = Query(...),
-    session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Manual search for an unmatched file."""
     arq_pool = request.app.state.arq_pool
@@ -292,9 +289,7 @@ async def _render_tracklist_list(request: Request, session: AsyncSession, filter
 
     for tl in tracklists:
         if tl.latest_version_id:
-            count_result = await session.execute(
-                select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id)
-            )
+            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
             tl._track_count = count_result.scalar() or 0  # type: ignore[attr-defined]
         else:
             tl._track_count = 0  # type: ignore[attr-defined]

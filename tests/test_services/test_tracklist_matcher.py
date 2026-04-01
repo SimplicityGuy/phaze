@@ -15,61 +15,93 @@ class TestComputeMatchConfidence:
 
     def test_exact_match_returns_100(self):
         score = compute_match_confidence(
-            "Skrillex", "Coachella", date(2025, 4, 12),
-            "Skrillex", "Coachella", date(2025, 4, 12),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
         )
         assert score == 100
 
     def test_exact_artist_event_date_off_5_days(self):
         score = compute_match_confidence(
-            "Skrillex", "Coachella", date(2025, 4, 12),
-            "Skrillex", "Coachella", date(2025, 4, 17),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 17),
         )
         # Date off by 5 days, but artist+event match > 80, so cap at 89
         assert 70 <= score <= 89
 
     def test_different_artist_returns_low(self):
         score = compute_match_confidence(
-            "Skrillex", "Coachella", date(2025, 4, 12),
-            "deadmau5", "Coachella", date(2025, 4, 12),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
+            "deadmau5",
+            "Coachella",
+            date(2025, 4, 12),
         )
         # Event and date match but artist differs -- score should be below auto-link
         assert score < AUTO_LINK_THRESHOLD
 
     def test_all_none_file_fields_returns_0(self):
         score = compute_match_confidence(
-            "Skrillex", "Coachella", date(2025, 4, 12),
-            None, None, None,
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
+            None,
+            None,
+            None,
         )
         assert score == 0
 
     def test_date_cap_at_89_when_date_differs_more_than_3_days(self):
         """Artist+event similarity > 80 but date >3 days apart -> cap at 89."""
         score = compute_match_confidence(
-            "Skrillex", "Coachella", date(2025, 4, 12),
-            "Skrillex", "Coachella", date(2025, 5, 1),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
+            "Skrillex",
+            "Coachella",
+            date(2025, 5, 1),
         )
         assert score <= 89
 
     def test_partial_artist_match(self):
         score = compute_match_confidence(
-            "Skrillex", "Coachella", date(2025, 4, 12),
-            "Skrillex feat. Diplo", "Coachella", date(2025, 4, 12),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
+            "Skrillex feat. Diplo",
+            "Coachella",
+            date(2025, 4, 12),
         )
         # Should still be high due to token_set_ratio
         assert score >= 80
 
     def test_none_tracklist_fields_returns_0(self):
         score = compute_match_confidence(
-            None, None, None,
-            "Skrillex", "Coachella", date(2025, 4, 12),
+            None,
+            None,
+            None,
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
         )
         assert score == 0
 
     def test_date_within_3_days_no_cap(self):
         score = compute_match_confidence(
-            "Skrillex", "Coachella", date(2025, 4, 12),
-            "Skrillex", "Coachella", date(2025, 4, 14),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 12),
+            "Skrillex",
+            "Coachella",
+            date(2025, 4, 14),
         )
         assert score >= 90
 

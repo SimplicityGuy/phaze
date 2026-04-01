@@ -1,7 +1,7 @@
 """Tests for Tracklist, TracklistVersion, and TracklistTrack models."""
 
+from datetime import date
 import uuid
-from datetime import date, datetime
 
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 

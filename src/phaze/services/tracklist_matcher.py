@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 from datetime import date
+import re
 
 from rapidfuzz import fuzz
 
@@ -17,9 +17,7 @@ _EVENT_WEIGHT = 0.3
 _DATE_WEIGHT = 0.2
 
 # Filename pattern for v1.0 live set naming format
-_LIVE_SET_PATTERN = re.compile(
-    r"^(?P<artist>.+?) - Live @ (?P<event>.+?) (?P<year>\d{4})\.(?P<month>\d{2})\.(?P<day>\d{2})\.\w+$"
-)
+_LIVE_SET_PATTERN = re.compile(r"^(?P<artist>.+?) - Live @ (?P<event>.+?) (?P<year>\d{4})\.(?P<month>\d{2})\.(?P<day>\d{2})\.\w+$")
 
 
 def parse_live_set_filename(filename: str) -> tuple[str, str, date] | None:
