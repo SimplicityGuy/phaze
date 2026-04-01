@@ -1,0 +1,36 @@
+{% if pagination.total > pagination.page_size %}
+{% set total_pages = (pagination.total + pagination.page_size - 1) // pagination.page_size %}
+<nav aria-label="Tracklist pagination" class="flex items-center justify-between mt-6">
+    <p class="text-sm text-gray-500">
+        Showing {{ (pagination.page - 1) * pagination.page_size + 1 }}-{{ [pagination.page * pagination.page_size, pagination.total] | min }}
+        of {{ pagination.total }}
+    </p>
+    <div class="flex gap-1">
+        {% if pagination.page > 1 %}
+        <button hx-get="/tracklists/?filter={{ active_filter }}&page={{ pagination.page - 1 }}"
+                hx-target="#tracklists-list"
+                hx-swap="innerHTML"
+                class="text-sm px-3 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50">
+            Previous
+        </button>
+        {% else %}
+        <span class="text-sm px-3 py-1 rounded border border-gray-200 text-gray-400 cursor-not-allowed">
+            Previous
+        </span>
+        {% endif %}
+
+        {% if pagination.page < total_pages %}
+        <button hx-get="/tracklists/?filter={{ active_filter }}&page={{ pagination.page + 1 }}"
+                hx-target="#tracklists-list"
+                hx-swap="innerHTML"
+                class="text-sm px-3 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50">
+            Next
+        </button>
+        {% else %}
+        <span class="text-sm px-3 py-1 rounded border border-gray-200 text-gray-400 cursor-not-allowed">
+            Next
+        </span>
+        {% endif %}
+    </div>
+</nav>
+{% endif %}

@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, ClassVar
 
+from arq import cron
 from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -14,6 +15,7 @@ from phaze.tasks.functions import process_file
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.proposal import generate_proposals
+from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
 logger = logging.getLogger(__name__)
@@ -70,7 +72,10 @@ class WorkerSettings:
     Run via: ``uv run arq phaze.tasks.worker.WorkerSettings``
     """
 
-    functions: ClassVar[list[Any]] = [process_file, generate_proposals, execute_approved_batch, extract_file_metadata]
+    functions: ClassVar[list[Any]] = [process_file, generate_proposals, execute_approved_batch, extract_file_metadata, search_tracklist, scrape_and_store_tracklist]
+    cron_jobs: ClassVar[list[Any]] = [
+        cron(refresh_tracklists, month={1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, day=1, hour=3, minute=0, run_at_startup=False),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)

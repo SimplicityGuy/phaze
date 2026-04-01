@@ -1,0 +1,19 @@
+<div x-data="{ show: true }"
+     x-init="setTimeout(() => show = false, 10000)"
+     x-show="show"
+     x-transition:leave="transition ease-in duration-200"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     class="bg-slate-800 text-white rounded-lg shadow-lg px-4 py-3 flex items-center gap-3 text-sm">
+    <span>{{ toast_message }}</span>
+    <form hx-post="/tracklists/{{ tracklist_id }}/undo-link"
+          hx-target="#tracklists-list"
+          hx-swap="innerHTML"
+          class="inline">
+        <button type="submit"
+                @click="show = false"
+                class="text-blue-300 hover:text-white font-semibold underline">
+            Undo
+        </button>
+    </form>
+</div>

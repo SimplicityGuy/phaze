@@ -1,0 +1,72 @@
+<div id="tracklist-{{ tracklist.id }}" class="bg-white border border-gray-200 rounded-lg" x-data="{ expanded: false }">
+    <!-- Card header -->
+    <div class="px-4 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
+         @click="expanded = !expanded; if(expanded && !$refs.tracks{{ tracklist.id|replace('-', '') }}.innerHTML.trim()) $refs.tracks{{ tracklist.id|replace('-', '') }}.dispatchEvent(new Event('loadtracks'))"
+         :aria-expanded="expanded.toString()">
+        <div class="flex items-center gap-3 min-w-0">
+            <span class="text-sm font-semibold text-gray-900 truncate">{{ tracklist.artist or 'Unknown Artist' }}</span>
+            {% if tracklist.event %}
+            <span class="text-sm text-gray-500">@ {{ tracklist.event }}</span>
+            {% endif %}
+            {% if tracklist.date %}
+            <span class="text-sm text-gray-400">{{ tracklist.date }}</span>
+            {% endif %}
+        </div>
+        <div class="flex items-center gap-3 shrink-0">
+            {% if tracklist.match_confidence is not none %}
+            <span class="text-sm {% if tracklist.match_confidence >= 90 %}text-green-600{% elif tracklist.match_confidence >= 70 %}text-yellow-600{% else %}text-red-600{% endif %}">
+                {{ tracklist.match_confidence }}%
+            </span>
+            {% endif %}
+            <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                {{ tracklist._track_count if tracklist._track_count is defined else 0 }} tracks
+            </span>
+        </div>
+    </div>
+
+    <!-- Track detail (lazy loaded) -->
+    <div x-ref="tracks{{ tracklist.id|replace('-', '') }}"
+         id="tracks-{{ tracklist.id }}"
+         x-show="expanded"
+         x-transition
+         hx-get="/tracklists/{{ tracklist.id }}/tracks"
+         hx-trigger="loadtracks once"
+         hx-swap="innerHTML">
+    </div>
+
+    <!-- Action buttons -->
+    <div class="px-4 py-3 border-t border-gray-100 flex gap-2 text-sm">
+        <button hx-post="/tracklists/{{ tracklist.id }}/unlink"
+                hx-target="#tracklists-list"
+                hx-swap="innerHTML"
+                hx-confirm="Unlink: Are you sure? This tracklist will no longer be associated with this file."
+                class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+            Unlink
+        </button>
+        <button hx-post="/tracklists/{{ tracklist.id }}/rescrape"
+                hx-target="#tracklist-{{ tracklist.id }}"
+                hx-swap="outerHTML"
+                class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+            Re-scrape
+        </button>
+        <a href="{{ tracklist.source_url }}"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="text-xs text-blue-600 hover:underline px-2 py-1">
+            View on 1001tracklists
+        </a>
+        <button hx-get="/tracklists/{{ tracklist.id }}/search"
+                hx-target="#search-panel-{{ tracklist.id }}"
+                hx-swap="innerHTML"
+                class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+            Find Better Match
+        </button>
+    </div>
+
+    {% if rescrape_queued is defined and rescrape_queued %}
+    <div class="px-4 py-2 bg-blue-50 text-blue-700 text-xs rounded-b-lg">Re-scrape queued</div>
+    {% endif %}
+
+    <!-- Search results panel -->
+    <div id="search-panel-{{ tracklist.id }}"></div>
+</div>

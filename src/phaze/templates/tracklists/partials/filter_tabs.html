@@ -1,0 +1,23 @@
+<div x-data="{ activeTab: '{{ active_filter }}' }" class="flex gap-1 border-b border-gray-200 mb-4">
+    <button @click="activeTab = 'all'"
+            hx-get="/tracklists/?filter=all&page=1"
+            hx-target="#tracklists-list"
+            hx-swap="innerHTML"
+            :class="activeTab === 'all' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+        All ({{ stats.total }})
+    </button>
+    <button @click="activeTab = 'matched'"
+            hx-get="/tracklists/?filter=matched&page=1"
+            hx-target="#tracklists-list"
+            hx-swap="innerHTML"
+            :class="activeTab === 'matched' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+        Matched ({{ stats.matched }})
+    </button>
+    <button @click="activeTab = 'unmatched'"
+            hx-get="/tracklists/?filter=unmatched&page=1"
+            hx-target="#tracklists-list"
+            hx-swap="innerHTML"
+            :class="activeTab === 'unmatched' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+        Unmatched ({{ stats.unmatched }})
+    </button>
+</div>

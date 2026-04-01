@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
-status: verifying
-stopped_at: Completed 14-02-PLAN.md
-last_updated: "2026-04-01T02:27:59.613Z"
+status: executing
+stopped_at: Completed 15-02-PLAN.md
+last_updated: "2026-04-01T22:20:19.056Z"
 last_activity: 2026-04-01
 progress:
   total_phases: 6
-  completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
+  completed_phases: 4
+  total_plans: 10
+  completed_plans: 10
   percent: 66
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 14 — duplicate-resolution-ui
+**Current focus:** Phase 15 — 1001tracklists-integration
 
 ## Current Position
 
-Phase: 15
+Phase: 16
 Plan: Not started
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-04-01
 
 Progress: [██████░░░░] 66%
@@ -62,6 +62,8 @@ Progress: [██████░░░░] 66%
 - [Phase 14-duplicate-resolution-ui]: filesizeformat Jinja2 filter registered on duplicates router templates environment for bytes-to-human conversion
 - [Phase 14-duplicate-resolution-ui]: Alpine.js x-data on form tracks selected radio value for row highlighting without server round-trip
 - [Phase 14-duplicate-resolution-ui]: Undo toast uses 10-second timeout (not 5-second) per D-07 locked decision in duplicate resolution UI
+- [Phase 15]: arq cron job runs 1st of month at 03:00 UTC, run_at_startup=False to avoid refresh storms
+- [Phase 15]: Search endpoint uses synchronous-ish search (2-5s) rather than polling/SSE for manual user action
 
 ### Pending Todos
 
@@ -73,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-01T02:21:00.929Z
-Stopped at: Completed 14-02-PLAN.md
+Last session: 2026-04-01T20:32:13.973Z
+Stopped at: Completed 15-02-PLAN.md
 Resume file: None

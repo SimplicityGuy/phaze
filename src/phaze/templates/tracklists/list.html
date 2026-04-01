@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Tracklists - Phaze{% endblock %}
+
+{% block skip_link %}
+<a href="#tracklists-list" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to tracklists list</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-semibold text-gray-900 leading-tight">Tracklists</h1>
+
+    <div id="stats-container">
+        {% include "tracklists/partials/stats_header.html" %}
+    </div>
+
+    {% include "tracklists/partials/filter_tabs.html" %}
+
+    <div id="tracklists-list">
+        {% include "tracklists/partials/tracklist_list.html" %}
+    </div>
+</div>
+{% endblock %}
