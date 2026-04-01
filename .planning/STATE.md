@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
-status: verifying
-stopped_at: Completed 14-02-PLAN.md
-last_updated: "2026-04-01T02:27:59.613Z"
-last_activity: 2026-04-01
+status: executing
+stopped_at: Completed 15-01-PLAN.md
+last_updated: "2026-04-01T19:42:06Z"
+last_activity: 2026-04-01 -- Completed 15-01 (data model and services)
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
-  percent: 66
+  total_plans: 10
+  completed_plans: 9
+  percent: 72
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 
 ## Current Position
 
-Phase: 15
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-01
+Phase: 15 (1001tracklists-integration) -- EXECUTING
+Plan: 1 of 2 -- COMPLETE
+Status: Executing Phase 15
+Last activity: 2026-04-01 -- Completed 15-01 (data model and services)
 
 Progress: [██████░░░░] 66%
 
@@ -62,6 +62,9 @@ Progress: [██████░░░░] 66%
 - [Phase 14-duplicate-resolution-ui]: filesizeformat Jinja2 filter registered on duplicates router templates environment for bytes-to-human conversion
 - [Phase 14-duplicate-resolution-ui]: Alpine.js x-data on form tracks selected radio value for row highlighting without server round-trip
 - [Phase 14-duplicate-resolution-ui]: Undo toast uses 10-second timeout (not 5-second) per D-07 locked decision in duplicate resolution UI
+- [Phase 15-01]: CSS selectors stored as class constants on TracklistScraper for easy maintenance when site layout changes
+- [Phase 15-01]: Dataclass-based return types for scraper (not dicts) for type safety
+- [Phase 15-01]: Date cap at 89 prevents false auto-links when artist+event match but date diverges >3 days
 
 ### Pending Todos
 
@@ -73,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-01T02:21:00.929Z
-Stopped at: Completed 14-02-PLAN.md
-Resume file: None
+Last session: 2026-04-01T19:42:06Z
+Stopped at: Completed 15-01-PLAN.md
+Resume file: .planning/phases/15-1001tracklists-integration/15-01-SUMMARY.md

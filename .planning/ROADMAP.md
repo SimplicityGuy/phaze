@@ -91,7 +91,10 @@ Plans:
   2. Tracklist data (tracks, positions, timestamps) is scraped, validated, and stored in PostgreSQL with versioned snapshots
   3. Scraped tracklists are fuzzy-matched to files using artist/event/date similarity, and matches are visible in the admin UI
   4. A background job periodically re-checks tracklists with unresolved IDs on a monthly minimum cadence with randomized jitter
-**Plans**: TBD
+**Plans:** 1/2 plans complete
+Plans:
+- [x] 15-01-PLAN.md -- Data model (3 tables), async scraper, fuzzy matcher with weighted scoring
+- [ ] 15-02-PLAN.md -- arq task integration, admin UI, periodic refresh
 **UI hint**: yes
 
 ### Phase 16: Fingerprint Service & Batch Ingestion

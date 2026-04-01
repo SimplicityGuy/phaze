@@ -43,9 +43,9 @@ Requirements for Metadata Enrichment & Tracklist Integration. Each maps to roadm
 
 ### 1001Tracklists
 
-- [ ] **TL-01**: System searches 1001tracklists by artist and event to find matching tracklists
-- [ ] **TL-02**: Tracklist data (tracks, positions, timestamps) scraped and stored in PostgreSQL
-- [ ] **TL-03**: Scraped tracklists fuzzy-matched to files using artist/event/date similarity
+- [x] **TL-01**: System searches 1001tracklists by artist and event to find matching tracklists
+- [x] **TL-02**: Tracklist data (tracks, positions, timestamps) scraped and stored in PostgreSQL
+- [x] **TL-03**: Scraped tracklists fuzzy-matched to files using artist/event/date similarity
 - [ ] **TL-04**: Background job periodically re-checks tracklists with unresolved IDs (monthly minimum, randomized)
 
 ## Future Requirements
@@ -110,9 +110,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FPRINT-02 | Phase 16 | Pending |
 | FPRINT-03 | Phase 17 | Pending |
 | FPRINT-04 | Phase 17 | Pending |
-| TL-01 | Phase 15 | Pending |
-| TL-02 | Phase 15 | Pending |
-| TL-03 | Phase 15 | Pending |
+| TL-01 | Phase 15 | Complete |
+| TL-02 | Phase 15 | Complete |
+| TL-03 | Phase 15 | Complete |
 | TL-04 | Phase 15 | Pending |
 
 **Coverage:**
