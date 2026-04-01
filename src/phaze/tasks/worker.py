@@ -9,8 +9,10 @@ from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.config import settings
+from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks.execution import execute_approved_batch
+from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
@@ -54,6 +56,11 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
 
+    # Phase 16: Fingerprint service orchestrator
+    audfprint_adapter = AudfprintAdapter(base_url=settings.audfprint_url)
+    panako_adapter = PanakoAdapter(base_url=settings.panako_url)
+    ctx["fingerprint_orchestrator"] = FingerprintOrchestrator(engines=[audfprint_adapter, panako_adapter])
+
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Clean up shared resources (arq on_shutdown hook)."""
@@ -64,6 +71,12 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     task_engine = ctx.get("task_engine")
     if task_engine is not None:
         await task_engine.dispose()
+
+    orchestrator = ctx.get("fingerprint_orchestrator")
+    if orchestrator is not None:
+        for engine in orchestrator.engines:
+            if hasattr(engine, "close"):
+                await engine.close()
 
 
 class WorkerSettings:
@@ -77,6 +90,7 @@ class WorkerSettings:
         generate_proposals,
         execute_approved_batch,
         extract_file_metadata,
+        fingerprint_file,
         search_tracklist,
         scrape_and_store_tracklist,
     ]
