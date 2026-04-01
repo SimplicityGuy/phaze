@@ -1,0 +1,47 @@
+# Stage 1: Build Panako JAR
+FROM eclipse-temurin:21-jdk-jammy AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 https://github.com/JorenSix/Panako.git /build/panako
+WORKDIR /build/panako
+RUN ./gradlew shadowJar
+
+# Stage 2: Runtime
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install JRE (minimal)
+COPY --from=eclipse-temurin:21-jre-jammy /opt/java/openjdk /opt/java/openjdk
+ENV PATH="/opt/java/openjdk/bin:$PATH"
+
+# Copy built Panako JAR
+COPY --from=builder /build/panako/build/libs/Panako-*-all.jar /app/panako.jar
+
+# Install uv + Python deps for FastAPI wrapper
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY services/panako/pyproject.toml ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Copy FastAPI wrapper
+COPY services/panako/app.py ./
+
+ENV UV_NO_SYNC=1
+# Panako needs writable home for LMDB
+ENV HOME=/data/fprint
+
+# Non-root user
+RUN useradd -m -r panako && \
+    mkdir -p /data/fprint && \
+    chown panako:panako /data/fprint
+USER panako
+
+EXPOSE 8002
+CMD ["uv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8002"]
