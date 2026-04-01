@@ -34,7 +34,7 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 - [x] **Phase 13: AI Destination Paths** - LLM-generated destination paths with collision detection and directory tree preview in approval UI (completed 2026-03-31)
 - [x] **Phase 14: Duplicate Resolution UI** - Admin page for reviewing, comparing, and resolving SHA256 duplicate groups (completed 2026-04-01)
 - [x] **Phase 15: 1001Tracklists Integration** - Search, scrape, fuzzy-match, and periodically refresh tracklists from 1001tracklists.com (completed 2026-04-01)
-- [ ] **Phase 16: Fingerprint Service & Batch Ingestion** - Long-running fingerprint container with audfprint/Panako hybrid and batch ingestion of all music files
+- [x] **Phase 16: Fingerprint Service & Batch Ingestion** - Long-running fingerprint container with audfprint/Panako hybrid and batch ingestion of all music files (completed 2026-04-01)
 - [ ] **Phase 17: Live Set Matching & Tracklist Review** - Scan live sets against fingerprint DB and display proposed tracklists for human review
 
 ## Phase Details
@@ -139,5 +139,5 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 13. AI Destination Paths | v2.0 | 3/3 | Complete    | 2026-03-31 |
 | 14. Duplicate Resolution UI | v2.0 | 2/2 | Complete    | 2026-04-01 |
 | 15. 1001Tracklists Integration | v2.0 | 2/2 | Complete    | 2026-04-01 |
-| 16. Fingerprint Service & Batch Ingestion | v2.0 | 1/3 | In Progress|  |
+| 16. Fingerprint Service & Batch Ingestion | v2.0 | 3/3 | Complete   | 2026-04-01 |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 0/0 | Not started | - |
