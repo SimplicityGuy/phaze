@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
 status: executing
-stopped_at: Completed 15-01-PLAN.md
-last_updated: "2026-04-01T19:42:06Z"
-last_activity: 2026-04-01 -- Completed 15-01 (data model and services)
+stopped_at: Completed 15-02-PLAN.md
+last_updated: "2026-04-01T20:32:13.977Z"
+last_activity: 2026-04-01
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 10
-  completed_plans: 9
-  percent: 72
+  completed_plans: 10
+  percent: 66
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 14 — duplicate-resolution-ui
+**Current focus:** Phase 15 — 1001tracklists-integration
 
 ## Current Position
 
-Phase: 15 (1001tracklists-integration) -- EXECUTING
-Plan: 1 of 2 -- COMPLETE
-Status: Executing Phase 15
-Last activity: 2026-04-01 -- Completed 15-01 (data model and services)
+Phase: 15 (1001tracklists-integration) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-04-01
 
 Progress: [██████░░░░] 66%
 
@@ -62,9 +62,8 @@ Progress: [██████░░░░] 66%
 - [Phase 14-duplicate-resolution-ui]: filesizeformat Jinja2 filter registered on duplicates router templates environment for bytes-to-human conversion
 - [Phase 14-duplicate-resolution-ui]: Alpine.js x-data on form tracks selected radio value for row highlighting without server round-trip
 - [Phase 14-duplicate-resolution-ui]: Undo toast uses 10-second timeout (not 5-second) per D-07 locked decision in duplicate resolution UI
-- [Phase 15-01]: CSS selectors stored as class constants on TracklistScraper for easy maintenance when site layout changes
-- [Phase 15-01]: Dataclass-based return types for scraper (not dicts) for type safety
-- [Phase 15-01]: Date cap at 89 prevents false auto-links when artist+event match but date diverges >3 days
+- [Phase 15]: arq cron job runs 1st of month at 03:00 UTC, run_at_startup=False to avoid refresh storms
+- [Phase 15]: Search endpoint uses synchronous-ish search (2-5s) rather than polling/SSE for manual user action
 
 ### Pending Todos
 
@@ -76,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-01T19:42:06Z
-Stopped at: Completed 15-01-PLAN.md
-Resume file: .planning/phases/15-1001tracklists-integration/15-01-SUMMARY.md
+Last session: 2026-04-01T20:32:13.973Z
+Stopped at: Completed 15-02-PLAN.md
+Resume file: None
