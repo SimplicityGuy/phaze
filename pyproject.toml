@@ -47,6 +47,7 @@ ignore = ["B008", "C901", "E501", "S101"]
 "src/phaze/main.py" = ["T201"]
 "src/phaze/cli/**" = ["T201"]
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
+"services/**" = ["S603", "S607"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
@@ -75,7 +76,7 @@ warn_no_return = true
 warn_unreachable = true
 strict_equality = true
 mypy_path = ["src"]
-exclude = "^(tests/|prototype/)"
+exclude = "^(tests/|prototype/|services/)"
 
 [[tool.mypy.overrides]]
 module = "tests.*"

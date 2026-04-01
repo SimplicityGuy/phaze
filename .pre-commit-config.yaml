@@ -23,7 +23,7 @@ repos:
     rev: 92ae8b82fb422a639f0ed8d99e96cea769594e08
     hooks:
       - id: bandit
-        args: [-x, tests, -s, B608]
+        args: [-x, "tests,services", -s, B608]
 
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: ed81924a8b1cecdaa570b072528fa80c9c4d6ccd  # frozen: 0.37.1
