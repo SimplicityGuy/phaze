@@ -30,7 +30,7 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 
 **Milestone Goal:** Enrich the file corpus with audio tags, tracklist data, and audio fingerprinting -- building queryable infrastructure for cross-service linking and automated track identification.
 
-- [ ] **Phase 12: Infrastructure & Audio Tag Extraction** - Shared engine pool, expanded state machine, and mutagen-based tag extraction feeding richer LLM context
+- [x] **Phase 12: Infrastructure & Audio Tag Extraction** - Shared engine pool, expanded state machine, and mutagen-based tag extraction feeding richer LLM context (completed 2026-03-31)
 - [x] **Phase 13: AI Destination Paths** - LLM-generated destination paths with collision detection and directory tree preview in approval UI (completed 2026-03-31)
 - [x] **Phase 14: Duplicate Resolution UI** - Admin page for reviewing, comparing, and resolving SHA256 duplicate groups (completed 2026-04-01)
 - [x] **Phase 15: 1001Tracklists Integration** - Search, scrape, fuzzy-match, and periodically refresh tracklists from 1001tracklists.com (completed 2026-04-01)
@@ -139,7 +139,7 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 9. Pipeline Orchestration | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 10. CI Config & Bug Fixes | v1.0 | 1/1 | Complete | 2026-03-30 |
 | 11. Polish & Cleanup | v1.0 | 3/3 | Complete | 2026-03-30 |
-| 12. Infrastructure & Audio Tag Extraction | v2.0 | 0/0 | Not started | - |
+| 12. Infrastructure & Audio Tag Extraction | v2.0 | 3/3 | Complete | 2026-03-31 |
 | 13. AI Destination Paths | v2.0 | 3/3 | Complete    | 2026-03-31 |
 | 14. Duplicate Resolution UI | v2.0 | 2/2 | Complete    | 2026-04-01 |
 | 15. 1001Tracklists Integration | v2.0 | 2/2 | Complete    | 2026-04-01 |

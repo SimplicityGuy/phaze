@@ -21,6 +21,7 @@ PIPELINE_STAGES = [
     FileState.ANALYZED,
     FileState.PROPOSAL_GENERATED,
     FileState.APPROVED,
+    FileState.DUPLICATE_RESOLVED,
     FileState.EXECUTED,
 ]
 

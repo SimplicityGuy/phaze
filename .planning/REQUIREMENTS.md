@@ -9,16 +9,16 @@ Requirements for Metadata Enrichment & Tracklist Integration. Each maps to roadm
 
 ### Infrastructure
 
-- [ ] **INFRA-01**: Task session uses a shared async engine pool instead of creating a new engine per invocation
-- [ ] **INFRA-02**: FileRecord state machine expanded with METADATA_EXTRACTED and FINGERPRINTED states, all consumers updated atomically
+- [x] **INFRA-01**: Task session uses a shared async engine pool instead of creating a new engine per invocation
+- [x] **INFRA-02**: FileRecord state machine expanded with METADATA_EXTRACTED and FINGERPRINTED states, all consumers updated atomically
 
 ### Audio Tags
 
-- [ ] **TAGS-01**: User can trigger tag extraction that reads ID3/Vorbis/MP4/FLAC/OPUS tags from all music files
-- [ ] **TAGS-02**: Extracted tags populate FileMetadata with artist, title, album, year, genre, track number
-- [ ] **TAGS-03**: Full raw tag dump stored in FileMetadata.raw_tags JSONB column
-- [ ] **TAGS-04**: Duration and bitrate extracted from audio file info and stored in FileMetadata
-- [ ] **TAGS-05**: LLM proposal context includes extracted tag data for richer filename/path proposals
+- [x] **TAGS-01**: User can trigger tag extraction that reads ID3/Vorbis/MP4/FLAC/OPUS tags from all music files
+- [x] **TAGS-02**: Extracted tags populate FileMetadata with artist, title, album, year, genre, track number
+- [x] **TAGS-03**: Full raw tag dump stored in FileMetadata.raw_tags JSONB column
+- [x] **TAGS-04**: Duration and bitrate extracted from audio file info and stored in FileMetadata
+- [x] **TAGS-05**: LLM proposal context includes extracted tag data for richer filename/path proposals
 
 ### AI Destination Paths
 
@@ -91,13 +91,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INFRA-01 | Phase 12 | Pending |
-| INFRA-02 | Phase 12 | Pending |
-| TAGS-01 | Phase 12 | Pending |
-| TAGS-02 | Phase 12 | Pending |
-| TAGS-03 | Phase 12 | Pending |
-| TAGS-04 | Phase 12 | Pending |
-| TAGS-05 | Phase 12 | Pending |
+| INFRA-01 | Phase 12 | Complete |
+| INFRA-02 | Phase 12 | Complete |
+| TAGS-01 | Phase 12 | Complete |
+| TAGS-02 | Phase 12 | Complete |
+| TAGS-03 | Phase 12 | Complete |
+| TAGS-04 | Phase 12 | Complete |
+| TAGS-05 | Phase 12 | Complete |
 | PATH-01 | Phase 13 | Complete |
 | PATH-02 | Phase 13 | Complete |
 | PATH-03 | Phase 13 | Complete |
@@ -122,4 +122,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-03-30*
-*Last updated: 2026-03-30 after roadmap creation*
+*Last updated: 2026-04-02 after milestone audit tech debt cleanup*
