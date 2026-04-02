@@ -7,6 +7,7 @@ import pytest
 
 from phaze.services.fingerprint import (
     AudfprintAdapter,
+    CombinedMatch,
     FingerprintEngine,
     FingerprintOrchestrator,
     IngestResult,
@@ -322,3 +323,54 @@ class TestConfigSettings:
 
         s = Settings(database_url="postgresql+asyncpg://x:x@localhost/x", redis_url="redis://localhost")
         assert s.panako_url == "http://panako:8002"
+
+
+class TestQueryMatchTimestamp:
+    """Tests for QueryMatch timestamp field."""
+
+    def test_query_match_timestamp_default_none(self):
+        """QueryMatch timestamp defaults to None."""
+        match = QueryMatch(track_id="track-1", confidence=85.0)
+        assert match.timestamp is None
+
+    def test_query_match_timestamp_set(self):
+        """QueryMatch timestamp can be set."""
+        match = QueryMatch(track_id="track-1", confidence=85.0, timestamp="04:32")
+        assert match.timestamp == "04:32"
+
+
+class TestCombinedMatchExtended:
+    """Tests for CombinedMatch timestamp, resolved_artist, resolved_title fields."""
+
+    def test_combined_match_timestamp_default_none(self):
+        """CombinedMatch timestamp defaults to None."""
+        match = CombinedMatch(track_id="track-1", confidence=84.0)
+        assert match.timestamp is None
+
+    def test_combined_match_timestamp_set(self):
+        """CombinedMatch timestamp can be set."""
+        match = CombinedMatch(track_id="track-1", confidence=84.0, timestamp="04:32")
+        assert match.timestamp == "04:32"
+
+    def test_combined_match_resolved_artist_default_none(self):
+        """CombinedMatch resolved_artist defaults to None."""
+        match = CombinedMatch(track_id="track-1", confidence=84.0)
+        assert match.resolved_artist is None
+
+    def test_combined_match_resolved_title_default_none(self):
+        """CombinedMatch resolved_title defaults to None."""
+        match = CombinedMatch(track_id="track-1", confidence=84.0)
+        assert match.resolved_title is None
+
+    def test_combined_match_all_new_fields(self):
+        """CombinedMatch with all new fields set."""
+        match = CombinedMatch(
+            track_id="track-1",
+            confidence=84.0,
+            timestamp="04:32",
+            resolved_artist="Deadmau5",
+            resolved_title="Strobe",
+        )
+        assert match.timestamp == "04:32"
+        assert match.resolved_artist == "Deadmau5"
+        assert match.resolved_title == "Strobe"

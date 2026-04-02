@@ -1,0 +1,32 @@
+{% if done %}
+<div class="bg-white border border-gray-200 rounded-lg p-4" aria-live="polite">
+    {% if tracklists_created > 0 %}
+    <p class="text-sm text-gray-900">
+        Scan complete. {{ tracklists_created }} tracklist(s) created.
+        <a href="/tracklists/?filter=proposed&page=1"
+           class="text-blue-600 hover:underline"
+           @click="showScan = false; activeTab = 'proposed'"
+           hx-get="/tracklists/?filter=proposed&page=1"
+           hx-target="#tracklists-list"
+           hx-swap="innerHTML">View proposed tracklists.</a>
+    </p>
+    {% else %}
+    <p class="text-sm text-gray-900">Scan complete. No matching tracks found in the fingerprint database.</p>
+    {% endif %}
+    {% if errors is defined and errors %}
+    <div class="mt-2">
+        {% for filename in errors %}
+        <p class="text-sm text-red-600">Scan failed for {{ filename }}. The fingerprint service may be unavailable. Check that the fingerprint container is running.</p>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% else %}
+<div class="bg-white border border-gray-200 rounded-lg p-4" aria-live="polite"
+     hx-get="/tracklists/scan/status?job_ids={{ job_ids }}"
+     hx-trigger="every 3s"
+     hx-swap="innerHTML"
+     hx-target="#scan-panel">
+    <p class="text-sm text-gray-900">Scanning... ({{ completed }} of {{ total }} files)</p>
+</div>
+{% endif %}

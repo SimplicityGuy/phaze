@@ -1,6 +1,7 @@
 """Integration tests for tracklists router."""
 
 from datetime import date
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import AsyncClient
@@ -11,7 +12,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
-def _make_file(original_path: str = "/music/test.mp3") -> FileRecord:
+def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -> FileRecord:
     """Create a test FileRecord."""
     filename = original_path.rsplit("/", 1)[-1]
     return FileRecord(
@@ -20,7 +21,7 @@ def _make_file(original_path: str = "/music/test.mp3") -> FileRecord:
         original_path=original_path,
         original_filename=filename,
         current_path=original_path,
-        file_type="mp3",
+        file_type=file_type,
         file_size=1000,
         state=FileState.DISCOVERED,
     )
@@ -31,6 +32,8 @@ def _make_tracklist(
     external_id: str | None = None,
     match_confidence: int | None = None,
     auto_linked: bool = False,
+    source: str = "1001tracklists",
+    status: str = "approved",
 ) -> Tracklist:
     """Create a test Tracklist."""
     return Tracklist(
@@ -43,6 +46,8 @@ def _make_tracklist(
         artist="Test Artist",
         event="Test Festival",
         date=date(2024, 4, 14),
+        source=source,
+        status=status,
     )
 
 
@@ -209,3 +214,469 @@ async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -
     assert "Total Tracklists" in response.text
     assert "Matched" in response.text
     assert "Unmatched" in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_tab(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan returns scan tab HTML with file list."""
+    file1 = _make_file(original_path="/music/live-set-1.mp3", file_type="mp3")
+    file2 = _make_file(original_path="/music/live-set-2.m4a", file_type="m4a")
+    session.add_all([file1, file2])
+    await session.flush()
+
+    response = await client.get("/tracklists/scan")
+    assert response.status_code == 200
+    assert "Scan Live Sets" in response.text
+    assert "live-set-1.mp3" in response.text
+    assert "live-set-2.m4a" in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_excludes_already_scanned(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan excludes files that already have fingerprint tracklists."""
+    file1 = _make_file(original_path="/music/already-done.mp3", file_type="mp3")
+    file2 = _make_file(original_path="/music/fresh-file.mp3", file_type="mp3")
+    session.add_all([file1, file2])
+    await session.flush()
+
+    # Link file1 to a fingerprint-sourced tracklist
+    tl = _make_tracklist(file_id=file1.id, external_id="fp-scanned", source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.get("/tracklists/scan")
+    assert response.status_code == 200
+    assert "fresh-file.mp3" in response.text
+    assert "already-done.mp3" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_empty_state(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan with no unscanned files shows empty state."""
+    response = await client.get("/tracklists/scan")
+    assert response.status_code == 200
+    assert "No unscanned files" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/scan enqueues arq jobs and returns progress HTML."""
+    # Mock arq pool
+    mock_job = MagicMock()
+    mock_job.job_id = "test-job-123"
+    mock_pool = AsyncMock()
+    mock_pool.enqueue_job = AsyncMock(return_value=mock_job)
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    file_id = str(uuid.uuid4())
+    response = await client.post("/tracklists/scan", data={"file_ids": [file_id]})
+    assert response.status_code == 200
+    assert "Scanning..." in response.text
+    mock_pool.enqueue_job.assert_called_once_with("scan_live_set", file_id)
+
+
+@pytest.mark.asyncio
+async def test_proposed_filter(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/?filter=proposed returns only proposed tracklists."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    proposed = _make_tracklist(file_id=file.id, external_id="fp-proposed", source="fingerprint", status="proposed")
+    approved = _make_tracklist(external_id="tl-approved", source="1001tracklists", status="approved")
+    session.add_all([proposed, approved])
+    await session.flush()
+
+    response = await client.get("/tracklists/?filter=proposed")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_get(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/tracks/{id}/edit/{field} returns input HTML."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Original Artist",
+        title="Original Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.get(f"/tracklists/tracks/{track.id}/edit/artist")
+    assert response.status_code == 200
+    assert 'name="artist"' in response.text
+    assert "Original Artist" in response.text
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_save(session: AsyncSession, client: AsyncClient) -> None:
+    """PUT /tracklists/tracks/{id}/edit/{field} updates field and returns display HTML."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Old Artist",
+        title="Old Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/artist", data={"artist": "New Artist"})
+    assert response.status_code == 200
+    assert "New Artist" in response.text
+    assert "hx-get" in response.text
+
+    await session.refresh(track)
+    assert track.artist == "New Artist"
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_invalid_field(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/tracks/{id}/edit/{field} returns 400 for invalid field name."""
+    track_id = uuid.uuid4()
+    response = await client.get(f"/tracklists/tracks/{track_id}/edit/invalid_field")
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_track(session: AsyncSession, client: AsyncClient) -> None:
+    """DELETE /tracklists/tracks/{id} removes track row."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Delete Me",
+        title="Delete Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.delete(f"/tracklists/tracks/{track.id}")
+    assert response.status_code == 200
+    assert response.text == ""
+
+
+@pytest.mark.asyncio
+async def test_approve_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/approve changes status to approved."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/approve")
+    assert response.status_code == 200
+
+    await session.refresh(tl)
+    assert tl.status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_reject_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject changes status to rejected."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject")
+    assert response.status_code == 200
+
+    await session.refresh(tl)
+    assert tl.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_bulk_reject_low_confidence(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject-low removes tracks below threshold."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    high_conf = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Good",
+        title="Good Track",
+        confidence=95.0,
+    )
+    low_conf = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=2,
+        artist="Bad",
+        title="Bad Track",
+        confidence=30.0,
+    )
+    session.add_all([high_conf, low_conf])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject-low?threshold=50")
+    assert response.status_code == 200
+    assert "Good" in response.text
+    assert "Bad" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_tracks_use_fingerprint_template(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/{id}/tracks returns fingerprint template for fingerprint source."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="FP Artist",
+        title="FP Title",
+        confidence=88.0,
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.get(f"/tracklists/{tl.id}/tracks")
+    assert response.status_code == 200
+    # Fingerprint template includes confidence badges and inline edit
+    assert "FP Artist" in response.text
+    assert "hx-get" in response.text  # inline edit wiring
+    assert "hx-delete" in response.text  # delete button
+
+
+@pytest.mark.asyncio
+async def test_stats_include_proposed(session: AsyncSession, client: AsyncClient) -> None:
+    """Stats dict includes proposed count."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    proposed = _make_tracklist(file_id=file.id, external_id="fp-stats", source="fingerprint", status="proposed")
+    approved = _make_tracklist(external_id="tl-stats-appr", source="1001tracklists", status="approved")
+    session.add_all([proposed, approved])
+    await session.flush()
+
+    response = await client.get("/tracklists/")
+    assert response.status_code == 200
+    assert "Proposed" in response.text
+
+
+# --- Scan status / progress ---
+
+
+@pytest.mark.asyncio
+async def test_scan_status_all_complete(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status reports completion when all jobs done."""
+    mock_job = AsyncMock()
+    mock_info = MagicMock()
+    mock_info.result = {"status": "scanned", "filename": "test.mp3"}
+    mock_job.info.return_value = mock_info
+
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = mock_job
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_scan_status_with_error(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status reports errors from failed jobs."""
+    mock_job = AsyncMock()
+    mock_info = MagicMock()
+    mock_info.result = {"status": "error", "filename": "bad.mp3"}
+    mock_job.info.return_value = mock_info
+
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = mock_job
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_scan_status_job_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status handles missing job gracefully."""
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = None
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=missing-job")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_scan_status_job_pending(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status handles pending jobs (no result yet)."""
+    mock_job = AsyncMock()
+    mock_info = MagicMock()
+    mock_info.result = None
+    mock_job.info.return_value = mock_info
+
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = mock_job
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=pending-job")
+    assert response.status_code == 200
+
+
+# --- Link / rescrape / search endpoints ---
+
+
+@pytest.mark.asyncio
+async def test_link_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/link sets file_id and confidence."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(file.id), "confidence": 85},
+    )
+    assert response.status_code == 200
+
+    await session.refresh(tl)
+    assert tl.file_id == file.id
+    assert tl.match_confidence == 85
+
+
+@pytest.mark.asyncio
+async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/rescrape enqueues scrape job."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    mock_pool = AsyncMock()
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.post(f"/tracklists/{tl.id}/rescrape")
+    assert response.status_code == 200
+    mock_pool.enqueue_job.assert_called_once_with("scrape_and_store_tracklist", str(tl.id))
+
+
+@pytest.mark.asyncio
+async def test_manual_search(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/search enqueues a search job."""
+    mock_pool = AsyncMock()
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    file_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/search?file_id={file_id}")
+    assert response.status_code == 200
+    mock_pool.enqueue_job.assert_called_once_with("search_tracklist", str(file_id))
+
+
+@pytest.mark.asyncio
+async def test_search_better_match_no_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/{id}/search with non-existent tracklist returns empty results."""
+    fake_id = uuid.uuid4()
+    response = await client.get(f"/tracklists/{fake_id}/search")
+    assert response.status_code == 200
+
+
+# --- Error branches ---
+
+
+@pytest.mark.asyncio
+async def test_approve_tracklist_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/approve returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/{fake_id}/approve")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reject_tracklist_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/{fake_id}/reject")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reject_low_confidence_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject-low returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/{fake_id}/reject-low?threshold=50")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_track_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """DELETE /tracklists/tracks/{id} returns 404 for non-existent track."""
+    fake_id = uuid.uuid4()
+    response = await client.delete(f"/tracklists/tracks/{fake_id}")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_edit_track_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/tracks/{id}/edit/{field} returns 404 for non-existent track."""
+    fake_id = uuid.uuid4()
+    response = await client.get(f"/tracklists/tracks/{fake_id}/edit/artist")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_save_track_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """PUT /tracklists/tracks/{id}/edit/{field} returns 404 for non-existent track."""
+    fake_id = uuid.uuid4()
+    response = await client.put(f"/tracklists/tracks/{fake_id}/edit/artist", data={"artist": "New"})
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_save_track_invalid_field(session: AsyncSession, client: AsyncClient) -> None:
+    """PUT /tracklists/tracks/{id}/edit/{field} returns 400 for invalid field."""
+    fake_id = uuid.uuid4()
+    response = await client.put(f"/tracklists/tracks/{fake_id}/edit/invalid_field", data={"invalid_field": "x"})
+    assert response.status_code == 400

@@ -1,6 +1,14 @@
 <div id="tracklist-{{ tracklist.id }}" class="bg-white border border-gray-200 rounded-lg" x-data="{ expanded: false }">
+    <!-- Badge row -->
+    <div class="px-4 pt-3">
+        <div class="flex items-center gap-2 mb-1">
+            {% include "tracklists/partials/source_badge.html" %}
+            {% include "tracklists/partials/status_badge.html" %}
+        </div>
+    </div>
+
     <!-- Card header -->
-    <div class="px-4 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
+    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50"
          @click="expanded = !expanded; if(expanded && !$refs.tracks{{ tracklist.id|replace('-', '') }}.innerHTML.trim()) $refs.tracks{{ tracklist.id|replace('-', '') }}.dispatchEvent(new Event('loadtracks'))"
          :aria-expanded="expanded.toString()">
         <div class="flex items-center gap-3 min-w-0">
@@ -36,6 +44,26 @@
 
     <!-- Action buttons -->
     <div class="px-4 py-3 border-t border-gray-100 flex gap-2 text-sm">
+        {% if tracklist.source == 'fingerprint' %}
+        {% if tracklist.status != 'rejected' %}
+        {% if tracklist.status != 'approved' %}
+        <button hx-post="/tracklists/{{ tracklist.id }}/approve"
+                hx-target="#tracklist-{{ tracklist.id }}"
+                hx-swap="outerHTML"
+                class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1.5 rounded-md">
+            Approve Tracklist
+        </button>
+        {% endif %}
+        <button hx-post="/tracklists/{{ tracklist.id }}/reject"
+                hx-target="#tracklist-{{ tracklist.id }}"
+                hx-swap="outerHTML"
+                hx-confirm="Reject this tracklist? All track identifications will be discarded."
+                class="text-xs text-red-600 hover:text-red-700 font-semibold px-2 py-1">
+            Reject Tracklist
+        </button>
+        {% endif %}
+        {% else %}
+        <!-- 1001Tracklists-sourced actions -->
         <button hx-post="/tracklists/{{ tracklist.id }}/unlink"
                 hx-target="#tracklists-list"
                 hx-swap="innerHTML"
@@ -61,6 +89,7 @@
                 class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
             Find Better Match
         </button>
+        {% endif %}
     </div>
 
     {% if rescrape_queued is defined and rescrape_queued %}

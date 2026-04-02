@@ -40,6 +40,7 @@ class QueryMatch:
 
     track_id: str
     confidence: float
+    timestamp: str | None = None
 
 
 @dataclass
@@ -49,6 +50,9 @@ class CombinedMatch:
     track_id: str
     confidence: float
     engines: dict[str, float] = field(default_factory=dict)
+    timestamp: str | None = None
+    resolved_artist: str | None = None
+    resolved_title: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +115,7 @@ class AudfprintAdapter:
             if resp.status_code != 200:
                 return []
             data = resp.json()
-            return [QueryMatch(track_id=m["track_id"], confidence=m["confidence"]) for m in data.get("matches", [])]
+            return [QueryMatch(track_id=m["track_id"], confidence=m["confidence"], timestamp=m.get("timestamp")) for m in data.get("matches", [])]
         except Exception:
             logger.exception("audfprint query failed")
             return []
@@ -162,7 +166,7 @@ class PanakoAdapter:
             if resp.status_code != 200:
                 return []
             data = resp.json()
-            return [QueryMatch(track_id=m["track_id"], confidence=m["confidence"]) for m in data.get("matches", [])]
+            return [QueryMatch(track_id=m["track_id"], confidence=m["confidence"], timestamp=m.get("timestamp")) for m in data.get("matches", [])]
         except Exception:
             logger.exception("panako query failed")
             return []

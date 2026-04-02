@@ -1,0 +1,10 @@
+<input type="text"
+       name="{{ field }}"
+       value="{{ track[field] or '' }}"
+       class="text-sm border border-blue-300 rounded px-2 py-1 w-full focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+       hx-put="/tracklists/tracks/{{ track.id }}/edit/{{ field }}"
+       hx-target="closest td"
+       hx-swap="innerHTML"
+       hx-trigger="blur, keyup[keyCode==13]"
+       aria-label="Edit {{ field }}"
+       autofocus>

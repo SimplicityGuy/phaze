@@ -1,0 +1,66 @@
+{% if files %}
+<div class="bg-white border border-gray-200 rounded-lg p-4" x-data="{ selectedFiles: [], selectAll: false }">
+    <h2 class="text-sm font-semibold text-gray-900 mb-1">Scan Live Sets</h2>
+    <p class="text-sm text-gray-500 mb-4">Select files to scan against the fingerprint database.</p>
+
+    <form hx-post="/tracklists/scan" hx-target="#scan-panel" hx-swap="innerHTML">
+        <!-- Toolbar -->
+        <div class="flex items-center justify-between mb-4">
+            <label class="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox"
+                       class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                       x-model="selectAll"
+                       @change="selectedFiles = selectAll ? [{% for file in files %}'{{ file.id }}'{% if not loop.last %}, {% endif %}{% endfor %}] : []">
+                Select All
+            </label>
+            <button type="submit"
+                    class="text-sm font-semibold px-4 py-2 rounded-md text-white"
+                    :class="selectedFiles.length > 0 ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer' : 'bg-gray-300 cursor-not-allowed'"
+                    :disabled="selectedFiles.length === 0"
+                    title="Select at least one file to scan">
+                Scan Selected Files
+            </button>
+        </div>
+
+        <!-- File list -->
+        <div role="group" aria-label="Select files to scan">
+            {% for file in files %}
+            <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50">
+                <input type="checkbox"
+                       name="file_ids"
+                       value="{{ file.id }}"
+                       class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                       x-model="selectedFiles"
+                       @change="selectAll = selectedFiles.length === {{ files | length }}">
+                <span class="text-sm text-gray-900 flex-1 truncate">{{ file.original_filename }}</span>
+                <span class="text-sm text-gray-400 w-24 text-right">{{ (file.file_size / 1048576) | round(1) }} MB</span>
+                <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-600 w-12 text-center">{{ file.file_type | upper }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </form>
+
+    <!-- Footer -->
+    <div class="px-4 py-3 text-xs text-gray-500 flex items-center justify-between">
+        <span>Showing {{ files | length }} of {{ total_unscanned }} unscanned files</span>
+        {% if pagination.total > pagination.page_size %}
+        <div class="flex gap-1">
+            {% set total_pages = (pagination.total / pagination.page_size) | round(0, 'ceil') | int %}
+            {% for p in range(1, total_pages + 1) %}
+            <button hx-get="/tracklists/scan?page={{ p }}"
+                    hx-target="#scan-panel"
+                    hx-swap="innerHTML"
+                    class="px-2 py-1 rounded {% if p == pagination.page %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+                {{ p }}
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="text-center py-12">
+    <h2 class="text-lg font-semibold text-gray-900 mb-2">No unscanned files</h2>
+    <p class="text-sm text-gray-500 max-w-md mx-auto">All files have already been scanned against the fingerprint database. Re-scan a file by selecting it from the file list.</p>
+</div>
+{% endif %}

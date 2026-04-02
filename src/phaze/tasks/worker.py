@@ -17,6 +17,7 @@ from phaze.tasks.functions import process_file
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.proposal import generate_proposals
+from phaze.tasks.scan import scan_live_set
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
@@ -93,6 +94,7 @@ class WorkerSettings:
         fingerprint_file,
         search_tracklist,
         scrape_and_store_tracklist,
+        scan_live_set,
     ]
     cron_jobs: ClassVar[list[Any]] = [
         cron(refresh_tracklists, month={1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, day=1, hour=3, minute=0, run_at_startup=False),
