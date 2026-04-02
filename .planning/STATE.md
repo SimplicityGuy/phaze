@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
 status: executing
-stopped_at: Completed 17-01-PLAN.md
-last_updated: "2026-04-02T15:29:55.511Z"
+stopped_at: Completed 17-02-PLAN.md
+last_updated: "2026-04-02T15:41:18.022Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 16
-  completed_plans: 14
+  completed_plans: 15
   percent: 70
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 ## Current Position
 
 Phase: 17 (live-set-matching-tracklist-review) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-02
 
@@ -72,6 +72,9 @@ Progress: [███████░░░] 70%
 - [Phase 17]: source_url set to empty string for fingerprint-sourced tracklists (no external URL)
 - [Phase 17]: Re-scan creates new TracklistVersion with incremented version_number via MAX query
 - [Phase 17]: Fixed pre-existing datetime import bug in tracklist model (TYPE_CHECKING vs SQLAlchemy runtime resolution)
+- [Phase 17]: Alpine.js x-data moved to outer container in list.html so filter_tabs and scan-panel share showScan state
+- [Phase 17]: Scan tab uses Alpine.js toggle (not HTMX) per Research Pitfall 6
+- [Phase 17]: Fingerprint-sourced cards hide 1001tracklists-specific actions; approve/reject deferred to Plan 03
 
 ### Pending Todos
 
@@ -83,6 +86,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-02T15:29:55.507Z
-Stopped at: Completed 17-01-PLAN.md
+Last session: 2026-04-02T15:41:18.018Z
+Stopped at: Completed 17-02-PLAN.md
 Resume file: None
