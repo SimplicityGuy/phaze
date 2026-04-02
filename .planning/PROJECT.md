@@ -124,4 +124,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-01 after Phase 16 complete — Fingerprint service (audfprint + Panako containers), Protocol-based adapters, weighted hybrid scoring, batch ingestion via arq*
+*Last updated: 2026-04-02 after Phase 17 complete — Live set scanning, fingerprint tracklist review with inline editing, approve/reject flow. v2.0 milestone complete.*
