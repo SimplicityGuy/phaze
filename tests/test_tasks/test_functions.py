@@ -78,6 +78,19 @@ async def test_process_file_calls_analyze(mock_pool: AsyncMock) -> None:
     assert call_args[0][2] == "/music/track.mp3"
 
 
+async def test_process_file_not_found() -> None:
+    """process_file for a non-existent file_id returns status 'not_found'."""
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_result
+
+    ctx = _make_ctx(mock_session=mock_session)
+    result = await process_file(ctx, file_id=str(uuid.uuid4()))
+
+    assert result["status"] == "not_found"
+
+
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
 async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
     """process_file for a file with file_type not music returns status 'skipped' without calling analyze."""

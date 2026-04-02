@@ -244,3 +244,82 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     data = response.json()
     assert data["total_files"] == 5
     assert data["enqueued_batches"] == 1  # 5 files / 10 batch_size = 1 batch
+
+
+@pytest.mark.asyncio
+async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /api/v1/extract-metadata with music files returns enqueue count."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    await session.commit()
+
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/api/v1/extract-metadata")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 3
+
+
+@pytest.mark.asyncio
+async def test_extract_metadata_no_files(client: AsyncClient) -> None:
+    """POST /api/v1/extract-metadata with no music files returns enqueued=0."""
+    response = await client.post("/api/v1/extract-metadata")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 0
+
+
+@pytest.mark.asyncio
+async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/extract-metadata with music files returns HTML response."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    await session.commit()
+
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/extract-metadata")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "metadata extraction" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_extraction_ui_no_files(client: AsyncClient) -> None:
+    """POST /pipeline/extract-metadata with no music files returns HTML with zero count."""
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/extract-metadata")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/fingerprint with METADATA_EXTRACTED files returns HTML response."""
+    session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
+    await session.commit()
+
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/fingerprint")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "fingerprinting" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_ui_no_files(client: AsyncClient) -> None:
+    """POST /pipeline/fingerprint with no eligible files returns HTML with zero count."""
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/fingerprint")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
