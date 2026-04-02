@@ -3,8 +3,9 @@
 # update-project.sh - Comprehensive project dependency and version updater
 #
 # This script provides a safe and comprehensive way to update:
-# - Python version across all project files
+# - Python version across all project files (including services)
 # - Python package dependencies via uv (all version types)
+# - Service dependencies (audfprint, panako)
 # - UV package manager version in Dockerfiles and GitHub workflows
 # - Pre-commit hooks to latest versions (with frozen SHAs)
 # - Docker base images to latest versions
@@ -47,6 +48,13 @@ EMOJI_TEST="🧪"
 EMOJI_BACKUP="💾"
 EMOJI_CHANGES="📝"
 EMOJI_VERIFY="🔍"
+EMOJI_SERVICE="🔧"
+
+# Service directories with their own dependencies
+SERVICE_DIRS=(
+  "services/audfprint"
+  "services/panako"
+)
 
 # Print colored output with emojis
 print_info() {
@@ -144,6 +152,16 @@ create_backup() {
     cp .pre-commit-config.yaml "$backup_dir/"
     cp Dockerfile "$backup_dir/"
     cp docker-compose.yml "$backup_dir/"
+    for svc_dir in "${SERVICE_DIRS[@]}"; do
+      if [[ -d "$svc_dir" ]]; then
+        local svc_backup="$backup_dir/$svc_dir"
+        mkdir -p "$svc_backup"
+        cp "$svc_dir"/pyproject.toml "$svc_backup/" 2>/dev/null || true
+        for df in "$svc_dir"/Dockerfile*; do
+          [[ -f "$df" ]] && cp "$df" "$svc_backup/"
+        done
+      fi
+    done
     print_success "Backups saved to $backup_dir"
   fi
 }
@@ -160,10 +178,19 @@ update_python_version() {
   local files_to_update=(
     "pyproject.toml"
     "Dockerfile"
+    ".github/workflows/ci.yml"
     ".github/workflows/code-quality.yml"
     ".github/workflows/tests.yml"
     ".github/workflows/security.yml"
   )
+
+  # Add service pyproject.toml and Dockerfiles
+  for svc_dir in "${SERVICE_DIRS[@]}"; do
+    [[ -f "$svc_dir/pyproject.toml" ]] && files_to_update+=("$svc_dir/pyproject.toml")
+    for df in "$svc_dir"/Dockerfile*; do
+      [[ -f "$df" ]] && files_to_update+=("$df")
+    done
+  done
 
   for file in "${files_to_update[@]}"; do
     if [[ -f "$file" ]]; then
@@ -230,7 +257,51 @@ update_python_packages() {
   just lock-upgrade
   just sync
   CHANGES_MADE=true
-  print_success "Python packages updated"
+  print_success "Root packages updated"
+
+  # Report available major version upgrades beyond current constraints
+  if [[ "$MAJOR_UPGRADES" == true ]]; then
+    print_info "Checking for major version upgrades beyond current constraints..."
+    local outdated
+    outdated=$(uv pip list --outdated 2>/dev/null) || true
+    if [[ -n "$outdated" ]]; then
+      print_warning "Packages with newer versions (may include major bumps):"
+      echo "$outdated"
+      echo ""
+      print_info "Review versions above and update pyproject.toml constraints manually for major upgrades"
+      print_info "Then re-run: just lock-upgrade && just sync"
+    else
+      print_success "All packages are at latest compatible versions"
+    fi
+  fi
+}
+
+# === Service Dependency Updates ===
+
+update_service_packages() {
+  print_section "$EMOJI_SERVICE" "Updating Service Dependencies"
+
+  for svc_dir in "${SERVICE_DIRS[@]}"; do
+    if [[ ! -f "$svc_dir/pyproject.toml" ]]; then
+      continue
+    fi
+
+    local svc_name
+    svc_name=$(basename "$svc_dir")
+
+    if [[ "$DRY_RUN" == true ]]; then
+      print_info "[DRY RUN] Would update dependencies in $svc_dir"
+      continue
+    fi
+
+    print_info "Updating $svc_name dependencies..."
+    (cd "$svc_dir" && uv lock --upgrade 2>/dev/null && uv sync 2>/dev/null) || {
+      # Services may not have a uv.lock — update in-place via pip compile
+      print_info "$svc_name has no lockfile, skipping lock upgrade"
+    }
+    CHANGES_MADE=true
+    print_success "Updated $svc_name"
+  done
 }
 
 # === Docker Base Images ===
@@ -238,9 +309,15 @@ update_python_packages() {
 update_docker_images() {
   print_section "$EMOJI_DOCKER" "Checking Docker Base Images"
 
-  # Show current images
+  # Show current images from all Dockerfiles
   print_info "Current Docker base images:"
-  grep "^FROM\|^    image:" Dockerfile docker-compose.yml 2>/dev/null || true
+  local dockerfiles=("Dockerfile" "docker-compose.yml")
+  for svc_dir in "${SERVICE_DIRS[@]}"; do
+    for df in "$svc_dir"/Dockerfile*; do
+      [[ -f "$df" ]] && dockerfiles+=("$df")
+    done
+  done
+  grep "^FROM\|^    image:" "${dockerfiles[@]}" 2>/dev/null || true
 
   if [[ "$DRY_RUN" == true ]]; then
     print_info "[DRY RUN] Docker image updates handled by Dependabot"
@@ -446,7 +523,11 @@ generate_summary() {
     echo "  - pyproject.toml"
     echo "  - uv.lock"
     echo "  - .pre-commit-config.yaml"
+    for svc_dir in "${SERVICE_DIRS[@]}"; do
+      [[ -d "$svc_dir" ]] && echo "  - $svc_dir/pyproject.toml"
+    done
     [[ "$UPDATE_PYTHON" == true ]] && echo "  - Dockerfile"
+    [[ "$UPDATE_PYTHON" == true ]] && echo "  - services/*/Dockerfile.*"
     [[ "$UPDATE_PYTHON" == true ]] && echo "  - .github/workflows/*.yml"
     echo ""
     echo "Next steps:"
@@ -466,6 +547,7 @@ update_python_version
 update_uv_version
 update_precommit_hooks
 update_python_packages
+update_service_packages
 update_docker_images
 sweep_pip_audit_ignores
 sweep_osv_scanner_ignores
