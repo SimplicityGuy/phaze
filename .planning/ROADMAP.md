@@ -113,9 +113,9 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. User can trigger a scan of a live set recording against the fingerprint DB and receive a list of identified tracks with timestamps and confidence scores
   2. Proposed tracklists from fingerprint matches are displayed in the admin UI with per-track confidence, and the user can approve, reject, or edit individual track identifications
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 Plans:
-- [ ] 17-01-PLAN.md -- Backend data layer: migration, model extensions, dataclass updates, scan_live_set task
+- [x] 17-01-PLAN.md -- Backend data layer: migration, model extensions, dataclass updates, scan_live_set task
 - [ ] 17-02-PLAN.md -- Scan tab UI, source/status badges, proposed filter, scan endpoints
 - [ ] 17-03-PLAN.md -- Review flow: inline editing, approve/reject, bulk reject, fingerprint track detail
 **UI hint**: yes
@@ -144,4 +144,4 @@ Note: Phases 13, 14, and 15 all depend only on Phase 12 and could theoretically 
 | 14. Duplicate Resolution UI | v2.0 | 2/2 | Complete    | 2026-04-01 |
 | 15. 1001Tracklists Integration | v2.0 | 2/2 | Complete    | 2026-04-01 |
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 3/3 | Complete    | 2026-04-01 |
-| 17. Live Set Matching & Tracklist Review | v2.0 | 0/3 | Planning    | - |
+| 17. Live Set Matching & Tracklist Review | v2.0 | 1/3 | In Progress|  |

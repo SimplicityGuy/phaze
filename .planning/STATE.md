@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Metadata Enrichment & Tracklist Integration
 status: executing
-stopped_at: Phase 17 UI-SPEC approved
-last_updated: "2026-04-02T00:32:00.347Z"
-last_activity: 2026-04-01
+stopped_at: Completed 17-01-PLAN.md
+last_updated: "2026-04-02T15:29:55.511Z"
+last_activity: 2026-04-02
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 13
-  completed_plans: 13
+  total_plans: 16
+  completed_plans: 14
   percent: 70
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 16 — fingerprint-service-batch-ingestion
+**Current focus:** Phase 17 — live-set-matching-tracklist-review
 
 ## Current Position
 
-Phase: 17
-Plan: Not started
+Phase: 17 (live-set-matching-tracklist-review) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-04-01
+Last activity: 2026-04-02
 
 Progress: [███████░░░] 70%
 
@@ -69,6 +69,9 @@ Progress: [███████░░░] 70%
 - [Phase 16]: PanakoAdapter mirrors AudfprintAdapter structure; factory could DRY later
 - [Phase 16]: FingerprintOrchestrator injected via arq ctx dict, matching existing async_session pattern
 - [Phase 16]: Fingerprint trigger includes failed-result retry for re-enqueue on backfill
+- [Phase 17]: source_url set to empty string for fingerprint-sourced tracklists (no external URL)
+- [Phase 17]: Re-scan creates new TracklistVersion with incremented version_number via MAX query
+- [Phase 17]: Fixed pre-existing datetime import bug in tracklist model (TYPE_CHECKING vs SQLAlchemy runtime resolution)
 
 ### Pending Todos
 
@@ -80,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-02T00:32:00.343Z
-Stopped at: Phase 17 UI-SPEC approved
-Resume file: .planning/phases/17-live-set-matching-tracklist-review/17-UI-SPEC.md
+Last session: 2026-04-02T15:29:55.507Z
+Stopped at: Completed 17-01-PLAN.md
+Resume file: None
