@@ -8,28 +8,31 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
 
-## Current Milestone: v2.0 Metadata Enrichment & Tracklist Integration
+## Current State
 
-**Goal:** Enrich the file corpus with audio tags, tracklist data, and audio fingerprinting — building queryable infrastructure for cross-service linking and automated track identification.
+**v2.0 shipped 2026-04-02.** Metadata enrichment and tracklist integration complete.
 
-**Target features:**
-- Audio tag extraction (mutagen) → populate FileMetadata → richer LLM context
-- AI destination path proposals using v1.0 naming format
-- Duplicate resolution workflow in admin UI
-- 1001tracklists integration (search, scrape, fuzzy-match, store)
-- Periodic tracklist refresh for unresolved IDs (randomized, monthly minimum)
-- Audio fingerprinting (audfprint + Panako hybrid) → fingerprint all files during ingestion, scan live sets to generate proposed tracklists for review
-- Fingerprint service as a long-running container with API/message interface
+- 5,966 lines of Python across 17 phases (6 in v2.0), 40 plans total
+- 538 tests passing, 23/23 v2.0 requirements satisfied (42/42 cumulative)
+- Tech stack: FastAPI, SQLAlchemy (async), arq, litellm, essentia-tensorflow, mutagen, rapidfuzz, HTMX + Tailwind
+- Docker Compose: api, worker, postgres, redis, audfprint, panako containers
+- 9 Alembic migrations, 9 SQLAlchemy models, 3 fingerprint service containers
+- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview
 
 ## Previous State
 
-**v1.0 shipped 2026-03-30.** Full pipeline operational: scan → analyze → propose → approve → execute.
+<details>
+<summary>v1.0 shipped 2026-03-30</summary>
+
+Full pipeline operational: scan → analyze → propose → approve → execute.
 
 - 7,975 lines of Python across 11 phases, 24 plans
 - 282 tests passing, 19/19 requirements satisfied
 - Tech stack: FastAPI, SQLAlchemy (async), arq, litellm, essentia-tensorflow, HTMX + Tailwind
 - Docker Compose: api, worker, postgres, redis containers with health checks
 - 4 Alembic migrations, 6 SQLAlchemy models, 28 file extensions classified
+
+</details>
 
 ## Requirements
 
@@ -56,31 +59,40 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - ✓ Append-only audit log for all file operations — v1.0 Phase 8
 - ✓ Pipeline orchestration: scan→analyze→propose triggers via API endpoints — v1.0 Phase 9
 
+- ✓ Audio tag extraction (ID3/Vorbis/MP4/FLAC/OPUS) feeding richer LLM context — v2.0 Phase 12
+- ✓ Shared async engine pool replacing per-invocation engine creation — v2.0 Phase 12
+- ✓ AI destination path proposals with collision detection and directory tree preview — v2.0 Phase 13
+- ✓ Duplicate resolution UI with auto-scoring, side-by-side comparison, resolve/undo — v2.0 Phase 14
+- ✓ 1001Tracklists integration with search, scrape, fuzzy match, periodic refresh — v2.0 Phase 15
+- ✓ Dual fingerprint service (audfprint + Panako) with batch ingestion — v2.0 Phase 16
+- ✓ Live set scanning with tracklist review, inline editing, approve/reject — v2.0 Phase 17
+
 ### Active
 
-- [ ] Use AI to propose destination paths for file organization (proposed_path wiring exists, LLM prompt needs path generation)
-- [ ] Resolve duplicate files (human decision via approval UI, detection done in v1.0 Phase 3)
-- [ ] Extract and use existing audio tags (ID3, Vorbis, MP4) for richer LLM context (FileMetadata model scaffolded)
+(No active requirements — next milestone not yet planned)
 
 ### Out of Scope
 
-- Search frontend — deferred to post-v2
-- Natural language querying across services — deferred to post-v2
-- Discogsography cross-service linking — deferred to v3 (tracklist infrastructure built in v2.0)
+- Search frontend — deferred to v3+
+- Natural language querying across services — deferred to v3+
+- Discogsography cross-service linking — deferred to v3+ (tracklist infrastructure built in v2.0)
+- Acoustic near-duplicate detection via fingerprint similarity — deferred to v3+
+- Cross-reference fingerprint matches with 1001tracklists — deferred to v3+
+- Write corrected tags to destination copies — deferred to v3+
+- CUE sheet generation from tracklist data — deferred to v3+
 - Public network access — private network only
 - Offline mode — real-time server tool, not a desktop app
 
 ## Context
 
-- v1.0 shipped with full pipeline: scan → analyze → propose → approve → execute
+- v1.0 + v2.0 shipped: full pipeline from scan → tag extract → analyze → propose (filename + path) → approve → execute
 - ~200K files total, mix of music files and full concert video streams
 - Concert videos are primarily recordings of live streams (YouTube streams from festivals, etc.)
-- FileMetadata model and table exist but are unpopulated (mutagen integration in v2.0)
-- Task session creates new engine per invocation — acceptable for v1 but worth pooling for v2 scale
+- FileMetadata fully populated via mutagen tag extraction (ID3/Vorbis/MP4/FLAC/OPUS)
+- Shared async engine pool eliminates per-invocation engine creation
+- Dual fingerprint service (audfprint + Panako) with weighted scoring (60/40, 70% single-engine cap)
+- 1001tracklists integration operational with monthly refresh cron
 - This is a personal tool running on a home server, not a multi-user SaaS
-- 1001tracklists.com has documented HTTP endpoints for search (POST) and detail pages (POST) — no headless browser needed
-- Audio fingerprinting: audfprint (Python-native, landmark-based) and Panako (Java, tempo-robust) as hybrid approach with weighted scoring
-- Fingerprint service runs as a long-running container with API/message interface, not subprocess calls
 
 ## Constraints
 
@@ -105,6 +117,10 @@ Get 200K messy music and concert files properly named, organized into logical fo
 | litellm for LLM abstraction | Provider flexibility without vendor lock-in | ⚠️ Revisit — supply chain incident on 1.82.7/1.82.8, pin aggressively |
 | copy-verify-delete protocol | Never direct move — SHA256 verification before deleting original | ✓ Good — safety for irreplaceable collection |
 | State machine on FileRecord | Explicit state transitions (DISCOVERED→ANALYZED→PROPOSED→APPROVED→EXECUTED) | ✓ Good — enables pipeline dashboard stage counts |
+| mutagen for tag read/write | Zero-dependency, supports all major tag formats | ✓ Good — reliable across ID3/Vorbis/MP4/FLAC/OPUS |
+| audfprint + Panako hybrid | Complement each other: landmark-based vs tempo-robust | ✓ Good — weighted orchestrator with per-engine results |
+| rapidfuzz for fuzzy matching | Fast token_set_ratio for tracklist-to-file matching | ✓ Good — weighted scoring with artist/event/date |
+| Long-running fingerprint containers | HTTP API over subprocess calls for fingerprint services | ✓ Good — persistent DBs, Docker Compose integration |
 
 ## Evolution
 
@@ -124,4 +140,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 17 complete — Live set scanning, fingerprint tracklist review with inline editing, approve/reject flow. v2.0 milestone complete.*
+*Last updated: 2026-04-02 after v2.0 milestone — Metadata Enrichment & Tracklist Integration*

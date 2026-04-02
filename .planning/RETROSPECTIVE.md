@@ -50,6 +50,50 @@
 
 ---
 
+## Milestone: v2.0 — Metadata Enrichment & Tracklist Integration
+
+**Shipped:** 2026-04-02
+**Phases:** 6 | **Plans:** 16 | **Tasks:** 31
+
+### What Was Built
+- Audio tag extraction (mutagen) populating FileMetadata with artist, title, album, year, genre, track number, duration, bitrate, raw JSONB dump
+- AI destination path proposals with collision detection, directory tree preview, and execution gate
+- Duplicate resolution UI with auto-scoring (bitrate > tags > path), side-by-side comparison, resolve/undo workflow
+- 1001Tracklists integration: async scraper, fuzzy matcher (rapidfuzz), monthly refresh cron
+- Dual fingerprint service (audfprint + Panako) as Docker containers with HTTP APIs and batch ingestion
+- Live set scanning with tracklist review: inline editing, approve/reject, bulk reject, confidence badges
+
+### What Worked
+- Milestone audit after all phases caught only cosmetic/process tech debt — no functional gaps, proving v1.0 lesson about integration testing paid off
+- Phase branching with PRs continued to keep main clean (PRs #16-#22)
+- Research phases before planning (especially Phase 16 fingerprint architecture) prevented major rework
+- HTMX + server-rendered templates kept UI delivery fast without frontend build complexity
+- Parallel-capable phases (13, 14, 15 all depend only on 12) gave scheduling flexibility
+
+### What Was Inefficient
+- Phase 12 REQUIREMENTS.md checkboxes got lost during branch merge — needed manual sync in tech debt cleanup
+- Nyquist VALIDATION.md frontmatter was never toggled to `true` after execution across all 6 phases — process step consistently skipped
+- Phase 12 showed as "Not started" in ROADMAP.md progress table despite being complete — merge artifact from phase branch
+- Some MILESTONES.md accomplishments are raw summary one-liners rather than curated highlights
+
+### Patterns Established
+- Dual fingerprint engine architecture with Protocol-based adapters and weighted orchestrator
+- HTMX OOB swaps for inline updates (undo toasts, status transitions) — reusable pattern across all admin pages
+- Alpine.js for client-side state that HTMX doesn't handle (filter tabs, radio selection highlighting, scan panel toggle)
+- Convergence gate pattern: dual exists() subquery checks before advancing pipeline stage
+
+### Key Lessons
+1. Nyquist VALIDATION.md frontmatter finalization should be automated (hook or post-execution step) — manually toggling 6 files is error-prone
+2. REQUIREMENTS.md checkbox sync needs to happen on main after PR merge, not just on the phase branch
+3. Research phases for unfamiliar domains (fingerprinting, scraping) are high-ROI — Phase 16 research prevented audfprint/Panako integration surprises
+4. MILESTONES.md accomplishment extraction should be curated (4-6 highlights), not raw dump of all 16 summary one-liners
+
+### Cost Observations
+- Model mix: ~70% opus (execution + planning), ~20% sonnet (verification), ~10% haiku (quick checks)
+- Notable: 6 phases in 3 days with 538 tests — velocity improved from v1.0 due to established patterns and infrastructure
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -57,14 +101,17 @@
 | Milestone | Phases | Plans | Key Change |
 |-----------|--------|-------|------------|
 | v1.0 | 11 | 24 | Established GSD workflow, branching strategy, Nyquist validation |
+| v2.0 | 6 | 16 | Research phases before planning, dual-service architecture, HTMX patterns matured |
 
 ### Cumulative Quality
 
 | Milestone | Tests | LOC | Phases |
 |-----------|-------|-----|--------|
 | v1.0 | 282 | 7,975 | 11 |
+| v2.0 | 538 | 5,966 | 6 |
 
 ### Top Lessons (Verified Across Milestones)
 
-1. Integration testing at pipeline boundaries catches gaps that unit tests miss
-2. Documentation conventions established early save cleanup phases later
+1. Integration testing at pipeline boundaries catches gaps that unit tests miss (v1.0 audit gaps, v2.0 clean audit)
+2. Documentation conventions established early save cleanup phases later (v1.0 SUMMARY frontmatter, v2.0 Nyquist frontmatter)
+3. Research phases for unfamiliar domains prevent rework (v2.0 fingerprint architecture research)

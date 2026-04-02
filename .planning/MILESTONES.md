@@ -1,5 +1,30 @@
 # Milestones
 
+## v2.0 Metadata Enrichment & Tracklist Integration (Shipped: 2026-04-02)
+
+**Phases completed:** 6 phases, 16 plans, 31 tasks
+
+**Key accomplishments:**
+
+- Shared async engine pool for arq workers with FileMetadata column expansion and METADATA_EXTRACTED pipeline stage
+- 1. [Rule 3 - Blocking] Added track_number/duration/bitrate to FileMetadata model
+- Tag data piped to LLM context via build_file_context, dual-state convergence gate prevents proposal generation until both metadata extraction and audio analysis complete
+- Extended LLM prompt with 3-step directory path decision tree and added proposed_path field to FileProposalResponse with slash normalization in store_proposals
+- SQL collision detection service, recursive tree builder, and /preview/ route with collapsible directory tree for approved proposals
+- Wired collision detection and proposed_path display into the approval table and execution router, adding a Destination column with three visual states and an execution gate that blocks batch start when duplicate destination paths exist
+- Duplicate resolution backend with auto-selection scoring (bitrate > tags > path), metadata-enriched queries, resolve/undo state machine, and stats aggregation
+- FastAPI router + 9 Jinja2 templates delivering full duplicate resolution workflow: card-per-group layout, expandable comparison tables with green best-value highlighting, radio pre-selection, resolve/undo via HTMX OOB swaps, 10-second undo toast, bulk Accept All, and nav integration
+- Three-table tracklist data model with async scraper (rate-limited) and weighted fuzzy matcher using rapidfuzz token_set_ratio
+- arq task functions for tracklist search/scrape/refresh with monthly cron job, plus full HTMX admin UI with card layout, filter tabs, expand/collapse tracks, and undo toasts
+- Two Docker containers (audfprint + Panako) with FastAPI HTTP APIs exposing /ingest, /query, /health endpoints, integrated into Docker Compose with named volumes and internal networking
+- FingerprintEngine Protocol with httpx adapters, weighted orchestrator (60/40, 70% single-engine cap), FingerprintResult model, and Alembic migration
+- arq fingerprint_file task with per-engine result storage, pipeline trigger/progress endpoints, FINGERPRINTED stage in pipeline stats, and justfile commands
+- Tracklist source/status columns, track confidence, fingerprint dataclass extensions, and scan_live_set arq task for fingerprint-to-tracklist pipeline
+- Scan tab with batch file selection, arq-based fingerprint scanning with polling progress, and source/status badge partials on tracklist cards
+- HTMX inline editing, approve/reject status transitions, bulk reject low-confidence tracks, and fingerprint track detail with color-coded confidence badges
+
+---
+
 ## v1.0 MVP (Shipped: 2026-03-30)
 
 **Phases completed:** 11 phases, 24 plans, 43 tasks
