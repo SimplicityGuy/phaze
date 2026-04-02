@@ -38,9 +38,9 @@ async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, sessio
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(3)])
     await session.commit()
 
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/fingerprint")
     assert response.status_code == 200

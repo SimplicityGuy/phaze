@@ -1,4 +1,4 @@
-"""arq task functions for 1001Tracklists search, scrape, and refresh."""
+"""SAQ task functions for 1001Tracklists search, scrape, and refresh."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import random
 from typing import Any
 import uuid
 
-from arq import Retry
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -109,115 +108,107 @@ async def _store_scraped_tracklist(
     return tracklist
 
 
-async def search_tracklist(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
+async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, Any]:
     """Search 1001Tracklists for a file and store/link matching results.
 
     Per D-16: parse filename first, fall back to FileMetadata tags.
     Per D-14: auto-link if confidence >= 90.
+    Retries with exponential backoff are handled by SAQ queue configuration.
     """
-    try:
-        async with ctx["async_session"]() as session:
-            # Load file with metadata
-            result = await session.execute(
-                select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(FileRecord.id == uuid.UUID(file_id))
-            )
-            file_record = result.scalar_one_or_none()
-            if file_record is None:
-                return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "not_found"}
+    async with ctx["async_session"]() as session:
+        # Load file with metadata
+        result = await session.execute(select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(FileRecord.id == uuid.UUID(file_id)))
+        file_record = result.scalar_one_or_none()
+        if file_record is None:
+            return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "not_found"}
 
-            # Parse filename for artist/event/date signals
-            parsed = parse_live_set_filename(file_record.original_filename)
-            file_artist: str | None = None
-            file_event: str | None = None
-            file_date = None
+        # Parse filename for artist/event/date signals
+        parsed = parse_live_set_filename(file_record.original_filename)
+        file_artist: str | None = None
+        file_event: str | None = None
+        file_date = None
 
-            if parsed:
-                file_artist, file_event, file_date = parsed
-            elif file_record.file_metadata:
-                file_artist = file_record.file_metadata.artist
-                file_event = None  # No event info from tags
+        if parsed:
+            file_artist, file_event, file_date = parsed
+        elif file_record.file_metadata:
+            file_artist = file_record.file_metadata.artist
+            file_event = None  # No event info from tags
 
-            # Build search query
-            if file_artist and file_event:
-                query = f"{file_artist} {file_event}"
-            elif file_artist:
-                query = file_artist
-            else:
-                return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "no_query"}
+        # Build search query
+        if file_artist and file_event:
+            query = f"{file_artist} {file_event}"
+        elif file_artist:
+            query = file_artist
+        else:
+            return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "no_query"}
 
-            # Search and scrape
-            scraper = TracklistScraper()
-            try:
-                results = await scraper.search(query)
-                any_auto_linked = False
+        # Search and scrape
+        scraper = TracklistScraper()
+        try:
+            results = await scraper.search(query)
+            any_auto_linked = False
 
-                for search_result in results:
-                    scraped = await scraper.scrape_tracklist(search_result.url)
-                    confidence = compute_match_confidence(
-                        tracklist_artist=scraped.artist,
-                        tracklist_event=scraped.event,
-                        tracklist_date=None,  # Date parsing happens in store
-                        file_artist=file_artist,
-                        file_event=file_event,
-                        file_date=file_date,
-                    )
+            for search_result in results:
+                scraped = await scraper.scrape_tracklist(search_result.url)
+                confidence = compute_match_confidence(
+                    tracklist_artist=scraped.artist,
+                    tracklist_event=scraped.event,
+                    tracklist_date=None,  # Date parsing happens in store
+                    file_artist=file_artist,
+                    file_event=file_event,
+                    file_date=file_date,
+                )
 
-                    auto_link = should_auto_link(confidence)
-                    if auto_link:
-                        any_auto_linked = True
+                auto_link = should_auto_link(confidence)
+                if auto_link:
+                    any_auto_linked = True
 
-                    await _store_scraped_tracklist(
-                        session,
-                        scraped,
-                        file_id=uuid.UUID(file_id) if auto_link else None,
-                        confidence=confidence if auto_link else None,
-                        auto_linked=auto_link,
-                    )
+                await _store_scraped_tracklist(
+                    session,
+                    scraped,
+                    file_id=uuid.UUID(file_id) if auto_link else None,
+                    confidence=confidence if auto_link else None,
+                    auto_linked=auto_link,
+                )
 
-                await session.commit()
-                return {"file_id": file_id, "results_found": len(results), "auto_linked": any_auto_linked}
-            finally:
-                await scraper.close()
-
-    except Exception as exc:
-        raise Retry(defer=ctx["job_try"] * 10) from exc
+            await session.commit()
+            return {"file_id": file_id, "results_found": len(results), "auto_linked": any_auto_linked}
+        finally:
+            await scraper.close()
 
 
-async def scrape_and_store_tracklist(ctx: dict[str, Any], tracklist_id: str) -> dict[str, Any]:
+async def scrape_and_store_tracklist(ctx: dict[str, Any], *, tracklist_id: str) -> dict[str, Any]:
     """Re-scrape an existing tracklist and create a new version.
 
     Used for manual re-scrape action and refresh jobs.
+    Retries with exponential backoff are handled by SAQ queue configuration.
     """
-    try:
-        async with ctx["async_session"]() as session:
-            result = await session.execute(select(Tracklist).where(Tracklist.id == uuid.UUID(tracklist_id)))
-            tracklist = result.scalar_one_or_none()
-            if tracklist is None:
-                return {"tracklist_id": tracklist_id, "tracks_found": 0, "version": 0, "status": "not_found"}
+    async with ctx["async_session"]() as session:
+        result = await session.execute(select(Tracklist).where(Tracklist.id == uuid.UUID(tracklist_id)))
+        tracklist = result.scalar_one_or_none()
+        if tracklist is None:
+            return {"tracklist_id": tracklist_id, "tracks_found": 0, "version": 0, "status": "not_found"}
 
-            scraper = TracklistScraper()
-            try:
-                scraped = await scraper.scrape_tracklist(tracklist.source_url)
-                await _store_scraped_tracklist(session, scraped)
-                await session.commit()
+        scraper = TracklistScraper()
+        try:
+            scraped = await scraper.scrape_tracklist(tracklist.source_url)
+            await _store_scraped_tracklist(session, scraped)
+            await session.commit()
 
-                # Get the version number we just created
-                version_result = await session.execute(
-                    select(TracklistVersion)
-                    .where(TracklistVersion.tracklist_id == tracklist.id)
-                    .order_by(TracklistVersion.version_number.desc())
-                    .limit(1)
-                )
-                latest = version_result.scalar_one_or_none()
-                version_number = latest.version_number if latest else 0
-                tracks_found = len(scraped.tracks)
+            # Get the version number we just created
+            version_result = await session.execute(
+                select(TracklistVersion)
+                .where(TracklistVersion.tracklist_id == tracklist.id)
+                .order_by(TracklistVersion.version_number.desc())
+                .limit(1)
+            )
+            latest = version_result.scalar_one_or_none()
+            version_number = latest.version_number if latest else 0
+            tracks_found = len(scraped.tracks)
 
-                return {"tracklist_id": tracklist_id, "tracks_found": tracks_found, "version": version_number}
-            finally:
-                await scraper.close()
-
-    except Exception as exc:
-        raise Retry(defer=ctx["job_try"] * 10) from exc
+            return {"tracklist_id": tracklist_id, "tracks_found": tracks_found, "version": version_number}
+        finally:
+            await scraper.close()
 
 
 async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -237,7 +228,7 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
 
         for tl in tracklists:
             try:
-                await scrape_and_store_tracklist(ctx, str(tl.id))
+                await scrape_and_store_tracklist(ctx, tracklist_id=str(tl.id))
                 refreshed += 1
             except Exception:
                 logger.warning("Failed to refresh tracklist %s", tl.id, exc_info=True)

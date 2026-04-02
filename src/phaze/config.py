@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     worker_job_timeout: int = 600  # 10 min per file (generous for audio)
     worker_max_retries: int = 4  # D-03: max_tries=4 (1 initial + 3 retries)
     worker_process_pool_size: int = 4  # D-04: CPU-bound worker count
-    worker_health_check_interval: int = 60  # arq health check interval in seconds
+    worker_health_check_interval: int = 60  # SAQ health check interval in seconds
     worker_keep_result: int = 3600  # keep job results in Redis for 1 hour
 
     # Fingerprint service URLs (Docker service names)

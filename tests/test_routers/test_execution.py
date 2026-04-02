@@ -116,18 +116,18 @@ async def test_audit_log_empty_state(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_execute_approved(client: AsyncClient) -> None:
     """POST /execution/start returns HTML with SSE progress container."""
-    # Mock arq_pool on the app
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    # Mock queue on the app
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/execution/start")
     assert response.status_code == 200
     assert "sse-connect" in response.text
     assert "execution/progress/" in response.text
-    mock_pool.enqueue_job.assert_called_once()
-    call_args = mock_pool.enqueue_job.call_args
-    assert call_args[0][0] == "execute_approved_batch"
+    mock_queue.enqueue.assert_called_once()
+    call_args = mock_queue.enqueue.call_args
+    assert call_args.args[0] == "execute_approved_batch"
 
 
 @pytest.mark.asyncio
@@ -135,9 +135,9 @@ async def test_sse_progress(client: AsyncClient) -> None:
     """GET /execution/progress/{batch_id} returns text/event-stream content type."""
     batch_id = uuid.uuid4().hex
 
-    # Mock arq_pool with Redis hgetall that returns progress data
-    mock_pool = MagicMock()
-    mock_pool.hgetall = AsyncMock(
+    # Mock queue with Redis hgetall that returns progress data
+    mock_redis = MagicMock()
+    mock_redis.hgetall = AsyncMock(
         return_value={
             b"total": b"10",
             b"completed": b"5",
@@ -145,7 +145,9 @@ async def test_sse_progress(client: AsyncClient) -> None:
             b"status": b"complete",
         }
     )
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = MagicMock()
+    mock_queue.redis = mock_redis
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.get(f"/execution/progress/{batch_id}")
     assert response.status_code == 200
@@ -179,9 +181,9 @@ async def test_audit_log_stats_in_filter_tabs(client: AsyncClient, session: Asyn
 @pytest.mark.asyncio
 async def test_collision_gate_blocks_execution(client: AsyncClient) -> None:
     """POST /execution/start returns collision block HTML when collisions exist."""
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     with patch("phaze.routers.execution.detect_collisions", new_callable=AsyncMock) as mock_detect:
         mock_detect.return_value = [("performances/artists/Disclosure/file.mp3", 2)]
@@ -190,15 +192,15 @@ async def test_collision_gate_blocks_execution(client: AsyncClient) -> None:
     assert response.status_code == 200
     assert "Path collisions detected" in response.text
     assert "performances/artists/Disclosure/file.mp3" in response.text
-    mock_pool.enqueue_job.assert_not_called()
+    mock_queue.enqueue.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
     """POST /execution/start proceeds with execution when no collisions detected."""
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     with patch("phaze.routers.execution.detect_collisions", new_callable=AsyncMock) as mock_detect:
         mock_detect.return_value = []
@@ -206,4 +208,4 @@ async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     assert "sse-connect" in response.text
-    mock_pool.enqueue_job.assert_called_once()
+    mock_queue.enqueue.assert_called_once()

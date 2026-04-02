@@ -260,19 +260,19 @@ async def test_scan_tab_empty_state(session: AsyncSession, client: AsyncClient) 
 
 @pytest.mark.asyncio
 async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /tracklists/scan enqueues arq jobs and returns progress HTML."""
-    # Mock arq pool
+    """POST /tracklists/scan enqueues SAQ jobs and returns progress HTML."""
+    # Mock SAQ queue
     mock_job = MagicMock()
-    mock_job.job_id = "test-job-123"
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock(return_value=mock_job)
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_job.key = "test-job-123"
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock(return_value=mock_job)
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     file_id = str(uuid.uuid4())
     response = await client.post("/tracklists/scan", data={"file_ids": [file_id]})
     assert response.status_code == 200
     assert "Scanning..." in response.text
-    mock_pool.enqueue_job.assert_called_once_with("scan_live_set", file_id)
+    mock_queue.enqueue.assert_called_once_with("scan_live_set", file_id=file_id)
 
 
 @pytest.mark.asyncio
@@ -507,59 +507,74 @@ async def test_stats_include_proposed(session: AsyncSession, client: AsyncClient
 @pytest.mark.asyncio
 async def test_scan_status_all_complete(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/scan/status reports completion when all jobs done."""
-    mock_job = AsyncMock()
-    mock_info = MagicMock()
-    mock_info.result = {"status": "scanned", "filename": "test.mp3"}
-    mock_job.info.return_value = mock_info
+    from unittest.mock import patch
 
-    mock_pool = AsyncMock()
-    mock_pool.job.return_value = mock_job
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    from saq import Status
 
-    response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    mock_job = MagicMock()
+    mock_job.status = Status.COMPLETE
+    mock_job.result = {"status": "scanned", "filename": "test.mp3"}
+
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    with patch("saq.Job") as mock_job_cls:
+        mock_job_cls.fetch = AsyncMock(return_value=mock_job)
+        response = await client.get("/tracklists/scan/status?job_ids=job-1")
     assert response.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_scan_status_with_error(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/scan/status reports errors from failed jobs."""
-    mock_job = AsyncMock()
-    mock_info = MagicMock()
-    mock_info.result = {"status": "error", "filename": "bad.mp3"}
-    mock_job.info.return_value = mock_info
+    from unittest.mock import patch
 
-    mock_pool = AsyncMock()
-    mock_pool.job.return_value = mock_job
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    from saq import Status
 
-    response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    mock_job = MagicMock()
+    mock_job.status = Status.FAILED
+    mock_job.result = {"status": "error", "filename": "bad.mp3"}
+
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    with patch("saq.Job") as mock_job_cls:
+        mock_job_cls.fetch = AsyncMock(return_value=mock_job)
+        response = await client.get("/tracklists/scan/status?job_ids=job-1")
     assert response.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_scan_status_job_not_found(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/scan/status handles missing job gracefully."""
-    mock_pool = AsyncMock()
-    mock_pool.job.return_value = None
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    from unittest.mock import patch
 
-    response = await client.get("/tracklists/scan/status?job_ids=missing-job")
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    with patch("saq.Job") as mock_job_cls:
+        mock_job_cls.fetch = AsyncMock(return_value=None)
+        response = await client.get("/tracklists/scan/status?job_ids=missing-job")
     assert response.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_scan_status_job_pending(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/scan/status handles pending jobs (no result yet)."""
-    mock_job = AsyncMock()
-    mock_info = MagicMock()
-    mock_info.result = None
-    mock_job.info.return_value = mock_info
+    from unittest.mock import patch
 
-    mock_pool = AsyncMock()
-    mock_pool.job.return_value = mock_job
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    from saq import Status
 
-    response = await client.get("/tracklists/scan/status?job_ids=pending-job")
+    mock_job = MagicMock()
+    mock_job.status = Status.QUEUED
+    mock_job.result = None
+
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    with patch("saq.Job") as mock_job_cls:
+        mock_job_cls.fetch = AsyncMock(return_value=mock_job)
+        response = await client.get("/tracklists/scan/status?job_ids=pending-job")
     assert response.status_code == 200
 
 
@@ -595,24 +610,24 @@ async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) ->
     session.add(tl)
     await session.flush()
 
-    mock_pool = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post(f"/tracklists/{tl.id}/rescrape")
     assert response.status_code == 200
-    mock_pool.enqueue_job.assert_called_once_with("scrape_and_store_tracklist", str(tl.id))
+    mock_queue.enqueue.assert_called_once_with("scrape_and_store_tracklist", tracklist_id=str(tl.id))
 
 
 @pytest.mark.asyncio
 async def test_manual_search(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/search enqueues a search job."""
-    mock_pool = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     file_id = uuid.uuid4()
     response = await client.post(f"/tracklists/search?file_id={file_id}")
     assert response.status_code == 200
-    mock_pool.enqueue_job.assert_called_once_with("search_tracklist", str(file_id))
+    mock_queue.enqueue.assert_called_once_with("search_tracklist", file_id=str(file_id))
 
 
 @pytest.mark.asyncio

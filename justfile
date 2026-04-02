@@ -110,9 +110,9 @@ worker-logs:
 worker-restart:
     docker compose restart worker
 
-# Check arq worker health
+# Check SAQ worker health
 worker-health:
-    docker compose exec worker uv run arq phaze.tasks.worker.WorkerSettings --check
+    docker compose exec worker uv run saq phaze.tasks.worker.settings --check
 
 # === Docker ===
 

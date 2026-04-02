@@ -1,4 +1,4 @@
-"""Tests for 1001Tracklists arq task functions."""
+"""Tests for 1001Tracklists SAQ task functions."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ import uuid
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
-def _make_ctx(job_try: int = 1) -> dict[str, Any]:
-    """Create a minimal arq context dict with async_session factory."""
+def _make_ctx() -> dict[str, Any]:
+    """Create a minimal SAQ context dict with async_session factory."""
     mock_session = AsyncMock()
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
-    return {"job_try": job_try, "async_session": mock_session_factory, "_mock_session": mock_session}
+    return {"async_session": mock_session_factory, "_mock_session": mock_session}
 
 
 def _make_file_record(
@@ -92,7 +92,7 @@ async def test_search_tracklist_processes_results(
     mock_scraper.scrape_tracklist.return_value = scraped
     mock_scraper_cls.return_value = mock_scraper
 
-    result = await search_tracklist(ctx, str(file_record.id))
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
 
     assert result["results_found"] == 1
     assert result["auto_linked"] is False
@@ -132,7 +132,7 @@ async def test_search_tracklist_auto_links(
     mock_scraper.scrape_tracklist.return_value = scraped
     mock_scraper_cls.return_value = mock_scraper
 
-    result = await search_tracklist(ctx, str(file_record.id))
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
 
     assert result["auto_linked"] is True
     mock_scraper.close.assert_awaited_once()
@@ -154,7 +154,7 @@ async def test_search_tracklist_no_query(
     mock_file_result.scalar_one_or_none.return_value = file_record
     session.execute.return_value = mock_file_result
 
-    result = await search_tracklist(ctx, str(file_record.id))
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
 
     assert result["results_found"] == 0
     assert result["status"] == "no_query"
@@ -181,7 +181,7 @@ async def test_search_tracklist_no_results(
     mock_scraper.search.return_value = []
     mock_scraper_cls.return_value = mock_scraper
 
-    result = await search_tracklist(ctx, str(file_record.id))
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
 
     assert result["results_found"] == 0
     assert result["auto_linked"] is False
@@ -218,7 +218,7 @@ async def test_scrape_and_store_tracklist(mock_scraper_cls: MagicMock) -> None:
     mock_scraper.scrape_tracklist.return_value = scraped
     mock_scraper_cls.return_value = mock_scraper
 
-    result = await scrape_and_store_tracklist(ctx, str(tracklist_id))
+    result = await scrape_and_store_tracklist(ctx, tracklist_id=str(tracklist_id))
 
     assert result["tracklist_id"] == str(tracklist_id)
     mock_scraper.scrape_tracklist.assert_awaited_once()
@@ -251,21 +251,80 @@ async def test_refresh_tracklists(mock_sleep: AsyncMock, mock_scrape: AsyncMock)
     assert mock_sleep.await_count == 2
 
 
-def test_worker_settings_contains_tracklist_functions() -> None:
-    """WorkerSettings.functions includes search_tracklist and scrape_and_store_tracklist."""
-    from phaze.tasks.worker import WorkerSettings
+async def test_search_tracklist_file_not_found() -> None:
+    """search_tracklist returns not_found for non-existent file."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
 
-    func_names = [f.__name__ if hasattr(f, "__name__") else str(f) for f in WorkerSettings.functions]
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    session.execute.return_value = mock_result
+
+    result = await search_tracklist(ctx, file_id=str(uuid.uuid4()))
+
+    assert result["status"] == "not_found"
+    assert result["results_found"] == 0
+
+
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename", return_value=None)
+async def test_search_tracklist_metadata_fallback(
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+) -> None:
+    """search_tracklist falls back to file_metadata artist when filename parse fails."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record(original_filename="unknown.mp3")
+    # Set up metadata fallback
+    file_record.file_metadata = MagicMock()
+    file_record.file_metadata.artist = "Metadata Artist"
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = []
+    mock_scraper_cls.return_value = mock_scraper
+
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    assert result["results_found"] == 0
+    # Verify search was called with the metadata artist
+    mock_scraper.search.assert_awaited_once_with("Metadata Artist")
+
+
+async def test_scrape_and_store_tracklist_not_found() -> None:
+    """scrape_and_store_tracklist returns not_found for non-existent tracklist."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    session.execute.return_value = mock_result
+
+    result = await scrape_and_store_tracklist(ctx, tracklist_id=str(uuid.uuid4()))
+
+    assert result["status"] == "not_found"
+    assert result["tracks_found"] == 0
+
+
+def test_worker_settings_contains_tracklist_functions() -> None:
+    """SAQ worker settings functions includes search_tracklist and scrape_and_store_tracklist."""
+    from phaze.tasks.worker import settings as worker_settings
+
+    func_names = [f.__name__ if hasattr(f, "__name__") else str(f) for f in worker_settings["functions"]]
     assert "search_tracklist" in func_names
     assert "scrape_and_store_tracklist" in func_names
 
 
 def test_worker_settings_has_cron_jobs() -> None:
-    """WorkerSettings.cron_jobs includes refresh_tracklists cron."""
-    from phaze.tasks.worker import WorkerSettings
+    """SAQ worker settings cron_jobs includes refresh_tracklists cron."""
+    from phaze.tasks.worker import settings as worker_settings
 
-    assert hasattr(WorkerSettings, "cron_jobs")
-    assert len(WorkerSettings.cron_jobs) >= 1
+    assert "cron_jobs" in worker_settings
+    assert len(worker_settings["cron_jobs"]) >= 1
     # Check the cron job has the right function
-    cron_job = WorkerSettings.cron_jobs[0]
-    assert cron_job.coroutine.__name__ == "refresh_tracklists"
+    cron_job = worker_settings["cron_jobs"][0]
+    assert cron_job.function.__name__ == "refresh_tracklists"

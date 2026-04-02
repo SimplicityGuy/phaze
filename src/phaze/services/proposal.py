@@ -226,7 +226,7 @@ async def check_rate_limit(redis_pool: Any, max_rpm: int) -> None:
     and retries.
 
     Args:
-        redis_pool: An async Redis connection (e.g. arq's ``ArqRedis``).
+        redis_pool: An async Redis connection (e.g. SAQ's ``queue.redis``).
         max_rpm: Maximum requests allowed per minute.
     """
     key = "phaze:llm:rpm"

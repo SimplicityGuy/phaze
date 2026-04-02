@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from saq import Status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -163,13 +164,13 @@ async def trigger_scan(
     file_ids: list[str] = Form(...),
 ) -> HTMLResponse:
     """Trigger batch fingerprint scanning for selected files."""
-    arq_pool = request.app.state.arq_pool
+    queue = request.app.state.queue
     job_ids: list[str] = []
 
     for fid in file_ids:
-        job = await arq_pool.enqueue_job("scan_live_set", fid)
+        job = await queue.enqueue("scan_live_set", file_id=fid)
         if job is not None:
-            job_ids.append(job.job_id)
+            job_ids.append(job.key)
 
     return templates.TemplateResponse(
         request=request,
@@ -190,23 +191,22 @@ async def scan_status(
     request: Request,
     job_ids: str = Query(...),
 ) -> HTMLResponse:
-    """Poll scan progress by checking arq job results."""
-    arq_pool = request.app.state.arq_pool
+    """Poll scan progress by checking SAQ job results."""
+    queue = request.app.state.queue
     ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
 
     completed = 0
     tracklists_created = 0
     errors: list[str] = []
 
-    for job_id in ids:
-        job = await arq_pool.job(job_id)
+    for job_key in ids:
+        job = await queue.job(job_key)
         if job is None:
             completed += 1
             continue
-        info = await job.info()
-        if info is not None and info.result is not None:
+        if job.status in (Status.COMPLETE, Status.FAILED):
             completed += 1
-            result_data = info.result
+            result_data = job.result
             if isinstance(result_data, dict):
                 if result_data.get("status") == "scanned":
                     tracklists_created += 1
@@ -308,8 +308,8 @@ async def rescrape_tracklist(
     result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
     tracklist = result.scalar_one_or_none()
     if tracklist:
-        arq_pool = request.app.state.arq_pool
-        await arq_pool.enqueue_job("scrape_and_store_tracklist", str(tracklist_id))
+        queue = request.app.state.queue
+        await queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
 
     return templates.TemplateResponse(
         request=request,
@@ -379,8 +379,8 @@ async def manual_search(
     file_id: uuid.UUID = Query(...),
 ) -> HTMLResponse:
     """Manual search for an unmatched file."""
-    arq_pool = request.app.state.arq_pool
-    await arq_pool.enqueue_job("search_tracklist", str(file_id))
+    queue = request.app.state.queue
+    await queue.enqueue("search_tracklist", file_id=str(file_id))
 
     return templates.TemplateResponse(
         request=request,

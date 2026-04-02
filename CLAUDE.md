@@ -141,7 +141,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 | asyncpg | >=0.30.0 | PostgreSQL async driver | Fastest Python PostgreSQL driver. Purpose-built for asyncio. Used as SQLAlchemy's async backend. |
 | Alembic | >=1.18.4 | Database migrations | Official SQLAlchemy migration tool. Async template support (`alembic init -t async`). Autogenerate from model changes. |
 | PostgreSQL | 16+ | Primary database | Project constraint. Handles 200K+ file metadata, complex queries, JSON columns for flexible metadata, full-text search for future features. |
-| Redis | 7+ | Task queue broker / cache | Required by arq task queue. Also useful for caching analysis results and rate-limiting LLM API calls. |
+| Redis | 7+ | Task queue broker / cache | Required by SAQ task queue. Also useful for caching analysis results and rate-limiting LLM API calls. |
 | Docker Compose | 2.x | Deployment orchestration | Project constraint. Runs PostgreSQL, Redis, API server, worker processes as separate containers. |
 ### Audio / Music Libraries
 | Library | Version | Purpose | Why Recommended |
@@ -161,7 +161,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 ### Task Processing
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| arq | >=0.27.0 | Async task queue | Purpose-built for asyncio + Redis. 7x faster than RQ, simpler than Celery. Perfect for file analysis jobs (BPM, fingerprinting, metadata extraction). Supports retries with backoff, job results, cron jobs. Single-user app doesn't need Celery's complexity. |
+| SAQ | >=0.26.3 | Async task queue | Purpose-built for asyncio + Redis. Inspired by arq with active maintenance. Perfect for file analysis jobs (BPM, fingerprinting, metadata extraction). Supports retries with backoff, job results, cron jobs, built-in web UI. Single-user app doesn't need Celery's complexity. |
 ### AI / LLM Integration
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
@@ -194,8 +194,8 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 |-------------|-------------|-------------------------|
 | FastAPI | Litestar | If you want more explicit DI and slightly lower memory usage. FastAPI wins on ecosystem size, docs quality, and community support. |
 | SQLAlchemy | SQLModel | If models are simple and you want less boilerplate. SQLModel is a thin FastAPI-aligned wrapper over SQLAlchemy but has fewer features and weaker async story. Stick with SQLAlchemy for a 200K-record system. |
-| arq | Celery | If you need multi-broker support, complex routing, or canvas workflows. Overkill for a single-user app. Celery's config complexity is not justified here. |
-| arq | Dramatiq | If you want RabbitMQ support or more mature retry/middleware. Dramatiq is sync-first which conflicts with our async stack. |
+| SAQ | Celery | If you need multi-broker support, complex routing, or canvas workflows. Overkill for a single-user app. Celery's config complexity is not justified here. |
+| SAQ | Dramatiq | If you want RabbitMQ support or more mature retry/middleware. Dramatiq is sync-first which conflicts with our async stack. |
 | HTMX + Jinja2 | React/Vue SPA | If you need offline capability, complex client-side state, or multiple developers on frontend. A single-user admin tool does not need SPA complexity or a separate build pipeline. |
 | litellm | Direct OpenAI SDK | If you are committed to a single LLM provider forever. litellm provides flexibility to switch between local/cloud models with zero code changes. |
 | mutagen | tinytag | If you only need read-only metadata. We need write capability to update tags after renaming, so mutagen is required. |
@@ -205,7 +205,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 |-------|-----|-------------|
 | ffmpeg-python (pip: `ffmpeg-python`) | Last PyPI release was 2022. Effectively abandoned. 500+ open issues on GitHub. | Use `subprocess.run(["ffprobe", ...])` directly for metadata extraction. Or `python-ffmpeg` (pip: `python-ffmpeg`) which is actively maintained. |
 | SQLite | Cannot handle concurrent writes from multiple worker processes analyzing files in parallel. No JSON operators for flexible metadata queries. | PostgreSQL (project constraint). |
-| Celery | Massive dependency tree, complex configuration, sync-first design. Overkill for single-user app with Redis already in stack. | arq for async task queue. |
+| Celery | Massive dependency tree, complex configuration, sync-first design. Overkill for single-user app with Redis already in stack. | SAQ for async task queue. |
 | Django | Full MVC framework with ORM, admin, auth -- all unnecessary when you have FastAPI + SQLAlchemy + custom admin UI. Sync-first design conflicts with async processing needs. | FastAPI. |
 | LangChain | Enormous abstraction layer for LLM calls. This project just needs "send prompt, get structured response." LangChain adds complexity without benefit for simple classification/naming tasks. | litellm for provider abstraction + raw Pydantic for structured output. |
 | React/Next.js | Requires separate build pipeline, Node.js in Docker, npm dependencies. Completely unnecessary for a single-user admin approval UI. | HTMX + Jinja2 + Tailwind CSS via CDN. |
@@ -220,7 +220,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 | FastAPI >=0.135.2 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
 | Alembic >=1.18.4 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
 | litellm | ALL | **Pin exact version.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Use >=1.82.6,<1.82.7 or wait for verified post-incident release. Verify SHA checksums. |
-| arq >=0.27.0 | Redis 7+ | arq is in maintenance mode but stable. No breaking changes expected. |
+| SAQ >=0.26.3 | Redis 7+ | Actively maintained. Drop-in replacement for arq with similar API. |
 | pyacoustid >=1.3.0 | chromaprint (system) | Requires `fpcalc` binary on PATH. Install `chromaprint-tools` in Docker. |
 ## Confidence Assessment
 | Area | Confidence | Reasoning |
@@ -230,7 +230,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 | Audio metadata (mutagen) | HIGH | No real alternative for read+write. Stable, zero-dependency, widely used |
 | Audio analysis (librosa) | HIGH | Industry standard MIR library, Python 3.13 confirmed with known workarounds |
 | Audio fingerprinting (pyacoustid) | MEDIUM | Library works but hasn't released since 2023. Stable API, low maintenance risk, but monitor |
-| Task queue (arq) | MEDIUM | Excellent fit for async stack but in "maintenance only" mode. If it becomes truly abandoned, migrate to taskiq or Dramatiq |
+| Task queue (SAQ) | HIGH | Actively maintained, async-native, Redis-based. Drop-in replacement for arq with built-in web monitoring UI. |
 | LLM integration (litellm) | MEDIUM | Best abstraction layer but recent supply chain incident is concerning. Pin versions aggressively, verify checksums |
 | Web UI (HTMX + Jinja2) | HIGH | Well-proven pattern for Python admin tools. No build step, no JS framework complexity |
 ## Sources
@@ -241,7 +241,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 - [FastAPI releases](https://github.com/fastapi/fastapi/releases) -- version 0.135.2 verified
 - [SQLAlchemy on PyPI](https://pypi.org/project/SQLAlchemy/) -- version 2.0.48 verified
 - [Alembic on PyPI](https://pypi.org/project/alembic/) -- version 1.18.4 verified
-- [arq on PyPI](https://pypi.org/project/arq/) -- version 0.27.0, maintenance mode noted
+- [SAQ on PyPI](https://pypi.org/project/saq/) -- version 0.26.3, actively maintained
 - [litellm security incident](https://docs.litellm.ai/blog/security-update-march-2026) -- supply chain attack March 2026
 - [pydantic-settings on PyPI](https://pypi.org/project/pydantic-settings/) -- version 2.13.1 verified
 - [HTMX + FastAPI patterns](https://johal.in/htmx-fastapi-patterns-hypermedia-driven-single-page-applications-2025/) -- 2025 production patterns

@@ -10,7 +10,7 @@ license = "MIT"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.18.4",
-    "arq>=0.27.0",
+    "saq[redis]>=0.26.3",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.14.3",
     "essentia-tensorflow>=2.1b6.dev1389; sys_platform != 'linux' or platform_machine == 'x86_64'",

@@ -1,4 +1,4 @@
-"""Tests for the proposal arq task function."""
+"""Tests for the proposal SAQ task function."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
-from arq import Retry
 import pytest
 
 from phaze.services.proposal import BatchProposalResponse, FileProposalResponse
@@ -22,13 +21,14 @@ def _make_session_factory(mock_session: AsyncMock) -> MagicMock:
     return factory
 
 
-def _make_ctx(job_try: int = 1, mock_session: AsyncMock | None = None) -> dict[str, Any]:
-    """Create a minimal arq context dict with mocked services."""
+def _make_ctx(mock_session: AsyncMock | None = None) -> dict[str, Any]:
+    """Create a minimal SAQ context dict with mocked services."""
     if mock_session is None:
         mock_session = AsyncMock()
+    mock_queue = MagicMock()
+    mock_queue.redis = AsyncMock()
     return {
-        "job_try": job_try,
-        "redis": AsyncMock(),
+        "queue": mock_queue,
         "proposal_service": AsyncMock(),
         "async_session": _make_session_factory(mock_session),
         "_mock_session": mock_session,
@@ -106,7 +106,7 @@ async def test_generate_proposals_happy_path(
     ctx["proposal_service"].generate_batch.return_value = SAMPLE_BATCH_RESPONSE
     mock_store.return_value = 1
 
-    result = await generate_proposals(ctx, [str(file_id)], batch_index=0)
+    result = await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=0)
 
     assert result["status"] == "ok"
     assert result["count"] == 1
@@ -135,7 +135,7 @@ async def test_generate_proposals_file_not_found(
     session.execute.return_value = mock_result
 
     ctx = _make_ctx(mock_session=session)
-    result = await generate_proposals(ctx, [str(uuid.uuid4())], batch_index=0)
+    result = await generate_proposals(ctx, file_ids=[str(uuid.uuid4())], batch_index=0)
 
     assert result["status"] == "empty"
     assert result["count"] == 0
@@ -143,19 +143,15 @@ async def test_generate_proposals_file_not_found(
 
 
 async def test_generate_proposals_retry_on_exception() -> None:
-    """generate_proposals raises arq Retry with defer=job_try*10 on exception."""
+    """generate_proposals re-raises exception for SAQ retry handling."""
     from phaze.tasks.proposal import generate_proposals
 
     session = AsyncMock()
     session.execute.side_effect = RuntimeError("DB connection failed")
 
-    ctx = _make_ctx(job_try=2, mock_session=session)
-    with pytest.raises(Retry) as exc_info:
-        await generate_proposals(ctx, [str(uuid.uuid4())], batch_index=0)
-
-    # arq stores defer as defer_score in milliseconds
-    assert exc_info.value.defer_score == 2 * 10 * 1000
-    session.rollback.assert_called_once()
+    ctx = _make_ctx(mock_session=session)
+    with pytest.raises(RuntimeError, match="DB connection failed"):
+        await generate_proposals(ctx, file_ids=[str(uuid.uuid4())], batch_index=0)
 
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
@@ -189,16 +185,16 @@ async def test_generate_proposals_calls_rate_limit(
     ctx["proposal_service"].generate_batch.return_value = SAMPLE_BATCH_RESPONSE
     mock_store.return_value = 1
 
-    await generate_proposals(ctx, [str(file_id)], batch_index=0)
+    await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=0)
 
-    mock_rate_limit.assert_called_once_with(ctx["redis"], 30)  # settings.llm_max_rpm default
+    mock_rate_limit.assert_called_once_with(ctx["queue"].redis, 30)  # settings.llm_max_rpm default
 
 
 def test_worker_settings_contains_generate_proposals() -> None:
-    """WorkerSettings.functions includes generate_proposals."""
-    from phaze.tasks.worker import WorkerSettings
+    """SAQ worker settings functions includes generate_proposals."""
+    from phaze.tasks.worker import settings as worker_settings
 
-    func_names = [f.__name__ if callable(f) else str(f) for f in WorkerSettings.functions]
+    func_names = [f.__name__ if callable(f) else str(f) for f in worker_settings["functions"]]
     assert "generate_proposals" in func_names
 
 

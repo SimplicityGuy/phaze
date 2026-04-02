@@ -1,35 +1,25 @@
-"""Tests for arq WorkerSettings configuration."""
+"""Tests for SAQ worker settings configuration."""
 
-from phaze.config import settings
+from phaze.config import settings as app_settings
 from phaze.tasks.functions import process_file
-from phaze.tasks.worker import WorkerSettings, shutdown, startup
+from phaze.tasks.worker import settings, shutdown, startup
 
 
 def test_worker_functions_contains_process_file() -> None:
-    """WorkerSettings.functions contains process_file."""
-    assert process_file in WorkerSettings.functions
+    """settings["functions"] contains process_file."""
+    assert process_file in settings["functions"]
 
 
-def test_worker_max_jobs_matches_settings() -> None:
-    """WorkerSettings.max_jobs equals settings.worker_max_jobs."""
-    assert WorkerSettings.max_jobs == settings.worker_max_jobs
+def test_worker_concurrency_matches_settings() -> None:
+    """settings["concurrency"] equals app_settings.worker_max_jobs."""
+    assert settings["concurrency"] == app_settings.worker_max_jobs
 
 
-def test_worker_max_tries_matches_settings() -> None:
-    """WorkerSettings.max_tries equals settings.worker_max_retries."""
-    assert WorkerSettings.max_tries == settings.worker_max_retries
+def test_worker_startup_is_startup() -> None:
+    """settings["startup"] is the startup function."""
+    assert settings["startup"] is startup
 
 
-def test_worker_job_timeout_matches_settings() -> None:
-    """WorkerSettings.job_timeout equals settings.worker_job_timeout."""
-    assert WorkerSettings.job_timeout == settings.worker_job_timeout
-
-
-def test_worker_on_startup_is_startup() -> None:
-    """WorkerSettings.on_startup is the startup function."""
-    assert WorkerSettings.on_startup is startup
-
-
-def test_worker_on_shutdown_is_shutdown() -> None:
-    """WorkerSettings.on_shutdown is the shutdown function."""
-    assert WorkerSettings.on_shutdown is shutdown
+def test_worker_shutdown_is_shutdown() -> None:
+    """settings["shutdown"] is the shutdown function."""
+    assert settings["shutdown"] is shutdown

@@ -1,14 +1,13 @@
-"""arq WorkerSettings -- the entry point for ``arq phaze.tasks.worker.WorkerSettings``."""
+"""SAQ worker settings -- the entry point for ``saq phaze.tasks.worker.settings``."""
 
 import logging
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
-from arq import cron
-from arq.connections import RedisSettings
+from saq import CronJob, Queue
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from phaze.config import settings
+from phaze.config import settings as app_settings
 from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks.execution import execute_approved_batch
@@ -25,32 +24,32 @@ logger = logging.getLogger(__name__)
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    """Initialize shared resources for all jobs (arq on_startup hook)."""
+    """Initialize shared resources for all jobs (SAQ startup hook)."""
     # Check that ML models are available (volume mount)
-    models_dir = Path(settings.models_path)
+    models_dir = Path(app_settings.models_path)
     if not models_dir.is_dir():
-        msg = f"Models directory not found: {settings.models_path}. Run 'just download-models' to populate it."
+        msg = f"Models directory not found: {app_settings.models_path}. Run 'just download-models' to populate it."
         raise RuntimeError(msg)
     pb_files = list(models_dir.glob("*.pb"))
     if not pb_files:
-        msg = f"No .pb model files found in {settings.models_path}. Run 'just download-models' to populate it."
+        msg = f"No .pb model files found in {app_settings.models_path}. Run 'just download-models' to populate it."
         raise RuntimeError(msg)
-    logger.info("Found %d model files in %s", len(pb_files), settings.models_path)
+    logger.info("Found %d model files in %s", len(pb_files), app_settings.models_path)
 
     ctx["process_pool"] = create_process_pool()
 
     # Phase 6: AI proposal generation
     prompt_template = load_prompt_template()
     ctx["proposal_service"] = ProposalService(
-        model=settings.llm_model,
+        model=app_settings.llm_model,
         prompt_template=prompt_template,
-        max_rpm=settings.llm_max_rpm,
+        max_rpm=app_settings.llm_max_rpm,
     )
 
     # Shared async engine pool for all task functions (INFRA-01)
     task_engine = create_async_engine(
-        str(settings.database_url),
-        echo=settings.debug,
+        str(app_settings.database_url),
+        echo=app_settings.debug,
         pool_size=10,
         max_overflow=5,
     )
@@ -58,13 +57,13 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["task_engine"] = task_engine
 
     # Phase 16: Fingerprint service orchestrator
-    audfprint_adapter = AudfprintAdapter(base_url=settings.audfprint_url)
-    panako_adapter = PanakoAdapter(base_url=settings.panako_url)
+    audfprint_adapter = AudfprintAdapter(base_url=app_settings.audfprint_url)
+    panako_adapter = PanakoAdapter(base_url=app_settings.panako_url)
     ctx["fingerprint_orchestrator"] = FingerprintOrchestrator(engines=[audfprint_adapter, panako_adapter])
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
-    """Clean up shared resources (arq on_shutdown hook)."""
+    """Clean up shared resources (SAQ shutdown hook)."""
     pool = ctx.get("process_pool")
     if pool is not None:
         pool.shutdown(wait=True)
@@ -75,18 +74,16 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 
     orchestrator = ctx.get("fingerprint_orchestrator")
     if orchestrator is not None:
-        for engine in orchestrator.engines:
-            if hasattr(engine, "close"):
-                await engine.close()
+        for eng in orchestrator.engines:
+            if hasattr(eng, "close"):
+                await eng.close()
 
 
-class WorkerSettings:
-    """arq worker configuration.
+queue = Queue.from_url(app_settings.redis_url)
 
-    Run via: ``uv run arq phaze.tasks.worker.WorkerSettings``
-    """
-
-    functions: ClassVar[list[Any]] = [
+settings = {
+    "queue": queue,
+    "functions": [
         process_file,
         generate_proposals,
         execute_approved_batch,
@@ -95,15 +92,11 @@ class WorkerSettings:
         search_tracklist,
         scrape_and_store_tracklist,
         scan_live_set,
-    ]
-    cron_jobs: ClassVar[list[Any]] = [
-        cron(refresh_tracklists, month={1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, day=1, hour=3, minute=0, run_at_startup=False),
-    ]
-    on_startup = startup
-    on_shutdown = shutdown
-    redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    max_jobs = settings.worker_max_jobs
-    job_timeout = settings.worker_job_timeout
-    max_tries = settings.worker_max_retries
-    health_check_interval = settings.worker_health_check_interval
-    keep_result = settings.worker_keep_result
+    ],
+    "concurrency": app_settings.worker_max_jobs,
+    "cron_jobs": [
+        CronJob(refresh_tracklists, cron="0 3 1 * *"),  # type: ignore[type-var]  # 1st of each month at 03:00
+    ],
+    "startup": startup,
+    "shutdown": shutdown,
+}

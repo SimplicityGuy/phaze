@@ -1,4 +1,4 @@
-"""Tests for arq batch execution task with Redis progress tracking."""
+"""Tests for SAQ batch execution task with Redis progress tracking."""
 
 from __future__ import annotations
 
@@ -20,9 +20,11 @@ def _make_proposal(proposal_id: uuid.UUID | None = None) -> MagicMock:
 
 
 def _make_ctx(redis: Any = None) -> dict[str, Any]:
-    """Create a minimal arq context dict with Redis mock and async_session."""
+    """Create a minimal SAQ context dict with queue (containing Redis) and async_session."""
     if redis is None:
         redis = AsyncMock()
+    mock_queue = MagicMock()
+    mock_queue.redis = redis
     mock_session = AsyncMock()
     # async_sessionmaker() returns an AsyncSession context manager
     mock_session_factory = MagicMock()
@@ -30,7 +32,7 @@ def _make_ctx(redis: Any = None) -> dict[str, Any]:
     mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_cm.__aexit__ = AsyncMock(return_value=False)
     mock_session_factory.return_value = mock_session_cm
-    return {"redis": redis, "async_session": mock_session_factory, "_mock_session": mock_session}
+    return {"queue": mock_queue, "async_session": mock_session_factory, "_mock_session": mock_session}
 
 
 # ---------------------------------------------------------------------------

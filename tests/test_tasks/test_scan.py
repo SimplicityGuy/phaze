@@ -1,4 +1,4 @@
-"""Tests for the scan_live_set arq task function."""
+"""Tests for the scan_live_set SAQ task function."""
 
 from __future__ import annotations
 
@@ -6,14 +6,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
-from arq import Retry
 import pytest
 
 from phaze.services.fingerprint import CombinedMatch
 
 
-def _make_ctx(job_try: int = 1) -> dict[str, Any]:
-    """Create a minimal arq context dict with async_session factory and orchestrator."""
+def _make_ctx() -> dict[str, Any]:
+    """Create a minimal SAQ context dict with async_session factory and orchestrator."""
     mock_session = AsyncMock()
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
@@ -22,7 +21,6 @@ def _make_ctx(job_try: int = 1) -> dict[str, Any]:
     mock_orchestrator = AsyncMock()
 
     return {
-        "job_try": job_try,
         "async_session": mock_session_factory,
         "_mock_session": mock_session,
         "fingerprint_orchestrator": mock_orchestrator,
@@ -60,7 +58,7 @@ async def test_scan_live_set_not_found() -> None:
     mock_result.scalar_one_or_none.return_value = None
     session.execute.return_value = mock_result
 
-    result = await scan_live_set(ctx, str(uuid.uuid4()))
+    result = await scan_live_set(ctx, file_id=str(uuid.uuid4()))
     assert result["status"] == "not_found"
     ctx["fingerprint_orchestrator"].combined_query.assert_not_called()
 
@@ -79,7 +77,7 @@ async def test_scan_live_set_no_matches() -> None:
     session.execute.return_value = mock_result
     ctx["fingerprint_orchestrator"].combined_query.return_value = []
 
-    result = await scan_live_set(ctx, str(file_record.id))
+    result = await scan_live_set(ctx, file_id=str(file_record.id))
     assert result["status"] == "no_matches"
 
 
@@ -110,7 +108,7 @@ async def test_scan_live_set_creates_tracklist_with_fingerprint_source() -> None
         CombinedMatch(track_id=track_id, confidence=84.0, timestamp="04:32"),
     ]
 
-    result = await scan_live_set(ctx, str(file_record.id))
+    result = await scan_live_set(ctx, file_id=str(file_record.id))
     assert result["status"] == "scanned"
     assert "tracklist_id" in result
 
@@ -140,7 +138,7 @@ async def test_scan_live_set_creates_version_with_number_1() -> None:
         CombinedMatch(track_id=track_id, confidence=84.0),
     ]
 
-    await scan_live_set(ctx, str(file_record.id))
+    await scan_live_set(ctx, file_id=str(file_record.id))
 
     # Find TracklistVersion in add calls
     added_objects = [call.args[0] for call in session.add.call_args_list]
@@ -177,7 +175,7 @@ async def test_scan_live_set_tracks_have_confidence_and_timestamp() -> None:
         CombinedMatch(track_id=t2, confidence=72.0, timestamp="12:15"),
     ]
 
-    await scan_live_set(ctx, str(file_record.id))
+    await scan_live_set(ctx, file_id=str(file_record.id))
 
     added_objects = [call.args[0] for call in session.add.call_args_list]
     from phaze.models.tracklist import TracklistTrack
@@ -214,7 +212,7 @@ async def test_scan_live_set_resolves_artist_title_from_metadata() -> None:
         CombinedMatch(track_id=track_id, confidence=84.0, timestamp="04:32"),
     ]
 
-    await scan_live_set(ctx, str(file_record.id))
+    await scan_live_set(ctx, file_id=str(file_record.id))
 
     added_objects = [call.args[0] for call in session.add.call_args_list]
     from phaze.models.tracklist import TracklistTrack
@@ -248,7 +246,7 @@ async def test_scan_live_set_external_id_format() -> None:
         CombinedMatch(track_id=track_id, confidence=84.0),
     ]
 
-    await scan_live_set(ctx, str(file_id))
+    await scan_live_set(ctx, file_id=str(file_id))
 
     added_objects = [call.args[0] for call in session.add.call_args_list]
     from phaze.models.tracklist import Tracklist
@@ -291,7 +289,7 @@ async def test_scan_live_set_rescan_creates_new_version() -> None:
         CombinedMatch(track_id=track_id, confidence=84.0),
     ]
 
-    result = await scan_live_set(ctx, str(file_record.id))
+    result = await scan_live_set(ctx, file_id=str(file_record.id))
     assert result["status"] == "scanned"
 
     added_objects = [call.args[0] for call in session.add.call_args_list]
@@ -327,7 +325,7 @@ async def test_scan_live_set_invalid_track_id_skipped() -> None:
         CombinedMatch(track_id="not-a-uuid", confidence=84.0, timestamp="04:32"),
     ]
 
-    result = await scan_live_set(ctx, str(file_record.id))
+    result = await scan_live_set(ctx, file_id=str(file_record.id))
     assert result["status"] == "scanned"
     assert "tracklist_id" in result
 
@@ -343,12 +341,12 @@ async def test_scan_live_set_invalid_track_id_skipped() -> None:
 
 @pytest.mark.asyncio
 async def test_scan_live_set_retry_on_exception() -> None:
-    """scan_live_set retries on exception via Retry with exponential defer."""
+    """scan_live_set re-raises exception for SAQ retry handling."""
     from phaze.tasks.scan import scan_live_set
 
-    ctx = _make_ctx(job_try=2)
+    ctx = _make_ctx()
     session = ctx["_mock_session"]
     session.execute.side_effect = RuntimeError("DB connection lost")
 
-    with pytest.raises(Retry):
-        await scan_live_set(ctx, str(uuid.uuid4()))
+    with pytest.raises(RuntimeError, match="DB connection lost"):
+        await scan_live_set(ctx, file_id=str(uuid.uuid4()))

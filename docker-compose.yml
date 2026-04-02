@@ -20,7 +20,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: uv run arq phaze.tasks.worker.WorkerSettings
+    command: uv run saq phaze.tasks.worker.settings
     env_file: .env
     environment:
       - MODELS_PATH=/models

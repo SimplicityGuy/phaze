@@ -1,4 +1,4 @@
-"""arq job for batch execution of approved rename proposals."""
+"""SAQ job for batch execution of approved rename proposals."""
 
 from __future__ import annotations
 
@@ -14,14 +14,14 @@ logger = logging.getLogger(__name__)
 _REDIS_KEY_TTL_SECONDS = 3600  # 1 hour
 
 
-async def execute_approved_batch(ctx: dict[str, Any], batch_id: str | None = None) -> dict[str, Any]:
+async def execute_approved_batch(ctx: dict[str, Any], *, batch_id: str | None = None) -> dict[str, Any]:
     """Execute all approved rename proposals sequentially.
 
     Processes each approved proposal via copy-verify-delete, tracking progress
     in Redis for SSE endpoint consumption.
 
     Args:
-        ctx: arq context dict containing Redis connection.
+        ctx: SAQ context dict containing queue with Redis connection.
         batch_id: Optional batch ID. Generated if not provided.
 
     Returns:
@@ -30,7 +30,7 @@ async def execute_approved_batch(ctx: dict[str, Any], batch_id: str | None = Non
     if batch_id is None:
         batch_id = uuid.uuid4().hex
 
-    redis = ctx["redis"]
+    redis = ctx["queue"].redis
 
     async with ctx["async_session"]() as session:
         proposals = await get_approved_proposals(session)

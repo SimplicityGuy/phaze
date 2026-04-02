@@ -75,9 +75,9 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
     await session.commit()
 
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/analyze")
     assert response.status_code == 200
@@ -108,9 +108,9 @@ async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSes
     session.add_all(related)
     await session.commit()
 
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/proposals/generate")
     assert response.status_code == 200
@@ -149,9 +149,9 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
     await session.commit()
 
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
@@ -162,8 +162,8 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
 @pytest.mark.asyncio
 async def test_trigger_analysis_ui_no_files(client: AsyncClient) -> None:
     """POST /pipeline/analyze with no DISCOVERED files returns HTML with zero count."""
-    mock_pool = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
@@ -184,9 +184,9 @@ async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: Asy
     session.add_all(related)
     await session.commit()
 
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/pipeline/proposals")
     assert response.status_code == 200
@@ -197,8 +197,8 @@ async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: Asy
 @pytest.mark.asyncio
 async def test_trigger_proposals_ui_no_files(client: AsyncClient) -> None:
     """POST /pipeline/proposals with no ANALYZED files returns HTML with zero count."""
-    mock_pool = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/pipeline/proposals")
     assert response.status_code == 200
@@ -211,9 +211,9 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     session.add(_make_file(state=FileState.DISCOVERED))
     await session.commit()
 
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/analyze")
     assert response.status_code == 200
@@ -235,12 +235,91 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     session.add_all(related)
     await session.commit()
 
-    mock_pool = AsyncMock()
-    mock_pool.enqueue_job = AsyncMock()
-    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/proposals/generate")
     assert response.status_code == 200
     data = response.json()
     assert data["total_files"] == 5
     assert data["enqueued_batches"] == 1  # 5 files / 10 batch_size = 1 batch
+
+
+@pytest.mark.asyncio
+async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /api/v1/extract-metadata with music files returns enqueue count."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    await session.commit()
+
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/api/v1/extract-metadata")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 3
+
+
+@pytest.mark.asyncio
+async def test_extract_metadata_no_files(client: AsyncClient) -> None:
+    """POST /api/v1/extract-metadata with no music files returns enqueued=0."""
+    response = await client.post("/api/v1/extract-metadata")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 0
+
+
+@pytest.mark.asyncio
+async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/extract-metadata with music files returns HTML response."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    await session.commit()
+
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/extract-metadata")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "metadata extraction" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_extraction_ui_no_files(client: AsyncClient) -> None:
+    """POST /pipeline/extract-metadata with no music files returns HTML with zero count."""
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/extract-metadata")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/fingerprint with METADATA_EXTRACTED files returns HTML response."""
+    session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
+    await session.commit()
+
+    mock_queue = AsyncMock()
+    mock_queue.enqueue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/fingerprint")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "fingerprinting" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_ui_no_files(client: AsyncClient) -> None:
+    """POST /pipeline/fingerprint with no eligible files returns HTML with zero count."""
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post("/pipeline/fingerprint")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
