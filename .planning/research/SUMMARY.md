@@ -1,190 +1,214 @@
 # Project Research Summary
 
-**Project:** Phaze v2.0
-**Domain:** Music collection enrichment — audio metadata, fingerprinting, tracklist scraping, duplicate resolution
-**Researched:** 2026-03-30
-**Confidence:** MEDIUM
+**Project:** Phaze v3.0 — Cross-Service Intelligence & File Enrichment
+**Domain:** Music collection organizer — post-organization enrichment layer
+**Researched:** 2026-04-02
+**Confidence:** HIGH
 
 ## Executive Summary
 
-Phaze v2.0 extends a completed v1.0 music organization system (FastAPI + arq + PostgreSQL + HTMX) with four new capability areas: audio tag extraction via mutagen, AI-generated destination path proposals, duplicate resolution UI, audio fingerprinting with an audfprint/Panako hybrid, and 1001Tracklists scraping. The existing architecture is well-suited to absorb these features with minimal disruption — the v1.0 state machine already declares `METADATA_EXTRACTED` and `FINGERPRINTED` states; the duplicate detection backend exists but has no UI; `RenameProposal.proposed_path` is wired but always NULL. v2.0 completes these unfinished threads while adding two genuinely new capabilities: fingerprint-based live set identification and external tracklist scraping.
+Phaze v3.0 adds four enrichment features on top of the fully operational v2.0 pipeline (200K-file ingestion, fingerprinting, tracklist matching, proposal workflow, and file execution). The v3.0 scope is: Discogs cross-service linking (connect TracklistTracks to discogsography's local Discogs database), tag writing (push corrected metadata from Postgres into destination file tags), CUE sheet generation (produce `.cue` companion files from tracklist timestamps), and a unified search page. All four features operate on already-executed files — this is enrichment, not pipeline extension.
 
-The recommended approach builds incrementally from least to most complex. Start with tag extraction (low complexity, unblocks everything else), then surface the dedup UI (backend exists, only frontend work needed), then integrate 1001Tracklists scraping (adds one new Docker dependency), then deploy the fingerprint service container (highest technical risk and longest calendar time). This ordering respects data dependencies — extracted tags feed LLM path proposals, 1001Tracklists search queries, and duplicate quality scoring — while deferring the two highest-risk items (fingerprinting and live set matching) until foundational work is stable and the library is de-duplicated.
+The recommended approach leans heavily on the existing stack. Zero new Python dependencies are required: httpx, mutagen, rapidfuzz, SQLAlchemy, Alembic, arq/SAQ, HTMX/Jinja2, and PostgreSQL already cover everything. The architecture extends cleanly along established patterns — Protocol-based adapters for external services, SAQ tasks for batch operations, write-ahead audit logging for destructive operations, and HTMX partials for dynamic UI. The discogsography service (the user's separate project) is queried via HTTP on the private Docker network, avoiding Discogs API rate limits entirely.
 
-The primary risks are: (1) the audfprint library dates from 2015 and must be vendored and modernized, with Python 3.13 compatibility unverified (MEDIUM confidence); (2) Panako's Javalin HTTP wrapper is custom work with no existing examples (LOW confidence); (3) live concert recordings — the majority of the Phaze corpus — are the hardest input for fingerprinting algorithms, with published research showing 60-70% of live music goes unidentified by standard landmark-based algorithms. Fingerprint match quality on live sets must be treated as a probabilistic aid requiring human review, not an authoritative identification. All three risks are manageable with the mitigations in PITFALLS.md but require staged validation and realistic expectations.
+The primary risks are concentrated in tag writing (file mutation without rollback) and Discogs matching (false positives on ambiguous track names). Both risks are well-understood and have established mitigations: write only to destination copies (never originals), verify-after-write with re-read, and store candidate matches rather than auto-committing the top result. CUE sheet generation and search have low risk profiles — one is string formatting with a well-specified format, the other is read-only PostgreSQL queries. The phase ordering (Search → Discogs → Tag Writing → CUE) reflects both dependency order and risk escalation: start with zero-risk read-only queries, end with the highest-risk file mutation feature.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The v1.0 stack (FastAPI, SQLAlchemy 2.x + asyncpg, arq/Redis, litellm, HTMX/Jinja2/Tailwind, Alembic, Docker Compose) is unchanged and fully validated. v2.0 adds only targeted new dependencies: **mutagen** (audio tag read/write), **beautifulsoup4 + lxml** (HTML scraping), **httpx** promoted from dev to production (scraping + fingerprint service HTTP calls), **joblib + scipy** (audfprint vendored dependency), and a new **fingerprint-service** Docker container running Python 3.13 + JDK 17 + Panako wrapped behind a thin FastAPI HTTP API.
+v3.0 introduces no new pip/uv dependencies. All required capabilities are already in `pyproject.toml`. The four new infrastructure points are: (1) a `DISCOGSOGRAPHY_URL` environment variable to reach the discogsography service, (2) `CREATE EXTENSION IF NOT EXISTS pg_trgm` in a new Alembic migration for fuzzy search, (3) mutagen's write API (symmetric to the existing read API already in `services/metadata.py`), and (4) a custom CUE file generator — a 50-line string formatting function, no library needed.
 
-The critical stack decision for v2.0 is the fingerprint service architecture. Running Panako via subprocess-per-call is prohibitive (2-5 second JVM startup x 200K files). The correct design is a long-running container with its own HTTP API (POST /ingest, POST /query, POST /compare, GET /stats, GET /health) at port 8001, keeping the JVM alive and LMDB open between requests. audfprint is vendored as a Python module (`src/phaze/fingerprint/audfprint/`) rather than installed from its unmaintained 2015 GitHub repo.
+**Core technologies (new usage in v3.0):**
+- **httpx** (existing): Async HTTP client to call discogsography `/api/search` — same pattern as existing fingerprint service adapters
+- **mutagen** (existing, write API): Write corrected tags to destination files across all five formats (MP3/ID3, M4A/MP4, OGG/Vorbis, FLAC, OPUS)
+- **rapidfuzz** (existing): Fuzzy match artist+title against Discogs search results — same `token_set_ratio` pattern as `tracklist_matcher.py`
+- **PostgreSQL pg_trgm** (extension, new): GIN trigram indexes on artist/title columns for fuzzy text search; `websearch_to_tsquery` for user input
+- **Custom CUE writer**: 50-line function producing `MM:SS:FF` timestamps at 75fps (Red Book standard, not centiseconds)
 
-**Core new technologies:**
-- **mutagen >=1.47.0**: Audio tag read/write — the only Python library with both capabilities across all formats (ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF). Zero dependencies.
-- **beautifulsoup4 >=4.14.3 + lxml >=5.3.0**: HTML scraping — battle-tested for malformed HTML; lxml backend provides 5-10x parse speed over html.parser.
-- **httpx >=0.28.1** (promote from dev): Async HTTP — already validated in test suite; used for 1001tracklists POST requests and fingerprint service calls.
-- **audfprint (vendored)**: Landmark-based fingerprinting — vendor core classes from 2015 repo, strip CLI layer, modernize to Python 3.13. Fast for exact/near-exact matches.
-- **Panako 2.1 (Docker container + Javalin wrapper)**: Tempo-robust fingerprinting — handles up to 10% tempo/pitch shifts common in DJ sets. Runs as long-lived JVM service with custom HTTP wrapper.
-- **joblib >=1.4.0**: Parallel processing — lightweight library used by audfprint vendored code.
-
-**What to avoid:** Selenium/Playwright for scraping (POST endpoints confirmed to work without headless browser); Scrapy (full framework overkill for one site); subprocess-per-call Panako (JVM startup penalty makes this prohibitive); dejavu (MySQL dependency, abandoned 2021); LMDB Python bindings for direct Panako DB access (single-writer corruption risk); litellm >=1.82.7 (supply chain attack March 2026 — remain pinned at <1.82.7).
+**What NOT to use:**
+- python3-discogs-client: bypasses discogsography's enriched local data, imposes 60 req/min rate limit
+- Elasticsearch/Meilisearch: massive overhead for 200K records; PostgreSQL handles this trivially
+- cuetools/CueParser (PyPI): adding a dependency for string formatting of 5 CUE keywords
+- eyeD3: ID3-only, does not cover OGG/M4A/FLAC
+- SQLAlchemy-Searchable: abandoned since 2021
 
 ### Expected Features
 
-v2.0 research identified five feature areas with a clear dependency order.
+v3.0 research identified four feature areas with clear dependency ordering and a concrete prioritization matrix.
 
 **Must have (table stakes):**
-- Audio tag extraction for all formats (MP3/M4A/OGG/FLAC/OPUS) via mutagen — populates the existing but empty `FileMetadata` table; feeds LLM context for all downstream features
-- AI destination path proposals — `RenameProposal.proposed_path` column exists but is always NULL; extend the LLM prompt to fill it; add path display and collision detection to the approval UI
-- Duplicate resolution UI — `find_duplicate_groups()` service exists; build the review page with side-by-side metadata comparison and "keep this, delete rest" workflow
-- Fingerprint service container — run audfprint + Panako as a long-lived HTTP sidecar; ingest all music files; match live set audio against the resulting library
-- Live set tracklist matching with admin review UI — proposed tracklists from fingerprint matches, ordered by timestamp, pending human confirmation
+- Match TracklistTrack records to Discogs releases via artist+title fuzzy search against discogsography
+- Store DiscogsLink records with confidence score and candidate set (not just the top result)
+- Batch Discogs linking via SAQ job (10-30 HTTP calls per tracklist — must not block request path)
+- "Find all sets containing track X" cross-query (DiscogsLink JOIN TracklistTrack JOIN Tracklist)
+- Write corrected tags to EXECUTED destination files with per-field preview diff before writing
+- Batch tag writing with audit log (before/after JSONB snapshots)
+- Generate `.cue` files from tracklist timestamps with source preference (fingerprint > 1001tracklists)
+- Bulk CUE generation for all approved tracklists
+- Full-text search across artist, title, event, filename with BPM/date/genre filters
+- Unified search page as first-class admin nav tab
 
 **Should have (differentiators):**
-- 1001Tracklists search, scraping, and storage — fuzzy-match tracklists to files; cross-reference with fingerprint matches for high-confidence identification
-- Periodic tracklist refresh via arq cron — monthly re-scrape with randomized jitter for unresolved tracklists
-- Quality-based duplicate auto-suggestion — pre-select keeper by bitrate + tag completeness + path length
-- Acoustic near-duplicate detection — fingerprint similarity groups to complement SHA256 exact dedup
+- Tag source selection UI (choose between extracted metadata, LLM proposal, Discogs data per field)
+- Dry-run validation before tag write (file exists, writable, mutagen can open it)
+- Discogs REM comments in CUE sheets (label, year, release ID per track)
+- CUE timestamp quality badge (fingerprint accuracy vs 1001tracklists approximation)
+- Cross-entity drill-down from search results to existing detail pages
+- Reverse Discogs lookup ("what tracks from my collection appear on this release?")
 
-**Defer to v3+:**
-- Tag writing back to audio files after rename (destructive; Postgres is the metadata store)
-- Album art extraction and display in UI (binary blob complexity, scope creep)
-- User-editable path templates (single-user tool; edit the prompt text directly)
-- Real-time fingerprinting during playback (Shazam architecture; out of scope)
-- Bulk scraping of 1001tracklists database (abusive, IP-ban risk)
+**Defer to v4+:**
+- Direct Discogs API calls from phaze (use discogsography service always — no exceptions)
+- Auto-write tags after execution (violates human-in-the-loop principle)
+- Album art embedding (binary blob complexity, format-specific embedding)
+- Natural language search queries (LLM-to-SQL, deferred to v4+ per PROJECT.md)
+- Graph visualization of track relationships
+- Audio splitting from CUE sheets
 
 ### Architecture Approach
 
-v2.0 follows the established v1.0 pattern: thin arq task wrappers calling service classes, CPU-bound work via `run_in_process_pool`, per-task sessions initialized in arq `on_startup`. The additions are six new service classes, four new routers, six new arq task functions, one new Docker container (fingerprint-service), and one Alembic migration adding four tables and two columns to existing tables. The fingerprint service is intentionally domain-ignorant — it accepts file paths and returns match scores; all Phaze business logic stays in the main codebase.
+v3.0 adds four new services, two new routers, three new SAQ task modules, two new models, and two Alembic migrations — all strictly additive. The existing architecture (single codebase, two runtime modes: API via uvicorn + worker via SAQ) is preserved without modification to core pipeline models or state machine. The FileState enum is explicitly NOT extended for tag writing, CUE generation, or Discogs linking — these are enrichment actions tracked via separate audit tables (TagWriteLog, DiscogsLink), not pipeline stages.
 
-**Major components:**
-1. **MetadataExtractService** — reads audio tags with mutagen, normalizes to typed FileMetadata columns, stores raw dump in `raw_tags` JSONB; runs at `DISCOVERED -> METADATA_EXTRACTED` transition
-2. **Fingerprint Service Container** — Python 3.13 + JDK 17 image; audfprint (imported directly) + Panako (subprocess to long-running JVM); exposes POST /ingest, POST /query, POST /compare, GET /stats, GET /health at :8001; two named Docker volumes (`/data/audfprint`, `/data/panako`)
-3. **TracklistScraper** — httpx + BeautifulSoup; POST-based requests to 1001tracklists.com; 3-5 second randomized delay; raw HTML cached alongside parsed data; versioned scrape snapshots
-4. **DedupResolutionService** — surfaces SHA256 duplicate groups (existing) plus acoustic near-duplicates from FingerprintMatch table; all deletions require human approval
-5. **New SQLAlchemy Models** — `Tracklist`, `TracklistEntry`, `FingerprintMatch`, `TracklistFileLink`; `FileMetadata` gains `duration_seconds` and `track_number` columns
+**Major new components:**
+1. **DiscogsService** (`services/discogs.py`) — Protocol-based HTTP adapter to discogsography; fuzzy match with rapidfuzz; batch via SAQ; graceful degradation when service is unavailable
+2. **TagWriterService** (`services/tag_writer.py`) — Format-specific mutagen writers; write-ahead audit log (TagWriteLog); verify-after-write re-read; hard EXECUTED-state guard
+3. **CueGeneratorService** (`services/cue_generator.py`) — CUE string generation; timestamp resolution priority (fingerprint > 1001tracklists > position-based); UTF-8 BOM encoding; frame-rate conversion (75fps)
+4. **SearchService** (`services/search.py`) — Dynamic SQLAlchemy query across FileRecord, FileMetadata, AnalysisResult, Tracklist, DiscogsLink; read-only; paginated
+5. **DiscogsLink model** — Links TracklistTrack/FileMetadata to Discogs releases; stores candidates JSONB, confidence score, match_method enum, master_id
+6. **TagWriteLog model** — Append-only audit trail following ExecutionLog pattern; tags_before + tags_after JSONB
 
-**Critical design decisions:**
-- Tag extraction inserts a new step at the front of the pipeline; the state machine transition `process_file` must check for `METADATA_EXTRACTED` state, not `DISCOVERED`
-- Fingerprinting is additive enrichment, not a pipeline prerequisite — track status in `AnalysisResult.features` JSONB rather than blocking the critical path
-- Periodic tracklist refresh uses Redis SETNX as a distributed lock to prevent double-execution across workers
-- Panako gets higher combined score weight (0.6) than audfprint (0.4) because the primary use case — DJ sets — inherently involves tempo adjustment
+**Patterns to follow (all established in v2.0):**
+- Protocol-based external service adapters (follow FingerprintEngine pattern in `services/fingerprint.py`)
+- Write-ahead audit logging for destructive ops (follow ExecutionLog pattern in `services/execution.py`)
+- SAQ task for batch external calls (follow scan_live_set pattern with HTMX polling for progress)
+- HTMX partials with HX-Request header check (all existing routers do this)
+- Service layer session injection — no ORM model leaks into templates
 
 ### Critical Pitfalls
 
-1. **State machine expansion breaks existing pipeline** — `process_file` transitions directly `DISCOVERED -> ANALYZED`; inserting intermediate states requires updating `PIPELINE_STAGES`, all UI templates, and the dashboard in the same PR. Write an Alembic data migration to backfill existing `ANALYZED+` files. Make new stages non-blocking so existing files remain processable.
+1. **Tag writing corrupts audio files** — Use format-specific mutagen writers (not generic `File()` interface for writes), write only to destination copies, always re-read after `save()` to verify, default to ID3v2.3 (`save(v2_version=3)`) for maximum MP3 player compatibility. Format-specific round-trip tests required for all 5 formats (mp3, m4a, ogg, opus, flac).
 
-2. **Task session engine leak exhausts PostgreSQL connections** — v1.0's `get_task_session()` creates a new `AsyncEngine` per invocation. With 3-4 concurrent task types in v2.0, connection exhaustion (`asyncpg.TooManyConnectionsError`) cascades. Refactor to a module-level engine with connection pooling (`pool_size=5, max_overflow=10`) initialized in arq `on_startup` — do this before adding any new task type.
+2. **False positive Discogs matches** — Never auto-link without human review. Store top 3-5 candidates with confidence scores; do not commit the top result immediately. Use field-specific discogsography search (`artist=`, `title=`) rather than free-text `q=`. Weighted scoring: artist similarity (0.6) + title similarity (0.4). Manual override UI is required.
 
-3. **Panako LMDB corruption in Docker** — LMDB uses memory-mapped I/O with POSIX locks that can break on bind mounts. Use Docker named volumes only. Run exactly one Panako container instance. Add stale-reader check on startup. Implement SIGTERM trap for graceful LMDB close.
+3. **CUE timestamp frame rate error** — CUE `MM:SS:FF` uses 75fps (Red Book CD-DA standard), NOT centiseconds. Use a dedicated `CueTimestamp` value object with explicit `frames = int(fractional_seconds * 75)`. Validation must reject FF >= 75. Unit test: `seconds_to_cue_timestamp(61.5)` returns `"01:01:37"`, not `"01:01:50"`.
 
-4. **Fingerprinting live concert recordings produces mostly noise** — Landmark-based algorithms fail on live recordings with crowd noise, reverb, and tempo shifts. Published research shows 60-70% of live material goes unidentified. Design the UI around probabilistic confidence scores and mandatory human review from day one. Never auto-apply fingerprint matches.
+4. **Tag/database state divergence** — Write sequence must be: (1) write tags to file, (2) re-read from file with mutagen, (3) update database with re-read values, (4) record audit log. Never update database based on intended values. If file write fails, leave database unchanged.
 
-5. **audfprint hash table bucket overflow at 200K files** — Default hash table (2^20 bins, 100 entries/bin) silently drops entries when full. Long concert recordings generate 10-100x more landmarks than studio tracks. Use `--density 7.0`, shard by file type (studio vs. live), and monitor bucket fill statistics after the first 10K files before proceeding to full ingestion.
+5. **Search slow without pre-computed index** — PostgreSQL `ILIKE '%term%'` on 4+ JOINed tables is O(n) at 200K rows. Use `to_tsvector('simple', ...)` (NOT `'english'` — music metadata is not natural language; `'english'` config stems words and mangles artist names) with GIN index. Add `pg_trgm` GIN index for fuzzy/prefix matching. Index creation must be in the Alembic migration, not just the SQLAlchemy model.
 
-6. **1001Tracklists scraping overwrites good data with bad** — Unofficial endpoints change without notice. Cache raw HTTP responses. Version every scrape as a snapshot. Validate parsed structure before promoting to active. Surface validation failures as admin UI alerts, not silent corruption.
+6. **CUE encoding breaks non-ASCII names** — Write with `open(path, 'w', encoding='utf-8-sig')` for UTF-8 BOM. Add `REM ENCODING UTF-8` comment line. Test with accented artist names (Röyksopp, Amelie Lens, etc.).
+
+7. **Discogsography unavailability blocks users** — Apply circuit breaker with graceful degradation: if discogsography is down, mark tracks as "linking pending" and retry via SAQ. Never block the UI waiting for the external service.
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure (7 phases total):
+Based on combined research, suggested phase structure is Phases 18-21 (continuing from v2.0's Phase 17):
 
-### Phase 1: Audio Tag Extraction + Path Proposals + Session Refactor
-**Rationale:** Lowest complexity, highest leverage. Tags feed every other v2.0 feature: path proposals, duplicate quality comparison, and tracklist search queries all depend on extracted artist, title, event, duration, and bitrate. `proposed_path` is already wired in `RenameProposal` — this completes v1.0 unfinished work. The `get_task_session()` connection pooling refactor (Pitfall 2) is a prerequisite for all new task types and must happen in Phase 1.
-**Delivers:** Populated `FileMetadata` table; LLM proposals with destination paths; path collision detection in approval UI; connection-pooled arq session management.
-**Addresses:** Audio tag extraction (all table-stakes items), AI destination path proposals.
-**Avoids:** Task session engine leak (Pitfall 2), state machine disruption (Pitfall 1) — establish the expanded state machine pattern here with non-blocking transitions.
-**Research flag:** Standard patterns. mutagen is thoroughly documented; LLM prompt extension follows v1.0 patterns.
+### Phase 18: Search
 
-### Phase 2: Duplicate Resolution UI
-**Rationale:** Backend fully exists (`find_duplicate_groups()`, SHA256 dedup). Tag extraction from Phase 1 enables bitrate and format comparison in the side-by-side view. Resolving duplicates before fingerprint ingestion keeps the audfprint hash table from filling prematurely with redundant audio.
-**Delivers:** `/duplicates/` page with duplicate groups, side-by-side metadata comparison including bitrate, "keep this / delete rest" workflow, quality-based auto-suggestion, bulk resolution actions.
-**Addresses:** Duplicate resolution workflow (all table-stakes items).
-**Avoids:** UX pitfall of showing only filenames — side-by-side comparison uses bitrate and tag completeness data from Phase 1.
-**Research flag:** Standard patterns. HTMX table + comparison view follows established v1.0 approval UI patterns.
+**Rationale:** Zero new models, zero new infrastructure, zero external dependencies. Queries only existing tables. Provides immediate value, establishes search router/service patterns, and lays groundwork for "find all sets containing track X" that Phase 19 enriches. Starting here builds developer confidence and delivers a UI win with no risk.
 
-### Phase 3: 1001Tracklists Integration
-**Rationale:** Depends on Phase 1 (artist/event metadata drives search queries). Can be built before fingerprinting since scraped tracklist data will be used to cross-reference fingerprint matches in Phase 5. httpx is already in the stack; BeautifulSoup is the only new dependency.
-**Delivers:** `Tracklist` + `TracklistEntry` tables populated; fuzzy file-to-tracklist linking via rapidfuzz; admin UI for tracklist browsing; periodic refresh cron job with distributed locking.
-**Addresses:** 1001Tracklists search and scraping (all table-stakes items), periodic refresh.
-**Avoids:** Scraping without rate limiting (Pitfall 5), silent data corruption — versioned snapshots and structural validation built into initial implementation.
-**Research flag:** Needs phase-level research. The 1001tracklists POST endpoints are undocumented and subject to change. Validate endpoint behavior and HTML structure before building the parser.
+**Delivers:** Unified search page across files, tracklists, tracks; BPM/date/genre/file-type filters; paginated entity-grouped results; new nav tab in base.html.
 
-### Phase 4: Fingerprint Service Container
-**Rationale:** Largest workstream with the highest technical risk. Isolated behind an HTTP API so discovery work does not affect the main codebase. Phase 2 produces a cleaner library (fewer duplicates) before bulk ingestion, reducing wasted CPU and hash table pressure.
-**Delivers:** `fingerprint-service` Docker container with Dockerfile; audfprint vendored module modernized to Python 3.13; Panako + Javalin HTTP wrapper; POST /ingest /query /compare /health endpoints; bulk ingestion of studio files with staged validation.
-**Addresses:** Fingerprint service container (all table-stakes items), persistent fingerprint databases.
-**Avoids:** JVM startup overhead (long-running container not subprocess-per-call), LMDB corruption (named volumes, single-writer, SIGTERM trap), audfprint bucket overflow (density tuning, staged ingestion with validation after 10K files).
-**Research flag:** Needs phase-level research. Two unknowns at LOW confidence: (1) audfprint Python 3.13 compatibility — run the vendored module against Python 3.13 before committing to the architecture; (2) Panako Java API accessibility — verify Panako exposes usable Java classes beyond CLI `main()` before designing the Javalin wrapper. Also validate ARM64 Docker compatibility if home server is ARM-based.
+**Addresses:** Full-text search table stakes; filter features; cross-entity drill-down.
 
-### Phase 5: Live Set Fingerprint Matching + Tracklist Cross-Reference
-**Rationale:** Depends on both the fingerprint database (Phase 4) and scraped tracklists (Phase 3). This phase produces the "killer feature" — automated setlist identification with cross-validated confidence from two independent sources (acoustic fingerprint + human-curated tracklist).
-**Delivers:** `FingerprintMatch` table; batch live set querying against fingerprint DB; proposed tracklist UI for admin review with confidence scores; cross-reference of fingerprint matches against 1001Tracklists data; `TracklistFileLink` table.
-**Addresses:** Live set tracklist matching (all table-stakes items), acoustic near-duplicate detection.
-**Avoids:** False positive matches auto-applied (Pitfall 4) — all matches routed through review UI; fingerprint matching on live sets treated as probabilistic aid requiring calibration.
-**Research flag:** Needs phase-level research. The hybrid audfprint + Panako scoring weights (0.4/0.6) are a design decision, not a proven pattern. Requires calibration against real concert recordings from the actual corpus. Build scoring as a configurable parameter from day one.
+**Avoids:** Search performance pitfall — requires GIN indexes in Alembic migration and `'simple'` tsconfig (not `'english'`); pagination from the start (no full-table result returns).
+
+**Research flag:** Standard patterns (skip research-phase). PostgreSQL FTS + pg_trgm is well-documented with established SQLAlchemy patterns.
+
+### Phase 19: Discogs Cross-Service Linking
+
+**Rationale:** Introduces the DiscogsLink model (the key enrichment table for v3.0) and the discogsography HTTP dependency. Building after search means the search page immediately benefits from Discogs data in results. DiscogsLink data (label, genre, year) then enriches Phase 20 tag writing.
+
+**Delivers:** DiscogsLink table and migration, batch matching SAQ job, "find all sets containing track X" query endpoint, Discogs context in tracklist review UI, manual override UI for bad matches.
+
+**Addresses:** Cross-service linking table stakes; batch matching job; candidate storage with confidence scoring.
+
+**Avoids:** False positive linking pitfall — requires candidate storage (top 3-5, not single auto-commit), confidence scoring, manual override; discogsography unavailability pitfall — circuit breaker with "linking pending" fallback.
+
+**Research flag:** Needs integration check during planning. Verify the discogsography `/api/search` response shape (field names, pagination structure, available query parameters) by inspecting `api/routers/search.py` in the discogsography codebase before writing the DiscogsographyAdapter client.
+
+### Phase 20: Tag Writing
+
+**Rationale:** Highest-risk feature (modifies file contents on disk). Building after Discogs linking means DiscogsLink data is available as an additional metadata source for tag enrichment (label, genre, year). Requires TagWriteLog audit table and format-specific writer implementations.
+
+**Delivers:** Tag write service with format-specific mutagen writers, preview UI (current vs proposed diff), per-field checkboxes, batch tag writing, audit log with before/after snapshots, EXECUTED-state hard guard.
+
+**Addresses:** Tag writing table stakes; per-field selection; batch write workflow; undo via audit log.
+
+**Avoids:** File corruption pitfall — format-specific writers, verify-after-write re-read, write-only-to-destination rule; DB/file divergence pitfall — re-read from file before any DB update.
+
+**Research flag:** Requires thorough format-specific testing during execution (not planning). Tag write round-trip tests for mp3 (ID3v2.3), m4a (MP4), ogg (Vorbis), opus (OggOpus), flac (FLAC) are mandatory before any integration test. This is not optional coverage.
+
+### Phase 21: CUE Sheet Generation
+
+**Rationale:** Simplest feature in isolation — string formatting with file write, no model changes. Benefits from Phase 19 Discogs data for REM comments and Phase 20 verified metadata for PERFORMER fields. Non-destructive (creates new files only, never modifies existing ones). Building last means full enrichment data is available to include.
+
+**Delivers:** CUE file generator with timestamp source preference logic, MM:SS:FF conversion at 75fps, UTF-8 BOM encoding, "Generate CUE" button on tracklist detail page, bulk generation SAQ job.
+
+**Addresses:** CUE sheet table stakes; bulk generation; timestamp quality indicators.
+
+**Avoids:** Frame rate pitfall (75fps not centiseconds — validated by unit test); encoding pitfall (UTF-8 BOM, `utf-8-sig`); FILE path pitfall (relative paths not absolute in CUE FILE directives).
+
+**Research flag:** Standard patterns (skip research-phase). CUE format specification is complete, stable, and well-documented.
 
 ### Phase Ordering Rationale
 
-- **Tags before everything:** Mutagen extraction is the foundation. Path proposals, duplicate quality comparison, and 1001tracklists search all depend on extracted metadata. No other phase delivers full value without it.
-- **Session refactor in Phase 1:** The `get_task_session()` engine leak is a prerequisite for every subsequent phase that adds new task types. Fixing it first prevents cascading connection exhaustion.
-- **Dedup before fingerprinting:** Running fingerprint ingestion on a de-duplicated library avoids wasting CPU on redundant files and keeps the audfprint hash table from filling prematurely with duplicate landmarks.
-- **Tracklists before fingerprint matching:** Scraped tracklist data is needed for Phase 5's cross-reference validation. Building it independently in Phase 3 also validates the httpx + BeautifulSoup stack before fingerprint integration.
-- **Container setup before live matching:** The fingerprint service must exist and be populated before the main codebase can query it. Phase 4 and Phase 3 can run in parallel if resourcing allows — they have no direct dependency on each other.
+- Phase 18 (Search) has zero external dependencies — pure read over existing data. No reason to delay. Establishes search patterns the whole team uses.
+- Phase 19 (Discogs) must come before Phase 20 (Tag Write) because DiscogsLink data is a metadata source for tag enrichment. Also produces the "find sets by track" feature that search (Phase 18) then surfaces.
+- Phase 20 (Tag Write) is highest-risk; placing it third ensures Discogs data is available to enrich tags and search can help find files needing updates.
+- Phase 21 (CUE) is non-destructive and can technically be built any time — placing it last ensures Discogs REM metadata is available and the full enrichment picture is in place.
+- The FileState machine is intentionally NOT extended — enrichment actions are tracked via TagWriteLog and DiscogsLink tables, not pipeline states.
 
 ### Research Flags
 
 Phases needing deeper research during planning:
-- **Phase 3 (1001Tracklists):** Validate the undocumented POST endpoints and current HTML structure before building the parser. One-time manual investigation to confirm endpoints still work.
-- **Phase 4 (Fingerprint Service):** Two unknowns at LOW confidence require spikes: (1) audfprint Python 3.13 compatibility with vendored module; (2) Panako Java API class structure for Javalin integration. Also confirm server architecture (x86 vs. ARM64) for Docker platform targeting.
-- **Phase 5 (Live Set Matching):** The hybrid scoring formula requires calibration against real live recordings from the corpus. Plan for an iteration cycle; do not treat initial weights as final.
+- **Phase 19 (Discogs):** Inspect `api/routers/search.py` in the discogsography codebase to verify the exact response shape for `/api/search` before writing the DiscogsographyAdapter. Response field names, pagination structure, and available query parameters must be confirmed.
 
 Phases with standard patterns (skip research-phase):
-- **Phase 1 (Tag Extraction + Path Proposals):** mutagen is thoroughly documented; LLM prompt extension follows v1.0 patterns; arq session pooling is straightforward.
-- **Phase 2 (Duplicate Resolution UI):** HTMX bulk-action table view follows the existing v1.0 proposals UI pattern exactly.
+- **Phase 18 (Search):** PostgreSQL FTS + pg_trgm is well-documented. Established SQLAlchemy `func.to_tsvector` / `func.similarity` patterns confirmed in multiple sources.
+- **Phase 20 (Tag Write):** mutagen write API is symmetric to the read API already in production in `services/metadata.py`. Write patterns are well-documented.
+- **Phase 21 (CUE):** CUE format is a stable text specification using 5 keywords. Implementation is pure string formatting + file write.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | MEDIUM | New prod dependencies (mutagen, BS4, lxml, httpx) are HIGH. audfprint vendoring is MEDIUM (Python 3.13 unverified). Javalin/Panako HTTP wrapper is LOW (no existing examples). |
-| Features | HIGH | All five feature areas have clear scope, dependency order, and existing v1.0 hooks to build on. Anti-features are explicitly out of scope. |
-| Architecture | MEDIUM | Main codebase integration is HIGH confidence following v1.0 patterns. Fingerprint service container design is MEDIUM (Panako Java API structure unverified). Hybrid scoring weights are LOW (calibration required). |
-| Pitfalls | HIGH | Most pitfalls derive from v1.0 codebase analysis, documented library issues (mutagen GitHub issues), and established domain knowledge. Recovery strategies defined for all major risks. |
+| Stack | HIGH | All technologies already in production in this codebase. Zero new dependencies. Stack research confirmed no gaps. |
+| Features | HIGH | Four feature areas well-defined with clear table stakes / differentiator / anti-feature distinction. Dependency graph between features is explicit and acyclic. |
+| Architecture | HIGH | v3.0 maps cleanly onto existing patterns. Protocol adapters, SAQ tasks, HTMX partials, write-ahead logging all have production examples in the v2.0 codebase. |
+| Pitfalls | HIGH | 7 critical pitfalls identified with specific prevention strategies and phase assignments. Recovery strategies documented for all major risks. |
 
-**Overall confidence:** MEDIUM
+**Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **audfprint Python 3.13 compatibility:** The library uses numpy/scipy patterns from 2015. Before Phase 4 planning, vendor the module and run its test suite under Python 3.13. Document any failures before committing to the architecture.
-- **Panako Java API accessibility:** Research confirms Panako is CLI-only at the user level, but does not verify whether its core Java classes are importable by Javalin without going through `main()`. Inspect the panako.jar class structure as a Phase 4 spike before designing the wrapper.
-- **Hybrid scoring calibration:** The 0.4/0.6 weighting between audfprint and Panako is a starting hypothesis. Real validation requires testing against known live recordings from the actual corpus. Build scoring as a configurable parameter and plan a calibration iteration.
-- **1001tracklists endpoint stability:** Undocumented POST endpoints are the foundation of Phase 3. Manual validation before Phase 3 kickoff; if endpoints have changed, adjust the scraping strategy before building the parser.
-- **ARM64 Panako Docker:** If the home server runs on Apple Silicon or ARM64, Panako's LMDB and JGaborator native libraries require platform-specific builds. Confirm server architecture before Phase 4 planning.
+- **Discogsography API contract:** The `/api/search` endpoint existence is confirmed (router file inspected), but the exact response schema (field names, pagination envelope, available filter parameters) should be verified against the live service before writing the DiscogsographyAdapter in Phase 19. Mitigation: inspect `api/routers/search.py` in discogsography and run a test query before Phase 19 kickoff.
+
+- **Search index strategy with real data:** Research recommends GIN indexes on individual columns plus a combined tsvector. The optimal approach (per-column GIN vs materialized view with combined tsvector) should be validated with `EXPLAIN ANALYZE` on actual production data during Phase 18 implementation. Profile before committing to materialized view overhead.
+
+- **mutagen ID3v2.3 vs v2.4 user preference:** Research recommends defaulting to ID3v2.3 (`save(v2_version=3)`) for maximum player compatibility. Consider adding a `tag_id3_version: int = 3` config setting in Phase 20 to make this user-configurable without code changes.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [mutagen 1.47.0 — PyPI, GitHub, readthedocs](https://pypi.org/project/mutagen/) — tag formats, EasyID3/EasyMP4 API, error taxonomy (ID3NoHeaderError, HeaderNotFoundError)
-- [beautifulsoup4 4.14.3 — PyPI](https://pypi.org/project/beautifulsoup4/) — HTML parsing, lxml backend performance
-- [httpx 0.28.1 — PyPI, v1.0 test suite](https://pypi.org/project/httpx/) — already validated in project
-- [LMDB documentation](http://www.lmdb.tech/doc/) — file locking, multi-process caveats, Docker volume requirements
-- [v1.0 codebase — tasks/session.py, models/file.py, services/pipeline.py, services/dedup.py] — engine-per-call pattern, unused FileState values, hardcoded PIPELINE_STAGES
+- PostgreSQL `pg_trgm` documentation — trigram similarity, GIN index operators, `similarity()` function
+- PostgreSQL Full Text Search documentation — tsvector, tsquery, ts_rank, websearch_to_tsquery, `'simple'` vs `'english'` text search configs
+- mutagen documentation — tag write API, format-specific containers, ID3v2.3/v2.4 version control
+- CUE Sheet Format Specification (wyday.com) — canonical reference: INDEX MM:SS:FF at 75fps Red Book standard
+- Discogsography source code (`api/routers/search.py`) — `/api/search` endpoint verified as existing
+- Existing phaze codebase — v2.0 production patterns: FingerprintEngine Protocol, ExecutionLog write-ahead, SAQ scan_live_set, HTMX partials, `tracklist_matcher.py` rapidfuzz scoring
 
 ### Secondary (MEDIUM confidence)
-- [audfprint GitHub (dpwe/audfprint)](https://github.com/dpwe/audfprint) — landmark algorithm, hash table design, density settings — last commit 2015
-- [Panako 2.1 GitHub + documentation](https://github.com/JorenSix/Panako) — tempo-robust fingerprinting, CLI-only interface, LMDB storage, Docker support
-- [Panako ISMIR 2014 + JOSS papers](https://archives.ismir.net/ismir2014/paper/000122.pdf) — handles time-scale and pitch modification up to 10%
-- [Docker Panako community container](https://github.com/Pixelartist/docker-panako) — confirms Docker feasibility
-- [leandertolksdorf/1001-tracklists-api + GodLesZ/1001tracklists-scraper](https://github.com/leandertolksdorf/1001-tracklists-api) — confirms POST endpoints, BeautifulSoup approach; both evaluated and rejected as libraries
-- [Landmark-based fingerprinting for DJ mix monitoring (ISMIR/ResearchGate)](https://www.researchgate.net/publication/307547659_LANDMARK-BASED_AUDIO_FINGERPRINTING_FOR_DJ_MIX_MONITORING) — live recording matching challenges
-- [Accuracy comparisons of fingerprint-based song recognition (PMC)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10028751/) — 60-70% unidentified live music statistic
+- SQLAlchemy pg_trgm discussion (GitHub) — `func.similarity()` integration patterns
+- PostgreSQL FTS for large datasets (case study) — tsvector + GIN optimization at scale
+- mutagen ID3 GitHub issues — v2.3 compatibility, Latin-1 encoding gotchas with ID3v1
 
-### Tertiary (LOW confidence)
-- Javalin 6.x wrapping Panako core Java API — technically plausible but no existing examples; needs spike to verify class structure
-- Hybrid audfprint + Panako scoring weights (0.4/0.6) — design decision, not proven pattern; needs calibration with real corpus data
+### Tertiary (references for context)
+- Discogs API documentation — rate limits (60 req/min authenticated, IP-based), field-specific search behavior
+- CUE encoding compatibility issues (XLD, DeaDBeeF player reports) — UTF-8 BOM as best compromise for player compatibility
+- CUE sheet Wikipedia — format overview, MSF timestamp origins in CD-DA sector format
 
 ---
-*Research completed: 2026-03-30*
+*Research completed: 2026-04-02*
 *Ready for roadmap: yes*

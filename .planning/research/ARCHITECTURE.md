@@ -1,544 +1,503 @@
 # Architecture Patterns
 
-**Domain:** Music file management -- v2.0 integration of tracklists, audio fingerprinting, and metadata enrichment
-**Researched:** 2026-03-30
-**Focus:** How new v2.0 features integrate with existing FastAPI/arq/Postgres architecture
+**Domain:** Music collection organizer -- v3.0 cross-service intelligence & file enrichment
+**Researched:** 2026-04-02
+**Focus:** How Discogs linking, tag writing, CUE sheets, and search integrate with existing architecture
 
-## Existing Architecture (v1.0 Baseline)
-
-Before defining new components, here is what already exists and must not be disrupted:
+## Existing Architecture (v2.0 Baseline)
 
 ```
-Containers:  api (FastAPI), worker (arq), postgres (PG18), redis (Redis 8)
-Models:      FileRecord, FileMetadata, AnalysisResult, RenameProposal, ExecutionLog, FileCompanion, ScanBatch
-State machine: DISCOVERED -> METADATA_EXTRACTED -> FINGERPRINTED -> ANALYZED -> PROPOSAL_GENERATED -> APPROVED/REJECTED -> EXECUTED/FAILED
-Task functions: process_file, generate_proposals, execute_approved_batch
-Volumes:     /data/music (ro), /data/output (rw), /models (ro)
+Containers:  api (FastAPI), worker (SAQ), postgres (PG18), redis (Redis 8), audfprint, panako
+Models:      FileRecord, FileMetadata, AnalysisResult, RenameProposal, ExecutionLog,
+             FileCompanion, ScanBatch, FingerprintResult, Tracklist, TracklistVersion, TracklistTrack
+State machine: DISCOVERED -> METADATA_EXTRACTED -> FINGERPRINTED -> ANALYZED ->
+               PROPOSAL_GENERATED -> APPROVED -> DUPLICATE_RESOLVED -> EXECUTED
+Routers:     health, scan, companion, proposals, execution, preview, duplicates, tracklists, pipeline
+Services:    pipeline, dedup, collision, companion, metadata (read), analysis, execution,
+             fingerprint (Protocol adapters), tracklist_scraper, tracklist_matcher,
+             proposal, proposal_queries, execution_queries, ingestion
+Tasks:       process_file, generate_proposals, execute_approved_batch, extract_file_metadata,
+             fingerprint_file, search_tracklist, scrape_and_store_tracklist, scan_live_set
+             + refresh_tracklists cron (monthly)
+Volumes:     /data/music (ro), /data/output (rw), /models (ro), audfprint_data, panako_data
 ```
 
-Key architectural properties that v2.0 must preserve:
-- Single Python codebase, two runtime modes (API + worker)
-- arq tasks are thin wrappers calling services
-- All CPU-bound work runs in ProcessPoolExecutor via `run_in_process_pool`
-- Per-task session creation (`get_task_session()`) -- no shared engine in workers
-- Fan-out/fan-in batch processing pattern
-- State machine transitions guard idempotent re-runs
+Key architectural properties v3.0 must preserve:
+- Single Python codebase, two runtime modes (API via uvicorn + worker via SAQ)
+- SAQ tasks are thin wrappers calling service-layer functions
+- Protocol-based adapters for external HTTP services (FingerprintEngine)
+- httpx.AsyncClient for inter-service communication
+- Write-ahead audit logging for destructive file operations
+- HTMX partials for dynamic UI (check HX-Request header)
+- Worker context pattern: startup/shutdown hooks initialize shared resources
+- FileState machine guards idempotent pipeline progression
 
-## v2.0 System Diagram
-
-```
-+-----------------------------------------------------------------------------+
-|                      Admin Web UI (HTMX + Jinja2)                           |
-|  +--------------+  +--------------+  +---------------+  +--------------+    |
-|  | Approval UI  |  | Dedup Review |  | Tracklist     |  |  Dashboard   |    |
-|  |  (existing)  |  |   (NEW)      |  | Browser (NEW) |  |  (existing)  |    |
-|  +------+-------+  +------+-------+  +-------+-------+  +------+-------+    |
-+---------+-----------------+-------------------+-----------------+-----------+
-|                      API Layer (FastAPI)                                     |
-|  +----------+  +----------+  +----------+  +----------+  +------------+     |
-|  | Existing |  | Metadata |  |Tracklist |  |Fingerprint|  |  Dedup     |     |
-|  | Routers  |  | Router   |  | Router   |  | Router    |  |  Router    |     |
-|  |          |  |  (NEW)   |  |  (NEW)   |  |  (NEW)    |  |  (NEW)     |     |
-|  +----+-----+  +----+-----+  +----+-----+  +----+------+  +----+------+     |
-+-------+--------------+-------------+---------------+--------------+--------+
-|                    Service Layer                                            |
-|  +------------+  +------------+  +------------+  +------------------+       |
-|  | Metadata   |  | Tracklist  |  |Fingerprint |  | Dedup Resolution |       |
-|  | Extract    |  | Scraper    |  | Client     |  | Service          |       |
-|  | (NEW)      |  | (NEW)      |  | (NEW)      |  | (NEW)            |       |
-|  +-----+------+  +-----+------+  +-----+------+  +-----+------------+       |
-+--------+--------------+---------------+--------------+-------------------+
-|                    Task Queue (arq + Redis)                                |
-|  +--------------------------------------------------------------------+    |
-|  |  NEW tasks: extract_metadata | scrape_tracklist | submit_fingerprint|    |
-|  |             | refresh_tracklists | resolve_duplicates               |    |
-|  |  arq cron:  periodic_tracklist_refresh (monthly + jitter)          |    |
-|  +--------------------------------------------------------------------+    |
-+------------------------------------------------------------------------+
-|                    Data Layer                                              |
-|  +--------------+  +--------------+  +--------------+                     |
-|  | PostgreSQL   |  |    Redis     |  |  Filesystem   |                     |
-|  | + NEW tables |  | (task queue) |  | (music files) |                     |
-|  +--------------+  +--------------+  +--------------+                     |
-+-------------+----------------------------------+---------------------------+
-              |                                  |
-     +--------+--------+              +----------+-----------+
-     | 1001tracklists   |              | Fingerprint Service  |
-     | (HTTP scraping)  |              | (NEW container)      |
-     +-----------------+              | audfprint + Panako   |
-                                      | FastAPI thin wrapper  |
-                                      | LMDB + fprint volumes |
-                                      +----------------------+
-```
-
-## New Container: Fingerprint Service
-
-The fingerprint service is the only new container in v2.0. It wraps audfprint (Python, landmark-based) and Panako (Java, tempo-robust) behind a unified FastAPI API.
-
-### Why a Separate Container
-
-1. **Panako requires JDK 17** -- cannot coexist in the Python 3.13 image
-2. **Long-running databases** -- both audfprint and Panako (LMDB) maintain persistent index files that must survive container restarts
-3. **LMDB single-writer constraint** -- Panako's LMDB does not allow concurrent writes; a dedicated service serializes access
-4. **Resource isolation** -- fingerprinting is CPU-intensive and should not starve the API or arq workers
-5. **Independent scaling** -- fingerprint ingestion is a one-time bulk operation; once complete, the service switches to query-only mode
-
-### Fingerprint Service Architecture
+## v3.0 System Diagram
 
 ```
-+-------------------------------------------------+
-|          fingerprint-service container           |
-|                                                  |
-|  +--------------------------------------------+ |
-|  |  FastAPI thin wrapper (:8001)              | |
-|  |  POST /ingest   -- add file to both DBs    | |
-|  |  POST /query    -- match audio against DBs  | |
-|  |  POST /compare  -- compare two files        | |
-|  |  GET  /stats    -- DB sizes and health      | |
-|  |  GET  /health   -- readiness probe          | |
-|  +----------+----------------+-----------------+ |
-|             |                |                   |
-|  +----------v----+  +-------v----------------+  |
-|  |  audfprint    |  |  Panako (subprocess)   |  |
-|  |  (Python lib) |  |  JDK 17 + panako.jar   |  |
-|  |  hash DB      |  |  LMDB at /data/panako  |  |
-|  +---------------+  +------------------------+  |
-|                                                  |
-|  Volumes:                                        |
-|    /data/audfprint  -- fingerprint database      |
-|    /data/panako     -- LMDB database directory   |
-|    /data/music      -- shared audio volume (ro)  |
-+-------------------------------------------------+
++--------------------------------------------------------------------------------+
+|                       Admin Web UI (HTMX + Jinja2)                             |
+|  +------------+ +----------+ +----------+ +-----------+ +--------+ +--------+  |
+|  | Proposals  | | Dupes    | | Track-   | | Pipeline  | | Search | | Discogs|  |
+|  | (existing) | | (exists) | | lists    | | (exists)  | | (NEW)  | | (NEW)  |  |
+|  +-----+------+ +----+-----+ | (exists) | +-----+-----+ +---+----+ +---+----+  |
++--------+-------------+-------+----+------+-------+-----------+---------+-------+
+|                       API Layer (FastAPI) -- 11 routers                         |
+|  +----------+ +----------+ +---------+ +--------+ +----------+ +----------+    |
+|  | existing | | existing | | track-  | | pipe-  | | search   | | discogs  |    |
+|  | 7 rtrs   | | tracklst | | lists   | | line   | | (NEW)    | | (NEW)    |    |
+|  +----+-----+ +----+-----+ +----+----+ +---+----+ +----+-----+ +----+-----+    |
++-------+-----------+--------------+----------+-----------+-----------+-----------+
+|                      Service Layer                                              |
+|  +---------------+ +--------------+ +---------------+ +---------------------+   |
+|  | existing      | | discogs      | | tag_writer    | | cue_generator       |   |
+|  | 14 services   | | (NEW)        | | (NEW)         | | (NEW)               |   |
+|  +-------+-------+ +------+-------+ +------+--------+ +----------+----------+   |
+|          |                |                |                      |              |
+|  +-------+-------+ +-----+--------+ +-----+--------+                           |
+|  | search         | | (existing   | | (existing    |                           |
+|  | (NEW)          | | services)   | | services)    |                           |
+|  +----------------+ +-------------+ +--------------+                           |
++-----+-------------------+-------------------+----------------------------------+
+|                      Task Queue (SAQ + Redis)                                   |
+|  +------------------------------------------------------------------------+     |
+|  |  NEW tasks: link_discogs_batch | write_tags_batch | generate_cue       |     |
+|  |  existing: process_file | generate_proposals | execute_approved_batch  |     |
+|  |            extract_file_metadata | fingerprint_file | scan_live_set    |     |
+|  |            search_tracklist | scrape_and_store_tracklist               |     |
+|  |  cron: refresh_tracklists (monthly, existing)                         |     |
+|  +------------------------------------------------------------------------+     |
++-----+-------------------+-------------------+----------------------------------+
+|                      Data Layer                                                 |
+|  +--------------+  +-----------+  +-----------+                                |
+|  | PostgreSQL   |  |   Redis   |  | Filesystem |                                |
+|  | +2 NEW tbls  |  | (broker)  |  | (dest rw)  |                                |
+|  +--------------+  +-----------+  +-----------+                                |
++-------+---------------------------+--------------------------------------------+
+        |                           |
++-------+------+   +---------------+---------------+
+| discogsography|   | audfprint    |    panako     |
+| (EXTERNAL    |   | (existing)   |  (existing)   |
+|  HTTP API)   |   +--------------+---------------+
++--------------+
 ```
 
-### Fingerprint Service API Contract
+## New Component Map
+
+| Component | Type | New/Modified | Integrates With |
+|-----------|------|--------------|-----------------|
+| `services/discogs.py` | Service | **NEW** | Discogsography HTTP API, TracklistTrack, FileMetadata |
+| `models/discogs_link.py` | Model | **NEW** | TracklistTrack, FileMetadata |
+| `services/tag_writer.py` | Service | **NEW** | mutagen, FileRecord, FileMetadata, RenameProposal, DiscogsLink |
+| `models/tag_write_log.py` | Model | **NEW** | FileRecord (audit trail) |
+| `services/cue_generator.py` | Service | **NEW** | Tracklist, TracklistTrack, FileRecord |
+| `services/search.py` | Service | **NEW** | FileRecord, FileMetadata, AnalysisResult, Tracklist, DiscogsLink |
+| `routers/search.py` | Router | **NEW** | SearchService, HTMX templates |
+| `routers/discogs.py` | Router | **NEW** | DiscogsService, TagWriterService, HTMX templates |
+| `tasks/discogs.py` | Tasks | **NEW** | DiscogsService (batch linking) |
+| `tasks/tag_write.py` | Tasks | **NEW** | TagWriterService |
+| `tasks/cue.py` | Tasks | **NEW** | CueGeneratorService |
+| `templates/search/` | Templates | **NEW** | Search page + partials |
+| `templates/discogs/` | Templates | **NEW** | Discogs linking UI + partials |
+| `config.py` | Config | MODIFIED | Add discogsography_url, tag write settings |
+| `main.py` | App | MODIFIED | Register search + discogs routers |
+| `tasks/worker.py` | Worker | MODIFIED | Register new tasks, init discogs client in startup |
+| `models/__init__.py` | Models | MODIFIED | Export DiscogsLink, TagWriteLog |
+| `templates/base.html` | Template | MODIFIED | Add Search nav tab |
+| `routers/tracklists.py` | Router | MODIFIED | Add "Generate CUE" + "Link to Discogs" buttons |
+
+### Component Boundaries
+
+| Component | Responsibility | Communicates With |
+|-----------|---------------|-------------------|
+| DiscogsService | HTTP client to discogsography API; fuzzy match track artist+title to Discogs releases | Discogsography external API (HTTP), PostgreSQL (DiscogsLink model) |
+| TagWriterService | Write corrected tags to DESTINATION copies using mutagen; preview diffs | Filesystem (destination files only, never originals), PostgreSQL (TagWriteLog, FileMetadata) |
+| CueGeneratorService | Generate .cue files from tracklist data with resolved timestamps | Filesystem (write .cue next to destination), PostgreSQL (Tracklist, TracklistTrack, FileRecord) |
+| SearchService | Query layer across FileRecord, FileMetadata, AnalysisResult, Tracklist, DiscogsLink | PostgreSQL only (read-only queries) |
+
+## Data Flow: Feature by Feature
+
+### 1. Discogs Linking Flow
+
+```
+TracklistTrack (artist + title)
+        |
+        v
+DiscogsService.match_track(artist, title)
+        |
+        v
+HTTP GET discogsography/api/search?artist=X&title=Y
+        |
+        v
+DiscogsLink record created (track_id -> discogs_release_id, discogs_master_id)
+        |
+        v
+UI shows Discogs release info on tracklist detail page
+        |
+        v
+Cross-query enabled: "find all sets containing track X" via DiscogsLink JOIN TracklistTrack
+```
+
+**Key decision: Store links in phaze's DB.** DiscogsLink is a join table in phaze's PostgreSQL, NOT in discogsography's DB. Phaze owns the relationship. Discogsography is a read-only lookup service -- phaze sends search queries, gets release data back, stores the link locally.
+
+**Key decision: Batch linking via SAQ tasks.** A tracklist has 10-30 tracks. Linking all tracks means 10-30 HTTP calls to discogsography. Do not block the request path. Enqueue a `link_discogs_batch` SAQ task, show progress via HTMX polling (same pattern as fingerprint scan progress in `tracklists.py`).
+
+**Key decision: Use rapidfuzz for client-side confidence scoring.** Discogsography may return multiple candidate releases. Compute a confidence score using rapidfuzz token_set_ratio on artist+title, store the best match. Allow manual override via UI.
+
+### 2. Tag Writing Flow
+
+```
+FileRecord (state=EXECUTED, current_path = destination copy)
+        |
+        v
+User clicks "Write Tags" on file detail / bulk action in UI
+        |
+        v
+TagWriterService.preview_tags(file_id)
+  -> Returns diff: current tags vs proposed tags
+  -> Proposed tags aggregated from: FileMetadata + RenameProposal + DiscogsLink
+        |
+        v
+User reviews diff, confirms write
+        |
+        v
+SAQ task: write_tags enqueued
+        |
+        v
+TagWriterService.write_tags(file_id)
+  1. Snapshot current tags -> tags_before (TagWriteLog, write-ahead)
+  2. Build corrected tag dict:
+     - artist, title from RenameProposal.proposed_filename (parsed)
+     - album, year, genre, label from DiscogsLink (if linked)
+     - track_number from FileMetadata (if present)
+  3. Write tags to destination file via mutagen (current_path)
+  4. Snapshot written tags -> tags_after
+  5. Update TagWriteLog status to "completed"
+  6. Update FileMetadata.raw_tags with new values
+```
+
+**Key decision: Tag writing does NOT change FileRecord.state.** It is an enrichment action on already-executed files, not a pipeline stage. The FileState machine represents the core pipeline (DISCOVERED through EXECUTED). Tag writing can happen multiple times on the same file. Track it via TagWriteLog instead.
+
+**Key decision: NEVER modify original files.** Tag writing operates ONLY on destination copies (files at `current_path` after EXECUTED state). This preserves the copy-verify-delete safety model. If tag writing corrupts a file, the original at `original_path` is still intact.
+
+**Key decision: Write-ahead audit logging.** Follow the existing ExecutionLog pattern from `services/execution.py`: log the operation with `tags_before` snapshot BEFORE executing the write, then update status after. This enables rollback if needed.
+
+### 3. CUE Sheet Generation Flow
+
+```
+Tracklist (file_id linked, status=approved)
+  with TracklistVersion -> TracklistTracks (with timestamps)
+        |
+        v
+User clicks "Generate CUE" on tracklist detail page
+        |
+        v
+CueGeneratorService.generate(tracklist_id)
+  1. Load latest TracklistVersion with tracks
+  2. Resolve timestamps:
+     Priority: fingerprint tracklist timestamps (TracklistTrack.confidence > 0)
+       -> fall back to 1001tracklists timestamps (TracklistTrack.timestamp field)
+       -> fall back to position-based even spacing
+  3. Look up FileRecord.current_path for the linked file
+  4. Format CUE sheet:
+     - PERFORMER from Tracklist.artist
+     - TITLE from Tracklist event + date
+     - FILE from destination filename
+     - TRACK entries with INDEX 01 timestamps (MM:SS:FF format)
+  5. Write .cue file adjacent to destination file (same base name)
+  6. Return path for UI confirmation
+```
+
+**Key decision: CUE files placed next to destination files.** For `Artist - Live @ Event 2024.01.01.mp3`, the CUE is `Artist - Live @ Event 2024.01.01.cue`. This follows standard CUE sheet conventions and media player expectations.
+
+**Key decision: Timestamp resolution priority.** Fingerprint-sourced timestamps are more accurate than 1001tracklists timestamps (which are often approximate). If a file has both a fingerprint-sourced tracklist and a 1001tracklists tracklist, prefer the fingerprint one's timestamps.
+
+**Key decision: CUE generation is non-destructive.** It only creates new files, never modifies existing ones. No audit log needed (unlike tag writing). If the .cue already exists, prompt the user before overwriting.
+
+### 4. Search Flow
+
+```
+User navigates to /search page
+        |
+        v
+HTMX form with filter fields:
+  artist, title, event, date_from, date_to, bpm_min, bpm_max,
+  genre, file_type, state, has_tracklist, has_discogs_link
+        |
+        v
+HTMX POST /search -> SearchService.search(filters)
+  - Dynamic SQLAlchemy query:
+    SELECT files.* FROM files
+    JOIN metadata ON metadata.file_id = files.id
+    LEFT JOIN analysis ON analysis.file_id = files.id
+    LEFT JOIN tracklists ON tracklists.file_id = files.id
+    LEFT JOIN discogs_links ON discogs_links.file_metadata_id = metadata.id
+    WHERE [dynamic filter clauses]
+    ORDER BY [sortable columns]
+    LIMIT page_size OFFSET offset
+  - Returns paginated SearchResult objects
+        |
+        v
+HTMX partial renders result cards with file info, metadata, analysis data
+```
+
+**Key decision: PostgreSQL only, no search engine.** At 200K records with proper indexes, PostgreSQL handles ILIKE and filtered queries in milliseconds. Adding Elasticsearch or Meilisearch would mean another Docker container, index synchronization, and consistency concerns for zero benefit at this scale. If text search becomes slow later, add `pg_trgm` extension with GIN indexes.
+
+**Key decision: Search is read-only.** No mutations. The SearchService is a pure query layer. This means it can use the API session directly (no task queue needed).
+
+## New Models
+
+### DiscogsLink
 
 ```python
-# POST /ingest
-# Body: {"file_path": "/data/music/path/to/file.mp3", "file_id": "uuid"}
-# Response: {"status": "ok", "audfprint_landmarks": 1423, "panako_fingerprints": 892}
+class DiscogsLink(TimestampMixin, Base):
+    """Links a tracklist track or file to a Discogs release."""
 
-# POST /query
-# Body: {"file_path": "/data/music/path/to/liveset.mp3", "max_results": 20, "min_confidence": 0.3}
-# Response: {"matches": [
-#   {"file_id": "uuid", "file_path": "...", "engine": "audfprint", "score": 0.87,
-#    "offset_seconds": 142.5, "duration_seconds": 245.0},
-#   {"file_id": "uuid", "file_path": "...", "engine": "panako", "score": 0.72,
-#    "offset_seconds": 143.1, "duration_seconds": 244.8, "tempo_ratio": 1.03}
-# ]}
+    __tablename__ = "discogs_links"
 
-# POST /compare
-# Body: {"file_a": "/data/music/a.mp3", "file_b": "/data/music/b.mp3"}
-# Response: {"audfprint_match": true, "panako_match": true, "combined_score": 0.92}
+    id: Mapped[uuid.UUID]             # PK
+    track_id: Mapped[uuid.UUID | None]       # FK -> tracklist_tracks.id
+    file_metadata_id: Mapped[uuid.UUID | None]  # FK -> metadata.id (for standalone file matches)
+    discogs_release_id: Mapped[int]   # Discogs release ID (integer from their API)
+    discogs_master_id: Mapped[int | None]  # Discogs master release ID
+    artist: Mapped[str]               # Matched artist name (from Discogs)
+    title: Mapped[str]                # Matched track title (from Discogs)
+    label: Mapped[str | None]         # Record label from Discogs
+    year: Mapped[int | None]          # Release year from Discogs
+    genre: Mapped[str | None]         # Genre from Discogs
+    match_confidence: Mapped[float]   # Fuzzy match score (0-100)
+    match_method: Mapped[str]         # "fuzzy", "exact", "manual"
 ```
 
-### Hybrid Scoring
+Indexes: `(track_id, discogs_release_id)` unique composite for dedup, `discogs_release_id` for reverse lookups ("find all tracks from this release"), `file_metadata_id` for standalone file lookups.
 
-The service combines results from both engines because they have complementary strengths:
-
-| Property | audfprint | Panako |
-|----------|-----------|--------|
-| Language | Python (importable) | Java (subprocess) |
-| Algorithm | Landmark-based spectral peaks | Constant-Q spectral with event points |
-| Speed change tolerance | Up to ~5% | Up to ~10% |
-| Best for | Exact/near-exact matches | DJ sets with tempo adjustment |
-| Database format | Compressed hash table (single file) | LMDB (memory-mapped, directory) |
-| Python 3.13 | Needs verification -- depends on numpy/scipy (both support 3.13) | N/A (Java, subprocess call) |
-
-Combined scoring formula (in the fingerprint service):
+### TagWriteLog
 
 ```python
-def combined_score(audfprint_score: float | None, panako_score: float | None) -> float:
-    """Weighted combination. Panako weighted higher for tempo-shifted content."""
-    if audfprint_score is not None and panako_score is not None:
-        return 0.4 * audfprint_score + 0.6 * panako_score
-    return audfprint_score or panako_score or 0.0
+class TagWriteLog(TimestampMixin, Base):
+    """Append-only audit log for tag write operations."""
+
+    __tablename__ = "tag_write_log"
+
+    id: Mapped[uuid.UUID]             # PK
+    file_id: Mapped[uuid.UUID]        # FK -> files.id
+    tags_before: Mapped[dict]         # JSONB snapshot before write
+    tags_after: Mapped[dict]          # JSONB snapshot after write
+    status: Mapped[str]               # "completed", "failed"
+    error_message: Mapped[str | None]
+    file_path: Mapped[str]            # Path where tags were written (audit)
 ```
 
-Panako gets higher weight because the primary use case (identifying tracks within DJ live sets) inherently involves tempo adjustment.
+Follows the ExecutionLog pattern -- append-only, write-ahead, enables tag restoration from `tags_before` snapshot.
 
-### Fingerprint Service Dockerfile
+## Patterns to Follow
 
-```dockerfile
-FROM python:3.13-slim AS base
+### Pattern 1: Protocol-Based External Service Adapter
 
-# Install JDK for Panako, ffmpeg for both
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openjdk-17-jre-headless ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install audfprint and FastAPI wrapper
-COPY fingerprint-service/requirements.txt .
-RUN pip install -r requirements.txt
-
-# Install Panako jar
-COPY fingerprint-service/panako/ /opt/panako/
-
-# Copy service code
-COPY fingerprint-service/src/ /app/
-WORKDIR /app
-
-EXPOSE 8001
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
-```
-
-### Docker Compose Addition
-
-```yaml
-  fingerprint:
-    build:
-      context: .
-      dockerfile: fingerprint-service/Dockerfile
-    ports:
-      - "${FINGERPRINT_PORT:-8001}:8001"
-    env_file: .env
-    volumes:
-      - "${SCAN_PATH:-/data/music}:/data/music:ro"
-      - fingerprint_audfprint:/data/audfprint
-      - fingerprint_panako:/data/panako
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  pgdata:
-  fingerprint_audfprint:
-  fingerprint_panako:
-```
-
-The fingerprint container does NOT depend on postgres or redis. It is stateless from the perspective of the main app -- it just stores/queries its own fingerprint databases.
-
-## New and Modified SQLAlchemy Models
-
-### New Model: Tracklist
-
-Stores scraped tracklist data from 1001tracklists.
+Follow the existing `FingerprintEngine` Protocol pattern for the Discogs HTTP client.
 
 ```python
-class Tracklist(TimestampMixin, Base):
-    """A tracklist scraped from 1001tracklists.com."""
+@runtime_checkable
+class DiscogsSearchProvider(Protocol):
+    async def search_release(self, artist: str, title: str) -> list[DiscogsSearchResult]: ...
+    async def get_release(self, release_id: int) -> DiscogsRelease | None: ...
+    async def health(self) -> bool: ...
 
-    __tablename__ = "tracklists"
+class DiscogsographyAdapter:
+    """HTTP client adapter for the discogsography service."""
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    source_url: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    source_id: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)  # 1001tl internal ID
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    artist: Mapped[str | None] = mapped_column(Text, nullable=True)
-    event: Mapped[str | None] = mapped_column(Text, nullable=True)  # e.g., "Coachella 2024"
-    date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    track_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    raw_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # full scraped payload
-    last_scraped_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    next_refresh_after: Mapped[datetime | None] = mapped_column(nullable=True)  # for periodic refresh
+    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
 
-    __table_args__ = (
-        Index("ix_tracklists_source_id", "source_id"),
-        Index("ix_tracklists_artist", "artist"),
-        Index("ix_tracklists_next_refresh", "next_refresh_after"),
-    )
+    async def search_release(self, artist: str, title: str) -> list[DiscogsSearchResult]:
+        resp = await self._client.get("/api/search", params={"artist": artist, "title": title})
+        ...
 ```
 
-### New Model: TracklistEntry
+Testable via Protocol mock, consistent with existing adapter pattern, swappable if discogsography API changes.
 
-Individual tracks within a tracklist.
+### Pattern 2: Write-Ahead Audit Logging for Destructive Operations
+
+Tag writing modifies file contents. Follow the `execution.py` pattern exactly:
 
 ```python
-class TracklistEntry(TimestampMixin, Base):
-    """A single track entry within a tracklist."""
+# 1. Log BEFORE executing
+log_entry = TagWriteLog(file_id=file_id, tags_before=current_tags, status="in_progress")
+session.add(log_entry)
+await session.commit()
 
-    __tablename__ = "tracklist_entries"
+# 2. Execute the write
+write_tags_to_file(file_path, new_tags)
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tracklist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklists.id", ondelete="CASCADE"), nullable=False)
-    position: Mapped[int] = mapped_column(Integer, nullable=False)  # order in tracklist
-    artist: Mapped[str | None] = mapped_column(Text, nullable=True)
-    title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    label: Mapped[str | None] = mapped_column(Text, nullable=True)
-    start_time: Mapped[str | None] = mapped_column(String(10), nullable=True)  # "HH:MM:SS" from 1001tl
-    source_track_id: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 1001tl track ID
-
-    __table_args__ = (
-        Index("ix_tracklist_entries_tracklist_id", "tracklist_id"),
-        Index("ix_tracklist_entries_artist_title", "artist", "title"),
-    )
+# 3. Update log entry
+log_entry.tags_after = read_tags_from_file(file_path)
+log_entry.status = "completed"
+await session.commit()
 ```
 
-### New Model: FingerprintMatch
+### Pattern 3: SAQ Task for Batch External Calls
 
-Records fingerprint matches between files (e.g., a live set and its constituent tracks).
+Discogs linking for a tracklist (10-30 HTTP calls) must not block the request path. Follow the scan_live_set pattern:
 
 ```python
-class FingerprintMatch(TimestampMixin, Base):
-    """A fingerprint match between two files or between a file and a tracklist entry."""
+# Router: enqueue task, return progress partial
+job = await queue.enqueue("link_discogs_batch", tracklist_id=str(tracklist_id))
+return TemplateResponse("discogs/partials/link_progress.html", ...)
 
-    __tablename__ = "fingerprint_matches"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    source_file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=False)  # the live set
-    matched_file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=True)  # matched track (if in library)
-    tracklist_entry_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklist_entries.id"), nullable=True)
-    engine: Mapped[str] = mapped_column(String(20), nullable=False)  # "audfprint", "panako", "combined"
-    score: Mapped[float] = mapped_column(Float, nullable=False)
-    offset_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)  # where in the source file
-    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-    tempo_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)  # 1.0 = same speed
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending/confirmed/rejected
-
-    __table_args__ = (
-        Index("ix_fingerprint_matches_source", "source_file_id"),
-        Index("ix_fingerprint_matches_matched", "matched_file_id"),
-    )
+# Task: iterate tracks, call service
+async def link_discogs_batch(ctx, tracklist_id: str):
+    discogs_service = ctx["discogs_service"]
+    session_factory = ctx["async_session"]
+    async with session_factory() as session:
+        tracks = await get_tracks_for_tracklist(session, tracklist_id)
+        for track in tracks:
+            result = await discogs_service.search_release(track.artist, track.title)
+            # store DiscogsLink...
 ```
 
-### New Model: TracklistFileLink
+### Pattern 4: HTMX Partial Responses
 
-Links a tracklist to a file (e.g., "this live set recording corresponds to this 1001tl tracklist").
+Check `HX-Request` header, return full page or partial. Every existing router does this.
 
 ```python
-class TracklistFileLink(TimestampMixin, Base):
-    """Links a FileRecord (live set) to a Tracklist from 1001tracklists."""
-
-    __tablename__ = "tracklist_file_links"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=False)
-    tracklist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tracklists.id"), nullable=False)
-    match_method: Mapped[str] = mapped_column(String(30), nullable=False)  # "fuzzy_metadata", "fingerprint", "manual"
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="proposed")  # proposed/confirmed/rejected
-
-    __table_args__ = (
-        UniqueConstraint("file_id", "tracklist_id", name="uq_tracklist_file_links_pair"),
-    )
+if request.headers.get("HX-Request") == "true":
+    return templates.TemplateResponse(request=request, name="search/partials/results.html", context=ctx)
+return templates.TemplateResponse(request=request, name="search/page.html", context=ctx)
 ```
 
-### Modified Model: FileMetadata
+### Pattern 5: Service Layer Session Injection
 
-The existing FileMetadata model is already scaffolded and sufficient. The mutagen extraction service populates it. Two columns should be added via migration:
+Services receive AsyncSession, perform queries, return domain objects. Routers handle HTTP/HTMX concerns. No ORM model leaks into templates -- convert to dicts or Pydantic schemas.
 
-```python
-# Add to FileMetadata
-duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-track_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
-```
+## Anti-Patterns to Avoid
 
-### Modified Model: AnalysisResult
+### Anti-Pattern 1: Modifying Original Files
 
-The existing `fingerprint` column (Text) is sufficient for storing a reference. The `features` JSONB can store fingerprint metadata. No schema change required.
+**What:** Writing tags to files at `original_path` before or instead of destination copies.
+**Why bad:** Violates copy-verify-delete safety model. Original files are the source of truth for the irreplaceable collection.
+**Instead:** Only write tags to files at `current_path` after FileRecord reaches EXECUTED state. Guard with state check.
 
-### Model Summary
+### Anti-Pattern 2: Adding FileState for Non-Pipeline Actions
 
-| Model | Status | Table | Purpose |
-|-------|--------|-------|---------|
-| FileRecord | EXISTING | `files` | No changes needed |
-| FileMetadata | MODIFY | `metadata` | Add `duration_seconds`, `track_number` |
-| AnalysisResult | EXISTING | `analysis` | No changes needed |
-| RenameProposal | EXISTING | `proposals` | No changes needed |
-| ExecutionLog | EXISTING | `execution_log` | No changes needed |
-| FileCompanion | EXISTING | `file_companions` | No changes needed |
-| ScanBatch | EXISTING | `scan_batches` | No changes needed |
-| Tracklist | **NEW** | `tracklists` | 1001tracklists scraped data |
-| TracklistEntry | **NEW** | `tracklist_entries` | Individual tracks in a tracklist |
-| FingerprintMatch | **NEW** | `fingerprint_matches` | Fingerprint match results |
-| TracklistFileLink | **NEW** | `tracklist_file_links` | Links files to tracklists |
+**What:** Adding TAG_WRITTEN, CUE_GENERATED, or DISCOGS_LINKED to the FileState enum.
+**Why bad:** The FileState machine represents the linear pipeline (DISCOVERED through EXECUTED). Tag writing, CUE generation, and Discogs linking are enrichment actions that can happen multiple times, in any order, after execution. Adding states would break the pipeline dashboard stage counts, the state transition guards, and the processing progression logic.
+**Instead:** Track via separate audit/log tables (TagWriteLog, DiscogsLink). Use computed properties or boolean flags if the UI needs status indicators.
 
-## Data Flow: New Features
+### Anti-Pattern 3: Calling Discogsography Synchronously in Request Path
 
-### Flow 1: Audio Tag Extraction (mutagen)
+**What:** Making HTTP calls to discogsography in the API router while the user waits.
+**Why bad:** Linking an entire tracklist (10-30 tracks) means 10-30 sequential HTTP calls. Network failures would cause 500 errors. User sees a spinner for 30+ seconds.
+**Instead:** Enqueue batch linking as SAQ task. Show progress via HTMX polling (same pattern as fingerprint scan progress in `routers/tracklists.py`).
 
-```
-FileRecord (state=DISCOVERED)
-  |
-  v  arq task: extract_metadata
-  |  Service: MetadataExtractService.extract(file_path)
-  |  Uses: mutagen to read ID3/Vorbis/MP4 tags
-  |  Writes: FileMetadata row (artist, title, album, year, genre, duration, track_number, raw_tags)
-  |  Transitions: DISCOVERED -> METADATA_EXTRACTED
-  |
-  v  existing arq task: process_file (essentia analysis)
-     Transitions: METADATA_EXTRACTED -> ANALYZED
-```
+### Anti-Pattern 4: Deploying a Search Engine for 200K Records
 
-This inserts a new step at the front of the pipeline. The state machine already has `METADATA_EXTRACTED` defined in `FileState`. The existing `process_file` task needs modification to check for `METADATA_EXTRACTED` state instead of `DISCOVERED`.
+**What:** Adding Elasticsearch, Meilisearch, or Typesense to the Docker Compose stack.
+**Why bad:** PostgreSQL handles 200K records with indexed queries trivially (sub-millisecond for B-tree, low milliseconds for ILIKE with pg_trgm). A search engine adds container overhead, index sync complexity, and consistency concerns for zero benefit.
+**Instead:** PostgreSQL with proper indexes. Add `pg_trgm` GIN indexes later if ILIKE performance degrades.
 
-### Flow 2: Audio Fingerprint Ingestion
+### Anti-Pattern 5: Shared Mutable State Between Tag Writer and Execution Service
 
-```
-FileRecord (state=METADATA_EXTRACTED or ANALYZED)
-  |
-  v  arq task: submit_fingerprint
-  |  Service: FingerprintClient.ingest(file_path, file_id)
-  |  HTTP call: POST fingerprint-service:8001/ingest
-  |  The fingerprint service stores in audfprint + Panako LMDB
-  |  No data stored in Postgres (fingerprint DBs are in the service)
-  |  Transitions: -> FINGERPRINTED (or just records success in features JSONB)
-  |
-  v  Note: Fingerprinting can run in parallel with analysis.
-     Both METADATA_EXTRACTED -> {FINGERPRINTED, ANALYZED} paths feed into proposals.
-```
+**What:** Tag writer reading `original_path` to determine what tags to write, or modifying FileRecord.state.
+**Why bad:** Creates coupling between the execution pipeline and the enrichment layer. Race conditions if a file is being re-executed while tags are being written.
+**Instead:** Tag writer reads `current_path` (post-execution destination), never touches FileRecord.state. Completely decoupled from pipeline progression.
 
-**Important design decision:** Fingerprint ingestion does NOT need to block the pipeline. A file can proceed to ANALYZED and even PROPOSAL_GENERATED without being fingerprinted. Fingerprinting is additive enrichment, not a prerequisite for naming. The `FINGERPRINTED` state in the state machine is available but optional -- track fingerprint status in `AnalysisResult.features` JSONB instead, to avoid blocking the critical path.
+## Integration Points: New vs Modified Files
 
-### Flow 3: 1001Tracklists Scraping
+### New Files (~1,100 lines estimated)
 
-```
-User/System triggers tracklist search
-  |
-  v  arq task: scrape_tracklist
-  |  Service: TracklistScraper.search(artist, event, date)
-  |  HTTP: POST to 1001tracklists.com search endpoint (with fake-useragent, rate limiting)
-  |  Parses: BeautifulSoup HTML parsing
-  |  Writes: Tracklist + TracklistEntry rows
-  |  Sets: next_refresh_after = now + 30 days + random(0-7 days)
-  |
-  v  Service: TracklistMatcher.match_to_files(tracklist_id)
-  |  Fuzzy matches tracklist entries against FileMetadata (artist + title)
-  |  Writes: TracklistFileLink rows (match_method="fuzzy_metadata")
-  |
-  v  Optional: Fingerprint-based matching
-     For live set files linked to a tracklist, run fingerprint queries
-     against known tracks to confirm/discover track boundaries
-```
+| File | Est. Lines | Depends On |
+|------|-----------|------------|
+| `models/discogs_link.py` | ~40 | Base, TimestampMixin |
+| `models/tag_write_log.py` | ~30 | Base, TimestampMixin |
+| `services/discogs.py` | ~150 | httpx, DiscogsLink model, rapidfuzz |
+| `services/tag_writer.py` | ~130 | mutagen, FileRecord, FileMetadata, TagWriteLog, DiscogsLink |
+| `services/cue_generator.py` | ~100 | Tracklist, TracklistTrack, FileRecord |
+| `services/search.py` | ~120 | FileRecord, FileMetadata, AnalysisResult, Tracklist, DiscogsLink |
+| `routers/search.py` | ~90 | SearchService, Jinja2Templates |
+| `routers/discogs.py` | ~130 | DiscogsService, TagWriterService, Jinja2Templates |
+| `tasks/discogs.py` | ~50 | DiscogsService, async_session |
+| `tasks/tag_write.py` | ~50 | TagWriterService, async_session |
+| `tasks/cue.py` | ~40 | CueGeneratorService, async_session |
+| `templates/search/` | ~150 | HTMX partials (page, results, filters) |
+| `templates/discogs/` | ~120 | HTMX partials (link progress, release card, tag preview) |
+| Alembic migration (discogs_links) | ~40 | DiscogsLink model |
+| Alembic migration (tag_write_log) | ~30 | TagWriteLog model |
 
-### Flow 4: Periodic Tracklist Refresh
+### Modified Files (low risk, additive changes)
 
-```
-arq cron job: periodic_tracklist_refresh (runs daily)
-  |
-  v  Query: SELECT * FROM tracklists WHERE next_refresh_after < now() LIMIT 50
-  |
-  v  For each stale tracklist:
-  |    Re-scrape from 1001tracklists.com
-  |    Update TracklistEntry rows (upsert by position)
-  |    Set next_refresh_after = now + 30 days + random(0-7 days)
-  |
-  v  Rate limit: Max 50 scrapes per cron run, 2-5 second delay between requests
-     Jitter prevents thundering herd on refresh dates
-```
+| File | Change | Risk |
+|------|--------|------|
+| `config.py` | Add `discogsography_url: str`, `tag_write_enabled: bool` | Low |
+| `main.py` | Register search + discogs routers (2 lines) | Low |
+| `tasks/worker.py` | Add discogs adapter to startup, register 3 new task functions | Low |
+| `models/__init__.py` | Export DiscogsLink, TagWriteLog (2 imports + 2 __all__ entries) | Low |
+| `templates/base.html` | Add "Search" nav tab + "Discogs" nav tab | Low |
+| `routers/tracklists.py` | Add "Generate CUE" and "Link to Discogs" action buttons on tracklist detail | Medium |
+| `templates/tracklists/` | Add CUE/Discogs buttons to existing tracklist card partials | Medium |
 
-The randomized jitter is critical: if 10,000 tracklists are scraped in the first week, without jitter they would all try to refresh on the same day 30 days later.
+## Suggested Build Order
 
-### Flow 5: Fingerprint-Based Track Identification in Live Sets
+Order based on dependency analysis, risk assessment, and value delivery:
 
-```
-User selects a live set file in admin UI
-  |
-  v  API: POST /fingerprint/query
-  |  Service: FingerprintClient.query(file_path)
-  |  HTTP: POST fingerprint-service:8001/query
-  |  Returns: list of matched tracks with time offsets
-  |
-  v  Service: FingerprintMatchService.store_matches(source_file_id, matches)
-  |  Writes: FingerprintMatch rows
-  |  Cross-references with TracklistEntry if a linked tracklist exists
-  |
-  v  UI: Shows proposed tracklist for the live set
-     User can confirm/reject individual track identifications
-```
+### Phase 18: Search
 
-### Flow 6: Duplicate Resolution
+**Why first:** Zero new models, zero new infrastructure, zero external dependencies. Queries existing tables only. Provides immediate value by making the 200K-file dataset queryable. Establishes the search router + service pattern. The search page is the foundation for "find all sets containing track X" which later uses DiscogsLink data.
+
+**Scope:** New router, service, templates. One Alembic migration for any new indexes (pg_trgm if needed). No model changes.
+
+**Risk:** Low. Read-only queries over existing data.
+
+### Phase 19: Discogs Linking
+
+**Why second:** Requires DiscogsLink model + Alembic migration + external HTTP dependency (discogsography). Should be built after search because "find all sets containing track X" is a search feature enriched by DiscogsLink data. Discogs data also enriches tag writing (genre, label, year from Discogs releases).
+
+**Scope:** New model, service, router, tasks, templates. Alembic migration. DiscogsographyAdapter following Protocol pattern. Batch linking via SAQ.
+
+**Risk:** Medium. External HTTP dependency on discogsography. Needs discogsography API contract to be stable. Fuzzy matching confidence thresholds need tuning.
+
+### Phase 20: Tag Writing
+
+**Why third:** Highest-risk feature (modifies file contents). Benefits from Discogs data being available (enriched tags with label, genre, year from DiscogsLink). Requires TagWriteLog model for audit trail.
+
+**Scope:** New model, service, tasks, templates added to discogs router. Alembic migration. mutagen write operations (library already imported for read). Write-ahead audit logging.
+
+**Risk:** High. File content mutation. Requires thorough testing with all tag formats (ID3, Vorbis, MP4, FLAC, OPUS). Must verify tag writes do not corrupt files.
+
+### Phase 21: CUE Sheet Generation
+
+**Why last:** Simplest feature in isolation. Only creates new files, never modifies existing ones. Depends on approved tracklists with timestamps (already exist). Building last means Discogs-enriched track metadata (from Phase 19) can be included in CUE sheet comments (PERFORMER, SONGWRITER fields).
+
+**Scope:** New service, task, templates added to tracklists router. CUE format string generation + file write. No model changes needed.
+
+**Risk:** Low. Non-destructive (creates files, never modifies). CUE format is a simple text standard.
+
+### Phase Ordering Rationale
 
 ```
-Admin UI: Dedup Review page
-  |
-  v  API: GET /dedup/groups
-  |  Service: DedupService.get_duplicate_groups()
-  |  Query: GROUP BY sha256_hash HAVING COUNT(*) > 1
-  |  Also: FingerprintMatch-based acoustic duplicates (different files, same audio)
-  |
-  v  UI: Shows duplicate groups with metadata comparison
-  |  User picks "keep" file for each group
-  |
-  v  API: POST /dedup/resolve
-  |  Service: DedupService.resolve(keep_file_id, remove_file_ids)
-  |  Marks removed files as REJECTED
-  |  Does NOT delete files -- just marks state. Deletion happens in execution phase.
+Phase 18 (Search)    -- no dependencies, immediate value, establishes patterns
+    |
+Phase 19 (Discogs)   -- new model, enriches search + tag writing
+    |
+Phase 20 (Tag Write) -- benefits from Discogs data, highest risk = needs most context
+    |
+Phase 21 (CUE)       -- simplest, benefits from all prior enrichments
 ```
 
-## New arq Task Functions
+Dependencies:
+- Search has no data dependencies on other v3.0 features
+- Discogs linking enriches search results (show Discogs info on search cards)
+- Tag writing aggregates data from FileMetadata + RenameProposal + DiscogsLink
+- CUE generation benefits from Discogs-enriched track metadata
 
-```python
-# In tasks/metadata.py
-async def extract_metadata(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
-    """Extract audio tags with mutagen and populate FileMetadata."""
+## Scalability Considerations
 
-# In tasks/fingerprint.py
-async def submit_fingerprint(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
-    """Submit file to fingerprint service for ingestion."""
-
-async def query_fingerprint(ctx: dict[str, Any], file_id: str) -> dict[str, Any]:
-    """Query fingerprint service to find matches for a file."""
-
-# In tasks/tracklist.py
-async def scrape_tracklist(ctx: dict[str, Any], search_params: dict[str, str]) -> dict[str, Any]:
-    """Scrape a tracklist from 1001tracklists.com."""
-
-async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
-    """Refresh stale tracklists (cron job)."""
-
-async def match_tracklist_to_files(ctx: dict[str, Any], tracklist_id: str) -> dict[str, Any]:
-    """Fuzzy-match tracklist entries to files in the library."""
-```
-
-Worker settings update:
-
-```python
-class WorkerSettings:
-    functions: ClassVar[list[Any]] = [
-        # Existing
-        process_file, generate_proposals, execute_approved_batch,
-        # New v2.0
-        extract_metadata, submit_fingerprint, query_fingerprint,
-        scrape_tracklist, refresh_tracklists, match_tracklist_to_files,
-    ]
-    # Add cron job for periodic refresh
-    cron_jobs: ClassVar[list[Any]] = [
-        cron(refresh_tracklists, hour=3, minute=0),  # Run at 3 AM daily
-    ]
-```
-
-## New Service Classes
-
-| Service | Responsibility | Dependencies |
-|---------|---------------|-------------|
-| `MetadataExtractService` | Read audio tags with mutagen, normalize, write FileMetadata | mutagen, AsyncSession |
-| `TracklistScraper` | HTTP scraping of 1001tracklists.com, rate limiting, parsing | httpx, beautifulsoup4, fake-useragent |
-| `TracklistMatcher` | Fuzzy matching of tracklist entries to FileMetadata | AsyncSession, rapidfuzz (for fuzzy string matching) |
-| `FingerprintClient` | HTTP client for the fingerprint service | httpx |
-| `FingerprintMatchService` | Store/query fingerprint match results | AsyncSession |
-| `DedupResolutionService` | Resolve duplicate groups (SHA256 + acoustic) | AsyncSession |
-
-## New Router Endpoints
-
-| Router | Endpoints | Purpose |
-|--------|-----------|---------|
-| `routers/metadata.py` | `POST /metadata/extract/{file_id}`, `POST /metadata/extract-batch` | Trigger metadata extraction |
-| `routers/tracklist.py` | `GET /tracklists`, `POST /tracklists/search`, `GET /tracklists/{id}`, `POST /tracklists/{id}/refresh`, `POST /tracklists/{id}/link/{file_id}` | Tracklist CRUD and linking |
-| `routers/fingerprint.py` | `POST /fingerprint/ingest/{file_id}`, `POST /fingerprint/query/{file_id}`, `GET /fingerprint/stats` | Fingerprint operations (proxied to service) |
-| `routers/dedup.py` | `GET /dedup/groups`, `POST /dedup/resolve`, `GET /dedup/groups/{hash}` | Duplicate resolution workflow |
-
-## Component Boundaries
-
-### What Stays in the Main Codebase (phaze)
-
-- All PostgreSQL models and migrations
-- All business logic (services)
-- All API endpoints and UI templates
-- All arq task definitions
-- HTTP client for fingerprint service (NOT the fingerprint logic itself)
-
-### What Lives in the Fingerprint Service
-
-- audfprint library integration (Python, imported directly)
-- Panako integration (Java, subprocess calls to panako.jar)
-- Fingerprint database files (audfprint hash DB + LMDB)
-- Thin FastAPI wrapper exposing ingest/query/compare/stats/health
-- Its own Dockerfile, requirements.txt, and health check
-
-The fingerprint service is intentionally dumb. It knows nothing about Phaze's domain model, state machine, or PostgreSQL. It accepts file paths, returns match results. All intelligence lives in the main codebase.
+| Concern | At 200K files | At 500K files | Notes |
+|---------|---------------|---------------|-------|
+| Search query speed | Milliseconds with B-tree indexes | Add pg_trgm GIN index if ILIKE slows | Monitor EXPLAIN ANALYZE |
+| Discogs API rate | ~30 tracks/tracklist, rate limited by discogsography | Same | Phaze does not call Discogs directly |
+| Tag write throughput | Sequential per-file, I/O bound | Batch with SAQ concurrency (worker_max_jobs=8) | Already parallelized via task queue |
+| CUE generation | Instant (string formatting + file write) | Same | Zero scaling concerns |
+| DiscogsLink table size | ~50K rows (5K tracklists x 10 tracks avg) | ~125K rows | Standard B-tree indexes sufficient |
 
 ## Configuration Additions
 
@@ -546,113 +505,25 @@ The fingerprint service is intentionally dumb. It knows nothing about Phaze's do
 class Settings(BaseSettings):
     # ... existing settings ...
 
-    # Fingerprint service
-    fingerprint_service_url: str = "http://fingerprint:8001"
-    fingerprint_ingest_timeout: int = 120  # seconds per file
-    fingerprint_query_timeout: int = 60
+    # Discogsography service
+    discogsography_url: str = "http://discogsography:8000"
+    discogsography_timeout: float = 30.0
 
-    # 1001tracklists scraping
-    tracklist_scrape_delay: float = 3.0  # seconds between requests
-    tracklist_refresh_days: int = 30  # minimum days between refreshes
-    tracklist_refresh_jitter_days: int = 7  # random jitter added to refresh interval
-    tracklist_max_refresh_per_run: int = 50  # max tracklists to refresh per cron run
+    # Tag writing
+    tag_write_enabled: bool = True  # Safety toggle
 ```
 
-## Migration Strategy
-
-v2.0 requires one Alembic migration adding four tables and two columns:
-
-```python
-# alembic/versions/005_v2_tracklists_and_fingerprints.py
-def upgrade():
-    # New tables
-    op.create_table("tracklists", ...)
-    op.create_table("tracklist_entries", ...)
-    op.create_table("fingerprint_matches", ...)
-    op.create_table("tracklist_file_links", ...)
-
-    # Modify existing
-    op.add_column("metadata", sa.Column("duration_seconds", sa.Float, nullable=True))
-    op.add_column("metadata", sa.Column("track_number", sa.Integer, nullable=True))
-```
-
-## Anti-Patterns to Avoid
-
-### Anti-Pattern 1: Embedding Panako in the Python Image
-
-**What:** Trying to run Panako via Py4J or JNI bridge inside the main container.
-**Why bad:** JDK 17 bloats the image. JNI bridges are fragile. LMDB concurrent access from multiple workers will corrupt the database.
-**Instead:** Separate container with HTTP API. Single writer process.
-
-### Anti-Pattern 2: Scraping 1001Tracklists Without Rate Limiting
-
-**What:** Blasting requests to 1001tracklists.com in parallel.
-**Why bad:** IP ban within minutes. The site has anti-scraping measures.
-**Instead:** Sequential requests with 2-5 second delays. fake-useragent rotation. Respect rate limits. Cache aggressively.
-
-### Anti-Pattern 3: Blocking Pipeline on Fingerprinting
-
-**What:** Requiring fingerprint ingestion to complete before a file can proceed to ANALYZED state.
-**Why bad:** Fingerprint service may be slow (bulk ingestion of 200K files). Pipeline stalls.
-**Instead:** Fingerprinting runs as a parallel enrichment path. Files proceed through analysis and proposals without waiting for fingerprints. Fingerprint data enhances dedup and tracklist matching but is not on the critical path.
-
-### Anti-Pattern 4: Storing Fingerprint Databases in PostgreSQL
-
-**What:** Putting audfprint landmarks or Panako hashes in Postgres.
-**Why bad:** Fingerprint databases are optimized for their specific access patterns (hash table lookup, LMDB B-tree). PostgreSQL would be slower and more complex for these workloads.
-**Instead:** Let each engine manage its own database. Store only match results in PostgreSQL.
-
-### Anti-Pattern 5: Writing a Custom 1001Tracklists Scraper from Scratch
-
-**What:** Building a full scraper with session management, CSRF handling, etc.
-**Why bad:** 1001tracklists has documented POST endpoints that work with simple HTTP requests + fake-useragent. Over-engineering the scraper wastes time.
-**Instead:** Use httpx + BeautifulSoup + fake-useragent. Keep it simple. The existing community scrapers confirm this approach works.
-
-## Build Order (Dependency-Aware)
-
-This order respects both data dependencies and the existing v1.0 pipeline:
-
-```
-Phase 1: Audio Tag Extraction (mutagen -> FileMetadata)
-  Depends on: v1.0 FileMetadata model (exists, unpopulated)
-  Unlocks: Richer LLM context for proposals, fuzzy matching for tracklists
-
-Phase 2: AI Destination Path Proposals
-  Depends on: Phase 1 (metadata enriches LLM context)
-  Unlocks: Complete file organization (proposed_path already wired in v1.0)
-
-Phase 3: Duplicate Resolution UI
-  Depends on: Phase 1 (metadata for comparing duplicates)
-  Unlocks: Clean library before fingerprinting
-
-Phase 4: 1001Tracklists Scraping + Storage
-  Depends on: Phase 1 (metadata for fuzzy matching tracklists to files)
-  Unlocks: Tracklist data for fingerprint cross-referencing
-
-Phase 5: Periodic Tracklist Refresh
-  Depends on: Phase 4 (tracklists must exist before refreshing)
-  Unlocks: Kept-current tracklist data
-
-Phase 6: Fingerprint Service Container
-  Depends on: Phase 3 (cleaner library = better fingerprint DB)
-  Unlocks: Track identification in live sets, acoustic dedup
-
-Phase 7: Fingerprint Integration (ingest + query + match UI)
-  Depends on: Phase 4 (tracklist data for cross-referencing matches), Phase 6 (service running)
-  Unlocks: Full tracklist identification workflow
-```
+No new Docker containers needed. Discogsography is already running as a separate service on the home network. Phaze just needs its URL configured.
 
 ## Sources
 
-- [audfprint on GitHub](https://github.com/dpwe/audfprint) -- landmark-based fingerprinting, Python, compressed hash database
-- [Panako on GitHub](https://github.com/JorenSix/Panako) -- tempo-robust fingerprinting, Java, LMDB storage
-- [Panako documentation](https://0110.be/releases/Panako/Panako-latest/readme.html) -- CLI commands, LMDB details
-- [Panako paper](https://github.com/JorenSix/Panako/blob/master/paper.md) -- algorithm comparison, tempo robustness up to 10%
-- [1001-tracklists-api](https://github.com/leandertolksdorf/1001-tracklists-api) -- BeautifulSoup-based scraping pattern
-- [1001tracklists-scraper](https://github.com/GodLesZ/1001tracklists-scraper) -- JavaScript scraper, confirms POST endpoints work
-- [Docker Panako](https://github.com/Pixelartist/docker-panako) -- community Docker wrapper for Panako
-- [Python 3.13 readiness](https://pyreadiness.org/3.13/) -- NumPy 2.2+ and SciPy support Python 3.13
+- Existing codebase analysis: 11 models, 9 routers, 14+ service files, 8 task functions, 9 Alembic migrations
+- Established patterns: FingerprintEngine Protocol (services/fingerprint.py), write-ahead ExecutionLog (services/execution.py), HTMX partial rendering (routers/tracklists.py), SAQ task enqueue + poll (routers/tracklists.py scan endpoints)
+- mutagen tag writing: same library already used for read (services/metadata.py), write API is symmetric (mutagen.File.save())
+- CUE sheet format: standard text format (PERFORMER, TITLE, FILE, TRACK, INDEX directives), no external dependencies
+- PostgreSQL performance: well within single-node capacity for 200K-record indexed queries
+- rapidfuzz: already in use (services/tracklist_matcher.py) for fuzzy matching
 
 ---
-*Architecture patterns for: Phaze v2.0 -- tracklist integration, fingerprinting, and metadata enrichment*
-*Researched: 2026-03-30*
+*Architecture patterns for: Phaze v3.0 -- Cross-Service Intelligence & File Enrichment*
+*Researched: 2026-04-02*

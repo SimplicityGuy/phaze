@@ -1,185 +1,200 @@
 # Pitfalls Research
 
-**Domain:** Adding audio tag extraction, web scraping, audio fingerprinting services, and periodic background jobs to existing music organization system (Phaze v2.0)
-**Researched:** 2026-03-30
-**Confidence:** HIGH (most pitfalls derived from v1.0 codebase analysis, documented library issues, and established domain knowledge)
+**Domain:** Cross-service intelligence and file enrichment (Discogs linking, tag writing, CUE sheets, search) for existing music collection organizer
+**Researched:** 2026-04-02
+**Confidence:** HIGH
 
 ## Critical Pitfalls
 
-### Pitfall 1: State Machine Expansion Breaks Existing Pipeline
+### Pitfall 1: Tag Writing Corrupts Audio Files or Produces Unreadable Tags
 
 **What goes wrong:**
-v1.0's `FileState` enum already declares `METADATA_EXTRACTED` and `FINGERPRINTED` states but they are unused. The v1.0 pipeline hardcodes a linear flow: `DISCOVERED -> ANALYZED -> PROPOSAL_GENERATED -> APPROVED -> EXECUTED`. The pipeline stats dashboard (`PIPELINE_STAGES` in `pipeline.py`) only lists these 5 states. Adding metadata extraction and fingerprinting as intermediate steps changes the meaning of "what comes next" for every file. Existing files already in `ANALYZED` or later states have never passed through the new steps. The `process_file` task function transitions directly from `DISCOVERED` to `ANALYZED` -- inserting new intermediate states breaks this hardcoded transition.
+Calling `mutagen.save()` on a file modifies it in-place with no built-in backup or rollback. If the write is interrupted (process kill, disk full, power loss), the file is corrupted. Additionally, mutagen defaults to ID3v2.4 for MP3 files, which some players cannot read. Each format family (ID3 for mp3, Vorbis Comments for ogg/opus/flac, MP4 atoms for m4a) has different encoding rules and gotchas. The existing `metadata.py` only reads tags -- writing is fundamentally different because it modifies irreplaceable files on disk.
 
 **Why it happens:**
-States were forward-declared in v1.0 but transition logic, pipeline stats, dashboard UI, and task functions all assume the original 5-state linear flow. Developers add the new states to the enum and forget to update every consumer.
+Developers treat tag writing as "set field, call save()." They forget: (1) `save()` rewrites the file in-place with no transaction or backup, (2) mutagen writes ID3v2.4 by default but many players only read ID3v2.3, (3) ID3v1 tags are encoded in Latin-1 which cannot represent all Unicode characters, (4) MP4/M4A, Vorbis Comment, and ID3 have different APIs for the same logical operation. The existing tag extraction code uses `mutagen.File()` generic interface for reads, but the generic interface lacks fine-grained control over write parameters (ID3 version, encoding).
 
 **How to avoid:**
-1. Write an Alembic data migration that backfills existing `ANALYZED`+ files with stub metadata and fingerprint records, marking them "migrated from v1" so they can be reprocessed later if desired.
-2. Make metadata extraction and fingerprinting optional enrichment steps -- files can proceed to `ANALYZED` if these steps fail, with a flag indicating incomplete enrichment. Do not block the existing pipeline.
-3. Update `PIPELINE_STAGES`, `get_pipeline_stats()`, all UI templates that enumerate states, and the pipeline dashboard in the SAME migration/PR as the state transition changes.
-4. Add a `reprocess` capability that lets you push files backward through new stages without losing existing analysis data.
+- Write ONLY to destination copies, never to originals. The project already uses copy-verify-delete, so enforce that tag writes happen post-copy. Originals remain untouched.
+- Create format-specific writer functions dispatched by file type: `_write_id3()` for MP3, `_write_vorbis()` for OGG/OPUS/FLAC, `_write_mp4()` for M4A. Do not rely on the generic `mutagen.File()` interface for writes.
+- For ID3 files, explicitly set `save(v2_version=3)` for maximum player compatibility. If the user needs v2.4, make it configurable.
+- Implement verify-after-write: after `save()`, re-open the file with `mutagen.File()` and confirm the written values match what was intended.
+- Gate all tag writes behind human-in-the-loop approval: show a diff of "current tags vs proposed tags" in the UI before writing.
+- Log the operation in the audit log with before/after snapshots.
 
 **Warning signs:**
-- Pipeline dashboard shows 0 files in new stages after migration
-- Existing `ANALYZED` files cannot be re-proposed because they "skipped" a required state
-- HTMX partial templates enumerate states from a hardcoded list that was not updated
+- Tag write tests only cover one format (usually MP3). OGG, OPUS, FLAC, M4A are untested.
+- No error handling around `save()` calls.
+- Writing tags to files in the original source directory instead of destination copies.
+- No UI preview of what will change before writing.
+- Tests use `mutagen.File()` generic interface for writes instead of format-specific classes.
 
 **Phase to address:**
-First v2 phase (metadata extraction). Must establish the expanded state machine before any new processing logic.
+Tag writing phase. Must include format-specific round-trip tests for all 5 formats (mp3, m4a, ogg, opus, flac).
 
 ---
 
-### Pitfall 2: Mutagen Error Explosion on 200K Wild Files
+### Pitfall 2: Discogs Matching Links to Wrong Release (False Positive Linking)
 
 **What goes wrong:**
-A music collection accumulated over decades will contain files with corrupted tags, missing headers, wrong extensions, and non-standard encodings. Mutagen raises distinct exceptions: `ID3NoHeaderError` (MP3 without ID3 header), `HeaderNotFoundError` (file is not actually the claimed format), and `MutagenError` (general corruption). Processing 200K files without granular error handling causes entire worker batches to fail via arq retry, or silently skips files that later break the LLM proposal pipeline because they have empty metadata.
+Fuzzy matching artist+title against Discogs returns plausible but incorrect results. The same track appears on hundreds of Discogs releases -- original single, compilation albums, DJ mix CDs, bootlegs, different regional pressings. "Tiesto - Adagio for Strings" has dozens of Discogs entries across different labels, remixes, and compilations. Artist names vary ("Tiesto" vs "DJ Tiesto" vs "Tiesto" with diacritics). If the system auto-links to the wrong release, bad metadata propagates into tags and CUE sheets and is hard to undo.
 
 **Why it happens:**
-Developers test with clean files. Real collections contain Napster-era rips, truncated downloads, files whose extensions lie about their format (`.mp3` that is actually `.m4a`), and files with Latin-1 or Windows-1252 encoded tags.
+Discogs has enormous duplication by design -- it catalogs every pressing and variant. Discogs search relevancy is unreliable: the first result is often not the best match. Developers pick the highest-confidence fuzzy match without understanding that Discogs field-specific searches (`artist=X&release_title=Y`) behave differently from free-text `q=` searches. Tests use exact-match data that does not exercise ambiguous cases.
 
 **How to avoid:**
-1. Use `mutagen.File(path, easy=True)` wrapped in try/except catching `MutagenError` (the base class), NOT specific subclasses.
-2. Record extraction outcome in the database: create a `tag_status` enum on FileMetadata with values `extracted`, `no_tags`, `corrupt`, `unsupported_format`.
-3. Test the extraction pipeline with intentionally broken files: truncated, wrong extension, empty, zero-byte, non-audio files with music extensions.
-4. Handle encoding normalization: mutagen returns `str` for ID3v2.4+ (UTF-8) but may return Latin-1 bytes for ID3v1. Normalize everything to UTF-8 before writing to PostgreSQL.
-5. Existing v1.0 `FileMetadata` model has `artist`, `title`, `album`, `year`, `genre`, `raw_tags` columns. The `raw_tags` JSONB column should store the complete mutagen output; the typed columns should store normalized, validated values.
+- Never auto-link without human review. Store top 3-5 candidate matches with confidence scores rather than committing to one.
+- Use Discogs field-specific search parameters (`artist=`, `track=`, `release_title=`) rather than free-text `q=` queries.
+- Implement multi-signal scoring: exact artist match (high weight), title match including remix info (medium), label match (medium), year proximity (low).
+- Since Discogsography is a separate service with its own local database, query its local data first. Only fall through to the Discogs API for cache misses.
+- Store `discogs_release_id` and `discogs_master_id` separately. Master IDs group all pressings of the same release.
+- Display match candidates in the UI with enough context (label, year, format, track listing) for the user to select the correct one.
+- Distinguish "not yet searched" from "searched, no match found" from "searched, matched" in the data model.
 
 **Warning signs:**
-- Metadata extraction reports 100% success rate on a real collection (means error handling is too broad)
-- FileMetadata table has significantly fewer rows than FileRecord table with no explanation
-- LLM proposals fail because metadata fields are `None` for files that actually have tags
+- Tests only use exact-match test data with no ambiguous cases.
+- No concept of "candidate matches" -- code picks one result and stores it immediately.
+- Matching logic ignores remix suffixes, featured artists, and label variations.
+- No way for the user to manually enter a Discogs URL to correct a bad auto-link.
 
 **Phase to address:**
-Metadata extraction phase. Build the error taxonomy before running batch processing.
+Discogs linking phase. Must include candidate storage, confidence scoring, and manual override UI.
 
 ---
 
-### Pitfall 3: Panako LMDB Database Corruption in Docker
+### Pitfall 3: Discogs API Rate Limiting Breaks Batch Operations
 
 **What goes wrong:**
-Panako uses LMDB (Lightning Memory-Mapped Database) for its fingerprint store. LMDB relies on POSIX file locks and memory-mapped I/O. In Docker, if the LMDB data directory is on a bind mount with certain filesystems, file locking may fail silently. If the container is killed mid-write (`docker stop`, OOM kill), stale reader locks accumulate and can block future writes or cause unbounded database growth. Opening the same LMDB environment from multiple processes (e.g., accidentally running two Panako containers) corrupts the lock table.
+Discogs API allows 60 authenticated requests/minute (25 unauthenticated), enforced per IP address. With 200K files, even 10% needing Discogs lookups means 20,000 requests -- 5.5+ hours at max rate. Bursting above the limit returns 429 errors. Because rate limiting is per-IP (not per-token), Discogsography running on the same server consumes shared quota. Generic User-Agent strings trigger stricter undocumented throttling that is not reflected in response headers.
 
 **Why it happens:**
-LMDB is designed for bare-metal performance. Docker's filesystem abstraction layers can break POSIX lock semantics. Panako's documentation does not warn about Docker-specific LMDB behavior. Developers test with clean starts and never test crash recovery.
+Developers test with 10-50 files and never hit rate limits. They add naive retry logic (retry immediately on 429) which worsens the problem. They forget that Discogsography on the same IP is also making Discogs API calls, consuming shared quota.
 
 **How to avoid:**
-1. Use a Docker named volume (not a bind mount) for Panako's LMDB data directory. Named volumes use the local driver which supports POSIX locks correctly.
-2. Run exactly ONE Panako container instance. LMDB does not safely support multi-process write access.
-3. Add a container health check that verifies LMDB is readable (e.g., run `panako stats` or equivalent).
-4. Implement SIGTERM trap in the container entrypoint for graceful LMDB environment closure.
-5. Include an LMDB stale-reader check on container startup before accepting requests.
-6. Back up the LMDB data directory on a schedule -- it is the sole source of truth for fingerprints. Named volumes survive `docker compose down` but not `docker compose down -v`.
+- Route ALL Discogs queries through the Discogsography service. Do not call the Discogs API directly from phaze. Discogsography should own rate limiting centrally.
+- Implement batch matching at the database level: query Discogsography's local database first, only hit the Discogs API for cache misses.
+- Use the `X-Discogs-Ratelimit-Remaining` header to throttle proactively, not reactively.
+- Process Discogs linking as a background job with a global rate limiter (Redis-based token bucket shared across all workers).
+- Set a custom, unique User-Agent string. Generic user agents get more aggressive throttling not reflected in headers.
+- Prioritize: link tracks in approved tracklists first, defer orphan files.
 
 **Warning signs:**
-- Panako container restarts and reports "readers table is full" or `MDB_MAP_FULL`
-- LMDB data file grows to many GB despite modest track count
-- Container health check passes but fingerprint queries return no results
+- No rate limiting logic in the Discogs client code.
+- phaze calls the Discogs API directly instead of through Discogsography.
+- Batch operations spawn concurrent Discogs requests without coordination.
+- No exponential backoff -- just fixed-delay retry.
 
 **Phase to address:**
-Fingerprint service container setup. Must be validated before ingesting 200K fingerprints.
+Discogs linking phase. Rate limiting must be built into the client from day one.
 
 ---
 
-### Pitfall 4: Fingerprinting Live Concert Recordings Produces Mostly Noise
+### Pitfall 4: CUE Sheet Timestamps Use Wrong Frame Rate (Centiseconds Instead of 75fps)
 
 **What goes wrong:**
-Audio fingerprinting (audfprint landmark-based and Panako) is designed to match clean studio recordings. Live concert recordings from festival streams deviate heavily: crowd noise, PA system coloring, DJ transitions with tempo/pitch shifts, crossfading, MC talking over music. Research literature reports up to 60-70% of live music goes unidentified by standard fingerprinting algorithms. The Phaze collection is primarily live concert recordings and festival streams -- the hardest possible input for fingerprinting. Developers build the service, test with studio tracks, declare it working, then get garbage results on the actual corpus.
+CUE sheet INDEX timestamps use `MM:SS:FF` format where FF is frames at 75 frames per second (CD Red Book standard). Developers convert from seconds using `int(frac * 100)` (centiseconds) instead of `int(frac * 75)` (frames), producing invalid frame values (76-99) and incorrect playback positions. Additionally, fingerprint timestamps have variable sub-second accuracy, and 1001tracklists timestamps are often rounded to the nearest minute with no sub-second precision at all.
 
 **Why it happens:**
-Every fingerprinting tutorial uses clean studio recordings. Landmark-based fingerprinting (audfprint) fails on live recordings because the landmarks shift with reverb, crowd noise, and tempo changes. Panako handles tempo/pitch modification better but still struggles with heavy environmental noise.
+The 75fps frame rate is unintuitive -- it comes from CD-DA's 2352-byte sector format, not from any modern convention. Most developers assume frames are centiseconds. Fingerprint services return timestamps in seconds (float) and the conversion is easy to get wrong. 1001tracklists positions are just "MM:SS" with no sub-second data.
 
 **How to avoid:**
-1. Set expectations upfront: fingerprinting will identify studio-quality files reliably and live recordings poorly. Design the UI around this.
-2. Use the hybrid audfprint + Panako approach with weighted scoring. Require BOTH systems to agree before showing high-confidence matches.
-3. Require a minimum confidence threshold before surfacing matches. All matches must go through human review -- never auto-propose or auto-execute.
-4. For live sets, combine fingerprinting with 1001tracklists data: use tracklist timestamps + fingerprint confirmation together for higher confidence than either alone.
-5. Build the reference fingerprint database from studio tracks first, then query live set segments against it. Do not fingerprint live recordings as reference material.
-6. Test with known live recordings from the actual collection during development, not just studio tracks.
+- Create a dedicated `CueTimestamp` value object or utility function that converts from seconds (float) to `MM:SS:FF` with explicit `frames = int(fractional_seconds * 75)`.
+- Add validation that rejects FF values >= 75. This catches the centiseconds bug immediately.
+- Document the precision source for each track timestamp: "fingerprint" (sub-second), "1001tracklists" (minute-level), "manual" (user-entered). Store this alongside the timestamp.
+- When using 1001tracklists timestamps (no sub-second precision), always set FF to 00.
+- Ensure INDEX 01 of TRACK 01 in each file starts at 00:00:00 (CUE spec requirement for the first track).
+- Test with actual CUE-aware players (foobar2000, VLC, Kodi), not just syntax validation.
+- Handle the case where some tracks have no timestamp at all -- estimate from position order or skip with a REM comment.
 
 **Warning signs:**
-- Fingerprint match rate suspiciously high (>50%) on live recordings
-- Same studio track matches dozens of different live recordings (technically correct but noisy)
-- Users spend more time rejecting false fingerprint matches than approving real ones
+- Frame values >= 75 in generated CUE sheets.
+- No distinction between timestamp precision sources.
+- Tests only validate string format, not that timestamps are correct.
+- No handling for tracks with missing timestamps.
 
 **Phase to address:**
-Fingerprint matching/query phase (after ingestion). Build review UI with confidence scores from day one.
+CUE sheet generation phase. Timestamp conversion must be a tested utility with frame-rate validation.
 
 ---
 
-### Pitfall 5: 1001Tracklists Scraping Silently Returns Bad Data
+### Pitfall 5: CUE Sheet Encoding Breaks Non-ASCII Artist and Track Names
 
 **What goes wrong:**
-1001tracklists.com changes HTML structure, endpoint behavior, or anti-scraping measures without notice. The PROJECT.md notes "documented HTTP endpoints for search (POST) and detail pages (POST)" but these are undocumented unofficial endpoints subject to change. When the site changes, the scraper returns 200 OK with subtly wrong or empty data rather than failing loudly. The periodic refresh job keeps running, overwriting good cached tracklists with garbage parsed from a changed page structure.
+CUE sheets have no official encoding standard. The format predates Unicode adoption. Many players expect Latin-1 or Windows-1252. Writing UTF-8 CUE files with non-ASCII characters (accented names common in electronic music: Royksopp, Amelie Lens, Bonobo feat. various artists with diacritics) produces garbled text in players that assume Latin-1. Adding a UTF-8 BOM helps some players but breaks others.
 
 **Why it happens:**
-Scraping unofficial APIs creates a dependency on implementation details the site can change at will. There is no API contract, versioning, or deprecation notice. Anti-scraping measures in 2025-2026 increasingly use behavioral analysis and ML-based detection beyond simple rate limiting.
+CUE sheets originated in the CD burning era when Latin-1 was the de facto standard. The specification does not mandate an encoding. Modern players vary wildly: foobar2000 handles UTF-8 well, VLC handles it reasonably, but many other players (DeaDBeeF, older hardware players) do not detect encoding automatically and default to Latin-1.
 
 **How to avoid:**
-1. Never overwrite existing tracklist data with scraped results. Store each scrape as a versioned snapshot with timestamp. Only promote to "active" after validation passes.
-2. Build structural validation: check that parsed tracklists contain expected fields (artist name, track name, timestamps). If validation fails, log the error, keep the previous good data, surface an alert in the admin UI.
-3. Implement response structure fingerprinting: hash the CSS class names / DOM structure of response pages. When structure changes, halt scraping and flag for manual review.
-4. Rate limit aggressively: 3-5 second randomized delay between requests. Implement exponential backoff on non-200 responses. Respect robots.txt.
-5. Cache raw HTTP responses alongside parsed data so you can re-parse without re-scraping when the parser is updated.
-6. Store the source URL for every tracklist so the user can manually verify against the original page.
+- Default to UTF-8 with BOM (`\xEF\xBB\xBF` prefix). This is the best compromise for modern player compatibility.
+- Add a `REM ENCODING UTF-8` comment at the top (non-standard but recognized by some tools like CUETools).
+- Validate that all track/artist strings can be encoded in the target encoding before writing. Catch `UnicodeEncodeError` and transliterate with `unidecode` as fallback.
+- Open files with explicit encoding: `open(path, 'w', encoding='utf-8-sig')` (Python handles BOM automatically with `utf-8-sig`).
+- Test with non-ASCII artist names and non-Latin scripts in the test suite.
 
 **Warning signs:**
-- Scraper returns 200 OK but parsed results have empty fields
-- Tracklist count drops suddenly during a refresh cycle
-- All newly scraped tracklists have the same structural parsing error
-- Scraper success rate drops below 90% (site may have added anti-scraping)
+- CUE generation tests only use ASCII artist/track names.
+- No encoding parameter in the CUE generation function.
+- File opened with bare `open(path, 'w')` relying on platform default encoding.
+- No test with accented characters.
 
 **Phase to address:**
-1001tracklists integration phase. Validation and versioning must be designed into the initial implementation.
+CUE sheet generation phase. Encoding must be explicitly handled.
 
 ---
 
-### Pitfall 6: Task Session Engine Leak Exhausts PostgreSQL Connections
+### Pitfall 6: Search Across Multiple Tables is Slow Without Pre-Computed Index
 
 **What goes wrong:**
-v1.0's `get_task_session()` in `tasks/session.py` creates a NEW `AsyncEngine` on every invocation: `engine = create_async_engine(settings.database_url)`. With v1 this was acceptable because only one task type (audio analysis) ran through arq workers. v2 adds 3-4 concurrent task types: metadata extraction, fingerprint ingestion, tracklist scraping, and periodic refresh jobs. Each task creates its own engine, each engine opens its own connection. PostgreSQL's default `max_connections=100` gets exhausted, causing `asyncpg.TooManyConnectionsError` that cascades across all task types simultaneously.
+Searching across FileRecord + FileMetadata + Tracklist + TracklistTrack requires JOINing 4+ tables with text matching on multiple columns. At 200K files with potentially hundreds of thousands of tracklist tracks, naive `ILIKE '%term%'` queries take seconds. PostgreSQL full-text search (tsvector/tsquery) is fast on single tables with GIN indexes, but you cannot create composite GIN indexes across JOINed tables. This forces either multiple separate searches stitched together in Python, or a pre-computed search index.
 
 **Why it happens:**
-The v1 pattern worked with bounded concurrency for a single task type. v2 multiplies the concurrent task types without updating the connection management strategy. Each `create_async_engine()` call creates a separate connection pool.
+Developers add search by putting `WHERE artist ILIKE '%query%' OR title ILIKE '%query%'` on existing queries. This works with 100 rows in development. At 200K rows with JOINs, it degrades to multi-second responses. Adding GIN indexes on individual columns helps per-table queries but does not solve the cross-table search problem.
 
 **How to avoid:**
-1. Refactor `get_task_session()` to use a module-level engine with a connection pool, created once per worker process. Use `pool_size=5, max_overflow=10`.
-2. Initialize the pooled engine in arq's `on_startup` hook and pass it through the worker context (`ctx`).
-3. Set PostgreSQL `max_connections` explicitly in `docker-compose.yml` (e.g., `command: postgres -c max_connections=200`).
-4. Monitor active connections: add a health endpoint or periodic log that queries `pg_stat_activity`.
+- Create a materialized view or dedicated `search_index` table with a pre-computed `tsvector` column that combines text from all relevant tables (artist, title, album, event, genre from files, tracklists, and metadata).
+- Use `to_tsvector('simple', ...)` rather than `to_tsvector('english', ...)`. Music metadata is not natural language -- the `'english'` config stems words (e.g., "Remixes" becomes "remix") and may mangle artist names.
+- Create a GIN index on the tsvector column.
+- For faceted filtering (BPM range, year, genre), use regular B-tree indexes on those columns. Do not encode numeric filters into tsvectors.
+- Use `REFRESH MATERIALIZED VIEW CONCURRENTLY` (requires a unique index on the view) on a schedule or after batch operations, not per-row triggers.
+- For partial/fuzzy matching (user types "tiest" expecting "Tiesto"), combine tsvector with `pg_trgm` trigram extension and a GiST or GIN trigram index.
+- Profile with realistic data volume before finalizing the approach.
 
 **Warning signs:**
-- Intermittent `connection refused` or `too many connections` errors in worker logs
-- Tasks succeed individually in dev but fail when multiple task types run concurrently
-- PostgreSQL logs show rapid connect/disconnect churn (hundreds of connections per minute)
+- Search uses `ILIKE` instead of `tsvector/tsquery`.
+- No GIN index on any text search column.
+- Search query JOINs 4+ tables without LIMIT.
+- No `EXPLAIN ANALYZE` in tests or development workflow.
+- Search returns all matching rows without pagination.
 
 **Phase to address:**
-First v2 phase. Refactor session management before adding any new task types.
+Search phase. Must include index creation migration, materialized view or search table, and load testing.
 
 ---
 
-### Pitfall 7: audfprint Hash Table Bucket Overflow at Scale
+### Pitfall 7: Tag Writing Creates Inconsistent State Between Database and Files
 
 **What goes wrong:**
-audfprint's fingerprint database uses a fixed-size hash table: 2^20 (~1M) distinct fingerprint bins, each holding up to 100 entries by default. With 200K files -- many being hour-long concert recordings that generate extremely dense fingerprint landmarks -- buckets fill and entries are dropped randomly with no error. Match accuracy silently degrades as more files are ingested.
+Tags are written to the file but the database metadata record is not updated, or vice versa. The UI shows "corrected" tags but the file still has old tags. Or the database has new values but the file write actually failed silently. Subsequent scans re-extract old tags because the write never completed, overwriting the "corrected" database values.
 
 **Why it happens:**
-audfprint was designed for Shazam-style "identify this 10-second clip" use cases, not fingerprinting hundreds of thousands of full-length recordings. Long concert recordings generate 10-100x more landmarks per track than a 3-minute pop song.
+Tag writing and database updates are separate operations with no transactional guarantee across the file system and database. Developers update the database optimistically before writing to the file, or write to the file but forget to update the database. Without re-reading tags after writing, there is no verification that the write succeeded.
 
 **How to avoid:**
-1. Reduce hash density with `--density 7.0` (default is higher) to generate fewer landmarks per track while maintaining match quality.
-2. Shard the fingerprint database: separate databases for studio tracks vs. live recordings, or by genre/decade.
-3. Monitor bucket fill statistics after each batch ingestion. audfprint reports dropped entries -- log and alert on this.
-4. Reserve audfprint for studio track identification (its strength). Use Panako as the primary engine for live set matching (its tempo-robust design is better suited).
-5. Run a validation test after each ingestion batch: query a known-good match and verify it still returns the correct result.
+- Implement a strict write sequence: (1) write tags to file, (2) re-read tags from file with mutagen to verify, (3) update database metadata with the re-read values, (4) record in audit log with before/after snapshots.
+- Never update database metadata based on "what we intended to write." Always re-read from the file after write.
+- Add a tag-write state: `TAGS_PENDING` -> `TAGS_WRITTEN` -> `TAGS_VERIFIED`. Only advance state after re-read confirms correctness.
+- If the file write fails, do not update the database. Leave the record in `TAGS_PENDING` with the error recorded.
+- Use the existing audit log pattern to record tag writes.
 
 **Warning signs:**
-- audfprint logs report "N entries dropped" during ingestion
-- Match accuracy degrades as more files are added (established matches stop working)
-- Database file size plateaus despite continued ingestion (entries being replaced, not added)
+- Database update happens before file write or without verification.
+- No re-read step after tag writing.
+- Tag write operation has no audit log entry.
+- No rollback path when file write fails after database was already updated.
 
 **Phase to address:**
-Fingerprint ingestion phase. Configure density and sharding strategy before bulk ingestion.
+Tag writing phase. Must follow the project's verify-after-write philosophy (same as copy-verify-delete).
 
 ---
 
@@ -187,121 +202,113 @@ Fingerprint ingestion phase. Configure density and sharding strategy before bulk
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Store fingerprints only in audfprint/Panako native formats | Faster initial implementation | Cannot query fingerprint metadata from PostgreSQL, no cross-referencing with file records | Never -- always store a fingerprint summary (algorithm, timestamp, landmark count, status) in PostgreSQL alongside the native store |
-| Skip tracklist validation on scrape | Faster scraping pipeline | Bad data pollutes tracklist tables, corrupts future LLM context for proposals | Never -- validation is cheap, data corruption is expensive |
-| Single arq worker for all v2 task types | Simpler deployment, one container | CPU-heavy fingerprinting (hours to complete) starves metadata extraction and scraping | Only during early development. Split to dedicated queues before ingesting the full corpus |
-| Hardcode scraping selectors inline | Quick to build | Breaks when 1001tracklists changes HTML. Must search entire codebase to update | During prototyping only -- extract to a config/constants module within the same phase |
-| Skip raw HTML caching for scraped pages | Less storage | Cannot re-parse when scraper needs updating. Must re-scrape all pages, risking rate limits | Never -- raw responses are cheap to store |
-| Subprocess calls to Panako CLI from Python | Avoids building HTTP API wrapper | Process spawn overhead (2-5s JVM startup) per query, error handling via string parsing, no connection pooling | Never for production -- the entire point of the container service is to avoid this |
-| Reuse v1.0 `get_task_session()` pattern for new task types | No refactoring needed | Connection exhaustion under concurrent multi-task load (see Pitfall 6) | Never -- refactor before adding new task types |
+| Using `mutagen.File()` generic interface for writes | Less code, single code path | Cannot control ID3 version, encoding, or format-specific write options; silent failures on unsupported formats | Never for writes -- use format-specific classes (ID3, VorbisComment, MP4Tags) |
+| Storing Discogs link as a single `release_id` column | Simple schema, fast to implement | Cannot distinguish release vs master, loses candidate alternatives, no way to record "not yet searched" vs "searched, no match" | Never -- add `master_id`, `match_status` enum, `candidates` JSONB from the start |
+| CUE sheet as string concatenation | Quick to build | No validation, encoding bugs surface late, impossible to test individual components, hard to handle edge cases | Never -- use a CUE builder class with typed fields and validation |
+| Search via ILIKE on raw columns | Works immediately, no migration needed | O(n) scan on every query, unusable at 200K rows, no ranking | Development/testing only -- must add tsvector/GIN index before real data |
+| Skipping tag write verification (no re-read) | Faster writes, simpler code | Silent corruption, database/file divergence goes undetected indefinitely | Never -- verification is mandatory for irreplaceable files |
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| mutagen + existing FileMetadata model | Assuming all files have tags; storing raw tag dicts with format-specific keys | Use `mutagen.File(easy=True)` for normalized key names. Store raw tags in `raw_tags` JSONB, normalized values in typed columns |
-| mutagen + file writing (future tag updates after rename) | Opening files read-write during extraction phase | Open read-only for extraction. Write capability only needed post-rename in a future phase. Separate concerns |
-| 1001tracklists + arq periodic jobs | Using arq's built-in `cron()` which runs on every worker startup with no distributed lock | Store last-run timestamp in PostgreSQL. Use Redis SETNX as a distributed lock. Check minimum interval before executing |
-| audfprint + Docker volumes | Mounting the fingerprint database as a bind mount from host | Use a Docker named volume. audfprint's hash table uses memory-mapped I/O requiring proper filesystem semantics |
-| Panako + Python API caller | Calling Panako via `subprocess.run()` from Python arq workers | Run Panako as its own long-running JVM container with an HTTP API. JVM startup (2-5s) makes per-file subprocess calls prohibitive at 200K files |
-| Panako + ARM64 (Apple Silicon) host | Assuming Panako Docker image works on ARM hosts | Panako's LMDB and JGaborator native libraries need platform-specific builds. Build for `linux/amd64`, use `platform: linux/amd64` on ARM hosts, accept emulation overhead |
-| Fingerprint results + existing approval workflow | Auto-applying fingerprint matches without human review | All fingerprint matches must create records that feed into the existing approval workflow. Never auto-execute |
-| Multiple task types + single arq queue | All tasks share one worker pool and one Redis queue | Use separate arq queues (separate Redis DB indexes or key prefixes) for CPU-heavy (fingerprinting), I/O-bound (scraping), and fast (metadata extraction) tasks |
-| New Alembic migrations + v1 data | Running `alembic upgrade head` without considering existing data in v1 states | Every schema migration that adds columns or changes states needs a data migration component that handles existing rows |
+| Discogsography HTTP API | Assuming it mirrors the Discogs API exactly (same endpoints, same response shapes) | Verify actual endpoints, response shapes, and what Discogsography caches locally vs proxies to Discogs. Document the API contract before writing client code |
+| Discogsography HTTP API | Not handling service unavailability (it is a separate container on the same server) | Use circuit breaker pattern with graceful degradation. If Discogsography is down, mark files as "linking pending" and retry later. Do not block the UI |
+| mutagen tag writing | Writing ID3v2.4 and assuming all players can read it | Default to ID3v2.3 with `save(v2_version=3)` for maximum compatibility, or make the version configurable per-user preference |
+| mutagen tag writing | Not handling read-only files, permission denied, or file locked by another process | Check write permissions before attempting. Return a clear error message. The worker may be trying to write while the fingerprint service has the file open |
+| PostgreSQL full-text search | Using `'english'` text search config for music metadata | Use `'simple'` config (no stemming). Artist names, track titles, and event names are not natural language. Stemming "Remixes" to "remix" or mangling "Bass" loses precision |
+| PostgreSQL full-text search | Not handling partial matches (user types "tiest" expecting "Tiesto") | `tsquery` requires full lexeme matches. Add prefix matching with `:*` operator or combine with `pg_trgm` for fuzzy search. `websearch_to_tsquery()` supports prefix syntax |
+| CUE sheet generation | Using `FILE` directive with absolute paths | Exposes internal directory structure. Use relative paths in CUE FILE directives, relative to the CUE file's own location |
+| CUE sheet generation | Ignoring tracks with no timestamp data | Some tracklist tracks have no timestamp (1001tracklists data may be incomplete). Decide explicitly: skip the track, estimate from position order, or error. Document the choice |
 
 ## Performance Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Loading all 200K FileRecords to find unprocessed files | API/worker OOM, PostgreSQL temp disk usage | Always query with `.where(FileRecord.state == target_state).limit(batch_size)` using cursor-based pagination | >10K files in a single state |
-| Fingerprinting audio files on network/bind-mount storage | 10x slower fingerprint generation, I/O timeouts | Ensure bind mounts point to local SSD paths. For NFS/remote storage, copy to local tmpfs before processing | >1000 files on non-local storage |
-| Scraping 1001tracklists without delay between requests | IP blocked, empty responses, silent data corruption | 3-5 second randomized delay. Max 100 requests per session. Exponential backoff on non-200 responses | Immediately without rate limiting |
-| audfprint single-threaded query against full database | 5-10 seconds per query, unusable for batch matching | Use `--ncores` for parallel query. Pre-filter candidates using PostgreSQL metadata before fingerprint matching | >50K entries in fingerprint database |
-| JVM cold start for Panako container on each query | First request takes 5-15 seconds; container restart penalty | Keep Panako as a long-lived container service. Add warmup step that pre-loads LMDB into memory on startup | Every container restart |
-| Storing raw_tags JSONB + analysis features JSONB + fingerprint metadata per file without indexes | PostgreSQL table bloat, slow aggregate queries on metadata table | Create GIN indexes only on JSONB fields you actually query. Use typed columns for frequent filter/sort operations | >100K rows with full JSONB payloads |
-| Enqueueing 200K fingerprinting jobs at once | Redis memory exhaustion, arq job result buildup | Enqueue in batches of 500-1000. Set `keep_result` TTL to auto-expire completed results | >50K queued jobs in Redis |
+| Sequential Discogs lookups for all 200K files | Batch linking takes 5+ hours, blocks workers | Query Discogsography's local DB first; only API-call for cache misses; prioritize tracks in approved tracklists | >1,000 lookups (~17 min at rate limit) |
+| Full-table scan on search without tsvector index | Search page takes 3-10 seconds | GIN index on tsvector column, B-tree indexes on facet columns (year, bpm, genre) | >50K rows without index |
+| Loading full tracklist version history for CUE generation | Memory spike when tracklist has many versions | Only load the latest approved version; use `.options(selectinload())` to avoid N+1 | >100 tracks per tracklist with many versions |
+| Tag writing one file at a time in sync loop | 200K files at 50ms each = 2.8 hours | Batch via SAQ jobs; write concurrently (tag writing is IO-bound, safe to parallelize across different files) | >1,000 files needing tag updates |
+| Refreshing materialized search view on every insert/update | View refresh blocks reads during rebuild at scale | Use `REFRESH MATERIALIZED VIEW CONCURRENTLY` with a unique index; schedule refreshes after batch operations, not per-row | >10K rows in view |
+| Loading all Discogs candidates into memory for scoring | Memory growth proportional to unique tracks times candidates per track | Stream candidates, score on retrieval, store only top-N per track. Use database-side ranking where possible | >10K tracks with 5+ candidates each |
 
 ## Security Mistakes
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Exposing Panako HTTP API on host network via `ports:` mapping | Anyone on local network can query/modify fingerprint database | Panako container should only be on the internal Docker Compose network. No host port mapping |
-| Storing scraped HTML containing inline JavaScript, rendering in admin UI | XSS via stored scrape data displayed in Jinja2 templates | Sanitize all scraped content before storage. Rely on Jinja2's default autoescaping. Never use `|safe` on scraped content |
-| Scraping with identifying User-Agent string | Site blocks IP, flags for abuse | Use a generic browser User-Agent. Rotate if needed. Respect robots.txt |
-| Running Panako JVM as root in container | Container escape gives root on host | Use non-root user in Panako Dockerfile. JVM does not require root |
-| Storing 1001tracklists session cookies or credentials in plaintext config | Credential exposure if .env file is committed | Use `SecretStr` in pydantic-settings. Ensure `.env` is in `.gitignore` (already is for v1) |
+| Passing user search input directly to `to_tsquery()` | SQL injection or query parse errors from special characters (`&`, `!`, `:`, `*`) | Use `plainto_tsquery()` or `websearch_to_tsquery()` which sanitize input. Never construct tsquery strings manually |
+| Storing Discogs/Discogsography API credentials in code or unencrypted config | Token exposure in git history or container inspection | Use `pydantic-settings` `SecretStr` type, load from Docker secret or env var, never log token values |
+| Tag writing to files outside the designated destination directory | Path traversal if proposed paths contain `../` or symlinks | Validate all write targets with `Path.resolve()` and `is_relative_to(destination_root)` before any write |
+| CUE sheet FILE paths using absolute paths | Exposes internal server directory structure if CUE sheets are ever shared or viewed | Always use relative paths in CUE FILE directives |
 
 ## UX Pitfalls
 
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| Showing fingerprint matches without confidence scores | User cannot distinguish good from bad matches, wastes time reviewing noise | Always display match confidence as a percentage. Sort by confidence descending. Allow filtering by minimum threshold |
-| Duplicate resolution UI showing only filenames | User cannot decide which duplicate to keep | Show full metadata side-by-side: path, file size, bitrate (from mutagen tags), format, analysis results. Highlight differences |
-| Tracklist display with no link to source page | User cannot verify tracklist accuracy | Always store and display the 1001tracklists source URL. Make it clickable for manual verification |
-| No progress indication for long-running fingerprint ingestion | User thinks system is stuck, restarts container, potentially corrupts LMDB | Show real-time progress via SSE (already used in v1): "Fingerprinting: 4,523 / 200,000 (2.3%). ETA: 14h" |
-| Mixing v1 and v2 pipeline stages in one flat dashboard | Dashboard becomes a wall of numbers. New stages confuse the pipeline view | Group stages logically: "Enrichment" (metadata, fingerprint), "Analysis" (BPM/mood/style), "Organization" (proposal, approval, execution). Collapsible sections |
-| Showing all tracklist matches without grouping by set/event | User cannot see the context of a tracklist match | Group tracklist matches by event/venue/date. Show the set context alongside individual track matches |
+| Tag write with no preview | User cannot verify what will change before committing to irreversible file modification | Show side-by-side diff of current vs proposed tags, require explicit "Write Tags" button per file or batch |
+| Discogs link with no context | User sees "Linked to Discogs #12345" -- meaningless without context | Show release title, label, year, format inline. Link to Discogs page for verification |
+| Search with no results explanation | Empty results page with no guidance on what to try | Show "No results for X. Try: broader terms, different spelling. Or filter by BPM/year/genre instead" |
+| CUE generation with no quality indicator | User does not know if timestamps are accurate or approximate | Badge each CUE: "Fingerprint timestamps (high accuracy)" vs "1001tracklists positions (approximate)" |
+| Batch tag write with no progress | User clicks "Write All Tags" and sees nothing for minutes | SSE-based progress (already used in pipeline dashboard). Show count of written/failed/remaining |
+| Search returning mixed entity types without grouping | User sees files, tracklists, and tracks mixed together in one flat list | Group results by type: "Files (42)", "Tracklists (7)", "Tracks (128)". Or use tabs |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Metadata extraction:** Often missing error categorization -- verify files with no tags vs. corrupt tags vs. unsupported format produce distinct, queryable `tag_status` values in the database
-- [ ] **Metadata extraction:** Often missing encoding normalization -- verify Latin-1 ID3v1 tags convert to UTF-8 before PostgreSQL storage
-- [ ] **Metadata extraction:** Often missing integration with LLM proposals -- verify extracted metadata actually flows into the prompt context for filename/path proposals
-- [ ] **Fingerprint ingestion:** Often missing resumability -- verify you can restart the container mid-ingestion without re-processing already-fingerprinted files (check state in PostgreSQL)
-- [ ] **Fingerprint ingestion:** Often missing idempotency -- verify re-ingesting a file does not create duplicate entries in audfprint/Panako databases
-- [ ] **1001tracklists scraping:** Often missing backoff on rate limiting -- verify 429/503 responses trigger exponential backoff, not immediate retry
-- [ ] **1001tracklists scraping:** Often missing data versioning -- verify a new scrape does not overwrite previous good data
-- [ ] **Periodic refresh job:** Often missing distributed locking -- verify two arq workers do not execute the same periodic job simultaneously
-- [ ] **Periodic refresh job:** Often missing minimum-interval enforcement -- verify the monthly minimum checks a database timestamp, not just the arq cron schedule
-- [ ] **Duplicate resolution:** Often missing "keep both" option -- verify the UI supports marking duplicates as intentionally separate (same song, different contexts)
-- [ ] **Panako container:** Often missing backup strategy -- verify fingerprint LMDB data persists across `docker compose down` (named volume, NOT anonymous)
-- [ ] **AI destination paths:** Often missing integration with existing proposal workflow -- verify path proposals use the same approve/reject/execute flow as filename proposals from v1
-- [ ] **State machine expansion:** Often missing pipeline dashboard update -- verify all new states appear in the dashboard with correct ordering and counts
+- [ ] **Tag writing:** Often missing format-specific tests -- verify writes work for mp3 (ID3), m4a (MP4), ogg (Vorbis), opus (OggOpus), and flac (VorbisComment in FLAC container)
+- [ ] **Tag writing:** Often missing re-read verification -- verify that after `save()`, re-opening the file with `mutagen.File()` returns the written values
+- [ ] **Tag writing:** Often missing state management -- verify database reflects actual file state, not intended state
+- [ ] **Discogs linking:** Often missing "no match" state -- verify the system distinguishes "not yet searched" from "searched, no match found" from "linked"
+- [ ] **Discogs linking:** Often missing manual override -- verify the user can manually enter a Discogs URL/ID to link or correct a bad auto-link
+- [ ] **CUE generation:** Often missing first-track-at-zero rule -- verify INDEX 01 of TRACK 01 is always 00:00:00
+- [ ] **CUE generation:** Often missing tracks-without-timestamps -- verify behavior when some tracks have no timestamp (skip? estimate? error?)
+- [ ] **CUE generation:** Often missing non-ASCII test -- verify CUE files with accented artist names render correctly in at least one reference player
+- [ ] **Search:** Often missing NULL-field handling -- verify search works when metadata fields are NULL (200K files will have many NULL artists/titles)
+- [ ] **Search:** Often missing pagination -- verify search returns paginated results, not all matching rows
+- [ ] **Search:** Often missing index migration -- verify the Alembic migration creates GIN indexes, not just the SQLAlchemy model definition
+- [ ] **Search:** Often missing `'simple'` tsconfig -- verify the text search config is `'simple'`, not `'english'`
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| State machine breaks existing pipeline flow | LOW | Alembic data migration to backfill missing intermediate states. No data loss, just state column updates |
-| Mutagen batch failure on corrupt files | LOW | Fix error handling, re-run extraction on failed files. Original audio files untouched (read-only mount) |
-| LMDB corruption in Panako container | MEDIUM | Rebuild fingerprint database from audio files. Hours of CPU time but no data loss -- audio files are the source of truth |
-| False positive fingerprint matches auto-applied | HIGH | Must manually review and undo incorrect renames/moves. This is why auto-apply must NEVER be implemented |
-| 1001tracklists data overwritten with bad scrape | LOW if raw HTML cached, HIGH if not | Re-parse from cached raw HTML. If no cache, must re-scrape all pages risking rate limits |
-| PostgreSQL connection exhaustion from engine leak | LOW | Restart workers, deploy connection pooling fix. No data loss |
-| audfprint bucket overflow | MEDIUM | Must rebuild hash table with lower density setting. Hours of reprocessing all files |
-| Periodic job runs twice simultaneously | LOW | Idempotent design means double-run is wasteful but not destructive. Fix distributed lock for future runs |
+| Corrupted file from bad tag write | LOW (writes only target copies) | Delete corrupted copy, re-copy from original, re-attempt with fixed writer. Originals are never touched |
+| Wrong Discogs link propagated to tags | MEDIUM | Query files linked to the wrong release ID, revert tags from audit log snapshots, re-link to correct release |
+| CUE sheets with wrong frame format (centiseconds instead of 75fps) | LOW | Regenerate all CUE sheets with corrected conversion. CUE files are generated artifacts, not source data |
+| Search index out of sync with data | LOW | `REFRESH MATERIALIZED VIEW CONCURRENTLY search_index;` -- one command, seconds at 200K rows |
+| Database/file tag divergence | MEDIUM | Run a "tag audit" job: re-read tags from all destination files, compare with database, report discrepancies. Trust the file, update the DB |
+| Discogs rate limit exceeded and IP throttled | LOW | Stop all requests, wait 60 seconds for window reset. Implement proper rate limiter to prevent recurrence |
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| State machine expansion | Phase 1: metadata extraction | Pipeline dashboard shows all new states; existing v1 files still queryable and progressable |
-| Mutagen error handling | Phase 1: metadata extraction | Test suite includes corrupt, missing-header, wrong-extension, and zero-byte files |
-| Task session engine leak | Phase 1: metadata extraction (prerequisite refactor) | Load test with 3+ concurrent task types; monitor `pg_stat_activity` count stays bounded |
-| 1001tracklists scraping fragility | Tracklist integration phase | Validation failures produce admin UI alerts, not silent data corruption |
-| Panako LMDB corruption | Fingerprint service setup phase | Container crash-restart test: `docker kill` mid-ingestion, restart, verify database integrity and query accuracy |
-| Fingerprint false positives on live sets | Fingerprint matching phase | Test with known live recordings; measure and log false positive rate; UI shows confidence scores |
-| audfprint bucket overflow | Fingerprint ingestion phase | Monitor bucket stats after ingesting first 10K files before proceeding to full corpus |
-| Periodic job distributed locking | Periodic refresh phase | Run two workers simultaneously; verify job executes exactly once per interval |
-| Duplicate resolution UX | Duplicate resolution UI phase | Side-by-side metadata comparison including bitrate, format, analysis results |
-| AI destination path integration | Path proposal phase | Path proposals visible in existing approval UI; approve/reject/execute cycle works identically to filename proposals |
+| Tag writing corrupts files | Tag writing phase | Format-specific round-trip tests for all 5 formats; SHA256 of audio payload unchanged after tag write |
+| Wrong Discogs match | Discogs linking phase | Tests with ambiguous input data; candidate storage verified; manual override UI functional |
+| Discogs rate limiting | Discogs linking phase | Rate limiter test with mock 429 responses; backoff verified; Discogsography client respects shared rate state |
+| CUE timestamp frame rate | CUE generation phase | Unit test: `seconds_to_cue_timestamp(61.5)` returns `"01:01:37"` (37 = 0.5 * 75), not `"01:01:50"`; frame values always 0-74 |
+| CUE encoding | CUE generation phase | Test with non-ASCII artist names; output file has UTF-8 BOM; decode round-trip succeeds |
+| Search performance | Search phase | `EXPLAIN ANALYZE` on search with 200K+ rows shows index scan, not seq scan; GIN index in migration; response < 500ms |
+| Tag/DB inconsistency | Tag writing phase | Integration test: write tag -> re-read -> compare with DB; audit log entry present with before/after |
 
 ## Sources
 
-- [audfprint GitHub -- bucket overflow, density settings, hash table design](https://github.com/dpwe/audfprint)
-- [Panako GitHub -- LMDB dependencies, container usage, platform support](https://github.com/JorenSix/Panako)
-- [Panako documentation -- file path issues in containers](http://panako.be/releases/Panako-latest/readme.html)
-- [mutagen issue #327 -- ID3NoHeaderError handling](https://github.com/quodlibet/mutagen/issues/327)
-- [mutagen issue #562 -- HeaderNotFoundError on corrupt files](https://github.com/quodlibet/mutagen/issues/562)
-- [mutagen issue #666 -- file corruption after writing ID3 tags](https://github.com/quodlibet/mutagen/issues/666)
-- [LMDB documentation -- file locking, multi-process caveats, stale readers](http://www.lmdb.tech/doc/)
-- [Landmark-based audio fingerprinting for DJ mix monitoring (ISMIR)](https://www.researchgate.net/publication/307547659_LANDMARK_BASED_AUDIO_FINGERPRINTING_FOR_DJ_MIX_MONITORING)
-- [arq documentation -- cron jobs, pessimistic execution, worker lifecycle](https://arq-docs.helpmanual.io/)
-- [JVM memory in Docker containers -- heap sizing, container awareness](https://medium.com/@svosh2/how-to-choose-jvm-and-docker-container-properties-for-our-java-service-a04bb9e2c855)
-- [Rate limiting in web scraping 2026 -- anti-detection evolution](https://www.scrapehero.com/rate-limiting-in-web-scraping/)
-- [Accuracy comparisons of fingerprint-based song recognition](https://pmc.ncbi.nlm.nih.gov/articles/PMC10028751/)
-- v1.0 codebase analysis: `tasks/session.py` (engine-per-call pattern), `models/file.py` (FileState enum with unused states), `services/pipeline.py` (hardcoded PIPELINE_STAGES), `services/dedup.py` (SHA256-only dedup)
+- [Discogs API Documentation](https://www.discogs.com/developers) -- rate limits: 60 req/min authenticated, 25 unauthenticated, IP-based
+- [Discogs Forum: Rate Limiting](https://www.discogs.com/forum/thread/392153) -- rate limit per-IP, generic user agents get stricter limits
+- [Discogs Forum: Search Relevancy](https://www.discogs.com/forum/thread/323339) -- field-specific search vs free-text, relevancy unreliable
+- [10 Tips for Better Discogs Searching](http://www.onemusicapi.com/blog/2013/06/12/better-discogs-searching/) -- scoring strategies, handling ambiguity
+- [mutagen ID3 Documentation](https://mutagen.readthedocs.io/en/latest/user/id3.html) -- v2.4 default, v2.3 compatibility, encoding behavior
+- [mutagen Issue #354: ID3v1 Latin-1 Encoding](https://github.com/quodlibet/mutagen/issues/354) -- ID3v1 uses Latin-1, lossy for Unicode
+- [mutagen Vorbis Comment Documentation](https://mutagen.readthedocs.io/en/latest/user/vcomment.html) -- shared tag format for OGG/FLAC/OPUS
+- [CUE Sheet Format Specification](https://wyday.com/cuesharp/specification.php) -- INDEX MM:SS:FF, 75 frames/second
+- [Hydrogenaudio CUE Sheet Wiki](https://wiki.hydrogenaudio.org/index.php?title=Cue_sheet) -- encoding issues, compatibility
+- [XLD CUE Encoding Issue](https://github.com/DanielPhoton/xld/issues/17) -- UTF-8 vs Latin-1 player compatibility
+- [DeaDBeeF CUE Encoding Issue](https://github.com/DeaDBeeF-Player/deadbeef/issues/1962) -- GBK/UTF-8 encoding detection failures
+- [PostgreSQL Full-Text Search Limitations](https://www.postgresql.org/docs/current/textsearch-limitations.html) -- official limitations
+- [PostgreSQL FTS for 200M Rows](https://medium.com/@yogeshsherawat/using-full-text-search-fts-in-postgresql-for-over-200-million-rows-a-case-study-e0a347df14d0) -- tsvector + GIN optimization patterns
+- [Meilisearch: When Postgres FTS Stops Being Good Enough](https://www.meilisearch.com/blog/postgres-full-text-search-limitations) -- composite index limitations
+- [python3-discogs-client Rate Limiting](https://python3-discogs-client.readthedocs.io/en/v2.3.12/requests_rate_limit.html) -- header-based rate limit tracking
+- Existing codebase analysis: `services/metadata.py` (read-only tag extraction), `models/metadata.py` (FileMetadata schema), `models/tracklist.py` (TracklistTrack with timestamp field), `models/file.py` (FileState enum)
 
 ---
-*Pitfalls research for: Phaze v2.0 -- audio tag extraction, web scraping, audio fingerprinting, periodic jobs*
-*Researched: 2026-03-30*
+*Pitfalls research for: Phaze v3.0 -- Cross-Service Intelligence & File Enrichment*
+*Researched: 2026-04-02*

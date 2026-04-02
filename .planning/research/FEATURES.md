@@ -1,248 +1,224 @@
-# Feature Research: v2.0 Metadata Enrichment & Tracklist Integration
+# Feature Research: v3.0 Cross-Service Intelligence & File Enrichment
 
-**Domain:** Music collection enrichment -- audio tags, tracklist scraping, audio fingerprinting, duplicate resolution
-**Researched:** 2026-03-30
-**Confidence:** HIGH (audio tags, duplicate resolution) / MEDIUM (tracklist scraping, fingerprinting hybrid)
+**Domain:** Music collection cross-service linking, tag writing, CUE sheet generation, unified search
+**Researched:** 2026-04-02
+**Confidence:** HIGH (tag writing, CUE sheets, search) / MEDIUM (Discogs cross-service linking)
 
 ---
 
-## Feature Area 1: Audio Tag Extraction (mutagen)
+## Feature Area 1: Discogs Cross-Service Linking
+
+Phaze tracks individual files. Discogsography is a separate service with a full Discogs knowledge graph (artists, releases, labels, masters) in PostgreSQL and Neo4j. Linking them lets phaze answer "what Discogs release is this track from?" and "find all sets containing tracks from this release."
 
 ### Table Stakes
 
-| Feature | Why Expected | Complexity | v1.0 Dependency | Notes |
-|---------|--------------|------------|------------------|-------|
-| Read tags from all supported formats (MP3/ID3, M4A/MP4, OGG/Vorbis, FLAC, OPUS, WAV, AIFF) | Files already contain metadata. Cannot propose good names without reading what exists. Every competitor (beets, Picard, Mp3tag) reads tags first. | LOW | FileRecord (scan), FileMetadata model (scaffolded but empty) | `mutagen.File()` auto-detects format. Use `easy=True` for normalized interface across ID3/MP4/Vorbis. Falls back to raw tags for format-specific fields. |
-| Extract core fields: artist, title, album, year, genre, track number | The minimum useful set for LLM context and dedup heuristics. These 6 fields map directly to the existing FileMetadata columns. | LOW | FileMetadata model columns already defined | Map to FileMetadata.artist, .title, .album, .year, .genre. Track number goes in raw_tags JSONB. |
-| Store raw tag dump in JSONB | Tags contain far more than 6 fields (comment, encoder, label, ISRC, album artist, disc number, compilation flag, replay gain). Raw dump preserves everything for future use. | LOW | FileMetadata.raw_tags column exists | Serialize all tags to dict. Mutagen values are lists; flatten single-element lists for readability. |
-| Handle missing/corrupt tags gracefully | Real-world collections have files with no tags, partial tags, corrupt tags, wrong encodings. Must not crash the pipeline. | LOW | arq retry with backoff (v1.0 Phase 4) | `mutagen.File()` returns None for unrecognized formats. Catch `MutagenError` base exception. Store what you can, log what fails. |
-| Batch extraction via worker pool | 200K files need parallel tag reading. Must integrate with existing arq task queue. | LOW | arq + process pool (v1.0 Phase 4) | Tag extraction is I/O-bound and fast (~10ms per file). Can run in async batches without process pool. Reserve process pool for CPU-heavy work (analysis, fingerprinting). |
-| Feed extracted tags into LLM proposal context | Entire point of extraction: richer LLM context produces better filename proposals. | LOW | `build_file_context()` in proposal service | Extend `build_file_context()` to include FileMetadata fields alongside AnalysisResult. Artist + title + album from tags are the most valuable signals for filename proposals. |
+| Feature | Why Expected | Complexity | Existing Dependency | Notes |
+|---------|--------------|------------|---------------------|-------|
+| Match TracklistTrack to Discogs release via artist+title fuzzy search | Core value of cross-service linking. TracklistTrack already has artist + title from 1001Tracklists scraping and fingerprint matching. Discogsography has `/api/search` endpoint accepting artist/title queries. | MEDIUM | TracklistTrack.artist, TracklistTrack.title, discogsography `/api/search` endpoint | Use httpx async client to call discogsography API. Fuzzy match on artist+title. Store Discogs release ID + URL on a new linking table. Reuse rapidfuzz scoring pattern from tracklist_matcher.py. |
+| Store cross-service links in PostgreSQL | Links must persist. A TracklistTrack can match zero or many Discogs releases (remixes exist on multiple releases). | LOW | Alembic migrations | New model: `DiscogsLink` with tracklist_track_id, discogs_release_id, discogs_artist_id, confidence, match_method. Foreign key to tracklist_tracks. |
+| Confidence scoring for Discogs matches | Not all matches are correct. Artist name variations ("Deadmau5" vs "deadmau5" vs "Dead Mau5"), remix disambiguation ("Original Mix" vs "Club Mix"). Must score and let admin review. | MEDIUM | rapidfuzz (already in dependencies) | Score artist similarity + title similarity. Weight artist higher (0.6 artist, 0.4 title). Auto-link at 90+, propose at 70-89, skip below 70. Same pattern as tracklist_matcher.py. |
+| Display Discogs links in tracklist review UI | When viewing a tracklist, each track should show its Discogs match (if any) with link to discogsography. | LOW | Tracklist review UI (v2.0 Phase 17), HTMX partials | Add a column or expandable row to the tracklist track table. Show release name, label, year from Discogs. Link to discogsography web UI. |
+| "Find all sets containing track X" query | The killer cross-service query. Given a Discogs release/track, find all tracklists (live sets) that contain it. Answers "which DJs played this track at festivals?" | MEDIUM | DiscogsLink table, TracklistTrack -> TracklistVersion -> Tracklist -> FileRecord join chain | SQL join from discogs_links -> tracklist_tracks -> tracklist_versions -> tracklists -> files. Expose as API endpoint + UI page. Results show set name, DJ, event, date. |
+| Batch matching for all unlinked tracks | Cannot expect users to link tracks one at a time. Need a background job that iterates unlinked TracklistTracks and queries discogsography in batch. | MEDIUM | arq task queue, rate limiting | arq job that pages through unlinked tracks. Rate-limit discogsography API calls (10 req/sec is reasonable for local network). Store results, skip already-linked. |
 
 ### Differentiators
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Duration extraction from tags | Mutagen exposes `info.length` for all formats. Duration helps distinguish full sets (60-120min) from individual tracks (3-7min). Valuable signal for concert detection and naming format selection. | LOW | No additional library needed. `mutagen.File().info.length` gives seconds as float. |
-| Bitrate and codec info extraction | `info.bitrate`, `info.sample_rate`, `info.channels`. Useful for quality-based duplicate resolution ("keep the 320kbps, discard the 128kbps"). | LOW | Available via `mutagen.File().info`. Store in raw_tags JSONB. |
-| Encoding-safe text handling | ID3v2 allows Latin-1, UTF-16, and UTF-8 text encodings. Some files have mojibake from incorrect encoding assumptions. Detect and normalize. | MEDIUM | Mutagen handles encoding internally but surfaces the raw bytes. For truly garbled tags, store as-is in raw_tags and let the LLM interpret. |
+| Reverse lookup: "What tracks from my collection appear on this Discogs release?" | Given a Discogs release URL/ID, find all files in phaze that match tracks on that release. Useful for discovering what you own from a specific album. | MEDIUM | Fetch release tracklist from discogsography API, match against FileMetadata.artist + FileMetadata.title. |
+| Label statistics | Aggregate which labels appear most across your live set tracklists. "Your collection is 30% Drumcode, 20% mau5trap." Interesting for the user, trivial to compute from linked data. | LOW | GROUP BY on DiscogsLink joined to discogsography label data. |
+| Link health monitoring | Discogsography data refreshes periodically. Links may become stale if releases are merged or deleted on Discogs. Periodic validation job. | LOW | arq cron job, HTTP HEAD or GET to discogsography to verify release still exists. |
 
 ### Anti-Features
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| Tag writing / updating embedded tags | "Fix the bad tags while extracting" | Modifying originals is destructive. If the write fails mid-file you corrupt the source. Not needed for organization -- Postgres IS the metadata store. | Store corrected metadata in Postgres only. Optionally write tags to the *destination* copy after approved move (post-v2 feature). |
-| Album art extraction/display | "Show cover art in the UI" | Binary blob storage, image processing, serving static assets. Scope creep for an approval workflow UI. | Store album art presence as boolean in raw_tags. Display placeholder. Album art rendering is a post-v2 polish item. |
-| Re-reading tags after file move | "Tags might change" | Files are copied byte-for-byte via copy-verify-delete. Tags do not change. Re-reading 200K files wastes hours. | Tags are extracted once, stored in Postgres. If a user manually edits tags, they can trigger a re-scan. |
+| Direct Discogs API calls from phaze | "Why go through discogsography? Just call Discogs directly." | Discogs API rate limit is 60 req/min (authenticated). At thousands of tracks, this takes hours. Discogsography already has the full database locally with no rate limits. Avoids external network dependency (private network constraint). | Always route through discogsography HTTP API on local network. Zero rate limit concerns. |
+| Automatic tag enrichment from Discogs | "Pull genre/label/year from Discogs and update FileMetadata." | FileMetadata stores what was extracted from the actual file. Discogs data belongs in the cross-service link, not overwriting source-of-truth metadata. Mixing sources creates confusion about what came from where. | Store Discogs metadata on the DiscogsLink record. Display both sources in UI. Let tag writing (Feature Area 2) explicitly merge from chosen sources. |
+| Graph visualization of track relationships | "Show a network graph of which tracks connect which sets." | Cool but zero practical value for file organization. Significant frontend complexity (D3/Cytoscape). Discogsography already has graph exploration. | Link to discogsography's explore UI for graph needs. Phaze focuses on tabular data and approval workflows. |
 
 ---
 
-## Feature Area 2: AI Destination Path Proposals
+## Feature Area 2: Tag Writing
+
+v2.0 explicitly deferred tag writing as an anti-feature during extraction ("modifying originals is destructive"). v3.0 implements it correctly: write to destination copies only, after explicit user action, with review before writing.
 
 ### Table Stakes
 
-| Feature | Why Expected | Complexity | v1.0 Dependency | Notes |
-|---------|--------------|------------|------------------|-------|
-| Generate proposed_path alongside proposed_filename | v1.0 already stores `proposed_path` on RenameProposal but it is always NULL. Users expect files to land in organized folders, not a flat directory. | MEDIUM | RenameProposal.proposed_path column exists, LLM prompt template, naming format constraints | Extend the existing LLM prompt to also produce a destination path. Path format: `{Genre}/{Artist}/` for albums, `{Event}/{Year}/` for live sets. |
-| Path follows naming convention from constraints | Live sets: hierarchy by event/year. Album tracks: hierarchy by genre/artist. Must be consistent and predictable. | LOW | Naming format defined in PROJECT.md constraints | Encode path templates in the prompt. Let LLM fill in variables. Validate output matches expected structure. |
-| Display proposed_path in approval UI | Users must see WHERE a file will land before approving. Path is as important as filename for organization. | LOW | Proposals list UI, row_detail template | Add path column to proposal table. Show full destination in detail panel. |
-| Path collision detection | Two files proposed to same destination path = data loss. Must detect and flag. | MEDIUM | Proposal storage, PostgreSQL unique constraints | Query proposed_path for duplicates before storing. Flag collisions in UI for manual resolution. Can be a database unique partial index on (proposed_path, status='pending' OR status='approved'). |
+| Feature | Why Expected | Complexity | Existing Dependency | Notes |
+|---------|--------------|------------|---------------------|-------|
+| Write corrected tags to destination copies | After a file has been executed (copied to destination via copy-verify-delete), the destination copy may have wrong/missing tags. User should be able to push corrected metadata (from Postgres) into the actual file tags. | MEDIUM | mutagen (already in dependencies for read), FileRecord.state == EXECUTED, FileMetadata, destination file path from ExecutionLog | mutagen supports write for all formats: `EasyID3` for MP3, `EasyMP4` for M4A, `OggVorbis` for OGG, `FLAC` for FLAC, `OggOpus` for OPUS. Use the Easy interfaces for normalized field names. Write to current_path (post-execution destination). |
+| Preview tags before writing | Human-in-the-loop principle. Show "current tags in file" vs "proposed new tags" side-by-side. User approves, then tags are written. | MEDIUM | HTMX partial rendering, FileMetadata model | New UI page or modal: left column = current file tags (re-read from file), right column = proposed tags (from Postgres FileMetadata + any Discogs enrichment). Highlight differences. Approve/reject per file. |
+| Selective field writing | User may want to update artist + title but leave album alone. Per-field checkboxes in the review UI. | LOW | UI checkbox state, passed to write endpoint | Accept a list of fields to write. Only modify selected tag frames. Mutagen preserves unmodified tags on save. |
+| Batch tag writing with review | Cannot write tags one file at a time for 200K files. Need batch selection with a summary review step. | MEDIUM | Bulk action pattern from proposals UI | Select files (checkboxes or filter), show aggregate preview ("updating artist on 47 files"), confirm, enqueue arq jobs. |
+| Audit log for tag writes | Tags are being modified. Must record what was changed, when, and the before/after values. | LOW | Existing ExecutionLog / audit pattern | New audit entry type: TAG_WRITE. Store file_id, field_name, old_value, new_value, timestamp. |
+| Only write to EXECUTED files | Safety constraint. Never write tags to source files, only to destination copies that have been verified. Prevents data loss on the irreplaceable original collection. | LOW | FileRecord.state check | Endpoint rejects tag write requests for files not in EXECUTED state. Hard guard, not just UI filtering. |
 
 ### Differentiators
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Path preview tree | Show a visual directory tree of where approved files will land. Gives user a "before/after" view of their collection structure. | MEDIUM | HTMX partial rendering a tree view from approved proposals grouped by path prefix. |
-| Dry-run path validation | Verify destination directories exist (or will be created) and sufficient disk space exists before approving. | LOW | `pathlib.Path.exists()` check on parent dirs. Disk space via `shutil.disk_usage()`. |
+| Tag source selection | When writing tags, let user choose source: "from extracted metadata", "from LLM proposal", "from Discogs link". Each source may have different data. | LOW | UI radio buttons per source. Merge logic picks fields from selected source. |
+| Dry-run validation | Before writing, verify the destination file exists, is writable, and mutagen can open it. Report any issues before committing. | LOW | `pathlib.Path.exists()`, `os.access(W_OK)`, `mutagen.File()` open check. Fast pre-flight. |
+| Undo tag write | Re-read original tags from raw_tags JSONB (stored during v2.0 extraction) and write them back. Restores file to pre-write state. | MEDIUM | raw_tags stored in FileMetadata. Parse back into mutagen format-specific frames. |
 
 ### Anti-Features
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| User-editable path templates | "Let me define my own folder structure" | Single user tool. Templates add config UI complexity for one person. | Hard-code path logic in the LLM prompt. Edit the prompt text directly when formats need to change. |
-| Auto-create directory hierarchy | "Just make the folders" | Should only create dirs during approved execution, not during proposal. Premature dir creation leaves empty folders on rejection. | Create directories only in the execution phase, inside the copy-verify-delete flow. |
+| Auto-write tags after execution | "Just update tags automatically when files are moved." | Violates human-in-the-loop. Tag data might be wrong (LLM hallucination, wrong Discogs match). Must review before writing. | Tag writing is always an explicit user action, separate from file execution. |
+| Album art writing | "Embed cover art from Discogs into files." | Binary blob handling, image resizing, format-specific embedding (APIC for ID3, covr for MP4, METADATA_BLOCK_PICTURE for Vorbis). Significant complexity for marginal value in a CLI-managed collection. | Store album art URL from Discogs in the link table. Display in UI. Do not embed in files. |
+| ReplayGain calculation and writing | "Normalize volume tags across collection." | Requires reading entire audio stream (not just tags). CPU-intensive. Different standards (ReplayGain 1.0 vs 2.0, R128). Not part of the organization mission. | Out of scope. Use a dedicated tool (r128gain, loudgain) if needed. |
 
 ---
 
-## Feature Area 3: Duplicate Resolution Workflow
+## Feature Area 3: CUE Sheet Generation
+
+CUE sheets are simple text files that describe track boundaries within a single audio file. For live DJ sets, a CUE sheet lets music players show individual track markers within a long recording. The format is well-specified and widely supported by foobar2000, VLC, Kodi, and others.
 
 ### Table Stakes
 
-| Feature | Why Expected | Complexity | v1.0 Dependency | Notes |
-|---------|--------------|------------|------------------|-------|
-| Display duplicate groups in admin UI | v1.0 detects SHA256 duplicates and stores them. Users need to see and act on them. The `find_duplicate_groups()` service exists but has no UI. | MEDIUM | `services/dedup.py` (find_duplicate_groups, count_duplicate_groups) | New HTMX page: `/duplicates/`. List duplicate groups with file details (path, size, type, tags). Paginated like proposals. |
-| "Keep this one, delete the rest" per group | Core duplicate resolution action. User picks the canonical file and marks others for deletion. | MEDIUM | FileRecord state machine, execution service | Add a "keeper" selection per duplicate group. Non-keeper files get marked for deletion (new state or flag). Execute via existing copy-verify-delete (just the delete part). |
-| Show file metadata side-by-side | Users need to compare duplicates to decide which to keep. Path, size, bitrate, tags, analysis results all matter. | MEDIUM | FileMetadata (v2 tag extraction), AnalysisResult (v1 analysis) | Side-by-side or table comparison view. Highlight differences (e.g., one has tags, one does not; different bitrates). |
-| Bulk resolution for identical groups | Many duplicate groups will have obvious winners (same file in two directories). Bulk "keep first found, delete rest" action. | LOW | Bulk action pattern from v1.0 proposals UI | Reuse the checkbox + bulk action pattern from proposals. "Auto-resolve: keep file with shortest path" or "keep highest quality". |
-| Audit trail for deletions | Deleting duplicates is destructive. Must log what was deleted and why, with ability to review. | LOW | Append-only audit log (v1.0 Phase 8) | Reuse ExecutionLog model. Log deletion reason (duplicate of file X). |
+| Feature | Why Expected | Complexity | Existing Dependency | Notes |
+|---------|--------------|------------|---------------------|-------|
+| Generate CUE file from tracklist data | Given a Tracklist with TracklistTracks that have timestamps, produce a valid `.cue` file. This is the core feature. | LOW | Tracklist + TracklistTrack models with timestamp field, approved tracklists | CUE format is trivial: FILE, PERFORMER, TITLE header, then TRACK/INDEX entries per track. Timestamps need conversion from "MM:SS" or "HH:MM:SS" to CUE "MM:SS:FF" (frames = 1/75 sec). Python string formatting, no library needed. |
+| Prefer fingerprint timestamps over 1001Tracklists | Fingerprint-sourced tracklists have precise audio-aligned timestamps. 1001Tracklists timestamps are approximate (often rounded to nearest minute). Use the best available source. | LOW | TracklistTrack.confidence field, Tracklist.source field ("fingerprint" vs "1001tracklists") | If tracklist has source="fingerprint", use those timestamps directly. If source="1001tracklists", use as fallback. If both exist for same file (via tracklist versions), prefer fingerprint version. |
+| Place CUE file alongside the audio file | CUE sheet must reference the audio file by relative filename. Standard practice is same directory, same base name (e.g., `Artist - Live @ Event 2024.01.15.mp3` and `Artist - Live @ Event 2024.01.15.cue`). | LOW | FileRecord.current_path (post-execution destination) | Write to `Path(current_path).with_suffix('.cue')`. Only generate for EXECUTED files (destination exists). |
+| Handle missing timestamps gracefully | Some tracklists have tracks without timestamps (common on 1001Tracklists). Generate CUE entries for tracks with timestamps, add comments for tracks without. | LOW | TracklistTrack.timestamp nullable field | If timestamp is NULL, include as REM comment: `REM TRACK {position} - {artist} - {title} (no timestamp)`. Player will skip these but the information is preserved. |
+| UI action to generate CUE | Explicit button on tracklist review page: "Generate CUE Sheet". Shows preview of the CUE content, then writes on confirm. | LOW | Tracklist review UI, HTMX | Button triggers HTMX request. Response shows CUE content in a code block (monospace). Confirm button writes the file. |
+| Bulk CUE generation for all approved tracklists | "Generate CUE sheets for all 150 matched live sets." Must be a batch action, not one at a time. | LOW | arq task queue for batch processing | arq job iterates approved tracklists where file_id is not NULL and file state is EXECUTED. Generate CUE for each. Report count of generated/skipped/failed. |
 
 ### Differentiators
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Quality-based auto-suggestion | Pre-select the "best" duplicate based on bitrate, tag completeness, path length. User still approves but gets a smart default. | LOW | Requires bitrate from tag extraction (Feature Area 1). Score: higher bitrate + more tags + shorter path = better. |
-| Acoustic duplicate detection (near-duplicates) | Find files that are the *same recording* but different encodings (mp3 vs m4a, 128k vs 320k). SHA256 misses these entirely. | HIGH | Requires audio fingerprinting (Feature Area 4). Group by fingerprint similarity threshold instead of exact hash match. |
-| Duplicate group dashboard stats | "You have 1,247 duplicate groups containing 3,891 files wasting 42GB." Motivates action. | LOW | Aggregate query on duplicate groups + file sizes. Display on dashboard. |
+| Include Discogs metadata in CUE REM comments | CUE format supports REM (remark) lines. Include Discogs release ID, label, year for each track as comments. Players ignore these but they enrich the metadata for tools that parse CUE files. | LOW | DiscogsLink data joined to TracklistTrack. Add `REM DISCOGS_RELEASE {id}` per track. |
+| CUE sheet validation | After generation, verify the CUE file is parseable and that timestamps are monotonically increasing. Catch errors before writing. | LOW | Parse own output. Check each INDEX time > previous INDEX time. Flag violations. |
+| Re-generate on tracklist update | If a tracklist is edited (inline editing from v2.0 Phase 17), the CUE sheet is stale. Detect and offer re-generation. | LOW | Compare tracklist updated_at vs CUE file mtime. Show "outdated" badge in UI. |
 
 ### Anti-Features
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| Auto-delete duplicates without approval | "Just delete the obvious ones" | Violates human-in-the-loop constraint. "Obvious" is subjective. Different paths might mean intentional copies (backup, DJ crate, playlist folder). | Auto-suggest but always require approval. Provide "approve all suggestions" bulk action for speed. |
-| Merge metadata from duplicates before deleting | "Combine the best tags from both copies" | Tag merging logic is complex (conflicting artists, years, genres). Which source wins? Adds significant complexity for edge cases. | Keep the file with the best metadata. Lost tags from deleted copy are stored in Postgres raw_tags anyway. |
+| Split audio files using CUE sheet | "Use the CUE to extract individual tracks from the mix." | Audio splitting requires FFmpeg, produces N new files per set, doubles storage, creates files that may have quality issues at split points. Not part of the organization mission. | Generate CUE sheets for players that support cue-based playback (foobar2000, Kodi). The set stays as one file with virtual track markers. |
+| CUE sheet parsing/import | "Import existing CUE files from the collection." | Adds a whole input pipeline for a format that is rarely present in messy collections. The value is in GENERATING CUE sheets from tracklist data, not consuming them. | If existing CUE files are found during scan, classify them as companion files (already handled in v1.0 Phase 3). Do not parse their content. |
+| Chapter markers in MP4/M4A | "Write chapter metadata instead of CUE for video files." | MP4 chapter writing requires ffmpeg or mp4v2. Different format per container. CUE sheets work universally and are simpler. | Generate CUE sheets for all formats. If MP4 chapter support is needed later, add as a separate feature. |
 
 ---
 
-## Feature Area 4: Audio Fingerprinting (audfprint + Panako hybrid)
+## Feature Area 4: Search Page
+
+A unified search across all phaze entities: files, tracklists, tracks, metadata, analysis results. Currently the admin UI has separate pages for proposals, duplicates, tracklists, and pipeline status, but no way to search across everything.
 
 ### Table Stakes
 
-| Feature | Why Expected | Complexity | v1.0 Dependency | Notes |
-|---------|--------------|------------|------------------|-------|
-| Fingerprint all music files during ingestion | Every file needs a fingerprint for matching. Run alongside or after analysis. | HIGH | arq task queue, process pool, FileRecord state machine (FINGERPRINTED state already exists) | audfprint is Python-native (librosa dependency, already installed). Generates spectral landmarks. ~2-5 sec per file. At 200K files = ~110-280 hours of CPU time. Must parallelize across workers. |
-| Persistent fingerprint database | Fingerprints must survive container restarts. audfprint uses an in-memory hash table that can be serialized to disk. | MEDIUM | Docker volume mounts | audfprint stores its database as a numpy-based file. Mount as Docker volume. Panako uses LMDB. Both need persistent storage outside the container. |
-| Match live set audio against fingerprint database | Core use case: take a 90-minute festival set recording, scan it against the fingerprint DB to identify individual tracks within it. Produces timestamped list of matched tracks. | HIGH | Fingerprinted music library, audfprint match mode | audfprint `match` mode returns hit times and track IDs. Panako returns time-offset matches robust to tempo changes. Combine results with weighted scoring. |
-| Fingerprint service as long-running container | PROJECT.md specifies: fingerprint service runs as a container with API/message interface, not subprocess calls. | HIGH | Docker Compose infrastructure (v1.0 Phase 1) | Separate container with FastAPI or gRPC interface. Holds fingerprint DB in memory for fast matching. Receives "fingerprint this file" and "match this file" requests via API or Redis messages. |
-| Store match results in PostgreSQL | Match results (which tracks appear in which live sets, at what timestamps) are the core data product of fingerprinting. | MEDIUM | PostgreSQL, Alembic migrations | New model: TrackMatch or SetTracklist. Fields: set_file_id, matched_file_id, start_time, end_time, confidence, algorithm (audfprint/panako). |
+| Feature | Why Expected | Complexity | Existing Dependency | Notes |
+|---------|--------------|------------|---------------------|-------|
+| Full-text search across artist, title, event, filename | The minimum search: type "Deadmau5" and see all files, tracklists, and tracks matching that artist. | MEDIUM | PostgreSQL `to_tsvector` / `to_tsquery`, existing indexed columns | Create GIN indexes on files.original_filename, metadata.artist, metadata.title, tracklists.artist, tracklists.event, tracklist_tracks.artist, tracklist_tracks.title. Use `websearch_to_tsquery` for natural input parsing. |
+| Filter by entity type | "Show me only files" or "show me only tracklist tracks." Tabs or dropdown on the search page. | LOW | Query routing based on selected entity type | Run separate queries per entity type, combine results. Or use UNION ALL with a type discriminator column. |
+| Filter by date range | Live sets have dates. "Show me everything from Coachella 2024" needs a date filter. | LOW | tracklists.date, metadata.year columns | Date picker in UI (HTMX + native HTML date input). Filter WHERE date BETWEEN start AND end. |
+| Filter by BPM range | "Show me all tracks between 124-128 BPM." Useful for finding DJ-compatible tracks. | LOW | analysis.bpm column (already populated from v1.0 Phase 5) | Two number inputs: min BPM, max BPM. WHERE bpm BETWEEN min AND max. |
+| Filter by genre/style | "Show me all techno tracks." Genre from tags, style from essentia analysis. | LOW | metadata.genre, analysis.style columns | Dropdown or text input. ILIKE match for flexibility (genre tags are inconsistent). |
+| Paginated results | Cannot return 200K results. Standard pagination with page numbers and result count. | LOW | Existing Pagination class from proposal_queries.py | Reuse the Pagination dataclass. LIMIT/OFFSET with total count. |
+| New admin UI tab | Search page must be a first-class navigation item alongside proposals, duplicates, tracklists, pipeline. | LOW | base.html template, HTMX navigation pattern | Add "Search" tab to the nav bar in base.html. New router + template. |
 
 ### Differentiators
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Hybrid audfprint + Panako scoring | audfprint is fast but brittle to tempo changes (DJs speed up/slow down tracks). Panako handles tempo/pitch shifts up to 10%. Running both and combining scores catches more matches. | HIGH | audfprint = Python, Panako = Java (separate process/container). Need a scoring/fusion layer that weighs results from both. Panako needs JDK 11+ in its container. |
-| Proposed tracklist generation for live sets | After matching, generate a proposed tracklist (ordered list of tracks with timestamps) for admin review. This is the "killer feature" -- automated setlist creation. | MEDIUM | Match results in PostgreSQL, UI for review | Present matched tracks in time order with confidence scores. Admin reviews and can correct/add/remove tracks. Store approved tracklist. |
-| Incremental fingerprinting | Only fingerprint new files, not the entire library on each scan. | LOW | Track fingerprint status on FileRecord (FINGERPRINTED state exists) | State machine already has FINGERPRINTED state. Skip files already fingerprinted. |
+| Combined results with entity type grouping | Search "Deadmau5" and see grouped results: "3 files, 2 tracklists, 47 tracklist tracks" with expandable sections. Better UX than showing a flat list. | MEDIUM | Multiple queries, grouped rendering in Jinja2 template. |
+| Sort by relevance, date, or BPM | After searching, reorder results by different criteria. PostgreSQL `ts_rank` for relevance, column sorting for others. | LOW | ORDER BY clause variation. HTMX sort controls. |
+| Saved searches / quick filters | Preset filters like "Untagged files", "Live sets without tracklists", "High BPM tracks (>140)". Quick access to common queries. | LOW | Hard-coded filter presets in the template. No persistence needed for a single-user tool. |
+| Cross-entity drill-down | Click a search result to navigate to its detail page (proposal, tracklist review, etc.). Contextual navigation. | LOW | Link to existing detail pages. Each result includes a URL to its entity-specific view. |
 
 ### Anti-Features
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| AcoustID/Chromaprint web service lookup | "Identify unknown tracks via the internet" | AcoustID rate limit is 3 req/sec. At 200K files = 18+ hours just for API calls. Also requires internet access (private network constraint). The value is in LOCAL matching (what tracks appear in your live sets), not internet lookup. | Build a local fingerprint database from your own collection. Match locally. No external API dependency. |
-| Real-time fingerprinting during playback | "Identify what's playing right now" | This is Shazam, not a collection organizer. Requires audio capture, streaming analysis, completely different architecture. | Batch fingerprint files after ingestion. Match live sets against library in background jobs. |
-| Fingerprint-based dedup as primary dedup | "Replace SHA256 dedup with fingerprint dedup" | Fingerprint matching has false positives (remixes, samples). SHA256 is exact and fast. Fingerprint dedup is a complement, not a replacement. | SHA256 for exact dedup (fast, certain). Fingerprint similarity for near-duplicate detection (slower, probabilistic). Present both in duplicate resolution UI. |
+| Elasticsearch/Meilisearch integration | "PostgreSQL full-text search is slow." | At 200K records, PostgreSQL FTS with GIN indexes is sub-second. Adding a search engine means another Docker service, data sync pipeline, index management. Massive complexity for zero user-perceptible benefit at this scale. | PostgreSQL `to_tsvector` + GIN indexes. Benchmark first. Add dedicated search engine only if proven insufficient (unlikely at 200K). |
+| Natural language query | "Find me energetic tracks from festivals in 2024." | Requires LLM-to-SQL translation, prompt engineering for schema understanding, error handling for malformed queries. Interesting but v4+ scope per PROJECT.md ("Natural language querying across services -- deferred to v4+"). | Structured filters (dropdowns, ranges, text inputs). Covers 95% of search needs without AI complexity. |
+| Fuzzy search across all fields | "Match even if I misspell the artist name." | PostgreSQL trigram similarity (`pg_trgm`) across all indexed fields on every query is expensive. GIN trigram indexes on every text column bloat the database. | Use `pg_trgm` only on artist and title columns where misspellings are common. Use exact match or `ILIKE` for event, filename. Install `pg_trgm` extension only if needed after basic FTS. |
 
 ---
 
-## Feature Area 5: 1001Tracklists Integration
-
-### Table Stakes
-
-| Feature | Why Expected | Complexity | v1.0 Dependency | Notes |
-|---------|--------------|------------|------------------|-------|
-| Search 1001tracklists by artist + event | Given a live set file, search 1001tracklists for the corresponding tracklist. PROJECT.md confirms: "documented HTTP endpoints for search (POST) and detail pages (POST) -- no headless browser needed." | MEDIUM | FileMetadata (artist from tags), LLM-extracted event/date from proposal context | POST-based search endpoint. Parse HTML response for tracklist URLs. Rate limit requests (be a good citizen). |
-| Scrape tracklist detail pages | Extract ordered track list (artist, track name, timestamps if available) from a tracklist detail page. | MEDIUM | None directly, but enriches fingerprint match results | Parse HTML for track entries. Handle partial tracklists (some tracks marked "ID" = unidentified). Store structured data. |
-| Store tracklists in PostgreSQL | Tracklist data must persist and be queryable. Link tracklists to FileRecord (which live set file they correspond to). | MEDIUM | Alembic migrations, FileRecord | New models: Tracklist (id, file_id, source_url, artist, event, date), TracklistEntry (id, tracklist_id, position, artist, title, timestamp). |
-| Fuzzy matching tracklist to file | Search results may not exactly match filename. Need fuzzy matching on artist name + event name + date to link tracklist to file. | MEDIUM | FileMetadata.artist, proposal context_used (event_name, date) | Use string similarity (rapidfuzz or difflib). Match threshold ~80%. Present matches for admin confirmation. |
-
-### Differentiators
-
-| Feature | Value Proposition | Complexity | Notes |
-|---------|-------------------|------------|-------|
-| Periodic refresh for unresolved tracklists | Some live sets have no tracklist yet on 1001tracklists. Check back periodically (monthly minimum, randomized). PROJECT.md explicitly includes this feature. | MEDIUM | arq cron jobs (arq supports scheduled tasks) | Maintain a "last_checked" timestamp on tracklists with unresolved tracks. Randomize re-check to avoid hammering the site on a schedule. |
-| Cross-reference fingerprint matches with scraped tracklist | Validate fingerprint-identified tracks against the scraped 1001tracklists data. Agreement = high confidence. Disagreement = flag for review. | MEDIUM | Both fingerprint match results and scraped tracklist data | Compare track lists. Mark agreements, flag disagreements. Present unified view to admin. |
-| Link to original 1001tracklists page | Store source URL. Allow admin to click through to the original page for manual verification. | LOW | Store URL in Tracklist model. Render as link in UI. |
-
-### Anti-Features
-
-| Feature | Why Requested | Why Problematic | Alternative |
-|---------|---------------|-----------------|-------------|
-| Headless browser scraping | "Use Selenium/Playwright for JavaScript-rendered content" | PROJECT.md confirms POST endpoints work without headless browser. Headless browsers are heavy, flaky, and slow. Adds Chromium to Docker image (500MB+). | Use httpx/aiohttp with POST requests directly. Parse HTML with BeautifulSoup or lxml. |
-| Bulk scraping entire 1001tracklists database | "Download all tracklists for future matching" | Abusive to the service. Gets you IP-banned. Legally questionable. Unnecessary -- only need tracklists for files you actually have. | Search on-demand for files that need tracklists. Cache results. Respect rate limits. |
-| Writing tracklist data back to audio files as chapters | "Embed chapter markers in the audio file" | Modifying source files (anti-feature from Area 1). Chapter format varies by container (MP4 chapters, CUE sheets). Complex. | Store tracklists in Postgres. Generate CUE sheets as companion files if needed (post-v2). |
-
----
-
-## Feature Dependencies (v2.0 scope)
+## Feature Dependencies (v3.0 scope)
 
 ```
-Audio Tag Extraction (mutagen)
-    |
-    +---> Enriched LLM Context
-    |       |
-    |       +---> AI Destination Path Proposals (extend existing LLM prompt)
-    |
-    +---> Duration/Bitrate for Duplicate Resolution quality scoring
-    |
-    +---> Artist/Event metadata for 1001Tracklists search queries
+Search Page (independent)
+    |-- requires --> GIN indexes on existing columns (migration)
+    |-- NO dependency on other v3.0 features
+    |-- enhanced by --> Discogs links (adds Discogs release to search results)
 
-Duplicate Resolution UI
-    |-- requires --> SHA256 duplicate groups (v1.0 Phase 3 -- EXISTS)
-    |-- requires --> Tag extraction (for side-by-side comparison)
-    |-- enhanced by --> Acoustic fingerprint similarity (Feature Area 4)
+CUE Sheet Generation
+    |-- requires --> Approved tracklists with timestamps (v2.0 Phase 17 -- EXISTS)
+    |-- requires --> EXECUTED files at destination (v1.0 Phase 8 -- EXISTS)
+    |-- enhanced by --> Discogs links (REM metadata in CUE)
+    |-- enhanced by --> Fingerprint timestamps (more precise than 1001TL)
 
-Audio Fingerprinting (audfprint + Panako)
-    |-- requires --> Music files ingested (v1.0 Phase 2 -- EXISTS)
-    |-- requires --> Fingerprint service container (new Docker service)
-    |
-    +---> Match live sets against library
-    |       |
-    |       +---> Proposed tracklists for admin review
-    |
-    +---> Acoustic near-duplicate detection
-            |
-            +---> Enhanced duplicate resolution groups
+Tag Writing
+    |-- requires --> EXECUTED files at destination (v1.0 Phase 8 -- EXISTS)
+    |-- requires --> FileMetadata populated (v2.0 Phase 12 -- EXISTS)
+    |-- enhanced by --> Discogs links (additional metadata source)
+    |-- enhanced by --> Search (find files that need tag updates)
 
-1001Tracklists Integration
-    |-- requires --> Artist/event metadata (from tag extraction + LLM proposals)
-    |-- enhanced by --> Fingerprint match results (cross-reference validation)
-    |
-    +---> Stored tracklists linked to files
-    |
-    +---> Periodic refresh (arq cron)
+Discogs Cross-Service Linking
+    |-- requires --> TracklistTrack with artist+title (v2.0 Phase 15/17 -- EXISTS)
+    |-- requires --> Discogsography service running on local network
+    |-- enhanced by --> Search ("find all sets containing track X")
+    |-- enhances --> Tag writing (Discogs metadata as tag source)
+    |-- enhances --> CUE sheets (Discogs metadata in REM comments)
 ```
 
 ### Dependency Notes
 
-- **Tag extraction is foundational for v2.0**: Path proposals, duplicate resolution, and tracklist search all depend on having extracted tags. Build this first.
-- **Path proposals depend only on tag extraction + existing LLM infra**: Minimal new work, extend existing prompt and store proposed_path.
-- **Duplicate resolution UI is mostly a frontend task**: Backend (dedup service) exists. UI is the gap. Tag extraction enhances it with quality comparison.
-- **Fingerprinting is the largest and most independent workstream**: Can be built in parallel with tracklist scraping. Container setup is the main complexity.
-- **1001Tracklists search needs artist/event metadata**: Either from tag extraction or from v1.0 LLM proposal context_used (which already stores artist, event_name, date).
-- **Fingerprint matches + 1001Tracklists are complementary**: Both produce tracklists. Cross-referencing them is the high-confidence path. But each is valuable independently.
+- **Search is fully independent**: Zero dependency on other v3.0 features. Operates on existing data. Can be built first or in parallel.
+- **CUE sheets are nearly independent**: Only depends on existing v2.0 data. The Discogs enhancement is optional polish.
+- **Tag writing is nearly independent**: Depends on existing v2.0 data. Discogs metadata is an optional source, not required.
+- **Discogs linking enriches everything**: Links feed into search results, CUE metadata, and tag writing sources. Build early so other features can incorporate the data.
+- **No circular dependencies**: All features can proceed in any order. The optimal order is based on value delivery and enhancement potential, not hard blocking.
 
 ---
 
-## v2.0 Phase Recommendations
+## v3.0 Phase Recommendations
 
-### Phase 1: Tag Extraction + Path Proposals (build together)
-- [ ] mutagen tag extraction for all formats, populate FileMetadata
-- [ ] Extend LLM prompt to generate proposed_path
-- [ ] Display proposed_path in approval UI
-- [ ] Path collision detection
+### Phase 1: Discogs Cross-Service Linking
+- [ ] DiscogsLink model + migration
+- [ ] httpx async client to discogsography `/api/search`
+- [ ] Fuzzy match scoring (rapidfuzz, reuse pattern from tracklist_matcher)
+- [ ] Batch matching arq job for unlinked TracklistTracks
+- [ ] Display Discogs links in tracklist review UI
+- [ ] "Find all sets containing track X" query endpoint + UI
 
-**Why first:** Lowest complexity, highest immediate value. Tags feed everything else. Path proposals complete the v1.0 rename workflow (proposed_path was always NULL).
+**Why first:** Produces the data that enriches all other v3.0 features. CUE sheets and tag writing both benefit from Discogs metadata. Search results are richer with cross-service links.
 
-### Phase 2: Duplicate Resolution UI
-- [ ] Duplicate groups page with side-by-side comparison
-- [ ] "Keep this, delete rest" workflow
-- [ ] Quality-based auto-suggestion (bitrate, tag completeness)
-- [ ] Bulk resolution actions
+### Phase 2: Tag Writing
+- [ ] Tag write service using mutagen (EasyID3/EasyMP4/OggVorbis/FLAC/OggOpus)
+- [ ] Preview UI: current tags vs proposed tags, per-field checkboxes
+- [ ] Batch tag writing with review step
+- [ ] Audit log for tag writes
+- [ ] EXECUTED-state guard
 
-**Why second:** Backend exists. UI is the gap. Benefits from tag extraction (Phase 1) for quality comparison.
+**Why second:** Depends on existing data. Discogs links (Phase 1) provide an additional metadata source. Core user value: files finally have correct tags.
 
-### Phase 3: Audio Fingerprinting Infrastructure
-- [ ] Fingerprint service container (audfprint, potentially Panako)
-- [ ] API interface for fingerprint/match requests
-- [ ] Fingerprint all music files (batch job)
-- [ ] Persistent fingerprint database
+### Phase 3: CUE Sheet Generation
+- [ ] CUE file generator from TracklistTrack data
+- [ ] Timestamp source preference (fingerprint > 1001tracklists)
+- [ ] "MM:SS" to CUE "MM:SS:FF" conversion
+- [ ] UI action on tracklist review page
+- [ ] Bulk generation for all approved tracklists
+- [ ] Discogs REM comments (from Phase 1 links)
 
-**Why third:** Largest workstream. Independent of Phases 1-2. Sets up infrastructure for Phase 4-5.
+**Why third:** Low complexity, benefits from Phase 1 Discogs data for REM comments. Produces companion files alongside organized audio.
 
-### Phase 4: Live Set Tracklist Matching
-- [ ] Match live sets against fingerprint DB
-- [ ] Proposed tracklist generation with timestamps
-- [ ] Admin review UI for proposed tracklists
+### Phase 4: Search Page
+- [ ] GIN index migration on text columns
+- [ ] Full-text search with `websearch_to_tsquery`
+- [ ] Entity type filter tabs
+- [ ] Date range, BPM range, genre/style filters
+- [ ] New admin UI tab in base.html nav
+- [ ] Paginated results with entity grouping
+- [ ] Cross-entity drill-down links
 
-**Why fourth:** Depends on fingerprint database from Phase 3.
-
-### Phase 5: 1001Tracklists Integration
-- [ ] Search and scrape 1001tracklists
-- [ ] Store tracklists in PostgreSQL
-- [ ] Fuzzy match tracklists to files
-- [ ] Cross-reference with fingerprint matches
-- [ ] Periodic refresh for unresolved tracklists
-
-**Why fifth:** Benefits from both tag extraction (search queries) and fingerprint matches (cross-reference). Can start earlier if Phase 3 is slow, but full value comes after fingerprinting.
+**Why last:** Benefits from all prior phases. Discogs links appear in search results. CUE generation status can be shown. Tag write status visible. The search page is the culmination of v3.0 data enrichment.
 
 ---
 
@@ -250,42 +226,58 @@ Audio Fingerprinting (audfprint + Panako)
 
 | Feature | User Value | Implementation Cost | Priority | Phase |
 |---------|------------|---------------------|----------|-------|
-| Audio tag extraction (mutagen) | HIGH | LOW | P1 | 1 |
-| AI destination path proposals | HIGH | LOW | P1 | 1 |
-| Duplicate resolution UI | HIGH | MEDIUM | P1 | 2 |
-| Fingerprint service container | HIGH | HIGH | P1 | 3 |
-| Fingerprint all music files | HIGH | MEDIUM | P1 | 3 |
-| Live set tracklist matching | HIGH | HIGH | P1 | 4 |
-| 1001tracklists search + scrape | MEDIUM | MEDIUM | P2 | 5 |
-| Proposed tracklist admin UI | HIGH | MEDIUM | P1 | 4 |
-| Periodic tracklist refresh | LOW | LOW | P2 | 5 |
-| Acoustic near-duplicate detection | MEDIUM | HIGH | P2 | 3+ |
-| Panako hybrid scoring | MEDIUM | HIGH | P3 | 3+ |
-| Path preview tree | LOW | MEDIUM | P3 | 1+ |
-| Cross-reference fingerprints vs tracklists | MEDIUM | MEDIUM | P2 | 5 |
+| Discogs track-to-release matching | HIGH | MEDIUM | P1 | 1 |
+| Discogs batch matching job | HIGH | MEDIUM | P1 | 1 |
+| "Find all sets containing track X" | HIGH | MEDIUM | P1 | 1 |
+| Tag writing with preview UI | HIGH | MEDIUM | P1 | 2 |
+| Batch tag writing | HIGH | MEDIUM | P1 | 2 |
+| Tag write audit log | MEDIUM | LOW | P1 | 2 |
+| CUE sheet generation from tracklists | HIGH | LOW | P1 | 3 |
+| Bulk CUE generation | MEDIUM | LOW | P1 | 3 |
+| Full-text search page | HIGH | MEDIUM | P1 | 4 |
+| BPM/date/genre filters | MEDIUM | LOW | P1 | 4 |
+| Discogs REM in CUE sheets | LOW | LOW | P2 | 3 |
+| Tag source selection (extracted/LLM/Discogs) | MEDIUM | LOW | P2 | 2 |
+| Reverse Discogs lookup | MEDIUM | MEDIUM | P2 | 1+ |
+| Label statistics | LOW | LOW | P3 | 1+ |
+| Saved search presets | LOW | LOW | P3 | 4 |
+| Undo tag write | LOW | MEDIUM | P3 | 2+ |
 
 **Priority key:**
-- P1: Must have for v2.0 milestone
+- P1: Must have for v3.0 milestone
 - P2: Should have, builds on P1 features
 - P3: Nice to have, defer if timeline pressure
 
 ---
 
-## Sources
+## Competitor Feature Analysis
 
-- [mutagen documentation](https://mutagen.readthedocs.io/) -- tag extraction API, format support, EasyID3/EasyMP4 interfaces
-- [mutagen on PyPI](https://pypi.org/project/mutagen/) -- version 1.47.0, zero dependencies
-- [mutagen GitHub](https://github.com/quodlibet/mutagen) -- source, issues, format-specific tag handling
-- [audfprint GitHub](https://github.com/dpwe/audfprint) -- landmark-based fingerprinting, database structure, match mode
-- [Panako GitHub](https://github.com/JorenSix/Panako) -- tempo-robust fingerprinting, JDK 11+ requirement, LMDB storage
-- [Panako ISMIR 2014 paper](https://archives.ismir.net/ismir2014/paper/000122.pdf) -- handles time-scale and pitch modification up to 10%
-- [1001tracklists-api (unofficial)](https://github.com/leandertolksdorf/1001-tracklists-api) -- Python scraping patterns, BeautifulSoup approach
-- [1001tracklists-scraper](https://github.com/GodLesZ/1001tracklists-scraper) -- alternate scraping approach
-- [Landmark-Based Fingerprinting for DJ Mix Monitoring](https://www.researchgate.net/publication/307547659_LANDMARK-BASED_AUDIO_FINGERPRINTING_FOR_DJ_MIX_MONITORING) -- academic reference for live set matching challenges
-- [bliss duplicate resolution strategies](https://www.blisshq.com/music-library-management-blog/2013/10/22/four-strategies-to-resolve-duplicate-music-files/) -- checksum, metadata, fingerprint, and dedicated tool approaches
-- [DJ Set Analyzer](https://dj-set-analyzer.com/) -- reference for tracklist identification workflow
-- [TrackSniff blog](https://tracksniff.com/blog/how-to-find-tracklists-from-dj-sets/) -- overview of DJ set identification methods and tools
+| Feature | beets | MusicBrainz Picard | Mp3tag | Phaze v3.0 |
+|---------|-------|-------------------|--------|------------|
+| Tag writing | Auto-write from MusicBrainz | Auto-write from MusicBrainz | Manual edit + batch write | Review-then-write with multiple sources |
+| CUE sheet support | Plugin (cue) for import only | None | CUE sheet export from tags | Generate CUE from tracklist timestamps |
+| Cross-service linking | MusicBrainz only | MusicBrainz only | None | Discogs via local discogsography service |
+| Search | CLI query syntax | GUI filter | GUI filter + search | Web UI with FTS + structured filters |
+| Live set awareness | None | None | None | First-class: tracklists, timestamps, set matching |
+
+**Phaze's differentiation is live set intelligence.** No competitor understands DJ sets, tracklists, or festival recordings. The combination of fingerprint-identified tracklists + 1001Tracklists data + Discogs cross-linking + CUE sheet generation is unique to phaze.
 
 ---
-*Feature research for: v2.0 Metadata Enrichment & Tracklist Integration*
-*Researched: 2026-03-30*
+
+## Sources
+
+- [CUE Sheet Format Specification](https://wyday.com/cuesharp/specification.php) -- canonical CUE format reference
+- [CUE Sheet - Hydrogenaudio Knowledgebase](https://wiki.hydrogenaudio.org/index.php?title=Cue_sheet) -- field descriptions, player compatibility
+- [CUE Sheet - Wikipedia](https://en.wikipedia.org/wiki/Cue_sheet_(computing)) -- format overview, INDEX timing (MM:SS:FF at 75fps)
+- [mutagen ID3 documentation](https://mutagen.readthedocs.io/en/latest/user/id3.html) -- write API, EasyID3 interface, encoding handling
+- [mutagen Getting Started](https://mutagen.readthedocs.io/en/latest/user/gettingstarted.html) -- format-agnostic File() interface, save patterns
+- [python3-discogs-client docs](https://python3-discogs-client.readthedocs.io/en/latest/quickstart.html) -- search API patterns (not used directly, but reference for what discogsography exposes)
+- [Discogs API documentation](https://www.discogs.com/developers) -- search endpoint parameters, rate limits (60 req/min)
+- [youtube-cue](https://github.com/captn3m0/youtube-cue) -- reference implementation for timestamp-to-CUE generation
+- [CueSheetGenerator](https://github.com/ApplePie420/CueSheetGenerator) -- reference for tracklist-to-CUE conversion
+- [PostgreSQL Full Text Search](https://www.postgresql.org/docs/16/textsearch.html) -- `to_tsvector`, `websearch_to_tsquery`, GIN indexes
+- Discogsography `/api/search` endpoint -- local service, verified available (search.py router inspected)
+
+---
+*Feature research for: v3.0 Cross-Service Intelligence & File Enrichment*
+*Researched: 2026-04-02*
