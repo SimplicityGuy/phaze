@@ -308,6 +308,40 @@ async def test_scan_live_set_rescan_creates_new_version() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scan_live_set_invalid_track_id_skipped() -> None:
+    """scan_live_set gracefully handles non-UUID track_ids from fingerprint matches."""
+    from phaze.tasks.scan import scan_live_set
+
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+
+    mock_result_file = MagicMock()
+    mock_result_file.scalar_one_or_none.return_value = file_record
+    mock_result_existing = MagicMock()
+    mock_result_existing.scalar_one_or_none.return_value = None
+
+    # Use a non-UUID track_id — should trigger the ValueError/AttributeError handler (lines 57-59)
+    session.execute = AsyncMock(side_effect=[mock_result_file, mock_result_existing])
+    ctx["fingerprint_orchestrator"].combined_query.return_value = [
+        CombinedMatch(track_id="not-a-uuid", confidence=84.0, timestamp="04:32"),
+    ]
+
+    result = await scan_live_set(ctx, str(file_record.id))
+    assert result["status"] == "scanned"
+    assert "tracklist_id" in result
+
+    # Track should still be created, just without resolved artist/title
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    from phaze.models.tracklist import TracklistTrack
+
+    tracks = [obj for obj in added_objects if isinstance(obj, TracklistTrack)]
+    assert len(tracks) == 1
+    # resolved_artist/resolved_title not set because UUID parse failed
+    assert tracks[0].artist is None
+
+
+@pytest.mark.asyncio
 async def test_scan_live_set_retry_on_exception() -> None:
     """scan_live_set retries on exception via Retry with exponential defer."""
     from phaze.tasks.scan import scan_live_set

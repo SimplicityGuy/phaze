@@ -499,3 +499,184 @@ async def test_stats_include_proposed(session: AsyncSession, client: AsyncClient
     response = await client.get("/tracklists/")
     assert response.status_code == 200
     assert "Proposed" in response.text
+
+
+# --- Scan status / progress ---
+
+
+@pytest.mark.asyncio
+async def test_scan_status_all_complete(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status reports completion when all jobs done."""
+    mock_job = AsyncMock()
+    mock_info = MagicMock()
+    mock_info.result = {"status": "scanned", "filename": "test.mp3"}
+    mock_job.info.return_value = mock_info
+
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = mock_job
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_scan_status_with_error(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status reports errors from failed jobs."""
+    mock_job = AsyncMock()
+    mock_info = MagicMock()
+    mock_info.result = {"status": "error", "filename": "bad.mp3"}
+    mock_job.info.return_value = mock_info
+
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = mock_job
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_scan_status_job_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status handles missing job gracefully."""
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = None
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=missing-job")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_scan_status_job_pending(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan/status handles pending jobs (no result yet)."""
+    mock_job = AsyncMock()
+    mock_info = MagicMock()
+    mock_info.result = None
+    mock_job.info.return_value = mock_info
+
+    mock_pool = AsyncMock()
+    mock_pool.job.return_value = mock_job
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.get("/tracklists/scan/status?job_ids=pending-job")
+    assert response.status_code == 200
+
+
+# --- Link / rescrape / search endpoints ---
+
+
+@pytest.mark.asyncio
+async def test_link_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/link sets file_id and confidence."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(file.id), "confidence": 85},
+    )
+    assert response.status_code == 200
+
+    await session.refresh(tl)
+    assert tl.file_id == file.id
+    assert tl.match_confidence == 85
+
+
+@pytest.mark.asyncio
+async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/rescrape enqueues scrape job."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    mock_pool = AsyncMock()
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    response = await client.post(f"/tracklists/{tl.id}/rescrape")
+    assert response.status_code == 200
+    mock_pool.enqueue_job.assert_called_once_with("scrape_and_store_tracklist", str(tl.id))
+
+
+@pytest.mark.asyncio
+async def test_manual_search(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/search enqueues a search job."""
+    mock_pool = AsyncMock()
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    file_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/search?file_id={file_id}")
+    assert response.status_code == 200
+    mock_pool.enqueue_job.assert_called_once_with("search_tracklist", str(file_id))
+
+
+@pytest.mark.asyncio
+async def test_search_better_match_no_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/{id}/search with non-existent tracklist returns empty results."""
+    fake_id = uuid.uuid4()
+    response = await client.get(f"/tracklists/{fake_id}/search")
+    assert response.status_code == 200
+
+
+# --- Error branches ---
+
+
+@pytest.mark.asyncio
+async def test_approve_tracklist_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/approve returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/{fake_id}/approve")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reject_tracklist_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/{fake_id}/reject")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reject_low_confidence_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject-low returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/{fake_id}/reject-low?threshold=50")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_track_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """DELETE /tracklists/tracks/{id} returns 404 for non-existent track."""
+    fake_id = uuid.uuid4()
+    response = await client.delete(f"/tracklists/tracks/{fake_id}")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_edit_track_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/tracks/{id}/edit/{field} returns 404 for non-existent track."""
+    fake_id = uuid.uuid4()
+    response = await client.get(f"/tracklists/tracks/{fake_id}/edit/artist")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_save_track_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """PUT /tracklists/tracks/{id}/edit/{field} returns 404 for non-existent track."""
+    fake_id = uuid.uuid4()
+    response = await client.put(f"/tracklists/tracks/{fake_id}/edit/artist", data={"artist": "New"})
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_save_track_invalid_field(session: AsyncSession, client: AsyncClient) -> None:
+    """PUT /tracklists/tracks/{id}/edit/{field} returns 400 for invalid field."""
+    fake_id = uuid.uuid4()
+    response = await client.put(f"/tracklists/tracks/{fake_id}/edit/invalid_field", data={"invalid_field": "x"})
+    assert response.status_code == 400
