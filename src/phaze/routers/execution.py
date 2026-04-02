@@ -30,7 +30,7 @@ router = APIRouter(tags=["execution"])
 
 @router.post("/execution/start", response_class=HTMLResponse)
 async def start_execution(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """Trigger batch execution of all approved proposals via arq.
+    """Trigger batch execution of all approved proposals via SAQ.
 
     Returns a collision block if duplicate destination paths exist among
     approved proposals, preventing execution until collisions are resolved.
@@ -43,9 +43,9 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
             context={"request": request, "collisions": collisions},
         )
 
-    arq_pool = request.app.state.arq_pool
+    queue = request.app.state.queue
     batch_id = uuid4().hex
-    await arq_pool.enqueue_job("execute_approved_batch", batch_id)
+    await queue.enqueue("execute_approved_batch", batch_id=batch_id)
     return templates.TemplateResponse(
         request=request,
         name="execution/partials/progress.html",
@@ -56,11 +56,11 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
 @router.get("/execution/progress/{batch_id}")
 async def execution_progress(request: Request, batch_id: str) -> EventSourceResponse:
     """Stream SSE events with real-time execution progress from Redis."""
-    arq_pool = request.app.state.arq_pool
+    queue = request.app.state.queue
 
     async def event_generator() -> AsyncGenerator[dict[str, str]]:
         while True:
-            data = await arq_pool.hgetall(f"exec:{batch_id}")
+            data = await queue.redis.hgetall(f"exec:{batch_id}")
             if not data:
                 yield {"event": "progress", "data": "Waiting for execution to start..."}
             else:

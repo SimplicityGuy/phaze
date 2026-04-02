@@ -46,8 +46,8 @@ async def trigger_scan(request: ScanRequest, http_request: Request) -> ScanRespo
         raise HTTPException(status_code=400, detail=f"Scan path is not a valid directory: {scan_path}")
 
     batch_id = uuid.uuid4()
-    arq_pool = http_request.app.state.arq_pool
-    task = asyncio.create_task(run_scan(scan_path, batch_id, async_session, arq_pool=arq_pool))
+    queue = http_request.app.state.queue
+    task = asyncio.create_task(run_scan(scan_path, batch_id, async_session, queue=queue))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 

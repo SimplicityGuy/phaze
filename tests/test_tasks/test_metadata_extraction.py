@@ -1,4 +1,4 @@
-"""Tests for the metadata extraction arq task and auto-enqueue wiring."""
+"""Tests for the metadata extraction SAQ task and auto-enqueue wiring."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
-from arq import Retry
 import pytest
 
 from phaze.models.file import FileState
@@ -14,13 +13,13 @@ from phaze.services.metadata import ExtractedTags
 from phaze.tasks.metadata_extraction import extract_file_metadata
 
 
-def _make_ctx(job_try: int = 1) -> dict[str, Any]:
-    """Create a minimal arq context dict with async_session factory."""
+def _make_ctx() -> dict[str, Any]:
+    """Create a minimal SAQ context dict with async_session factory."""
     mock_session = AsyncMock()
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
-    return {"job_try": job_try, "async_session": mock_session_factory, "_mock_session": mock_session}
+    return {"async_session": mock_session_factory, "_mock_session": mock_session}
 
 
 def _make_file_record(
@@ -48,7 +47,7 @@ async def test_file_not_found_returns_not_found(mock_extract: MagicMock) -> None
     mock_result.scalar_one_or_none.return_value = None
     session.execute.return_value = mock_result
 
-    result = await extract_file_metadata(ctx, str(uuid.uuid4()))
+    result = await extract_file_metadata(ctx, file_id=str(uuid.uuid4()))
     assert result["status"] == "not_found"
     mock_extract.assert_not_called()
 
@@ -64,7 +63,7 @@ async def test_companion_file_skipped(mock_extract: MagicMock) -> None:
     mock_result.scalar_one_or_none.return_value = file_record
     session.execute.return_value = mock_result
 
-    result = await extract_file_metadata(ctx, str(file_record.id))
+    result = await extract_file_metadata(ctx, file_id=str(file_record.id))
     assert result["status"] == "skipped"
     assert result["reason"] == "not_extractable"
     mock_extract.assert_not_called()
@@ -97,7 +96,7 @@ async def test_music_file_tags_extracted(mock_extract: MagicMock) -> None:
     mock_result_meta.scalar_one_or_none.return_value = None
     session.execute.side_effect = [mock_result_file, mock_result_meta]
 
-    result = await extract_file_metadata(ctx, str(file_record.id))
+    result = await extract_file_metadata(ctx, file_id=str(file_record.id))
     assert result["status"] == "extracted"
     assert file_record.state == FileState.METADATA_EXTRACTED
     session.add.assert_called_once()
@@ -120,24 +119,24 @@ async def test_no_tags_creates_empty_metadata_row(mock_extract: MagicMock) -> No
     mock_result_meta.scalar_one_or_none.return_value = None
     session.execute.side_effect = [mock_result_file, mock_result_meta]
 
-    result = await extract_file_metadata(ctx, str(file_record.id))
+    result = await extract_file_metadata(ctx, file_id=str(file_record.id))
     assert result["status"] == "extracted"
     session.add.assert_called_once()
 
 
 @patch("phaze.tasks.metadata_extraction.extract_tags")
 async def test_exception_triggers_retry(_mock_extract: MagicMock) -> None:
-    """Exception during processing triggers arq Retry with exponential backoff."""
-    ctx = _make_ctx(job_try=2)
+    """Exception during processing re-raises for SAQ retry handling."""
+    ctx = _make_ctx()
     session = ctx["_mock_session"]
     session.execute.side_effect = RuntimeError("DB connection lost")
 
-    with pytest.raises(Retry):
-        await extract_file_metadata(ctx, str(uuid.uuid4()))
+    with pytest.raises(RuntimeError, match="DB connection lost"):
+        await extract_file_metadata(ctx, file_id=str(uuid.uuid4()))
 
 
 async def test_run_scan_auto_enqueues_extraction() -> None:
-    """run_scan with arq_pool enqueues extract_file_metadata for music/video files (D-09)."""
+    """run_scan with queue enqueues extract_file_metadata for music/video files (D-09)."""
     from phaze.services.ingestion import run_scan
 
     mock_session = AsyncMock()
@@ -145,7 +144,7 @@ async def test_run_scan_auto_enqueues_extraction() -> None:
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
 
-    mock_arq_pool = AsyncMock()
+    mock_queue = AsyncMock()
 
     file_id_1 = uuid.uuid4()
     file_id_2 = uuid.uuid4()
@@ -193,11 +192,11 @@ async def test_run_scan_auto_enqueues_extraction() -> None:
         patch("phaze.services.ingestion.discover_and_hash_files", return_value=mock_records),
         patch("phaze.services.ingestion.bulk_upsert_files", new_callable=AsyncMock, return_value=3),
     ):
-        await run_scan("/fake/path", batch_id, mock_session_factory, arq_pool=mock_arq_pool)
+        await run_scan("/fake/path", batch_id, mock_session_factory, queue=mock_queue)
 
     # Should enqueue for mp3 and mp4 (music + video), but NOT for txt (companion)
-    enqueue_calls = mock_arq_pool.enqueue_job.call_args_list
-    enqueued_ids = [call.args[1] for call in enqueue_calls]
+    enqueue_calls = mock_queue.enqueue.call_args_list
+    enqueued_ids = [call.kwargs["file_id"] for call in enqueue_calls]
     assert str(file_id_1) in enqueued_ids
     assert str(file_id_2) in enqueued_ids
     assert str(file_id_3) not in enqueued_ids

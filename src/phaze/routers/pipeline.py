@@ -34,16 +34,16 @@ router = APIRouter(tags=["pipeline"])
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
-async def _enqueue_analysis_jobs(arq_pool: Any, file_ids: list[str]) -> None:
+async def _enqueue_analysis_jobs(queue: Any, file_ids: list[str]) -> None:
     """Background coroutine to enqueue process_file jobs for a list of file IDs."""
     for fid in file_ids:
-        await arq_pool.enqueue_job("process_file", fid)
+        await queue.enqueue("process_file", file_id=fid)
 
 
-async def _enqueue_proposal_jobs(arq_pool: Any, batches: list[list[str]]) -> None:
+async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:
     """Background coroutine to enqueue generate_proposals jobs for batched file IDs."""
     for idx, batch in enumerate(batches):
-        await arq_pool.enqueue_job("generate_proposals", batch, idx)
+        await queue.enqueue("generate_proposals", file_ids=batch, batch_index=idx)
 
 
 @router.post("/api/v1/analyze")
@@ -53,7 +53,7 @@ async def trigger_analysis(
 ) -> dict[str, Any]:
     """Enqueue process_file jobs for all DISCOVERED files (per D-01, D-04).
 
-    One arq job per file. Enqueue runs in a background task to avoid
+    One SAQ job per file. Enqueue runs in a background task to avoid
     HTTP timeout on large file counts (200K+). Returns immediately
     with the expected enqueue count.
     """
@@ -61,11 +61,11 @@ async def trigger_analysis(
     if not files:
         return {"enqueued": 0, "message": "No files in DISCOVERED state"}
 
-    arq_pool = request.app.state.arq_pool
+    queue = request.app.state.queue
     file_ids = [str(f.id) for f in files]
 
     # Background enqueue to avoid HTTP timeout (per Research pitfall 2)
-    task = asyncio.create_task(_enqueue_analysis_jobs(arq_pool, file_ids))
+    task = asyncio.create_task(_enqueue_analysis_jobs(queue, file_ids))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -104,8 +104,8 @@ async def trigger_proposals(
     batch_size = settings.llm_batch_size
     batches = [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
 
-    arq_pool = request.app.state.arq_pool
-    task = asyncio.create_task(_enqueue_proposal_jobs(arq_pool, batches))
+    queue = request.app.state.queue
+    task = asyncio.create_task(_enqueue_proposal_jobs(queue, batches))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -156,9 +156,9 @@ async def trigger_analysis_ui(
     count = len(files)
 
     if count > 0:
-        arq_pool = request.app.state.arq_pool
+        queue = request.app.state.queue
         file_ids = [str(f.id) for f in files]
-        task = asyncio.create_task(_enqueue_analysis_jobs(arq_pool, file_ids))
+        task = asyncio.create_task(_enqueue_analysis_jobs(queue, file_ids))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -195,12 +195,12 @@ async def trigger_proposals_ui(
     batches_count = 0
 
     if count > 0:
-        arq_pool = request.app.state.arq_pool
+        queue = request.app.state.queue
         file_ids = [str(f.id) for f in files]
         batch_size = settings.llm_batch_size
         batches = [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
         batches_count = len(batches)
-        task = asyncio.create_task(_enqueue_proposal_jobs(arq_pool, batches))
+        task = asyncio.create_task(_enqueue_proposal_jobs(queue, batches))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -211,10 +211,10 @@ async def trigger_proposals_ui(
     )
 
 
-async def _enqueue_extraction_jobs(arq_pool: Any, file_ids: list[str]) -> None:
+async def _enqueue_extraction_jobs(queue: Any, file_ids: list[str]) -> None:
     """Background coroutine to enqueue extract_file_metadata jobs."""
     for fid in file_ids:
-        await arq_pool.enqueue_job("extract_file_metadata", fid)
+        await queue.enqueue("extract_file_metadata", file_id=fid)
 
 
 @router.post("/api/v1/extract-metadata")
@@ -235,10 +235,10 @@ async def trigger_metadata_extraction(
     if not files:
         return {"enqueued": 0, "message": "No music/video files found"}
 
-    arq_pool = request.app.state.arq_pool
+    queue = request.app.state.queue
     file_ids = [str(f.id) for f in files]
 
-    task = asyncio.create_task(_enqueue_extraction_jobs(arq_pool, file_ids))
+    task = asyncio.create_task(_enqueue_extraction_jobs(queue, file_ids))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -258,9 +258,9 @@ async def trigger_extraction_ui(
     count = len(files)
 
     if count > 0:
-        arq_pool = request.app.state.arq_pool
+        queue = request.app.state.queue
         file_ids = [str(f.id) for f in files]
-        task = asyncio.create_task(_enqueue_extraction_jobs(arq_pool, file_ids))
+        task = asyncio.create_task(_enqueue_extraction_jobs(queue, file_ids))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -274,10 +274,10 @@ async def trigger_extraction_ui(
 # --- Fingerprint endpoints (Phase 16, D-14, D-15) ---
 
 
-async def _enqueue_fingerprint_jobs(arq_pool: Any, file_ids: list[str]) -> None:
+async def _enqueue_fingerprint_jobs(queue: Any, file_ids: list[str]) -> None:
     """Background coroutine to enqueue fingerprint_file jobs."""
     for fid in file_ids:
-        await arq_pool.enqueue_job("fingerprint_file", fid)
+        await queue.enqueue("fingerprint_file", file_id=fid)
 
 
 @router.post("/api/v1/fingerprint")
@@ -314,8 +314,8 @@ async def trigger_fingerprint(
     if not all_file_ids:
         return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
 
-    arq_pool = request.app.state.arq_pool
-    task = asyncio.create_task(_enqueue_fingerprint_jobs(arq_pool, all_file_ids))
+    queue = request.app.state.queue
+    task = asyncio.create_task(_enqueue_fingerprint_jobs(queue, all_file_ids))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -340,9 +340,9 @@ async def trigger_fingerprint_ui(
     count = len(files)
 
     if count > 0:
-        arq_pool = request.app.state.arq_pool
+        queue = request.app.state.queue
         file_ids = [str(f.id) for f in files]
-        task = asyncio.create_task(_enqueue_fingerprint_jobs(arq_pool, file_ids))
+        task = asyncio.create_task(_enqueue_fingerprint_jobs(queue, file_ids))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 

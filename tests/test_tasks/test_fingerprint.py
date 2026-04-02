@@ -1,4 +1,4 @@
-"""Tests for the fingerprint arq task function."""
+"""Tests for the fingerprint SAQ task function."""
 
 from __future__ import annotations
 
@@ -6,14 +6,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
-from arq import Retry
 import pytest
 
 from phaze.models.file import FileState
 
 
-def _make_ctx(job_try: int = 1) -> dict[str, Any]:
-    """Create a minimal arq context dict with async_session factory and orchestrator."""
+def _make_ctx() -> dict[str, Any]:
+    """Create a minimal SAQ context dict with async_session factory and orchestrator."""
     mock_session = AsyncMock()
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
@@ -22,7 +21,6 @@ def _make_ctx(job_try: int = 1) -> dict[str, Any]:
     mock_orchestrator = AsyncMock()
 
     return {
-        "job_try": job_try,
         "async_session": mock_session_factory,
         "_mock_session": mock_session,
         "fingerprint_orchestrator": mock_orchestrator,
@@ -75,7 +73,7 @@ async def test_both_engines_success_transitions_to_fingerprinted() -> None:
         "panako": _make_ingest_result("success"),
     }
 
-    result = await fingerprint_file(ctx, str(file_record.id))
+    result = await fingerprint_file(ctx, file_id=str(file_record.id))
     assert result["status"] == "fingerprinted"
     assert file_record.state == FileState.FINGERPRINTED
     session.commit.assert_awaited_once()
@@ -105,7 +103,7 @@ async def test_one_engine_fails_no_transition() -> None:
         "panako": _make_ingest_result("failed", error="HTTP 500: Internal Server Error"),
     }
 
-    result = await fingerprint_file(ctx, str(file_record.id))
+    result = await fingerprint_file(ctx, file_id=str(file_record.id))
     assert result["status"] == "partial"
     assert file_record.state != FileState.FINGERPRINTED
 
@@ -122,7 +120,7 @@ async def test_nonexistent_file_returns_not_found() -> None:
     mock_result.scalar_one_or_none.return_value = None
     session.execute.return_value = mock_result
 
-    result = await fingerprint_file(ctx, str(uuid.uuid4()))
+    result = await fingerprint_file(ctx, file_id=str(uuid.uuid4()))
     assert result["status"] == "not_found"
     ctx["fingerprint_orchestrator"].ingest_all.assert_not_called()
 
@@ -153,7 +151,7 @@ async def test_idempotent_updates_existing_results() -> None:
         "panako": _make_ingest_result("success"),
     }
 
-    result = await fingerprint_file(ctx, str(file_record.id))
+    result = await fingerprint_file(ctx, file_id=str(file_record.id))
     assert result["status"] == "fingerprinted"
     # No new rows added -- existing ones updated in place
     session.add.assert_not_called()
@@ -163,13 +161,13 @@ async def test_idempotent_updates_existing_results() -> None:
 
 
 @pytest.mark.asyncio
-async def test_exception_triggers_retry() -> None:
-    """fingerprint_file retries on unexpected exception (raises Retry with backoff)."""
+async def test_exception_propagates() -> None:
+    """fingerprint_file propagates exceptions (SAQ handles retry with backoff)."""
     from phaze.tasks.fingerprint import fingerprint_file
 
-    ctx = _make_ctx(job_try=2)
+    ctx = _make_ctx()
     session = ctx["_mock_session"]
     session.execute.side_effect = RuntimeError("DB connection lost")
 
-    with pytest.raises(Retry):
-        await fingerprint_file(ctx, str(uuid.uuid4()))
+    with pytest.raises(RuntimeError, match="DB connection lost"):
+        await fingerprint_file(ctx, file_id=str(uuid.uuid4()))

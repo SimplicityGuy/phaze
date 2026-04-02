@@ -6,7 +6,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
-from arq import Retry
 import pytest
 
 from phaze.tasks.functions import process_file
@@ -31,11 +30,11 @@ def _make_session_factory(mock_session: AsyncMock) -> MagicMock:
     return factory
 
 
-def _make_ctx(job_try: int = 1, mock_session: AsyncMock | None = None) -> dict[str, Any]:
-    """Create a minimal arq context dict."""
+def _make_ctx(mock_session: AsyncMock | None = None) -> dict[str, Any]:
+    """Create a minimal SAQ context dict."""
     if mock_session is None:
         mock_session = AsyncMock()
-    return {"job_try": job_try, "process_pool": MagicMock(), "async_session": _make_session_factory(mock_session), "_mock_session": mock_session}
+    return {"process_pool": MagicMock(), "async_session": _make_session_factory(mock_session), "_mock_session": mock_session}
 
 
 def _make_file_record(
@@ -71,7 +70,7 @@ async def test_process_file_calls_analyze(mock_pool: AsyncMock) -> None:
     mock_pool.return_value = MOCK_ANALYSIS
 
     ctx = _make_ctx(mock_session=mock_session)
-    await process_file(ctx, str(file_id))
+    await process_file(ctx, file_id=str(file_id))
 
     mock_pool.assert_called_once()
     call_args = mock_pool.call_args
@@ -91,7 +90,7 @@ async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
     mock_session.execute.return_value = mock_result
 
     ctx = _make_ctx(mock_session=mock_session)
-    result = await process_file(ctx, str(file_id))
+    result = await process_file(ctx, file_id=str(file_id))
 
     assert result["status"] == "skipped"
     mock_pool.assert_not_called()
@@ -114,7 +113,7 @@ async def test_process_file_stores_analysis_result(mock_pool: AsyncMock) -> None
     mock_pool.return_value = MOCK_ANALYSIS
 
     ctx = _make_ctx(mock_session=mock_session)
-    result = await process_file(ctx, str(file_id))
+    result = await process_file(ctx, file_id=str(file_id))
 
     assert result["status"] == "analyzed"
     # Verify session.add was called (new AnalysisResult created)
@@ -144,14 +143,14 @@ async def test_process_file_updates_file_state(mock_pool: AsyncMock) -> None:
     mock_pool.return_value = MOCK_ANALYSIS
 
     ctx = _make_ctx(mock_session=mock_session)
-    await process_file(ctx, str(file_id))
+    await process_file(ctx, file_id=str(file_id))
 
     assert file_record.state == "analyzed"
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_raises_retry_on_failure(mock_pool: AsyncMock) -> None:
-    """process_file raises arq Retry when analyze_file raises an exception."""
+async def test_process_file_raises_on_failure(mock_pool: AsyncMock) -> None:
+    """process_file raises exception when analyze_file fails (SAQ handles retry)."""
     mock_session = AsyncMock()
 
     file_record = _make_file_record()
@@ -161,16 +160,9 @@ async def test_process_file_raises_retry_on_failure(mock_pool: AsyncMock) -> Non
 
     mock_pool.side_effect = RuntimeError("analysis failed")
 
-    ctx = _make_ctx(job_try=1, mock_session=mock_session)
-    with pytest.raises(Retry):
-        await process_file(ctx, str(uuid.uuid4()))
-
-
-def test_process_file_retry_backoff() -> None:
-    """Retry defer is job_try * 5 seconds."""
-    for job_try in (1, 2, 3):
-        retry = Retry(defer=job_try * 5)
-        assert retry.defer_score == job_try * 5 * 1000
+    ctx = _make_ctx(mock_session=mock_session)
+    with pytest.raises(RuntimeError, match="analysis failed"):
+        await process_file(ctx, file_id=str(uuid.uuid4()))
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +187,7 @@ async def test_process_file_analysis(mock_pool: AsyncMock) -> None:
     mock_pool.return_value = MOCK_ANALYSIS
 
     ctx = _make_ctx(mock_session=mock_session)
-    result = await process_file(ctx, str(file_id))
+    result = await process_file(ctx, file_id=str(file_id))
 
     # Pool was called with analyze_file and correct path
     mock_pool.assert_called_once()
@@ -211,7 +203,7 @@ async def test_process_file_analysis(mock_pool: AsyncMock) -> None:
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
 async def test_process_file_retry(mock_pool: AsyncMock) -> None:
-    """ANL-01+02: process_file raises arq.Retry when analysis fails, with backoff scaled by job_try."""
+    """ANL-01+02: process_file raises exception when analysis fails; SAQ retries automatically."""
     mock_session = AsyncMock()
 
     file_record = _make_file_record()
@@ -221,10 +213,6 @@ async def test_process_file_retry(mock_pool: AsyncMock) -> None:
 
     mock_pool.side_effect = RuntimeError("process pool crashed")
 
-    # job_try=2 -> defer should be 10 seconds
-    ctx = _make_ctx(job_try=2, mock_session=mock_session)
-    with pytest.raises(Retry) as exc_info:
-        await process_file(ctx, str(uuid.uuid4()))
-
-    # defer_score is in milliseconds in arq
-    assert exc_info.value.defer_score == 2 * 5 * 1000
+    ctx = _make_ctx(mock_session=mock_session)
+    with pytest.raises(RuntimeError, match="process pool crashed"):
+        await process_file(ctx, file_id=str(uuid.uuid4()))

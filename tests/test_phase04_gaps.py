@@ -1,9 +1,9 @@
-"""Phase 4 gap-filling tests: ArqRedis pool lifespan and docker-compose worker command.
+"""Phase 4 gap-filling tests: SAQ queue lifespan and docker-compose worker command.
 
 Covers:
-- 04-02-01 (INF-02): ArqRedis pool is created during FastAPI lifespan startup
+- 04-02-01 (INF-02): SAQ queue is created during FastAPI lifespan startup
   and closed during shutdown.
-- 04-02-01 (INF-02): Docker Compose worker service uses the correct arq command.
+- 04-02-01 (INF-02): Docker Compose worker service uses the correct SAQ command.
 """
 
 from __future__ import annotations
@@ -15,24 +15,25 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Gap 1: ArqRedis pool lifecycle in FastAPI lifespan
+# Gap 1: SAQ queue lifecycle in FastAPI lifespan
 # ---------------------------------------------------------------------------
 # Note: ASGITransport does not invoke the FastAPI lifespan, so we invoke the
 # lifespan context manager directly against a minimal mock app object.
 
 
 @pytest.mark.asyncio
-async def test_lifespan_creates_arq_pool_on_startup() -> None:
-    """FastAPI lifespan creates an arq pool on app.state during startup."""
+async def test_lifespan_creates_queue_on_startup() -> None:
+    """FastAPI lifespan creates a SAQ queue on app.state during startup."""
     from fastapi import FastAPI
 
-    mock_pool = MagicMock()
-    mock_pool.close = AsyncMock()
+    mock_queue = MagicMock()
+    mock_queue.disconnect = AsyncMock()
 
     with (
-        patch("phaze.main.create_pool", new_callable=AsyncMock, return_value=mock_pool) as mock_create,
+        patch("phaze.main.Queue") as mock_queue_cls,
         patch("phaze.main.engine") as mock_engine,
     ):
+        mock_queue_cls.from_url.return_value = mock_queue
         mock_conn = AsyncMock()
         mock_engine.begin.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_engine.begin.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -43,24 +44,25 @@ async def test_lifespan_creates_arq_pool_on_startup() -> None:
         app = FastAPI()
         # Invoke the lifespan directly so startup hooks actually run
         async with lifespan(app):
-            # create_pool must have been called exactly once during startup
-            mock_create.assert_called_once()
-            # Pool must be stored on app.state
-            assert app.state.arq_pool is mock_pool
+            # Queue.from_url must have been called exactly once during startup
+            mock_queue_cls.from_url.assert_called_once()
+            # Queue must be stored on app.state
+            assert app.state.queue is mock_queue
 
 
 @pytest.mark.asyncio
-async def test_lifespan_closes_arq_pool_on_shutdown() -> None:
-    """FastAPI lifespan closes the arq pool when the application shuts down."""
+async def test_lifespan_disconnects_queue_on_shutdown() -> None:
+    """FastAPI lifespan disconnects the SAQ queue when the application shuts down."""
     from fastapi import FastAPI
 
-    mock_pool = MagicMock()
-    mock_pool.close = AsyncMock()
+    mock_queue = MagicMock()
+    mock_queue.disconnect = AsyncMock()
 
     with (
-        patch("phaze.main.create_pool", new_callable=AsyncMock, return_value=mock_pool),
+        patch("phaze.main.Queue") as mock_queue_cls,
         patch("phaze.main.engine") as mock_engine,
     ):
+        mock_queue_cls.from_url.return_value = mock_queue
         mock_conn = AsyncMock()
         mock_engine.begin.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_engine.begin.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -72,12 +74,12 @@ async def test_lifespan_closes_arq_pool_on_shutdown() -> None:
         async with lifespan(app):
             pass  # context exit triggers lifespan shutdown
 
-        # Pool close must be called exactly once on shutdown
-        mock_pool.close.assert_called_once()
+        # Queue disconnect must be called exactly once on shutdown
+        mock_queue.disconnect.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# Gap 2: Docker Compose worker service uses the correct arq command
+# Gap 2: Docker Compose worker service uses the correct SAQ command
 # ---------------------------------------------------------------------------
 
 
@@ -92,7 +94,7 @@ async def test_startup_raises_if_models_dir_missing(tmp_path: Path) -> None:
     from phaze.tasks.worker import startup
 
     missing = tmp_path / "nonexistent"
-    with patch("phaze.tasks.worker.settings") as mock_settings:
+    with patch("phaze.tasks.worker.app_settings") as mock_settings:
         mock_settings.models_path = str(missing)
         with pytest.raises(RuntimeError, match="Models directory not found"):
             await startup({})
@@ -107,7 +109,7 @@ async def test_startup_raises_if_no_pb_files(tmp_path: Path) -> None:
     models_dir.mkdir()
     (models_dir / "readme.txt").write_text("empty")
 
-    with patch("phaze.tasks.worker.settings") as mock_settings:
+    with patch("phaze.tasks.worker.app_settings") as mock_settings:
         mock_settings.models_path = str(models_dir)
         with pytest.raises(RuntimeError, match=r"No \.pb model files found"):
             await startup({})
@@ -126,7 +128,7 @@ async def test_startup_succeeds_with_pb_files(tmp_path: Path) -> None:
     mock_engine = MagicMock()
     mock_sessionmaker = MagicMock()
     with (
-        patch("phaze.tasks.worker.settings") as mock_settings,
+        patch("phaze.tasks.worker.app_settings") as mock_settings,
         patch("phaze.tasks.worker.create_process_pool") as mock_pool,
         patch("phaze.tasks.worker.load_prompt_template", return_value="template"),
         patch("phaze.tasks.worker.ProposalService"),
@@ -150,15 +152,13 @@ async def test_startup_succeeds_with_pb_files(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Gap 2: Docker Compose worker service uses the correct arq command
+# Gap 2: Docker Compose worker service uses the correct SAQ command
 # ---------------------------------------------------------------------------
 
 
-def test_docker_compose_worker_command_is_arq() -> None:
-    """docker-compose.yml worker service command is 'uv run arq phaze.tasks.worker.WorkerSettings'."""
+def test_docker_compose_worker_command_is_saq() -> None:
+    """docker-compose.yml worker service command is 'uv run saq phaze.tasks.worker.settings'."""
     compose_file = Path(__file__).parent.parent / "docker-compose.yml"
     assert compose_file.exists(), "docker-compose.yml not found at project root"
     content = compose_file.read_text()
-    assert "uv run arq phaze.tasks.worker.WorkerSettings" in content, (
-        "Worker service must use 'uv run arq phaze.tasks.worker.WorkerSettings' as its command"
-    )
+    assert "uv run saq phaze.tasks.worker.settings" in content, "Worker service must use 'uv run saq phaze.tasks.worker.settings' as its command"
