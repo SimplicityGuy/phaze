@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.0
-milestone_name: Metadata Enrichment & Tracklist Integration
-status: shipped
-stopped_at: Milestone v2.0 complete
+milestone: v3.0
+milestone_name: Cross-Service Intelligence & File Enrichment
+status: defining_requirements
+stopped_at: null
 last_updated: "2026-04-02"
 last_activity: 2026-04-02
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 16
-  completed_plans: 16
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Between milestones — v2.0 shipped, planning next milestone
+**Current focus:** Defining requirements for v3.0
 
 ## Current Position
 
-Phase: All complete
-Plan: All complete
-Status: Milestone v2.0 shipped
-Last activity: 2026-04-02
+Phase: Not started (defining requirements)
+Plan: --
+Status: Defining requirements
+Last activity: 2026-04-02 -- Milestone v3.0 started
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -54,7 +54,7 @@ Progress: [██████████] 100%
 
 ### Decisions
 
-(Archived to milestones/v2.0-ROADMAP.md)
+(None yet for v3.0)
 
 ### Pending Todos
 
@@ -62,10 +62,11 @@ None.
 
 ### Blockers/Concerns
 
-None.
+- Discogsography HTTP API endpoints need to be verified/documented before integration phase
+- arq has been replaced by SAQ — all new task code must use SAQ conventions
 
 ## Session Continuity
 
 Last session: 2026-04-02
-Stopped at: Milestone v2.0 complete
+Stopped at: Defining v3.0 requirements
 Resume file: None

@@ -8,6 +8,16 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
 
+## Current Milestone: v3.0 Cross-Service Intelligence & File Enrichment
+
+**Goal:** Link phaze's music collection to Discogs releases, write corrected tags to destination files, generate CUE sheets from tracklist data, and provide a unified search page across all entities.
+
+**Target features:**
+- Discogsography cross-service linking via HTTP API — match live set tracks to Discogs releases by artist+title fuzzy match, enable "find all sets containing track X" queries
+- Write corrected tags to destination copies — explicit UI action with review before writing
+- CUE sheet generation from tracklist data — prefer fingerprint timestamps, fall back to 1001tracklists positions
+- Search page in admin UI — new tab with fields for artist, event, date, BPM, genre, etc. across files, tracklists, and metadata
+
 ## Current State
 
 **v2.0 shipped 2026-04-02.** Metadata enrichment and tracklist integration complete.
@@ -69,17 +79,16 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 ### Active
 
-(No active requirements — next milestone not yet planned)
+- [ ] Discogsography cross-service linking via HTTP API (track-to-release matching, cross-system queries)
+- [ ] Write corrected tags to destination copies (explicit action with review UI)
+- [ ] CUE sheet generation from tracklist data (fingerprint timestamps preferred, 1001tracklists fallback)
+- [ ] Search page in admin UI (artist, event, date, BPM, genre across files/tracklists/metadata)
 
 ### Out of Scope
 
-- Search frontend — deferred to v3+
-- Natural language querying across services — deferred to v3+
-- Discogsography cross-service linking — deferred to v3+ (tracklist infrastructure built in v2.0)
-- Acoustic near-duplicate detection via fingerprint similarity — deferred to v3+
-- Cross-reference fingerprint matches with 1001tracklists — deferred to v3+
-- Write corrected tags to destination copies — deferred to v3+
-- CUE sheet generation from tracklist data — deferred to v3+
+- Natural language querying across services — deferred to v4+
+- Acoustic near-duplicate detection via fingerprint similarity — deferred to v4+
+- Cross-reference fingerprint matches with 1001tracklists — partially addressed by Discogs linking in v3.0, full cross-ref deferred
 - Public network access — private network only
 - Offline mode — real-time server tool, not a desktop app
 
@@ -140,4 +149,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after v2.0 milestone — Metadata Enrichment & Tracklist Integration*
+*Last updated: 2026-04-02 after starting v3.0 milestone — Cross-Service Intelligence & File Enrichment*
