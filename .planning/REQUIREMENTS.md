@@ -9,10 +9,10 @@ Requirements for Cross-Service Intelligence & File Enrichment. Each maps to road
 
 ### Search
 
-- [ ] **SRCH-01**: User can search across files, tracklists, and metadata from a single search page in the admin UI
+- [x] **SRCH-01**: User can search across files, tracklists, and metadata from a single search page in the admin UI
 - [ ] **SRCH-02**: Search results are faceted by artist, genre, date range, BPM range, and file state
-- [ ] **SRCH-03**: Results show unified cross-entity hits (files and tracklists together with type indicators)
-- [ ] **SRCH-04**: Search uses PostgreSQL full-text search with GIN indexes for sub-second response at 200K files
+- [x] **SRCH-03**: Results show unified cross-entity hits (files and tracklists together with type indicators)
+- [x] **SRCH-04**: Search uses PostgreSQL full-text search with GIN indexes for sub-second response at 200K files
 
 ### Discogs Linking
 
@@ -62,10 +62,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SRCH-01 | Phase 18 | Pending |
+| SRCH-01 | Phase 18 | Complete |
 | SRCH-02 | Phase 18 | Pending |
-| SRCH-03 | Phase 18 | Pending |
-| SRCH-04 | Phase 18 | Pending |
+| SRCH-03 | Phase 18 | Complete |
+| SRCH-04 | Phase 18 | Complete |
 | DISC-01 | Phase 19 | Pending |
 | DISC-02 | Phase 19 | Pending |
 | DISC-03 | Phase 19 | Pending |
