@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime  # noqa: TC003 — SQLAlchemy needs these at runtime for Mapped[] resolution
 from typing import TYPE_CHECKING
 import uuid
 

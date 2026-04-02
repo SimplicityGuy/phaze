@@ -1,0 +1,17 @@
+[project]
+name = "audfprint-service"
+version = "0.1.0"
+description = "FastAPI wrapper for audfprint audio fingerprinting"
+requires-python = ">=3.13"
+dependencies = [
+    "docopt",
+    "fastapi>=0.135.2",
+    "joblib",
+    "librosa",
+    "numpy",
+    "psutil",
+    "scipy",
+    "standard-aifc",
+    "standard-sunau",
+    "uvicorn>=0.34.0",
+]

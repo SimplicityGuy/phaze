@@ -138,12 +138,15 @@ async def test_startup_succeeds_with_pb_files(tmp_path: Path) -> None:
         mock_settings.llm_max_rpm = 30
         mock_settings.database_url = "postgresql+asyncpg://test:test@localhost/test"
         mock_settings.debug = False
+        mock_settings.audfprint_url = "http://audfprint:8001"
+        mock_settings.panako_url = "http://panako:8002"
         await startup(ctx)
 
     mock_pool.assert_called_once()
     assert "process_pool" in ctx
     assert "async_session" in ctx
     assert "task_engine" in ctx
+    assert "fingerprint_orchestrator" in ctx
 
 
 # ---------------------------------------------------------------------------

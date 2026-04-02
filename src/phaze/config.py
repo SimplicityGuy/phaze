@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     worker_health_check_interval: int = 60  # arq health check interval in seconds
     worker_keep_result: int = 3600  # keep job results in Redis for 1 hour
 
+    # Fingerprint service URLs (Docker service names)
+    audfprint_url: str = "http://audfprint:8001"
+    panako_url: str = "http://panako:8002"
+
     # LLM API keys
     openai_api_key: SecretStr | None = None
 

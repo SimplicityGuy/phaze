@@ -124,4 +124,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-01 after Phase 15 complete — 1001Tracklists integration with search, scrape, fuzzy-match, auto-link (90%+), and monthly refresh cron*
+*Last updated: 2026-04-01 after Phase 16 complete — Fingerprint service (audfprint + Panako containers), Protocol-based adapters, weighted hybrid scoring, batch ingestion via arq*

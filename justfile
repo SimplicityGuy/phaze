@@ -156,6 +156,24 @@ db-history:
 download-models:
     bash scripts/download-models.sh models
 
+# === Fingerprint ===
+
+# Trigger fingerprint processing for all eligible files
+fingerprint:
+    curl -s -X POST http://localhost:8000/api/v1/fingerprint | python -m json.tool
+
+# Check fingerprint progress
+fingerprint-progress:
+    curl -s http://localhost:8000/api/v1/fingerprint/progress | python -m json.tool
+
+# Check audfprint container health
+audfprint-health:
+    docker compose exec worker curl -sf http://audfprint:8001/health | python -m json.tool
+
+# Check panako container health
+panako-health:
+    docker compose exec worker curl -sf http://panako:8002/health | python -m json.tool
+
 # === Maintenance ===
 
 # Update pre-commit hooks (with frozen SHAs)
