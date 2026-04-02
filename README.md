@@ -11,48 +11,41 @@ A music collection organizer that ingests ~200K music and concert files, fingerp
 
 ## Architecture
 
-```
-                    ┌─────────────────────────────────────────────┐
-                    │              Web UI (HTMX + Tailwind)       │
-                    │  Proposals · Duplicates · Tracklists · Exec │
-                    └──────────────────┬──────────────────────────┘
-                                       │
-                    ┌──────────────────▼──────────────────────────┐
-                    │           FastAPI (async, port 8000)        │
-                    │   /api/v1/*  ·  /proposals  ·  /pipeline   │
-                    │   /execution ·  /duplicates  · /tracklists │
-                    └───────┬──────────────┬─────────────┬────────┘
-                            │              │             │
-               ┌────────────▼──┐   ┌───────▼──────┐  ┌──▼──────────┐
-               │  PostgreSQL   │   │    Redis      │  │  SAQ Worker  │
-               │  18-alpine    │   │  8-alpine     │  │  (async)     │
-               │  :5432        │   │  :6379        │  │              │
-               └───────────────┘   └──────────────┘  └──┬───┬──────┘
-                                                        │   │
-                                          ┌─────────────▼┐ ┌▼────────────┐
-                                          │  Audfprint   │ │   Panako    │
-                                          │  :8001       │ │   :8002     │
-                                          │  landmark    │ │   tempo-    │
-                                          │  fingerprint │ │   robust    │
-                                          └──────────────┘ └─────────────┘
+```mermaid
+graph TD
+    UI["Web UI (HTMX + Tailwind)<br/>Proposals · Duplicates · Tracklists · Exec"]
+    API["FastAPI (async, :8000)<br/>/api/v1/* · /proposals · /pipeline<br/>/execution · /duplicates · /tracklists"]
+    PG["PostgreSQL 18-alpine<br/>:5432"]
+    REDIS["Redis 8-alpine<br/>:6379"]
+    WORKER["SAQ Worker<br/>(async)"]
+    AUD["Audfprint :8001<br/>landmark fingerprint"]
+    PAN["Panako :8002<br/>tempo-robust fingerprint"]
+
+    UI --> API
+    API --> PG
+    API --> REDIS
+    API --> WORKER
+    WORKER --> AUD
+    WORKER --> PAN
 ```
 
 ## File Processing Pipeline
 
 Files progress through a state machine as they move through the pipeline:
 
+```mermaid
+stateDiagram-v2
+    [*] --> DISCOVERED
+    DISCOVERED --> METADATA_EXTRACTED : mutagen
+    METADATA_EXTRACTED --> FINGERPRINTED : audfprint + panako
+    FINGERPRINTED --> ANALYZED : librosa + essentia
+    ANALYZED --> PROPOSAL_GENERATED : LLM via litellm
+    PROPOSAL_GENERATED --> APPROVED : human review
+    PROPOSAL_GENERATED --> REJECTED : human review
+    APPROVED --> EXECUTED : copy‑verify‑delete
+    APPROVED --> FAILED
+    PROPOSAL_GENERATED --> DUPLICATE_RESOLVED
 ```
-DISCOVERED ──► METADATA_EXTRACTED ──► FINGERPRINTED ──► ANALYZED
-                   (mutagen)         (audfprint+panako)  (librosa+essentia)
-                                                              │
-                                                              ▼
-EXECUTED ◄── APPROVED ◄── PROPOSAL_GENERATED ◄────────────────┘
-  (copy-       (human         (LLM via litellm)
-  verify-      review)
-  delete)
-```
-
-Additional states: `REJECTED`, `FAILED`, `DUPLICATE_RESOLVED`
 
 ## Prerequisites
 
