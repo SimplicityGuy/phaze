@@ -292,6 +292,199 @@ async def test_proposed_filter(session: AsyncSession, client: AsyncClient) -> No
 
 
 @pytest.mark.asyncio
+async def test_inline_edit_get(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/tracks/{id}/edit/{field} returns input HTML."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Original Artist",
+        title="Original Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.get(f"/tracklists/tracks/{track.id}/edit/artist")
+    assert response.status_code == 200
+    assert 'name="artist"' in response.text
+    assert "Original Artist" in response.text
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_save(session: AsyncSession, client: AsyncClient) -> None:
+    """PUT /tracklists/tracks/{id}/edit/{field} updates field and returns display HTML."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Old Artist",
+        title="Old Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/artist", data={"artist": "New Artist"})
+    assert response.status_code == 200
+    assert "New Artist" in response.text
+    assert "hx-get" in response.text
+
+    await session.refresh(track)
+    assert track.artist == "New Artist"
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_invalid_field(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/tracks/{id}/edit/{field} returns 400 for invalid field name."""
+    track_id = uuid.uuid4()
+    response = await client.get(f"/tracklists/tracks/{track_id}/edit/invalid_field")
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_track(session: AsyncSession, client: AsyncClient) -> None:
+    """DELETE /tracklists/tracks/{id} removes track row."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Delete Me",
+        title="Delete Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.delete(f"/tracklists/tracks/{track.id}")
+    assert response.status_code == 200
+    assert response.text == ""
+
+
+@pytest.mark.asyncio
+async def test_approve_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/approve changes status to approved."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/approve")
+    assert response.status_code == 200
+
+    await session.refresh(tl)
+    assert tl.status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_reject_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject changes status to rejected."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject")
+    assert response.status_code == 200
+
+    await session.refresh(tl)
+    assert tl.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_bulk_reject_low_confidence(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/reject-low removes tracks below threshold."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    high_conf = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Good",
+        title="Good Track",
+        confidence=95.0,
+    )
+    low_conf = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=2,
+        artist="Bad",
+        title="Bad Track",
+        confidence=30.0,
+    )
+    session.add_all([high_conf, low_conf])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject-low?threshold=50")
+    assert response.status_code == 200
+    assert "Good" in response.text
+    assert "Bad" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_tracks_use_fingerprint_template(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/{id}/tracks returns fingerprint template for fingerprint source."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="FP Artist",
+        title="FP Title",
+        confidence=88.0,
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.get(f"/tracklists/{tl.id}/tracks")
+    assert response.status_code == 200
+    # Fingerprint template includes confidence badges and inline edit
+    assert "FP Artist" in response.text
+    assert "hx-get" in response.text  # inline edit wiring
+    assert "hx-delete" in response.text  # delete button
+
+
+@pytest.mark.asyncio
 async def test_stats_include_proposed(session: AsyncSession, client: AsyncClient) -> None:
     """Stats dict includes proposed count."""
     file = _make_file()

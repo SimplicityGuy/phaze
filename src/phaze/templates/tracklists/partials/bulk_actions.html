@@ -1,0 +1,19 @@
+<div class="px-4 py-3 border-t border-gray-100 flex items-center gap-3">
+    <span class="text-sm text-gray-600">Reject tracks below</span>
+    <input type="number"
+           value="50"
+           min="0"
+           max="100"
+           class="w-16 text-sm border border-gray-300 rounded px-2 py-1 text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
+           aria-label="Minimum confidence threshold"
+           id="threshold-{{ tracklist.id }}">
+    <span class="text-sm text-gray-600">% confidence</span>
+    <button hx-post="/tracklists/{{ tracklist.id }}/reject-low"
+            hx-include="#threshold-{{ tracklist.id }}"
+            hx-vals='js:{"threshold": document.getElementById("threshold-{{ tracklist.id }}").value}'
+            hx-target="#tracks-{{ tracklist.id }}"
+            hx-swap="innerHTML"
+            class="text-xs bg-red-600 hover:bg-red-700 text-white font-semibold px-3 py-1.5 rounded-md">
+        Reject Low Confidence
+    </button>
+</div>

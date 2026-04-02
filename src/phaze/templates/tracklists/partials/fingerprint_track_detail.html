@@ -1,0 +1,57 @@
+<div class="px-4 py-3 border-t border-gray-100">
+    {% if tracks %}
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="text-xs text-gray-500 uppercase border-b border-gray-100">
+                <th class="text-left py-2 pr-3 w-8">#</th>
+                <th class="text-left py-2 pr-3">Artist</th>
+                <th class="text-left py-2 pr-3">Title</th>
+                <th class="text-left py-2 pr-3">Time</th>
+                <th class="text-left py-2 pr-3">Conf.</th>
+                <th class="text-left py-2">Remove</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for track in tracks %}
+            <tr class="border-b border-gray-50 hover:bg-gray-50">
+                <td class="py-2 pr-3 text-gray-400 w-8">{{ track.position }}</td>
+                <td class="py-2 pr-3 text-gray-900 cursor-pointer hover:bg-blue-50"
+                    hx-get="/tracklists/tracks/{{ track.id }}/edit/artist"
+                    hx-target="this"
+                    hx-swap="innerHTML">
+                    {{ track.artist or '-' }}
+                </td>
+                <td class="py-2 pr-3 text-gray-900 cursor-pointer hover:bg-blue-50"
+                    hx-get="/tracklists/tracks/{{ track.id }}/edit/title"
+                    hx-target="this"
+                    hx-swap="innerHTML">
+                    {{ track.title or '-' }}
+                </td>
+                <td class="py-2 pr-3 text-gray-400 cursor-pointer hover:bg-blue-50"
+                    hx-get="/tracklists/tracks/{{ track.id }}/edit/timestamp"
+                    hx-target="this"
+                    hx-swap="innerHTML">
+                    {{ track.timestamp or '-' }}
+                </td>
+                <td class="py-2 pr-3">
+                    {% set confidence = track.confidence %}
+                    {% include "tracklists/partials/confidence_badge.html" %}
+                </td>
+                <td class="py-2">
+                    <button hx-delete="/tracklists/tracks/{{ track.id }}"
+                            hx-target="closest tr"
+                            hx-swap="outerHTML"
+                            hx-confirm="Remove this track from the tracklist?"
+                            class="text-xs text-red-500 hover:text-red-700 px-1">
+                        Remove
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% include "tracklists/partials/bulk_actions.html" %}
+    {% else %}
+    <p class="text-sm text-gray-500">No tracks identified in this recording.</p>
+    {% endif %}
+</div>

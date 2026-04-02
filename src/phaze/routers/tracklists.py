@@ -1,4 +1,4 @@
-"""Tracklists admin UI router -- 1001Tracklists management page."""
+"""Tracklists admin UI router -- 1001Tracklists and fingerprint tracklist management page."""
 
 from pathlib import Path
 from typing import Any
@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +17,9 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tracklist_matcher import compute_match_confidence
 from phaze.services.tracklist_scraper import TracklistScraper
+
+
+EDITABLE_FIELDS = {"artist", "title", "timestamp"}
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -247,11 +250,14 @@ async def get_tracks(
         if version:
             tracks = sorted(version.tracks, key=lambda t: t.position)
 
-    return templates.TemplateResponse(
-        request=request,
-        name="tracklists/partials/track_detail.html",
-        context={"request": request, "tracks": tracks},
-    )
+    if tracklist and tracklist.source == "fingerprint":
+        template_name = "tracklists/partials/fingerprint_track_detail.html"
+        context: dict[str, Any] = {"request": request, "tracklist": tracklist, "tracks": tracks}
+    else:
+        template_name = "tracklists/partials/track_detail.html"
+        context = {"request": request, "tracks": tracks}
+
+    return templates.TemplateResponse(request=request, name=template_name, context=context)
 
 
 @router.post("/{tracklist_id}/link", response_class=HTMLResponse)
@@ -399,6 +405,159 @@ async def undo_link(
         await session.commit()
 
     return await _render_tracklist_list(request, session, "all")
+
+
+@router.get("/tracks/{track_id}/edit/{field}", response_class=HTMLResponse)
+async def edit_track_field(
+    request: Request,
+    track_id: uuid.UUID,
+    field: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return inline edit input for a track field."""
+    if field not in EDITABLE_FIELDS:
+        return HTMLResponse(content="Invalid field", status_code=400)
+
+    result = await session.execute(select(TracklistTrack).where(TracklistTrack.id == track_id))
+    track = result.scalar_one_or_none()
+    if not track:
+        return HTMLResponse(content="Track not found", status_code=404)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/inline_edit_field.html",
+        context={"request": request, "track": track, "field": field},
+    )
+
+
+@router.put("/tracks/{track_id}/edit/{field}", response_class=HTMLResponse)
+async def save_track_field(
+    request: Request,
+    track_id: uuid.UUID,
+    field: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Save an inline edit for a track field and return display-mode HTML."""
+    if field not in EDITABLE_FIELDS:
+        return HTMLResponse(content="Invalid field", status_code=400)
+
+    result = await session.execute(select(TracklistTrack).where(TracklistTrack.id == track_id))
+    track = result.scalar_one_or_none()
+    if not track:
+        return HTMLResponse(content="Track not found", status_code=404)
+
+    form_data = await request.form()
+    new_value = str(form_data.get(field, ""))
+    setattr(track, field, new_value)
+    await session.commit()
+    await session.refresh(track)
+
+    # Return display-mode HTML via Jinja2 template (auto-escaped, remains clickable)
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/inline_display_field.html",
+        context={"request": request, "track": track, "field": field, "value": getattr(track, field) or "-"},
+    )
+
+
+@router.delete("/tracks/{track_id}", response_class=HTMLResponse)
+async def delete_track(
+    track_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Delete a track from a tracklist. Returns empty string for outerHTML swap."""
+    result = await session.execute(select(TracklistTrack).where(TracklistTrack.id == track_id))
+    track = result.scalar_one_or_none()
+    if not track:
+        return HTMLResponse(content="Track not found", status_code=404)
+
+    await session.delete(track)
+    await session.commit()
+    return HTMLResponse(content="")
+
+
+@router.post("/{tracklist_id}/approve", response_class=HTMLResponse)
+async def approve_tracklist(
+    request: Request,
+    tracklist_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Approve a tracklist (set status to 'approved')."""
+    result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
+    tracklist = result.scalar_one_or_none()
+    if not tracklist:
+        return HTMLResponse(content="Tracklist not found", status_code=404)
+
+    tracklist.status = "approved"
+    await session.commit()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/tracklist_card.html",
+        context={"request": request, "tracklist": tracklist},
+    )
+
+
+@router.post("/{tracklist_id}/reject", response_class=HTMLResponse)
+async def reject_tracklist(
+    request: Request,
+    tracklist_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Reject a tracklist (set status to 'rejected')."""
+    result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
+    tracklist = result.scalar_one_or_none()
+    if not tracklist:
+        return HTMLResponse(content="Tracklist not found", status_code=404)
+
+    tracklist.status = "rejected"
+    await session.commit()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/tracklist_card.html",
+        context={"request": request, "tracklist": tracklist},
+    )
+
+
+@router.post("/{tracklist_id}/reject-low", response_class=HTMLResponse)
+async def reject_low_confidence(
+    request: Request,
+    tracklist_id: uuid.UUID,
+    threshold: int = Query(50),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Bulk reject tracks below a confidence threshold."""
+    result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
+    tracklist = result.scalar_one_or_none()
+    if not tracklist:
+        return HTMLResponse(content="Tracklist not found", status_code=404)
+
+    if tracklist.latest_version_id:
+        # Delete low-confidence tracks from the latest version
+        await session.execute(
+            delete(TracklistTrack).where(
+                TracklistTrack.version_id == tracklist.latest_version_id,
+                TracklistTrack.confidence.is_not(None),
+                TracklistTrack.confidence < threshold,
+            )
+        )
+        await session.commit()
+
+        # Reload remaining tracks
+        version_result = await session.execute(
+            select(TracklistVersion).options(selectinload(TracklistVersion.tracks)).where(TracklistVersion.id == tracklist.latest_version_id)
+        )
+        version = version_result.scalar_one_or_none()
+        tracks = sorted(version.tracks, key=lambda t: t.position) if version else []
+    else:
+        tracks = []
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/fingerprint_track_detail.html",
+        context={"request": request, "tracklist": tracklist, "tracks": tracks},
+    )
 
 
 async def _render_tracklist_list(request: Request, session: AsyncSession, filter_value: str, page: int = 1, page_size: int = 20) -> HTMLResponse:
