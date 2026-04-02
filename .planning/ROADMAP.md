@@ -59,7 +59,7 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
   2. User can narrow results by artist, genre, date range, BPM range, and file state using facet controls
   3. Search returns results in under one second on a 200K-file database (PostgreSQL FTS with GIN indexes)
   4. Search page is accessible as a first-class tab in the admin navigation bar
-**Plans**: TBD
+**Plans**: 2 (01-search-data-layer, 02-search-ui)
 **UI hint**: yes
 
 ### Phase 19: Discogs Cross-Service Linking
@@ -116,7 +116,7 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 | 15. 1001Tracklists Integration | v2.0 | 2/2 | Complete | 2026-04-01 |
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 3/3 | Complete | 2026-04-01 |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 3/3 | Complete | 2026-04-02 |
-| 18. Unified Search | v3.0 | 0/? | Not started | - |
+| 18. Unified Search | v3.0 | 2/2 | In progress (checkpoint pending) | - |
 | 19. Discogs Cross-Service Linking | v3.0 | 0/? | Not started | - |
 | 20. Tag Writing | v3.0 | 0/? | Not started | - |
 | 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |
