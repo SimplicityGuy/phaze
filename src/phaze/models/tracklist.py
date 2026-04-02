@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime  # noqa: TC003 — SQLAlchemy needs these at runtime for Mapped[] resolution
 from typing import TYPE_CHECKING
 import uuid
 
@@ -13,8 +14,6 @@ from phaze.models.base import Base, TimestampMixin
 
 
 if TYPE_CHECKING:
-    from datetime import date, datetime
-
     from phaze.models.file import FileRecord
 
 
