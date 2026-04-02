@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
+from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tracklist_matcher import compute_match_confidence
@@ -22,16 +23,21 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/tracklists", tags=["tracklists"])
 
+AUDIO_EXTENSIONS = {"mp3", "m4a", "ogg", "flac", "wav", "opus", "aac"}
+
 
 async def _get_tracklist_stats(session: AsyncSession) -> dict[str, int]:
-    """Query aggregate tracklist counts: total, matched, unmatched."""
+    """Query aggregate tracklist counts: total, matched, unmatched, proposed."""
     total_result = await session.execute(select(func.count(Tracklist.id)))
     total = total_result.scalar() or 0
 
     matched_result = await session.execute(select(func.count(Tracklist.id)).where(Tracklist.file_id.is_not(None)))
     matched = matched_result.scalar() or 0
 
-    return {"total": total, "matched": matched, "unmatched": total - matched}
+    proposed_result = await session.execute(select(func.count(Tracklist.id)).where(Tracklist.status == "proposed"))
+    proposed = proposed_result.scalar() or 0
+
+    return {"total": total, "matched": matched, "unmatched": total - matched, "proposed": proposed}
 
 
 async def _get_tracklist_count(session: AsyncSession, filter_value: str) -> int:
@@ -41,6 +47,8 @@ async def _get_tracklist_count(session: AsyncSession, filter_value: str) -> int:
         stmt = stmt.where(Tracklist.file_id.is_not(None))
     elif filter_value == "unmatched":
         stmt = stmt.where(Tracklist.file_id.is_(None))
+    elif filter_value == "proposed":
+        stmt = stmt.where(Tracklist.status == "proposed")
     result = await session.execute(stmt)
     return result.scalar() or 0
 
@@ -60,6 +68,8 @@ async def list_tracklists(
         stmt = stmt.where(Tracklist.file_id.is_not(None))
     elif filter == "unmatched":
         stmt = stmt.where(Tracklist.file_id.is_(None))
+    elif filter == "proposed":
+        stmt = stmt.where(Tracklist.status == "proposed")
 
     stmt = stmt.order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.created_at.desc())
 
@@ -95,6 +105,127 @@ async def list_tracklists(
         return templates.TemplateResponse(request=request, name="tracklists/partials/tracklist_list.html", context=context)
 
     return templates.TemplateResponse(request=request, name="tracklists/list.html", context=context)
+
+
+@router.get("/scan", response_class=HTMLResponse)
+async def scan_tab(
+    request: Request,
+    page: int = Query(1, ge=1),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return the scan tab content with unscanned audio files."""
+    page_size = 20
+
+    # Subquery: file IDs that already have a fingerprint-sourced tracklist
+    scanned_subquery = select(Tracklist.file_id).where(Tracklist.source == "fingerprint").where(Tracklist.file_id.is_not(None)).correlate(FileRecord)
+
+    # Audio files not yet scanned
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(AUDIO_EXTENSIONS),
+        FileRecord.id.not_in(scanned_subquery),
+    )
+
+    # Count total unscanned
+    count_stmt = select(func.count(FileRecord.id)).where(
+        FileRecord.file_type.in_(AUDIO_EXTENSIONS),
+        FileRecord.id.not_in(scanned_subquery),
+    )
+    count_result = await session.execute(count_stmt)
+    total = count_result.scalar() or 0
+
+    # Paginate
+    offset = (page - 1) * page_size
+    stmt = stmt.order_by(FileRecord.original_filename).offset(offset).limit(page_size)
+
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
+
+    pagination = Pagination(page=page, page_size=page_size, total=total)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/scan_tab.html",
+        context={
+            "request": request,
+            "files": files,
+            "pagination": pagination,
+            "total_unscanned": total,
+        },
+    )
+
+
+@router.post("/scan", response_class=HTMLResponse)
+async def trigger_scan(
+    request: Request,
+    file_ids: list[str] = Form(...),
+) -> HTMLResponse:
+    """Trigger batch fingerprint scanning for selected files."""
+    arq_pool = request.app.state.arq_pool
+    job_ids: list[str] = []
+
+    for fid in file_ids:
+        job = await arq_pool.enqueue_job("scan_live_set", fid)
+        if job is not None:
+            job_ids.append(job.job_id)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/scan_progress.html",
+        context={
+            "request": request,
+            "job_ids": ",".join(job_ids),
+            "total": len(file_ids),
+            "completed": 0,
+            "done": False,
+            "tracklists_created": 0,
+        },
+    )
+
+
+@router.get("/scan/status", response_class=HTMLResponse)
+async def scan_status(
+    request: Request,
+    job_ids: str = Query(...),
+) -> HTMLResponse:
+    """Poll scan progress by checking arq job results."""
+    arq_pool = request.app.state.arq_pool
+    ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
+
+    completed = 0
+    tracklists_created = 0
+    errors: list[str] = []
+
+    for job_id in ids:
+        job = await arq_pool.job(job_id)
+        if job is None:
+            completed += 1
+            continue
+        info = await job.info()
+        if info is not None and info.result is not None:
+            completed += 1
+            result_data = info.result
+            if isinstance(result_data, dict):
+                if result_data.get("status") == "scanned":
+                    tracklists_created += 1
+                elif result_data.get("status") == "error":
+                    errors.append(result_data.get("filename", "unknown"))
+
+    total = len(ids)
+    done = completed >= total
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/scan_progress.html",
+        context={
+            "request": request,
+            "job_ids": job_ids,
+            "total": total,
+            "completed": completed,
+            "done": done,
+            "tracklists_created": tracklists_created,
+            "errors": errors,
+        },
+    )
 
 
 @router.get("/{tracklist_id}/tracks", response_class=HTMLResponse)
@@ -277,6 +408,8 @@ async def _render_tracklist_list(request: Request, session: AsyncSession, filter
         stmt = stmt.where(Tracklist.file_id.is_not(None))
     elif filter_value == "unmatched":
         stmt = stmt.where(Tracklist.file_id.is_(None))
+    elif filter_value == "proposed":
+        stmt = stmt.where(Tracklist.status == "proposed")
 
     stmt = stmt.order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.created_at.desc())
 

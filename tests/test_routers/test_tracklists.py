@@ -1,6 +1,7 @@
 """Integration tests for tracklists router."""
 
 from datetime import date
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import AsyncClient
@@ -11,7 +12,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
-def _make_file(original_path: str = "/music/test.mp3") -> FileRecord:
+def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -> FileRecord:
     """Create a test FileRecord."""
     filename = original_path.rsplit("/", 1)[-1]
     return FileRecord(
@@ -20,7 +21,7 @@ def _make_file(original_path: str = "/music/test.mp3") -> FileRecord:
         original_path=original_path,
         original_filename=filename,
         current_path=original_path,
-        file_type="mp3",
+        file_type=file_type,
         file_size=1000,
         state=FileState.DISCOVERED,
     )
@@ -31,6 +32,8 @@ def _make_tracklist(
     external_id: str | None = None,
     match_confidence: int | None = None,
     auto_linked: bool = False,
+    source: str = "1001tracklists",
+    status: str = "approved",
 ) -> Tracklist:
     """Create a test Tracklist."""
     return Tracklist(
@@ -43,6 +46,8 @@ def _make_tracklist(
         artist="Test Artist",
         event="Test Festival",
         date=date(2024, 4, 14),
+        source=source,
+        status=status,
     )
 
 
@@ -209,3 +214,95 @@ async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -
     assert "Total Tracklists" in response.text
     assert "Matched" in response.text
     assert "Unmatched" in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_tab(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan returns scan tab HTML with file list."""
+    file1 = _make_file(original_path="/music/live-set-1.mp3", file_type="mp3")
+    file2 = _make_file(original_path="/music/live-set-2.m4a", file_type="m4a")
+    session.add_all([file1, file2])
+    await session.flush()
+
+    response = await client.get("/tracklists/scan")
+    assert response.status_code == 200
+    assert "Scan Live Sets" in response.text
+    assert "live-set-1.mp3" in response.text
+    assert "live-set-2.m4a" in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_excludes_already_scanned(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan excludes files that already have fingerprint tracklists."""
+    file1 = _make_file(original_path="/music/already-done.mp3", file_type="mp3")
+    file2 = _make_file(original_path="/music/fresh-file.mp3", file_type="mp3")
+    session.add_all([file1, file2])
+    await session.flush()
+
+    # Link file1 to a fingerprint-sourced tracklist
+    tl = _make_tracklist(file_id=file1.id, external_id="fp-scanned", source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.get("/tracklists/scan")
+    assert response.status_code == 200
+    assert "fresh-file.mp3" in response.text
+    assert "already-done.mp3" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_empty_state(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/scan with no unscanned files shows empty state."""
+    response = await client.get("/tracklists/scan")
+    assert response.status_code == 200
+    assert "No unscanned files" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/scan enqueues arq jobs and returns progress HTML."""
+    # Mock arq pool
+    mock_job = MagicMock()
+    mock_job.job_id = "test-job-123"
+    mock_pool = AsyncMock()
+    mock_pool.enqueue_job = AsyncMock(return_value=mock_job)
+    client._transport.app.state.arq_pool = mock_pool  # type: ignore[union-attr]
+
+    file_id = str(uuid.uuid4())
+    response = await client.post("/tracklists/scan", data={"file_ids": [file_id]})
+    assert response.status_code == 200
+    assert "Scanning..." in response.text
+    mock_pool.enqueue_job.assert_called_once_with("scan_live_set", file_id)
+
+
+@pytest.mark.asyncio
+async def test_proposed_filter(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/?filter=proposed returns only proposed tracklists."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    proposed = _make_tracklist(file_id=file.id, external_id="fp-proposed", source="fingerprint", status="proposed")
+    approved = _make_tracklist(external_id="tl-approved", source="1001tracklists", status="approved")
+    session.add_all([proposed, approved])
+    await session.flush()
+
+    response = await client.get("/tracklists/?filter=proposed")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_stats_include_proposed(session: AsyncSession, client: AsyncClient) -> None:
+    """Stats dict includes proposed count."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    proposed = _make_tracklist(file_id=file.id, external_id="fp-stats", source="fingerprint", status="proposed")
+    approved = _make_tracklist(external_id="tl-stats-appr", source="1001tracklists", status="approved")
+    session.add_all([proposed, approved])
+    await session.flush()
+
+    response = await client.get("/tracklists/")
+    assert response.status_code == 200
+    assert "Proposed" in response.text

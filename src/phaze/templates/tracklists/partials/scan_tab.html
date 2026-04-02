@@ -1,0 +1,26 @@
+{% if files %}
+<div class="bg-white border border-gray-200 rounded-lg p-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-1">Scan Live Sets</h2>
+    <p class="text-sm text-gray-500 mb-4">Select files to scan against the fingerprint database.</p>
+    <form hx-post="/tracklists/scan" hx-target="#scan-panel" hx-swap="innerHTML">
+        <div class="space-y-1">
+            {% for file in files %}
+            <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50">
+                <input type="checkbox" name="file_ids" value="{{ file.id }}" class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                <span class="text-sm text-gray-900 flex-1 truncate">{{ file.original_filename }}</span>
+                <span class="text-sm text-gray-400 w-24 text-right">{{ file.file_size }}</span>
+                <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-600 w-12 text-center">{{ file.file_type | upper }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </form>
+    <div class="px-4 py-3 text-xs text-gray-500">
+        Showing {{ files | length }} of {{ total_unscanned }} unscanned files
+    </div>
+</div>
+{% else %}
+<div class="text-center py-12">
+    <h2 class="text-lg font-semibold text-gray-900 mb-2">No unscanned files</h2>
+    <p class="text-sm text-gray-500 max-w-md mx-auto">All files have already been scanned against the fingerprint database. Re-scan a file by selecting it from the file list.</p>
+</div>
+{% endif %}
