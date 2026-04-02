@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: defining_requirements
+status: ready_to_plan
 stopped_at: null
 last_updated: "2026-04-02"
 last_activity: 2026-04-02
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Defining requirements for v3.0
+**Current focus:** Phase 18: Unified Search
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: --
-Status: Defining requirements
-Last activity: 2026-04-02 -- Milestone v3.0 started
+Phase: 18 of 21 (Unified Search) -- first of 4 v3.0 phases
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-04-02 -- v3.0 roadmap created, 4 phases (18-21) from 15 requirements
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [░░░░░░░░░░] 0% (v3.0)
 
 ## Performance Metrics
 
@@ -54,7 +54,10 @@ Progress: [░░░░░░░░░░] 0%
 
 ### Decisions
 
-(None yet for v3.0)
+- v3.0 scope: Search, Discogs Linking, Tag Writing, CUE Sheets -- enrichment layer, not pipeline extension
+- FileState enum NOT extended -- enrichment tracked via TagWriteLog and DiscogsLink tables
+- Zero new pip dependencies -- httpx, mutagen, rapidfuzz, SQLAlchemy already in pyproject.toml
+- Discogs integration routes through discogsography HTTP API only, never direct Discogs API
 
 ### Pending Todos
 
@@ -62,11 +65,11 @@ None.
 
 ### Blockers/Concerns
 
-- Discogsography HTTP API endpoints need to be verified/documented before integration phase
-- arq has been replaced by SAQ — all new task code must use SAQ conventions
+- Phase 19: Verify discogsography `/api/search` response shape before writing adapter (research flag)
+- arq replaced by SAQ -- all new task code must use SAQ conventions
 
 ## Session Continuity
 
 Last session: 2026-04-02
-Stopped at: Defining v3.0 requirements
+Stopped at: v3.0 roadmap created, ready to plan Phase 18
 Resume file: None

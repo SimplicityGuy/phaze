@@ -62,27 +62,27 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SRCH-01 | TBD | Pending |
-| SRCH-02 | TBD | Pending |
-| SRCH-03 | TBD | Pending |
-| SRCH-04 | TBD | Pending |
-| DISC-01 | TBD | Pending |
-| DISC-02 | TBD | Pending |
-| DISC-03 | TBD | Pending |
-| DISC-04 | TBD | Pending |
-| TAGW-01 | TBD | Pending |
-| TAGW-02 | TBD | Pending |
-| TAGW-03 | TBD | Pending |
-| TAGW-04 | TBD | Pending |
-| CUE-01 | TBD | Pending |
-| CUE-02 | TBD | Pending |
-| CUE-03 | TBD | Pending |
+| SRCH-01 | Phase 18 | Pending |
+| SRCH-02 | Phase 18 | Pending |
+| SRCH-03 | Phase 18 | Pending |
+| SRCH-04 | Phase 18 | Pending |
+| DISC-01 | Phase 19 | Pending |
+| DISC-02 | Phase 19 | Pending |
+| DISC-03 | Phase 19 | Pending |
+| DISC-04 | Phase 19 | Pending |
+| TAGW-01 | Phase 20 | Pending |
+| TAGW-02 | Phase 20 | Pending |
+| TAGW-03 | Phase 20 | Pending |
+| TAGW-04 | Phase 20 | Pending |
+| CUE-01 | Phase 21 | Pending |
+| CUE-02 | Phase 21 | Pending |
+| CUE-03 | Phase 21 | Pending |
 
 **Coverage:**
 - v3.0 requirements: 15 total
-- Mapped to phases: 0
-- Unmapped: 15
+- Mapped to phases: 15
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-02*
-*Last updated: 2026-04-02 after initial definition*
+*Last updated: 2026-04-02 after roadmap creation*
