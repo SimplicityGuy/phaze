@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: ready_to_plan
-stopped_at: null
-last_updated: "2026-04-02"
-last_activity: 2026-04-02
+status: planning
+stopped_at: Completed 18-01-PLAN.md
+last_updated: "2026-04-02T23:41:40.702Z"
+last_activity: 2026-04-02 -- v3.0 roadmap created, 4 phases (18-21) from 15 requirements
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 0
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -58,6 +58,7 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - FileState enum NOT extended -- enrichment tracked via TagWriteLog and DiscogsLink tables
 - Zero new pip dependencies -- httpx, mutagen, rapidfuzz, SQLAlchemy already in pyproject.toml
 - Discogs integration routes through discogsography HTTP API only, never direct Discogs API
+- [Phase 18]: Expression-based tsvector for test compatibility and GIN index auto-use
 
 ### Pending Todos
 
@@ -70,6 +71,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-02
-Stopped at: v3.0 roadmap created, ready to plan Phase 18
+Last session: 2026-04-02T23:41:40.699Z
+Stopped at: Completed 18-01-PLAN.md
 Resume file: None
