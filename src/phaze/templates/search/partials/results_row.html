@@ -1,0 +1,31 @@
+<tr class="border-b border-gray-100 hover:bg-gray-50 cursor-pointer">
+    <td class="px-3 py-3">
+        {% if result.result_type == "file" %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">File</span>
+        {% else %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">Tracklist</span>
+        {% endif %}
+    </td>
+    <td class="px-3 py-3 text-sm text-gray-900 truncate max-w-md">{{ result.title }}</td>
+    <td class="px-3 py-3 text-sm text-gray-700 truncate">{{ result.artist or "--" }}</td>
+    <td class="px-3 py-3 text-sm text-gray-500">{{ result.genre or "--" }}</td>
+    <td class="px-3 py-3">
+        {% set state_lower = result.state|lower %}
+        {% if state_lower in ("discovered", "ingested") %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">{{ result.state }}</span>
+        {% elif state_lower in ("metadata_extracted", "analyzed", "fingerprinted") %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-700">{{ result.state }}</span>
+        {% elif state_lower in ("proposal_generated", "proposed") %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">{{ result.state }}</span>
+        {% elif state_lower == "approved" %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">{{ result.state }}</span>
+        {% elif state_lower == "rejected" %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">{{ result.state }}</span>
+        {% elif state_lower == "executed" %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">{{ result.state }}</span>
+        {% else %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">{{ result.state }}</span>
+        {% endif %}
+    </td>
+    <td class="px-3 py-3 text-sm text-gray-400">{{ result.date or "--" }}</td>
+</tr>

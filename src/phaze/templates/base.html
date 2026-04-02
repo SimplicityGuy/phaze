@@ -36,6 +36,10 @@
     <!-- Navigation -->
     <nav aria-label="Main navigation" class="max-w-7xl mx-auto px-4 pt-4">
         <div class="flex gap-2">
+            <a href="/search/"
+               class="text-sm font-semibold px-3 py-2 {% if current_page == 'search' %}text-blue-600{% else %}text-gray-600 hover:text-gray-900{% endif %}">
+                Search
+            </a>
             <a href="/pipeline/"
                class="text-sm font-semibold px-3 py-2 {% if current_page == 'pipeline' %}text-blue-600{% else %}text-gray-600 hover:text-gray-900{% endif %}">
                 Pipeline
