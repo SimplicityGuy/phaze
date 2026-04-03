@@ -9,6 +9,7 @@ from sqlalchemy import String, func, literal_column, select, union_all
 from sqlalchemy.sql.expression import cast
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist
@@ -21,10 +22,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class SearchResult:
-    """A single search result from either files or tracklists."""
+    """A single search result from files, tracklists, or Discogs releases."""
 
     id: str
-    result_type: str  # "file" or "tracklist"
+    result_type: str  # "file", "tracklist", or "discogs_release"
     title: str
     artist: str | None
     genre: str | None
@@ -109,8 +110,31 @@ async def search(
     if date_to:
         tracklist_q = tracklist_q.where(Tracklist.date <= date_to)
 
-    # When file_state filter is active, exclude tracklists entirely
-    combined = file_q.subquery() if file_state else union_all(file_q, tracklist_q).subquery()
+    # Discogs release subquery (only accepted links, per D-09)
+    discogs_tsvector = func.to_tsvector(
+        "simple",
+        func.concat_ws(" ", DiscogsLink.discogs_artist, DiscogsLink.discogs_title),
+    )
+    discogs_q = (
+        select(
+            cast(DiscogsLink.id, String).label("id"),
+            literal_column("'discogs_release'").label("result_type"),
+            DiscogsLink.discogs_title.label("title"),
+            DiscogsLink.discogs_artist.label("artist"),
+            literal_column("NULL").label("genre"),
+            DiscogsLink.status.label("state"),
+            cast(DiscogsLink.discogs_year, String).label("date"),
+            func.ts_rank(discogs_tsvector, ts_query).label("rank"),
+        )
+        .where(discogs_tsvector.op("@@")(ts_query))
+        .where(DiscogsLink.status == "accepted")
+    )
+
+    if artist:
+        discogs_q = discogs_q.where(DiscogsLink.discogs_artist.ilike(f"%{artist}%"))
+
+    # When file_state filter is active, exclude tracklists and Discogs results entirely
+    combined = file_q.subquery() if file_state else union_all(file_q, tracklist_q, discogs_q).subquery()
 
     # Count total
     count_q = select(func.count()).select_from(combined)
@@ -141,11 +165,16 @@ async def search(
 
 
 async def get_summary_counts(session: AsyncSession) -> dict[str, int]:
-    """Return total file and tracklist counts for the search landing page."""
+    """Return total file, tracklist, and Discogs link counts for the search landing page."""
     file_count_result = await session.execute(select(func.count()).select_from(FileRecord))
     file_count = file_count_result.scalar() or 0
 
     tracklist_count_result = await session.execute(select(func.count()).select_from(Tracklist))
     tracklist_count = tracklist_count_result.scalar() or 0
 
-    return {"file_count": file_count, "tracklist_count": tracklist_count}
+    discogs_count_result = await session.execute(
+        select(func.count()).select_from(DiscogsLink).where(DiscogsLink.status == "accepted")
+    )
+    discogs_count = discogs_count_result.scalar() or 0
+
+    return {"file_count": file_count, "tracklist_count": tracklist_count, "discogs_count": discogs_count}
