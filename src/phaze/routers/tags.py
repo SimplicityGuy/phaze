@@ -52,16 +52,12 @@ async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
     total_executed = executed_result.scalar() or 0
 
     # Count completed writes
-    completed_stmt = (
-        select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
-    )
+    completed_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
     completed_result = await session.execute(completed_stmt)
     completed = completed_result.scalar() or 0
 
     # Count discrepancy writes
-    discrepancy_stmt = (
-        select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.DISCREPANCY)
-    )
+    discrepancy_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.DISCREPANCY)
     discrepancy_result = await session.execute(discrepancy_stmt)
     discrepancies = discrepancy_result.scalar() or 0
 
@@ -100,14 +96,20 @@ def _build_comparison(
     for field in CORE_FIELDS:
         current_val = getattr(file_metadata, field, None) if file_metadata else None
         proposed_val = proposed_tags.get(field)
-        changed = str(current_val) != str(proposed_val) if current_val is not None and proposed_val is not None else (current_val is not None) != (proposed_val is not None)
-        comparison.append({
-            "field": field,
-            "label": FIELD_LABELS.get(field, field),
-            "current": current_val,
-            "proposed": proposed_val,
-            "changed": changed,
-        })
+        changed = (
+            str(current_val) != str(proposed_val)
+            if current_val is not None and proposed_val is not None
+            else (current_val is not None) != (proposed_val is not None)
+        )
+        comparison.append(
+            {
+                "field": field,
+                "label": FIELD_LABELS.get(field, field),
+                "current": current_val,
+                "proposed": proposed_val,
+                "changed": changed,
+            }
+        )
     return comparison
 
 
@@ -161,14 +163,16 @@ async def list_tags(
         changes = _count_changes(comparison)
         status = _determine_file_status(write_log)
 
-        files.append({
-            "id": fr.id,
-            "filename": fr.original_filename,
-            "file_type": fr.file_type,
-            "changes": changes,
-            "status": status,
-            "comparison": comparison,
-        })
+        files.append(
+            {
+                "id": fr.id,
+                "filename": fr.original_filename,
+                "file_type": fr.file_type,
+                "changes": changes,
+                "status": status,
+                "comparison": comparison,
+            }
+        )
 
     stats = await _get_tag_stats(session)
     pagination = Pagination(page=page, page_size=page_size, total=total)
