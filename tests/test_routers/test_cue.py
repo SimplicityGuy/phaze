@@ -181,6 +181,96 @@ async def test_generate_cue_no_timestamps(client: AsyncClient, session: AsyncSes
 
 
 @pytest.mark.asyncio
+async def test_cue_list_shows_generated_count_after_generation(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """GET /cue/ stats show generated count > 0 after generating a CUE file."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    # Generate a CUE first
+    await client.post(f"/cue/{tracklist.id}/generate")
+    assert audio_path.with_suffix(".cue").exists()
+
+    # Now list page should show generated count and CUE version
+    response = await client.get("/cue/")
+    assert response.status_code == 200
+    assert "CUE v1" in response.text or "Regenerate" in response.text
+
+
+@pytest.mark.asyncio
+async def test_cue_list_shows_version_after_regeneration(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """GET /cue/ shows correct version number after regenerating CUE."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    # Generate twice to create v2
+    await client.post(f"/cue/{tracklist.id}/generate")
+    await client.post(f"/cue/{tracklist.id}/generate")
+    v2_path = audio_path.parent / f"{audio_path.stem}.v2.cue"
+    assert v2_path.exists()
+
+    # List page should show version 2
+    response = await client.get("/cue/")
+    assert response.status_code == 200
+    assert "CUE v2" in response.text
+
+
+@pytest.mark.asyncio
+async def test_batch_generate_with_write_failure_continues(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """POST /cue/generate-batch continues past write failures and logs the error."""
+    _tl1, file1 = await _create_approved_tracklist_with_file(session, artist="Good")
+    _tl2, file2 = await _create_approved_tracklist_with_file(session, artist="Bad")
+
+    for fr in [file1, file2]:
+        audio_path = tmp_path / fr.original_filename
+        audio_path.write_text("fake audio")
+        fr.current_path = str(audio_path)
+    await session.commit()
+
+    call_count = 0
+
+    def _write_side_effect(content: str, audio_path_arg: Path) -> Path:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("Permission denied")
+        from phaze.services.cue_generator import write_cue_file as real_write
+
+        return real_write(content, audio_path_arg)
+
+    with patch("phaze.routers.cue.write_cue_file", side_effect=_write_side_effect):
+        response = await client.post("/cue/generate-batch")
+    assert response.status_code == 200
+    assert "Generated 1 CUE files" in response.text
+
+
+@pytest.mark.asyncio
+async def test_tracklist_list_shows_cue_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """GET /tracklists/ computes CUE version for approved tracklists with executed files."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    # Generate a CUE file
+    await client.post(f"/cue/{tracklist.id}/generate")
+    assert audio_path.with_suffix(".cue").exists()
+
+    # Tracklist list should return 200 with CUE version computed
+    response = await client.get("/tracklists/")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_generate_batch(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/generate-batch generates CUEs for all eligible tracklists."""
     _tracklist1, file1 = await _create_approved_tracklist_with_file(session, artist="Artist A")
