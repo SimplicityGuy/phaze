@@ -21,6 +21,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 ## Current State
 
 **v2.0 shipped 2026-04-02.** Metadata enrichment and tracklist integration complete.
+**Phase 18 complete (2026-04-03):** Unified search page with PostgreSQL FTS, GIN indexes, cross-entity results, faceted filtering.
 
 - 5,966 lines of Python across 17 phases (6 in v2.0), 40 plans total
 - 538 tests passing, 23/23 v2.0 requirements satisfied (42/42 cumulative)
@@ -149,4 +150,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after starting v3.0 milestone — Cross-Service Intelligence & File Enrichment*
+*Last updated: 2026-04-03 after Phase 18 complete — Unified Search*
