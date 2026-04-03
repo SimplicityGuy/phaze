@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: executing
-stopped_at: Completed 19-01-PLAN.md
-last_updated: "2026-04-03T03:51:24.223Z"
+stopped_at: Completed 19-03-PLAN.md
+last_updated: "2026-04-03T03:59:25.052Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 5
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 19 (discogs-cross-service-linking) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-03
 
@@ -61,6 +61,8 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - Search UI: HTMX partial detection via truthy HX-Request header check
 - Search UI: Alpine.js collapsible filter panel pattern (x-data showFilters boolean)
 - [Phase 19]: Confidence blending: 0.6 token_set_ratio + 0.4 API relevance, denormalized Discogs metadata in DiscogsLink
+- [Phase 19]: Discogs results excluded when file_state filter active, matching tracklist exclusion pattern
+- [Phase 19]: Three-entity UNION ALL search: file (blue), tracklist (green), discogs_release (purple) pill colors
 
 ### Pending Todos
 
@@ -73,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T03:51:24.220Z
-Stopped at: Completed 19-01-PLAN.md
+Last session: 2026-04-03T03:59:25.049Z
+Stopped at: Completed 19-03-PLAN.md
 Resume file: None

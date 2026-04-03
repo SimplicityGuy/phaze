@@ -75,7 +75,7 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 Plans:
 - [x] 19-01-PLAN.md -- Data layer: DiscogsLink model, migration, API adapter, fuzzy matcher, SAQ task
 - [ ] 19-02-PLAN.md -- Tracklist UI: match/accept/dismiss/bulk-link endpoints and templates
-- [ ] 19-03-PLAN.md -- Search extension: Discogs UNION ALL branch and purple pill badge
+- [x] 19-03-PLAN.md -- Search extension: Discogs UNION ALL branch and purple pill badge
 **UI hint**: yes
 
 ### Phase 20: Tag Writing
@@ -122,6 +122,6 @@ Plans:
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 3/3 | Complete | 2026-04-01 |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 3/3 | Complete | 2026-04-02 |
 | 18. Unified Search | v3.0 | 2/2 | Complete    | 2026-04-03 |
-| 19. Discogs Cross-Service Linking | v3.0 | 1/3 | In Progress|  |
+| 19. Discogs Cross-Service Linking | v3.0 | 2/3 | In Progress|  |
 | 20. Tag Writing | v3.0 | 0/? | Not started | - |
 | 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |
