@@ -93,12 +93,23 @@
         {% include "tracklists/partials/discogs_match_button.html" %}
         {% include "tracklists/partials/discogs_bulk_link.html" %}
         {% if tracklist.status == 'approved' and tracklist.file_id %}
+        {% set cv = tracklist._cue_version if tracklist._cue_version is defined else (cue_version if cue_version is defined else 0) %}
+        {% if cv > 0 %}
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">CUE v{{ cv }}</span>
+        <button hx-post="/cue/{{ tracklist.id }}/generate"
+                hx-target="#tracklist-{{ tracklist.id }}"
+                hx-swap="outerHTML"
+                class="text-xs text-green-600 hover:text-green-700 font-semibold px-2 py-1">
+            Regenerate CUE
+        </button>
+        {% else %}
         <button hx-post="/cue/{{ tracklist.id }}/generate"
                 hx-target="#tracklist-{{ tracklist.id }}"
                 hx-swap="outerHTML"
                 class="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md">
             Generate CUE
         </button>
+        {% endif %}
         {% endif %}
     </div>
 
@@ -109,3 +120,13 @@
     <!-- Search results panel -->
     <div id="search-panel-{{ tracklist.id }}"></div>
 </div>
+
+{% if toast_message is defined and toast_message %}
+<div hx-swap-oob="beforeend:#toast-container">
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow-lg" role="status"
+         x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
+         x-transition>
+        {{ toast_message }}
+    </div>
+</div>
+{% endif %}

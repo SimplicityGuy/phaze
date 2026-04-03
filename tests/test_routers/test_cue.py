@@ -241,3 +241,24 @@ async def test_cue_list_fingerprint_first(client: AsyncClient, session: AsyncSes
     fp_pos = text.index("AAA First")
     tt_pos = text.index("ZZZ Last")
     assert fp_pos < tt_pos, "Fingerprint-sourced tracklist should appear before 1001tracklists-sourced"
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_returns_tracklist_card_when_target_is_tracklist(
+    client: AsyncClient, session: AsyncSession, tmp_path: Path
+) -> None:
+    """POST /cue/{id}/generate with HX-Target: tracklist-{id} returns tracklist card with Regenerate CUE."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"tracklist-{tracklist.id}"},
+    )
+    assert response.status_code == 200
+    assert "Regenerate CUE" in response.text
+    assert "CUE v1" in response.text

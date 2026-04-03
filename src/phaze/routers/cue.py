@@ -285,6 +285,21 @@ async def generate_cue(
         )
         track_count = count_result.scalar() or 0
 
+    # Detect if request came from tracklist card (HX-Target starts with "tracklist-")
+    hx_target = request.headers.get("HX-Target", "")
+    if hx_target.startswith("tracklist-"):
+        # Request came from tracklist card -- return updated card
+        return templates.TemplateResponse(
+            request=request,
+            name="tracklists/partials/tracklist_card.html",
+            context={
+                "request": request,
+                "tracklist": tracklist,
+                "cue_version": cue_version,
+                "toast_message": toast_msg,
+            },
+        )
+
     row_data: dict[str, Any] = {
         "id": tracklist.id,
         "artist": tracklist.artist or "Unknown Artist",
