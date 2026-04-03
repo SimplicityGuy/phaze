@@ -129,8 +129,9 @@ def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTr
         if track.artist:
             lines.append(f'    PERFORMER "{track.artist}"')
 
-        # INDEX command with converted timestamp
-        assert track.timestamp_seconds is not None  # guaranteed by filter above
+        # INDEX command with converted timestamp (timestamp_seconds guaranteed non-None by filter above)
+        if track.timestamp_seconds is None:
+            continue
         lines.append(f"    INDEX 01 {seconds_to_cue_timestamp(track.timestamp_seconds)}")
 
     return "\n".join(lines) + "\n"

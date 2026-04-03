@@ -1,5 +1,6 @@
 """CUE sheet management UI router -- generation, batch generation, and CUE management page."""
 
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -19,6 +20,8 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string, write_cue_file
 from phaze.services.proposal_queries import Pagination
 
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -339,7 +342,8 @@ async def generate_batch(
             content = generate_cue_content(audio_path.name, fr.file_type, cue_tracks)
             write_cue_file(content, audio_path)
             generated_count += 1
-        except Exception:  # noqa: S112
+        except Exception:
+            logger.exception("Failed to generate CUE for tracklist %s", tl.id)
             continue
 
     toast_msg = f"Generated {generated_count} CUE files"
