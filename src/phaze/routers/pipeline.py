@@ -54,7 +54,7 @@ async def trigger_analysis(
     """Enqueue process_file jobs for all DISCOVERED files (per D-01, D-04).
 
     One SAQ job per file. Enqueue runs in a background task to avoid
-    HTTP timeout on large file counts (200K+). Returns immediately
+    HTTP timeout on large file counts. Returns immediately
     with the expected enqueue count.
     """
     files = await get_files_by_state(session, FileState.DISCOVERED)

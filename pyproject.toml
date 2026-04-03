@@ -79,10 +79,6 @@ mypy_path = ["src"]
 exclude = "^(tests/|prototype/|services/)"
 
 [[tool.mypy.overrides]]
-module = "tests.*"
-disallow_untyped_decorators = false
-
-[[tool.mypy.overrides]]
 module = ["essentia", "essentia.*"]
 ignore_missing_imports = true
 

@@ -7,7 +7,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 [![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
 
-A music collection organizer that ingests ~200K music and concert files, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.
+A music collection organizer that ingests music and concert files, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.
 
 ## Architecture
 
@@ -38,7 +38,7 @@ stateDiagram-v2
     [*] --> DISCOVERED
     DISCOVERED --> METADATA_EXTRACTED : mutagen
     METADATA_EXTRACTED --> FINGERPRINTED : audfprint + panako
-    FINGERPRINTED --> ANALYZED : librosa + essentia
+    FINGERPRINTED --> ANALYZED : essentia
     ANALYZED --> PROPOSAL_GENERATED : LLM via litellm
     PROPOSAL_GENERATED --> APPROVED : human review
     PROPOSAL_GENERATED --> REJECTED : human review
@@ -388,7 +388,7 @@ phaze/
 │   ├── services/               # Business logic
 │   │   ├── ingestion.py        #   File discovery, hashing, bulk upsert
 │   │   ├── metadata.py         #   Tag extraction via mutagen
-│   │   ├── analysis.py         #   BPM/key/mood via librosa + essentia
+│   │   ├── analysis.py         #   BPM/key/mood via essentia
 │   │   ├── fingerprint.py      #   Multi-engine fingerprint orchestrator
 │   │   ├── proposal.py         #   LLM calling + context building
 │   │   ├── proposal_queries.py #   Proposal queries + pagination
@@ -455,7 +455,7 @@ phaze/
 | **Migrations** | Alembic (async template)                | Database schema management           |
 | **Task Queue** | SAQ + Redis                             | Async background job processing      |
 | **Audio Tags** | mutagen                                 | Read/write audio metadata            |
-| **Analysis**   | librosa + essentia-tensorflow           | BPM, key, mood, style detection      |
+| **Analysis**   | essentia-tensorflow                     | BPM, key, mood, style detection      |
 | **Fingerprint**| audfprint + Panako                      | Audio deduplication + identification |
 | **AI/LLM**     | litellm (pinned <1.82.7)               | Unified LLM API for rename proposals |
 | **Scraping**   | BeautifulSoup4 + lxml                   | 1001Tracklists integration           |
