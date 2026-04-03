@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: executing
-stopped_at: Completed 21-01-PLAN.md
-last_updated: "2026-04-03T21:58:48.103Z"
+stopped_at: Completed 21-02-PLAN.md
+last_updated: "2026-04-03T22:14:47.239Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 4
-  completed_phases: 3
-  total_plans: 8
-  completed_plans: 9
+  completed_phases: 4
+  total_plans: 10
+  completed_plans: 10
   percent: 0
 ---
 
@@ -70,6 +70,7 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - [Phase 20-tag-writing]: Tag row partial with OOB toast for post-write HTMX swap response
 - [Phase 20-tag-writing]: Server-side fallback for empty form data in Write Tags endpoint; ID-based HTMX targeting over closest tr
 - [Phase 21]: CueTrackData uses dataclass not Pydantic for zero-overhead service input
+- [Phase 21]: Dropped from __future__ annotations in CUE router to avoid FastAPI uuid runtime resolution issues
 
 ### Pending Todos
 
@@ -82,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T21:58:48.100Z
-Stopped at: Completed 21-01-PLAN.md
+Last session: 2026-04-03T22:14:47.235Z
+Stopped at: Completed 21-02-PLAN.md
 Resume file: None
