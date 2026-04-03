@@ -3,7 +3,6 @@
 
     {% set has_changes = comparison|selectattr("changed")|list|length > 0 %}
 
-    {% if has_changes %}
     <table class="w-full text-sm">
         <thead>
             <tr class="border-b border-gray-200">
@@ -14,7 +13,7 @@
         </thead>
         <tbody>
             {% for item in comparison %}
-            <tr class="border-b border-gray-100">
+            <tr class="border-b border-gray-100{% if item.changed %} bg-yellow-50{% endif %}">
                 <td class="py-1 px-2 font-semibold text-sm">{{ item.label }}</td>
                 <td class="py-1 px-2 text-gray-500">
                     {% if item.current is not none and item.current != '' %}
@@ -31,6 +30,7 @@
         </tbody>
     </table>
 
+    {% if has_changes %}
     <form hx-post="/tags/{{ file.id }}/write"
           hx-target="#row-{{ file.id }}"
           hx-swap="outerHTML">
@@ -43,6 +43,6 @@
         </button>
     </form>
     {% else %}
-    <p class="text-gray-400 italic">No changes</p>
+    <p class="text-gray-400 italic text-sm mt-2">All tags match — no changes needed</p>
     {% endif %}
 </div>
