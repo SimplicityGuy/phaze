@@ -239,9 +239,7 @@ class TestExecuteTagWrite:
             patch("phaze.services.tag_writer.write_tags") as mock_write,
             patch("phaze.services.tag_writer.verify_write", return_value={}),
         ):
-            mock_extract.return_value = MagicMock(
-                artist=None, title=None, album=None, year=None, genre=None, track_number=None
-            )
+            mock_extract.return_value = MagicMock(artist=None, title=None, album=None, year=None, genre=None, track_number=None)
             await execute_tag_write(session, fr, {"artist": "Test"}, "tracklist")
             mock_write.assert_called_once_with("/dest/music.mp3", {"artist": "Test"})
 
