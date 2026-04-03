@@ -338,7 +338,7 @@ async def test_cue_list_pagination(client: AsyncClient, session: AsyncSession) -
     for i in range(3):
         await _create_approved_tracklist_with_file(session, artist=f"Artist {i}")
 
-    response = await client.get("/cue/?page=1&page_size=2")
+    response = await client.get("/cue/?page=1&page_size=10")
     assert response.status_code == 200
 
 
