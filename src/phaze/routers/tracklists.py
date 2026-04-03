@@ -15,8 +15,9 @@ from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord
+from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.routers.cue import _get_cue_version
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tracklist_matcher import compute_match_confidence
 from phaze.services.tracklist_scraper import TracklistScraper
@@ -94,6 +95,18 @@ async def list_tracklists(
             tl._track_count = count_result.scalar() or 0  # type: ignore[attr-defined]
         else:
             tl._track_count = 0  # type: ignore[attr-defined]
+
+    # Compute CUE version for approved tracklists with executed files
+    for tl in tracklists:
+        if tl.status == "approved" and tl.file_id:
+            fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tl.file_id))
+            fr = fr_result.scalar_one_or_none()
+            if fr and fr.state == FileState.EXECUTED:
+                tl._cue_version = _get_cue_version(fr.current_path)  # type: ignore[attr-defined]
+            else:
+                tl._cue_version = 0  # type: ignore[attr-defined]
+        else:
+            tl._cue_version = 0  # type: ignore[attr-defined]
 
     stats = await _get_tracklist_stats(session)
     pagination = Pagination(page=page, page_size=page_size, total=total)
@@ -316,7 +329,7 @@ async def rescrape_tracklist(
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "rescrape_queued": True},
+        context={"request": request, "tracklist": tracklist, "rescrape_queued": True, "cue_version": 0},
     )
 
 
@@ -493,10 +506,17 @@ async def approve_tracklist(
     tracklist.status = "approved"
     await session.commit()
 
+    cue_version = 0
+    if tracklist.file_id:
+        fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tracklist.file_id))
+        fr = fr_result.scalar_one_or_none()
+        if fr and fr.state == FileState.EXECUTED:
+            cue_version = _get_cue_version(fr.current_path)
+
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist},
+        context={"request": request, "tracklist": tracklist, "cue_version": cue_version},
     )
 
 
@@ -518,7 +538,7 @@ async def reject_tracklist(
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist},
+        context={"request": request, "tracklist": tracklist, "cue_version": 0},
     )
 
 
@@ -580,7 +600,7 @@ async def match_discogs(
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "match_queued": True},
+        context={"request": request, "tracklist": tracklist, "match_queued": True, "cue_version": 0},
     )
 
 

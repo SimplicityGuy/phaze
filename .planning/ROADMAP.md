@@ -46,7 +46,7 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 - [x] **Phase 18: Unified Search** - Full-text search across files, tracklists, and metadata with faceted filtering (completed 2026-04-03)
 - [x] **Phase 19: Discogs Cross-Service Linking** - Fuzzy-match tracks to Discogs releases via discogsography, store candidate links with confidence scores (completed 2026-04-03)
 - [x] **Phase 20: Tag Writing** - Write corrected tags to destination file copies with review UI, verify-after-write, and audit logging (completed 2026-04-03)
-- [ ] **Phase 21: CUE Sheet Generation** - Generate .cue companion files from tracklist timestamps with Discogs metadata enrichment
+- [x] **Phase 21: CUE Sheet Generation** - Generate .cue companion files from tracklist timestamps with Discogs metadata enrichment (completed 2026-04-03)
 
 ## Phase Details
 
@@ -101,7 +101,11 @@ Plans:
   1. User can generate a .cue file from any approved tracklist, with timestamps preferring fingerprint data over 1001tracklists positions
   2. Generated CUE files use correct 75fps frame conversion (MM:SS:FF) and UTF-8 with BOM encoding
   3. CUE files include REM comments with Discogs metadata (genre, label, catalog number, year) when available
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 21-01-PLAN.md -- CUE generator service: timestamp conversion, content generation, file writing (TDD)
+- [x] 21-02-PLAN.md -- CUE UI: router, management page, tracklist inline button, nav tab, integration tests
+**UI hint**: yes
 
 ## Progress
 
@@ -127,4 +131,4 @@ Plans:
 | 18. Unified Search | v3.0 | 2/2 | Complete    | 2026-04-03 |
 | 19. Discogs Cross-Service Linking | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 20. Tag Writing | v3.0 | 3/3 | Complete    | 2026-04-03 |
-| 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |
+| 21. CUE Sheet Generation | v3.0 | 3/3 | Complete    | 2026-04-03 |

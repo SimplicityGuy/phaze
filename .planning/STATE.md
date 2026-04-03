@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: executing
-stopped_at: Completed 20-03-PLAN.md
-last_updated: "2026-04-03T19:38:28.813Z"
+status: completed
+stopped_at: Completed 21-03-PLAN.md
+last_updated: "2026-04-03T22:54:47.490Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 4
-  completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
-  percent: 0
+  completed_phases: 4
+  total_plans: 11
+  completed_plans: 11
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 20 — tag-writing
+**Current focus:** Phase 21 — cue-sheet-generation
 
 ## Current Position
 
 Phase: 21
 Plan: Not started
-Status: Ready to execute
+Status: Phase 21 complete
 Last activity: 2026-04-03
 
-Progress: [░░░░░░░░░░] 0% (v3.0)
+Progress: [██████████] 100% (v3.0)
 
 ## Performance Metrics
 
@@ -69,6 +69,10 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - [Phase 20-tag-writing]: Inline edits are transient (client-side), no server session storage for edited proposed values
 - [Phase 20-tag-writing]: Tag row partial with OOB toast for post-write HTMX swap response
 - [Phase 20-tag-writing]: Server-side fallback for empty form data in Write Tags endpoint; ID-based HTMX targeting over closest tr
+- [Phase 21]: CueTrackData uses dataclass not Pydantic for zero-overhead service input
+- [Phase 21]: Dropped from __future__ annotations in CUE router to avoid FastAPI uuid runtime resolution issues
+- [Phase 21-03]: HX-Target header prefix matching for cross-page response routing (tracklist- prefix returns tracklist_card.html)
+- [Phase 21-03]: Dynamic _cue_version attribute on Tracklist ORM objects for UI-only display data
 
 ### Pending Todos
 
@@ -81,6 +85,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T18:59:48.695Z
-Stopped at: Completed 20-03-PLAN.md
+Last session: 2026-04-03T22:46:01.000Z
+Stopped at: Completed 21-03-PLAN.md
 Resume file: None

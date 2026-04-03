@@ -24,9 +24,10 @@ Get 200K messy music and concert files properly named, organized into logical fo
 **Phase 18 complete (2026-04-03):** Unified search page with PostgreSQL FTS, GIN indexes, cross-entity results, faceted filtering.
 **Phase 19 complete (2026-04-03):** Discogs cross-service linking via discogsography HTTP API, fuzzy matching with confidence scores, inline candidate review, bulk-link, search extension with purple pills.
 **Phase 20 complete (2026-04-03):** Tag writing with review UI — cascade merge proposals (tracklist > metadata > filename), format-aware mutagen writes (MP3/M4A/OGG/OPUS/FLAC), verify-after-write, append-only audit log, HTMX comparison view.
+**Phase 21 complete (2026-04-03):** CUE sheet generation from tracklist timestamps — 75fps frame conversion, fingerprint-preferred timestamps, per-track Discogs REM comments, version suffix naming, UTF-8 BOM encoding, /cue management page with batch generation, inline Generate/Regenerate CUE on tracklist cards.
 
-- 6,200+ lines of Python across 20 phases, 46 plans total
-- 580+ tests passing, 23/23 v2.0 requirements satisfied, 4/4 DISC + 4/4 TAGW requirements satisfied (50/50 cumulative)
+- 6,700+ lines of Python across 21 phases, 49 plans total
+- 630+ tests passing, 23/23 v2.0 requirements satisfied, 4/4 DISC + 4/4 TAGW + 3/3 CUE requirements satisfied (53/53 cumulative)
 - Tech stack: FastAPI, SQLAlchemy (async), SAQ, litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, HTMX + Tailwind
 - Docker Compose: api, worker, postgres, redis, audfprint, panako containers
 - 11 Alembic migrations, 11 SQLAlchemy models, 3 fingerprint service containers
@@ -83,10 +84,11 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ Unified search across files, tracklists, and metadata with faceted filtering — v3.0 Phase 18
 - ✓ Discogsography cross-service linking via HTTP API with fuzzy matching and confidence scores — v3.0 Phase 19
 - ✓ Write corrected tags to destination copies with review UI, verify-after-write, and audit logging — v3.0 Phase 20
+- ✓ CUE sheet generation from tracklist data with fingerprint-preferred timestamps and Discogs REM enrichment — v3.0 Phase 21
 
 ### Active
 
-- [ ] CUE sheet generation from tracklist data (fingerprint timestamps preferred, 1001tracklists fallback)
+None — v3.0 milestone complete.
 
 ### Out of Scope
 
@@ -153,4 +155,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-03 after Phase 18 complete — Unified Search*
+*Last updated: 2026-04-03 after Phase 21 complete — CUE Sheet Generation (v3.0 milestone complete)*

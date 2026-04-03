@@ -30,9 +30,9 @@ Requirements for Cross-Service Intelligence & File Enrichment. Each maps to road
 
 ### CUE Sheets
 
-- [ ] **CUE-01**: System generates .cue companion files from tracklist data, preferring fingerprint timestamps with 1001tracklists fallback
-- [ ] **CUE-02**: CUE files use correct 75fps frame conversion and UTF-8 with BOM encoding
-- [ ] **CUE-03**: CUE files include REM comments with Discogs metadata (genre, label, catalog number, year)
+- [x] **CUE-01**: System generates .cue companion files from tracklist data, preferring fingerprint timestamps with 1001tracklists fallback
+- [x] **CUE-02**: CUE files use correct 75fps frame conversion and UTF-8 with BOM encoding
+- [x] **CUE-03**: CUE files include REM comments with Discogs metadata (genre, label, catalog number, year)
 
 ## Future Requirements
 
@@ -74,9 +74,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TAGW-02 | Phase 20 | Complete |
 | TAGW-03 | Phase 20 | Complete |
 | TAGW-04 | Phase 20 | Complete |
-| CUE-01 | Phase 21 | Pending |
-| CUE-02 | Phase 21 | Pending |
-| CUE-03 | Phase 21 | Pending |
+| CUE-01 | Phase 21 | Complete |
+| CUE-02 | Phase 21 | Complete |
+| CUE-03 | Phase 21 | Complete |
 
 **Coverage:**
 - v3.0 requirements: 15 total

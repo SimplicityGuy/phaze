@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from phaze.config import settings
 from phaze.database import engine
-from phaze.routers import companion, duplicates, execution, health, pipeline, preview, proposals, scan, search, tags, tracklists
+from phaze.routers import companion, cue, duplicates, execution, health, pipeline, preview, proposals, scan, search, tags, tracklists
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(pipeline.router)
     app.include_router(search.router)
     app.include_router(tags.router)
+    app.include_router(cue.router)
     return app
 
 
