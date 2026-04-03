@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 import uuid
 
 import pytest
@@ -14,6 +12,8 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -182,8 +182,8 @@ async def test_generate_cue_no_timestamps(client: AsyncClient, session: AsyncSes
 @pytest.mark.asyncio
 async def test_generate_batch(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/generate-batch generates CUEs for all eligible tracklists."""
-    tracklist1, file1 = await _create_approved_tracklist_with_file(session, artist="Artist A")
-    tracklist2, file2 = await _create_approved_tracklist_with_file(session, artist="Artist B")
+    _tracklist1, file1 = await _create_approved_tracklist_with_file(session, artist="Artist A")
+    _tracklist2, file2 = await _create_approved_tracklist_with_file(session, artist="Artist B")
 
     # Set up temp paths
     for fr in [file1, file2]:
@@ -244,9 +244,7 @@ async def test_cue_list_fingerprint_first(client: AsyncClient, session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_generate_cue_returns_tracklist_card_when_target_is_tracklist(
-    client: AsyncClient, session: AsyncSession, tmp_path: Path
-) -> None:
+async def test_generate_cue_returns_tracklist_card_when_target_is_tracklist(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/{id}/generate with HX-Target: tracklist-{id} returns tracklist card with Regenerate CUE."""
     tracklist, file_record = await _create_approved_tracklist_with_file(session)
 

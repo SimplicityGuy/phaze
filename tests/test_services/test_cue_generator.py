@@ -251,8 +251,8 @@ class TestDiscogRem:
         content = generate_cue_content("test.mp3", "mp3", tracks)
         lines = content.strip().split("\n")
         # Find REM and TITLE line indices
-        rem_genre_idx = next(i for i, l in enumerate(lines) if "REM GENRE" in l)
-        title_idx = next(i for i, l in enumerate(lines) if "TITLE" in l)
+        rem_genre_idx = next(i for i, line in enumerate(lines) if "REM GENRE" in line)
+        title_idx = next(i for i, line in enumerate(lines) if "TITLE" in line)
         assert rem_genre_idx < title_idx
 
     def test_mixed_tracks_with_and_without_discogs(self):
@@ -276,7 +276,7 @@ class TestDiscogRem:
         content = generate_cue_content("test.mp3", "mp3", tracks)
         lines = content.strip().split("\n")
         # Track 1 should have REM lines, Track 2 should not
-        track2_start = next(i for i, l in enumerate(lines) if "TRACK 02" in l)
+        track2_start = next(i for i, line in enumerate(lines) if "TRACK 02" in line)
         track2_lines = lines[track2_start:]
         track2_block = "\n".join(track2_lines)
         assert "REM GENRE" not in track2_block
