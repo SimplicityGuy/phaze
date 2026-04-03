@@ -1,0 +1,62 @@
+<tr class="border-b border-gray-200" x-data="{ expanded: false }">
+    <td class="py-2 px-2 cursor-pointer truncate"
+        @click="expanded = !expanded"
+        hx-get="/tags/{{ file.id }}/compare"
+        hx-target="#detail-{{ file.id }}"
+        hx-swap="innerHTML"
+        hx-trigger="click once">
+        {{ file.filename }}
+    </td>
+    <td class="py-2 px-2">
+        {% set ft = file.file_type|upper %}
+        {% if ft == 'MP3' %}
+        <span class="bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-0.5 rounded-full">MP3</span>
+        {% elif ft == 'M4A' %}
+        <span class="bg-purple-100 text-purple-700 text-xs font-semibold px-2 py-0.5 rounded-full">M4A</span>
+        {% elif ft == 'OGG' %}
+        <span class="bg-green-100 text-green-700 text-xs font-semibold px-2 py-0.5 rounded-full">OGG</span>
+        {% elif ft == 'OPUS' %}
+        <span class="bg-teal-100 text-teal-700 text-xs font-semibold px-2 py-0.5 rounded-full">OPUS</span>
+        {% elif ft == 'FLAC' %}
+        <span class="bg-orange-100 text-orange-700 text-xs font-semibold px-2 py-0.5 rounded-full">FLAC</span>
+        {% else %}
+        <span class="bg-gray-100 text-gray-700 text-xs font-semibold px-2 py-0.5 rounded-full">{{ ft }}</span>
+        {% endif %}
+    </td>
+    <td class="py-2 px-2">{{ file.changes }} of 6</td>
+    <td class="py-2 px-2">
+        {% if file.status == 'completed' %}
+        <span class="bg-green-100 text-green-700 text-xs font-semibold px-2 py-0.5 rounded-full">completed</span>
+        {% elif file.status == 'discrepancy' %}
+        <span class="bg-yellow-100 text-yellow-700 text-xs font-semibold px-2 py-0.5 rounded-full">discrepancy</span>
+        {% elif file.status == 'failed' %}
+        <span class="bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">failed</span>
+        {% else %}
+        <span class="bg-yellow-100 text-yellow-700 text-xs font-semibold px-2 py-0.5 rounded-full">pending</span>
+        {% endif %}
+    </td>
+    <td class="py-2 px-2">
+        {% if file.status == 'completed' %}
+        <span class="text-green-600 text-sm font-semibold">Done</span>
+        {% elif file.status == 'discrepancy' %}
+        <span class="text-yellow-600 text-sm font-semibold">Review needed</span>
+        {% elif file.status == 'failed' %}
+        <span class="text-red-600 text-sm font-semibold">Failed</span>
+        {% else %}
+        <span class="text-gray-500 text-sm">--</span>
+        {% endif %}
+    </td>
+</tr>
+<tr x-show="expanded" id="detail-{{ file.id }}">
+    <td colspan="5" class="bg-gray-50 px-4 py-4"></td>
+</tr>
+
+{% if toast_message %}
+<div hx-swap-oob="beforeend:#toast-container">
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow-lg" role="status"
+         x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
+         x-transition>
+        {{ toast_message }}
+    </div>
+</div>
+{% endif %}

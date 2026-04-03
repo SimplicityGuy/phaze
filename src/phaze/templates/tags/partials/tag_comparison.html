@@ -1,0 +1,48 @@
+<div class="space-y-4">
+    <h3 class="text-sm font-semibold text-gray-700">Tag Comparison</h3>
+
+    {% set has_changes = comparison|selectattr("changed")|list|length > 0 %}
+
+    {% if has_changes %}
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="border-b border-gray-200">
+                <th scope="col" class="py-1 px-2 text-left font-semibold" style="width: 20%">Field</th>
+                <th scope="col" class="py-1 px-2 text-left font-semibold" style="width: 40%">Current</th>
+                <th scope="col" class="py-1 px-2 text-left font-semibold" style="width: 40%">Proposed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in comparison %}
+            <tr class="border-b border-gray-100">
+                <td class="py-1 px-2 font-semibold text-sm">{{ item.label }}</td>
+                <td class="py-1 px-2 text-gray-500">
+                    {% if item.current is not none and item.current != '' %}
+                        {{ item.current }}
+                    {% else %}
+                        <span class="text-gray-400">&mdash;</span>
+                    {% endif %}
+                </td>
+                <td class="py-1 px-2">
+                    {% include "tags/partials/inline_display.html" %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <form hx-post="/tags/{{ file.id }}/write"
+          hx-target="closest tr"
+          hx-swap="outerHTML">
+        {% for item in comparison %}
+        <input type="hidden" name="{{ item.field }}" value="{{ item.proposed if item.proposed is not none else '' }}">
+        {% endfor %}
+        <button type="submit"
+                class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-md mt-2">
+            Write Tags
+        </button>
+    </form>
+    {% else %}
+    <p class="text-gray-400 italic">No changes</p>
+    {% endif %}
+</div>
