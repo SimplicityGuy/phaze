@@ -8,8 +8,10 @@ from saq import CronJob, Queue
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.config import settings as app_settings
+from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
 from phaze.services.proposal import ProposalService, load_prompt_template
+from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
@@ -56,6 +58,9 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
 
+    # Phase 19: Discogsography client for Discogs release matching
+    ctx["discogs_client"] = DiscogsographyClient(base_url=app_settings.discogsography_url)
+
     # Phase 16: Fingerprint service orchestrator
     audfprint_adapter = AudfprintAdapter(base_url=app_settings.audfprint_url)
     panako_adapter = PanakoAdapter(base_url=app_settings.panako_url)
@@ -71,6 +76,10 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     task_engine = ctx.get("task_engine")
     if task_engine is not None:
         await task_engine.dispose()
+
+    discogs_client = ctx.get("discogs_client")
+    if discogs_client is not None:
+        await discogs_client.close()
 
     orchestrator = ctx.get("fingerprint_orchestrator")
     if orchestrator is not None:
@@ -92,6 +101,7 @@ settings = {
         search_tracklist,
         scrape_and_store_tracklist,
         scan_live_set,
+        match_tracklist_to_discogs,
     ],
     "concurrency": app_settings.worker_max_jobs,
     "cron_jobs": [
