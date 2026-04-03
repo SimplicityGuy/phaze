@@ -1,31 +1,24 @@
 """Tag review UI router -- side-by-side comparison, inline editing, and tag writing."""
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+import uuid
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord, FileState
+from phaze.models.metadata import FileMetadata
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import execute_tag_write
-
-
-if TYPE_CHECKING:
-    import uuid
-
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-    from phaze.models.metadata import FileMetadata
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
