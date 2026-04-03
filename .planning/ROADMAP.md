@@ -44,7 +44,7 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 ### v3.0 Cross-Service Intelligence & File Enrichment (In Progress)
 
 - [x] **Phase 18: Unified Search** - Full-text search across files, tracklists, and metadata with faceted filtering (completed 2026-04-03)
-- [ ] **Phase 19: Discogs Cross-Service Linking** - Fuzzy-match tracks to Discogs releases via discogsography, store candidate links with confidence scores
+- [x] **Phase 19: Discogs Cross-Service Linking** - Fuzzy-match tracks to Discogs releases via discogsography, store candidate links with confidence scores (completed 2026-04-03)
 - [ ] **Phase 20: Tag Writing** - Write corrected tags to destination file copies with review UI, verify-after-write, and audit logging
 - [ ] **Phase 21: CUE Sheet Generation** - Generate .cue companion files from tracklist timestamps with Discogs metadata enrichment
 
@@ -71,7 +71,12 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
   2. User can review and approve/reject individual Discogs link candidates (not auto-committed)
   3. User can query "find all sets containing track X" and get results spanning phaze tracklists and Discogs releases
   4. User can bulk-link all tracks in a tracklist to their top Discogs matches in one action
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [x] 19-01-PLAN.md -- Data layer: DiscogsLink model, migration, API adapter, fuzzy matcher, SAQ task
+- [x] 19-02-PLAN.md -- Tracklist UI: match/accept/dismiss/bulk-link endpoints and templates
+- [x] 19-03-PLAN.md -- Search extension: Discogs UNION ALL branch and purple pill badge
+**UI hint**: yes
 
 ### Phase 20: Tag Writing
 **Goal**: Users can push corrected metadata from Postgres into destination file tags with full review and audit trail
@@ -117,6 +122,6 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 3/3 | Complete | 2026-04-01 |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 3/3 | Complete | 2026-04-02 |
 | 18. Unified Search | v3.0 | 2/2 | Complete    | 2026-04-03 |
-| 19. Discogs Cross-Service Linking | v3.0 | 0/? | Not started | - |
+| 19. Discogs Cross-Service Linking | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 20. Tag Writing | v3.0 | 0/? | Not started | - |
 | 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |

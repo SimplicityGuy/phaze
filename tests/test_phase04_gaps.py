@@ -142,6 +142,7 @@ async def test_startup_succeeds_with_pb_files(tmp_path: Path) -> None:
         mock_settings.debug = False
         mock_settings.audfprint_url = "http://audfprint:8001"
         mock_settings.panako_url = "http://panako:8002"
+        mock_settings.discogsography_url = "http://discogsography:8000"
         await startup(ctx)
 
     mock_pool.assert_called_once()

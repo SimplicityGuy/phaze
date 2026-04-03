@@ -1,5 +1,6 @@
 """Tracklists admin UI router -- 1001Tracklists and fingerprint tracklist management page."""
 
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 import uuid
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.proposal_queries import Pagination
@@ -255,7 +257,7 @@ async def get_tracks(
         context: dict[str, Any] = {"request": request, "tracklist": tracklist, "tracks": tracks}
     else:
         template_name = "tracklists/partials/track_detail.html"
-        context = {"request": request, "tracks": tracks}
+        context = {"request": request, "tracks": tracks, "tracklist_id": tracklist_id}
 
     return templates.TemplateResponse(request=request, name=template_name, context=context)
 
@@ -557,6 +559,180 @@ async def reject_low_confidence(
         request=request,
         name="tracklists/partials/fingerprint_track_detail.html",
         context={"request": request, "tracklist": tracklist, "tracks": tracks},
+    )
+
+
+@router.post("/{tracklist_id}/match-discogs", response_class=HTMLResponse)
+async def match_discogs(
+    request: Request,
+    tracklist_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Enqueue a SAQ task to match all tracks in this tracklist to Discogs releases."""
+    result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
+    tracklist = result.scalar_one_or_none()
+    if not tracklist:
+        return HTMLResponse(content="Tracklist not found", status_code=404)
+
+    queue = request.app.state.queue
+    await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tracklist_id))
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/tracklist_card.html",
+        context={"request": request, "tracklist": tracklist, "match_queued": True},
+    )
+
+
+@router.get("/{tracklist_id}/tracks/{track_id}/discogs", response_class=HTMLResponse)
+async def get_discogs_candidates(
+    request: Request,
+    tracklist_id: uuid.UUID,  # noqa: ARG001
+    track_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return Discogs candidate rows for a single track."""
+    stmt = select(DiscogsLink).where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
+    result = await session.execute(stmt)
+    candidates = list(result.scalars().all())
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/discogs_candidates.html",
+        context={"request": request, "track_id": str(track_id), "candidates": candidates},
+    )
+
+
+@router.post("/discogs-links/{link_id}/accept", response_class=HTMLResponse)
+async def accept_discogs_link(
+    request: Request,
+    link_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Accept a Discogs candidate link and auto-dismiss siblings for the same track."""
+    result = await session.execute(select(DiscogsLink).where(DiscogsLink.id == link_id))
+    link = result.scalar_one_or_none()
+    if not link:
+        return HTMLResponse(content="Link not found", status_code=404)
+
+    # Accept this link
+    link.status = "accepted"
+
+    # Dismiss all other links for the same track
+    siblings_stmt = select(DiscogsLink).where(
+        DiscogsLink.track_id == link.track_id,
+        DiscogsLink.id != link.id,
+    )
+    siblings_result = await session.execute(siblings_stmt)
+    for sibling in siblings_result.scalars().all():
+        sibling.status = "dismissed"
+
+    await session.commit()
+
+    # Re-query remaining candidates (only the accepted one should remain visible)
+    remaining_stmt = (
+        select(DiscogsLink).where(DiscogsLink.track_id == link.track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
+    )
+    remaining_result = await session.execute(remaining_stmt)
+    candidates = list(remaining_result.scalars().all())
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/discogs_candidates.html",
+        context={"request": request, "track_id": str(link.track_id), "candidates": candidates},
+    )
+
+
+@router.delete("/discogs-links/{link_id}", response_class=HTMLResponse)
+async def dismiss_discogs_link(
+    request: Request,
+    link_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Dismiss a Discogs candidate link."""
+    result = await session.execute(select(DiscogsLink).where(DiscogsLink.id == link_id))
+    link = result.scalar_one_or_none()
+    if not link:
+        return HTMLResponse(content="Link not found", status_code=404)
+
+    track_id = link.track_id
+    link.status = "dismissed"
+    await session.commit()
+
+    # Re-query remaining candidates
+    remaining_stmt = (
+        select(DiscogsLink).where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
+    )
+    remaining_result = await session.execute(remaining_stmt)
+    candidates = list(remaining_result.scalars().all())
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/discogs_candidates.html",
+        context={"request": request, "track_id": str(track_id), "candidates": candidates},
+    )
+
+
+@router.post("/{tracklist_id}/bulk-link", response_class=HTMLResponse)
+async def bulk_link_discogs(
+    request: Request,
+    tracklist_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Bulk-link all tracks to their highest-confidence Discogs candidate."""
+    result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
+    tracklist = result.scalar_one_or_none()
+    if not tracklist:
+        return HTMLResponse(content="Tracklist not found", status_code=404)
+
+    if not tracklist.latest_version_id:
+        return templates.TemplateResponse(
+            request=request,
+            name="tracklists/partials/track_detail.html",
+            context={"request": request, "tracks": []},
+        )
+
+    # Load all tracks for this tracklist version
+    tracks_result = await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id))
+    tracks = list(tracks_result.scalars().all())
+    track_ids = [t.id for t in tracks]
+
+    if track_ids:
+        # Load all candidate links for these tracks
+        candidates_stmt = select(DiscogsLink).where(
+            DiscogsLink.track_id.in_(track_ids),
+            DiscogsLink.status == "candidate",
+        )
+        candidates_result = await session.execute(candidates_stmt)
+        all_candidates = list(candidates_result.scalars().all())
+
+        # Group by track_id, find highest confidence per track
+        by_track: dict[uuid.UUID, list[DiscogsLink]] = defaultdict(list)
+        for c in all_candidates:
+            by_track[c.track_id].append(c)
+
+        for _tid, track_candidates in by_track.items():
+            # Sort by confidence descending, accept the top one
+            track_candidates.sort(key=lambda x: x.confidence, reverse=True)
+            top = track_candidates[0]
+            top.status = "accepted"
+            # Dismiss the rest
+            for other in track_candidates[1:]:
+                other.status = "dismissed"
+
+        await session.commit()
+
+    # Reload tracks for display
+    version_result = await session.execute(
+        select(TracklistVersion).options(selectinload(TracklistVersion.tracks)).where(TracklistVersion.id == tracklist.latest_version_id)
+    )
+    version = version_result.scalar_one_or_none()
+    display_tracks = sorted(version.tracks, key=lambda t: t.position) if version else []
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/track_detail.html",
+        context={"request": request, "tracks": display_tracks, "tracklist_id": tracklist_id},
     )
 
 

@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: executing
-stopped_at: "Phase 18 Plan 02 complete -- checkpoint:human-verify pending"
-last_updated: "2026-04-03T00:24:13.347Z"
+status: verifying
+stopped_at: Completed 19-02-PLAN.md
+last_updated: "2026-04-03T15:09:07.127Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  completed_phases: 2
+  total_plans: 5
+  completed_plans: 5
   percent: 0
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 18: Unified Search
+**Current focus:** Phase 19 — discogs-cross-service-linking
 
 ## Current Position
 
-Phase: 19 of 21 (discogs cross service linking)
+Phase: 20
 Plan: Not started
-Status: Executing -- Plan 02 code complete, checkpoint pending
+Status: Phase complete — ready for verification
 Last activity: 2026-04-03
 
 Progress: [░░░░░░░░░░] 0% (v3.0)
@@ -60,6 +60,10 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - Discogs integration routes through discogsography HTTP API only, never direct Discogs API
 - Search UI: HTMX partial detection via truthy HX-Request header check
 - Search UI: Alpine.js collapsible filter panel pattern (x-data showFilters boolean)
+- [Phase 19]: Confidence blending: 0.6 token_set_ratio + 0.4 API relevance, denormalized Discogs metadata in DiscogsLink
+- [Phase 19]: Discogs results excluded when file_state filter active, matching tracklist exclusion pattern
+- [Phase 19]: Three-entity UNION ALL search: file (blue), tracklist (green), discogs_release (purple) pill colors
+- [Phase 19]: Discogs UI: HTMX candidate lifecycle with accept/dismiss, auto-dismiss siblings, bulk-link top candidate
 
 ### Pending Todos
 
@@ -72,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-02T23:50:52Z
-Stopped at: Phase 18 Plan 02 complete -- checkpoint:human-verify pending
-Resume file: .planning/phases/18-unified-search/18-02-PLAN.md
+Last session: 2026-04-03T04:02:03.364Z
+Stopped at: Completed 19-02-PLAN.md
+Resume file: None

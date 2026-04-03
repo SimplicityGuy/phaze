@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     audfprint_url: str = "http://audfprint:8001"
     panako_url: str = "http://panako:8002"
 
+    # Discogsography service
+    discogsography_url: str = "http://discogsography:8000"
+    discogs_match_concurrency: int = 5
+
     # LLM API keys
     openai_api_key: SecretStr | None = None
 

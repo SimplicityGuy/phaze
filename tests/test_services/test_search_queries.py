@@ -9,9 +9,10 @@ import uuid
 import pytest
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.search_queries import SearchResult, get_summary_counts, search
 
 
@@ -286,10 +287,164 @@ async def test_get_summary_counts(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_union_has_result_type(session: AsyncSession) -> None:
-    """Every result has result_type of 'file' or 'tracklist' (SRCH-03)."""
+    """Every result has result_type of 'file', 'tracklist', or 'discogs_release' (SRCH-03)."""
     await create_test_file(session, original_filename="union_file.mp3", artist="Union Artist")
     await create_test_tracklist(session, artist="Union Artist", event="Union Fest")
     results, _pagination = await search(session, "union")
     assert len(results) >= 2
     for r in results:
-        assert r.result_type in ("file", "tracklist")
+        assert r.result_type in ("file", "tracklist", "discogs_release")
+
+
+# ---------------------------------------------------------------------------
+# Discogs search helpers
+# ---------------------------------------------------------------------------
+
+
+async def create_test_discogs_link(
+    session: AsyncSession,
+    *,
+    discogs_artist: str | None = "Daft Punk",
+    discogs_title: str | None = "Random Access Memories",
+    discogs_label: str | None = "Columbia",
+    discogs_year: int | None = 2013,
+    confidence: float = 85.0,
+    status: str = "accepted",
+) -> DiscogsLink:
+    """Create a DiscogsLink with required TracklistTrack parent chain."""
+    # Create minimal parent hierarchy: Tracklist -> TracklistVersion -> TracklistTrack
+    tracklist = Tracklist(
+        id=uuid.uuid4(),
+        external_id=f"ext-{uuid.uuid4().hex[:12]}",
+        source_url=f"https://example.com/{uuid.uuid4().hex[:8]}",
+        artist=discogs_artist,
+        event="Test Event",
+        status="approved",
+    )
+    session.add(tracklist)
+    await session.flush()
+
+    version = TracklistVersion(
+        id=uuid.uuid4(),
+        tracklist_id=tracklist.id,
+        version_number=1,
+    )
+    session.add(version)
+    await session.flush()
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist=discogs_artist,
+        title=discogs_title,
+    )
+    session.add(track)
+    await session.flush()
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id=f"r-{uuid.uuid4().hex[:8]}",
+        discogs_artist=discogs_artist,
+        discogs_title=discogs_title,
+        discogs_label=discogs_label,
+        discogs_year=discogs_year,
+        confidence=confidence,
+        status=status,
+    )
+    session.add(link)
+    await session.commit()
+    return link
+
+
+# ---------------------------------------------------------------------------
+# search() — Discogs results (DISC-03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_returns_discogs_release(session: AsyncSession) -> None:
+    """Search matching a Discogs release returns result_type='discogs_release'."""
+    await create_test_discogs_link(session, discogs_artist="Daft Punk", discogs_title="Random Access Memories")
+    results, pagination = await search(session, "daft punk")
+    assert len(results) >= 1
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert len(discogs_results) >= 1
+    assert pagination.total >= 1
+
+
+@pytest.mark.asyncio
+async def test_search_only_accepted_discogs(session: AsyncSession) -> None:
+    """Only accepted DiscogsLink entries appear in search."""
+    await create_test_discogs_link(session, discogs_artist="Accepted Artist", discogs_title="Accepted Album", status="accepted")
+    results, _pagination = await search(session, "accepted")
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert len(discogs_results) >= 1
+
+
+@pytest.mark.asyncio
+async def test_search_excludes_candidate_discogs(session: AsyncSession) -> None:
+    """Candidate DiscogsLink entries do NOT appear in search."""
+    await create_test_discogs_link(session, discogs_artist="Candidate Only", discogs_title="Candidate Album", status="candidate")
+    results, _pagination = await search(session, "candidate")
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert len(discogs_results) == 0
+
+
+@pytest.mark.asyncio
+async def test_search_excludes_dismissed_discogs(session: AsyncSession) -> None:
+    """Dismissed DiscogsLink entries do NOT appear in search."""
+    await create_test_discogs_link(session, discogs_artist="Dismissed Only", discogs_title="Dismissed Album", status="dismissed")
+    results, _pagination = await search(session, "dismissed")
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert len(discogs_results) == 0
+
+
+@pytest.mark.asyncio
+async def test_discogs_result_fields(session: AsyncSession) -> None:
+    """Discogs results include correct fields mapping."""
+    await create_test_discogs_link(
+        session,
+        discogs_artist="Bonobo",
+        discogs_title="Migration",
+        discogs_year=2017,
+    )
+    results, _pagination = await search(session, "bonobo")
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert len(discogs_results) >= 1
+    r = discogs_results[0]
+    assert r.title == "Migration"
+    assert r.artist == "Bonobo"
+    assert r.date == "2017"
+    assert r.state == "accepted"
+    assert r.genre is None
+
+
+@pytest.mark.asyncio
+async def test_discogs_artist_filter(session: AsyncSession) -> None:
+    """Artist filter applies to Discogs results via discogs_artist ilike."""
+    await create_test_discogs_link(session, discogs_artist="Bonobo", discogs_title="Migration")
+    await create_test_discogs_link(session, discogs_artist="Four Tet", discogs_title="Rounds")
+    results, _pagination = await search(session, "migration rounds", artist="Bonobo")
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert all(r.artist == "Bonobo" for r in discogs_results)
+
+
+@pytest.mark.asyncio
+async def test_discogs_excluded_with_file_state_filter(session: AsyncSession) -> None:
+    """When file_state filter is active, Discogs results are excluded."""
+    await create_test_discogs_link(session, discogs_artist="Filtered Artist", discogs_title="Filtered Album")
+    await create_test_file(session, original_filename="filtered_artist.mp3", artist="Filtered Artist", state=FileState.APPROVED)
+    results, _pagination = await search(session, "filtered", file_state="approved")
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert len(discogs_results) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_summary_counts_includes_discogs(session: AsyncSession) -> None:
+    """get_summary_counts includes discogs_count for accepted links."""
+    await create_test_discogs_link(session, discogs_artist="Count Artist", discogs_title="Count Album", status="accepted")
+    await create_test_discogs_link(session, discogs_artist="Candidate Artist", discogs_title="Candidate Album", status="candidate")
+    counts = await get_summary_counts(session)
+    assert counts["discogs_count"] == 1  # Only accepted

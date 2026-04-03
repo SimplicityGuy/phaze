@@ -22,13 +22,14 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 **v2.0 shipped 2026-04-02.** Metadata enrichment and tracklist integration complete.
 **Phase 18 complete (2026-04-03):** Unified search page with PostgreSQL FTS, GIN indexes, cross-entity results, faceted filtering.
+**Phase 19 complete (2026-04-03):** Discogs cross-service linking via discogsography HTTP API, fuzzy matching with confidence scores, inline candidate review, bulk-link, search extension with purple pills.
 
-- 5,966 lines of Python across 17 phases (6 in v2.0), 40 plans total
-- 538 tests passing, 23/23 v2.0 requirements satisfied (42/42 cumulative)
-- Tech stack: FastAPI, SQLAlchemy (async), arq, litellm, essentia-tensorflow, mutagen, rapidfuzz, HTMX + Tailwind
+- 5,966+ lines of Python across 19 phases, 43 plans total
+- 538+ tests passing, 23/23 v2.0 requirements satisfied, 4/4 DISC requirements satisfied (46/46 cumulative)
+- Tech stack: FastAPI, SQLAlchemy (async), SAQ, litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, HTMX + Tailwind
 - Docker Compose: api, worker, postgres, redis, audfprint, panako containers
-- 9 Alembic migrations, 9 SQLAlchemy models, 3 fingerprint service containers
-- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview
+- 10 Alembic migrations, 10 SQLAlchemy models, 3 fingerprint service containers
+- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview, unified search with Discogs linking
 
 ## Previous State
 

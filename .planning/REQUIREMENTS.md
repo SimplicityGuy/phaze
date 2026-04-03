@@ -16,10 +16,10 @@ Requirements for Cross-Service Intelligence & File Enrichment. Each maps to road
 
 ### Discogs Linking
 
-- [ ] **DISC-01**: System fuzzy-matches live set tracks to Discogs releases via discogsography HTTP API
-- [ ] **DISC-02**: Candidate matches stored with confidence scores in DiscogsLink table, displayed in admin UI
-- [ ] **DISC-03**: User can query "find all sets containing track X" across phaze and discogsography data
-- [ ] **DISC-04**: User can bulk-link an entire tracklist's tracks to Discogs releases in one action
+- [x] **DISC-01**: System fuzzy-matches live set tracks to Discogs releases via discogsography HTTP API
+- [x] **DISC-02**: Candidate matches stored with confidence scores in DiscogsLink table, displayed in admin UI
+- [x] **DISC-03**: User can query "find all sets containing track X" across phaze and discogsography data
+- [x] **DISC-04**: User can bulk-link an entire tracklist's tracks to Discogs releases in one action
 
 ### Tag Writing
 
@@ -66,10 +66,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SRCH-02 | Phase 18 | Complete |
 | SRCH-03 | Phase 18 | Complete |
 | SRCH-04 | Phase 18 | Complete |
-| DISC-01 | Phase 19 | Pending |
-| DISC-02 | Phase 19 | Pending |
-| DISC-03 | Phase 19 | Pending |
-| DISC-04 | Phase 19 | Pending |
+| DISC-01 | Phase 19 | Complete |
+| DISC-02 | Phase 19 | Complete |
+| DISC-03 | Phase 19 | Complete |
+| DISC-04 | Phase 19 | Complete |
 | TAGW-01 | Phase 20 | Pending |
 | TAGW-02 | Phase 20 | Pending |
 | TAGW-03 | Phase 20 | Pending |
