@@ -8,6 +8,7 @@ from httpx import AsyncClient
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
@@ -695,3 +696,268 @@ async def test_save_track_invalid_field(session: AsyncSession, client: AsyncClie
     fake_id = uuid.uuid4()
     response = await client.put(f"/tracklists/tracks/{fake_id}/edit/invalid_field", data={"invalid_field": "x"})
     assert response.status_code == 400
+
+
+# --- Discogs matching endpoints ---
+
+
+def _make_version_with_tracks(session: AsyncSession, tl: Tracklist, num_tracks: int = 2) -> tuple[TracklistVersion, list[TracklistTrack]]:
+    """Create a version with tracks for a tracklist. Call session.flush() after."""
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    tracks = []
+    for i in range(num_tracks):
+        track = TracklistTrack(
+            id=uuid.uuid4(),
+            version_id=version.id,
+            position=i + 1,
+            artist=f"Artist {i + 1}",
+            title=f"Title {i + 1}",
+            timestamp=f"0{i}:00",
+        )
+        tracks.append(track)
+    return version, tracks
+
+
+@pytest.mark.asyncio
+async def test_match_discogs_enqueues_task(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/match-discogs enqueues SAQ task and returns card."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post(f"/tracklists/{tl.id}/match-discogs")
+    assert response.status_code == 200
+    mock_queue.enqueue.assert_called_once_with("match_tracklist_to_discogs", tracklist_id=str(tl.id))
+
+
+@pytest.mark.asyncio
+async def test_match_discogs_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/match-discogs returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post(f"/tracklists/{fake_id}/match-discogs")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_discogs_candidates(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/{tl_id}/tracks/{t_id}/discogs returns candidate rows."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = tracks[0]
+    link1 = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-12345",
+        discogs_artist="deadmau5",
+        discogs_title="Strobe",
+        discogs_label="mau5trap",
+        discogs_year=2009,
+        confidence=87.0,
+        status="candidate",
+    )
+    link2 = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-67890",
+        discogs_artist="deadmau5",
+        discogs_title="Strobe (Radio Edit)",
+        confidence=72.0,
+        status="candidate",
+    )
+    session.add_all([link1, link2])
+    await session.flush()
+
+    response = await client.get(f"/tracklists/{tl.id}/tracks/{track.id}/discogs")
+    assert response.status_code == 200
+    assert "deadmau5" in response.text
+    assert "Strobe" in response.text
+    assert "Accept Match" in response.text
+    assert "Dismiss Match" in response.text
+
+
+@pytest.mark.asyncio
+async def test_get_discogs_candidates_empty(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/{tl_id}/tracks/{t_id}/discogs returns empty state when no candidates."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    track_id = uuid.uuid4()
+    response = await client.get(f"/tracklists/{tl.id}/tracks/{track_id}/discogs")
+    assert response.status_code == 200
+    assert "No Discogs candidates" in response.text
+
+
+@pytest.mark.asyncio
+async def test_accept_discogs_link(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/discogs-links/{id}/accept sets accepted and dismisses siblings."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+
+    track = tracks[0]
+    link1 = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-111",
+        discogs_artist="Artist A",
+        discogs_title="Title A",
+        confidence=90.0,
+        status="candidate",
+    )
+    link2 = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-222",
+        discogs_artist="Artist B",
+        discogs_title="Title B",
+        confidence=75.0,
+        status="candidate",
+    )
+    session.add_all([link1, link2])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/discogs-links/{link1.id}/accept")
+    assert response.status_code == 200
+    assert "Linked" in response.text
+
+    await session.refresh(link1)
+    await session.refresh(link2)
+    assert link1.status == "accepted"
+    assert link2.status == "dismissed"
+
+
+@pytest.mark.asyncio
+async def test_accept_discogs_link_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/discogs-links/{id}/accept returns 404 for non-existent link."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/discogs-links/{fake_id}/accept")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_dismiss_discogs_link(session: AsyncSession, client: AsyncClient) -> None:
+    """DELETE /tracklists/discogs-links/{id} sets status to dismissed."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+
+    track = tracks[0]
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-333",
+        discogs_artist="Dismiss Me",
+        discogs_title="Gone",
+        confidence=60.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    response = await client.delete(f"/tracklists/discogs-links/{link.id}")
+    assert response.status_code == 200
+    # The dismissed link should not appear
+    assert "Dismiss Me" not in response.text
+    assert "No Discogs candidates" in response.text
+
+    await session.refresh(link)
+    assert link.status == "dismissed"
+
+
+@pytest.mark.asyncio
+async def test_dismiss_discogs_link_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """DELETE /tracklists/discogs-links/{id} returns 404 for non-existent link."""
+    fake_id = uuid.uuid4()
+    response = await client.delete(f"/tracklists/discogs-links/{fake_id}")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bulk_link_discogs(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/bulk-link accepts top candidate per track."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=2)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    # Track 1: two candidates
+    link1a = DiscogsLink(
+        id=uuid.uuid4(), track_id=tracks[0].id, discogs_release_id="r-a1",
+        discogs_artist="A1", discogs_title="T1", confidence=95.0, status="candidate",
+    )
+    link1b = DiscogsLink(
+        id=uuid.uuid4(), track_id=tracks[0].id, discogs_release_id="r-a2",
+        discogs_artist="A2", discogs_title="T2", confidence=70.0, status="candidate",
+    )
+    # Track 2: one candidate
+    link2a = DiscogsLink(
+        id=uuid.uuid4(), track_id=tracks[1].id, discogs_release_id="r-b1",
+        discogs_artist="B1", discogs_title="T3", confidence=80.0, status="candidate",
+    )
+    session.add_all([link1a, link1b, link2a])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/bulk-link")
+    assert response.status_code == 200
+
+    await session.refresh(link1a)
+    await session.refresh(link1b)
+    await session.refresh(link2a)
+    assert link1a.status == "accepted"
+    assert link1b.status == "dismissed"
+    assert link2a.status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_bulk_link_discogs_no_candidates(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/bulk-link with no candidates returns gracefully."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    response = await client.post(f"/tracklists/{tl.id}/bulk-link")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_bulk_link_discogs_not_found(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/bulk-link returns 404 for non-existent tracklist."""
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/tracklists/{fake_id}/bulk-link")
+    assert response.status_code == 404
