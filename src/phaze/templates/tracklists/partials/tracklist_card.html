@@ -90,6 +90,8 @@
             Find Better Match
         </button>
         {% endif %}
+        {% include "tracklists/partials/discogs_match_button.html" %}
+        {% include "tracklists/partials/discogs_bulk_link.html" %}
     </div>
 
     {% if rescrape_queued is defined and rescrape_queued %}

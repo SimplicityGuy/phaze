@@ -257,7 +257,7 @@ async def get_tracks(
         context: dict[str, Any] = {"request": request, "tracklist": tracklist, "tracks": tracks}
     else:
         template_name = "tracklists/partials/track_detail.html"
-        context = {"request": request, "tracks": tracks}
+        context = {"request": request, "tracks": tracks, "tracklist_id": tracklist_id}
 
     return templates.TemplateResponse(request=request, name=template_name, context=context)
 
@@ -740,7 +740,7 @@ async def bulk_link_discogs(
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/track_detail.html",
-        context={"request": request, "tracks": display_tracks},
+        context={"request": request, "tracks": display_tracks, "tracklist_id": tracklist_id},
     )
 
 

@@ -7,7 +7,8 @@
                 <th class="text-left py-2 pr-3">Artist</th>
                 <th class="text-left py-2 pr-3">Title</th>
                 <th class="text-left py-2 pr-3">Label</th>
-                <th class="text-left py-2">Time</th>
+                <th class="text-left py-2 pr-3">Time</th>
+                <th class="text-left py-2 w-16"></th>
             </tr>
         </thead>
         <tbody>
@@ -26,6 +27,21 @@
                 </td>
                 <td class="py-2 pr-3 text-gray-500">{{ track.label or '-' }}</td>
                 <td class="py-2 text-gray-400">{{ track.timestamp or '-' }}</td>
+                <td class="py-2 pr-3">
+                    <button hx-get="/tracklists/{{ tracklist_id }}/tracks/{{ track.id }}/discogs"
+                            hx-trigger="click once"
+                            hx-target="#discogs-{{ track.id }}"
+                            hx-swap="innerHTML"
+                            class="text-xs text-purple-600 hover:text-purple-700 font-semibold"
+                            :aria-expanded="false">
+                        Discogs
+                    </button>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="6" class="p-0">
+                    <div id="discogs-{{ track.id }}"></div>
+                </td>
             </tr>
             {% endfor %}
         </tbody>
