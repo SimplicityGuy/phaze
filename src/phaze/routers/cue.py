@@ -45,7 +45,12 @@ async def _get_eligible_tracklist_query(session: AsyncSession) -> list[tuple[Tra
             FileRecord.state == FileState.EXECUTED,
             Tracklist.id.in_(has_timestamp_subq),
         )
-        .order_by(Tracklist.artist, Tracklist.event)
+        .order_by(
+            # Fingerprint first per D-02 (CUE-01 preference)
+            (Tracklist.source == "fingerprint").desc(),
+            Tracklist.artist,
+            Tracklist.event,
+        )
     )
 
     result = await session.execute(stmt)
@@ -205,6 +210,7 @@ async def list_cue(
                 "date": tl.date,
                 "track_count": track_count,
                 "cue_version": cue_version,
+                "source": tl.source,
             }
         )
 
@@ -286,6 +292,7 @@ async def generate_cue(
         "date": tracklist.date,
         "track_count": track_count,
         "cue_version": cue_version,
+        "source": tracklist.source,
     }
 
     return templates.TemplateResponse(
@@ -348,6 +355,7 @@ async def generate_batch(
                 "date": tl.date,
                 "track_count": track_count,
                 "cue_version": cue_version,
+                "source": tl.source,
             }
         )
 
