@@ -87,7 +87,10 @@ Plans:
   2. User can write corrected tags to destination copies across all supported formats (MP3, M4A, OGG, OPUS, FLAC) and the system verifies correctness by re-reading the file
   3. All tag writes appear in an append-only audit log with before/after snapshots
   4. Tag writes are blocked on non-EXECUTED files (only destination copies are writable)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 20-01-PLAN.md -- Data layer: TagWriteLog model, migration, tag proposal service, tag writer service
+- [ ] 20-02-PLAN.md -- Tag review UI: router, templates, inline editing, nav update, integration tests
 **UI hint**: yes
 
 ### Phase 21: CUE Sheet Generation
@@ -123,5 +126,5 @@ Plans:
 | 17. Live Set Matching & Tracklist Review | v2.0 | 3/3 | Complete | 2026-04-02 |
 | 18. Unified Search | v3.0 | 2/2 | Complete    | 2026-04-03 |
 | 19. Discogs Cross-Service Linking | v3.0 | 3/3 | Complete    | 2026-04-03 |
-| 20. Tag Writing | v3.0 | 0/? | Not started | - |
+| 20. Tag Writing | v3.0 | 0/2 | Not started | - |
 | 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |
