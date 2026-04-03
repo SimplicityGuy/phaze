@@ -92,6 +92,14 @@
         {% endif %}
         {% include "tracklists/partials/discogs_match_button.html" %}
         {% include "tracklists/partials/discogs_bulk_link.html" %}
+        {% if tracklist.status == 'approved' and tracklist.file_id %}
+        <button hx-post="/cue/{{ tracklist.id }}/generate"
+                hx-target="#tracklist-{{ tracklist.id }}"
+                hx-swap="outerHTML"
+                class="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md">
+            Generate CUE
+        </button>
+        {% endif %}
     </div>
 
     {% if rescrape_queued is defined and rescrape_queued %}
