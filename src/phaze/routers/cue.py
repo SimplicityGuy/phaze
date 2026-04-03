@@ -45,7 +45,12 @@ async def _get_eligible_tracklist_query(session: AsyncSession) -> list[tuple[Tra
             FileRecord.state == FileState.EXECUTED,
             Tracklist.id.in_(has_timestamp_subq),
         )
-        .order_by(Tracklist.artist, Tracklist.event)
+        .order_by(
+            # Fingerprint first per D-02 (CUE-01 preference)
+            (Tracklist.source == "fingerprint").desc(),
+            Tracklist.artist,
+            Tracklist.event,
+        )
     )
 
     result = await session.execute(stmt)
@@ -190,9 +195,7 @@ async def list_cue(
 
         # Load track count
         if tl.latest_version_id:
-            count_result = await session.execute(
-                select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id)
-            )
+            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
             track_count = count_result.scalar() or 0
         else:
             track_count = 0
@@ -205,6 +208,7 @@ async def list_cue(
                 "date": tl.date,
                 "track_count": track_count,
                 "cue_version": cue_version,
+                "source": tl.source,
             }
         )
 
@@ -274,10 +278,23 @@ async def generate_cue(
     # Return updated row + OOB toast
     track_count = 0
     if tracklist.latest_version_id:
-        count_result = await session.execute(
-            select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tracklist.latest_version_id)
-        )
+        count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tracklist.latest_version_id))
         track_count = count_result.scalar() or 0
+
+    # Detect if request came from tracklist card (HX-Target starts with "tracklist-")
+    hx_target = request.headers.get("HX-Target", "")
+    if hx_target.startswith("tracklist-"):
+        # Request came from tracklist card -- return updated card
+        return templates.TemplateResponse(
+            request=request,
+            name="tracklists/partials/tracklist_card.html",
+            context={
+                "request": request,
+                "tracklist": tracklist,
+                "cue_version": cue_version,
+                "toast_message": toast_msg,
+            },
+        )
 
     row_data: dict[str, Any] = {
         "id": tracklist.id,
@@ -286,6 +303,7 @@ async def generate_cue(
         "date": tracklist.date,
         "track_count": track_count,
         "cue_version": cue_version,
+        "source": tracklist.source,
     }
 
     return templates.TemplateResponse(
@@ -335,9 +353,7 @@ async def generate_batch(
         cue_version = _get_cue_version(fr.current_path)
         track_count = 0
         if tl.latest_version_id:
-            count_result = await session.execute(
-                select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id)
-            )
+            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
             track_count = count_result.scalar() or 0
 
         tracklists.append(
@@ -348,6 +364,7 @@ async def generate_batch(
                 "date": tl.date,
                 "track_count": track_count,
                 "cue_version": cue_version,
+                "source": tl.source,
             }
         )
 

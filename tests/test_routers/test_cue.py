@@ -26,6 +26,7 @@ async def _create_approved_tracklist_with_file(
     file_state: str = FileState.EXECUTED,
     with_timestamps: bool = True,
     track_count: int = 3,
+    source: str = "1001tracklists",
 ) -> tuple[Tracklist, FileRecord]:
     """Create an approved tracklist with an EXECUTED file and tracks with timestamps."""
     file_id = uuid.uuid4()
@@ -54,7 +55,7 @@ async def _create_approved_tracklist_with_file(
         artist=artist,
         event=event,
         latest_version_id=version_id,
-        source="1001tracklists",
+        source=source,
         status="approved",
     )
     session.add(tracklist)
@@ -217,3 +218,47 @@ async def test_generate_cue_regenerate_increments_version(client: AsyncClient, s
     # Should have v2 file
     v2_path = audio_path.parent / f"{audio_path.stem}.v2.cue"
     assert v2_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_cue_list_shows_source_badge(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /cue/ shows source badge for each tracklist."""
+    await _create_approved_tracklist_with_file(session, source="1001tracklists")
+    response = await client.get("/cue/")
+    assert response.status_code == 200
+    assert "1001tracklists" in response.text
+
+
+@pytest.mark.asyncio
+async def test_cue_list_fingerprint_first(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /cue/ sorts fingerprint-sourced tracklists before 1001tracklists."""
+    await _create_approved_tracklist_with_file(session, artist="ZZZ Last", source="1001tracklists")
+    await _create_approved_tracklist_with_file(session, artist="AAA First", source="fingerprint")
+    response = await client.get("/cue/")
+    assert response.status_code == 200
+    text = response.text
+    # Fingerprint artist should appear before 1001tracklists artist
+    fp_pos = text.index("AAA First")
+    tt_pos = text.index("ZZZ Last")
+    assert fp_pos < tt_pos, "Fingerprint-sourced tracklist should appear before 1001tracklists-sourced"
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_returns_tracklist_card_when_target_is_tracklist(
+    client: AsyncClient, session: AsyncSession, tmp_path: Path
+) -> None:
+    """POST /cue/{id}/generate with HX-Target: tracklist-{id} returns tracklist card with Regenerate CUE."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"tracklist-{tracklist.id}"},
+    )
+    assert response.status_code == 200
+    assert "Regenerate CUE" in response.text
+    assert "CUE v1" in response.text

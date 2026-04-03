@@ -1,6 +1,10 @@
 <div id="cue-row-{{ tracklist.id }}" class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between">
     <div class="flex items-center gap-3 min-w-0">
         <span class="text-sm font-semibold text-gray-900 truncate">{{ tracklist.artist }}</span>
+        <span class="text-xs font-semibold px-1.5 py-0.5 rounded-full
+            {% if tracklist.source == 'fingerprint' %}bg-indigo-100 text-indigo-700{% else %}bg-gray-100 text-gray-500{% endif %}">
+            {{ tracklist.source }}
+        </span>
         {% if tracklist.event %}
         <span class="text-sm text-gray-500">@ {{ tracklist.event }}</span>
         {% endif %}
