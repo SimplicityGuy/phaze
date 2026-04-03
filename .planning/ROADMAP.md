@@ -101,7 +101,11 @@ Plans:
   1. User can generate a .cue file from any approved tracklist, with timestamps preferring fingerprint data over 1001tracklists positions
   2. Generated CUE files use correct 75fps frame conversion (MM:SS:FF) and UTF-8 with BOM encoding
   3. CUE files include REM comments with Discogs metadata (genre, label, catalog number, year) when available
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 21-01-PLAN.md -- CUE generator service: timestamp conversion, content generation, file writing (TDD)
+- [ ] 21-02-PLAN.md -- CUE UI: router, management page, tracklist inline button, nav tab, integration tests
+**UI hint**: yes
 
 ## Progress
 
@@ -127,4 +131,4 @@ Plans:
 | 18. Unified Search | v3.0 | 2/2 | Complete    | 2026-04-03 |
 | 19. Discogs Cross-Service Linking | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 20. Tag Writing | v3.0 | 3/3 | Complete    | 2026-04-03 |
-| 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |
+| 21. CUE Sheet Generation | v3.0 | 0/2 | Not started | - |
