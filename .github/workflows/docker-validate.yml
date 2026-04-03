@@ -66,5 +66,6 @@ jobs:
       - name: 🐳 Validate docker-compose.yml
         run: |
           echo "🔍 Validating Docker Compose configuration..."
+          touch .env
           docker compose config --quiet
           echo "✅ docker-compose.yml is valid"

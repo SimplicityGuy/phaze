@@ -27,7 +27,7 @@ COPY --from=builder /build/panako/build/libs/Panako-*-all.jar /app/panako.jar
 
 # Install uv + Python deps for FastAPI wrapper
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-COPY services/panako/pyproject.toml ./
+COPY services/panako/pyproject.toml services/panako/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy FastAPI wrapper
