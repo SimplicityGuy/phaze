@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003 — SQLAlchemy resolves Mapped[] annotations at runtime
 import enum
 from typing import TYPE_CHECKING
 import uuid
@@ -14,8 +15,6 @@ from phaze.models.base import Base, TimestampMixin
 
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from phaze.models.file import FileRecord
 
 
