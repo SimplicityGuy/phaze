@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 import uuid
 
 import pytest
@@ -260,3 +261,117 @@ async def test_generate_cue_returns_tracklist_card_when_target_is_tracklist(clie
     assert response.status_code == 200
     assert "Regenerate CUE" in response.text
     assert "CUE v1" in response.text
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_not_approved(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """POST /cue/{id}/generate with non-approved tracklist returns error toast."""
+    file_id = uuid.uuid4()
+    file_record = FileRecord(
+        id=file_id,
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path="/music/test.mp3",
+        original_filename="test.mp3",
+        current_path=str(tmp_path / "test.mp3"),
+        file_type="mp3",
+        file_size=50_000_000,
+        state=FileState.EXECUTED,
+    )
+    session.add(file_record)
+    (tmp_path / "test.mp3").write_text("fake")
+
+    tracklist = Tracklist(
+        id=uuid.uuid4(),
+        external_id=f"ext-{uuid.uuid4().hex[:8]}",
+        source_url="https://example.com",
+        file_id=file_id,
+        artist="Test",
+        latest_version_id=uuid.uuid4(),
+        source="1001tracklists",
+        status="proposed",  # Not approved
+    )
+    session.add(tracklist)
+    await session.commit()
+
+    response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert "approved" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_write_failure(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """POST /cue/{id}/generate with write failure returns error toast."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    with patch("phaze.routers.cue.write_cue_file", side_effect=OSError("Permission denied")):
+        response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert "Failed to write CUE file" in response.text
+
+
+@pytest.mark.asyncio
+async def test_generate_batch_skips_no_timestamps(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """POST /cue/generate-batch skips tracklists without timestamps."""
+    _tl_with, file_with = await _create_approved_tracklist_with_file(session, artist="With Timestamps")
+    _tl_without, file_without = await _create_approved_tracklist_with_file(session, artist="No Timestamps", with_timestamps=False)
+
+    for fr in [file_with, file_without]:
+        audio_path = tmp_path / fr.original_filename
+        audio_path.write_text("fake audio")
+        fr.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post("/cue/generate-batch")
+    assert response.status_code == 200
+    assert "Generated 1 CUE files" in response.text
+
+
+@pytest.mark.asyncio
+async def test_cue_list_pagination(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /cue/?page=2 returns second page of results."""
+    # Create enough tracklists to paginate (default page_size=25)
+    for i in range(3):
+        await _create_approved_tracklist_with_file(session, artist=f"Artist {i}")
+
+    response = await client.get("/cue/?page=1&page_size=2")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_no_latest_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """POST /cue/{id}/generate with tracklist lacking latest_version_id returns error."""
+    file_id = uuid.uuid4()
+    file_record = FileRecord(
+        id=file_id,
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path="/music/test.mp3",
+        original_filename="test.mp3",
+        current_path=str(tmp_path / "test.mp3"),
+        file_type="mp3",
+        file_size=50_000_000,
+        state=FileState.EXECUTED,
+    )
+    session.add(file_record)
+    (tmp_path / "test.mp3").write_text("fake")
+
+    tracklist = Tracklist(
+        id=uuid.uuid4(),
+        external_id=f"ext-{uuid.uuid4().hex[:8]}",
+        source_url="https://example.com",
+        file_id=file_id,
+        artist="Test",
+        latest_version_id=None,  # No version
+        source="1001tracklists",
+        status="approved",
+    )
+    session.add(tracklist)
+    await session.commit()
+
+    response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert "timestamps" in response.text.lower()
