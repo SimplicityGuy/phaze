@@ -195,9 +195,7 @@ async def list_cue(
 
         # Load track count
         if tl.latest_version_id:
-            count_result = await session.execute(
-                select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id)
-            )
+            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
             track_count = count_result.scalar() or 0
         else:
             track_count = 0
@@ -280,9 +278,7 @@ async def generate_cue(
     # Return updated row + OOB toast
     track_count = 0
     if tracklist.latest_version_id:
-        count_result = await session.execute(
-            select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tracklist.latest_version_id)
-        )
+        count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tracklist.latest_version_id))
         track_count = count_result.scalar() or 0
 
     # Detect if request came from tracklist card (HX-Target starts with "tracklist-")
@@ -357,9 +353,7 @@ async def generate_batch(
         cue_version = _get_cue_version(fr.current_path)
         track_count = 0
         if tl.latest_version_id:
-            count_result = await session.execute(
-                select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id)
-            )
+            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
             track_count = count_result.scalar() or 0
 
         tracklists.append(
