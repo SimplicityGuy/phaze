@@ -2,6 +2,8 @@
     <td class="px-3 py-3">
         {% if result.result_type == "file" %}
             <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">File</span>
+        {% elif result.result_type == "discogs_release" %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">Discogs</span>
         {% else %}
             <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">Tracklist</span>
         {% endif %}

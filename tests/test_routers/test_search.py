@@ -8,9 +8,10 @@ import uuid
 import pytest
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
 if TYPE_CHECKING:
@@ -199,3 +200,103 @@ async def test_search_filter_panel_collapsed(client: AsyncClient) -> None:
     response = await client.get("/search/")
     assert response.status_code == 200
     assert 'x-data="{ showFilters: false }"' in response.text
+
+
+# ---------------------------------------------------------------------------
+# Discogs search integration (DISC-03)
+# ---------------------------------------------------------------------------
+
+
+async def create_searchable_discogs_link(
+    session: AsyncSession,
+    *,
+    discogs_artist: str = "Daft Punk",
+    discogs_title: str = "Random Access Memories",
+    discogs_year: int = 2013,
+    status: str = "accepted",
+) -> DiscogsLink:
+    """Create a DiscogsLink with required parent chain for search testing."""
+    tracklist = Tracklist(
+        id=uuid.uuid4(),
+        external_id=f"tl-{uuid.uuid4().hex[:8]}",
+        source_url=f"https://1001tracklists.com/{uuid.uuid4().hex[:8]}",
+        artist=discogs_artist,
+        event="Test Event",
+        status="approved",
+        source="1001tracklists",
+    )
+    session.add(tracklist)
+    await session.flush()
+
+    version = TracklistVersion(
+        id=uuid.uuid4(),
+        tracklist_id=tracklist.id,
+        version_number=1,
+    )
+    session.add(version)
+    await session.flush()
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist=discogs_artist,
+        title=discogs_title,
+    )
+    session.add(track)
+    await session.flush()
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id=f"r-{uuid.uuid4().hex[:8]}",
+        discogs_artist=discogs_artist,
+        discogs_title=discogs_title,
+        discogs_label="Test Label",
+        discogs_year=discogs_year,
+        confidence=90.0,
+        status=status,
+    )
+    session.add(link)
+    await session.commit()
+    return link
+
+
+@pytest.mark.asyncio
+async def test_search_returns_discogs_results(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /search/?q=daft+punk returns Discogs results with discogs_release type."""
+    await create_searchable_discogs_link(session, discogs_artist="Daft Punk", discogs_title="Random Access Memories")
+    response = await client.get("/search/", params={"q": "daft punk"})
+    assert response.status_code == 200
+    assert "Discogs" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_discogs_purple_pill(client: AsyncClient, session: AsyncSession) -> None:
+    """Discogs results render with purple pill badge."""
+    await create_searchable_discogs_link(session, discogs_artist="Bonobo", discogs_title="Migration")
+    response = await client.get("/search/", params={"q": "bonobo"})
+    assert response.status_code == 200
+    assert "bg-purple-100 text-purple-700" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_three_entity_types(client: AsyncClient, session: AsyncSession) -> None:
+    """Search results contain File (blue), Tracklist (green), and Discogs (purple) badges."""
+    await create_searchable_file(session, original_filename="bonobo - migration.mp3", artist="bonobo")
+    await create_searchable_tracklist(session, artist="bonobo", event="bonobo Coachella 2024")
+    await create_searchable_discogs_link(session, discogs_artist="bonobo", discogs_title="migration")
+    response = await client.get("/search/", params={"q": "bonobo"})
+    assert response.status_code == 200
+    assert "bg-blue-100 text-blue-700" in response.text  # File
+    assert "bg-green-100 text-green-700" in response.text  # Tracklist
+    assert "bg-purple-100 text-purple-700" in response.text  # Discogs
+
+
+@pytest.mark.asyncio
+async def test_summary_counts_include_discogs(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /search/ landing page shows Discogs link count."""
+    await create_searchable_discogs_link(session, discogs_artist="Count Artist", discogs_title="Count Album")
+    response = await client.get("/search/")
+    assert response.status_code == 200
+    assert "discogs links" in response.text
