@@ -49,6 +49,9 @@ jobs:
 
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          elif [[ "${BEFORE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
+            # First push to a new branch — compare against default branch
+            CHANGED_FILES=$(git diff --name-only "origin/main...${HEAD_SHA}")
           else
             CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}" "${HEAD_SHA}")
           fi
