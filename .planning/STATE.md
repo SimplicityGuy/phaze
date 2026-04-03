@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: executing
-stopped_at: Phase 19 UI-SPEC approved
-last_updated: "2026-04-03T03:05:43.185Z"
+stopped_at: Completed 19-01-PLAN.md
+last_updated: "2026-04-03T03:51:24.223Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 5
+  completed_plans: 3
   percent: 0
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 18: Unified Search
+**Current focus:** Phase 19 — discogs-cross-service-linking
 
 ## Current Position
 
-Phase: 19 of 21 (discogs cross service linking)
-Plan: Not started
-Status: Executing -- Plan 02 code complete, checkpoint pending
+Phase: 19 (discogs-cross-service-linking) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
 Last activity: 2026-04-03
 
 Progress: [░░░░░░░░░░] 0% (v3.0)
@@ -60,6 +60,7 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - Discogs integration routes through discogsography HTTP API only, never direct Discogs API
 - Search UI: HTMX partial detection via truthy HX-Request header check
 - Search UI: Alpine.js collapsible filter panel pattern (x-data showFilters boolean)
+- [Phase 19]: Confidence blending: 0.6 token_set_ratio + 0.4 API relevance, denormalized Discogs metadata in DiscogsLink
 
 ### Pending Todos
 
@@ -72,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T03:05:43.181Z
-Stopped at: Phase 19 UI-SPEC approved
-Resume file: .planning/phases/19-discogs-cross-service-linking/19-UI-SPEC.md
+Last session: 2026-04-03T03:51:24.220Z
+Stopped at: Completed 19-01-PLAN.md
+Resume file: None
