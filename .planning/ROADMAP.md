@@ -71,7 +71,12 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
   2. User can review and approve/reject individual Discogs link candidates (not auto-committed)
   3. User can query "find all sets containing track X" and get results spanning phaze tracklists and Discogs releases
   4. User can bulk-link all tracks in a tracklist to their top Discogs matches in one action
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 19-01-PLAN.md -- Data layer: DiscogsLink model, migration, API adapter, fuzzy matcher, SAQ task
+- [ ] 19-02-PLAN.md -- Tracklist UI: match/accept/dismiss/bulk-link endpoints and templates
+- [ ] 19-03-PLAN.md -- Search extension: Discogs UNION ALL branch and purple pill badge
+**UI hint**: yes
 
 ### Phase 20: Tag Writing
 **Goal**: Users can push corrected metadata from Postgres into destination file tags with full review and audit trail
@@ -117,6 +122,6 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 3/3 | Complete | 2026-04-01 |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 3/3 | Complete | 2026-04-02 |
 | 18. Unified Search | v3.0 | 2/2 | Complete    | 2026-04-03 |
-| 19. Discogs Cross-Service Linking | v3.0 | 0/? | Not started | - |
+| 19. Discogs Cross-Service Linking | v3.0 | 0/3 | Not started | - |
 | 20. Tag Writing | v3.0 | 0/? | Not started | - |
 | 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |
