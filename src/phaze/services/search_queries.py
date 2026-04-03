@@ -172,9 +172,7 @@ async def get_summary_counts(session: AsyncSession) -> dict[str, int]:
     tracklist_count_result = await session.execute(select(func.count()).select_from(Tracklist))
     tracklist_count = tracklist_count_result.scalar() or 0
 
-    discogs_count_result = await session.execute(
-        select(func.count()).select_from(DiscogsLink).where(DiscogsLink.status == "accepted")
-    )
+    discogs_count_result = await session.execute(select(func.count()).select_from(DiscogsLink).where(DiscogsLink.status == "accepted"))
     discogs_count = discogs_count_result.scalar() or 0
 
     return {"file_count": file_count, "tracklist_count": tracklist_count, "discogs_count": discogs_count}

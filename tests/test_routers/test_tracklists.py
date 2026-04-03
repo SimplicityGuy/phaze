@@ -912,17 +912,32 @@ async def test_bulk_link_discogs(session: AsyncSession, client: AsyncClient) -> 
 
     # Track 1: two candidates
     link1a = DiscogsLink(
-        id=uuid.uuid4(), track_id=tracks[0].id, discogs_release_id="r-a1",
-        discogs_artist="A1", discogs_title="T1", confidence=95.0, status="candidate",
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-a1",
+        discogs_artist="A1",
+        discogs_title="T1",
+        confidence=95.0,
+        status="candidate",
     )
     link1b = DiscogsLink(
-        id=uuid.uuid4(), track_id=tracks[0].id, discogs_release_id="r-a2",
-        discogs_artist="A2", discogs_title="T2", confidence=70.0, status="candidate",
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-a2",
+        discogs_artist="A2",
+        discogs_title="T2",
+        confidence=70.0,
+        status="candidate",
     )
     # Track 2: one candidate
     link2a = DiscogsLink(
-        id=uuid.uuid4(), track_id=tracks[1].id, discogs_release_id="r-b1",
-        discogs_artist="B1", discogs_title="T3", confidence=80.0, status="candidate",
+        id=uuid.uuid4(),
+        track_id=tracks[1].id,
+        discogs_release_id="r-b1",
+        discogs_artist="B1",
+        discogs_title="T3",
+        confidence=80.0,
+        status="candidate",
     )
     session.add_all([link1a, link1b, link2a])
     await session.flush()

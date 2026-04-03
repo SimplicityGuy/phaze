@@ -592,11 +592,7 @@ async def get_discogs_candidates(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Return Discogs candidate rows for a single track."""
-    stmt = (
-        select(DiscogsLink)
-        .where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed")
-        .order_by(DiscogsLink.confidence.desc())
-    )
+    stmt = select(DiscogsLink).where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
     result = await session.execute(stmt)
     candidates = list(result.scalars().all())
 
@@ -635,9 +631,7 @@ async def accept_discogs_link(
 
     # Re-query remaining candidates (only the accepted one should remain visible)
     remaining_stmt = (
-        select(DiscogsLink)
-        .where(DiscogsLink.track_id == link.track_id, DiscogsLink.status != "dismissed")
-        .order_by(DiscogsLink.confidence.desc())
+        select(DiscogsLink).where(DiscogsLink.track_id == link.track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
     )
     remaining_result = await session.execute(remaining_stmt)
     candidates = list(remaining_result.scalars().all())
@@ -667,9 +661,7 @@ async def dismiss_discogs_link(
 
     # Re-query remaining candidates
     remaining_stmt = (
-        select(DiscogsLink)
-        .where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed")
-        .order_by(DiscogsLink.confidence.desc())
+        select(DiscogsLink).where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
     )
     remaining_result = await session.execute(remaining_stmt)
     candidates = list(remaining_result.scalars().all())
