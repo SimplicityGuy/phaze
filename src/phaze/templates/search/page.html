@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Search - Phaze{% endblock %}
+
+{% block skip_link %}
+<a href="#search-results" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to search results</a>
+{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold leading-tight mb-6">Search</h1>
+
+{% include "search/partials/search_form.html" %}
+
+<div id="search-results">
+    {% if query %}
+        {% include "search/partials/results_content.html" %}
+    {% elif counts %}
+        {% include "search/partials/summary_counts.html" %}
+    {% endif %}
+</div>
+{% endblock %}
