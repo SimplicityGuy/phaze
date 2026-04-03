@@ -3,91 +3,44 @@
 from __future__ import annotations
 
 import struct
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import mutagen
-from mutagen.id3 import ID3, TIT2, TPE1
 from mutagen.mp3 import MP3
 import pytest
-import pytest_asyncio
 
 from phaze.models.file import FileState
 from phaze.models.tag_write_log import TagWriteStatus
-from phaze.services.tag_writer import execute_tag_write, verify_write, write_tags
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+from phaze.services.tag_writer import (
+    _write_mp4,
+    _write_vorbis,
+    execute_tag_write,
+    verify_write,
+    write_tags,
+)
 
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal valid audio files
 # ---------------------------------------------------------------------------
 
+
 def _make_mp3(path: Path) -> Path:
-    """Create a minimal valid MP3 file with an ID3 header."""
-    # Minimal MPEG frame: MPEG1 Layer3 128kbps 44100Hz stereo
-    # Sync word + header bytes for a valid frame
-    frame_header = b"\xff\xfb\x90\x00"
-    # Pad to frame size (417 bytes for 128kbps @ 44100Hz)
-    frame_data = frame_header + b"\x00" * 413
-    path.write_bytes(frame_data)
+    """Create a minimal valid MP3 file with multiple MPEG frames + ID3 tags."""
+    # MPEG1 Layer3 128kbps 44100Hz stereo, no padding, no CRC
+    header = struct.pack(">I", 0xFFFB9000)
+    frame_size = 417  # 144 * 128000 / 44100 = 417 bytes
+    frame = header + b"\x00" * (frame_size - 4)
+    # Write 10 frames so mutagen can sync properly
+    path.write_bytes(frame * 10)
     # Add ID3 tags via mutagen
     audio = MP3(str(path))
     audio.add_tags()
     audio.save()
-    return path
-
-
-def _make_ogg(path: Path) -> Path:
-    """Create a minimal valid OGG Vorbis file using mutagen test data."""
-    import shutil
-
-    try:
-        # Use mutagen's bundled test data for a valid OGG file
-        test_data_dir = Path(mutagen.__file__).parent.parent / "tests" / "data"
-        if (test_data_dir / "empty.ogg").exists():
-            shutil.copy(test_data_dir / "empty.ogg", path)
-            return path
-    except Exception:
-        pass
-
-    # Fallback: create a minimal OGG manually using struct
-    ogg_page = bytearray()
-    ogg_page.extend(b"OggS")  # capture pattern
-    ogg_page.extend(b"\x00")  # version
-    ogg_page.extend(b"\x02")  # header type (beginning of stream)
-    ogg_page.extend(struct.pack("<q", 0))  # granule position
-    ogg_page.extend(struct.pack("<I", 1))  # serial number
-    ogg_page.extend(struct.pack("<I", 0))  # page sequence
-    ogg_page.extend(struct.pack("<I", 0))  # CRC
-    ogg_page.extend(b"\x01")  # 1 segment
-    ogg_page.extend(b"\x1e")  # segment size = 30
-
-    # Vorbis identification header
-    vorbis_id = bytearray()
-    vorbis_id.extend(b"\x01vorbis")
-    vorbis_id.extend(struct.pack("<I", 0))  # version
-    vorbis_id.extend(b"\x01")  # channels
-    vorbis_id.extend(struct.pack("<I", 44100))  # sample rate
-    vorbis_id.extend(struct.pack("<i", 0))  # bitrate max
-    vorbis_id.extend(struct.pack("<i", 128000))  # bitrate nominal
-    vorbis_id.extend(struct.pack("<i", 0))  # bitrate min
-    vorbis_id.extend(b"\xb8")  # blocksize 0=256, 1=2048
-
-    ogg_page.extend(vorbis_id)
-    path.write_bytes(bytes(ogg_page))
-    return path
-
-
-def _make_m4a(path: Path) -> Path:
-    """Create a minimal valid M4A file."""
-    from mutagen.mp4 import MP4
-
-    # Create minimal ftyp + moov atoms for a valid MP4
-    # ftyp box
-    ftyp = b"\x00\x00\x00\x14ftypM4A \x00\x00\x00\x00M4A "
-    # minimal moov with mvhd
-    mvhd = b"\x00\x00\x00\x6cmvhd" + b"\x00" * 100
-    moov = struct.pack(">I", len(mvhd) + 8) + b"moov" + mvhd
-    path.write_bytes(ftyp + moov)
     return path
 
 
@@ -102,10 +55,16 @@ class TestWriteTags:
 
     def test_write_id3_tags_to_mp3(self, mp3_file: Path) -> None:
         """Write ID3 tags to an MP3 file and read them back."""
-        tags = {"artist": "Test Artist", "title": "Test Title", "album": "Test Album", "year": "2024", "genre": "Electronic", "track_number": "3"}
+        tags = {
+            "artist": "Test Artist",
+            "title": "Test Title",
+            "album": "Test Album",
+            "year": "2024",
+            "genre": "Electronic",
+            "track_number": "3",
+        }
         write_tags(str(mp3_file), tags)
 
-        # Read back
         audio = MP3(str(mp3_file))
         assert audio.tags is not None
         assert str(audio.tags["TPE1"]) == "Test Artist"
@@ -143,42 +102,57 @@ class TestWriteTags:
         assert "TIT2" not in audio.tags
 
 
-class TestWriteTagsVorbis:
-    """Tests for write_tags with Vorbis format (OGG)."""
+class TestWriteVorbisFormat:
+    """Tests for Vorbis format writing via mock (OGG/FLAC/OPUS)."""
 
-    def test_write_vorbis_tags(self, tmp_path: Path) -> None:
-        """Write Vorbis tags to an OGG file and read them back."""
-        ogg_path = _make_ogg(tmp_path / "test.ogg")
-        audio = mutagen.File(str(ogg_path))
-        if audio is None:
-            pytest.skip("Cannot create valid OGG test file in this environment")
+    def test_write_vorbis_keys(self) -> None:
+        """Vorbis writer sets correct keys with list-wrapped values."""
+        audio = MagicMock()
+        _write_vorbis(audio, {"artist": "Vorbis Artist", "title": "Vorbis Title", "year": "2024"})
 
-        tags = {"artist": "Vorbis Artist", "title": "Vorbis Title"}
-        write_tags(str(ogg_path), tags)
+        audio.__setitem__.assert_any_call("artist", ["Vorbis Artist"])
+        audio.__setitem__.assert_any_call("title", ["Vorbis Title"])
+        audio.__setitem__.assert_any_call("date", ["2024"])
 
-        audio = mutagen.File(str(ogg_path))
-        assert audio is not None
-        assert audio["artist"] == ["Vorbis Artist"]
-        assert audio["title"] == ["Vorbis Title"]
+    def test_write_vorbis_skips_none(self) -> None:
+        """Vorbis writer skips None values."""
+        audio = MagicMock()
+        _write_vorbis(audio, {"artist": "Test", "title": None})
+
+        audio.__setitem__.assert_called_once_with("artist", ["Test"])
+
+    def test_write_vorbis_track_number(self) -> None:
+        """Vorbis writer maps track_number to 'tracknumber'."""
+        audio = MagicMock()
+        _write_vorbis(audio, {"track_number": "7"})
+
+        audio.__setitem__.assert_called_once_with("tracknumber", ["7"])
 
 
-class TestWriteTagsMP4:
-    """Tests for write_tags with MP4/M4A format."""
+class TestWriteMP4Format:
+    """Tests for MP4/M4A format writing via mock."""
 
-    def test_write_mp4_tags(self, tmp_path: Path) -> None:
-        """Write MP4 tags and verify track number tuple format."""
-        m4a_path = _make_m4a(tmp_path / "test.m4a")
-        audio = mutagen.File(str(m4a_path))
-        if audio is None:
-            pytest.skip("Cannot create valid M4A test file in this environment")
+    def test_write_mp4_keys(self) -> None:
+        """MP4 writer sets correct atom keys."""
+        audio = MagicMock()
+        _write_mp4(audio, {"artist": "MP4 Artist", "album": "MP4 Album"})
 
-        tags = {"artist": "MP4 Artist", "track_number": "5"}
-        write_tags(str(m4a_path), tags)
+        audio.__setitem__.assert_any_call("\xa9ART", ["MP4 Artist"])
+        audio.__setitem__.assert_any_call("\xa9alb", ["MP4 Album"])
 
-        audio = mutagen.File(str(m4a_path))
-        assert audio is not None
-        assert audio["\xa9ART"] == ["MP4 Artist"]
-        assert audio["trkn"] == [(5, 0)]
+    def test_write_mp4_track_number_tuple(self) -> None:
+        """MP4 writer uses [(track_number, 0)] tuple format for trkn."""
+        audio = MagicMock()
+        _write_mp4(audio, {"track_number": "5"})
+
+        audio.__setitem__.assert_called_once_with("trkn", [(5, 0)])
+
+    def test_write_mp4_skips_none(self) -> None:
+        """MP4 writer skips None values."""
+        audio = MagicMock()
+        _write_mp4(audio, {"artist": "Test", "title": None})
+
+        audio.__setitem__.assert_called_once_with("\xa9ART", ["Test"])
 
 
 class TestVerifyWrite:
@@ -194,17 +168,22 @@ class TestVerifyWrite:
     def test_discrepancy_detected(self, mp3_file: Path) -> None:
         """verify_write detects mismatched tags."""
         write_tags(str(mp3_file), {"artist": "Actual Artist"})
-        # Verify against different expected
         discrepancies = verify_write(str(mp3_file), {"artist": "Expected Artist"})
         assert "artist" in discrepancies
         assert discrepancies["artist"]["expected"] == "Expected Artist"
         assert discrepancies["artist"]["actual"] == "Actual Artist"
 
+    def test_verify_skips_none_expected(self, mp3_file: Path) -> None:
+        """verify_write skips fields where expected is None."""
+        write_tags(str(mp3_file), {"artist": "Test"})
+        discrepancies = verify_write(str(mp3_file), {"artist": "Test", "title": None})
+        assert discrepancies == {}
+
 
 class TestExecuteTagWrite:
     """Tests for execute_tag_write async function."""
 
-    def _make_file_record(self, state: str = FileState.EXECUTED, current_path: str = "/tmp/test.mp3") -> MagicMock:
+    def _make_file_record(self, state: str = FileState.EXECUTED, current_path: str = "/mock/dest/test.mp3") -> MagicMock:
         """Create a mock FileRecord."""
         fr = MagicMock()
         fr.state = state
@@ -255,11 +234,24 @@ class TestExecuteTagWrite:
         fr.state = FileState.EXECUTED
         session = AsyncMock()
 
-        with patch("phaze.services.tag_writer.extract_tags") as mock_extract, \
-             patch("phaze.services.tag_writer.write_tags") as mock_write, \
-             patch("phaze.services.tag_writer.verify_write", return_value={}):
+        with (
+            patch("phaze.services.tag_writer.extract_tags") as mock_extract,
+            patch("phaze.services.tag_writer.write_tags") as mock_write,
+            patch("phaze.services.tag_writer.verify_write", return_value={}),
+        ):
             mock_extract.return_value = MagicMock(
                 artist=None, title=None, album=None, year=None, genre=None, track_number=None
             )
             await execute_tag_write(session, fr, {"artist": "Test"}, "tracklist")
             mock_write.assert_called_once_with("/dest/music.mp3", {"artist": "Test"})
+
+    @pytest.mark.asyncio
+    async def test_discrepancy_status(self, mp3_file: Path) -> None:
+        """execute_tag_write returns DISCREPANCY status when verify finds mismatches."""
+        fr = self._make_file_record(current_path=str(mp3_file))
+        session = AsyncMock()
+
+        with patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"expected": "A", "actual": "B"}}):
+            log_entry = await execute_tag_write(session, fr, {"artist": "A"}, "tracklist")
+            assert log_entry.status == TagWriteStatus.DISCREPANCY
+            assert log_entry.discrepancies == {"artist": {"expected": "A", "actual": "B"}}
