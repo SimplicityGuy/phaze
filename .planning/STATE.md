@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: verifying
-stopped_at: Phase 20 UI-SPEC approved
-last_updated: "2026-04-03T17:29:05.917Z"
+status: executing
+stopped_at: Completed 20-01-PLAN.md
+last_updated: "2026-04-03T18:04:45.352Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 7
+  completed_plans: 6
   percent: 0
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 19 — discogs-cross-service-linking
+**Current focus:** Phase 20 — tag-writing
 
 ## Current Position
 
-Phase: 20
-Plan: Not started
-Status: Phase complete — ready for verification
+Phase: 20 (tag-writing) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
 Last activity: 2026-04-03
 
 Progress: [░░░░░░░░░░] 0% (v3.0)
@@ -64,6 +64,8 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - [Phase 19]: Discogs results excluded when file_state filter active, matching tracklist exclusion pattern
 - [Phase 19]: Three-entity UNION ALL search: file (blue), tracklist (green), discogs_release (purple) pill colors
 - [Phase 19]: Discogs UI: HTMX candidate lifecycle with accept/dismiss, auto-dismiss siblings, bulk-link top candidate
+- [Phase 20-tag-writing]: Mock-based tests for OGG/M4A formats, real MP3 for end-to-end write/verify
+- [Phase 20-tag-writing]: Tracklist date.year is fallback-only for year field (does not override metadata year)
 
 ### Pending Todos
 
@@ -76,6 +78,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T17:29:05.913Z
-Stopped at: Phase 20 UI-SPEC approved
-Resume file: .planning/phases/20-tag-writing/20-UI-SPEC.md
+Last session: 2026-04-03T18:04:45.349Z
+Stopped at: Completed 20-01-PLAN.md
+Resume file: None
