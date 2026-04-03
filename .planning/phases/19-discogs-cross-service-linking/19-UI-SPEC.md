@@ -33,8 +33,8 @@ Declared values (must be multiples of 4):
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| xs | 4px | Icon gaps, inline padding, pill badge py (py-0.5) |
-| sm | 8px | Compact element spacing, pill badge px (px-2), button padding (py-1.5) |
+| xs | 4px | Icon gaps, inline padding, pill badge vertical padding (py-1) |
+| sm | 8px | Compact element spacing, pill badge horizontal padding (px-2), button vertical padding (py-2) |
 | md | 16px | Default element spacing, cell padding (px-3 py-3), card padding (px-4) |
 | lg | 24px | Section padding, space-y-6 between major sections |
 | xl | 32px | Layout gaps, py-8 main content area |
@@ -66,13 +66,13 @@ Source: base.html loads Inter 400+600. All existing pages use text-2xl font-semi
 | Dominant (60%) | white (bg-white) | Page background, card backgrounds, table backgrounds |
 | Secondary (30%) | gray-50/gray-100 (bg-gray-50, border-gray-200) | Hover states, card borders, table row separators, header backgrounds |
 | Accent (10%) | blue-600 (#2563EB) | Primary action buttons ("Match to Discogs", "Bulk-link All"), active nav tab text, focus rings |
-| Destructive | red-600 (#DC2626) | "Dismiss" candidate action text, reject-related actions |
+| Destructive | red-600 (#DC2626) | "Dismiss Match" candidate action text, reject-related actions |
 | Discogs entity | purple-100/purple-700 (#F3E8FF/#7C3AED) | Discogs pill badge in search results, Discogs-specific status indicators |
 
 Accent reserved for:
 - "Match to Discogs" button (bg-blue-600 text-white)
 - "Bulk-link All" button (bg-blue-600 text-white)
-- "Accept" candidate button (bg-blue-600 text-white)
+- "Accept Match" candidate button (bg-blue-600 text-white)
 - Active nav tab text color
 - Focus ring on interactive elements
 
@@ -100,15 +100,15 @@ Source: CONTEXT.md D-10 locks purple for Discogs pills. Existing results_row.htm
 Each candidate row renders inside the track detail table as a nested sub-row:
 
 ```
-| (indent) | Artist         | Title          | Label       | Year | Score | Actions        |
-|          | deadmau5       | Strobe         | mau5trap    | 2009 | 87%   | Accept Dismiss |
+| (indent) | Artist         | Title          | Label       | Year | Score | Actions                    |
+|          | deadmau5       | Strobe         | mau5trap    | 2009 | 87%   | Accept Match Dismiss Match |
 ```
 
 - Indent: left padding 32px (pl-8) to visually nest under parent track
 - Background: bg-gray-50 to differentiate from parent track rows
 - Confidence badge: reuse existing `confidence_badge.html` pattern (green >= 90, yellow >= 70, red < 70)
-- Accept button: `text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1.5 rounded-md`
-- Dismiss button: `text-xs text-red-600 hover:text-red-700 font-semibold px-2 py-1`
+- Accept Match button: `text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-2 rounded-md`
+- Dismiss Match button: `text-xs text-red-600 hover:text-red-700 font-semibold px-2 py-1`
 
 Source: D-04 (inline on tracklist page), D-05 (artist, title, label, year, confidence), D-07 (Accept/Dismiss actions).
 
@@ -120,7 +120,7 @@ Placement: tracklist card action bar (same row as Approve/Reject/Unlink buttons)
 <button hx-post="/tracklists/{id}/match-discogs"
         hx-target="#tracks-{id}"
         hx-swap="innerHTML"
-        class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1.5 rounded-md">
+        class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-2 rounded-md">
     Match to Discogs
 </button>
 ```
@@ -138,7 +138,7 @@ Placement: tracklist card action bar, visible only when candidates exist (D-12).
         hx-target="#tracks-{id}"
         hx-swap="innerHTML"
         hx-confirm="Accept the top Discogs match for all tracks? This cannot be undone."
-        class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1.5 rounded-md">
+        class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-2 rounded-md">
     Bulk-link All
 </button>
 ```
@@ -172,11 +172,15 @@ Add third entity type to `results_row.html`:
 
 ```html
 {% elif result.result_type == "discogs_release" %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">Discogs</span>
+    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-purple-100 text-purple-700">Discogs</span>
 {% endif %}
 ```
 
 Source: D-10, existing pill pattern in results_row.html.
+
+### Focal Point -- Tracklist Detail Page
+
+The primary visual anchor on the tracklist detail page is the track table itself. When Discogs candidates are loaded, the expanded candidate sub-rows with their confidence badges and Accept Match / Dismiss Match actions become the focal point, drawing the user's eye via the bg-gray-50 inset contrast and the blue accent Accept Match button.
 
 ---
 
@@ -188,8 +192,8 @@ Source: D-10, existing pill pattern in results_row.html.
 |----------|--------|---------|--------|------|---------|
 | `/tracklists/{id}/match-discogs` | POST | Button click | `#tracks-{id}` | innerHTML | Enqueue SAQ match task, return updated tracks with indicators |
 | `/tracklists/{tl_id}/tracks/{t_id}/discogs` | GET | Expand click (once) | `#discogs-{track_id}` | innerHTML | Load candidate rows for a single track |
-| `/tracklists/discogs-links/{link_id}/accept` | POST | Accept button | Candidate row | outerHTML | Set link accepted, dismiss siblings, return updated row |
-| `/tracklists/discogs-links/{link_id}/dismiss` | DELETE | Dismiss button | Candidate row | outerHTML | Set link dismissed, remove row |
+| `/tracklists/discogs-links/{link_id}/accept` | POST | Accept Match button | Candidate row | outerHTML | Set link accepted, dismiss siblings, return updated row |
+| `/tracklists/discogs-links/{link_id}/dismiss` | DELETE | Dismiss Match button | Candidate row | outerHTML | Set link dismissed, remove row |
 | `/tracklists/{id}/bulk-link` | POST | Bulk-link button | `#tracks-{id}` | innerHTML | Accept top candidate per track, return updated tracks |
 
 ### State Transitions
@@ -199,7 +203,7 @@ Source: D-10, existing pill pattern in results_row.html.
 | No matches run | "Match to Discogs" button visible, no expand toggles | Click "Match to Discogs" |
 | Matching in progress | Button shows "Matching...", spinner indicator | Wait for completion |
 | Candidates available | Track rows show purple "Discogs" expand toggle, "Bulk-link All" button appears | Expand tracks, review candidates |
-| Candidate accepted | Accepted row shows green check, other candidates for same track removed | Accept/Dismiss individual candidates |
+| Candidate accepted | Accepted row shows green check, other candidates for same track removed | Accept Match / Dismiss Match individual candidates |
 | All tracks linked | "Bulk-link All" hidden (all tracks have accepted links) | No further action needed |
 
 ---
@@ -210,8 +214,8 @@ Source: D-10, existing pill pattern in results_row.html.
 |---------|------|
 | Primary CTA | "Match to Discogs" |
 | Secondary CTA | "Bulk-link All" |
-| Accept action | "Accept" |
-| Dismiss action | "Dismiss" |
+| Accept action | "Accept Match" |
+| Dismiss action | "Dismiss Match" |
 | Empty state heading | "No Discogs matches" |
 | Empty state body | "Click 'Match to Discogs' to find matching releases for tracks in this tracklist." |
 | Matching in progress | "Matching tracks to Discogs..." |
@@ -236,8 +240,8 @@ Source: D-01 (Match to Discogs), D-02 (artist+title required), D-07 (Accept/Dism
 | ARIA live | Toast container uses `aria-live="polite"` (existing) |
 | Button labels | All buttons have visible text labels (no icon-only buttons) |
 | Color + text | Confidence scores shown as both color badge AND numeric percentage |
-| Focus management | After Accept/Dismiss, focus returns to next candidate or parent track row |
-| Keyboard | All expand/collapse, Accept, Dismiss, Bulk-link buttons are native `<button>` elements |
+| Focus management | After Accept Match / Dismiss Match, focus returns to next candidate or parent track row |
+| Keyboard | All expand/collapse, Accept Match, Dismiss Match, Bulk-link buttons are native `<button>` elements |
 
 ---
 
