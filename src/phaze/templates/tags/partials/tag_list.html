@@ -10,7 +10,7 @@
     </thead>
     <tbody>
         {% for file in files %}
-        <tr class="border-b border-gray-200" x-data="{ expanded: false }">
+        <tr id="row-{{ file.id }}" class="border-b border-gray-200" x-data="{ expanded: false }">
             <td class="py-2 px-2 cursor-pointer truncate"
                 @click="expanded = !expanded"
                 hx-get="/tags/{{ file.id }}/compare"
@@ -51,9 +51,8 @@
                 {% if file.status == 'pending' and file.changes > 0 %}
                 <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-md"
                         hx-post="/tags/{{ file.id }}/write"
-                        hx-target="closest tr"
-                        hx-swap="outerHTML"
-                        hx-include="[name^='{{ file.id }}']">
+                        hx-target="#row-{{ file.id }}"
+                        hx-swap="outerHTML">
                     Write Tags
                 </button>
                 {% elif file.status == 'pending' %}

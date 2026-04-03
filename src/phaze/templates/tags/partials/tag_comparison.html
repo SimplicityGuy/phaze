@@ -32,7 +32,7 @@
     </table>
 
     <form hx-post="/tags/{{ file.id }}/write"
-          hx-target="closest tr"
+          hx-target="#row-{{ file.id }}"
           hx-swap="outerHTML">
         {% for item in comparison %}
         <input type="hidden" name="{{ item.field }}" value="{{ item.proposed if item.proposed is not none else '' }}">

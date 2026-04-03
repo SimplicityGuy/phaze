@@ -1,4 +1,4 @@
-<tr class="border-b border-gray-200" x-data="{ expanded: false }">
+<tr id="row-{{ file.id }}" class="border-b border-gray-200" x-data="{ expanded: false }">
     <td class="py-2 px-2 cursor-pointer truncate"
         @click="expanded = !expanded"
         hx-get="/tags/{{ file.id }}/compare"
@@ -47,7 +47,7 @@
         {% endif %}
     </td>
 </tr>
-<tr x-show="expanded" id="detail-{{ file.id }}">
+<tr id="detail-{{ file.id }}" hx-swap-oob="outerHTML">
     <td colspan="5" class="bg-gray-50 px-4 py-4"></td>
 </tr>
 

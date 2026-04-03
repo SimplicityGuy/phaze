@@ -315,11 +315,18 @@ async def write_file_tags(
             else:
                 tags[field] = str(val)
 
-    # Determine source
-    tracklist = await _get_tracklist_for_file(session, file_id)
-    computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename)
-    has_edits = any(str(tags.get(f, "")) != str(computed.get(f, "")) for f in CORE_FIELDS if f in tags or f in computed)
-    source = "manual_edit" if has_edits else "proposal"
+    # Fallback: if no tag values submitted (e.g., collapsed row button without comparison panel),
+    # use server-computed proposed tags
+    if not tags:
+        tracklist = await _get_tracklist_for_file(session, file_id)
+        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename)
+        tags = {k: v for k, v in computed.items() if v is not None}
+        source = "proposal"
+    else:
+        tracklist = await _get_tracklist_for_file(session, file_id)
+        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename)
+        has_edits = any(str(tags.get(f, "")) != str(computed.get(f, "")) for f in CORE_FIELDS if f in tags or f in computed)
+        source = "manual_edit" if has_edits else "proposal"
 
     try:
         log_entry = await execute_tag_write(session, file_record, tags, source)
