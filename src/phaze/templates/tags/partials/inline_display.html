@@ -1,0 +1,14 @@
+{% set display_file_id = file_id if file_id is defined else file.id %}
+{% set display_field = field if field is defined else item.field %}
+{% set display_value = value if value is defined else item.proposed %}
+{% set display_changed = changed if changed is defined else item.changed %}
+<span hx-get="/tags/{{ display_file_id }}/edit/{{ display_field }}"
+      hx-target="closest td"
+      hx-swap="innerHTML"
+      class="cursor-pointer {% if display_changed %}text-blue-600 font-semibold{% endif %}">
+    {% if display_value is not none and display_value != '' %}
+        {{ display_value }}
+    {% else %}
+        <span class="text-gray-400">&mdash;</span>
+    {% endif %}
+</span>

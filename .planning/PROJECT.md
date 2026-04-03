@@ -23,13 +23,14 @@ Get 200K messy music and concert files properly named, organized into logical fo
 **v2.0 shipped 2026-04-02.** Metadata enrichment and tracklist integration complete.
 **Phase 18 complete (2026-04-03):** Unified search page with PostgreSQL FTS, GIN indexes, cross-entity results, faceted filtering.
 **Phase 19 complete (2026-04-03):** Discogs cross-service linking via discogsography HTTP API, fuzzy matching with confidence scores, inline candidate review, bulk-link, search extension with purple pills.
+**Phase 20 complete (2026-04-03):** Tag writing with review UI — cascade merge proposals (tracklist > metadata > filename), format-aware mutagen writes (MP3/M4A/OGG/OPUS/FLAC), verify-after-write, append-only audit log, HTMX comparison view.
 
-- 5,966+ lines of Python across 19 phases, 43 plans total
-- 538+ tests passing, 23/23 v2.0 requirements satisfied, 4/4 DISC requirements satisfied (46/46 cumulative)
+- 6,200+ lines of Python across 20 phases, 46 plans total
+- 580+ tests passing, 23/23 v2.0 requirements satisfied, 4/4 DISC + 4/4 TAGW requirements satisfied (50/50 cumulative)
 - Tech stack: FastAPI, SQLAlchemy (async), SAQ, litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, HTMX + Tailwind
 - Docker Compose: api, worker, postgres, redis, audfprint, panako containers
-- 10 Alembic migrations, 10 SQLAlchemy models, 3 fingerprint service containers
-- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview, unified search with Discogs linking
+- 11 Alembic migrations, 11 SQLAlchemy models, 3 fingerprint service containers
+- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview, unified search with Discogs linking, tag review
 
 ## Previous State
 
@@ -79,12 +80,13 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ Dual fingerprint service (audfprint + Panako) with batch ingestion — v2.0 Phase 16
 - ✓ Live set scanning with tracklist review, inline editing, approve/reject — v2.0 Phase 17
 
+- ✓ Unified search across files, tracklists, and metadata with faceted filtering — v3.0 Phase 18
+- ✓ Discogsography cross-service linking via HTTP API with fuzzy matching and confidence scores — v3.0 Phase 19
+- ✓ Write corrected tags to destination copies with review UI, verify-after-write, and audit logging — v3.0 Phase 20
+
 ### Active
 
-- [ ] Discogsography cross-service linking via HTTP API (track-to-release matching, cross-system queries)
-- [ ] Write corrected tags to destination copies (explicit action with review UI)
 - [ ] CUE sheet generation from tracklist data (fingerprint timestamps preferred, 1001tracklists fallback)
-- [ ] Search page in admin UI (artist, event, date, BPM, genre across files/tracklists/metadata)
 
 ### Out of Scope
 

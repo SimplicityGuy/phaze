@@ -23,10 +23,10 @@ Requirements for Cross-Service Intelligence & File Enrichment. Each maps to road
 
 ### Tag Writing
 
-- [ ] **TAGW-01**: User can write corrected tags to destination file copies (never originals) with format-aware encoding (ID3/Vorbis/MP4)
-- [ ] **TAGW-02**: Tag writes are verified by re-reading the file after write, with discrepancies flagged
-- [ ] **TAGW-03**: All tag writes logged in append-only TagWriteLog audit table
-- [ ] **TAGW-04**: Tag review page shows proposed vs current tags side-by-side before user approves the write
+- [x] **TAGW-01**: User can write corrected tags to destination file copies (never originals) with format-aware encoding (ID3/Vorbis/MP4)
+- [x] **TAGW-02**: Tag writes are verified by re-reading the file after write, with discrepancies flagged
+- [x] **TAGW-03**: All tag writes logged in append-only TagWriteLog audit table
+- [x] **TAGW-04**: Tag review page shows proposed vs current tags side-by-side before user approves the write
 
 ### CUE Sheets
 
@@ -70,10 +70,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISC-02 | Phase 19 | Complete |
 | DISC-03 | Phase 19 | Complete |
 | DISC-04 | Phase 19 | Complete |
-| TAGW-01 | Phase 20 | Pending |
-| TAGW-02 | Phase 20 | Pending |
-| TAGW-03 | Phase 20 | Pending |
-| TAGW-04 | Phase 20 | Pending |
+| TAGW-01 | Phase 20 | Complete |
+| TAGW-02 | Phase 20 | Complete |
+| TAGW-03 | Phase 20 | Complete |
+| TAGW-04 | Phase 20 | Complete |
 | CUE-01 | Phase 21 | Pending |
 | CUE-02 | Phase 21 | Pending |
 | CUE-03 | Phase 21 | Pending |

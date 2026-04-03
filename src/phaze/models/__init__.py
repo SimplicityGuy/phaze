@@ -9,6 +9,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
@@ -23,6 +24,8 @@ __all__ = [
     "RenameProposal",
     "ScanBatch",
     "ScanStatus",
+    "TagWriteLog",
+    "TagWriteStatus",
     "Tracklist",
     "TracklistTrack",
     "TracklistVersion",

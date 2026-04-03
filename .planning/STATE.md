@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: verifying
-stopped_at: Completed 19-02-PLAN.md
-last_updated: "2026-04-03T15:09:07.127Z"
+status: executing
+stopped_at: Completed 20-03-PLAN.md
+last_updated: "2026-04-03T19:38:28.813Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 3
+  total_plans: 8
+  completed_plans: 8
   percent: 0
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 19 — discogs-cross-service-linking
+**Current focus:** Phase 20 — tag-writing
 
 ## Current Position
 
-Phase: 20
+Phase: 21
 Plan: Not started
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-04-03
 
 Progress: [░░░░░░░░░░] 0% (v3.0)
@@ -64,6 +64,11 @@ Progress: [░░░░░░░░░░] 0% (v3.0)
 - [Phase 19]: Discogs results excluded when file_state filter active, matching tracklist exclusion pattern
 - [Phase 19]: Three-entity UNION ALL search: file (blue), tracklist (green), discogs_release (purple) pill colors
 - [Phase 19]: Discogs UI: HTMX candidate lifecycle with accept/dismiss, auto-dismiss siblings, bulk-link top candidate
+- [Phase 20-tag-writing]: Mock-based tests for OGG/M4A formats, real MP3 for end-to-end write/verify
+- [Phase 20-tag-writing]: Tracklist date.year is fallback-only for year field (does not override metadata year)
+- [Phase 20-tag-writing]: Inline edits are transient (client-side), no server session storage for edited proposed values
+- [Phase 20-tag-writing]: Tag row partial with OOB toast for post-write HTMX swap response
+- [Phase 20-tag-writing]: Server-side fallback for empty form data in Write Tags endpoint; ID-based HTMX targeting over closest tr
 
 ### Pending Todos
 
@@ -76,6 +81,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T04:02:03.364Z
-Stopped at: Completed 19-02-PLAN.md
+Last session: 2026-04-03T18:59:48.695Z
+Stopped at: Completed 20-03-PLAN.md
 Resume file: None
