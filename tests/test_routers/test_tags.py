@@ -194,3 +194,49 @@ async def test_stats_counts(client: AsyncClient, session: AsyncSession) -> None:
     assert "Written" in text
     assert "Pending" in text
     assert "Discrepancies" in text
+
+
+@pytest.mark.asyncio
+async def test_write_tags_empty_body_uses_fallback(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /tags/{file_id}/write with empty form body computes proposed tags server-side."""
+    file_record, _ = await _create_executed_file(
+        session,
+        filename="DJ Shadow - Live @ Coachella 2024.mp3",
+        artist="DJ Shadow",
+        title="Live Set",
+    )
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "DJ Shadow"}),
+        patch("phaze.services.tag_writer.write_tags") as mock_write,
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(f"/tags/{file_record.id}/write")
+
+    assert response.status_code == 200
+    assert "completed" in response.text.lower() or "Done" in response.text
+
+    # Verify write_tags was called with non-empty tags (the computed proposed tags)
+    mock_write.assert_called_once()
+    written_tags = mock_write.call_args[0][1]  # second positional arg is tags dict
+    assert len(written_tags) > 0, "Fallback should compute non-empty proposed tags"
+    assert "artist" in written_tags
+
+
+@pytest.mark.asyncio
+async def test_write_tags_response_has_row_id(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /tags/{file_id}/write response HTML contains id='row-{file_id}' for HTMX targeting."""
+    file_record, _ = await _create_executed_file(session, artist="Test Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Test Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(
+            f"/tags/{file_record.id}/write",
+            data={"artist": "New Artist"},
+        )
+
+    assert response.status_code == 200
+    assert f'id="row-{file_record.id}"' in response.text
