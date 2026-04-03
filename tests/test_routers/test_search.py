@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from typing import TYPE_CHECKING
 import uuid
 
@@ -15,6 +14,8 @@ from phaze.models.tracklist import Tracklist
 
 
 if TYPE_CHECKING:
+    from datetime import date
+
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
 
