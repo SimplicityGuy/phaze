@@ -116,9 +116,23 @@ worker-health:
 
 # === Docker ===
 
-# Build Docker image
+# Build Docker images
 docker-build:
     docker compose build
+
+# Validate Dockerfiles with hadolint
+docker-validate:
+    #!/usr/bin/env bash
+    set -e
+    for df in Dockerfile services/audfprint/Dockerfile.audfprint services/panako/Dockerfile.panako; do
+        echo "🔍 Validating ${df}..."
+        docker run --rm -i hadolint/hadolint < "${df}"
+        echo "✅ ${df} passed"
+    done
+
+# Validate docker-compose.yml syntax
+docker-compose-validate:
+    docker compose config --quiet && echo "✅ docker-compose.yml is valid"
 
 # Shell into the API container
 docker-shell:

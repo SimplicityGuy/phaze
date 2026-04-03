@@ -19,16 +19,126 @@ permissions:
   security-events: write
 
 jobs:
+  # ============================================================================
+  # CHANGE DETECTION - Skip heavy jobs for docs-only changes
+  # ============================================================================
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code-changed: ${{ steps.filter.outputs.code-changed }}
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 🔍 Detect changed file types
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "${EVENT_NAME}" == "schedule" ]] || \
+             [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "code-changed=true" >> "${GITHUB_OUTPUT}"
+            echo "⚙️ Scheduled/manual build — running full pipeline"
+            exit 0
+          fi
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          else
+            CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}" "${HEAD_SHA}")
+          fi
+
+          echo "📝 Changed files:"
+          echo "${CHANGED_FILES}"
+
+          NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -v '\.md$' || true)
+
+          if [[ -z "${NON_MD_FILES}" ]]; then
+            echo "code-changed=false" >> "${GITHUB_OUTPUT}"
+            echo "📄 Only markdown files changed — skipping tests, security, and docker jobs"
+          else
+            echo "code-changed=true" >> "${GITHUB_OUTPUT}"
+            echo "💻 Code changes detected — running full pipeline"
+          fi
+
+  # ============================================================================
+  # QUALITY GATES - Run in parallel after change detection
+  # ============================================================================
   quality:
     uses: ./.github/workflows/code-quality.yml
 
   test:
-    needs: quality
+    needs: [detect-changes, quality]
+    if: needs.detect-changes.outputs.code-changed == 'true'
     uses: ./.github/workflows/tests.yml
     secrets: inherit
 
   security:
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.code-changed == 'true'
     uses: ./.github/workflows/security.yml
     permissions:
       contents: read
       security-events: write
+
+  docker:
+    needs: [detect-changes, quality]
+    if: needs.detect-changes.outputs.code-changed == 'true'
+    uses: ./.github/workflows/docker-validate.yml
+
+  # ============================================================================
+  # AGGREGATE RESULTS - Enforce quality gates
+  # ============================================================================
+  aggregate-results:
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - quality
+      - test
+      - security
+      - docker
+    if: always()
+
+    steps:
+      - name: 📊 Check all pipeline results
+        env:
+          CODE_CHANGED: ${{ needs.detect-changes.outputs.code-changed }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          DOCKER_RESULT: ${{ needs.docker.result }}
+        run: |
+          echo "Pipeline Results Summary:"
+          echo "  Code Changed:  ${CODE_CHANGED}"
+          echo "  Code Quality:  ${QUALITY_RESULT}"
+          echo "  Tests:         ${TEST_RESULT}"
+          echo "  Security:      ${SECURITY_RESULT}"
+          echo "  Docker:        ${DOCKER_RESULT}"
+
+          # Code quality must always pass
+          if [[ "${QUALITY_RESULT}" == "failure" ]]; then
+            echo "❌ Code quality failed"
+            exit 1
+          fi
+
+          # For docs-only changes, skipped jobs are expected
+          if [[ "${CODE_CHANGED}" == "false" ]]; then
+            echo "📄 Docs-only change — skipped jobs are expected"
+            echo "✅ All required pipeline workflows passed!"
+            exit 0
+          fi
+
+          # For code changes, all jobs must pass (not fail)
+          if [[ "${TEST_RESULT}" == "failure" ]] || \
+             [[ "${SECURITY_RESULT}" == "failure" ]] || \
+             [[ "${DOCKER_RESULT}" == "failure" ]]; then
+            echo "❌ One or more pipeline workflows failed"
+            exit 1
+          fi
+
+          echo "✅ All pipeline workflows passed!"

@@ -113,9 +113,9 @@ Follow the discogsography pattern:
 
 **Phaze**
 
-A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and concert video streams, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
+A music collection organizer that ingests music files (mp3, m4a, ogg) and concert video streams, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
 
-**Core Value:** Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
+**Core Value:** Get messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
 
 ### Constraints
 
@@ -123,7 +123,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 - **Package manager**: uv only
 - **Deployment**: Docker Compose on home server, private network
 - **Database**: PostgreSQL
-- **Scale**: Must handle ~200K files efficiently — batch processing and parallelization required
+- **Scale**: Must handle large file counts efficiently — batch processing and parallelization required
 - **Existing code**: Must integrate with provided analysis prototypes and respect their per-file interface
 - **Naming format**: AI filename proposals — specific format TBD (will be provided later)
 <!-- GSD:project-end -->
@@ -140,17 +140,17 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 | SQLAlchemy | >=2.0.48 | ORM / database toolkit | Industry standard Python ORM. Full async support via `create_async_engine` + asyncpg driver. Declarative models, relationship management, migration support via Alembic. |
 | asyncpg | >=0.30.0 | PostgreSQL async driver | Fastest Python PostgreSQL driver. Purpose-built for asyncio. Used as SQLAlchemy's async backend. |
 | Alembic | >=1.18.4 | Database migrations | Official SQLAlchemy migration tool. Async template support (`alembic init -t async`). Autogenerate from model changes. |
-| PostgreSQL | 16+ | Primary database | Project constraint. Handles 200K+ file metadata, complex queries, JSON columns for flexible metadata, full-text search for future features. |
+| PostgreSQL | 16+ | Primary database | Project constraint. Handles large-scale file metadata, complex queries, JSON columns for flexible metadata, full-text search for future features. |
 | Redis | 7+ | Task queue broker / cache | Required by SAQ task queue. Also useful for caching analysis results and rate-limiting LLM API calls. |
 | Docker Compose | 2.x | Deployment orchestration | Project constraint. Runs PostgreSQL, Redis, API server, worker processes as separate containers. |
 ### Audio / Music Libraries
 | Library | Version | Purpose | Why Recommended |
 |---------|---------|---------|-----------------|
 | mutagen | >=1.47.0 | Audio metadata read/write | The standard for audio tag manipulation in Python. Supports ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF. Zero dependencies. Read AND write capability needed for renaming workflows. |
-| librosa | >=0.11.0 | Audio feature extraction (BPM, key, mood features) | Industry-standard MIR library. Beat tracking, tempo estimation, chroma features, spectral analysis. Python 3.13 support confirmed (requires `standard-aifc` and `standard-sunau` extras). |
+| essentia-tensorflow | >=2.1b6.dev1389 | Audio feature extraction (BPM, key, mood, style) | Comprehensive MIR library with pre-trained TensorFlow models. Beat tracking, tempo estimation, key detection, mood/style classification. Used for all audio analysis in the main application. |
 | pyacoustid | >=1.3.0 | Audio fingerprinting | Python bindings for Chromaprint/AcoustID. Identifies tracks via acoustic fingerprint, enables deduplication of differently-named identical audio. Complements sha256 hash dedup. |
 | chromaprint (system) | latest | Fingerprint generation | C library required by pyacoustid. Install via system package manager or include in Docker image. Provides `fpcalc` binary. |
-| FFmpeg (system) | 8.x | Audio/video processing | Required by librosa for audio decoding. Also needed for video stream metadata extraction via ffprobe. Install in Docker image. |
+| FFmpeg (system) | 8.x | Audio/video processing | Required for audio decoding and video stream metadata extraction via ffprobe. Install in Docker image. |
 ### Web UI
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
@@ -193,13 +193,13 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 | Recommended | Alternative | When to Use Alternative |
 |-------------|-------------|-------------------------|
 | FastAPI | Litestar | If you want more explicit DI and slightly lower memory usage. FastAPI wins on ecosystem size, docs quality, and community support. |
-| SQLAlchemy | SQLModel | If models are simple and you want less boilerplate. SQLModel is a thin FastAPI-aligned wrapper over SQLAlchemy but has fewer features and weaker async story. Stick with SQLAlchemy for a 200K-record system. |
+| SQLAlchemy | SQLModel | If models are simple and you want less boilerplate. SQLModel is a thin FastAPI-aligned wrapper over SQLAlchemy but has fewer features and weaker async story. Stick with SQLAlchemy for large-scale systems. |
 | SAQ | Celery | If you need multi-broker support, complex routing, or canvas workflows. Overkill for a single-user app. Celery's config complexity is not justified here. |
 | SAQ | Dramatiq | If you want RabbitMQ support or more mature retry/middleware. Dramatiq is sync-first which conflicts with our async stack. |
 | HTMX + Jinja2 | React/Vue SPA | If you need offline capability, complex client-side state, or multiple developers on frontend. A single-user admin tool does not need SPA complexity or a separate build pipeline. |
 | litellm | Direct OpenAI SDK | If you are committed to a single LLM provider forever. litellm provides flexibility to switch between local/cloud models with zero code changes. |
 | mutagen | tinytag | If you only need read-only metadata. We need write capability to update tags after renaming, so mutagen is required. |
-| librosa | essentia | If you need real-time audio processing or more algorithms. Essentia has a harder install (C++ compilation) and worse Python 3.13 story. Librosa covers BPM, key detection, and spectral features adequately. |
+| essentia-tensorflow | librosa | If you only need basic BPM/tempo and don't need pre-trained classification models. Essentia provides richer analysis (mood, style, danceability) via TensorFlow models. |
 ## What NOT to Use
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
@@ -215,7 +215,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 | Package A | Compatible With | Notes |
 |-----------|-----------------|-------|
 | SQLAlchemy >=2.0.48 | asyncpg >=0.30.0 | Use `postgresql+asyncpg://` connection string. Some older asyncpg versions (0.29.x) had issues with `create_async_engine`. |
-| librosa >=0.11.0 | Python 3.13 | Requires `standard-aifc` and `standard-sunau` pip packages on Python 3.13 (stdlib modules removed in 3.13). |
+| essentia-tensorflow >=2.1b6.dev1389 | Python 3.13 | Only available on Linux x86_64. Use platform marker `sys_platform != 'linux' or platform_machine == 'x86_64'` in dependencies. |
 | FastAPI >=0.135.2 | Pydantic >=2.10 | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
 | FastAPI >=0.135.2 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
 | Alembic >=1.18.4 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
@@ -228,15 +228,14 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg) and 
 | Web framework (FastAPI) | HIGH | Verified current version, massive ecosystem, well-documented async patterns |
 | Database (SQLAlchemy + asyncpg + Alembic) | HIGH | Standard production stack, verified versions, extensive async documentation |
 | Audio metadata (mutagen) | HIGH | No real alternative for read+write. Stable, zero-dependency, widely used |
-| Audio analysis (librosa) | HIGH | Industry standard MIR library, Python 3.13 confirmed with known workarounds |
+| Audio analysis (essentia-tensorflow) | HIGH | Comprehensive MIR library with pre-trained models for BPM, key, mood, style classification |
 | Audio fingerprinting (pyacoustid) | MEDIUM | Library works but hasn't released since 2023. Stable API, low maintenance risk, but monitor |
 | Task queue (SAQ) | HIGH | Actively maintained, async-native, Redis-based. Drop-in replacement for arq with built-in web monitoring UI. |
 | LLM integration (litellm) | MEDIUM | Best abstraction layer but recent supply chain incident is concerning. Pin versions aggressively, verify checksums |
 | Web UI (HTMX + Jinja2) | HIGH | Well-proven pattern for Python admin tools. No build step, no JS framework complexity |
 ## Sources
 - [mutagen on PyPI](https://pypi.org/project/mutagen/) -- version 1.47.0 verified
-- [librosa on PyPI](https://pypi.org/project/librosa/) -- version 0.11.0, Python 3.13 support confirmed
-- [librosa Python 3.13 issue](https://github.com/librosa/librosa/issues/1883) -- compatibility workarounds documented
+- [essentia on PyPI](https://pypi.org/project/essentia-tensorflow/) -- version 2.1b6.dev1389, used for audio analysis
 - [pyacoustid on PyPI](https://pypi.org/project/pyacoustid/) -- version 1.3.0 verified
 - [FastAPI releases](https://github.com/fastapi/fastapi/releases) -- version 0.135.2 verified
 - [SQLAlchemy on PyPI](https://pypi.org/project/SQLAlchemy/) -- version 2.0.48 verified
