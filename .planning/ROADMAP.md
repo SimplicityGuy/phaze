@@ -122,6 +122,6 @@ Plans:
 | 16. Fingerprint Service & Batch Ingestion | v2.0 | 3/3 | Complete | 2026-04-01 |
 | 17. Live Set Matching & Tracklist Review | v2.0 | 3/3 | Complete | 2026-04-02 |
 | 18. Unified Search | v3.0 | 2/2 | Complete    | 2026-04-03 |
-| 19. Discogs Cross-Service Linking | v3.0 | 3/3 | Complete   | 2026-04-03 |
+| 19. Discogs Cross-Service Linking | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 20. Tag Writing | v3.0 | 0/? | Not started | - |
 | 21. CUE Sheet Generation | v3.0 | 0/? | Not started | - |
