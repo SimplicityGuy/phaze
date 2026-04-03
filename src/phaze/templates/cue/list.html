@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}CUE Sheets - Phaze{% endblock %}
+
+{% block skip_link %}
+<a href="#cue-list-container" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to CUE list</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-semibold leading-tight">CUE Sheets</h1>
+        <button hx-post="/cue/generate-batch"
+                hx-target="#cue-list-container"
+                hx-swap="innerHTML"
+                class="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md">
+            Generate All Eligible
+        </button>
+    </div>
+
+    <!-- Stats header: 3-column grid -->
+    <div class="grid grid-cols-3 gap-4">
+        <div class="bg-blue-50 rounded-lg px-4 py-3">
+            <div class="text-2xl font-semibold text-blue-700">{{ stats.eligible }}</div>
+            <div class="text-xs font-semibold text-blue-700">Eligible</div>
+        </div>
+        <div class="bg-green-50 rounded-lg px-4 py-3">
+            <div class="text-2xl font-semibold text-green-700">{{ stats.generated }}</div>
+            <div class="text-xs font-semibold text-green-700">Generated</div>
+        </div>
+        <div class="bg-yellow-50 rounded-lg px-4 py-3">
+            <div class="text-2xl font-semibold text-yellow-700">{{ stats.missing_timestamps }}</div>
+            <div class="text-xs font-semibold text-yellow-700">Missing Timestamps</div>
+        </div>
+    </div>
+
+    <!-- Tracklist list -->
+    <div id="cue-list-container">
+    {% if tracklists %}
+        {% include "cue/partials/cue_list.html" %}
+    {% else %}
+        <div class="text-center py-16">
+            <h2 class="text-xl font-semibold text-gray-700 mb-2">No tracklists eligible for CUE generation</h2>
+            <p class="text-gray-500">Approved tracklists with executed files and track timestamps will appear here. Approve tracklists and run the pipeline first.</p>
+        </div>
+    {% endif %}
+    </div>
+</div>
+{% endblock %}
