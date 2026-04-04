@@ -1108,3 +1108,61 @@ async def test_list_tracklists_has_candidates_in_list(session: AsyncSession, cli
     response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Bulk-link All" in response.text
+
+
+@pytest.mark.asyncio
+async def test_render_tracklist_list_no_version_no_candidates(session: AsyncSession, client: AsyncClient) -> None:
+    """Undo-link with tracklist lacking latest_version_id sets _has_candidates=False."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist(file_id=file.id, match_confidence=90, auto_linked=True)
+    tl.latest_version_id = None
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/undo-link")
+    assert response.status_code == 200
+    assert "Bulk-link All" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_render_tracklist_list_approved_non_executed_cue_zero(session: AsyncSession, client: AsyncClient) -> None:
+    """Undo-link list view shows cue_version=0 for approved tracklist with non-EXECUTED file."""
+    file_exec = _make_file(original_path="/music/exec.mp3")
+    file_exec.state = FileState.EXECUTED
+    file_disc = _make_file(original_path="/music/disc.mp3")
+    file_disc.state = FileState.DISCOVERED
+    session.add_all([file_exec, file_disc])
+    await session.flush()
+
+    # Tracklist to undo
+    tl1 = _make_tracklist(file_id=file_exec.id, match_confidence=90, auto_linked=True, external_id="cue-zero-1")
+    # Approved tracklist with non-EXECUTED file — should get _cue_version=0
+    tl2 = _make_tracklist(file_id=file_disc.id, match_confidence=95, external_id="cue-zero-2", status="approved")
+    session.add_all([tl1, tl2])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl1.id}/undo-link")
+    assert response.status_code == 200
+    # tl2 is approved with non-EXECUTED file, so no CUE badge
+    assert "CUE v" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_render_tracklist_list_cue_version_not_approved(session: AsyncSession, client: AsyncClient) -> None:
+    """Undo-link list view shows cue_version=0 for non-approved tracklist."""
+    file = _make_file()
+    file.state = FileState.EXECUTED
+    session.add(file)
+    await session.flush()
+
+    tl1 = _make_tracklist(file_id=file.id, match_confidence=90, auto_linked=True, external_id="cue-na-1")
+    # Proposed (not approved) tracklist with EXECUTED file — should get _cue_version=0
+    tl2 = _make_tracklist(external_id="cue-na-2", status="proposed")
+    session.add_all([tl1, tl2])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl1.id}/undo-link")
+    assert response.status_code == 200
