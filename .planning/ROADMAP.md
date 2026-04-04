@@ -47,7 +47,7 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 - [x] **Phase 19: Discogs Cross-Service Linking** - Fuzzy-match tracks to Discogs releases via discogsography, store candidate links with confidence scores (completed 2026-04-03)
 - [x] **Phase 20: Tag Writing** - Write corrected tags to destination file copies with review UI, verify-after-write, and audit logging (completed 2026-04-03)
 - [x] **Phase 21: CUE Sheet Generation** - Generate .cue companion files from tracklist timestamps with Discogs metadata enrichment (completed 2026-04-03)
-- [ ] **Phase 22: Tracklist Integration Fixes** - Close audit gaps: wire bulk-link button context and fix stale CUE version after link ops
+- [x] **Phase 22: Tracklist Integration Fixes** - Wire has_candidates and _cue_version context variables to close DISC-04 audit gap (completed 2026-04-04)
 
 ## Phase Details
 
@@ -108,19 +108,6 @@ Plans:
 - [x] 21-02-PLAN.md -- CUE UI: router, management page, tracklist inline button, nav tab, integration tests
 **UI hint**: yes
 
-### Phase 22: Tracklist Integration Fixes
-**Goal**: Close audit gaps: DISC-04 bulk-link button unreachable and CUE version badge stale after link operations
-**Depends on**: Phase 21 (all features built, fixing integration wiring)
-**Requirements**: DISC-04
-**Gap Closure**: Closes gaps from v3.0 milestone audit
-**Success Criteria** (what must be TRUE):
-  1. User can see the "Bulk-link All" button on a tracklist card after Discogs matching completes (has_candidates context variable populated)
-  2. CUE version badge persists correctly after link/unlink/undo-link operations (_cue_version computed in _render_tracklist_list)
-**Plans**: 1 plan
-Plans:
-- [ ] 22-01-PLAN.md -- Wire has_candidates context and _cue_version in _render_tracklist_list
-**UI hint**: no (router-only fixes)
-
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -146,4 +133,4 @@ Plans:
 | 19. Discogs Cross-Service Linking | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 20. Tag Writing | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 21. CUE Sheet Generation | v3.0 | 3/3 | Complete    | 2026-04-03 |
-| 22. Tracklist Integration Fixes | v3.0 | 0/1 | Pending | - |
+| 22. Tracklist Integration Fixes | v3.0 | 1/1 | Complete    | 2026-04-04 |

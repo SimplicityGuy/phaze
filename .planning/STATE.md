@@ -3,11 +3,11 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: completed
-stopped_at: Phase 22 context gathered
-last_updated: "2026-04-04T00:31:09.667Z"
+stopped_at: Completed 21-03-PLAN.md
+last_updated: "2026-04-03T22:54:47.490Z"
 last_activity: 2026-04-03
 progress:
-  total_phases: 5
+  total_phases: 4
   completed_phases: 4
   total_plans: 11
   completed_plans: 11
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 21 — cue-sheet-generation
+**Current focus:** Phase 22 -- tracklist-integration-fixes
 
 ## Current Position
 
-Phase: 21
-Plan: Not started
-Status: Phase 21 complete
-Last activity: 2026-04-03
+Phase: 22 (tracklist-integration-fixes) -- COMPLETE
+Plan: 1 of 1 (COMPLETE)
+Status: Phase 22 complete
+Last activity: 2026-04-04 -- Phase 22 plan 01 complete
 
 Progress: [██████████] 100% (v3.0)
 
@@ -73,6 +73,7 @@ Progress: [██████████] 100% (v3.0)
 - [Phase 21]: Dropped from __future__ annotations in CUE router to avoid FastAPI uuid runtime resolution issues
 - [Phase 21-03]: HX-Target header prefix matching for cross-page response routing (tracklist- prefix returns tracklist_card.html)
 - [Phase 21-03]: Dynamic _cue_version attribute on Tracklist ORM objects for UI-only display data
+- [Phase 22]: Dual template guard pattern for context vars in both single-card and list renders (has_candidates + tracklist._has_candidates)
 
 ### Pending Todos
 
@@ -85,6 +86,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-04T00:31:09.662Z
-Stopped at: Phase 22 context gathered
-Resume file: .planning/phases/22-tracklist-integration-fixes/22-CONTEXT.md
+Last session: 2026-04-04T00:49:13Z
+Stopped at: Completed 22-01-PLAN.md
+Resume file: .planning/phases/22-tracklist-integration-fixes/22-01-SUMMARY.md
