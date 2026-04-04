@@ -19,7 +19,7 @@ Requirements for Cross-Service Intelligence & File Enrichment. Each maps to road
 - [x] **DISC-01**: System fuzzy-matches live set tracks to Discogs releases via discogsography HTTP API
 - [x] **DISC-02**: Candidate matches stored with confidence scores in DiscogsLink table, displayed in admin UI
 - [x] **DISC-03**: User can query "find all sets containing track X" across phaze and discogsography data
-- [x] **DISC-04**: User can bulk-link an entire tracklist's tracks to Discogs releases in one action
+- [ ] **DISC-04**: User can bulk-link an entire tracklist's tracks to Discogs releases in one action
 
 ### Tag Writing
 
@@ -69,7 +69,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISC-01 | Phase 19 | Complete |
 | DISC-02 | Phase 19 | Complete |
 | DISC-03 | Phase 19 | Complete |
-| DISC-04 | Phase 19 | Complete |
+| DISC-04 | Phase 22 (gap closure) | Pending |
 | TAGW-01 | Phase 20 | Complete |
 | TAGW-02 | Phase 20 | Complete |
 | TAGW-03 | Phase 20 | Complete |
@@ -80,7 +80,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Coverage:**
 - v3.0 requirements: 15 total
-- Mapped to phases: 15
+- Satisfied: 14
+- Pending (gap closure): 1 (DISC-04 → Phase 22)
 - Unmapped: 0
 
 ---
