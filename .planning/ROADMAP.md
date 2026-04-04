@@ -48,6 +48,7 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 - [x] **Phase 20: Tag Writing** - Write corrected tags to destination file copies with review UI, verify-after-write, and audit logging (completed 2026-04-03)
 - [x] **Phase 21: CUE Sheet Generation** - Generate .cue companion files from tracklist timestamps with Discogs metadata enrichment (completed 2026-04-03)
 - [x] **Phase 22: Tracklist Integration Fixes** - Wire has_candidates and _cue_version context variables to close DISC-04 audit gap (completed 2026-04-04)
+- [ ] **Phase 23: v3.0 Polish & Wiring Fixes** - Fix rescrape has_candidates omission and add Discogs metadata to tag proposals
 
 ## Phase Details
 
@@ -108,6 +109,17 @@ Plans:
 - [x] 21-02-PLAN.md -- CUE UI: router, management page, tracklist inline button, nav tab, integration tests
 **UI hint**: yes
 
+### Phase 23: v3.0 Polish & Wiring Fixes
+**Goal**: Fix rescrape_tracklist has_candidates omission and enrich tag proposals with accepted Discogs metadata
+**Depends on**: Phase 22 (all features built, closing audit tech debt)
+**Requirements**: None (all satisfied — this is polish/enrichment)
+**Gap Closure**: Closes tech debt from v3.0 milestone audit
+**Success Criteria** (what must be TRUE):
+  1. User sees "Bulk-link All" button on a tracklist card after re-scrape action completes (has_candidates context variable populated)
+  2. Tag proposals include Discogs-verified artist and title from accepted DiscogsLinks when available
+**Plans**: 1 plan
+**UI hint**: no (router-only fixes)
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -134,3 +146,4 @@ Plans:
 | 20. Tag Writing | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 21. CUE Sheet Generation | v3.0 | 3/3 | Complete    | 2026-04-03 |
 | 22. Tracklist Integration Fixes | v3.0 | 1/1 | Complete    | 2026-04-04 |
+| 23. v3.0 Polish & Wiring Fixes | v3.0 | 0/1 | Pending | - |
