@@ -12,10 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.models.tracklist import Tracklist
+from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import execute_tag_write
@@ -71,6 +72,24 @@ async def _get_tracklist_for_file(session: AsyncSession, file_id: uuid.UUID) -> 
     stmt = select(Tracklist).where(Tracklist.file_id == file_id)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) -> DiscogsLink | None:
+    """Find the accepted DiscogsLink for the file's tracklist, if any."""
+    tl_stmt = select(Tracklist.latest_version_id).where(Tracklist.file_id == file_id)
+    tl_result = await session.execute(tl_stmt)
+    version_id = tl_result.scalar_one_or_none()
+    if version_id is None:
+        return None
+    track_ids = select(TracklistTrack.id).where(TracklistTrack.version_id == version_id)
+    link_stmt = (
+        select(DiscogsLink)
+        .where(DiscogsLink.track_id.in_(track_ids), DiscogsLink.status == "accepted")
+        .order_by(DiscogsLink.confidence.desc())
+        .limit(1)
+    )
+    link_result = await session.execute(link_stmt)
+    return link_result.scalar_one_or_none()
 
 
 async def _get_latest_write_log(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
@@ -150,7 +169,8 @@ async def list_tags(
     files: list[dict[str, Any]] = []
     for fr in file_records:
         tracklist = await _get_tracklist_for_file(session, fr.id)
-        proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename)
+        discogs_link = await _get_accepted_discogs_link(session, fr.id)
+        proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
         write_log = await _get_latest_write_log(session, fr.id)
         comparison = _build_comparison(fr.file_metadata, proposed)
         changes = _count_changes(comparison)
@@ -196,7 +216,8 @@ async def compare_tags(
         return HTMLResponse(content="File not found", status_code=404)
 
     tracklist = await _get_tracklist_for_file(session, file_id)
-    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename)
+    discogs_link = await _get_accepted_discogs_link(session, file_id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
     comparison = _build_comparison(file_record.file_metadata, proposed)
 
     return templates.TemplateResponse(
@@ -228,7 +249,8 @@ async def edit_tag_field(
         return HTMLResponse(content="File not found", status_code=404)
 
     tracklist = await _get_tracklist_for_file(session, file_id)
-    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename)
+    discogs_link = await _get_accepted_discogs_link(session, file_id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
     value = proposed.get(field, "")
 
     return templates.TemplateResponse(
@@ -310,14 +332,14 @@ async def write_file_tags(
 
     # Fallback: if no tag values submitted (e.g., collapsed row button without comparison panel),
     # use server-computed proposed tags
+    tracklist = await _get_tracklist_for_file(session, file_id)
+    discogs_link = await _get_accepted_discogs_link(session, file_id)
     if not tags:
-        tracklist = await _get_tracklist_for_file(session, file_id)
-        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename)
+        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
         tags = {k: v for k, v in computed.items() if v is not None}
         source = "proposal"
     else:
-        tracklist = await _get_tracklist_for_file(session, file_id)
-        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename)
+        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
         has_edits = any(str(tags.get(f, "")) != str(computed.get(f, "")) for f in CORE_FIELDS if f in tags or f in computed)
         source = "manual_edit" if has_edits else "proposal"
 
