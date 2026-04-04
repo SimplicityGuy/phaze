@@ -118,6 +118,8 @@ Plans:
   1. User sees "Bulk-link All" button on a tracklist card after re-scrape action completes (has_candidates context variable populated)
   2. Tag proposals include Discogs-verified artist and title from accepted DiscogsLinks when available
 **Plans**: 1 plan
+Plans:
+- [ ] 23-01-PLAN.md -- Fix rescrape has_candidates context and add Discogs metadata to tag proposal cascade
 **UI hint**: no (router-only fixes)
 
 ## Progress
