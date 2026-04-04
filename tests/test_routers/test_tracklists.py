@@ -1166,3 +1166,51 @@ async def test_render_tracklist_list_cue_version_not_approved(session: AsyncSess
 
     response = await client.post(f"/tracklists/{tl1.id}/undo-link")
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_list_tracklists_cue_version_executed(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/ shows CUE badge for approved tracklist with EXECUTED file."""
+    file = _make_file()
+    file.state = FileState.EXECUTED
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist(file_id=file.id, match_confidence=90, status="approved")
+    session.add(tl)
+    await session.flush()
+
+    with patch("phaze.routers.tracklists._get_cue_version", return_value=3):
+        response = await client.get("/tracklists/")
+    assert response.status_code == 200
+    assert "CUE v3" in response.text
+
+
+@pytest.mark.asyncio
+async def test_list_tracklists_has_candidates_full_page(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/ (full page, no HTMX) shows Bulk-link button when candidates exist."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-full",
+        discogs_artist="Full",
+        discogs_title="Page",
+        confidence=85.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    response = await client.get("/tracklists/")
+    assert response.status_code == 200
+    assert "Bulk-link All" in response.text
