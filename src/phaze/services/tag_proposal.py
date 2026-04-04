@@ -1,7 +1,7 @@
 """Tag proposal service - computes merged tags from multiple sources.
 
 Priority cascade (per field, independently):
-  tracklist > FileMetadata > filename parsing
+  discogs_link > tracklist > FileMetadata > filename parsing
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from phaze.models.discogs_link import DiscogsLink
     from phaze.models.metadata import FileMetadata
     from phaze.models.tracklist import Tracklist
 
@@ -57,15 +58,21 @@ def compute_proposed_tags(
     file_metadata: FileMetadata | None,
     tracklist: Tracklist | None,
     filename: str,
+    discogs_link: DiscogsLink | None = None,
 ) -> dict[str, str | int | None]:
     """Compute proposed tags by merging sources with priority cascade.
 
-    Priority (per field, independently): tracklist > FileMetadata > filename.
+    Priority (per field, independently): DiscogsLink (accepted) > tracklist > FileMetadata > filename.
 
     Tracklist mapping:
       - tracklist.artist -> artist
       - tracklist.event -> album
       - tracklist.date.year -> year (fallback only)
+
+    DiscogsLink mapping:
+      - discogs_link.discogs_artist -> artist
+      - discogs_link.discogs_title -> title
+      - discogs_link.discogs_year -> year
 
     Returns dict with only non-None values, keys from CORE_FIELDS only.
     """
@@ -79,7 +86,7 @@ def compute_proposed_tags(
             if val is not None:
                 merged[field] = val
 
-    # Layer 3: Tracklist (highest priority)
+    # Layer 3: Tracklist
     if tracklist is not None:
         if tracklist.artist is not None:
             merged["artist"] = tracklist.artist
@@ -88,6 +95,15 @@ def compute_proposed_tags(
         # Tracklist date -> year is FALLBACK only (does not override existing year)
         if tracklist.date is not None and "year" not in merged:
             merged["year"] = tracklist.date.year
+
+    # Layer 4: Accepted DiscogsLink (highest priority -- verified metadata)
+    if discogs_link is not None:
+        if discogs_link.discogs_artist is not None:
+            merged["artist"] = discogs_link.discogs_artist
+        if discogs_link.discogs_title is not None:
+            merged["title"] = discogs_link.discogs_title
+        if discogs_link.discogs_year is not None:
+            merged["year"] = discogs_link.discogs_year
 
     # Filter to core fields only and remove None values
     return {k: v for k, v in merged.items() if k in CORE_FIELDS and v is not None}

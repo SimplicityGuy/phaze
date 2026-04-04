@@ -114,3 +114,52 @@ class TestComputeProposedTags:
         result = compute_proposed_tags(meta, None, "file.mp3")
         allowed = {"artist", "title", "album", "year", "genre", "track_number"}
         assert set(result.keys()).issubset(allowed)
+
+    def _make_discogs_link(self, **kwargs: object) -> MagicMock:
+        """Create a mock DiscogsLink with given attributes."""
+        dl = MagicMock()
+        dl.discogs_artist = kwargs.get("discogs_artist")
+        dl.discogs_title = kwargs.get("discogs_title")
+        dl.discogs_year = kwargs.get("discogs_year")
+        return dl
+
+    def test_discogs_link_overrides_tracklist(self) -> None:
+        """Accepted DiscogsLink artist/title override tracklist values."""
+        meta = self._make_metadata(artist="Meta Artist", genre="Electronic")
+        tl = self._make_tracklist(artist="TL Artist", event="Coachella 2024")
+        dl = self._make_discogs_link(discogs_artist="Discogs Artist", discogs_title="Discogs Title")
+        result = compute_proposed_tags(meta, tl, "file.mp3", discogs_link=dl)
+        assert result["artist"] == "Discogs Artist"
+        assert result["title"] == "Discogs Title"
+        assert result["album"] == "Coachella 2024"  # not overridden by discogs
+        assert result["genre"] == "Electronic"  # from metadata
+
+    def test_discogs_link_year_overrides(self) -> None:
+        """DiscogsLink year overrides metadata year."""
+        meta = self._make_metadata(year=2020)
+        dl = self._make_discogs_link(discogs_year=2023)
+        result = compute_proposed_tags(meta, None, "file.mp3", discogs_link=dl)
+        assert result["year"] == 2023
+
+    def test_discogs_link_none_fields_no_override(self) -> None:
+        """DiscogsLink with None fields does not override lower-priority sources."""
+        meta = self._make_metadata(artist="Meta Artist", title="Meta Title")
+        dl = self._make_discogs_link(discogs_artist=None, discogs_title=None, discogs_year=None)
+        result = compute_proposed_tags(meta, None, "file.mp3", discogs_link=dl)
+        assert result["artist"] == "Meta Artist"
+        assert result["title"] == "Meta Title"
+
+    def test_discogs_link_without_other_sources(self) -> None:
+        """DiscogsLink works as sole source of data."""
+        dl = self._make_discogs_link(discogs_artist="Solo Artist", discogs_title="Solo Track", discogs_year=2025)
+        result = compute_proposed_tags(None, None, "unknown.mp3", discogs_link=dl)
+        assert result["artist"] == "Solo Artist"
+        assert result["title"] == "Solo Track"
+        assert result["year"] == 2025
+
+    def test_no_discogs_link_unchanged_behavior(self) -> None:
+        """Passing discogs_link=None produces same result as before."""
+        meta = self._make_metadata(artist="Meta Artist", title="Meta Title")
+        result_without = compute_proposed_tags(meta, None, "file.mp3")
+        result_with_none = compute_proposed_tags(meta, None, "file.mp3", discogs_link=None)
+        assert result_without == result_with_none

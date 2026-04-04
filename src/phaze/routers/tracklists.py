@@ -353,10 +353,12 @@ async def rescrape_tracklist(
         queue = request.app.state.queue
         await queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
 
+    has_candidates = await _has_candidates(session, tracklist) if tracklist else False
+
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "rescrape_queued": True, "cue_version": 0},
+        context={"request": request, "tracklist": tracklist, "rescrape_queued": True, "cue_version": 0, "has_candidates": has_candidates},
     )
 
 
