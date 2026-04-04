@@ -499,11 +499,13 @@ run_tests() {
   print_section "$EMOJI_TEST" "Running Tests"
 
   if [[ "$DRY_RUN" == true ]]; then
-    print_info "[DRY RUN] Would run: just check"
+    print_info "[DRY RUN] Would run: just lint, just typecheck, pytest -m 'not integration'"
     return
   fi
 
-  just check
+  just lint
+  just typecheck
+  uv run pytest tests/ -x -q -m "not integration"
   print_success "All tests passed"
 }
 

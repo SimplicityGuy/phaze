@@ -3,6 +3,7 @@
 from collections.abc import AsyncGenerator
 
 from httpx import ASGITransport, AsyncClient
+import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -12,6 +13,15 @@ from phaze.models.base import Base
 
 
 TEST_DATABASE_URL = "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"
+
+DB_FIXTURES = {"async_engine", "session", "client"}
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Auto-mark tests that use database fixtures as integration tests."""
+    for item in items:
+        if DB_FIXTURES & set(getattr(item, "fixturenames", ())):
+            item.add_marker(pytest.mark.integration)
 
 
 @pytest_asyncio.fixture

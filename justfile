@@ -91,7 +91,7 @@ pip-audit:
         done < .pip-audit-ignores
     fi
     # shellcheck disable=SC2086
-    uv run pip-audit --desc $IGNORE_ARGS
+    uv run pip-audit --desc --skip-editable $IGNORE_ARGS
 
 # Run bandit for Python SAST
 security:

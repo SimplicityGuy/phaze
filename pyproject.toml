@@ -34,6 +34,9 @@ packages = ["src/phaze"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: tests that require external services (database, redis, etc.)",
+]
 
 [tool.ruff]
 line-length = 150
