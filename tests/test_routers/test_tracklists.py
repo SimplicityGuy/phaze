@@ -620,6 +620,57 @@ async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) ->
 
 
 @pytest.mark.asyncio
+async def test_rescrape_tracklist_has_candidates_in_context(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/rescrape includes has_candidates when candidates exist."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    # Create a version and track
+    version = TracklistVersion(
+        id=uuid.uuid4(),
+        tracklist_id=tl.id,
+        version_number=1,
+    )
+    session.add(version)
+    await session.flush()
+
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Track Artist",
+        title="Track Title",
+    )
+    session.add(track)
+    await session.flush()
+
+    # Create a candidate DiscogsLink for the track
+    dl = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="12345",
+        discogs_artist="Discogs Artist",
+        discogs_title="Discogs Title",
+        confidence=0.85,
+        status="candidate",
+    )
+    session.add(dl)
+    await session.flush()
+
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post(f"/tracklists/{tl.id}/rescrape")
+    assert response.status_code == 200
+    # The bulk-link button text should appear when has_candidates is True
+    assert "Bulk" in response.text
+
+
+@pytest.mark.asyncio
 async def test_manual_search(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/search enqueues a search job."""
     mock_queue = AsyncMock()

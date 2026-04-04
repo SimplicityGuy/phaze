@@ -26,6 +26,19 @@ from phaze.services.tracklist_scraper import TracklistScraper
 EDITABLE_FIELDS = {"artist", "title", "timestamp"}
 
 
+async def _has_candidates(session: AsyncSession, tracklist: Tracklist) -> bool:
+    """Check if any track in this tracklist has candidate DiscogsLinks."""
+    if not tracklist.latest_version_id:
+        return False
+    track_ids_stmt = select(TracklistTrack.id).where(TracklistTrack.version_id == tracklist.latest_version_id)
+    exists_stmt = select(func.count(DiscogsLink.id)).where(
+        DiscogsLink.track_id.in_(track_ids_stmt),
+        DiscogsLink.status == "candidate",
+    )
+    result = await session.execute(exists_stmt)
+    return (result.scalar() or 0) > 0
+
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/tracklists", tags=["tracklists"])
@@ -326,10 +339,12 @@ async def rescrape_tracklist(
         queue = request.app.state.queue
         await queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
 
+    has_candidates = await _has_candidates(session, tracklist) if tracklist else False
+
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "rescrape_queued": True, "cue_version": 0},
+        context={"request": request, "tracklist": tracklist, "rescrape_queued": True, "cue_version": 0, "has_candidates": has_candidates},
     )
 
 
