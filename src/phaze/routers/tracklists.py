@@ -109,6 +109,20 @@ async def list_tracklists(
         else:
             tl._track_count = 0  # type: ignore[attr-defined]
 
+    # Compute has_candidates for each tracklist
+    for tl in tracklists:
+        if tl.latest_version_id:
+            track_ids_stmt = select(TracklistTrack.id).where(TracklistTrack.version_id == tl.latest_version_id)
+            cand_result = await session.execute(
+                select(func.count(DiscogsLink.id)).where(
+                    DiscogsLink.track_id.in_(track_ids_stmt),
+                    DiscogsLink.status == "candidate",
+                )
+            )
+            tl._has_candidates = (cand_result.scalar() or 0) > 0  # type: ignore[attr-defined]
+        else:
+            tl._has_candidates = False  # type: ignore[attr-defined]
+
     # Compute CUE version for approved tracklists with executed files
     for tl in tracklists:
         if tl.status == "approved" and tl.file_id:
