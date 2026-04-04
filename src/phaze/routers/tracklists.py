@@ -26,6 +26,19 @@ from phaze.services.tracklist_scraper import TracklistScraper
 EDITABLE_FIELDS = {"artist", "title", "timestamp"}
 
 
+async def _has_candidates(session: AsyncSession, tracklist: Tracklist) -> bool:
+    """Check if any track in this tracklist has candidate DiscogsLinks."""
+    if not tracklist.latest_version_id:
+        return False
+    track_ids_stmt = select(TracklistTrack.id).where(TracklistTrack.version_id == tracklist.latest_version_id)
+    exists_stmt = select(func.count(DiscogsLink.id)).where(
+        DiscogsLink.track_id.in_(track_ids_stmt),
+        DiscogsLink.status == "candidate",
+    )
+    result = await session.execute(exists_stmt)
+    return (result.scalar() or 0) > 0
+
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/tracklists", tags=["tracklists"])
@@ -516,7 +529,7 @@ async def approve_tracklist(
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "cue_version": cue_version},
+        context={"request": request, "tracklist": tracklist, "cue_version": cue_version, "has_candidates": await _has_candidates(session, tracklist)},
     )
 
 
@@ -538,7 +551,7 @@ async def reject_tracklist(
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "cue_version": 0},
+        context={"request": request, "tracklist": tracklist, "cue_version": 0, "has_candidates": False},
     )
 
 
@@ -600,7 +613,13 @@ async def match_discogs(
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "match_queued": True, "cue_version": 0},
+        context={
+            "request": request,
+            "tracklist": tracklist,
+            "match_queued": True,
+            "cue_version": 0,
+            "has_candidates": await _has_candidates(session, tracklist),
+        },
     )
 
 
@@ -781,6 +800,32 @@ async def _render_tracklist_list(request: Request, session: AsyncSession, filter
             tl._track_count = count_result.scalar() or 0  # type: ignore[attr-defined]
         else:
             tl._track_count = 0  # type: ignore[attr-defined]
+
+    # Compute has_candidates for each tracklist
+    for tl in tracklists:
+        if tl.latest_version_id:
+            track_ids_stmt = select(TracklistTrack.id).where(TracklistTrack.version_id == tl.latest_version_id)
+            cand_result = await session.execute(
+                select(func.count(DiscogsLink.id)).where(
+                    DiscogsLink.track_id.in_(track_ids_stmt),
+                    DiscogsLink.status == "candidate",
+                )
+            )
+            tl._has_candidates = (cand_result.scalar() or 0) > 0  # type: ignore[attr-defined]
+        else:
+            tl._has_candidates = False  # type: ignore[attr-defined]
+
+    # Compute CUE version for approved tracklists with executed files
+    for tl in tracklists:
+        if tl.status == "approved" and tl.file_id:
+            fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tl.file_id))
+            fr = fr_result.scalar_one_or_none()
+            if fr and fr.state == FileState.EXECUTED:
+                tl._cue_version = _get_cue_version(fr.current_path)  # type: ignore[attr-defined]
+            else:
+                tl._cue_version = 0  # type: ignore[attr-defined]
+        else:
+            tl._cue_version = 0  # type: ignore[attr-defined]
 
     stats = await _get_tracklist_stats(session)
     pagination = Pagination(page=page, page_size=page_size, total=total)
