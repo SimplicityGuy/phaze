@@ -117,6 +117,8 @@ Plans:
   1. User can see the "Bulk-link All" button on a tracklist card after Discogs matching completes (has_candidates context variable populated)
   2. CUE version badge persists correctly after link/unlink/undo-link operations (_cue_version computed in _render_tracklist_list)
 **Plans**: 1 plan
+Plans:
+- [ ] 22-01-PLAN.md -- Wire has_candidates context and _cue_version in _render_tracklist_list
 **UI hint**: no (router-only fixes)
 
 ## Progress
