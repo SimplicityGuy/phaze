@@ -20,19 +20,15 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 ## Current State
 
-**v2.0 shipped 2026-04-02.** Metadata enrichment and tracklist integration complete.
-**Phase 18 complete (2026-04-03):** Unified search page with PostgreSQL FTS, GIN indexes, cross-entity results, faceted filtering.
-**Phase 19 complete (2026-04-03):** Discogs cross-service linking via discogsography HTTP API, fuzzy matching with confidence scores, inline candidate review, bulk-link, search extension with purple pills.
-**Phase 20 complete (2026-04-03):** Tag writing with review UI — cascade merge proposals (tracklist > metadata > filename), format-aware mutagen writes (MP3/M4A/OGG/OPUS/FLAC), verify-after-write, append-only audit log, HTMX comparison view.
-**Phase 21 complete (2026-04-03):** CUE sheet generation from tracklist timestamps — 75fps frame conversion, fingerprint-preferred timestamps, per-track Discogs REM comments, version suffix naming, UTF-8 BOM encoding, /cue management page with batch generation, inline Generate/Regenerate CUE on tracklist cards.
-**Phase 22 complete (2026-04-04):** Gap closure — wired `has_candidates` context variable for bulk-link button visibility and `_cue_version` computation in `_render_tracklist_list`. All v3.0 audit gaps resolved.
+**v3.0 shipped 2026-04-04.** Cross-service intelligence and file enrichment complete.
 
-- 6,700+ lines of Python across 22 phases, 50 plans total
-- 630+ tests passing, 23/23 v2.0 requirements satisfied, 4/4 DISC + 4/4 TAGW + 3/3 CUE requirements satisfied (53/53 cumulative), all v3.0 gaps closed
+- 8,000+ lines of Python across 23 phases, 52 plans total (v1.0-v3.0)
+- 650+ tests passing, 53/53 cumulative requirements satisfied (all milestones)
 - Tech stack: FastAPI, SQLAlchemy (async), SAQ, litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, HTMX + Tailwind
 - Docker Compose: api, worker, postgres, redis, audfprint, panako containers
-- 11 Alembic migrations, 11 SQLAlchemy models, 3 fingerprint service containers
-- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview, unified search with Discogs linking, tag review
+- 12 Alembic migrations, 12 SQLAlchemy models, 3 fingerprint service containers
+- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview, unified search, Discogs linking, tag review, CUE management
+- v3.0 added: unified FTS search with faceted filtering, Discogs cross-service linking with fuzzy matching and bulk-link, format-aware tag writing with 4-layer cascade (Discogs > tracklist > metadata > filename), CUE sheet generation with Discogs REM enrichment
 
 ## Previous State
 
@@ -156,4 +152,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-04 after Phase 22 complete — Tracklist Integration Fixes (all v3.0 audit gaps closed)*
+*Last updated: 2026-04-04 after v3.0 milestone complete — Cross-Service Intelligence & File Enrichment*

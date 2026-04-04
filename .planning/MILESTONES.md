@@ -1,5 +1,25 @@
 # Milestones
 
+## v3.0 Cross-Service Intelligence & File Enrichment (Shipped: 2026-04-04)
+
+**Phases completed:** 4 phases, 11 plans, 22 tasks
+
+**Key accomplishments:**
+
+- PostgreSQL full-text search with tsvector GENERATED columns, GIN indexes, and cross-entity UNION ALL search service returning ranked, paginated results from files and tracklists
+- Search page with FastAPI router, HTMX partial swaps, Alpine.js collapsible filters, type-badged results table, and nav bar integration as first tab
+- DiscogsLink model, discogsography HTTP adapter with rapidfuzz confidence scoring, and SAQ background task for batch matching tracklist tracks to Discogs releases
+- Five HTMX endpoints and three template partials for Discogs match triggering, inline candidate review with accept/dismiss, and bulk-link functionality
+- Discogs release UNION ALL branch in unified search with purple pill badges and accepted-only filtering per D-09
+- TagWriteLog audit model, tag proposal cascade merge (tracklist > metadata > filename), and format-aware tag writer with verify-after-write for MP3/OGG/FLAC/OPUS/M4A via mutagen
+- Tag review page with side-by-side comparison, inline editing of proposed values, Write Tags CTA, format/status badges, and 10 integration tests
+- Fixed two HTMX wiring bugs: collapsed Write Tags button now computes proposed tags server-side, post-write response targets main row by stable ID with OOB detail row cleanup
+- Pure-Python CUE sheet generator with 75fps timestamp conversion, Discogs REM enrichment, version suffix naming, and UTF-8 BOM file writing
+- CUE management page with stats, batch generation, inline tracklist card buttons, and nav tab integration
+- Source badges on CUE management rows with fingerprint-first sorting, and Regenerate CUE button state on tracklist cards via HX-Target detection
+
+---
+
 ## v2.0 Metadata Enrichment & Tracklist Integration (Shipped: 2026-04-02)
 
 **Phases completed:** 6 phases, 16 plans, 31 tasks
