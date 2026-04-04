@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: completed
-stopped_at: Completed 21-03-PLAN.md
-last_updated: "2026-04-03T22:54:47.490Z"
-last_activity: 2026-04-03
+stopped_at: Completed 23-01-PLAN.md
+last_updated: "2026-04-04T02:29:41.167Z"
+last_activity: 2026-04-04 -- Phase 23 Plan 01 executed
 progress:
   total_phases: 4
   completed_phases: 4
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 ## Current Position
 
-Phase: 21
-Plan: Not started
-Status: Phase 21 complete
-Last activity: 2026-04-03
+Phase: 23 (v3-polish-wiring-fixes) -- COMPLETE
+Plan: 1 of 1 -- COMPLETE
+Status: Phase 23 Plan 01 complete
+Last activity: 2026-04-04 -- Phase 23 Plan 01 executed
 
 Progress: [██████████] 100% (v3.0)
 
@@ -73,6 +73,8 @@ Progress: [██████████] 100% (v3.0)
 - [Phase 21]: Dropped from __future__ annotations in CUE router to avoid FastAPI uuid runtime resolution issues
 - [Phase 21-03]: HX-Target header prefix matching for cross-page response routing (tracklist- prefix returns tracklist_card.html)
 - [Phase 21-03]: Dynamic _cue_version attribute on Tracklist ORM objects for UI-only display data
+- [Phase 23]: [Phase 23]: _has_candidates helper wired into rescrape_tracklist for Bulk-link button visibility
+- [Phase 23]: [Phase 23]: DiscogsLink is Layer 4 (highest priority) in tag proposal cascade -- verified metadata overrides all
 
 ### Pending Todos
 
@@ -85,6 +87,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T22:46:01.000Z
-Stopped at: Completed 21-03-PLAN.md
+Last session: 2026-04-04T02:29:35.634Z
+Stopped at: Completed 23-01-PLAN.md
 Resume file: None
