@@ -1,4 +1,5 @@
-{% if has_candidates is defined and has_candidates %}
+{% set show_bulk = (has_candidates is defined and has_candidates) or (tracklist._has_candidates is defined and tracklist._has_candidates) %}
+{% if show_bulk %}
 <button hx-post="/tracklists/{{ tracklist.id }}/bulk-link"
         hx-target="#tracks-{{ tracklist.id }}"
         hx-swap="innerHTML"

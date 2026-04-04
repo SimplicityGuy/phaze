@@ -69,7 +69,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISC-01 | Phase 19 | Complete |
 | DISC-02 | Phase 19 | Complete |
 | DISC-03 | Phase 19 | Complete |
-| DISC-04 | Phase 19 | Complete |
+| DISC-04 | Phase 22 (gap closure) | Complete |
 | TAGW-01 | Phase 20 | Complete |
 | TAGW-02 | Phase 20 | Complete |
 | TAGW-03 | Phase 20 | Complete |
@@ -80,7 +80,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Coverage:**
 - v3.0 requirements: 15 total
-- Mapped to phases: 15
+- Satisfied: 14
+- Pending (gap closure): 0
 - Unmapped: 0
 
 ---

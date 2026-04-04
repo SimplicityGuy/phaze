@@ -1,7 +1,7 @@
 """Integration tests for tracklists router."""
 
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 from httpx import AsyncClient
@@ -976,3 +976,241 @@ async def test_bulk_link_discogs_not_found(session: AsyncSession, client: AsyncC
     fake_id = uuid.uuid4()
     response = await client.post(f"/tracklists/{fake_id}/bulk-link")
     assert response.status_code == 404
+
+
+# --- has_candidates and _cue_version wiring tests ---
+
+
+@pytest.mark.asyncio
+async def test_match_discogs_returns_has_candidates(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/match-discogs includes has_candidates when candidates exist."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    # Pre-create a candidate link
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-test",
+        discogs_artist="Test",
+        discogs_title="Test Track",
+        confidence=90.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    mock_queue = AsyncMock()
+    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+
+    response = await client.post(f"/tracklists/{tl.id}/match-discogs")
+    assert response.status_code == 200
+    assert "Bulk-link All" in response.text
+
+
+@pytest.mark.asyncio
+async def test_approve_tracklist_has_candidates(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/approve includes Bulk-link button when candidates exist."""
+    tl = _make_tracklist(status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-appr",
+        discogs_artist="A",
+        discogs_title="T",
+        confidence=85.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/approve")
+    assert response.status_code == 200
+    assert "Bulk-link All" in response.text
+
+
+@pytest.mark.asyncio
+async def test_approve_tracklist_no_candidates_no_bulk_button(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/approve without candidates does not show Bulk-link button."""
+    tl = _make_tracklist(status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/approve")
+    assert response.status_code == 200
+    assert "Bulk-link All" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_undo_link_preserves_cue_version(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/undo-link list response includes CUE version badge for other tracklists."""
+    file1 = _make_file(original_path="/music/set1.mp3")
+    file1.state = FileState.EXECUTED
+    file2 = _make_file(original_path="/music/set2.mp3")
+    file2.state = FileState.EXECUTED
+    session.add_all([file1, file2])
+    await session.flush()
+
+    # Tracklist to undo-link
+    tl1 = _make_tracklist(file_id=file1.id, match_confidence=90, auto_linked=True, external_id="undo-cue-1")
+    # Tracklist that should keep CUE badge
+    tl2 = _make_tracklist(file_id=file2.id, match_confidence=95, external_id="undo-cue-2", status="approved")
+    session.add_all([tl1, tl2])
+    await session.flush()
+
+    with patch("phaze.routers.tracklists._get_cue_version", return_value=2):
+        response = await client.post(f"/tracklists/{tl1.id}/undo-link")
+    assert response.status_code == 200
+    assert "CUE v" in response.text
+
+
+@pytest.mark.asyncio
+async def test_list_tracklists_has_candidates_in_list(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/ (HTMX) shows Bulk-link button when candidates exist."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-list",
+        discogs_artist="List",
+        discogs_title="Track",
+        confidence=88.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    response = await client.get("/tracklists/", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "Bulk-link All" in response.text
+
+
+@pytest.mark.asyncio
+async def test_render_tracklist_list_no_version_no_candidates(session: AsyncSession, client: AsyncClient) -> None:
+    """Undo-link with tracklist lacking latest_version_id sets _has_candidates=False."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist(file_id=file.id, match_confidence=90, auto_linked=True)
+    tl.latest_version_id = None
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/undo-link")
+    assert response.status_code == 200
+    assert "Bulk-link All" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_render_tracklist_list_approved_non_executed_cue_zero(session: AsyncSession, client: AsyncClient) -> None:
+    """Undo-link list view shows cue_version=0 for approved tracklist with non-EXECUTED file."""
+    file_exec = _make_file(original_path="/music/exec.mp3")
+    file_exec.state = FileState.EXECUTED
+    file_disc = _make_file(original_path="/music/disc.mp3")
+    file_disc.state = FileState.DISCOVERED
+    session.add_all([file_exec, file_disc])
+    await session.flush()
+
+    # Tracklist to undo
+    tl1 = _make_tracklist(file_id=file_exec.id, match_confidence=90, auto_linked=True, external_id="cue-zero-1")
+    # Approved tracklist with non-EXECUTED file — should get _cue_version=0
+    tl2 = _make_tracklist(file_id=file_disc.id, match_confidence=95, external_id="cue-zero-2", status="approved")
+    session.add_all([tl1, tl2])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl1.id}/undo-link")
+    assert response.status_code == 200
+    # tl2 is approved with non-EXECUTED file, so no CUE badge
+    assert "CUE v" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_render_tracklist_list_cue_version_not_approved(session: AsyncSession, client: AsyncClient) -> None:
+    """Undo-link list view shows cue_version=0 for non-approved tracklist."""
+    file = _make_file()
+    file.state = FileState.EXECUTED
+    session.add(file)
+    await session.flush()
+
+    tl1 = _make_tracklist(file_id=file.id, match_confidence=90, auto_linked=True, external_id="cue-na-1")
+    # Proposed (not approved) tracklist with EXECUTED file — should get _cue_version=0
+    tl2 = _make_tracklist(external_id="cue-na-2", status="proposed")
+    session.add_all([tl1, tl2])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl1.id}/undo-link")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_list_tracklists_cue_version_executed(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/ shows CUE badge for approved tracklist with EXECUTED file."""
+    file = _make_file()
+    file.state = FileState.EXECUTED
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist(file_id=file.id, match_confidence=90, status="approved")
+    session.add(tl)
+    await session.flush()
+
+    with patch("phaze.routers.tracklists._get_cue_version", return_value=3):
+        response = await client.get("/tracklists/")
+    assert response.status_code == 200
+    assert "CUE v3" in response.text
+
+
+@pytest.mark.asyncio
+async def test_list_tracklists_has_candidates_full_page(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /tracklists/ (full page, no HTMX) shows Bulk-link button when candidates exist."""
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-full",
+        discogs_artist="Full",
+        discogs_title="Page",
+        confidence=85.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    response = await client.get("/tracklists/")
+    assert response.status_code == 200
+    assert "Bulk-link All" in response.text
