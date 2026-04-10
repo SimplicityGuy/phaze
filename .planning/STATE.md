@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 Phase: 23
 Plan: Not started
 Status: Executing Phase 23
-Last activity: 2026-04-04
+Last activity: 2026-04-10 - Completed quick task 260410-kco: Add Docker image publishing to GHCR following discogsography pattern
 
 Progress: [██████████] 100% (v3.0)
 
@@ -82,6 +82,12 @@ None.
 
 - Phase 19: Verify discogsography `/api/search` response shape before writing adapter (research flag)
 - arq replaced by SAQ -- all new task code must use SAQ conventions
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260410-kco | Add Docker image publishing to GHCR following discogsography pattern | 2026-04-10 | 3f91f93 | [260410-kco-add-docker-image-publishing-to-ghcr-foll](./quick/260410-kco-add-docker-image-publishing-to-ghcr-foll/) |
 
 ## Session Continuity
 
