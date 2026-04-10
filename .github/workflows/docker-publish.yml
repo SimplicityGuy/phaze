@@ -1,0 +1,164 @@
+---
+name: Docker Publish
+
+on:
+  workflow_call:
+
+env:
+  REGISTRY: ghcr.io
+  PYTHON_VERSION: "3.13"
+
+concurrency:
+  group: docker-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        include:
+          - name: api
+            dockerfile: Dockerfile
+            context: .
+            use_cache: true
+          - name: audfprint
+            dockerfile: services/audfprint/Dockerfile.audfprint
+            context: .
+            use_cache: true
+          - name: panako
+            dockerfile: services/panako/Dockerfile.panako
+            context: .
+            use_cache: true
+
+    steps:
+      - name: "\u23F1\uFE0F Start timer"
+        id: timer
+        run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: "\U0001F3F7\uFE0F Set lowercase image name"
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "IMAGE_NAME=$(echo "$REPO" | tr "[:upper:]" "[:lower:]")" >> "$GITHUB_ENV"
+
+      - name: "\U0001F500 Checkout repository"
+        uses: actions/checkout@v6
+
+      - name: "\U0001F9F9 Free disk space"
+        run: |
+          echo "\U0001F4CA Disk space before cleanup:"
+          df -h
+
+          echo "\U0001F5D1\uFE0F Removing unnecessary software..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+          echo "\U0001F9F9 Cleaning Docker..."
+          docker system prune -af --volumes || true
+
+          echo "\U0001F4CA Disk space after cleanup:"
+          df -h
+
+      - name: "\U0001F512 Log in to the GitHub Container Registry"
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "\U0001F4BE Setup Docker build cache"
+        id: docker-cache
+        uses: ./.github/actions/docker-build-cache
+        with:
+          service-name: ${{ matrix.name }}
+          dockerfile-path: ${{ matrix.dockerfile }}
+          use-cache: ${{ matrix.use_cache }}
+
+      - name: "\U0001F4CA Extract metadata (tags, labels) for Docker"
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+
+      - name: "\U0001F527 Set up Docker Buildx"
+        uses: docker/setup-buildx-action@v4
+        with:
+          platforms: linux/amd64
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: "\U0001F680 Build and push Docker image - phaze/${{ matrix.name }}"
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: ${{ steps.docker-cache.outputs.cache-from }}
+          cache-to: ${{ steps.docker-cache.outputs.cache-to }}
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            BUILDKIT_CACHE_MOUNT_NS=phaze
+            DOCKER_BUILDKIT=1
+            PYTHON_VERSION=${{ env.PYTHON_VERSION }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+
+      -  # Temp fix
+        # https://github.com/docker/build-push-action/issues/252
+        # https://github.com/moby/buildkit/issues/1896
+        name: "\U0001F4BE Move cache"
+        if: ${{ matrix.use_cache }}
+        run: |
+          rm -rf ${{ runner.temp }}/.buildx-cache
+          mv ${{ runner.temp }}/.buildx-cache-new ${{ runner.temp }}/.buildx-cache
+
+      - name: "\U0001F9F9 Cleanup build artifacts"
+        if: always()
+        run: |
+          echo "\U0001F5D1\uFE0F Pruning Docker build cache..."
+          docker buildx prune -f --filter until=1h || true
+          docker system prune -f --filter until=1h || true
+
+          echo "\U0001F4CA Remaining disk space:"
+          df -h
+
+      - name: "\U0001F4CA Collect metrics"
+        if: always()
+        env:
+          START_TIME: ${{ steps.timer.outputs.start_time }}
+          SERVICE_NAME: ${{ matrix.name }}
+          CACHE_USED: ${{ matrix.use_cache }}
+          CACHE_HIT: ${{ steps.docker-cache.outputs.cache-hit }}
+        run: |
+          end_time=$(date +%s)
+          duration=$((end_time - START_TIME))
+          echo "::notice title=Build Metrics::Service: ${SERVICE_NAME}, Duration: ${duration}s, Cache Used: ${CACHE_USED}"
+
+          # Check cache hit rate
+          if [[ -n "${CACHE_HIT}" ]]; then
+            echo "::notice title=Cache Performance::Docker cache hit for ${SERVICE_NAME}"
+          fi

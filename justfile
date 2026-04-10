@@ -130,6 +130,27 @@ docker-validate:
         echo "✅ ${df} passed"
     done
 
+# Push Docker images to GHCR (requires: gh auth token with packages:write)
+image-push:
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    TAG="latest"
+    declare -A IMAGES=(
+        ["api"]="Dockerfile"
+        ["audfprint"]="services/audfprint/Dockerfile.audfprint"
+        ["panako"]="services/panako/Dockerfile.panako"
+    )
+    for SERVICE in "${!IMAGES[@]}"; do
+        IMAGE="${REGISTRY}/${OWNER}/${REPO}/${SERVICE}:${TAG}"
+        echo "🐳 Building and pushing ${IMAGE}..."
+        docker build -f "${IMAGES[$SERVICE]}" -t "${IMAGE}" .
+        docker push "${IMAGE}"
+        echo "✅ ${SERVICE} pushed"
+    done
+
 # Validate docker-compose.yml syntax
 docker-compose-validate:
     docker compose config --quiet && echo "✅ docker-compose.yml is valid"
