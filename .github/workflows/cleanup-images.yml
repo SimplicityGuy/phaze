@@ -18,7 +18,7 @@ jobs:
     strategy:
       matrix:
         package:
-          - phaze
+          - phaze/api
           - phaze/audfprint
           - phaze/panako
       fail-fast: false

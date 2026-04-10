@@ -16,6 +16,7 @@ concurrency:
 
 permissions:
   contents: read
+  packages: write
   security-events: write
 
 jobs:
@@ -145,3 +146,14 @@ jobs:
           fi
 
           echo "✅ All pipeline workflows passed!"
+
+  # ============================================================================
+  # DOCKER PUBLISH - Build and push images to GHCR after all gates pass
+  # ============================================================================
+  docker-publish:
+    needs: [detect-changes, aggregate-results]
+    if: needs.detect-changes.outputs.code-changed == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+    permissions:
+      contents: read
+      packages: write
