@@ -46,8 +46,5 @@ EXTENSION_MAP: dict[str, FileCategory] = {
     ".md5": FileCategory.COMPANION,
 }
 
-HASH_CHUNK_SIZE: int = 65_536
-"""Size in bytes for reading file chunks during SHA-256 hashing (64KB)."""
-
 BULK_INSERT_BATCH_SIZE: int = 1000
 """Number of records per bulk INSERT batch for database ingestion."""

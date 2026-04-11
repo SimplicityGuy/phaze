@@ -71,7 +71,7 @@ async def search_page(
     }
 
     # HTMX requests get partial content only (results swap target)
-    if request.headers.get("HX-Request"):
+    if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="search/partials/results_content.html", context=context)
 
     return templates.TemplateResponse(request=request, name="search/page.html", context=context)

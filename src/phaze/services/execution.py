@@ -10,7 +10,6 @@ Every operation is logged to ExecutionLog BEFORE execution (write-ahead per EXE-
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
 import shutil
@@ -24,6 +23,7 @@ from phaze.config import settings
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.services.hashing import compute_sha256
 
 
 if TYPE_CHECKING:
@@ -32,24 +32,6 @@ if TYPE_CHECKING:
     from phaze.models.file import FileRecord
 
 logger = logging.getLogger(__name__)
-
-_HASH_CHUNK_SIZE = 8192
-
-
-def compute_sha256(file_path: Path) -> str:
-    """Compute SHA256 hex digest of a file using chunked reads.
-
-    Args:
-        file_path: Path to the file to hash.
-
-    Returns:
-        64-character lowercase hex digest string.
-    """
-    sha256 = hashlib.sha256()
-    with Path.open(file_path, "rb") as f:
-        while chunk := f.read(_HASH_CHUNK_SIZE):
-            sha256.update(chunk)
-    return sha256.hexdigest()
 
 
 async def log_operation(

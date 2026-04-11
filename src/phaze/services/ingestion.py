@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import itertools
 import logging
 import os
@@ -15,9 +14,10 @@ import uuid
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, HASH_CHUNK_SIZE, FileCategory
+from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, FileCategory
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.services.hashing import compute_sha256
 
 
 if TYPE_CHECKING:
@@ -30,22 +30,6 @@ logger = logging.getLogger(__name__)
 def normalize_path(path: str) -> str:
     """NFC-normalize a Unicode path string."""
     return unicodedata.normalize("NFC", path)
-
-
-def compute_sha256(file_path: Path) -> str:
-    """Compute SHA-256 hex digest of a file using chunked reads.
-
-    Reads the file in HASH_CHUNK_SIZE (64KB) chunks to avoid loading
-    entire files into memory.
-    """
-    sha256 = hashlib.sha256()
-    with file_path.open("rb") as f:
-        while True:
-            chunk = f.read(HASH_CHUNK_SIZE)
-            if not chunk:
-                break
-            sha256.update(chunk)
-    return sha256.hexdigest()
 
 
 def classify_file(filename: str) -> FileCategory:

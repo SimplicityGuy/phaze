@@ -168,7 +168,11 @@ class TracklistScraper:
         """
         await self._rate_limit()
 
-        response = await self._client.get(url)
+        try:
+            response = await self._client.get(url)
+        except httpx.HTTPError:
+            logger.warning("HTTP error scraping tracklist: %s", url)
+            raise
 
         # Extract external_id from URL
         match = self._EXTERNAL_ID_PATTERN.search(url)

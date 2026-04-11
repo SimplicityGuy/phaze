@@ -198,7 +198,7 @@ async def list_tags(
         "pagination": pagination,
     }
 
-    if request.headers.get("HX-Request"):
+    if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="tags/partials/tag_list.html", context=context)
 
     return templates.TemplateResponse(request=request, name="tags/list.html", context=context)
