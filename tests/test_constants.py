@@ -1,6 +1,7 @@
 """Tests for phaze.constants module."""
 
-from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, HASH_CHUNK_SIZE, FileCategory
+from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, FileCategory
+from phaze.services.hashing import _HASH_CHUNK_SIZE
 
 
 def test_file_category_values():
@@ -61,7 +62,7 @@ def test_extensions_are_lowercase_with_dot():
 
 def test_hash_chunk_size():
     """HASH_CHUNK_SIZE is 64KB (65536 bytes)."""
-    assert HASH_CHUNK_SIZE == 65536
+    assert _HASH_CHUNK_SIZE == 65536
 
 
 def test_bulk_insert_batch_size():
