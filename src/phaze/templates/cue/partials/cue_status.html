@@ -1,7 +1,7 @@
 {% if tracklist.cue_version is defined and tracklist.cue_version is not none and tracklist.cue_version >= 1 %}
 <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">CUE v{{ tracklist.cue_version }}</span>
 {% elif tracklist.cue_version is defined and tracklist.cue_version == 0 %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">No CUE</span>
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-phaze-panel text-gray-600 dark:text-gray-400 dark:text-gray-500">No CUE</span>
 {% else %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">Not Eligible</span>
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-400">Not Eligible</span>
 {% endif %}

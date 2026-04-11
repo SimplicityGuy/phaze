@@ -1,10 +1,10 @@
 {% if match_queued is defined and match_queued %}
-<span class="text-xs text-blue-600 font-semibold">Matching tracks to Discogs...</span>
+<span class="text-xs text-blue-600 dark:text-blue-400 font-semibold">Matching tracks to Discogs...</span>
 {% else %}
 <button hx-post="/tracklists/{{ tracklist.id }}/match-discogs"
         hx-target="#tracklist-{{ tracklist.id }}"
         hx-swap="outerHTML"
-        class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1.5 rounded-md">
+        class="text-xs bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600 text-white font-semibold px-3 py-1.5 rounded-md">
   Match to Discogs
 </button>
 {% endif %}

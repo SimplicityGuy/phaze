@@ -1,19 +1,19 @@
-<div id="cue-row-{{ tracklist.id }}" class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between">
+<div id="cue-row-{{ tracklist.id }}" class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg px-4 py-3 flex items-center justify-between">
     <div class="flex items-center gap-3 min-w-0">
-        <span class="text-sm font-semibold text-gray-900 truncate">{{ tracklist.artist }}</span>
+        <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{{ tracklist.artist }}</span>
         <span class="text-xs font-semibold px-1.5 py-0.5 rounded-full
-            {% if tracklist.source == 'fingerprint' %}bg-indigo-100 text-indigo-700{% else %}bg-gray-100 text-gray-500{% endif %}">
+            {% if tracklist.source == 'fingerprint' %}bg-indigo-100 text-indigo-700{% else %}bg-gray-100 dark:bg-phaze-panel text-gray-500 dark:text-gray-400 dark:text-gray-500{% endif %}">
             {{ tracklist.source }}
         </span>
         {% if tracklist.event %}
-        <span class="text-sm text-gray-500">@ {{ tracklist.event }}</span>
+        <span class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">@ {{ tracklist.event }}</span>
         {% endif %}
         {% if tracklist.date %}
-        <span class="text-sm text-gray-400">{{ tracklist.date }}</span>
+        <span class="text-sm text-gray-400 dark:text-gray-500">{{ tracklist.date }}</span>
         {% endif %}
     </div>
     <div class="flex items-center gap-3 shrink-0">
-        <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+        <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 dark:bg-phaze-panel text-gray-600 dark:text-gray-400 dark:text-gray-500">
             {{ tracklist.track_count }} tracks
         </span>
         {% include "cue/partials/cue_status.html" %}
@@ -21,7 +21,7 @@
         <button hx-post="/cue/{{ tracklist.id }}/generate"
                 hx-target="#cue-row-{{ tracklist.id }}"
                 hx-swap="outerHTML"
-                class="text-xs text-green-600 hover:text-green-700 font-semibold px-2 py-1">
+                class="text-xs text-green-600 dark:text-green-400 hover:text-green-700 dark:text-green-400 font-semibold px-2 py-1">
             Regenerate CUE
         </button>
         {% else %}
@@ -37,7 +37,7 @@
 
 {% if toast_message is defined and toast_message %}
 <div hx-swap-oob="beforeend:#toast-container">
-    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow-lg" role="status"
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status"
          x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
          x-transition>
         {{ toast_message }}

@@ -1,7 +1,7 @@
 {% if count > 0 %}
-<span class="text-sm text-green-600 font-medium">
+<span class="text-sm text-green-600 dark:text-green-400 font-medium">
     Enqueued {{ count }} files for {{ action }}{% if batches %} in {{ batches }} batches{% endif %}.
 </span>
 {% else %}
-<span class="text-sm text-gray-500">No files ready for {{ action }}.</span>
+<span class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">No files ready for {{ action }}.</span>
 {% endif %}

@@ -1,7 +1,7 @@
 <input type="text"
        name="{{ field }}"
        value="{{ track[field] or '' }}"
-       class="text-sm border border-blue-300 rounded px-2 py-1 w-full focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+       class="text-sm border border-blue-300 rounded px-2 py-1 w-full focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400 dark:ring-blue-400 bg-white dark:bg-phaze-bg"
        hx-put="/tracklists/tracks/{{ track.id }}/edit/{{ field }}"
        hx-target="closest td"
        hx-swap="innerHTML"

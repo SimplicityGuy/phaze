@@ -1,4 +1,4 @@
-<div class="border-b border-gray-200 mb-4">
+<div class="border-b border-gray-200 dark:border-phaze-border mb-4">
     <nav class="flex space-x-4" aria-label="Status filter tabs">
         {% set tabs = [
             ("all", "All", stats.total),
@@ -14,14 +14,14 @@
                 hx-push-url="true"
                 class="px-3 py-2 text-sm transition-colors
                     {% if current_status == value %}
-                        text-blue-600 border-b-2 border-blue-600 font-semibold
+                        text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 font-semibold
                     {% else %}
-                        text-gray-500 hover:text-gray-700
+                        text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300
                     {% endif %}
                 "
             >
                 {{ label }}
-                <span class="text-xs bg-gray-200 text-gray-700 rounded-full px-2 py-0.5 ml-1">{{ count }}</span>
+                <span class="text-xs bg-gray-200 dark:bg-phaze-border text-gray-700 dark:text-gray-300 rounded-full px-2 py-0.5 ml-1">{{ count }}</span>
             </button>
         {% endfor %}
     </nav>

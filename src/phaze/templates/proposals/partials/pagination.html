@@ -1,6 +1,6 @@
 <div class="flex items-center justify-between mt-4 text-sm">
     <!-- Left: showing range -->
-    <div class="text-gray-500">
+    <div class="text-gray-500 dark:text-gray-400 dark:text-gray-500">
         Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} proposals
     </div>
 
@@ -12,7 +12,7 @@
                 hx-target="#proposal-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1"
+                class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1"
             >&laquo; Prev</button>
         {% endif %}
 
@@ -27,7 +27,7 @@
                     hx-target="#proposal-list-container"
                     hx-swap="innerHTML"
                     hx-push-url="true"
-                    class="{% if p == current_page %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                    class="{% if p == current_page %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
                 >{{ p }}</button>
             {% endfor %}
         {% else %}
@@ -37,11 +37,11 @@
                 hx-target="#proposal-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="{% if current_page == 1 %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                class="{% if current_page == 1 %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
             >1</button>
 
             {% if current_page > 3 %}
-                <span class="px-2 text-gray-400">...</span>
+                <span class="px-2 text-gray-400 dark:text-gray-500">...</span>
             {% endif %}
 
             {# Pages around current #}
@@ -51,12 +51,12 @@
                     hx-target="#proposal-list-container"
                     hx-swap="innerHTML"
                     hx-push-url="true"
-                    class="{% if p == current_page %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                    class="{% if p == current_page %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
                 >{{ p }}</button>
             {% endfor %}
 
             {% if current_page < total_pages - 2 %}
-                <span class="px-2 text-gray-400">...</span>
+                <span class="px-2 text-gray-400 dark:text-gray-500">...</span>
             {% endif %}
 
             {# Always show last page #}
@@ -65,7 +65,7 @@
                 hx-target="#proposal-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="{% if current_page == total_pages %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                class="{% if current_page == total_pages %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
             >{{ total_pages }}</button>
         {% endif %}
 
@@ -75,21 +75,21 @@
                 hx-target="#proposal-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1"
+                class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1"
             >Next &raquo;</button>
         {% endif %}
     </div>
 
     <!-- Right: page size selector -->
     <div class="flex items-center gap-2">
-        <span class="text-gray-500">Per page:</span>
+        <span class="text-gray-500 dark:text-gray-400 dark:text-gray-500">Per page:</span>
         {% for size in [25, 50, 100] %}
             <button
                 hx-get="/proposals/?page=1&status={{ current_status }}&q={{ search_query }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ size }}"
                 hx-target="#proposal-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="{% if pagination.page_size == size %}font-semibold text-blue-600{% else %}text-gray-500 hover:text-gray-700{% endif %} px-1"
+                class="{% if pagination.page_size == size %}font-semibold text-blue-600 dark:text-blue-400{% else %}text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300{% endif %} px-1"
             >{{ size }}</button>
         {% endfor %}
     </div>

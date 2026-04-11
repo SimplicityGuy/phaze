@@ -1,6 +1,14 @@
-# 🎵 Phaze
+# Phaze
 
 <div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="design/assets/banner_dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="design/assets/banner_light.png">
+  <img alt="Phaze — Align Your Music" src="design/assets/banner_dark.png" width="600">
+</picture>
+
+<br><br>
 
 [![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze)

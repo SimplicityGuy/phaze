@@ -1,34 +1,34 @@
-<div class="flex gap-1 border-b border-gray-200 mb-4">
+<div class="flex gap-1 border-b border-gray-200 dark:border-phaze-border mb-4">
     <button @click="showScan = false; activeTab = 'all'"
             hx-get="/tracklists/?filter=all&page=1"
             hx-target="#tracklists-list"
             hx-swap="innerHTML"
-            :class="activeTab === 'all' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+            :class="activeTab === 'all' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 dark:text-gray-100 text-sm font-semibold px-3 py-2'">
         All ({{ stats.total }})
     </button>
     <button @click="showScan = false; activeTab = 'matched'"
             hx-get="/tracklists/?filter=matched&page=1"
             hx-target="#tracklists-list"
             hx-swap="innerHTML"
-            :class="activeTab === 'matched' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+            :class="activeTab === 'matched' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 dark:text-gray-100 text-sm font-semibold px-3 py-2'">
         Matched ({{ stats.matched }})
     </button>
     <button @click="showScan = false; activeTab = 'unmatched'"
             hx-get="/tracklists/?filter=unmatched&page=1"
             hx-target="#tracklists-list"
             hx-swap="innerHTML"
-            :class="activeTab === 'unmatched' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+            :class="activeTab === 'unmatched' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 dark:text-gray-100 text-sm font-semibold px-3 py-2'">
         Unmatched ({{ stats.unmatched }})
     </button>
     <button @click="showScan = false; activeTab = 'proposed'"
             hx-get="/tracklists/?filter=proposed&page=1"
             hx-target="#tracklists-list"
             hx-swap="innerHTML"
-            :class="activeTab === 'proposed' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+            :class="activeTab === 'proposed' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 dark:text-gray-100 text-sm font-semibold px-3 py-2'">
         Proposed ({{ stats.proposed }})
     </button>
     <button @click="showScan = true; activeTab = 'scan'"
-            :class="activeTab === 'scan' ? 'text-blue-600 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 hover:text-gray-900 text-sm font-semibold px-3 py-2'">
+            :class="activeTab === 'scan' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 font-semibold text-sm px-3 py-2' : 'text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 dark:text-gray-100 text-sm font-semibold px-3 py-2'">
         Scan
     </button>
 </div>

@@ -4,9 +4,9 @@
                name="q"
                value="{{ query or '' }}"
                placeholder="Search files and tracklists..."
-               class="w-full rounded-md border border-gray-300 px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+               class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400">
         <button type="submit"
-                class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-md">
+                class="bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-md">
             Search
         </button>
     </div>
@@ -16,70 +16,70 @@
         <button type="button"
                 @click="showFilters = !showFilters"
                 :aria-expanded="showFilters"
-                class="mt-2 text-sm text-blue-600 hover:text-blue-800">
+                class="mt-2 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800">
             <span x-show="!showFilters">Advanced filters</span>
             <span x-show="showFilters">Hide filters</span>
         </button>
 
-        <div x-show="showFilters" x-transition class="mt-2 p-4 border border-gray-200 rounded-lg bg-gray-50">
+        <div x-show="showFilters" x-transition class="mt-2 p-4 border border-gray-200 dark:border-phaze-border rounded-lg bg-gray-50 dark:bg-phaze-panel">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label for="filter-artist" class="block text-xs font-medium text-gray-600 mb-1">Artist</label>
+                    <label for="filter-artist" class="block text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500 mb-1">Artist</label>
                     <input type="text"
                            id="filter-artist"
                            name="artist"
                            value="{{ artist or '' }}"
                            placeholder="Filter by artist..."
-                           class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-3 py-2 text-sm">
                 </div>
                 <div>
-                    <label for="filter-genre" class="block text-xs font-medium text-gray-600 mb-1">Genre</label>
+                    <label for="filter-genre" class="block text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500 mb-1">Genre</label>
                     <input type="text"
                            id="filter-genre"
                            name="genre"
                            value="{{ genre or '' }}"
                            placeholder="Filter by genre..."
-                           class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-3 py-2 text-sm">
                 </div>
                 <div>
-                    <label for="filter-date-from" class="block text-xs font-medium text-gray-600 mb-1">From</label>
+                    <label for="filter-date-from" class="block text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500 mb-1">From</label>
                     <input type="date"
                            id="filter-date-from"
                            name="date_from"
                            value="{{ date_from or '' }}"
-                           class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-3 py-2 text-sm">
                 </div>
                 <div>
-                    <label for="filter-date-to" class="block text-xs font-medium text-gray-600 mb-1">To</label>
+                    <label for="filter-date-to" class="block text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500 mb-1">To</label>
                     <input type="date"
                            id="filter-date-to"
                            name="date_to"
                            value="{{ date_to or '' }}"
-                           class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-3 py-2 text-sm">
                 </div>
                 <div>
-                    <label for="filter-bpm-min" class="block text-xs font-medium text-gray-600 mb-1">BPM min</label>
+                    <label for="filter-bpm-min" class="block text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500 mb-1">BPM min</label>
                     <input type="number"
                            id="filter-bpm-min"
                            name="bpm_min"
                            value="{{ bpm_min or '' }}"
                            placeholder="BPM min"
-                           class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-3 py-2 text-sm">
                 </div>
                 <div>
-                    <label for="filter-bpm-max" class="block text-xs font-medium text-gray-600 mb-1">BPM max</label>
+                    <label for="filter-bpm-max" class="block text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500 mb-1">BPM max</label>
                     <input type="number"
                            id="filter-bpm-max"
                            name="bpm_max"
                            value="{{ bpm_max or '' }}"
                            placeholder="BPM max"
-                           class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-3 py-2 text-sm">
                 </div>
                 <div>
-                    <label for="filter-file-state" class="block text-xs font-medium text-gray-600 mb-1">File state</label>
+                    <label for="filter-file-state" class="block text-xs font-medium text-gray-600 dark:text-gray-400 dark:text-gray-500 mb-1">File state</label>
                     <select id="filter-file-state"
                             name="file_state"
-                            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                            class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-3 py-2 text-sm">
                         <option value="">All states</option>
                         <option value="discovered" {% if file_state == "discovered" %}selected{% endif %}>Discovered</option>
                         <option value="metadata_extracted" {% if file_state == "metadata_extracted" %}selected{% endif %}>Metadata Extracted</option>
@@ -96,5 +96,5 @@
     </div>
 
     <!-- Loading indicator -->
-    <div id="search-spinner" class="htmx-indicator text-sm text-gray-400 py-4 text-center">Searching...</div>
+    <div id="search-spinner" class="htmx-indicator text-sm text-gray-400 dark:text-gray-500 py-4 text-center">Searching...</div>
 </form>

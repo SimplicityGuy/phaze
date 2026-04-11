@@ -2,8 +2,10 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from saq import Queue
 from sqlalchemy import text
 
@@ -40,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(tags.router)
     app.include_router(cue.router)
+    app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
     return app
 
 

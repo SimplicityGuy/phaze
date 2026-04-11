@@ -1,7 +1,7 @@
 <tr id="proposal-{{ proposal.id }}"
-    :class="{ 'bg-blue-100 ring-2 ring-blue-500': focusedRow === {{ loop.index0 if loop is defined else -1 }}, 'bg-blue-50': selectedRows.has('{{ proposal.id }}') }"
+    :class="{ 'bg-blue-100 dark:bg-blue-950 ring-2 ring-blue-500 dark:ring-blue-400': focusedRow === {{ loop.index0 if loop is defined else -1 }}, 'bg-blue-50 dark:bg-blue-950': selectedRows.has('{{ proposal.id }}') }"
     @click="focusedRow = {{ loop.index0 if loop is defined else -1 }}"
-    class="border-b border-gray-100 hover:bg-gray-50 cursor-pointer">
+    class="border-b border-gray-100 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel cursor-pointer">
     <td class="px-3 py-3">
         <input type="checkbox"
                :checked="selectedRows.has('{{ proposal.id }}')"
@@ -18,25 +18,25 @@
     <td class="px-3 py-3 max-w-48">
         {% set collision_ids = collision_ids|default({}) %}
         {% if proposal.proposed_path %}
-            <span class="text-sm text-gray-700 truncate block" title="{{ proposal.proposed_path }}">
+            <span class="text-sm text-gray-700 dark:text-gray-300 truncate block" title="{{ proposal.proposed_path }}">
                 {{ proposal.proposed_path|truncate(40) }}
             </span>
             {% if proposal.id|string in collision_ids %}
-                <span role="status" class="text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 ml-1"
+                <span role="status" class="text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-400 ml-1"
                       title="Another approved file targets this same destination">
                     Collision
                 </span>
             {% endif %}
         {% else %}
-            <span class="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">No path</span>
+            <span class="text-xs text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-phaze-panel px-2 py-1 rounded">No path</span>
         {% endif %}
     </td>
     <td class="px-3 py-3">
         {% set conf = proposal.confidence or 0 %}
         <span class="font-semibold
-            {% if conf >= 0.8 %}text-green-600
-            {% elif conf >= 0.5 %}text-yellow-600
-            {% else %}text-red-600
+            {% if conf >= 0.8 %}text-green-600 dark:text-green-400
+            {% elif conf >= 0.5 %}text-yellow-600 dark:text-yellow-400
+            {% else %}text-red-600 dark:text-red-400
             {% endif %}
         ">
             {{ "%.0f"|format(conf * 100) }}%
@@ -44,13 +44,13 @@
     </td>
     <td class="px-3 py-3">
         {% if proposal.file.state == "executed" %}
-            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">Executed</span>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400">Executed</span>
         {% elif proposal.status == "approved" %}
-            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">Approved</span>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400">Approved</span>
         {% elif proposal.status == "rejected" %}
-            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">Rejected</span>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400">Rejected</span>
         {% else %}
-            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">Pending</span>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-400">Pending</span>
         {% endif %}
     </td>
     <td class="px-3 py-3">
@@ -74,7 +74,7 @@
             <button hx-get="/proposals/{{ proposal.id }}/detail"
                     hx-target="#detail-{{ proposal.id }}"
                     hx-swap="innerHTML"
-                    class="text-gray-500 hover:text-gray-700 text-xs px-2 py-1"
+                    class="text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300 text-xs px-2 py-1"
                     aria-label="Expand details for {{ proposal.proposed_filename }}">
                 Details
             </button>
