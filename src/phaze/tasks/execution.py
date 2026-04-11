@@ -42,9 +42,9 @@ async def execute_approved_batch(ctx: dict[str, Any], *, batch_id: str | None = 
         await redis.hset(
             f"exec:{batch_id}",
             mapping={
-                "total": str(total),
-                "completed": "0",
-                "failed": "0",
+                "total": total,
+                "completed": 0,
+                "failed": 0,
                 "status": "running",
             },
         )
@@ -61,9 +61,9 @@ async def execute_approved_batch(ctx: dict[str, Any], *, batch_id: str | None = 
             await redis.hset(
                 f"exec:{batch_id}",
                 mapping={
-                    "total": str(total),
-                    "completed": str(completed),
-                    "failed": str(failed),
+                    "total": total,
+                    "completed": completed,
+                    "failed": failed,
                     "status": "running",
                 },
             )
@@ -72,9 +72,9 @@ async def execute_approved_batch(ctx: dict[str, Any], *, batch_id: str | None = 
         await redis.hset(
             f"exec:{batch_id}",
             mapping={
-                "total": str(total),
-                "completed": str(completed),
-                "failed": str(failed),
+                "total": total,
+                "completed": completed,
+                "failed": failed,
                 "status": "complete",
             },
         )
