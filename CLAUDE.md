@@ -59,7 +59,7 @@ warn_no_return = true
 warn_unreachable = true
 strict_equality = true
 explicit_package_bases = true
-exclude = "^tests/"
+exclude = "^(tests/|prototype/|services/)"
 ```
 
 Override for tests: `disallow_untyped_decorators = false`.

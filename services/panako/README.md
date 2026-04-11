@@ -86,7 +86,7 @@ Confidence scores are 0-100, derived from Panako's match percentage. The output 
 
 - Runs as a separate Docker container on the internal network (not exposed to host)
 - Non-root user (`panako`) for security
-- Multi-stage Docker build: JDK 21 for Gradle build, then JRE-only runtime to minimize image size
+- Multi-stage Docker build: JDK 17 for Gradle build, then JRE 21 runtime to minimize image size
 - Panako uses LMDB for storage, which requires `HOME=/data/fprint` for writable access
 - The Phaze worker communicates with this service via HTTP at `http://panako:8002`
 - Subprocess timeout of 120 seconds per operation
