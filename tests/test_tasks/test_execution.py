@@ -150,7 +150,7 @@ async def test_redis_progress_updates(
     initial_call = hset_calls[0]
     assert initial_call[0][0] == "exec:test-batch-123"
     initial_mapping = initial_call[1]["mapping"]
-    assert initial_mapping["total"] == 2
+    assert initial_mapping["total"] == "2"
     assert initial_mapping["status"] == "running"
 
     # Final status should be "complete"
