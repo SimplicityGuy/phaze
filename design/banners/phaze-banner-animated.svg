@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Jura:wght@300;500&amp;display=swap');
+    </style>
+  </defs>
+  <rect width="1200" height="400" fill="#0a0c12"/>
+  <!-- Mark positioned left with rotation animation -->
+  <g transform="translate(165, 200)">
+    <circle cx="0" cy="0" r="130" fill="none" stroke="#1abbdb" stroke-width="3" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" dur="1.2s" fill="freeze"/>
+    </circle>
+    <path d="M 6 -175 C 4 -90, -80 -55, 0 0 C 80 55, -2 95, -4 175" fill="none" stroke="#1abbdb" stroke-width="3" stroke-linecap="round" stroke-dasharray="500" stroke-dashoffset="500">
+      <animate attributeName="stroke-dashoffset" from="500" to="0" dur="1.8s" begin="0.4s" fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1"/>
+    </path>
+    <circle cx="14" cy="2" r="5.5" fill="#1abbdb" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" dur="0.3s" begin="1.6s" fill="freeze"/>
+      <animate attributeName="r" from="0" to="5.5" dur="0.3s" begin="1.6s" fill="freeze"/>
+    </circle>
+  </g>
+  <!-- Text with fade-in -->
+  <text x="480" y="192" fill="#ffffff" font-family="'Jura', sans-serif" font-weight="500" font-size="64" letter-spacing="18" opacity="0">
+    PHAZE
+    <animate attributeName="opacity" from="0" to="1" dur="0.8s" begin="1s" fill="freeze"/>
+  </text>
+  <text x="480" y="235" fill="#667c8a" font-family="'Jura', sans-serif" font-weight="300" font-size="22" letter-spacing="5" opacity="0">
+    ALIGN YOUR MUSIC
+    <animate attributeName="opacity" from="0" to="1" dur="0.8s" begin="1.4s" fill="freeze"/>
+  </text>
+</svg>

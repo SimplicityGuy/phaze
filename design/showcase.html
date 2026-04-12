@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phaze Design Showcase</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Jura:wght@300;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0c12;
+      --bg-surface: #10141c;
+      --bg-raised: #181d28;
+      --border: #232832;
+      --border-subtle: #1a1f28;
+      --text-primary: #f0f1f5;
+      --text-secondary: #a0a8b8;
+      --text-muted: #667c8a;
+      --accent: #1abbdb;
+      --accent-dim: #008caf;
+      --accent-bright: #4dcae3;
+      --status-active: #22c55e;
+      --status-warning: #eab308;
+      --status-error: #ef4444;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 48px;
+    }
+
+    h1 { font-family: 'Jura', sans-serif; font-weight: 500; font-size: 32px; letter-spacing: 0.08em; margin-bottom: 8px; }
+    h2 { font-family: 'Jura', sans-serif; font-weight: 300; font-size: 20px; letter-spacing: 0.04em; color: var(--text-secondary); margin: 48px 0 24px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+    h3 { font-size: 14px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; }
+
+    .subtitle { color: var(--text-muted); font-family: 'Jura', sans-serif; font-weight: 300; letter-spacing: 0.04em; margin-bottom: 48px; }
+
+    .grid { display: grid; gap: 24px; margin-bottom: 32px; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+    .grid-auto { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+
+    /* Color swatches */
+    .swatch {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .swatch-color {
+      width: 100%;
+      height: 64px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .swatch-label { font-size: 12px; color: var(--text-secondary); }
+    .swatch-hex { font-size: 12px; font-family: monospace; color: var(--text-muted); }
+
+    /* Typography samples */
+    .type-sample { margin-bottom: 16px; }
+    .type-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+    .type-display { font-family: 'Jura', sans-serif; font-weight: 500; font-size: 38px; letter-spacing: 0.08em; }
+    .type-heading { font-family: 'Jura', sans-serif; font-weight: 300; font-size: 24px; letter-spacing: 0.04em; }
+    .type-body { font-family: 'Inter', sans-serif; font-size: 16px; }
+    .type-small { font-family: 'Inter', sans-serif; font-size: 14px; color: var(--text-secondary); }
+    .type-mono { font-family: ui-monospace, monospace; font-size: 14px; color: var(--accent-bright); }
+
+    /* Spacing */
+    .spacing-row { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+    .spacing-bar { height: 24px; background: var(--accent); opacity: 0.3; border-radius: 4px; }
+    .spacing-label { font-size: 12px; font-family: monospace; color: var(--text-muted); min-width: 60px; }
+
+    /* Component demos */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-active { background: #22c55e14; color: var(--status-active); }
+    .badge-running { background: #1abbdb14; color: var(--accent); }
+    .badge-warning { background: #eab30814; color: var(--status-warning); }
+    .badge-error { background: #ef444414; color: var(--status-error); }
+    .badge-disabled { background: #6b728014; color: #6b7280; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+    }
+    .btn-primary { background: #00b0d8; color: white; }
+    .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+    .btn-danger { background: #ef444420; color: var(--status-error); border: 1px solid #ef444440; }
+
+    .input-demo {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text-primary);
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      width: 100%;
+      outline: none;
+    }
+    .input-demo:focus { border-color: var(--accent); box-shadow: 0 0 0 2px #1abbdb30; }
+
+    .code-inline {
+      background: var(--bg-primary);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: ui-monospace, monospace;
+      font-size: 13px;
+      color: var(--accent-bright);
+    }
+
+    /* Radius demos */
+    .radius-demo {
+      width: 80px;
+      height: 80px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    /* Logo display */
+    .logo-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+    .logo-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo-cell img {
+      width: 128px;
+      height: 128px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .logo-cell span { font-size: 11px; color: var(--text-muted); }
+
+    /* Favicon sizes */
+    .favicon-row { display: flex; align-items: end; gap: 16px; flex-wrap: wrap; }
+    .favicon-cell { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .favicon-cell img { border-radius: 4px; border: 1px solid var(--border); image-rendering: pixelated; }
+    .favicon-cell span { font-size: 10px; color: var(--text-muted); font-family: monospace; }
+  </style>
+</head>
+<body>
+
+<h1>PHAZE</h1>
+<p class="subtitle">DESIGN SYSTEM SHOWCASE</p>
+
+<!-- Colors -->
+<h2>Color — Brand Accent</h2>
+<div class="grid grid-auto">
+  <div class="swatch">
+    <div class="swatch-color" style="background:#e6f7fb"></div>
+    <span class="swatch-label">blue-50</span>
+    <span class="swatch-hex">#e6f7fb</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#b3e8f3"></div>
+    <span class="swatch-label">blue-100</span>
+    <span class="swatch-hex">#b3e8f3</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#80d9eb"></div>
+    <span class="swatch-label">blue-200</span>
+    <span class="swatch-hex">#80d9eb</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#4dcae3"></div>
+    <span class="swatch-label">blue-300</span>
+    <span class="swatch-hex">#4dcae3</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#1abbdb"></div>
+    <span class="swatch-label">blue-400 ★</span>
+    <span class="swatch-hex">#1abbdb</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#00b0d8"></div>
+    <span class="swatch-label">blue-500</span>
+    <span class="swatch-hex">#00b0d8</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#008caf"></div>
+    <span class="swatch-label">blue-700 ★</span>
+    <span class="swatch-hex">#008caf</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#006882"></div>
+    <span class="swatch-label">blue-800</span>
+    <span class="swatch-hex">#006882</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#004455"></div>
+    <span class="swatch-label">blue-900</span>
+    <span class="swatch-hex">#004455</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#002233"></div>
+    <span class="swatch-label">blue-950</span>
+    <span class="swatch-hex">#002233</span>
+  </div>
+</div>
+
+<h2>Color — Surfaces</h2>
+<div class="grid grid-auto">
+  <div class="swatch">
+    <div class="swatch-color" style="background:#0a0c12"></div>
+    <span class="swatch-label">bg-primary</span>
+    <span class="swatch-hex">#0a0c12</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#10141c"></div>
+    <span class="swatch-label">bg-surface</span>
+    <span class="swatch-hex">#10141c</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#181d28"></div>
+    <span class="swatch-label">bg-raised</span>
+    <span class="swatch-hex">#181d28</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#1c2230"></div>
+    <span class="swatch-label">bg-hover</span>
+    <span class="swatch-hex">#1c2230</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#232832"></div>
+    <span class="swatch-label">border</span>
+    <span class="swatch-hex">#232832</span>
+  </div>
+</div>
+
+<h2>Color — Status</h2>
+<div class="grid grid-4">
+  <div class="card" style="border-left: 3px solid #22c55e;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="width:12px;height:12px;border-radius:50%;background:#22c55e"></div>
+      <span style="color:#22c55e;font-weight:600">Active</span>
+    </div>
+    <span class="swatch-hex">#22c55e</span>
+  </div>
+  <div class="card" style="border-left: 3px solid #1abbdb;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="width:12px;height:12px;border-radius:50%;background:#1abbdb"></div>
+      <span style="color:#1abbdb;font-weight:600">Running</span>
+    </div>
+    <span class="swatch-hex">#1abbdb</span>
+  </div>
+  <div class="card" style="border-left: 3px solid #eab308;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="width:12px;height:12px;border-radius:50%;background:#eab308"></div>
+      <span style="color:#eab308;font-weight:600">Warning</span>
+    </div>
+    <span class="swatch-hex">#eab308</span>
+  </div>
+  <div class="card" style="border-left: 3px solid #ef4444;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="width:12px;height:12px;border-radius:50%;background:#ef4444"></div>
+      <span style="color:#ef4444;font-weight:600">Error</span>
+    </div>
+    <span class="swatch-hex">#ef4444</span>
+  </div>
+</div>
+
+<!-- Typography -->
+<h2>Typography</h2>
+<div class="card">
+  <div class="type-sample">
+    <div class="type-label">Display — Jura 500</div>
+    <div class="type-display">PHAZE</div>
+  </div>
+  <div class="type-sample">
+    <div class="type-label">Heading — Jura 300</div>
+    <div class="type-heading">Align Your Music</div>
+  </div>
+  <div class="type-sample">
+    <div class="type-label">Body — Inter 400</div>
+    <div class="type-body">Processing 1,247 audio files across 38 concert recordings with fingerprint analysis.</div>
+  </div>
+  <div class="type-sample">
+    <div class="type-label">Secondary — Inter 400</div>
+    <div class="type-small">Last analyzed 2 hours ago — 99.2% match confidence</div>
+  </div>
+  <div class="type-sample">
+    <div class="type-label">Monospace</div>
+    <div class="type-mono">/music/coachella-2025/main-stage/set-03.mp3</div>
+  </div>
+</div>
+
+<!-- Spacing -->
+<h2>Spacing Scale</h2>
+<div class="card">
+  <div class="spacing-row"><span class="spacing-label">4px</span><div class="spacing-bar" style="width:4px"></div></div>
+  <div class="spacing-row"><span class="spacing-label">8px</span><div class="spacing-bar" style="width:8px"></div></div>
+  <div class="spacing-row"><span class="spacing-label">12px</span><div class="spacing-bar" style="width:12px"></div></div>
+  <div class="spacing-row"><span class="spacing-label">16px</span><div class="spacing-bar" style="width:16px"></div></div>
+  <div class="spacing-row"><span class="spacing-label">24px</span><div class="spacing-bar" style="width:24px"></div></div>
+  <div class="spacing-row"><span class="spacing-label">32px</span><div class="spacing-bar" style="width:32px"></div></div>
+  <div class="spacing-row"><span class="spacing-label">48px</span><div class="spacing-bar" style="width:48px"></div></div>
+  <div class="spacing-row"><span class="spacing-label">64px</span><div class="spacing-bar" style="width:64px"></div></div>
+</div>
+
+<!-- Border Radius -->
+<h2>Border Radius</h2>
+<div style="display:flex;gap:24px;flex-wrap:wrap">
+  <div style="text-align:center">
+    <div class="radius-demo" style="border-radius:4px">4px</div>
+  </div>
+  <div style="text-align:center">
+    <div class="radius-demo" style="border-radius:6px">6px</div>
+  </div>
+  <div style="text-align:center">
+    <div class="radius-demo" style="border-radius:8px">8px</div>
+  </div>
+  <div style="text-align:center">
+    <div class="radius-demo" style="border-radius:12px">12px</div>
+  </div>
+  <div style="text-align:center">
+    <div class="radius-demo" style="border-radius:16px">16px</div>
+  </div>
+  <div style="text-align:center">
+    <div class="radius-demo" style="border-radius:9999px">full</div>
+  </div>
+</div>
+
+<!-- Components -->
+<h2>Components — Badges</h2>
+<div style="display:flex;gap:12px;flex-wrap:wrap">
+  <span class="badge badge-active">Completed</span>
+  <span class="badge badge-running">Processing</span>
+  <span class="badge badge-warning">Needs Review</span>
+  <span class="badge badge-error">Failed</span>
+  <span class="badge badge-disabled">Disabled</span>
+</div>
+
+<h2>Components — Buttons</h2>
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+  <button class="btn btn-primary">Approve</button>
+  <button class="btn btn-ghost">Cancel</button>
+  <button class="btn btn-danger">Reject</button>
+</div>
+
+<h2>Components — Inputs</h2>
+<div class="grid grid-2">
+  <div>
+    <div class="type-label" style="margin-bottom:6px">Text Input</div>
+    <input class="input-demo" type="text" placeholder="Search files..." value="">
+  </div>
+  <div>
+    <div class="type-label" style="margin-bottom:6px">With Value</div>
+    <input class="input-demo" type="text" value="/music/concerts/2025/">
+  </div>
+</div>
+
+<h2>Components — Code</h2>
+<div class="card">
+  <p style="color:var(--text-secondary)">
+    File <span class="code-inline">coachella-set-03.mp3</span> matched with
+    <span class="code-inline">98.7%</span> confidence via AcoustID fingerprint.
+  </p>
+</div>
+
+<!-- Logos -->
+<h2>Logo Variants</h2>
+<div class="logo-grid">
+  <div class="logo-cell">
+    <img src="assets/square_dark.png" alt="Square Dark">
+    <span>square_dark</span>
+  </div>
+  <div class="logo-cell">
+    <img src="assets/square_light.png" alt="Square Light">
+    <span>square_light</span>
+  </div>
+  <div class="logo-cell">
+    <img src="assets/icon_dark.png" alt="Icon Dark">
+    <span>icon_dark</span>
+  </div>
+  <div class="logo-cell">
+    <img src="assets/icon_light.png" alt="Icon Light">
+    <span>icon_light</span>
+  </div>
+</div>
+
+<!-- Favicons -->
+<h2>Favicon Sizes</h2>
+<div class="favicon-row">
+  <div class="favicon-cell">
+    <img src="assets/favicon-512.png" alt="512" width="64" height="64">
+    <span>512</span>
+  </div>
+  <div class="favicon-cell">
+    <img src="assets/favicon-256.png" alt="256" width="48" height="48">
+    <span>256</span>
+  </div>
+  <div class="favicon-cell">
+    <img src="assets/favicon-128.png" alt="128" width="40" height="40">
+    <span>128</span>
+  </div>
+  <div class="favicon-cell">
+    <img src="assets/favicon-64.png" alt="64" width="32" height="32">
+    <span>64</span>
+  </div>
+  <div class="favicon-cell">
+    <img src="assets/favicon-48.png" alt="48" width="28" height="28">
+    <span>48</span>
+  </div>
+  <div class="favicon-cell">
+    <img src="assets/favicon-32.png" alt="32" width="24" height="24">
+    <span>32</span>
+  </div>
+  <div class="favicon-cell">
+    <img src="assets/favicon-16.png" alt="16" width="16" height="16">
+    <span>16</span>
+  </div>
+</div>
+
+<!-- Banners -->
+<h2>Banners</h2>
+<div style="margin-bottom:16px">
+  <div class="type-label" style="margin-bottom:8px">Dark</div>
+  <img src="assets/banner_dark.png" alt="Banner Dark" style="width:100%;border-radius:8px;border:1px solid var(--border)">
+</div>
+<div>
+  <div class="type-label" style="margin-bottom:8px">Light</div>
+  <img src="assets/banner_light.png" alt="Banner Light" style="width:100%;border-radius:8px;border:1px solid var(--border)">
+</div>
+
+<!-- OG Image -->
+<h2>Social / OG Image</h2>
+<img src="assets/og_image.png" alt="OG Image" style="width:100%;max-width:600px;border-radius:8px;border:1px solid var(--border)">
+
+</body>
+</html>
