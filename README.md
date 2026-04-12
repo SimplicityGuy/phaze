@@ -49,8 +49,6 @@ graph TD
 
 ## File Processing Pipeline
 
-Files progress through a state machine as they move through the pipeline:
-
 ```mermaid
 stateDiagram-v2
     [*] --> DISCOVERED
@@ -65,240 +63,38 @@ stateDiagram-v2
     PROPOSAL_GENERATED --> DUPLICATE_RESOLVED
 ```
 
-## Prerequisites
+## Getting Started
+
+### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose v2
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - [just](https://just.systems/) (command runner)
 - Python 3.13
 
-## Getting Started
+### Setup
 
-1. **Clone and install dependencies:**
-   ```bash
-   git clone https://github.com/SimplicityGuy/phaze.git
-   cd phaze
-   uv sync
-   ```
-
-2. **Set up environment:**
-   ```bash
-   cp .env.example .env
-   # Edit .env to configure paths and API keys
-   ```
-
-3. **Download ML models** (required for audio analysis):
-   ```bash
-   just download-models
-   ```
-
-4. **Start all services:**
-   ```bash
-   just up
-   # Or: docker compose up -d
-   ```
-
-5. **Run database migrations:**
-   ```bash
-   just db-upgrade
-   # Or: uv run alembic upgrade head
-   ```
-
-6. **Verify everything is running:**
-   ```bash
-   curl http://localhost:8000/health
-   # {"status": "ok"}
-
-   just docker-ps
-   ```
+```bash
+git clone https://github.com/SimplicityGuy/phaze.git
+cd phaze
+uv sync
+cp .env.example .env          # Edit to configure paths and API keys
+just download-models           # Required for audio analysis
+just up                        # Start all services
+just db-upgrade                # Run database migrations
+curl http://localhost:8000/health   # Verify: {"status": "ok"}
+```
 
 ## Services
 
-| Service      | Port | Image                | Description                        |
-|--------------|------|----------------------|------------------------------------|
-| **api**      | 8000 | Custom (Dockerfile)  | FastAPI application server         |
-| **worker**   | --   | Custom (Dockerfile)  | SAQ async background task processor|
-| **postgres** | 5432 | postgres:18-alpine   | Primary database                   |
-| **redis**    | 6379 | redis:8-alpine       | Task queue broker and cache        |
-| **audfprint**| 8001 | Custom (Dockerfile)  | Landmark-based audio fingerprinting|
-| **panako**   | 8002 | Custom (Dockerfile)  | Tempo-robust audio fingerprinting  |
-
-## Configuration
-
-All configuration is via environment variables (or `.env` file). See [`.env.example`](.env.example) for defaults.
-
-### Core Settings
-
-| Variable              | Default                                          | Description                        |
-|-----------------------|--------------------------------------------------|------------------------------------|
-| `DATABASE_URL`        | `postgresql+asyncpg://phaze:phaze@postgres:5432/phaze` | PostgreSQL connection string |
-| `REDIS_URL`           | `redis://redis:6379/0`                           | Redis connection string            |
-| `SCAN_PATH`           | `/data/music`                                    | Music directory (mounted read-only)|
-| `OUTPUT_PATH`         | `/data/output`                                   | Destination for executed moves     |
-| `MODELS_PATH`         | `./models`                                       | Essentia ML model directory        |
-| `DEBUG`               | `false`                                          | Enable debug mode                  |
-| `API_HOST`            | `0.0.0.0`                                        | API server bind address            |
-| `API_PORT`            | `8000`                                           | API server port                    |
-
-### Worker Settings
-
-| Variable                      | Default | Description                          |
-|-------------------------------|---------|--------------------------------------|
-| `WORKER_MAX_JOBS`             | `8`     | Concurrent SAQ jobs per worker       |
-| `WORKER_JOB_TIMEOUT`          | `600`   | Per-file timeout (seconds)           |
-| `WORKER_MAX_RETRIES`          | `4`     | Max retry attempts (1 initial + 3)   |
-| `WORKER_PROCESS_POOL_SIZE`    | `4`     | CPU-bound worker pool size           |
-| `WORKER_HEALTH_CHECK_INTERVAL`| `60`    | SAQ health check interval (seconds)  |
-
-### LLM Settings
-
-| Variable                  | Default                      | Description                          |
-|---------------------------|------------------------------|--------------------------------------|
-| `LLM_MODEL`              | `claude-sonnet-4-20250514`       | LLM model for proposals             |
-| `ANTHROPIC_API_KEY`      | --                           | Anthropic API key                    |
-| `OPENAI_API_KEY`         | --                           | OpenAI API key (alternative)         |
-| `LLM_MAX_RPM`            | `30`                         | Max LLM requests per minute          |
-| `LLM_BATCH_SIZE`         | `10`                         | Files per LLM call                   |
-| `LLM_MAX_COMPANION_CHARS`| `3000`                       | Max chars per companion file content |
-
-### Fingerprint Settings
-
-| Variable         | Default                   | Description                 |
-|------------------|---------------------------|-----------------------------|
-| `AUDFPRINT_URL`  | `http://audfprint:8001`   | Audfprint service endpoint  |
-| `PANAKO_URL`     | `http://panako:8002`      | Panako service endpoint     |
-
-### Discogs Settings
-
-| Variable                  | Default                          | Description                     |
-|---------------------------|----------------------------------|---------------------------------|
-| `DISCOGSOGRAPHY_URL`      | `http://discogsography:8000`     | Discogsography service endpoint |
-| `DISCOGS_MATCH_CONCURRENCY`| `5`                             | Concurrent Discogs match tasks  |
-
-## API Reference
-
-### Health
-
-| Method | Path      | Description     |
-|--------|-----------|-----------------|
-| GET    | `/health` | Health check (verifies DB connectivity) |
-
-### Scan (`/api/v1`)
-
-| Method | Path                     | Description                          |
-|--------|--------------------------|--------------------------------------|
-| POST   | `/api/v1/scan`           | Start file discovery scan            |
-| GET    | `/api/v1/scan/{batch_id}`| Get scan progress and status         |
-
-### Pipeline (`/api/v1`, `/pipeline`)
-
-| Method | Path                           | Description                              |
-|--------|--------------------------------|------------------------------------------|
-| POST   | `/api/v1/extract-metadata`     | Enqueue metadata extraction jobs         |
-| POST   | `/api/v1/fingerprint`          | Enqueue fingerprint jobs                 |
-| GET    | `/api/v1/fingerprint/progress` | Fingerprint processing progress          |
-| POST   | `/api/v1/analyze`              | Enqueue audio analysis jobs              |
-| POST   | `/api/v1/proposals/generate`   | Enqueue LLM proposal generation          |
-| GET    | `/pipeline/`                   | Pipeline dashboard (HTML)                |
-| GET    | `/pipeline/stats`              | Pipeline stats bar (HTMX partial)        |
-| POST   | `/pipeline/extract-metadata`   | HTMX trigger for metadata extraction     |
-| POST   | `/pipeline/fingerprint`        | HTMX trigger for fingerprinting          |
-| POST   | `/pipeline/analyze`            | HTMX trigger for audio analysis          |
-| POST   | `/pipeline/proposals`          | HTMX trigger for proposal generation     |
-
-### Proposals (`/proposals`)
-
-| Method | Path                          | Description                        |
-|--------|-------------------------------|------------------------------------|
-| GET    | `/proposals/`                 | List proposals (HTML, filterable)  |
-| PATCH  | `/proposals/{id}/approve`     | Approve a proposal                 |
-| PATCH  | `/proposals/{id}/reject`      | Reject a proposal                  |
-| PATCH  | `/proposals/{id}/undo`        | Revert to pending                  |
-| GET    | `/proposals/{id}/detail`      | Expanded detail panel              |
-| PATCH  | `/proposals/bulk`             | Bulk approve/reject                |
-
-### Execution (`/execution`, `/audit`)
-
-| Method | Path                              | Description                          |
-|--------|-----------------------------------|--------------------------------------|
-| POST   | `/execution/start`                | Start batch execution (copy-verify-delete) |
-| GET    | `/execution/progress/{batch_id}`  | SSE stream with real-time progress   |
-| GET    | `/audit/`                         | Audit log (HTML, filterable)         |
-
-### Duplicates (`/duplicates`)
-
-| Method | Path                          | Description                        |
-|--------|-------------------------------|------------------------------------|
-| GET    | `/duplicates/`                | List duplicate groups (HTML)       |
-| GET    | `/duplicates/{hash}/compare`  | Comparison table for a group       |
-| POST   | `/duplicates/{hash}/resolve`  | Mark non-canonical as duplicates   |
-| POST   | `/duplicates/{hash}/undo`     | Undo resolution                    |
-| POST   | `/duplicates/resolve-all`     | Bulk resolve all groups            |
-| POST   | `/duplicates/undo-all`        | Undo bulk resolution               |
-
-### Tracklists (`/tracklists`)
-
-| Method | Path                                    | Description                          |
-|--------|-----------------------------------------|--------------------------------------|
-| GET    | `/tracklists/`                          | List tracklists (HTML, filterable)   |
-| GET    | `/tracklists/scan`                      | Show unscanned files                 |
-| POST   | `/tracklists/scan`                      | Trigger fingerprint scan             |
-| GET    | `/tracklists/scan/status`               | Scan progress                        |
-| GET    | `/tracklists/{id}/tracks`               | View tracks in tracklist             |
-| POST   | `/tracklists/{id}/link`                 | Manually link to file                |
-| POST   | `/tracklists/{id}/unlink`               | Remove link                          |
-| POST   | `/tracklists/{id}/rescrape`             | Re-scrape from 1001Tracklists        |
-| POST   | `/tracklists/{id}/approve`              | Approve tracklist                    |
-| POST   | `/tracklists/{id}/reject`               | Reject tracklist                     |
-| GET    | `/tracklists/{id}/search`               | Search for better match              |
-| POST   | `/tracklists/search`                    | Manual tracklist search              |
-| POST   | `/tracklists/{id}/reject-low`           | Bulk reject low-confidence tracks    |
-| POST   | `/tracklists/{id}/match-discogs`        | Match tracklist to Discogs           |
-| POST   | `/tracklists/{id}/bulk-link`            | Bulk link tracks to Discogs          |
-| POST   | `/tracklists/{id}/undo-link`            | Undo auto-link                       |
-| GET    | `/tracklists/{id}/tracks/{tid}/discogs` | Get Discogs match candidates         |
-| POST   | `/tracklists/discogs-links/{id}/accept` | Accept Discogs link                  |
-| DELETE | `/tracklists/discogs-links/{id}`        | Dismiss Discogs link                 |
-| GET    | `/tracklists/tracks/{id}/edit/{field}`  | Inline edit UI                       |
-| PUT    | `/tracklists/tracks/{id}/edit/{field}`  | Save inline edit                     |
-| DELETE | `/tracklists/tracks/{id}`               | Delete track                         |
-
-### Tags (`/tags`)
-
-| Method | Path                          | Description                        |
-|--------|-------------------------------|------------------------------------|
-| GET    | `/tags/`                      | List files with tag metadata (HTML)|
-| GET    | `/tags/{file_id}/compare`     | Tag comparison panel               |
-| GET    | `/tags/{file_id}/edit/{field}`| Inline edit input                  |
-| PUT    | `/tags/{file_id}/edit/{field}`| Save inline edit                   |
-| POST   | `/tags/{file_id}/write`       | Execute tag write to file          |
-
-### CUE Sheets (`/cue`)
-
-| Method | Path                          | Description                        |
-|--------|-------------------------------|------------------------------------|
-| GET    | `/cue/`                       | CUE sheet management page (HTML)   |
-| POST   | `/cue/{tracklist_id}/generate`| Generate CUE file for a tracklist  |
-| POST   | `/cue/generate-batch`         | Batch generate CUE files           |
-
-### Search (`/search`)
-
-| Method | Path        | Description                              |
-|--------|-------------|------------------------------------------|
-| GET    | `/search/`  | Global search page (HTML)                |
-
-### Companion Files (`/api/v1`)
-
-| Method | Path                    | Description                              |
-|--------|-------------------------|------------------------------------------|
-| POST   | `/api/v1/associate`     | Link companion files to media files      |
-| GET    | `/api/v1/duplicates`    | List duplicate groups by SHA256          |
-
-### Preview (`/preview`)
-
-| Method | Path        | Description                              |
-|--------|-------------|------------------------------------------|
-| GET    | `/preview/` | Directory tree of approved proposals     |
+| Service      | Port | Description                        |
+|--------------|------|------------------------------------|
+| **api**      | 8000 | FastAPI application server         |
+| **worker**   | --   | SAQ async background task processor|
+| **postgres** | 5432 | Primary database                   |
+| **redis**    | 6379 | Task queue broker and cache        |
+| **audfprint**| 8001 | Landmark-based audio fingerprinting|
+| **panako**   | 8002 | Tempo-robust audio fingerprinting  |
 
 ## Supported File Types
 
@@ -308,95 +104,18 @@ All configuration is via environment variables (or `.env` file). See [`.env.exam
 | Video      | mp4, mkv, avi, webm, mov, wmv, flv                              |
 | Companion  | cue, nfo, txt, jpg, jpeg, png, gif, m3u, m3u8, pls, sfv, md5    |
 
-## Database Schema
-
-### Tables
-
-| Table                 | Description                                       |
-|-----------------------|---------------------------------------------------|
-| `files`               | Central file records with state machine           |
-| `scan_batches`        | Scan operation progress tracking                  |
-| `metadata`            | Audio tag metadata (1:1 with files)               |
-| `analysis`            | BPM, key, mood, style results (1:1 with files)    |
-| `proposals`           | AI-generated rename/move proposals                |
-| `execution_log`       | Append-only audit trail for file operations       |
-| `file_companions`     | Many-to-many: companion files to media files      |
-| `fingerprint_results` | Per-engine fingerprint results (audfprint/panako) |
-| `tracklists`          | Tracklist metadata from 1001Tracklists            |
-| `tracklist_versions`  | Versioned tracklist snapshots                     |
-| `tracklist_tracks`    | Individual tracks within a version                |
-
-### Migrations
-
-Managed by Alembic with async template:
-
-```bash
-just db-upgrade              # Apply all pending migrations
-just db-revision "message"   # Create new migration (autogenerate)
-just db-current              # Show current migration
-just db-downgrade            # Roll back one migration
-just db-history              # Show migration history
-```
-
-## File Execution Safety
-
-File moves use a copy-verify-delete protocol with write-ahead audit logging:
-
-1. **Log** -- Create `ExecutionLog` entry with `IN_PROGRESS` status (committed immediately)
-2. **Copy** -- Copy source file to destination (preserving metadata)
-3. **Verify** -- Compute SHA256 of copy, compare to original hash
-4. **Delete** -- Remove original only after hash verification passes
-5. **Update** -- Mark `FileRecord` as `EXECUTED`, update `ExecutionLog` to `COMPLETED`
-
-If hash verification fails, the bad copy is deleted and the original is preserved. The write-ahead audit log persists even if the process crashes mid-operation.
-
 ## Development
 
-### Quick Reference
-
-| Command                  | Description                          |
-|--------------------------|--------------------------------------|
-| `just install`           | Install dependencies                 |
-| `just up` / `just down`  | Start / stop Docker services         |
-| `just rebuild`           | Rebuild and restart services         |
-| `just logs`              | Follow all service logs              |
-| `just test`              | Run tests                            |
-| `just test-cov`          | Run tests with coverage              |
-| `just test-file FILE`    | Run a specific test file             |
-| `just lint`              | Lint with ruff                       |
-| `just lint-fix`          | Lint with auto-fix                   |
-| `just fmt`               | Format with ruff                     |
-| `just typecheck`         | Type check with mypy                 |
-| `just check`             | Run lint + typecheck + test          |
-| `just pre-commit`        | Run all pre-commit hooks             |
-| `just scan`              | Trigger a file scan                  |
-| `just scan-status ID`    | Check scan status                    |
-| `just fingerprint`       | Trigger fingerprint processing       |
-| `just fingerprint-progress` | Check fingerprint progress        |
-| `just worker-logs`       | Follow worker logs                   |
-| `just worker-restart`    | Restart the worker                   |
-| `just worker-health`     | Check SAQ worker health              |
-| `just docker-build`      | Build Docker images                  |
-| `just docker-shell`      | Shell into the API container         |
-| `just docker-ps`         | List running containers              |
-| `just pip-audit`         | Dependency vulnerability scan        |
-| `just security`          | Python SAST with bandit              |
-| `just security-all`      | All security checks                  |
-| `just download-models`   | Download essentia ML models          |
-| `just update-hooks`      | Update pre-commit hook SHAs          |
-| `just lock-upgrade`      | Upgrade all dependency versions      |
-
-### Running Tests
-
-Tests require PostgreSQL:
-
 ```bash
-docker compose up -d postgres     # Start test database
-just test                         # Run tests
-just test-cov                     # With coverage report
+just install          # Install dependencies
+just up / just down   # Start / stop services
+just test             # Run tests
+just test-cov         # Tests with coverage (85% min)
+just check            # Lint + typecheck + test
+just pre-commit       # Run all pre-commit hooks
 ```
 
-Minimum 85% code coverage is enforced.
+See `just --list` for the full command reference.
 
 ### Code Quality
 
@@ -415,99 +134,6 @@ GitHub Actions runs on every push and PR:
 | **Test**     | pytest with PostgreSQL, coverage upload to Codecov       |
 | **Security** | pip-audit, bandit, Semgrep, TruffleHog, Trivy            |
 
-## Project Structure
-
-```
-phaze/
-├── src/phaze/                  # Application package
-│   ├── config.py               # Pydantic settings (env vars)
-│   ├── constants.py            # File categories, extension map, tuning constants
-│   ├── database.py             # Async SQLAlchemy engine + session factory
-│   ├── main.py                 # FastAPI app factory with lifespan
-│   ├── models/                 # SQLAlchemy ORM models
-│   │   ├── base.py             #   DeclarativeBase + TimestampMixin
-│   │   ├── file.py             #   FileRecord + FileState enum
-│   │   ├── scan_batch.py       #   ScanBatch progress tracking
-│   │   ├── metadata.py         #   FileMetadata (audio tags)
-│   │   ├── analysis.py         #   AnalysisResult (BPM, key, mood, style)
-│   │   ├── fingerprint.py      #   FingerprintResult (per-engine)
-│   │   ├── proposal.py         #   RenameProposal + ProposalStatus
-│   │   ├── execution.py        #   ExecutionLog (audit trail)
-│   │   ├── tracklist.py        #   Tracklist + TracklistVersion + TracklistTrack
-│   │   └── file_companion.py   #   FileCompanion (companion-media join)
-│   ├── routers/                # API + UI endpoints
-│   │   ├── health.py           #   GET /health
-│   │   ├── scan.py             #   File discovery scan
-│   │   ├── pipeline.py         #   Pipeline dashboard + processing triggers
-│   │   ├── proposals.py        #   Proposal review + approval UI
-│   │   ├── execution.py        #   Batch execution + SSE progress
-│   │   ├── preview.py          #   Directory tree preview
-│   │   ├── duplicates.py       #   Duplicate resolution UI
-│   │   ├── tracklists.py       #   Tracklist management UI
-│   │   └── companion.py        #   Companion file association
-│   ├── schemas/                # Pydantic request/response models
-│   │   ├── scan.py             #   Scan API schemas
-│   │   └── companion.py        #   Companion/duplicate schemas
-│   ├── services/               # Business logic
-│   │   ├── ingestion.py        #   File discovery, hashing, bulk upsert
-│   │   ├── metadata.py         #   Tag extraction via mutagen
-│   │   ├── analysis.py         #   BPM/key/mood via essentia
-│   │   ├── fingerprint.py      #   Multi-engine fingerprint orchestrator
-│   │   ├── proposal.py         #   LLM calling + context building
-│   │   ├── proposal_queries.py #   Proposal queries + pagination
-│   │   ├── execution.py        #   Copy-verify-delete with audit logging
-│   │   ├── execution_queries.py#   Execution log queries + pagination
-│   │   ├── companion.py        #   Companion file association
-│   │   ├── dedup.py            #   Duplicate detection + resolution
-│   │   ├── collision.py        #   Destination path collision detection
-│   │   ├── pipeline.py         #   Pipeline stats + file state queries
-│   │   ├── tracklist_scraper.py#   1001Tracklists web scraper
-│   │   └── tracklist_matcher.py#   Fuzzy match tracklists to files
-│   ├── tasks/                  # SAQ async background jobs
-│   │   ├── worker.py           #   SAQ settings + startup/shutdown
-│   │   ├── functions.py        #   process_file (full pipeline per file)
-│   │   ├── metadata_extraction.py # extract_file_metadata
-│   │   ├── fingerprint.py      #   fingerprint_file (multi-engine)
-│   │   ├── proposal.py         #   generate_proposals (batch LLM)
-│   │   ├── execution.py        #   execute_approved_batch
-│   │   ├── scan.py             #   scan_live_set (fingerprint matching)
-│   │   ├── tracklist.py        #   scrape/search/refresh tracklists
-│   │   ├── pool.py             #   ProcessPoolExecutor for CPU work
-│   │   └── session.py          #   Session utilities
-│   ├── prompts/                # LLM prompt templates
-│   └── templates/              # Jinja2 HTML templates (HTMX + Tailwind)
-│       ├── pipeline/           #   Pipeline dashboard
-│       ├── proposals/          #   Proposal approval UI
-│       ├── execution/          #   Execution dashboard + audit log
-│       ├── duplicates/         #   Duplicate resolution UI
-│       ├── tracklists/         #   Tracklist management UI
-│       └── preview/            #   Directory tree preview
-├── services/                   # Fingerprint microservices
-│   ├── audfprint/              #   Landmark-based fingerprinting
-│   └── panako/                 #   Tempo-robust fingerprinting
-├── tests/                      # Test suite (85%+ coverage)
-│   ├── conftest.py             #   Fixtures + test DB setup
-│   ├── test_models/            #   ORM model tests
-│   ├── test_routers/           #   Endpoint integration tests
-│   ├── test_services/          #   Business logic unit tests
-│   └── test_tasks/             #   SAQ job tests
-├── alembic/                    # Database migrations (async template)
-│   └── versions/               #   Migration scripts (001-008)
-├── .github/workflows/          # CI/CD pipelines
-│   ├── ci.yml                  #   Main orchestrator
-│   ├── code-quality.yml        #   Pre-commit hooks
-│   ├── tests.yml               #   Pytest + Codecov
-│   └── security.yml            #   pip-audit, bandit, Semgrep, Trivy
-├── scripts/                    # Utility scripts
-│   └── download-models.sh      #   Download essentia ML models
-├── docker-compose.yml          # Service orchestration
-├── docker-compose.override.yml # Local development overrides
-├── Dockerfile                  # Multi-stage build (API + worker)
-├── justfile                    # Developer commands
-├── pyproject.toml              # Project config + tool settings
-└── uv.lock                     # Frozen dependency versions
-```
-
 ## Technology Stack
 
 | Category       | Technology                              | Purpose                              |
@@ -525,6 +151,13 @@ phaze/
 | **Matching**   | rapidfuzz                               | Fuzzy string matching                |
 | **UI**         | Jinja2 + HTMX + Tailwind CSS + Alpine.js| Server-rendered interactive UI       |
 | **Deploy**     | Docker Compose                          | Container orchestration              |
+
+## Documentation
+
+- [API Reference](docs/api.md)
+- [Configuration](docs/configuration.md)
+- [Database Schema & Migrations](docs/database.md)
+- [Project Structure](docs/project-structure.md)
 
 ## License
 
