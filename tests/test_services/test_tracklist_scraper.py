@@ -173,6 +173,16 @@ class TestTracklistScraperScrape:
         assert result.tracks == []
 
     @pytest.mark.asyncio
+    async def test_scrape_http_error_raises(self):
+        """HTTP errors during scrape are logged and re-raised."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+
+        scraper = TracklistScraper(client=client)
+        with pytest.raises(httpx.ConnectError):
+            await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
+
+    @pytest.mark.asyncio
     async def test_scrape_mashup_detection(self):
         client = AsyncMock(spec=httpx.AsyncClient)
         client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
