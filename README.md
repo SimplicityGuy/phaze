@@ -1,5 +1,3 @@
-# Phaze
-
 <div align="center">
 
 <picture>
@@ -26,6 +24,12 @@
 **A music collection organizer that ingests music and concert files, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.**
 
 </div>
+
+<p align="center">
+
+[🚀 Getting Started](#getting-started) | [🏛️ Architecture](#architecture) | [🛠️ Development](#development) | [📖 Documentation](#documentation)
+
+</p>
 
 ## Architecture
 
@@ -162,3 +166,9 @@ GitHub Actions runs on every push and PR:
 ## License
 
 [MIT](LICENSE)
+
+______________________________________________________________________
+
+<div align="center">
+Made with ❤️ in the Pacific Northwest
+</div>
