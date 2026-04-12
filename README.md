@@ -27,7 +27,7 @@
 
 <p align="center">
 
-[🚀 Quick Start](#-quick-start) | [📖 Documentation](#-documentation) | [🌟 Features](#-key-features) | [👨‍💻 Development](#-development)
+[🚀 Quick Start](#-quick-start) | [📖 Documentation](#-documentation) | [🌟 Features](#-key-features) | [💬 Community](#-support--community)
 
 </p>
 
@@ -61,13 +61,24 @@ Perfect for DJs, music collectors, and live recording enthusiasts who want their
 
 ```mermaid
 graph TD
-    UI["Web UI (HTMX + Tailwind)<br/>Proposals · Duplicates · Tracklists · Exec"]
-    API["FastAPI (async, :8000)<br/>/api/v1/* · /proposals · /pipeline<br/>/execution · /duplicates · /tracklists"]
-    PG["PostgreSQL 18-alpine<br/>:5432"]
-    REDIS["Redis 8-alpine<br/>:6379"]
-    WORKER["SAQ Worker<br/>(async)"]
-    AUD["Audfprint :8001<br/>landmark fingerprint"]
-    PAN["Panako :8002<br/>tempo-robust fingerprint"]
+    subgraph Frontend ["🌐 Frontend"]
+        UI["🖥️ Web UI<br/>HTMX + Tailwind<br/>Proposals · Duplicates · Tracklists · Exec"]
+    end
+
+    subgraph Backend ["⚙️ Backend"]
+        API["🚀 FastAPI<br/>async, :8000<br/>/api/v1/* · /proposals · /pipeline"]
+        WORKER["🔧 SAQ Worker<br/>async background jobs"]
+    end
+
+    subgraph Storage ["💾 Storage"]
+        PG[("🐘 PostgreSQL 18<br/>:5432")]
+        REDIS[("🔴 Redis 8<br/>:6379")]
+    end
+
+    subgraph Fingerprint ["🎵 Fingerprinting"]
+        AUD["🎯 Audfprint :8001<br/>landmark"]
+        PAN["🎼 Panako :8002<br/>tempo-robust"]
+    end
 
     UI --> API
     API --> PG
@@ -75,7 +86,18 @@ graph TD
     API --> WORKER
     WORKER --> AUD
     WORKER --> PAN
+    WORKER --> PG
+
+    style UI fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
+    style API fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style WORKER fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style PG fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style REDIS fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+    style AUD fill:#e0f2f1,stroke:#004d40,stroke-width:2px
+    style PAN fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
+
+See [Architecture Overview](docs/architecture.md) for detailed diagrams covering data flow, service communication, and the approval pipeline.
 
 ### 🔄 File Processing Pipeline
 
@@ -127,22 +149,34 @@ just db-upgrade                # Run database migrations
 curl http://localhost:8000/health   # Verify: {"status": "ok"}
 ```
 
-| Service          | URL                          |
-| ---------------- | ---------------------------- |
-| 🌐 **Web UI**    | http://localhost:8000        |
-| 🐘 **PostgreSQL**| `localhost:5432`             |
-| 🔴 **Redis**     | `localhost:6379`             |
-| 🎵 **Audfprint** | http://localhost:8001        |
-| 🎧 **Panako**    | http://localhost:8002        |
+| Service          | URL                     | Default Credentials         |
+| ---------------- | ----------------------- | --------------------------- |
+| 🌐 **Web UI**    | http://localhost:8000   | None                        |
+| 🐘 **PostgreSQL**| `localhost:5432`        | `phaze` / `phaze`           |
+| 🔴 **Redis**     | `localhost:6379`        | None                        |
+| 🎵 **Audfprint** | http://localhost:8001   | None                        |
+| 🎧 **Panako**    | http://localhost:8002   | None                        |
+
+See the [Quick Start Guide](docs/quick-start.md) for prerequisites, local development setup, and environment configuration.
 
 ## 📖 Documentation
 
-| Document                                             | Purpose                                            |
-| ---------------------------------------------------- | -------------------------------------------------- |
-| **[API Reference](docs/api.md)**                     | 🔌 REST API endpoints and usage                   |
-| **[Configuration](docs/configuration.md)**           | ⚙️ Environment variables and settings reference   |
-| **[Database Schema & Migrations](docs/database.md)** | 🗄️ PostgreSQL schema and Alembic migrations       |
-| **[Project Structure](docs/project-structure.md)**   | 📁 Codebase layout and module organization         |
+### 🏁 Getting Started
+
+| Document                                   | Purpose                                           |
+| ------------------------------------------ | ------------------------------------------------- |
+| **[Quick Start Guide](docs/quick-start.md)** | 🚀 Get Phaze running in minutes                  |
+| **[Configuration](docs/configuration.md)** | ⚙️ Environment variables and settings reference   |
+
+### 📐 Reference
+
+| Document                                             | Purpose                                     |
+| ---------------------------------------------------- | ------------------------------------------- |
+| **[API Reference](docs/api.md)**                     | 🔌 REST API endpoints and usage             |
+| **[Database Schema & Migrations](docs/database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
+| **[Project Structure](docs/project-structure.md)**   | 📁 Codebase layout and module organization  |
+
+See [docs/README.md](docs/README.md) for the full documentation index.
 
 ## 👨‍💻 Development
 
@@ -191,6 +225,13 @@ GitHub Actions runs on every push and PR:
 | **Matching**   | rapidfuzz                               | Fuzzy string matching                |
 | **UI**         | Jinja2 + HTMX + Tailwind CSS + Alpine.js| Server-rendered interactive UI       |
 | **Deploy**     | Docker Compose                          | Container orchestration              |
+
+## 💬 Support & Community
+
+- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/SimplicityGuy/phaze/issues)
+- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/SimplicityGuy/phaze/discussions)
+- ❓ **Questions**: [Discussions Q&A](https://github.com/SimplicityGuy/phaze/discussions/categories/q-a)
+- 📖 **Full Documentation**: [docs/README.md](docs/README.md)
 
 ## 📄 License
 
