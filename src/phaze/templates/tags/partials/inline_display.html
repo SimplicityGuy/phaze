@@ -5,10 +5,10 @@
 <span hx-get="/tags/{{ display_file_id }}/edit/{{ display_field }}"
       hx-target="closest td"
       hx-swap="innerHTML"
-      class="cursor-pointer {% if display_changed %}text-blue-600 font-semibold{% endif %}">
+      class="cursor-pointer {% if display_changed %}text-blue-600 dark:text-blue-400 font-semibold{% endif %}">
     {% if display_value is not none and display_value != '' %}
         {{ display_value }}
     {% else %}
-        <span class="text-gray-400">&mdash;</span>
+        <span class="text-gray-400 dark:text-gray-500">&mdash;</span>
     {% endif %}
 </span>

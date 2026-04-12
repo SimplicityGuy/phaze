@@ -1,6 +1,6 @@
-<tr class="border-b border-gray-100 hover:bg-gray-50">
+<tr class="border-b border-gray-100 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">
     <td class="px-4 py-3">
-        <span class="bg-gray-100 text-gray-700 text-xs font-semibold px-2 py-0.5 rounded-full">{{ log.operation|capitalize }}</span>
+        <span class="bg-gray-100 dark:bg-phaze-panel text-gray-700 dark:text-gray-300 text-xs font-semibold px-2 py-0.5 rounded-full">{{ log.operation|capitalize }}</span>
     </td>
     <td class="px-4 py-3 max-w-xs truncate" title="{{ log.source_path }}">
         {{ log.source_path }}
@@ -11,33 +11,33 @@
     <td class="px-4 py-3">
         {% if log.operation == "verify" or log.operation == "copy" %}
             {% if log.sha256_verified %}
-                <span class="text-green-600" aria-label="SHA256 verified">&#10003;</span>
+                <span class="text-green-600 dark:text-green-400" aria-label="SHA256 verified">&#10003;</span>
             {% else %}
-                <span class="text-red-600" aria-label="SHA256 not verified">&#10007;</span>
+                <span class="text-red-600 dark:text-red-400" aria-label="SHA256 not verified">&#10007;</span>
             {% endif %}
         {% else %}
-            <span class="text-gray-400" aria-label="Not applicable">&mdash;</span>
+            <span class="text-gray-400 dark:text-gray-500" aria-label="Not applicable">&mdash;</span>
         {% endif %}
     </td>
     <td class="px-4 py-3">
         {% if log.status == "completed" %}
-            <span class="bg-green-100 text-green-700 text-xs font-semibold px-2 py-0.5 rounded-full">Completed</span>
+            <span class="bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400 text-xs font-semibold px-2 py-0.5 rounded-full">Completed</span>
         {% elif log.status == "failed" %}
-            <span class="bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">Failed</span>
+            <span class="bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400 text-xs font-semibold px-2 py-0.5 rounded-full">Failed</span>
         {% elif log.status == "in_progress" %}
-            <span class="bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-0.5 rounded-full">In Progress</span>
+            <span class="bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400 text-xs font-semibold px-2 py-0.5 rounded-full">In Progress</span>
         {% else %}
-            <span class="bg-yellow-100 text-yellow-700 text-xs font-semibold px-2 py-0.5 rounded-full">Pending</span>
+            <span class="bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-400 text-xs font-semibold px-2 py-0.5 rounded-full">Pending</span>
         {% endif %}
     </td>
-    <td class="px-4 py-3 text-gray-500">
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 dark:text-gray-500">
         {{ log.executed_at.strftime('%Y-%m-%d %H:%M:%S') }}
     </td>
-    <td class="px-4 py-3 text-red-600">
+    <td class="px-4 py-3 text-red-600 dark:text-red-400">
         {% if log.error_message %}
             {{ log.error_message }}
         {% else %}
-            <span class="text-gray-400">&mdash;</span>
+            <span class="text-gray-400 dark:text-gray-500">&mdash;</span>
         {% endif %}
     </td>
 </tr>

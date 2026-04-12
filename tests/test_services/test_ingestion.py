@@ -7,9 +7,10 @@ import uuid
 
 import pytest
 
-from phaze.constants import HASH_CHUNK_SIZE, FileCategory
+from phaze.constants import FileCategory
 from phaze.models.file import FileRecord, FileState
-from phaze.services.ingestion import bulk_upsert_files, classify_file, compute_sha256, discover_and_hash_files, normalize_path
+from phaze.services.hashing import _HASH_CHUNK_SIZE, compute_sha256
+from phaze.services.ingestion import bulk_upsert_files, classify_file, discover_and_hash_files, normalize_path
 
 
 # --- normalize_path tests ---
@@ -39,9 +40,9 @@ def test_compute_sha256_known_content(tmp_path: Path) -> None:
 
 
 def test_compute_sha256_reads_in_chunks(tmp_path: Path) -> None:
-    """File is read in HASH_CHUNK_SIZE chunks, not all at once."""
+    """File is read in _HASH_CHUNK_SIZE chunks, not all at once."""
     f = tmp_path / "data.bin"
-    data_size = HASH_CHUNK_SIZE * 3 + 100
+    data_size = _HASH_CHUNK_SIZE * 3 + 100
     f.write_bytes(b"x" * data_size)
     with patch.object(Path, "open", wraps=f.open) as mock_open:
         compute_sha256(f)

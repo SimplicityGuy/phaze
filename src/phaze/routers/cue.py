@@ -225,7 +225,7 @@ async def list_cue(
         "pagination": pagination,
     }
 
-    if request.headers.get("HX-Request"):
+    if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="cue/partials/cue_list.html", context=context)
 
     return templates.TemplateResponse(request=request, name="cue/list.html", context=context)

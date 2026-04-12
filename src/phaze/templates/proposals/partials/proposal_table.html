@@ -1,15 +1,15 @@
 <table id="proposals-table" class="w-full text-sm">
     <thead>
-        <tr class="border-b border-gray-200">
+        <tr class="border-b border-gray-200 dark:border-phaze-border">
             <th scope="col" class="w-8 px-3 py-3">
                 <input type="checkbox" @change="toggleAll($event.target.checked)" class="rounded" aria-label="Select all proposals">
             </th>
-            <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">
+            <th scope="col" class="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase px-3 py-3">
                 <button
                     hx-get="/proposals/?status={{ current_status }}&q={{ search_query }}&sort=original_filename&order={% if current_sort == 'original_filename' and current_order == 'asc' %}desc{% else %}asc{% endif %}&page_size={{ pagination.page_size }}"
                     hx-target="#proposal-list-container"
                     hx-swap="innerHTML"
-                    class="inline-flex items-center gap-1 hover:text-gray-700"
+                    class="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300"
                 >
                     Original Filename
                     {% if current_sort == "original_filename" %}
@@ -17,12 +17,12 @@
                     {% endif %}
                 </button>
             </th>
-            <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">
+            <th scope="col" class="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase px-3 py-3">
                 <button
                     hx-get="/proposals/?status={{ current_status }}&q={{ search_query }}&sort=proposed_filename&order={% if current_sort == 'proposed_filename' and current_order == 'asc' %}desc{% else %}asc{% endif %}&page_size={{ pagination.page_size }}"
                     hx-target="#proposal-list-container"
                     hx-swap="innerHTML"
-                    class="inline-flex items-center gap-1 hover:text-gray-700"
+                    class="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300"
                 >
                     Proposed Filename
                     {% if current_sort == "proposed_filename" %}
@@ -30,13 +30,13 @@
                     {% endif %}
                 </button>
             </th>
-            <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">Destination</th>
-            <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">
+            <th scope="col" class="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase px-3 py-3">Destination</th>
+            <th scope="col" class="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase px-3 py-3">
                 <button
                     hx-get="/proposals/?status={{ current_status }}&q={{ search_query }}&sort=confidence&order={% if current_sort == 'confidence' and current_order == 'asc' %}desc{% else %}asc{% endif %}&page_size={{ pagination.page_size }}"
                     hx-target="#proposal-list-container"
                     hx-swap="innerHTML"
-                    class="inline-flex items-center gap-1 hover:text-gray-700"
+                    class="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300"
                 >
                     Confidence
                     {% if current_sort == "confidence" %}
@@ -44,8 +44,8 @@
                     {% endif %}
                 </button>
             </th>
-            <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">Status</th>
-            <th scope="col" class="text-left text-xs font-semibold text-gray-500 uppercase px-3 py-3">Actions</th>
+            <th scope="col" class="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase px-3 py-3">Status</th>
+            <th scope="col" class="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase px-3 py-3">Actions</th>
         </tr>
     </thead>
     <tbody>

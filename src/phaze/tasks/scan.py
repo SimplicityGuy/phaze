@@ -80,6 +80,7 @@ async def scan_live_set(ctx: dict[str, Any], *, file_id: str) -> dict[str, Any]:
                 status="proposed",
             )
             session.add(tracklist)
+            await session.flush()
             version_number = 1
 
         # 5. Create version
@@ -88,6 +89,7 @@ async def scan_live_set(ctx: dict[str, Any], *, file_id: str) -> dict[str, Any]:
             version_number=version_number,
         )
         session.add(version)
+        await session.flush()
 
         # 6. Create tracks
         for position, match in enumerate(matches, start=1):

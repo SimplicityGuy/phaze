@@ -1,5 +1,5 @@
 <div hx-swap-oob="beforeend:#toast-container">
-    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow-lg" role="status"
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status"
          x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
          x-transition>
         {{ message }}

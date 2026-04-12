@@ -1,24 +1,24 @@
-<div id="stats-bar" class="bg-gray-50 rounded-lg p-6 mb-6">
+<div id="stats-bar" class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-6 mb-6">
     <div class="grid grid-cols-2 lg:grid-cols-6 gap-4 items-end">
         <div>
-            <span class="text-xs font-semibold text-gray-500 uppercase">Total</span>
-            <p class="text-xl font-semibold text-gray-900">{{ stats.total }}</p>
+            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Total</span>
+            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
         </div>
         <div>
-            <span class="text-xs font-semibold text-yellow-600 uppercase">Pending</span>
-            <p class="text-xl font-semibold text-yellow-600">{{ stats.pending }}</p>
+            <span class="text-xs font-semibold text-yellow-600 dark:text-yellow-400 uppercase">Pending</span>
+            <p class="text-xl font-semibold text-yellow-600 dark:text-yellow-400">{{ stats.pending }}</p>
         </div>
         <div>
-            <span class="text-xs font-semibold text-green-600 uppercase">Approved</span>
-            <p class="text-xl font-semibold text-green-600">{{ stats.approved }}</p>
+            <span class="text-xs font-semibold text-green-600 dark:text-green-400 uppercase">Approved</span>
+            <p class="text-xl font-semibold text-green-600 dark:text-green-400">{{ stats.approved }}</p>
         </div>
         <div>
-            <span class="text-xs font-semibold text-red-600 uppercase">Rejected</span>
-            <p class="text-xl font-semibold text-red-600">{{ stats.rejected }}</p>
+            <span class="text-xs font-semibold text-red-600 dark:text-red-400 uppercase">Rejected</span>
+            <p class="text-xl font-semibold text-red-600 dark:text-red-400">{{ stats.rejected }}</p>
         </div>
         <div>
-            <span class="text-xs font-semibold text-gray-500 uppercase">Avg Confidence</span>
-            <p class="text-xl font-semibold text-gray-900">{{ "%.0f"|format((stats.avg_confidence or 0) * 100) }}%</p>
+            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Avg Confidence</span>
+            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ "%.0f"|format((stats.avg_confidence or 0) * 100) }}%</p>
         </div>
         <div class="flex justify-end">
             {% include "proposals/partials/execute_button.html" %}

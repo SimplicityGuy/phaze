@@ -1,6 +1,6 @@
 <div class="flex items-center justify-between mt-4 text-sm">
     <!-- Left: showing range -->
-    <div class="text-gray-500">
+    <div class="text-gray-500 dark:text-gray-400 dark:text-gray-500">
         Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} files
     </div>
 
@@ -12,7 +12,7 @@
                 hx-target="#tag-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1"
+                class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1"
             >&laquo; Prev</button>
         {% endif %}
 
@@ -26,7 +26,7 @@
                     hx-target="#tag-list-container"
                     hx-swap="innerHTML"
                     hx-push-url="true"
-                    class="{% if p == cp %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                    class="{% if p == cp %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
                 >{{ p }}</button>
             {% endfor %}
         {% else %}
@@ -35,11 +35,11 @@
                 hx-target="#tag-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="{% if cp == 1 %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                class="{% if cp == 1 %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
             >1</button>
 
             {% if cp > 3 %}
-                <span class="px-2 text-gray-400">...</span>
+                <span class="px-2 text-gray-400 dark:text-gray-500">...</span>
             {% endif %}
 
             {% for p in range([cp - 1, 2]|max, [cp + 2, total_pages]|min + 1) %}
@@ -48,12 +48,12 @@
                     hx-target="#tag-list-container"
                     hx-swap="innerHTML"
                     hx-push-url="true"
-                    class="{% if p == cp %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                    class="{% if p == cp %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
                 >{{ p }}</button>
             {% endfor %}
 
             {% if cp < total_pages - 2 %}
-                <span class="px-2 text-gray-400">...</span>
+                <span class="px-2 text-gray-400 dark:text-gray-500">...</span>
             {% endif %}
 
             <button
@@ -61,7 +61,7 @@
                 hx-target="#tag-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="{% if cp == total_pages %}bg-blue-600 text-white{% else %}text-gray-600 hover:bg-gray-100{% endif %} rounded px-3 py-1"
+                class="{% if cp == total_pages %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel{% endif %} rounded px-3 py-1"
             >{{ total_pages }}</button>
         {% endif %}
 
@@ -71,21 +71,21 @@
                 hx-target="#tag-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1"
+                class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1"
             >Next &raquo;</button>
         {% endif %}
     </div>
 
     <!-- Right: page size selector -->
     <div class="flex items-center gap-2">
-        <span class="text-gray-500">Per page:</span>
+        <span class="text-gray-500 dark:text-gray-400 dark:text-gray-500">Per page:</span>
         {% for size in [20, 50, 100] %}
             <button
                 hx-get="/tags/?page=1&page_size={{ size }}"
                 hx-target="#tag-list-container"
                 hx-swap="innerHTML"
                 hx-push-url="true"
-                class="{% if pagination.page_size == size %}font-semibold text-blue-600{% else %}text-gray-500 hover:text-gray-700{% endif %} px-1"
+                class="{% if pagination.page_size == size %}font-semibold text-blue-600 dark:text-blue-400{% else %}text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300{% endif %} px-1"
             >{{ size }}</button>
         {% endfor %}
     </div>

@@ -3,12 +3,12 @@
 {% block title %}Duplicate Resolution - Phaze{% endblock %}
 
 {% block skip_link %}
-<a href="#duplicates-list" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to duplicates list</a>
+<a href="#duplicates-list" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 dark:bg-blue-700 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to duplicates list</a>
 {% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-    <h1 class="text-2xl font-semibold text-gray-900 leading-tight">Duplicate Resolution</h1>
+    <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100 leading-tight">Duplicate Resolution</h1>
 
     {% include "duplicates/partials/stats_header.html" %}
 
@@ -16,6 +16,6 @@
         {% include "duplicates/partials/group_list.html" %}
     </div>
 
-    <p class="text-xs text-gray-400 mt-4">Keyboard: arrows to navigate, Enter to expand, R to resolve</p>
+    <p class="text-xs text-gray-400 dark:text-gray-500 mt-4">Keyboard: arrows to navigate, Enter to expand, R to resolve</p>
 </div>
 {% endblock %}

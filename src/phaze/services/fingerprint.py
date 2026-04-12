@@ -227,14 +227,11 @@ class FingerprintOrchestrator:
                 matches_by_track[match.track_id][engine.name] = match.confidence
 
         # Calculate combined scores
-        total_weight = sum(e.weight for e in self.engines)
         combined: list[CombinedMatch] = []
 
         for track_id, engine_scores in matches_by_track.items():
             if len(engine_scores) == len(self.engines):
-                # Both engines matched: weighted average
-                confidence = sum(self.engines_by_name[name].weight * score for name, score in engine_scores.items()) / total_weight * total_weight
-                # Simplified: just sum weighted scores since weights sum to 1.0
+                # Both engines matched: weighted average (weights sum to 1.0)
                 confidence = sum(self.engines_by_name[name].weight * score for name, score in engine_scores.items())
             else:
                 # Single-engine match: cap at 70.0 (D-12)

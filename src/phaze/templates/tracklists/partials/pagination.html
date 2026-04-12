@@ -1,7 +1,7 @@
 {% if pagination.total > pagination.page_size %}
 {% set total_pages = (pagination.total + pagination.page_size - 1) // pagination.page_size %}
 <nav aria-label="Tracklist pagination" class="flex items-center justify-between mt-6">
-    <p class="text-sm text-gray-500">
+    <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">
         Showing {{ (pagination.page - 1) * pagination.page_size + 1 }}-{{ [pagination.page * pagination.page_size, pagination.total] | min }}
         of {{ pagination.total }}
     </p>
@@ -10,11 +10,11 @@
         <button hx-get="/tracklists/?filter={{ active_filter }}&page={{ pagination.page - 1 }}"
                 hx-target="#tracklists-list"
                 hx-swap="innerHTML"
-                class="text-sm px-3 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50">
+                class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">
             Previous
         </button>
         {% else %}
-        <span class="text-sm px-3 py-1 rounded border border-gray-200 text-gray-400 cursor-not-allowed">
+        <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">
             Previous
         </span>
         {% endif %}
@@ -23,11 +23,11 @@
         <button hx-get="/tracklists/?filter={{ active_filter }}&page={{ pagination.page + 1 }}"
                 hx-target="#tracklists-list"
                 hx-swap="innerHTML"
-                class="text-sm px-3 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50">
+                class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">
             Next
         </button>
         {% else %}
-        <span class="text-sm px-3 py-1 rounded border border-gray-200 text-gray-400 cursor-not-allowed">
+        <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">
             Next
         </span>
         {% endif %}

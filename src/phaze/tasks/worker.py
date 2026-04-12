@@ -104,6 +104,9 @@ settings = {
         match_tracklist_to_discogs,
     ],
     "concurrency": app_settings.worker_max_jobs,
+    "timeout": app_settings.worker_job_timeout,
+    "retries": app_settings.worker_max_retries,
+    "keep_result": app_settings.worker_keep_result,
     "cron_jobs": [
         CronJob(refresh_tracklists, cron="0 3 1 * *"),  # type: ignore[type-var]  # 1st of each month at 03:00
     ],

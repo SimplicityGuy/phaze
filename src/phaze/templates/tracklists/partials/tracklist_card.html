@@ -1,4 +1,4 @@
-<div id="tracklist-{{ tracklist.id }}" class="bg-white border border-gray-200 rounded-lg" x-data="{ expanded: false }">
+<div id="tracklist-{{ tracklist.id }}" class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg" x-data="{ expanded: false }">
     <!-- Badge row -->
     <div class="px-4 pt-3">
         <div class="flex items-center gap-2 mb-1">
@@ -8,25 +8,25 @@
     </div>
 
     <!-- Card header -->
-    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50"
+    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel"
          @click="expanded = !expanded; if(expanded && !$refs.tracks{{ tracklist.id|replace('-', '') }}.innerHTML.trim()) $refs.tracks{{ tracklist.id|replace('-', '') }}.dispatchEvent(new Event('loadtracks'))"
          :aria-expanded="expanded.toString()">
         <div class="flex items-center gap-3 min-w-0">
-            <span class="text-sm font-semibold text-gray-900 truncate">{{ tracklist.artist or 'Unknown Artist' }}</span>
+            <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{{ tracklist.artist or 'Unknown Artist' }}</span>
             {% if tracklist.event %}
-            <span class="text-sm text-gray-500">@ {{ tracklist.event }}</span>
+            <span class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">@ {{ tracklist.event }}</span>
             {% endif %}
             {% if tracklist.date %}
-            <span class="text-sm text-gray-400">{{ tracklist.date }}</span>
+            <span class="text-sm text-gray-400 dark:text-gray-500">{{ tracklist.date }}</span>
             {% endif %}
         </div>
         <div class="flex items-center gap-3 shrink-0">
             {% if tracklist.match_confidence is not none %}
-            <span class="text-sm {% if tracklist.match_confidence >= 90 %}text-green-600{% elif tracklist.match_confidence >= 70 %}text-yellow-600{% else %}text-red-600{% endif %}">
+            <span class="text-sm {% if tracklist.match_confidence >= 90 %}text-green-600 dark:text-green-400{% elif tracklist.match_confidence >= 70 %}text-yellow-600 dark:text-yellow-400{% else %}text-red-600 dark:text-red-400{% endif %}">
                 {{ tracklist.match_confidence }}%
             </span>
             {% endif %}
-            <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+            <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 dark:bg-phaze-panel text-gray-600 dark:text-gray-400 dark:text-gray-500">
                 {{ tracklist._track_count if tracklist._track_count is defined else 0 }} tracks
             </span>
         </div>
@@ -43,14 +43,14 @@
     </div>
 
     <!-- Action buttons -->
-    <div class="px-4 py-3 border-t border-gray-100 flex gap-2 text-sm">
+    <div class="px-4 py-3 border-t border-gray-100 dark:border-phaze-border flex gap-2 text-sm">
         {% if tracklist.source == 'fingerprint' %}
         {% if tracklist.status != 'rejected' %}
         {% if tracklist.status != 'approved' %}
         <button hx-post="/tracklists/{{ tracklist.id }}/approve"
                 hx-target="#tracklist-{{ tracklist.id }}"
                 hx-swap="outerHTML"
-                class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1.5 rounded-md">
+                class="text-xs bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600 text-white font-semibold px-3 py-1.5 rounded-md">
             Approve Tracklist
         </button>
         {% endif %}
@@ -58,7 +58,7 @@
                 hx-target="#tracklist-{{ tracklist.id }}"
                 hx-swap="outerHTML"
                 hx-confirm="Reject this tracklist? All track identifications will be discarded."
-                class="text-xs text-red-600 hover:text-red-700 font-semibold px-2 py-1">
+                class="text-xs text-red-600 dark:text-red-400 hover:text-red-700 dark:text-red-400 font-semibold px-2 py-1">
             Reject Tracklist
         </button>
         {% endif %}
@@ -68,25 +68,25 @@
                 hx-target="#tracklists-list"
                 hx-swap="innerHTML"
                 hx-confirm="Unlink: Are you sure? This tracklist will no longer be associated with this file."
-                class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+                class="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300 px-2 py-1">
             Unlink
         </button>
         <button hx-post="/tracklists/{{ tracklist.id }}/rescrape"
                 hx-target="#tracklist-{{ tracklist.id }}"
                 hx-swap="outerHTML"
-                class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+                class="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300 px-2 py-1">
             Re-scrape
         </button>
         <a href="{{ tracklist.source_url }}"
            target="_blank"
            rel="noopener noreferrer"
-           class="text-xs text-blue-600 hover:underline px-2 py-1">
+           class="text-xs text-blue-600 dark:text-blue-400 hover:underline px-2 py-1">
             View on 1001tracklists
         </a>
         <button hx-get="/tracklists/{{ tracklist.id }}/search"
                 hx-target="#search-panel-{{ tracklist.id }}"
                 hx-swap="innerHTML"
-                class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+                class="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300 px-2 py-1">
             Find Better Match
         </button>
         {% endif %}
@@ -99,7 +99,7 @@
         <button hx-post="/cue/{{ tracklist.id }}/generate"
                 hx-target="#tracklist-{{ tracklist.id }}"
                 hx-swap="outerHTML"
-                class="text-xs text-green-600 hover:text-green-700 font-semibold px-2 py-1">
+                class="text-xs text-green-600 dark:text-green-400 hover:text-green-700 dark:text-green-400 font-semibold px-2 py-1">
             Regenerate CUE
         </button>
         {% else %}
@@ -114,7 +114,7 @@
     </div>
 
     {% if rescrape_queued is defined and rescrape_queued %}
-    <div class="px-4 py-2 bg-blue-50 text-blue-700 text-xs rounded-b-lg">Re-scrape queued</div>
+    <div class="px-4 py-2 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-400 text-xs rounded-b-lg">Re-scrape queued</div>
     {% endif %}
 
     <!-- Search results panel -->
@@ -123,7 +123,7 @@
 
 {% if toast_message is defined and toast_message %}
 <div hx-swap-oob="beforeend:#toast-container">
-    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow-lg" role="status"
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status"
          x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
          x-transition>
         {{ toast_message }}

@@ -1,11 +1,11 @@
-<div id="group-{{ group.sha256_hash }}" class="bg-white border border-gray-200 rounded-lg"
+<div id="group-{{ group.sha256_hash }}" class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg"
      x-data="{ expanded: false }">
-    <div class="px-4 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
+    <div class="px-4 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel"
          @click="expanded = !expanded; if (expanded && !$refs.compare{{ group.sha256_hash[:12] }}.innerHTML.trim()) { htmx.trigger($refs.compareBtn{{ group.sha256_hash[:12] }}, 'click') }">
         <div class="flex items-center gap-4">
-            <span class="text-sm font-mono text-gray-500">{{ group.sha256_hash[:12] }}...</span>
-            <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-600">{{ group.count }} files</span>
-            <span class="text-sm text-gray-700">Best: {{ group.rationale }}</span>
+            <span class="text-sm font-mono text-gray-500 dark:text-gray-400 dark:text-gray-500">{{ group.sha256_hash[:12] }}...</span>
+            <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 dark:bg-phaze-panel text-gray-600 dark:text-gray-400 dark:text-gray-500">{{ group.count }} files</span>
+            <span class="text-sm text-gray-700 dark:text-gray-300">Best: {{ group.rationale }}</span>
         </div>
         <div class="flex items-center gap-2">
             <button type="button"
@@ -17,7 +17,7 @@
                     @click.stop="expanded = true"
                     :aria-expanded="expanded.toString()"
                     aria-controls="compare-{{ group.sha256_hash }}"
-                    class="text-gray-500 hover:text-gray-700 text-xs px-2 py-1">
+                    class="text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300 text-xs px-2 py-1">
                 <span x-text="expanded ? 'Collapse' : 'Compare'">Compare</span>
             </button>
         </div>

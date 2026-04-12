@@ -1,6 +1,14 @@
-# 🎵 Phaze
+# Phaze
 
 <div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="design/assets/banner_dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="design/assets/banner_light.png">
+  <img alt="Phaze — Align Your Music" src="design/assets/banner_dark.png" width="600">
+</picture>
+
+<br><br>
 
 [![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze)
@@ -128,7 +136,8 @@ All configuration is via environment variables (or `.env` file). See [`.env.exam
 | `SCAN_PATH`           | `/data/music`                                    | Music directory (mounted read-only)|
 | `OUTPUT_PATH`         | `/data/output`                                   | Destination for executed moves     |
 | `MODELS_PATH`         | `./models`                                       | Essentia ML model directory        |
-| `PHAZE_DEBUG`         | `false`                                          | Enable debug mode                  |
+| `DEBUG`               | `false`                                          | Enable debug mode                  |
+| `API_HOST`            | `0.0.0.0`                                        | API server bind address            |
 | `API_PORT`            | `8000`                                           | API server port                    |
 
 ### Worker Settings
@@ -159,6 +168,13 @@ All configuration is via environment variables (or `.env` file). See [`.env.exam
 | `AUDFPRINT_URL`  | `http://audfprint:8001`   | Audfprint service endpoint  |
 | `PANAKO_URL`     | `http://panako:8002`      | Panako service endpoint     |
 
+### Discogs Settings
+
+| Variable                  | Default                          | Description                     |
+|---------------------------|----------------------------------|---------------------------------|
+| `DISCOGSOGRAPHY_URL`      | `http://discogsography:8000`     | Discogsography service endpoint |
+| `DISCOGS_MATCH_CONCURRENCY`| `5`                             | Concurrent Discogs match tasks  |
+
 ## API Reference
 
 ### Health
@@ -185,6 +201,10 @@ All configuration is via environment variables (or `.env` file). See [`.env.exam
 | POST   | `/api/v1/proposals/generate`   | Enqueue LLM proposal generation          |
 | GET    | `/pipeline/`                   | Pipeline dashboard (HTML)                |
 | GET    | `/pipeline/stats`              | Pipeline stats bar (HTMX partial)        |
+| POST   | `/pipeline/extract-metadata`   | HTMX trigger for metadata extraction     |
+| POST   | `/pipeline/fingerprint`        | HTMX trigger for fingerprinting          |
+| POST   | `/pipeline/analyze`            | HTMX trigger for audio analysis          |
+| POST   | `/pipeline/proposals`          | HTMX trigger for proposal generation     |
 
 ### Proposals (`/proposals`)
 
@@ -230,9 +250,42 @@ All configuration is via environment variables (or `.env` file). See [`.env.exam
 | POST   | `/tracklists/{id}/rescrape`             | Re-scrape from 1001Tracklists        |
 | POST   | `/tracklists/{id}/approve`              | Approve tracklist                    |
 | POST   | `/tracklists/{id}/reject`               | Reject tracklist                     |
+| GET    | `/tracklists/{id}/search`               | Search for better match              |
+| POST   | `/tracklists/search`                    | Manual tracklist search              |
+| POST   | `/tracklists/{id}/reject-low`           | Bulk reject low-confidence tracks    |
+| POST   | `/tracklists/{id}/match-discogs`        | Match tracklist to Discogs           |
+| POST   | `/tracklists/{id}/bulk-link`            | Bulk link tracks to Discogs          |
+| POST   | `/tracklists/{id}/undo-link`            | Undo auto-link                       |
+| GET    | `/tracklists/{id}/tracks/{tid}/discogs` | Get Discogs match candidates         |
+| POST   | `/tracklists/discogs-links/{id}/accept` | Accept Discogs link                  |
+| DELETE | `/tracklists/discogs-links/{id}`        | Dismiss Discogs link                 |
 | GET    | `/tracklists/tracks/{id}/edit/{field}`  | Inline edit UI                       |
 | PUT    | `/tracklists/tracks/{id}/edit/{field}`  | Save inline edit                     |
 | DELETE | `/tracklists/tracks/{id}`               | Delete track                         |
+
+### Tags (`/tags`)
+
+| Method | Path                          | Description                        |
+|--------|-------------------------------|------------------------------------|
+| GET    | `/tags/`                      | List files with tag metadata (HTML)|
+| GET    | `/tags/{file_id}/compare`     | Tag comparison panel               |
+| GET    | `/tags/{file_id}/edit/{field}`| Inline edit input                  |
+| PUT    | `/tags/{file_id}/edit/{field}`| Save inline edit                   |
+| POST   | `/tags/{file_id}/write`       | Execute tag write to file          |
+
+### CUE Sheets (`/cue`)
+
+| Method | Path                          | Description                        |
+|--------|-------------------------------|------------------------------------|
+| GET    | `/cue/`                       | CUE sheet management page (HTML)   |
+| POST   | `/cue/{tracklist_id}/generate`| Generate CUE file for a tracklist  |
+| POST   | `/cue/generate-batch`         | Batch generate CUE files           |
+
+### Search (`/search`)
+
+| Method | Path        | Description                              |
+|--------|-------------|------------------------------------------|
+| GET    | `/search/`  | Global search page (HTML)                |
 
 ### Companion Files (`/api/v1`)
 

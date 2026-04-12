@@ -4,7 +4,7 @@
      x-transition:leave="transition ease-in duration-200"
      x-transition:leave-start="opacity-100"
      x-transition:leave-end="opacity-0"
-     class="bg-slate-800 text-white rounded-lg shadow-lg px-4 py-3 flex items-center gap-3 text-sm">
+     class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg px-4 py-3 flex items-center gap-3 text-sm">
     <span>{{ toast_message }}</span>
     {% if not is_bulk %}
     <button hx-patch="/proposals/{{ proposal.id }}/undo"

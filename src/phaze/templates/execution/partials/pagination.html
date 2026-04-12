@@ -1,6 +1,6 @@
 {% if pagination.total > 0 %}
 <div class="flex items-center justify-between mt-4 px-4 py-3">
-    <span class="text-sm text-gray-500">
+    <span class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">
         Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} operations
     </span>
     <div class="flex gap-1">
@@ -8,7 +8,7 @@
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page - 1 }}&page_size={{ pagination.page_size }}"
             hx-target="#audit-content"
-            class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1 text-sm">
+            class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
             Previous
         </button>
         {% endif %}
@@ -19,9 +19,9 @@
             hx-target="#audit-content"
             class="rounded px-3 py-1 text-sm
                 {% if p == pagination.page %}
-                    bg-blue-600 text-white
+                    bg-blue-600 dark:bg-blue-700 text-white
                 {% else %}
-                    text-gray-600 hover:bg-gray-100
+                    text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel
                 {% endif %}
             ">
             {{ p }}
@@ -32,7 +32,7 @@
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page + 1 }}&page_size={{ pagination.page_size }}"
             hx-target="#audit-content"
-            class="text-gray-600 hover:bg-gray-100 rounded px-3 py-1 text-sm">
+            class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
             Next
         </button>
         {% endif %}

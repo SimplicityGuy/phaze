@@ -5,8 +5,8 @@
     <div class="border rounded-lg p-4 flex items-center justify-between" x-data="{ loading: false }">
         <div>
             <h3 class="font-medium">Analyze Discovered Files</h3>
-            <p class="text-sm text-gray-500">Enqueue BPM detection and mood/style classification for all discovered files.</p>
-            <p class="text-sm text-gray-400 mt-1">{{ stats.discovered }} files ready</p>
+            <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueue BPM detection and mood/style classification for all discovered files.</p>
+            <p class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
         </div>
         <div id="analyze-response">
             <button
@@ -16,10 +16,10 @@
                 hx-indicator="#analyze-spinner"
                 @click="loading = true"
                 :disabled="loading || {{ stats.discovered }} === 0"
-                class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
+                class="px-4 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
                 Run Analysis
             </button>
-            <span id="analyze-spinner" class="htmx-indicator ml-2 text-sm text-gray-500">Enqueuing...</span>
+            <span id="analyze-spinner" class="htmx-indicator ml-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueuing...</span>
         </div>
     </div>
 
@@ -27,8 +27,8 @@
     <div class="border rounded-lg p-4 flex items-center justify-between" x-data="{ loading: false }">
         <div>
             <h3 class="font-medium">Generate Proposals</h3>
-            <p class="text-sm text-gray-500">Send analyzed files to LLM for filename proposals (batches of {{ settings_batch_size|default(10) }}).</p>
-            <p class="text-sm text-gray-400 mt-1">{{ stats.analyzed }} files ready</p>
+            <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Send analyzed files to LLM for filename proposals (batches of {{ settings_batch_size|default(10) }}).</p>
+            <p class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
         </div>
         <div id="proposals-response">
             <button
@@ -41,7 +41,7 @@
                 class="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
                 Generate Proposals
             </button>
-            <span id="proposals-spinner" class="htmx-indicator ml-2 text-sm text-gray-500">Enqueuing...</span>
+            <span id="proposals-spinner" class="htmx-indicator ml-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueuing...</span>
         </div>
     </div>
 </div>

@@ -43,8 +43,8 @@ async def execute_approved_batch(ctx: dict[str, Any], *, batch_id: str | None = 
             f"exec:{batch_id}",
             mapping={
                 "total": total,
-                "completed": "0",
-                "failed": "0",
+                "completed": 0,
+                "failed": 0,
                 "status": "running",
             },
         )
@@ -62,8 +62,8 @@ async def execute_approved_batch(ctx: dict[str, Any], *, batch_id: str | None = 
                 f"exec:{batch_id}",
                 mapping={
                     "total": total,
-                    "completed": str(completed),
-                    "failed": str(failed),
+                    "completed": completed,
+                    "failed": failed,
                     "status": "running",
                 },
             )
@@ -73,8 +73,8 @@ async def execute_approved_batch(ctx: dict[str, Any], *, batch_id: str | None = 
             f"exec:{batch_id}",
             mapping={
                 "total": total,
-                "completed": str(completed),
-                "failed": str(failed),
+                "completed": completed,
+                "failed": failed,
                 "status": "complete",
             },
         )
