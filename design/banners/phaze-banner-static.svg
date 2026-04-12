@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Jura:wght@300;500&amp;display=swap');
+    </style>
+  </defs>
+  <rect width="1200" height="400" fill="#0a0c12"/>
+  <!-- Mark positioned left -->
+  <g transform="translate(165, 200)">
+    <circle cx="0" cy="0" r="130" fill="none" stroke="#1abbdb" stroke-width="3"/>
+    <path d="M 6 -175 C 4 -90, -80 -55, 0 0 C 80 55, -2 95, -4 175" fill="none" stroke="#1abbdb" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="14" cy="2" r="4.5" fill="#1abbdb"/>
+  </g>
+  <!-- Text right of mark -->
+  <text x="480" y="192" fill="#ffffff" font-family="'Jura', sans-serif" font-weight="500" font-size="64" letter-spacing="18">PHAZE</text>
+  <text x="480" y="235" fill="#667c8a" font-family="'Jura', sans-serif" font-weight="300" font-size="22" letter-spacing="5">ALIGN YOUR MUSIC</text>
+</svg>
