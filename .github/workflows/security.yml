@@ -91,7 +91,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🔑 Run TruffleHog
-        uses: trufflesecurity/trufflehog@v3.94.2
+        uses: trufflesecurity/trufflehog@v3.94.3
         with:
           path: ./
           extra_args: --only-verified
