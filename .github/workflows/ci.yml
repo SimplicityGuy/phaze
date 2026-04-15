@@ -154,6 +154,7 @@ jobs:
     needs: [detect-changes, aggregate-results]
     if: needs.detect-changes.outputs.code-changed == 'true'
     uses: ./.github/workflows/docker-publish.yml
+    secrets: inherit
     permissions:
       contents: read
       packages: write
