@@ -162,3 +162,13 @@ jobs:
           if [[ -n "${CACHE_HIT}" ]]; then
             echo "::notice title=Cache Performance::Docker cache hit for ${SERVICE_NAME}"
           fi
+
+      - name: "\U0001F4E2 Send notification to Discord"
+        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708  # v1.16.0
+        if: always()
+        with:
+          title: phaze/${{ matrix.name }}
+          description: |
+            Build duration: ${{ steps.timer.outputs.duration || 'N/A' }}s
+            Cache used: ${{ matrix.use_cache }}
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
