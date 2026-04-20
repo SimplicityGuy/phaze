@@ -33,5 +33,8 @@
   },
   "agent_skills": {},
   "mode": "interactive",
-  "granularity": "fine"
+  "granularity": "fine",
+  "graphify": {
+    "enabled": true
+  }
 }
