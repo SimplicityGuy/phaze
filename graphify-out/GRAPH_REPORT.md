@@ -1,7 +1,7 @@
 # Graph Report - /Users/Robert/Code/public/phaze  (2026-04-28)
 
 ## Corpus Check
-- 141 files · ~349,064 words
+- 141 files · ~344,998 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -442,11 +442,11 @@ Nodes (1): Hyperedge: Banner set (1200x400 PNG renders)
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `FileRecord` connect `Community 0` to `Community 1`, `Community 2`, `Community 3`, `Community 4`, `Community 6`, `Community 7`, `Community 10`, `Community 11`, `Community 16`, `Community 20`, `Community 23`, `Community 24`, `Community 26`, `Community 27`, `Community 28`?**
-  _High betweenness centrality (0.249) - this node is a cross-community bridge._
+  _High betweenness centrality (0.258) - this node is a cross-community bridge._
 - **Why does `FileState` connect `Community 0` to `Community 1`, `Community 2`, `Community 3`, `Community 4`, `Community 6`, `Community 7`, `Community 8`, `Community 26`?**
-  _High betweenness centrality (0.247) - this node is a cross-community bridge._
+  _High betweenness centrality (0.217) - this node is a cross-community bridge._
 - **Why does `TracklistTrack` connect `Community 0` to `Community 1`, `Community 3`, `Community 4`, `Community 9`, `Community 10`, `Community 11`, `Community 13`, `Community 20`, `Community 23`, `Community 27`?**
-  _High betweenness centrality (0.057) - this node is a cross-community bridge._
+  _High betweenness centrality (0.081) - this node is a cross-community bridge._
 - **Are the 523 inferred relationships involving `FileRecord` (e.g. with `Integration tests for the preview route -- directory tree preview page.` and `Create an approved proposal with its associated file record.`) actually correct?**
   _`FileRecord` has 523 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 523 inferred relationships involving `FileState` (e.g. with `Tests for fingerprint service layer: Protocol, adapters, orchestrator, progress.` and `Create a minimal SAQ context dict with async_session factory and orchestrator.`) actually correct?**
