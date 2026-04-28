@@ -4,6 +4,14 @@ repos:
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c
     hooks:
       - id: check-added-large-files
+        exclude: |
+          (?x)^(
+            \.planning/graphs/graph\.json|
+            \.planning/graphs/graph\.html|
+            \.planning/graphs/\.last-build-snapshot\.json|
+            graphify-out/graph\.json|
+            graphify-out/graph\.html
+          )$
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
