@@ -4,6 +4,14 @@ repos:
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c
     hooks:
       - id: check-added-large-files
+        exclude: |
+          (?x)^(
+            \.planning/graphs/graph\.json|
+            \.planning/graphs/graph\.html|
+            \.planning/graphs/\.last-build-snapshot\.json|
+            graphify-out/graph\.json|
+            graphify-out/graph\.html
+          )$
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
@@ -13,7 +21,7 @@ repos:
       - id: mixed-line-ending
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: d1b833175a5d08a925900115526febd8fe71c98e  # frozen: v0.15.11
+    rev: 6fec9b7edb08fd9989088709d864a7826dc74e80  # frozen: v0.15.12
     hooks:
       - id: ruff
         args: [--fix]
