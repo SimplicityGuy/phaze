@@ -14,18 +14,18 @@ dependencies = [
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.14.3",
     "essentia-tensorflow>=2.1b6.dev1389; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.136.0",
+    "fastapi>=0.136.1",
     "httpx>=0.28.1",
-    "litellm>=1.83.10,<1.84.0",
+    "litellm>=1.83.14,<1.84.0",
     "lxml>=6.1.0",
     "mutagen>=1.47.0",
     "numpy>=2.4.4",
     "pydantic-settings>=2.14.0",
-    "python-multipart>=0.0.26",
+    "python-multipart>=0.0.27",
     "rapidfuzz>=3.14.5",
     "sqlalchemy>=2.0.49",
-    "sse-starlette>=3.3.4",
-    "uvicorn>=0.44.0",
+    "sse-starlette>=3.4.1",
+    "uvicorn>=0.46.0",
 ]
 
 [tool.hatch.build.targets.wheel]
