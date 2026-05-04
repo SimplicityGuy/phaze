@@ -222,3 +222,6 @@ models/
 
 # Update script backups
 .backups/
+
+# graphify cache
+graphify-out/cache/
