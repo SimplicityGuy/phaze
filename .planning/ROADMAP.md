@@ -77,7 +77,12 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   3. After running the upgrade migration on a v3.0 snapshot, every pre-existing FileRecord and ScanBatch points at a seeded `legacy-application-server` agent whose `scan_roots` matches the prior `SCAN_PATH`
   4. One sentinel `LIVE` ScanBatch exists per registered agent and is reused (not duplicated) when re-applied
   5. The migration is two-step (add nullable + backfill, then enforce NOT NULL + swap unique constraint) and can be downgraded cleanly to the v3.0 schema on an unmigrated test DB
-**Plans**: TBD
+**Plans**: 5 plans
+- [ ] 24-01-PLAN.md — Test infrastructure: tests/test_migrations/ package + alembic-driven fixture (Wave 0)
+- [ ] 24-02-PLAN.md — Agent model + ScanStatus.LIVE + agent_id columns + composite UQ on model layer (Wave 1)
+- [ ] 24-03-PLAN.md — Migration 012: agents table, legacy agent seed, FKs, partial UQ, backfill + integration tests (Wave 2)
+- [ ] 24-04-PLAN.md — Migration 013: NOT NULL + composite UQ swap + safe downgrade + [BLOCKING] roundtrip smoke (Wave 3)
+- [ ] 24-05-PLAN.md — Ingestion service: stamp legacy agent_id, swap conflict target to composite (Wave 3)
 
 ### Phase 25: Internal Agent HTTP API & Bearer Auth
 **Goal**: The application server exposes an authenticated, idempotent HTTP surface that agents can call to record every state change, with `agent_id` derived from the bearer token and never trusted from request bodies.
@@ -171,7 +176,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 21. CUE Sheet Generation | v3.0 | 3/3 | Complete | 2026-04-03 |
 | 22. Tracklist Integration Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 23. v3.0 Polish & Wiring Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
-| 24. Schema Foundation & Agent Registry | v4.0 | 0/? | Not started | - |
+| 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 0/? | Not started | - |
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 0/? | Not started | - |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
