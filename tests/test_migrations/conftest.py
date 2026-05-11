@@ -24,6 +24,7 @@ from pathlib import Path
 
 from alembic.config import Config
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
@@ -87,24 +88,48 @@ def downgrade_to(cfg: Config, revision: str) -> None:
         command.downgrade(cfg, revision)
 
 
+async def _reset_schema(database_url: str) -> None:
+    """Drop and recreate the ``public`` schema on ``database_url``.
+
+    Used as fixture teardown instead of ``downgrade_to('base')`` because tests
+    that deliberately insert duplicate ``original_path`` rows under different
+    ``agent_id`` values (validating the composite UQ from migration 013) would
+    otherwise trip the D-16 guard during the 013->012 downgrade step, leaving
+    the DB stuck mid-chain. A bare DROP/CREATE bypasses the migration chain
+    entirely and is faster than walking 13 downgrade steps.
+    """
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        await engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def migrated_engine() -> AsyncGenerator:
-    """Upgrade to head, yield an async engine bound to the migrations test DB, downgrade to base on teardown.
+    """Upgrade to head, yield an async engine bound to the migrations test DB, reset schema on teardown.
 
     ``upgrade_to`` / ``downgrade_to`` are sync helpers that internally trigger
     ``alembic/env.py``, which calls ``asyncio.run(run_async_migrations())``.
     When invoked directly from this async fixture, the nested ``asyncio.run``
     crashes with "cannot be called from a running event loop". Running the
     sync alembic commands in a worker thread sidesteps the conflict.
+
+    Teardown resets the schema rather than calling ``downgrade_to('base')`` so
+    tests that exercise the D-16 guard by inserting duplicate paths under
+    different agents do not strand the DB at revision 013 between tests.
     """
     cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
     await asyncio.to_thread(upgrade_to, cfg, "head")
     engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
     try:
         yield engine
     finally:
         await engine.dispose()
-        await asyncio.to_thread(downgrade_to, cfg, "base")
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
 
 
 __all__ = [
