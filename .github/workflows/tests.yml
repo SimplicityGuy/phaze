@@ -50,6 +50,12 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 🐘 Create migrations test database
+        env:
+          PGPASSWORD: phaze
+        run: |
+          psql -h localhost -U phaze -d postgres -c 'CREATE DATABASE phaze_migrations_test OWNER phaze;'
+
       - name: 📦 Install dependencies
         run: just install
 
