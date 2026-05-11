@@ -35,7 +35,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime, server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id", name="pk_discogs_links"),
-        sa.ForeignKeyConstraint(["track_id"], ["tracklist_tracks.id"], name="fk_discogs_links_track_id_tracklist_tracks"),
     )
 
     op.create_index("ix_discogs_links_track_id", "discogs_links", ["track_id"])
