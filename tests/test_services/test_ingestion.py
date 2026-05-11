@@ -151,7 +151,18 @@ def test_discover_files_record_keys(tmp_path: Path) -> None:
     (tmp_path / "track.flac").write_bytes(b"flac data")
     results = discover_and_hash_files(str(tmp_path), batch_id)
     assert len(results) == 1
-    expected_keys = {"id", "sha256_hash", "original_path", "original_filename", "current_path", "file_type", "file_size", "state", "batch_id"}
+    expected_keys = {
+        "id",
+        "agent_id",
+        "sha256_hash",
+        "original_path",
+        "original_filename",
+        "current_path",
+        "file_type",
+        "file_size",
+        "state",
+        "batch_id",
+    }
     assert set(results[0].keys()) == expected_keys
 
 

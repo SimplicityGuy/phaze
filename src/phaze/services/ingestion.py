@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
+LEGACY_AGENT_ID = "legacy-application-server"  # Phase 24 placeholder; Phase 25 wires real attribution per agent.
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,6 +74,7 @@ def discover_and_hash_files(scan_path: str, batch_id: uuid.UUID) -> list[dict[st
             records.append(
                 {
                     "id": uuid.uuid4(),
+                    "agent_id": LEGACY_AGENT_ID,
                     "sha256_hash": sha256_hash,
                     "original_path": normalized_path,
                     "original_filename": normalized_filename,
@@ -102,7 +105,7 @@ async def bulk_upsert_files(
         batch_list = list(batch)
         stmt = pg_insert(FileRecord).values(batch_list)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["original_path"],
+            index_elements=["agent_id", "original_path"],  # composite UQ swapped in migration 013
             set_={
                 "sha256_hash": stmt.excluded.sha256_hash,
                 "file_size": stmt.excluded.file_size,
@@ -132,6 +135,7 @@ async def run_scan(
         # Create scan batch record
         batch = ScanBatch(
             id=batch_id,
+            agent_id=LEGACY_AGENT_ID,
             scan_path=scan_path,
             status=ScanStatus.RUNNING,
             total_files=0,
