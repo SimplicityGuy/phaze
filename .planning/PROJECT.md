@@ -8,15 +8,20 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
 
-## Current Milestone: v3.0 Cross-Service Intelligence & File Enrichment
+## Current Milestone: v4.0 Distributed Agents
 
-**Goal:** Link phaze's music collection to Discogs releases, write corrected tags to destination files, generate CUE sheets from tracklist data, and provide a unified search page across all entities.
+**Goal:** Split phaze into an application server (control plane: API, UI, Postgres, Redis, fileless workers) and one or more file servers (remote hosts running agents that own the music/video files, pull jobs locally, and write results back via HTTP) — so files can live anywhere while decisions stay on a single server.
 
 **Target features:**
-- Discogsography cross-service linking via HTTP API — match live set tracks to Discogs releases by artist+title fuzzy match, enable "find all sets containing track X" queries
-- Write corrected tags to destination copies — explicit UI action with review before writing
-- CUE sheet generation from tracklist data — prefer fingerprint timestamps, fall back to 1001tracklists positions
-- Search page in admin UI — new tab with fields for artist, event, date, BPM, genre, etc. across files, tracklists, and metadata
+- Per-agent SAQ workers on each file server, pulling from the application server's Redis; absolute HTTP-only write-back boundary (no Postgres on file servers)
+- `agent_id` stamped on `FileRecord` at scan time; unique key `(agent_id, original_path)`; new `agents` table with token-based auth
+- Same Docker image, env-driven role; new `docker-compose.agent.yml` for file servers (worker + watcher + audfprint + panako); application server loses its `SCAN_PATH` + `MODELS_PATH` mounts
+- User-initiated scan (UI form) + always-on `phaze-agent-watcher` service on each file server (watchdog lib, settle/debounce, sentinel scan batch)
+- Per-file-server fingerprint sidecars (no cross-file-server fingerprint matching — documented v1 limitation)
+- Group-by-file-server execution dispatch with per-PATCH ExecutionLog write-ahead audit preserved over HTTP
+- Per-agent bearer tokens with `agent_id` derived from token on the application server (never from request body), private LAN, self-signed HTTPS, Redis `requirepass` + LAN-bound interface
+- Task code reorg: `phaze.tasks.lux_worker` (fileless) vs `phaze.tasks.agent_worker` (file-bound); job payloads carry everything the agent needs
+- Two-step Alembic migration with `legacy-application-server` backfill so existing v3.0 data survives
 
 ## Current State
 
@@ -85,12 +90,19 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 ### Active
 
-None — v3.0 milestone complete.
+- File servers run agents that own files locally; the application server orchestrates and stores all state — v4.0
+- HTTP-only boundary between agents and the application server (no shared filesystem, no shared database access) — v4.0
+- Per-agent bearer token auth with `agent_id` derived from token, never from request body — v4.0
+- Continuous file watcher service on each file server that streams new arrivals to the application server — v4.0
+- Distributed approval execution: group approved proposals by agent and dispatch one sub-batch per file server — v4.0
 
 ### Out of Scope
 
-- Natural language querying across services — deferred to v4+
-- Acoustic near-duplicate detection via fingerprint similarity — deferred to v4+
+- Cross-file-server fingerprint matching — per-agent fingerprint DB only in v4.0; document as limitation, defer to a later milestone
+- Delete / move / rename detection in the file watcher — v4.0 watcher only handles `created` events; deferred
+- Watcher catch-up on startup (rescan files that landed while watcher was down) — out of scope for v4.0; manual user-initiated scan covers this
+- Natural language querying across services — deferred
+- Acoustic near-duplicate detection via fingerprint similarity — deferred
 - Cross-reference fingerprint matches with 1001tracklists — partially addressed by Discogs linking in v3.0, full cross-ref deferred
 - Public network access — private network only
 - Offline mode — real-time server tool, not a desktop app
@@ -133,6 +145,11 @@ None — v3.0 milestone complete.
 | audfprint + Panako hybrid | Complement each other: landmark-based vs tempo-robust | ✓ Good — weighted orchestrator with per-engine results |
 | rapidfuzz for fuzzy matching | Fast token_set_ratio for tracklist-to-file matching | ✓ Good — weighted scoring with artist/event/date |
 | Long-running fingerprint containers | HTTP API over subprocess calls for fingerprint services | ✓ Good — persistent DBs, Docker Compose integration |
+| Distributed agents (v4.0) | Files stay on file servers; application server owns API, UI, Postgres, Redis | 🆕 Decided pre-v4.0 — enables remote file storage without losing centralized control |
+| HTTP-only agent boundary (v4.0) | Agents have zero Postgres access; all writes go through `/api/internal/agent/*` | 🆕 Decided pre-v4.0 — seals DB inside application server, agents are version-skew tolerant |
+| One SAQ queue per agent (v4.0) | `phaze-agent-<id>` queue per file server; enqueuer picks queue by `FileRecord.agent_id` | 🆕 Decided pre-v4.0 — matches SAQ's native pull model, clean per-agent maintenance |
+| Per-agent bearer token auth (v4.0) | `agent_id` derived from token lookup on application server, never from request body | 🆕 Decided pre-v4.0 — eliminates spoofing risk, supports per-agent rotation |
+| Per-agent fingerprint DB (v4.0) | Each file server runs its own audfprint+panako sidecars indexing only its files | 🆕 Decided pre-v4.0 — no cross-file-server fingerprint matching in v1; SHA-256 dedup still works |
 
 ## Evolution
 
@@ -152,4 +169,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-04 after v3.0 milestone complete — Cross-Service Intelligence & File Enrichment*
+*Last updated: 2026-05-11 starting v4.0 milestone — Distributed Agents*
