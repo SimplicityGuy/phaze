@@ -11,6 +11,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 from phaze.models.base import Base, TimestampMixin
 
 
+LEGACY_AGENT_ID = "legacy-application-server"
+"""Phase 24 placeholder agent_id stamped on every file and scan batch created without
+explicit agent attribution. Phase 25 wires real per-agent attribution through the HTTP
+API; until then every FileRecord/ScanBatch belongs to this single seeded agent."""
+
+
 class Agent(TimestampMixin, Base):
     """Agent (file server identity) that owns FileRecord and ScanBatch rows."""
 

@@ -29,6 +29,7 @@ class ScanBatch(TimestampMixin, Base):
         String(64),
         ForeignKey("agents.id", ondelete="RESTRICT"),
         nullable=False,
+        default="legacy-application-server",
     )
     scan_path: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=ScanStatus.RUNNING)

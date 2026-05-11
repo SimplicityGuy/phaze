@@ -8,10 +8,10 @@ import uuid
 import pytest
 
 from phaze.constants import FileCategory
-from phaze.models.agent import Agent
+from phaze.models.agent import LEGACY_AGENT_ID, Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.services.hashing import _HASH_CHUNK_SIZE, compute_sha256
-from phaze.services.ingestion import LEGACY_AGENT_ID, bulk_upsert_files, classify_file, discover_and_hash_files, normalize_path
+from phaze.services.ingestion import bulk_upsert_files, classify_file, discover_and_hash_files, normalize_path
 
 
 # --- normalize_path tests ---
@@ -227,9 +227,7 @@ async def test_bulk_upsert_stores_paths(session) -> None:  # type: ignore[no-unt
 
     from phaze.models.scan_batch import ScanBatch, ScanStatus
 
-    session.add(Agent(id=LEGACY_AGENT_ID, name=LEGACY_AGENT_ID, scan_roots=["/music"]))
-    await session.commit()
-
+    # Legacy agent is seeded by the root conftest async_engine fixture.
     batch_id = uuid.uuid4()
     scan_batch = ScanBatch(id=batch_id, agent_id=LEGACY_AGENT_ID, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
     session.add(scan_batch)
@@ -270,9 +268,7 @@ async def test_bulk_upsert_handles_duplicates(session) -> None:  # type: ignore[
 
     from phaze.models.scan_batch import ScanBatch, ScanStatus
 
-    session.add(Agent(id=LEGACY_AGENT_ID, name=LEGACY_AGENT_ID, scan_roots=["/music"]))
-    await session.commit()
-
+    # Legacy agent is seeded by the root conftest async_engine fixture.
     batch_id = uuid.uuid4()
     scan_batch = ScanBatch(id=batch_id, agent_id=LEGACY_AGENT_ID, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
     session.add(scan_batch)
@@ -328,8 +324,7 @@ async def test_bulk_upsert_same_path_different_agent(session) -> None:  # type: 
 
     from phaze.models.scan_batch import ScanBatch, ScanStatus
 
-    # Seed two agents
-    session.add(Agent(id=LEGACY_AGENT_ID, name=LEGACY_AGENT_ID, scan_roots=["/music"]))
+    # Legacy agent is seeded by the root conftest async_engine fixture; add second agent only.
     session.add(Agent(id="agent-b", name="agent-b", scan_roots=["/music"]))
     await session.commit()
 

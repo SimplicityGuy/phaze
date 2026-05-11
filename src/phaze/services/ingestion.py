@@ -15,6 +15,7 @@ from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, FileCategory
+from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.services.hashing import compute_sha256
@@ -23,8 +24,6 @@ from phaze.services.hashing import compute_sha256
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-
-LEGACY_AGENT_ID = "legacy-application-server"  # Phase 24 placeholder; Phase 25 wires real attribution per agent.
 
 logger = logging.getLogger(__name__)
 
