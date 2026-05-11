@@ -46,11 +46,17 @@ class FileRecord(TimestampMixin, Base):
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     state: Mapped[str] = mapped_column(String(30), nullable=False, default=FileState.DISCOVERED)
     batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("scan_batches.id"), nullable=True)
+    agent_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("agents.id", ondelete="RESTRICT"),
+        nullable=False,
+        default="legacy-application-server",
+    )
 
     file_metadata: Mapped[FileMetadata | None] = relationship("FileMetadata", foreign_keys="FileMetadata.file_id", uselist=False, lazy="noload")
 
     __table_args__ = (
         Index("ix_files_state", "state"),
         Index("ix_files_sha256_hash", "sha256_hash"),
-        Index("uq_files_original_path", "original_path", unique=True),
+        Index("uq_files_agent_id_original_path", "agent_id", "original_path", unique=True),
     )

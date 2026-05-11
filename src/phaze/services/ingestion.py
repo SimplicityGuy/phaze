@@ -15,6 +15,7 @@ from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, FileCategory
+from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.services.hashing import compute_sha256
@@ -72,6 +73,7 @@ def discover_and_hash_files(scan_path: str, batch_id: uuid.UUID) -> list[dict[st
             records.append(
                 {
                     "id": uuid.uuid4(),
+                    "agent_id": LEGACY_AGENT_ID,
                     "sha256_hash": sha256_hash,
                     "original_path": normalized_path,
                     "original_filename": normalized_filename,
@@ -102,7 +104,7 @@ async def bulk_upsert_files(
         batch_list = list(batch)
         stmt = pg_insert(FileRecord).values(batch_list)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["original_path"],
+            index_elements=["agent_id", "original_path"],  # composite UQ swapped in migration 013
             set_={
                 "sha256_hash": stmt.excluded.sha256_hash,
                 "file_size": stmt.excluded.file_size,
@@ -132,6 +134,7 @@ async def run_scan(
         # Create scan batch record
         batch = ScanBatch(
             id=batch_id,
+            agent_id=LEGACY_AGENT_ID,
             scan_path=scan_path,
             status=ScanStatus.RUNNING,
             total_files=0,
