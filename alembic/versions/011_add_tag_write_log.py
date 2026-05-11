@@ -35,7 +35,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime, server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id", name="pk_tag_write_log"),
-        sa.ForeignKeyConstraint(["file_id"], ["files.id"], name="fk_tag_write_log_file_id_files"),
     )
 
     op.create_index("ix_tag_write_log_file_id", "tag_write_log", ["file_id"])
