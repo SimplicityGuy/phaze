@@ -5,6 +5,7 @@
 - ✅ **v1.0 MVP** — Phases 1-11 (shipped 2026-03-30)
 - ✅ **v2.0 Metadata Enrichment & Tracklist Integration** — Phases 12-17 (shipped 2026-04-02)
 - ✅ **v3.0 Cross-Service Intelligence & File Enrichment** — Phases 18-23 (shipped 2026-04-04)
+- 🚧 **v4.0 Distributed Agents** — Phases 24-29 (in planning, 2026-05-11)
 
 ## Phases
 
@@ -55,6 +56,94 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 
 </details>
 
+### v4.0 Distributed Agents (Phases 24-29) — IN PLANNING
+
+- [ ] **Phase 24: Schema Foundation & Agent Registry** — `agents` table, `agent_id` columns on FileRecord/ScanBatch, two-step Alembic migration with legacy backfill
+- [ ] **Phase 25: Internal Agent HTTP API & Bearer Auth** — `/api/internal/agent/*` endpoints, token-hash auth middleware deriving `agent_id` from token, idempotent upserts on natural keys, rotatable tokens
+- [ ] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.lux_worker` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads
+- [ ] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form
+- [ ] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path
+- [ ] **Phase 29: Deployment Hardening & Agents Admin** — strip `SCAN_PATH`/`MODELS_PATH` from application-server compose, self-signed HTTPS w/ internal CA, Redis `requirepass` + LAN binding, `docker-compose.agent.yml`, per-file-server model download, heartbeat + Agents admin page
+
+## Phase Details
+
+### Phase 24: Schema Foundation & Agent Registry
+**Goal**: The database can model who owns each file and which agent originated each scan, with existing v3.0 data preserved end-to-end through a controlled migration.
+**Depends on**: Phase 23 (v3.0 shipped)
+**Requirements**: DATA-01, DATA-02, DATA-03, DATA-04
+**Success Criteria** (what must be TRUE):
+  1. An `agents` table exists with `id`, `name`, `token_hash`, `scan_roots` (jsonb), `created_at`, `last_seen_at`, `revoked_at`, and an operator can insert/query agent rows via Postgres
+  2. `FileRecord.agent_id` and `ScanBatch.agent_id` are non-null string columns, and the file uniqueness invariant has moved from `(original_path)` to `(agent_id, original_path)` (verified by attempting a same-path insert under a different agent and succeeding)
+  3. After running the upgrade migration on a v3.0 snapshot, every pre-existing FileRecord and ScanBatch points at a seeded `legacy-application-server` agent whose `scan_roots` matches the prior `SCAN_PATH`
+  4. One sentinel `LIVE` ScanBatch exists per registered agent and is reused (not duplicated) when re-applied
+  5. The migration is two-step (add nullable + backfill, then enforce NOT NULL + swap unique constraint) and can be downgraded cleanly to the v3.0 schema on an unmigrated test DB
+**Plans**: TBD
+
+### Phase 25: Internal Agent HTTP API & Bearer Auth
+**Goal**: The application server exposes an authenticated, idempotent HTTP surface that agents can call to record every state change, with `agent_id` derived from the bearer token and never trusted from request bodies.
+**Depends on**: Phase 24
+**Requirements**: DIST-04, DIST-05, AUTH-01, AUTH-04
+**Success Criteria** (what must be TRUE):
+  1. Every `/api/internal/agent/*` route requires a bearer token; an unauthenticated request returns 401 and an unknown/revoked token returns 403
+  2. The `agent_id` used by every endpoint is resolved by hashing the bearer token and looking it up in the `agents` table; any `agent_id` field in a request body is ignored or rejected
+  3. Replaying the same chunk of file upserts, the same proposal mutation, or the same execution-log PATCH with the same natural keys (`(agent_id, original_path)`, `file_id`, `proposal_id`, agent-generated log UUIDs) produces no duplicate rows and the same final state
+  4. Setting `agents.revoked_at` on a row immediately causes that agent's next `/api/internal/agent/*` call to be rejected with no application-server restart required (verified by integration test)
+  5. The API surface covers, at minimum, file upsert, metadata write, fingerprint write, execution-log create/patch, and heartbeat — all callable end-to-end with an HTTP client
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 26: Task Code Reorg & HTTP-Backed Agent Worker
+**Goal**: SAQ task code is cleanly split between the application server (fileless) and agents (file-bound), with role-driven startup and per-agent queues so the same Docker image runs both roles correctly.
+**Depends on**: Phase 25
+**Requirements**: DIST-03, TASK-01, TASK-02, TASK-03, OPS-01
+**Success Criteria** (what must be TRUE):
+  1. `phaze.tasks.lux_worker` exposes only fileless tasks (`generate_proposals`, `match_tracklist_to_discogs`, `scrape_and_store_tracklist`, `search_tracklist`, `refresh_tracklists` cron) and `phaze.tasks.agent_worker` exposes only file-bound tasks (`process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `execute_approved_batch`)
+  2. Setting `PHAZE_ROLE=control` boots the application-server worker with the fileless settings module and Postgres access; setting `PHAZE_ROLE=agent` boots the agent worker with the file-bound settings module and an HTTP client to the application server, with no Postgres driver loaded
+  3. Every file-bound task body uses the HTTP client (no `async_session` import reachable in agent-worker code paths) and writes results via `/api/internal/agent/*`
+  4. Each agent worker pulls from a per-agent SAQ queue named `phaze-agent-<agent_id>`; the application-server enqueuer selects the queue from `FileRecord.agent_id` and a job enqueued for agent A never executes on agent B
+  5. Agent task jobs carry a self-contained payload (`file_id`, `file_path`, `file_type`, model paths, agent metadata) sufficient to execute without any read-back to the application server during the job
+**Plans**: TBD
+
+### Phase 27: Watcher Service & User-Initiated Scan
+**Goal**: Each file server continuously streams new file arrivals to the application server, and the administrator can also trigger an explicit scan of any path on any agent from the admin UI.
+**Depends on**: Phase 26
+**Requirements**: DIST-02, SCAN-01, SCAN-02, SCAN-03, SCAN-04
+**Success Criteria** (what must be TRUE):
+  1. A new `phaze-agent-watcher` service is defined and starts alongside `worker`, `audfprint`, and `panako` on the file-server compose; it stays running and observes the agent's configured roots via the `watchdog` library
+  2. Dropping a new file into a watched root results in a new `FileRecord` appearing on the application server under that agent's sentinel `LIVE` ScanBatch, with `(agent_id, original_path)` as the natural key
+  3. A file whose `mtime` is still changing is **not** posted; only after the configured settle period (default 10s) of stable `mtime` does the watcher compute SHA-256 and stream the record (verified by writing a file slowly and observing no early upsert)
+  4. From the admin UI, an administrator can choose `(agent, scan_path)` and trigger a scan; this enqueues `scan_directory(scan_path, batch_id)` onto the chosen agent's queue and the agent streams discovered files back in chunks (e.g., 500 records per request), with `extract_file_metadata` enqueued per new music/video file before the scan completes
+  5. The same upsert endpoint serves both bulk scans and per-file watcher events, and a re-walked path produces no duplicate FileRecord rows
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 28: Distributed Execution Dispatch
+**Goal**: Approving a batch that spans multiple file servers results in each agent doing its own local copy-verify-delete, while the application server preserves the write-ahead audit trail and presents unified progress to the operator.
+**Depends on**: Phase 27
+**Requirements**: EXEC-01, EXEC-02, EXEC-03, EXEC-04, TASK-04
+**Success Criteria** (what must be TRUE):
+  1. Triggering execution on an approved batch groups proposals by `FileRecord.agent_id` and enqueues one `execute_approved_batch` sub-job per affected agent under a shared parent `batch_id`; the dispatch decision is visible in logs and via an admin endpoint
+  2. Each agent performs copy-verify-delete locally for its assigned proposals and PATCHes per-operation status (started, copied, verified, deleted, failed) to the application server, so the `ExecutionLog` write-ahead trail survives the HTTP boundary with no rows lost on retry
+  3. The application server owns the `exec:{batch_id}` Redis hash and serves SSE progress from a single aggregated key; the admin UI shows unified `total / completed / failed` counts that match the sum across all participating agents
+  4. The execution UI exposes a per-agent breakdown (which agent handled which sub-batch, with its own counts) for debugging without requiring database access
+  5. Each file server's audfprint and panako sidecars index only that file server's files; fingerprint queries during execution-adjacent flows resolve against the local sidecar and the limitation (no cross-file-server fingerprint matching) is documented in the admin UI / docs
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 29: Deployment Hardening & Agents Admin
+**Goal**: A real two-host deployment runs end-to-end with the application server holding no file mounts, HTTPS + Redis hardening in place, and an admin can see at a glance which agents are alive and healthy.
+**Depends on**: Phase 28
+**Requirements**: DIST-01, AUTH-02, AUTH-03, OPS-02, OPS-03, OPS-04
+**Success Criteria** (what must be TRUE):
+  1. The application-server `docker-compose.yml` declares no `SCAN_PATH` or `MODELS_PATH` mount; starting the stack and attempting to read a music file from inside the `api` or `lux_worker` container fails (verified manually) and the application server has no way to read or write file content
+  2. A new `docker-compose.agent.yml` brings up exactly `worker`, `watcher`, `audfprint`, and `panako` on a file server, configured via env (`PHAZE_API_URL`, `PHAZE_REDIS_URL`, `PHAZE_AGENT_TOKEN`, `PHAZE_AGENT_ID`) to reach the application server; running it on a second host registers the agent and begins watching
+  3. All agent → application-server traffic uses HTTPS terminated by a self-signed certificate from an application-server-local internal CA; each agent's `httpx` client trusts the CA file and rejects untrusted certs (verified by swapping the CA and observing connection failure)
+  4. Redis on the application server requires `requirepass` and is bound only to the private LAN interface; an attempt to connect from outside the LAN or without the password fails, and agents connect with `redis://default:<password>@<host>:6379`
+  5. Running `just download-models` on a fresh file server populates that host's local `/models` volume; the application-server image neither downloads nor mounts models
+  6. Each agent posts a heartbeat to `/api/internal/agent/heartbeat` every 30 seconds; the Agents admin page lists every registered agent with name, status (alive/stale/revoked), queue depth, and last-seen timestamp, and refreshes without requiring a manual page reload
+**Plans**: TBD
+**UI hint**: yes
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -82,3 +171,9 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 21. CUE Sheet Generation | v3.0 | 3/3 | Complete | 2026-04-03 |
 | 22. Tracklist Integration Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 23. v3.0 Polish & Wiring Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
+| 24. Schema Foundation & Agent Registry | v4.0 | 0/? | Not started | - |
+| 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 0/? | Not started | - |
+| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 0/? | Not started | - |
+| 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
+| 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
+| 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |

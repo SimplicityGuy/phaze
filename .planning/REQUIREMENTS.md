@@ -92,9 +92,39 @@ Explicitly excluded. Documented to prevent scope creep.
 
 ## Traceability
 
-| Phase | Requirements | Goal |
-|-------|--------------|------|
-| (filled in by roadmap) | | |
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| DIST-01 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
+| DIST-02 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
+| DIST-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| DIST-04 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
+| DIST-05 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
+| DATA-01 | Phase 24 — Schema Foundation & Agent Registry | Pending |
+| DATA-02 | Phase 24 — Schema Foundation & Agent Registry | Pending |
+| DATA-03 | Phase 24 — Schema Foundation & Agent Registry | Pending |
+| DATA-04 | Phase 24 — Schema Foundation & Agent Registry | Pending |
+| AUTH-01 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
+| AUTH-02 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
+| AUTH-03 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
+| AUTH-04 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
+| SCAN-01 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
+| SCAN-02 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
+| SCAN-03 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
+| SCAN-04 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
+| TASK-01 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| TASK-02 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| TASK-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| TASK-04 | Phase 28 — Distributed Execution Dispatch | Pending |
+| EXEC-01 | Phase 28 — Distributed Execution Dispatch | Pending |
+| EXEC-02 | Phase 28 — Distributed Execution Dispatch | Pending |
+| EXEC-03 | Phase 28 — Distributed Execution Dispatch | Pending |
+| EXEC-04 | Phase 28 — Distributed Execution Dispatch | Pending |
+| OPS-01 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| OPS-02 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
+| OPS-03 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
+| OPS-04 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
+
+**Coverage:** 26 / 26 v4.0 requirements mapped ✓
 
 ---
-*Last updated: 2026-05-11 — milestone v4.0 requirements defined*
+*Last updated: 2026-05-11 — milestone v4.0 roadmap mapped (Phases 24-29)*
