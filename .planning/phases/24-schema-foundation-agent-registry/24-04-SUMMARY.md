@@ -128,29 +128,90 @@ The plan's `<interfaces>` block, `<acceptance_criteria>` grep contracts, line-co
 - **Ruff format reflowed the dupe-detection SQL onto one line.** The plan's action block presents the `bind.execute(sa.text(...))` call as a multi-line string for readability, but ruff format (project line length 150) detected the SQL plus surrounding boilerplate fit on a single line and reflowed. The final formatted line is well under 150 chars; the grep contracts on `GROUP BY original_path HAVING COUNT(*) > 1` and `Cannot downgrade 013->012` remain satisfied. No behavior change.
 - **Postgres not available locally.** Same documented operator pre-condition as plan 24-03 - this sandbox has no Postgres daemon on localhost:5432 and no Docker daemon (`unix:///var/run/docker.sock` does not exist). Static gates all pass (`ruff check`, `ruff format --check`, `mypy`, pre-commit, `pytest --collect-only`); the integration tests collect (8/8 new this plan, 21/21 across phase 24) but cannot reach a passing assertion without a running Postgres. The BLOCKING smoke gate (Task 4) requires a real operator workflow against a throwaway DB and is documented in "User Setup Required" below.
 
-## User Setup Required
+## Operator Smoke Gate (Task 4) — PASSED 2026-05-11
 
-**Operator pre-condition for running the integration tests (inherited from plan 24-01 / 24-03):** the database `phaze_migrations_test` must exist on `localhost:5432` with the same credentials as `phaze_test`:
+Executed against a throwaway `postgres:18-alpine` container (`phaze-smoke-pg`) launched directly via `docker run`, bypassing the `phaze` compose stack to avoid a stale pgdata volume from an older Postgres major version. Full smoke log: `/tmp/24-04-smoke.log` (captured at execution time; not committed).
 
-```sql
-CREATE DATABASE phaze_migrations_test OWNER phaze;
+**Two pre-existing migration bugs discovered and fixed during this gate (commits `a4a375b` and `0a63c61`):** migrations 010 and 011 each declared the same foreign-key constraint twice (once inline on the column, once explicitly with the auto-generated naming-convention name), producing `DuplicateObjectError` against any fresh DB. These never failed in production because already-migrated deployments had passed those revisions before the conflict surfaced. Both fixes are pure deletions of the redundant explicit `sa.ForeignKeyConstraint(...)` lines; already-migrated DBs are unaffected. Defensive scan confirms 012 and 013 (and every other migration) are clean.
+
+### Roundtrip transcript (key lines)
+
+```
+==== Empty DB -> head (001 .. 013) ====
+Running upgrade  -> 001, Initial schema - all 5 tables.
+Running upgrade 001 -> 002, Add scan_batches table and unique path index.
+Running upgrade 002 -> 003, Add file_companions join table.
+Running upgrade 003 -> 004, Add indexes to execution_log table.
+Running upgrade 004 -> 005, Add track_number, duration, bitrate columns to metadata table.
+Running upgrade 005 -> 006, Add tracklists, tracklist_versions, and tracklist_tracks tables.
+Running upgrade 006 -> 007, Add fingerprint_results table.
+Running upgrade 007 -> 008, Add source, status columns to tracklists and confidence to tracklist_tracks.
+Running upgrade 008 -> 009, Add search_vector GENERATED columns and GIN indexes for full-text search.
+Running upgrade 009 -> 010, Add discogs_links table for Discogs release candidate matching.
+Running upgrade 010 -> 011, Add tag_write_log table for tag write audit trail.
+Running upgrade 011 -> 012, Add agents table, agent_id columns, FKs, and backfill legacy agent.
+phaze-024: resolved legacy-application-server scan_roots=["/data/music"] (SCAN_PATH='/data/music')
+Running upgrade 012 -> 013, Enforce NOT NULL on agent_id columns and swap files unique constraint to composite.
+
+==== Post-upgrade state ====
+db-current: 013 (head)
+agents row:    legacy-application-server | legacy-application-server | ["/data/music"] | revoked=t
+files UQ:      uq_files_agent_id_original_path                          (composite swap verified)
+agent_id NN:   files=NO, scan_batches=NO                                (NOT NULL enforced)
+LIVE sentinel: legacy-application-server | live                         (scan_batches row present)
+partial UQ:    CREATE UNIQUE INDEX uq_scan_batches_agent_id_live ON public.scan_batches USING btree (agent_id) WHERE ((status)::text = 'live'::text)
+slug CHECK:    ck_agents_ck_agents_id_charset | CHECK (((id)::text ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text))
+
+==== 013 -> 012 -> 011 downgrade ====
+Running downgrade 013 -> 012, Enforce NOT NULL on agent_id columns and swap files unique constraint to composite.
+db-current: 012
+post-013-down: agent_id is_nullable=YES on files+scan_batches, uq_files_original_path restored
+
+Running downgrade 012 -> 011, Add agents table, agent_id columns, FKs, and backfill legacy agent.
+db-current: 011
+post-012-down: to_regclass('agents') = NULL (agents table dropped cleanly)
+
+==== Re-upgrade roundtrip ====
+Running upgrade 011 -> 012, Add agents table, agent_id columns, FKs, and backfill legacy agent.
+phaze-024: resolved legacy-application-server scan_roots=["/data/music"] (SCAN_PATH='/data/music')
+Running upgrade 012 -> 013, Enforce NOT NULL on agent_id columns and swap files unique constraint to composite.
+db-current: 013 (head)
+
+==== SCAN_PATH override (D-05) ====
+SCAN_PATH=/tmp/test-override uv run alembic upgrade 012
+-> phaze-024: resolved legacy-application-server scan_roots=["/tmp/test-override"] (SCAN_PATH='/tmp/test-override')
+-> agents.scan_roots column reads: ["/tmp/test-override"]                (env var flows correctly)
+
+==== D-16 RuntimeError downgrade guard ====
+Inserted second agent (dupe-test-agent) plus duplicate /test/duplicate.flac under both agents.
+Ran alembic downgrade -1, captured:
+
+  RuntimeError: Cannot downgrade 013->012: original_path is no longer unique across agents.
+  Example collisions: ['/test/duplicate.flac']. Resolve manually before retrying.
+  Silent dedup is FORBIDDEN per phase-24 D-16.
+
+Post-guard state: db-current still 013 (head), uq_files_agent_id_original_path still present.
+Guard executed before any DDL — downgrade aborted pre-mutation as designed.
 ```
 
-**Task 4 BLOCKING smoke gate (unmet in this sandbox):** the operator-facing CLI roundtrip (`just db-upgrade`/`just db-downgrade`) was not executed because Docker Compose is not available here. The operator must run the 11-step sequence documented in `24-04-PLAN.md` Task 4 against a clean throwaway DB and confirm:
+### Acceptance checklist for Task 4 — all PASS
 
-1. `docker compose up -d postgres`
-2. `just db-current` (current revision)
-3. `just db-upgrade` -> log shows `Running upgrade 011 -> 012` and `Running upgrade 012 -> 013`
-4. `just db-current` -> revision is `013` (or `head`)
-5. Log line `phaze-024: resolved legacy-application-server scan_roots=...` is present (D-05 audit trail)
-6. `just db-downgrade` -> log shows `Running downgrade 013 -> 012`
-7. `just db-downgrade` -> log shows `Running downgrade 012 -> 011`
-8. `just db-current` -> revision is `011`
-9. `just db-upgrade` -> both `Running upgrade ...` lines reappear
-10. `just db-current` -> revision is back at head
-11. `SCAN_PATH=/tmp/test-override uv run alembic upgrade 012` on a fresh test DB shows `scan_roots=['/tmp/test-override']` in the log
+| Criterion | Evidence |
+|-----------|----------|
+| `Running upgrade 011 -> 012` log line present | ✓ |
+| `Running upgrade 012 -> 013` log line present | ✓ |
+| `db-current` shows `013 (head)` after upgrade | ✓ |
+| D-05 audit log line `phaze-024: resolved legacy-application-server scan_roots=...` present | ✓ (twice — initial upgrade + re-upgrade after downgrade) |
+| `Running downgrade 013 -> 012` log line present | ✓ |
+| `Running downgrade 012 -> 011` log line present | ✓ |
+| `db-current` shows `011` after two downgrades | ✓ |
+| Re-upgrade `Running upgrade ...` lines reappear | ✓ |
+| `db-current` back at `013 (head)` after roundtrip | ✓ |
+| `SCAN_PATH=/tmp/test-override` reflected in `agents.scan_roots` | ✓ — column reads `["/tmp/test-override"]` |
+| D-16 RuntimeError fires with exact substring `Cannot downgrade 013->012` | ✓ — full message includes `['/test/duplicate.flac']` collision list |
+| DB state unchanged after guard fires (013, composite UQ still present) | ✓ — guard runs pre-DDL |
 
-When the operator returns the actual log lines and exit codes, this SUMMARY.md should be updated in place with the captured output. Until then, the BLOCKING gate is recorded as "deferred to operator" rather than "passed".
+Smoke gate **PASSED**. Phase 24 migrations 012 and 013 are operator-verified end-to-end. The two pre-existing migration defects in 010 and 011 are now fixed on the phase-24 branch (commits `a4a375b`, `0a63c61`).
 
 ## Verification
 
