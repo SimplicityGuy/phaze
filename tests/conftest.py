@@ -1,6 +1,8 @@
 """Shared test fixtures for Phaze test suite."""
 
 from collections.abc import AsyncGenerator
+import hashlib
+import secrets
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -15,7 +17,7 @@ from phaze.models.base import Base
 
 TEST_DATABASE_URL = "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"
 
-DB_FIXTURES = {"async_engine", "session", "client"}
+DB_FIXTURES = {"async_engine", "session", "client", "authenticated_client", "seed_test_agent"}
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -61,4 +63,48 @@ async def client(session) -> AsyncGenerator[AsyncClient]:  # type: ignore[no-unt
     app = create_app()
     app.dependency_overrides[get_session] = lambda: session
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def seed_test_agent(session: AsyncSession) -> tuple[Agent, str]:
+    """Create a known agent with a known token. Returns (agent, raw_token).
+
+    Token format: ``phaze_agent_<43 urlsafe-base64 chars>`` per phase-25 D-01.
+    Hash storage: full wire string (prefix + secret) sha256-hex (D-02).
+    """
+    raw_token = "phaze_agent_" + secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    agent = Agent(
+        id="test-agent-01",  # kebab-case slug valid under ck_agents_id_charset
+        name="test-agent-01",
+        token_hash=token_hash,
+        scan_roots=["/test/music"],
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    return agent, raw_token
+
+
+@pytest_asyncio.fixture
+async def authenticated_client(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> AsyncGenerator[AsyncClient]:
+    """AsyncClient with Authorization: Bearer <known token> pre-set.
+
+    Mirrors the existing ``client`` fixture's session-override pattern and
+    additionally pre-sets the Authorization header so handlers gated by
+    ``Depends(get_authenticated_agent)`` (Plan 02) succeed.
+    """
+    _agent, raw_token = seed_test_agent
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: session
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers=headers,
+    ) as ac:
         yield ac
