@@ -17,6 +17,7 @@ in-memory ``settings.database_url`` for the duration of upgrade/downgrade
 calls. ``_patched_settings_database_url`` is the small helper that does that.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -88,15 +89,22 @@ def downgrade_to(cfg: Config, revision: str) -> None:
 
 @pytest_asyncio.fixture
 async def migrated_engine() -> AsyncGenerator:
-    """Upgrade to head, yield an async engine bound to the migrations test DB, downgrade to base on teardown."""
+    """Upgrade to head, yield an async engine bound to the migrations test DB, downgrade to base on teardown.
+
+    ``upgrade_to`` / ``downgrade_to`` are sync helpers that internally trigger
+    ``alembic/env.py``, which calls ``asyncio.run(run_async_migrations())``.
+    When invoked directly from this async fixture, the nested ``asyncio.run``
+    crashes with "cannot be called from a running event loop". Running the
+    sync alembic commands in a worker thread sidesteps the conflict.
+    """
     cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
-    upgrade_to(cfg, "head")
+    await asyncio.to_thread(upgrade_to, cfg, "head")
     engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
     try:
         yield engine
     finally:
         await engine.dispose()
-        downgrade_to(cfg, "base")
+        await asyncio.to_thread(downgrade_to, cfg, "base")
 
 
 __all__ = [
