@@ -20,13 +20,13 @@ The database can model who owns each file and which agent originated each scan. 
 - **D-04:** The `legacy-application-server` row is inserted **inside** the upgrade migration (revision 012), before any backfill UPDATE runs. The migration is self-contained and re-runnable — no separate `just seed-legacy-agent` step is required for the operator.
 
 ### Legacy Agent Backfill
-- **D-05:** `scan_roots` for the legacy agent is populated by **reading `PHAZE_SCAN_PATH` (or equivalent) from the environment at migration time**. Stored as a JSONB array: `["<value of SCAN_PATH>"]`. Falls back to `["/music"]` if the env var is unset. The migration logs which value it used so the operator has an audit trail.
+- **D-05:** `scan_roots` for the legacy agent is populated by **reading `SCAN_PATH` from the environment at migration time** (verified against `src/phaze/config.py:24` and `docker-compose.yml:12` — see Errata below). Stored as a JSONB array: `["<value of SCAN_PATH>"]`. Falls back to `["/data/music"]` if the env var is unset. The migration logs which value it used so the operator has an audit trail.
 - **D-06:** The legacy agent is **born revoked**: `token_hash = NULL` and `revoked_at = NOW()` at insert time. It exists purely for FK integrity over pre-existing data; no HTTP traffic should ever authenticate as it. Phase 25's auth middleware will reject any request whose resolved agent has `revoked_at IS NOT NULL`, so the legacy row is unreachable by design.
 - **D-07:** `token_hash` is **nullable** on the `agents` table. Combined with the auth check, NULL means "no usable credential." This lets the legacy agent exist credential-less and leaves room for future use cases (e.g., temporarily disabled agents).
 - **D-08:** Every pre-existing `FileRecord` and every pre-existing `ScanBatch` is attributed to the legacy agent during backfill. Both new columns are NOT NULL once enforced, so something must be set for every row; the legacy agent covers all of them.
 
 ### Sentinel LIVE ScanBatch
-- **D-09:** The sentinel is distinguished by a **new `ScanStatus.LIVE` enum value** added alongside `RUNNING`, `COMPLETED`, `FAILED`. Querying for an agent's sentinel is `WHERE agent_id = ? AND status = 'LIVE'`. This keeps the marker in a dedicated, indexable column and matches the existing `ScanStatus` enum pattern in `src/phaze/models/scan_batch.py`.
+- **D-09:** The sentinel is distinguished by a **new `ScanStatus.LIVE` enum value** added alongside `RUNNING`, `COMPLETED`, `FAILED`. Querying for an agent's sentinel is `WHERE agent_id = ? AND status = 'live'` (stored value is lowercase `'live'` — see Errata below). This keeps the marker in a dedicated, indexable column and matches the existing `ScanStatus` enum pattern in `src/phaze/models/scan_batch.py`.
 - **D-10:** The sentinel's `scan_path` value is the literal string `"<watcher>"`. Human-readable in the admin UI ("this batch holds watcher-originated files"), doesn't lie about being a real filesystem path, and avoids forcing `scan_path` to become nullable.
 - **D-11:** Each agent's LIVE sentinel is created at **agent-registration time**:
   - For the **legacy agent**, the upgrade migration inserts both the agents row and its LIVE sentinel ScanBatch in revision 012.
@@ -34,7 +34,7 @@ The database can model who owns each file and which agent originated each scan. 
 - **D-12:** Idempotency on the sentinel is enforced by a **partial unique index**:
   ```sql
   CREATE UNIQUE INDEX uq_scan_batches_agent_id_live
-    ON scan_batches (agent_id) WHERE status = 'LIVE';
+    ON scan_batches (agent_id) WHERE status = 'live';
   ```
   Postgres guarantees at most one LIVE batch per agent at the DB level. Re-applying the migration or re-registering an agent cannot duplicate the sentinel. This directly satisfies success criterion #4 ("one sentinel `LIVE` ScanBatch exists per registered agent and is reused").
 
@@ -154,6 +154,19 @@ The database can model who owns each file and which agent originated each scan. 
 - **Per-agent `scan_path` validation against `agents.scan_roots`** — Phase 27's job (the scan endpoint should refuse paths outside the agent's roots). Not a Phase 24 schema concern.
 
 </deferred>
+
+
+<errata>
+## Errata
+
+Three minor misprints in the original CONTEXT.md draft were discovered during planner-checker review and corrected in-place above. The originals are preserved here for diff history.
+
+- **D-05 (env var name):** Originally written as "reading `PHAZE_SCAN_PATH` (or equivalent)". The actual ground-truth env var in this codebase is `SCAN_PATH` (verified via `src/phaze/config.py:24` `scan_path: str = "/data/music"` and `docker-compose.yml:12` `${SCAN_PATH:-/data/music}`). All Phase 24 plans correctly use `SCAN_PATH`.
+
+- **D-05 (fallback path):** Originally written as `["/music"]`. The actual default in `src/phaze/config.py:24` and `docker-compose.yml:12` is `/data/music`. All Phase 24 plans correctly use `/data/music`.
+
+- **D-09 / D-12 (SQL string literal casing):** Originally written as `'LIVE'` (uppercase) in the WHERE-clause SQL examples. The actual stored value follows `ScanStatus.LIVE = "live"` (lowercase, matching existing enum-value casing `'running'`, `'completed'`, `'failed'`). All Phase 24 plans correctly use `'live'` lowercase in SQL predicates. The `ScanStatus.LIVE` Python name remains uppercase per StrEnum convention; only the stored/queried value is lowercase.
+</errata>
 
 ---
 

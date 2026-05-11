@@ -41,7 +41,7 @@ Bound to requirements DATA-01..DATA-04 plus compatibility tests. Task IDs use `2
 | # | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
 | 01 | TBD | 0 | infra | — | N/A | infra | `uv run pytest tests/test_migrations/ -x -q` (collects) | ❌ W0 | ⬜ |
-| 02 | TBD | 1 | DATA-01 | T-V5-01 | CHECK rejects hostile slugs (`UPPER`, `--double`, `-leading`, `trailing-`, `under_score`) | integration | `uv run pytest tests/test_models/test_agent.py::test_id_charset_check -x` | ❌ W0 | ⬜ |
+| 02 | TBD | 2 | DATA-01 | T-V5-01 | CHECK rejects hostile slugs (`UPPER`, `--double`, `-leading`, `trailing-`, `under_score`) at SQL INSERT time | integration | `uv run pytest tests/test_migrations/test_012_upgrade.py::test_id_charset_check -x` | ❌ W0 | ⬜ |
 | 03 | TBD | 1 | DATA-01 | — | N/A | unit | `uv run pytest tests/test_models/test_agent.py::test_agents_table_columns -x` | ❌ W0 | ⬜ |
 | 04 | TBD | 1 | DATA-01 | — | N/A | unit | `uv run pytest tests/test_models/test_agent.py::test_scan_roots_is_jsonb -x` | ❌ W0 | ⬜ |
 | 05 | TBD | 1 | DATA-01 | T-V6-01 | `token_hash` nullable; no plaintext token defaults | unit | `uv run pytest tests/test_models/test_agent.py::test_token_hash_nullable -x` | ❌ W0 | ⬜ |

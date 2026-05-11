@@ -655,17 +655,19 @@ async def bulk_upsert_files(...) -> int:
 
 **If this table is empty:** All claims were verified. (It's not empty — three small assumptions worth surfacing.)
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should Phase 24 update `bulk_upsert_files` to use the composite conflict target, or defer to Phase 25?**
    - What we know: Phase 25 will rewrite the upsert path entirely via the HTTP API; Phase 24 is the only chance to keep `just scan` working between phases.
    - What's unclear: Does the team plan to use `just scan` between Phase 24 and Phase 25 lands? If no, deferral is fine.
    - Recommendation: **Update in Phase 24.** Cheap fix; preserves dev-loop continuity; avoids stale-test risk. Add an inline comment pointing at Phase 25 for the real refactor.
+   - RESOLVED: Plan 05 implements the in-Phase update path (preferred per RESEARCH analysis). `bulk_upsert_files` uses the composite conflict target `(agent_id, original_path)` matching migration 013's post-swap unique index; `LEGACY_AGENT_ID` constant stamped on records and ScanBatch construction; Phase 25 will remove the placeholder.
 
 2. **Should the `Agent` model have `relationship("FileRecord", ...)` back-references?**
    - What we know: CONTEXT lists this as deferred ("planner can decide … not strictly needed for Phase 24").
    - What's unclear: Whether Phase 25's CRUD endpoints will need them.
    - Recommendation: **Do not add in Phase 24.** Add a one-line TODO comment in `agent.py` so Phase 25 knows where to wire them. Keeps Phase 24 surface area minimal.
+   - RESOLVED: Phase 24 does NOT add `Agent.files` / `Agent.scan_batches` back-references; Plan 02 explicitly forbids them (`grep -c 'relationship(' src/phaze/models/agent.py` returns 0). Deferred to Phase 25+ when CRUD endpoints have a concrete consumer.
 
 ## Environment Availability
 
