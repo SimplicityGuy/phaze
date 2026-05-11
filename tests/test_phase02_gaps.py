@@ -27,13 +27,14 @@ from phaze.services.ingestion import run_scan
 # ---------------------------------------------------------------------------
 
 
-def test_scan_status_has_three_values() -> None:
-    """ScanStatus enum contains exactly RUNNING, COMPLETED, FAILED."""
+def test_scan_status_has_four_values() -> None:
+    """ScanStatus enum contains exactly RUNNING, COMPLETED, FAILED, LIVE."""
     members = list(ScanStatus)
-    assert len(members) == 3
+    assert len(members) == 4
     assert ScanStatus.RUNNING == "running"
     assert ScanStatus.COMPLETED == "completed"
     assert ScanStatus.FAILED == "failed"
+    assert ScanStatus.LIVE == "live"
 
 
 # ---------------------------------------------------------------------------
