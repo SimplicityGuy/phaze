@@ -8,9 +8,10 @@ import uuid
 import pytest
 
 from phaze.constants import FileCategory
+from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.services.hashing import _HASH_CHUNK_SIZE, compute_sha256
-from phaze.services.ingestion import bulk_upsert_files, classify_file, discover_and_hash_files, normalize_path
+from phaze.services.ingestion import LEGACY_AGENT_ID, bulk_upsert_files, classify_file, discover_and_hash_files, normalize_path
 
 
 # --- normalize_path tests ---
@@ -150,7 +151,18 @@ def test_discover_files_record_keys(tmp_path: Path) -> None:
     (tmp_path / "track.flac").write_bytes(b"flac data")
     results = discover_and_hash_files(str(tmp_path), batch_id)
     assert len(results) == 1
-    expected_keys = {"id", "sha256_hash", "original_path", "original_filename", "current_path", "file_type", "file_size", "state", "batch_id"}
+    expected_keys = {
+        "id",
+        "agent_id",
+        "sha256_hash",
+        "original_path",
+        "original_filename",
+        "current_path",
+        "file_type",
+        "file_size",
+        "state",
+        "batch_id",
+    }
     assert set(results[0].keys()) == expected_keys
 
 
@@ -215,14 +227,18 @@ async def test_bulk_upsert_stores_paths(session) -> None:  # type: ignore[no-unt
 
     from phaze.models.scan_batch import ScanBatch, ScanStatus
 
+    session.add(Agent(id=LEGACY_AGENT_ID, name=LEGACY_AGENT_ID, scan_roots=["/music"]))
+    await session.commit()
+
     batch_id = uuid.uuid4()
-    scan_batch = ScanBatch(id=batch_id, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
+    scan_batch = ScanBatch(id=batch_id, agent_id=LEGACY_AGENT_ID, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
     session.add(scan_batch)
     await session.commit()
 
     records = [
         {
             "id": uuid.uuid4(),
+            "agent_id": LEGACY_AGENT_ID,
             "sha256_hash": f"{'a' * 63}{i}",
             "original_path": f"/music/song{i}.mp3",
             "original_filename": f"song{i}.mp3",
@@ -254,13 +270,17 @@ async def test_bulk_upsert_handles_duplicates(session) -> None:  # type: ignore[
 
     from phaze.models.scan_batch import ScanBatch, ScanStatus
 
+    session.add(Agent(id=LEGACY_AGENT_ID, name=LEGACY_AGENT_ID, scan_roots=["/music"]))
+    await session.commit()
+
     batch_id = uuid.uuid4()
-    scan_batch = ScanBatch(id=batch_id, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
+    scan_batch = ScanBatch(id=batch_id, agent_id=LEGACY_AGENT_ID, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0)
     session.add(scan_batch)
     await session.commit()
 
     original_record = {
         "id": uuid.uuid4(),
+        "agent_id": LEGACY_AGENT_ID,
         "sha256_hash": "a" * 64,
         "original_path": "/music/duplicate.mp3",
         "original_filename": "duplicate.mp3",
@@ -277,6 +297,7 @@ async def test_bulk_upsert_handles_duplicates(session) -> None:  # type: ignore[
     # Second insert with same path but different hash
     updated_record = {
         "id": uuid.uuid4(),
+        "agent_id": LEGACY_AGENT_ID,
         "sha256_hash": "b" * 64,
         "original_path": "/music/duplicate.mp3",
         "original_filename": "duplicate.mp3",
@@ -297,3 +318,61 @@ async def test_bulk_upsert_handles_duplicates(session) -> None:  # type: ignore[
     row = row_result.scalar_one()
     assert row.sha256_hash == "b" * 64
     assert row.file_size == 6000
+
+
+@_skip_no_db
+@pytest.mark.asyncio
+async def test_bulk_upsert_same_path_different_agent(session) -> None:  # type: ignore[no-untyped-def]
+    """Composite (agent_id, original_path) UQ allows same path under different agents."""
+    from sqlalchemy import select
+
+    from phaze.models.scan_batch import ScanBatch, ScanStatus
+
+    # Seed two agents
+    session.add(Agent(id=LEGACY_AGENT_ID, name=LEGACY_AGENT_ID, scan_roots=["/music"]))
+    session.add(Agent(id="agent-b", name="agent-b", scan_roots=["/music"]))
+    await session.commit()
+
+    # Seed scan batches (one per agent)
+    batch_legacy = uuid.uuid4()
+    batch_b = uuid.uuid4()
+    session.add(ScanBatch(id=batch_legacy, agent_id=LEGACY_AGENT_ID, scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0))
+    session.add(ScanBatch(id=batch_b, agent_id="agent-b", scan_path="/music", status=ScanStatus.RUNNING, total_files=0, processed_files=0))
+    await session.commit()
+
+    # Two records — same original_path, different agent_id
+    records = [
+        {
+            "id": uuid.uuid4(),
+            "agent_id": LEGACY_AGENT_ID,
+            "sha256_hash": "a" * 64,
+            "original_path": "/music/shared.mp3",
+            "original_filename": "shared.mp3",
+            "current_path": "/music/shared.mp3",
+            "file_type": "mp3",
+            "file_size": 1000,
+            "state": FileState.DISCOVERED,
+            "batch_id": batch_legacy,
+        },
+        {
+            "id": uuid.uuid4(),
+            "agent_id": "agent-b",
+            "sha256_hash": "b" * 64,
+            "original_path": "/music/shared.mp3",
+            "original_filename": "shared.mp3",
+            "current_path": "/music/shared.mp3",
+            "file_type": "mp3",
+            "file_size": 2000,
+            "state": FileState.DISCOVERED,
+            "batch_id": batch_b,
+        },
+    ]
+
+    count = await bulk_upsert_files(session, records, batch_size=10)
+    assert count == 2
+
+    result = await session.execute(select(FileRecord).where(FileRecord.original_path == "/music/shared.mp3"))
+    rows = result.scalars().all()
+    assert len(rows) == 2
+    agent_ids = {r.agent_id for r in rows}
+    assert agent_ids == {LEGACY_AGENT_ID, "agent-b"}
