@@ -40,7 +40,7 @@ jobs:
         run: just security
 
       - name: 🌐 Run osv-scanner
-        uses: google/osv-scanner-action/osv-scanner-action@v2.3.5
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
 
   semgrep:
     name: Semgrep CE Scan
@@ -91,7 +91,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🔑 Run TruffleHog
-        uses: trufflesecurity/trufflehog@v3.95.2
+        uses: trufflesecurity/trufflehog@v3.95.3
         with:
           path: ./
           extra_args: --only-verified
