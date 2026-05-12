@@ -101,6 +101,8 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 25-04-PLAN.md — Metadata + Fingerprint + Heartbeat routers + schemas + tests (Wave 3)
 - [x] 25-05-PLAN.md — Execution-log router (POST + PATCH monotonic) + schemas + tests (Wave 3)
 - [x] 25-06-PLAN.md — App wiring: register 5 routers in main.py + config knobs (Wave 4)
+- [ ] 25-07-PLAN.md — Gap closure CR-01: agent_metadata partial-PUT NULL clobber + regression test (Wave 1, gap_closure)
+- [ ] 25-08-PLAN.md — Gap closure CR-02: execution-log terminal-state idempotent retry + regression tests (Wave 1, gap_closure)
 **UI hint**: yes
 
 ### Phase 26: Task Code Reorg & HTTP-Backed Agent Worker
