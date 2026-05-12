@@ -106,6 +106,10 @@ async def test_analysis_put_happy_path(seed_test_agent: tuple[Agent, str], sessi
     assert row.style is not None
     assert "electronic=0.90" in row.style
     assert "house=0.60" in row.style
+    # Overflow funnel: wire fields without dedicated columns land in `features` JSONB.
+    assert row.features is not None
+    assert row.features.get("danceability") == 0.85
+    assert row.features.get("energy") == 0.92
 
 
 @pytest.mark.asyncio
@@ -161,8 +165,10 @@ async def test_analysis_partial_put_preserves_other_fields(
     row = result.scalar_one()
     assert row.bpm == 130.0, "partial PUT failed to update bpm"
     assert row.musical_key == "A minor", f"CR-01 regression: musical_key was clobbered to {row.musical_key!r}"
-    assert row.danceability == 0.8, f"CR-01 regression: danceability was clobbered to {row.danceability!r}"
-    assert row.energy == 0.9, f"CR-01 regression: energy was clobbered to {row.energy!r}"
+    # CR-01 invariant: `features` JSONB (carrying funneled danceability/energy) preserved unchanged.
+    assert row.features is not None, "CR-01 regression: features JSONB was wiped by partial PUT"
+    assert row.features.get("danceability") == 0.8, f"CR-01 regression: danceability was clobbered to {row.features.get('danceability')!r}"
+    assert row.features.get("energy") == 0.9, f"CR-01 regression: energy was clobbered to {row.features.get('energy')!r}"
 
 
 @pytest.mark.asyncio
@@ -211,8 +217,7 @@ async def test_analysis_first_put_with_empty_body_creates_row(
     assert row.musical_key is None
     assert row.mood is None
     assert row.style is None
-    assert row.danceability is None
-    assert row.energy is None
+    assert row.features is None  # no overflow fields set -> features stays NULL
 
 
 @pytest.mark.asyncio
