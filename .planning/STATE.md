@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: executing
-stopped_at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
-last_updated: "2026-05-12T21:31:07.730Z"
-last_activity: 2026-05-12 -- Phase 26 Plan 02 complete
+status: Plan 08 complete (Wave 3) -- agent_proposals router with W1 cross-tenant guard
+stopped_at: Phase 26 Plan 08 complete -- PATCH /proposals/{id}/state endpoint landed
+last_updated: "2026-05-12T21:51:12Z"
+last_activity: 2026-05-12 -- Phase 26 Plan 08 complete
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 15
-  percent: 58
+  completed_plans: 18
+  percent: 69
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: 02 (complete) -- Wave 2 PhazeAgentClient + retry funnel + 4-class error hierarchy
-Status: Ready to start Plan 03 (parallel) or proceed through Wave 2 plans
-Last activity: 2026-05-12 -- Phase 26 Plan 02 complete
+Plan: 08 (complete) -- Wave 3 agent_proposals router (PATCH /proposals/{id}/state)
+Status: Plan 08 complete; Plan 03 + 26-02 also already complete; ready for next Wave 3 plan or Wave 2 remainder
+Last activity: 2026-05-12 -- Phase 26 Plan 08 complete
 
-Progress: [█████░░░░░] 58%
+Progress: [██████░░░░] 69%
 
 ## Performance Metrics
 
@@ -80,6 +80,10 @@ Progress: [█████░░░░░] 58%
 - [Phase 26-02]: Tenacity retry funnel via AsyncRetrying async-iterator (not @retry decorator) -- cleaner try/except integration for 4xx/5xx status-code mapping post-loop
 - [Phase 26-02]: PhazeAgentClient bearer token NEVER stored as instance attribute -- lives only inside httpx.AsyncClient.headers (T-26-02-I mitigation)
 - [Phase 26-02]: Parallelization-debt marker pattern: type: ignore[import-not-found] + warn_unused_ignores makes missing-cross-plan-schema diagnostic self-deleting on merge
+- [Phase 26-08]: Cross-tenant guard placement: 403 returns BEFORE state-machine evaluation to prevent timing side-channel via 409 vs 403 (W1 / T-26-08-S2)
+- [Phase 26-08]: Joint Proposal+FileRecord mutation uses single await session.commit() (RESEARCH Pitfall 6 invariant; grep -c '^    await session.commit()$' == 1)
+- [Phase 26-08]: Idempotent same-state PATCH echoes current row state with ZERO DB writes -- does NOT bump updated_at on same-state retry
+- [Phase 26-08]: Mirror agent_execution.py PATCH structure byte-for-byte (no __future__ annotations import, Annotated[AsyncSession, Depends] dep pattern, session.get->404 pattern)
 
 ### Pending Todos
 
@@ -98,9 +102,10 @@ None.
 | 260414-quo | Add Discord notification to docker-publish.yml workflow mirroring discogsography pattern | 2026-04-14 | 9c5cedb | [260414-quo-add-discord-notification-to-docker-publi](./quick/260414-quo-add-discord-notification-to-docker-publi/) |
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
 | Phase 26 P02 | 9min | 2 tasks | 2 files |
+| Phase 26 P08 | 14min | 2 tasks | 3 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T21:31:01.911Z
-Stopped at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
-Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-03-PLAN.md
+Last session: 2026-05-12T21:51:12Z
+Stopped at: Phase 26 Plan 08 complete -- agent_proposals router landed
+Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/ -- next plan TBD by orchestrator

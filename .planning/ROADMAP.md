@@ -123,7 +123,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [ ] 26-05-PLAN.md — GET /api/internal/agent/whoami router + 4 contract tests (Wave 3)
 - [ ] 26-06-PLAN.md — PUT /api/internal/agent/analysis/{file_id} router (idempotent upsert) + 8 contract tests (Wave 3)
 - [ ] 26-07-PLAN.md — POST /api/internal/agent/tracklists router (Redis idempotency cache) + integration tests (Wave 3)
-- [ ] 26-08-PLAN.md — PATCH /api/internal/agent/proposals/{id}/state router (state-machine joint update) + 10 contract tests (Wave 3)
+- [x] 26-08-PLAN.md — PATCH /api/internal/agent/proposals/{id}/state router (state-machine joint update) + 11 contract tests incl. W1 cross-tenant guard (Wave 3)
 - [ ] 26-09-PLAN.md — phaze.tasks.controller SAQ settings module (fileless tasks only) (Wave 4)
 - [ ] 26-10-PLAN.md — phaze.tasks.agent_worker SAQ settings module + tests/test_task_split.py subprocess import-boundary test (D-25) (Wave 5)
 - [ ] 26-11-PLAN.md — Rewrite 5 file-bound task bodies (process_file, extract_file_metadata, fingerprint_file, scan_live_set, execute_approved_batch) to use ctx['api_client'] (Wave 4)
