@@ -94,7 +94,13 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   3. Replaying the same chunk of file upserts, the same proposal mutation, or the same execution-log PATCH with the same natural keys (`(agent_id, original_path)`, `file_id`, `proposal_id`, agent-generated log UUIDs) produces no duplicate rows and the same final state
   4. Setting `agents.revoked_at` on a row immediately causes that agent's next `/api/internal/agent/*` call to be rejected with no application-server restart required (verified by integration test)
   5. The API surface covers, at minimum, file upsert, metadata write, fingerprint write, execution-log create/patch, and heartbeat — all callable end-to-end with an HTTP client
-**Plans**: TBD
+**Plans**: 6 plans
+- [x] 25-01-PLAN.md — Schema foundation: Agent.last_status JSONB + migration 014 + conftest fixtures (Wave 1)
+- [ ] 25-02-PLAN.md — Auth helper module (agent_auth.py) + AUTH-01/AUTH-04 tests (Wave 2)
+- [ ] 25-03-PLAN.md — Files router + xmax regression test + schemas + auto-enqueue (Wave 3)
+- [ ] 25-04-PLAN.md — Metadata + Fingerprint + Heartbeat routers + schemas + tests (Wave 3)
+- [ ] 25-05-PLAN.md — Execution-log router (POST + PATCH monotonic) + schemas + tests (Wave 3)
+- [ ] 25-06-PLAN.md — App wiring: register 5 routers in main.py + config knobs (Wave 4)
 **UI hint**: yes
 
 ### Phase 26: Task Code Reorg & HTTP-Backed Agent Worker
