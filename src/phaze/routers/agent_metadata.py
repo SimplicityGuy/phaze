@@ -26,8 +26,15 @@ async def put_metadata(
 ) -> MetadataWriteResponse:
     """Idempotently replace tag-metadata for a file. Natural key: metadata.file_id (UQ from models/metadata.py:18).
 
-    Last-write-wins per D-14: every column in `body.model_dump()` lands in the
-    UPDATE set clause. `agent_id` comes from the auth dep, NEVER from body (AUTH-01).
+    Field-level last-write-wins per D-14: only fields the client *explicitly
+    set* (via Pydantic's exclude-unset dump semantics) land in the UPDATE
+    SET clause. Unset Optional fields preserve whatever was already on the
+    row, matching the natural read of "last write wins per field, not per
+    row". `agent_id` comes from the auth dep, NEVER from body (AUTH-01).
+
+    Empty-body PUT (`{}`) is a no-op against an existing row: the INSERT
+    path falls back to `ON CONFLICT DO NOTHING` (Postgres rejects an empty
+    SET clause). New rows still get an INSERT with whatever fields were set.
 
     PK NOTE: `FileMetadata.id` (models/metadata.py:17) declares
     `default=uuid.uuid4` as a Python-only default. The default fires only
@@ -35,19 +42,30 @@ async def put_metadata(
     therefore stamp `payload["id"] = uuid.uuid4()` explicitly so a fresh
     INSERT doesn't raise `NotNullViolationError`. ON CONFLICT DO UPDATE
     preserves the existing row's id (excluded.id is not in the SET clause).
+
+    Gap closure: CR-01 (25-VERIFICATION.md). Previously the dump call was
+    invoked without `exclude_unset=True`, so every Optional field with
+    default `None` was written to the SET clause, NULLing prior column
+    values on partial replays. Verified end-to-end in 25-VERIFICATION.md.
     """
+    # CR-01 fix: only fields the client explicitly set participate in the UPDATE.
+    dumped = body.model_dump(exclude_unset=True)
     # Stamp PK explicitly because FileMetadata.id has only a Python-side default,
     # which pg_insert bypasses.
-    payload = {**body.model_dump(), "file_id": file_id, "id": uuid.uuid4()}
+    payload = {**dumped, "file_id": file_id, "id": uuid.uuid4()}
     stmt = pg_insert(FileMetadata).values([payload])
-    # `set_` covers ONLY the user-provided fields (D-14 last-write-wins);
-    # excludes file_id AND id from the SET clause (both are conflict-target /
-    # immutable PK -- existing row keeps its existing id).
-    update_keys = set(body.model_dump().keys())
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["file_id"],  # UQ on metadata.file_id per models/metadata.py:18
-        set_={k: stmt.excluded[k] for k in update_keys},
-    )
+    if dumped:
+        # `set_` covers ONLY the user-provided fields (D-14 field-level LWW);
+        # excludes file_id AND id from the SET clause (both are conflict-target /
+        # immutable PK -- existing row keeps its existing id).
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["file_id"],
+            set_={k: stmt.excluded[k] for k in dumped},
+        )
+    else:
+        # Empty body -- no-op for existing rows; INSERT still happens for fresh ones.
+        # Avoids Postgres "SET clause empty" syntax error.
+        stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
     await session.execute(stmt)
     await session.commit()
     return MetadataWriteResponse(agent_id=agent.id, file_id=file_id)
