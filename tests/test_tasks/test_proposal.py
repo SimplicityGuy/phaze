@@ -190,20 +190,20 @@ async def test_generate_proposals_calls_rate_limit(
     mock_rate_limit.assert_called_once_with(ctx["queue"].redis, 30)  # settings.llm_max_rpm default
 
 
-def test_worker_settings_contains_generate_proposals() -> None:
-    """SAQ worker settings functions includes generate_proposals."""
-    from phaze.tasks.worker import settings as worker_settings
+def test_controller_settings_contains_generate_proposals() -> None:
+    """SAQ controller settings functions includes generate_proposals (Phase 26 D-03)."""
+    from phaze.tasks.controller import settings as controller_settings
 
-    func_names = [f.__name__ if callable(f) else str(f) for f in worker_settings["functions"]]
+    func_names = [f.__name__ if callable(f) else str(f) for f in controller_settings["functions"]]
     assert "generate_proposals" in func_names
 
 
-def test_worker_startup_creates_proposal_service() -> None:
-    """startup function initializes proposal_service in context."""
+def test_controller_startup_creates_proposal_service() -> None:
+    """startup function initializes proposal_service in context (Phase 26 D-03)."""
     # We verify by checking the startup function source references ProposalService
     import inspect
 
-    from phaze.tasks.worker import startup
+    from phaze.tasks.controller import startup
 
     source = inspect.getsource(startup)
     assert "proposal_service" in source

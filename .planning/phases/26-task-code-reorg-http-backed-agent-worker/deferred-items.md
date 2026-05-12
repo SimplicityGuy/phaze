@@ -38,3 +38,25 @@ belongs to a later plan or a follow-up cleanup wave.
   properly drops custom enum types in `async_engine` teardown; consider
   running each test module against a uniquely-named test schema; or wrap
   `create_all` in a `DROP TYPE IF EXISTS … CASCADE` preamble.
+
+## D-3: Live-Redis integration tests fail without a running Redis instance
+
+- **Surfaced during:** Plan 26-13 (full test-suite run after legacy deletion)
+- **Affected tests:**
+  - `tests/test_services/test_agent_task_router.py` (4 tests; added by Plan 26-04)
+  - `tests/test_routers/test_agent_tracklists.py` (7 tests; added by Plan 26-07)
+- **Error:** `redis.exceptions.ConnectionError: ... Connect call failed
+  ('127.0.0.1', 6379)`
+- **Pre-existing:** Yes — these tests have required a live Redis since they
+  were introduced. Independent of Plan 26-13's deletions.
+- **Root cause:** Tests construct real SAQ `Queue.from_url(redis://localhost:6379/0)`
+  and exercise enqueue paths against a live broker; the worktree CI sandbox has
+  no Redis sidecar.
+- **Reproducer in worktree:**
+  ```bash
+  uv run pytest tests/test_services/test_agent_task_router.py -x --no-cov
+  ```
+- **Suggested resolution:** Either gate these tests behind a `@pytest.mark.integration`
+  marker and skip when `REDIS_URL` is unset, or stand up a Redis sidecar in the
+  CI matrix. Pure unit-test variants (mock `Queue.enqueue`) would also satisfy
+  the contract; the live-Redis variants are belt-and-suspenders.

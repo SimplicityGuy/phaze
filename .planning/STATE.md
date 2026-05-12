@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: executing
-stopped_at: Phase 26 Plan 11 complete (5 task bodies HTTP-rewritten; D-03 import boundary verified)
-last_updated: "2026-05-12T22:55:00Z"
+stopped_at: Phase 26 Wave 5 complete (Plans 10 + 12); ready for Wave 6 cleanup
+last_updated: "2026-05-12T23:05:23.672Z"
 last_activity: 2026-05-12
 progress:
   total_phases: 3
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 26
-  completed_plans: 25
-  percent: 96
+  completed_plans: 26
+  percent: 100
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: 12 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
+Plan: 13 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
 Status: Ready to execute
 Last activity: 2026-05-12
 
-Progress: [█████████░] 92%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -102,6 +102,7 @@ Progress: [█████████░] 92%
 - [Phase ?]: 26-10: agent_worker SAQ settings module ships with subprocess import-boundary test (D-25) enforcing no phaze.database / sqlalchemy.ext.asyncio in agent import chain
 - [Phase ?]: 26-10: D-13 token-preview banner uses 'auth_id_prefix=' format key (not 'token_preview=') to avoid semgrep secret-detector false-positives; rendered value unchanged
 - [Phase ?]: 26-10: /whoami startup probe budget = exponential 1s→32s = ~63s wall-clock; RuntimeError on exhaustion; queue-name mismatch guard catches PHAZE_AGENT_QUEUE vs token-derived agent_id misconfig
+- [Phase ?]: [Phase 26-13] D-04+D-06 finalized: phaze.tasks.{worker,session} deleted with no back-compat shim; docker-compose worker service rewired to phaze.tasks.controller.settings under PHAZE_ROLE=control; lux_worker→controller doc sweep across PROJECT.md + ROADMAP.md
 
 ### Pending Todos
 
@@ -128,9 +129,10 @@ None.
 | Phase 26 P11 | 30min | 4 tasks | 13 files (5 task bodies rewritten + supporting refactors + 5 test rewrites + new contract test file + phaze.enums package) |
 | Phase 26 P10 | 25min | 3 tasks | 3 files |
 | Phase 26 P12 | 7m 25s | 2 tasks | 3 files |
+| Phase 26 P13 | 11m | 2 tasks | 8 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T22:55:00Z
+Last session: 2026-05-12T23:05:23.667Z
 Stopped at: Phase 26 Wave 5 complete (Plans 10 + 12); ready for Wave 6 cleanup
 Resume file: None
