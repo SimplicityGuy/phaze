@@ -59,7 +59,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 ### v4.0 Distributed Agents (Phases 24-29) — IN PLANNING
 
 - [ ] **Phase 24: Schema Foundation & Agent Registry** — `agents` table, `agent_id` columns on FileRecord/ScanBatch, two-step Alembic migration with legacy backfill
-- [ ] **Phase 25: Internal Agent HTTP API & Bearer Auth** — `/api/internal/agent/*` endpoints, token-hash auth middleware deriving `agent_id` from token, idempotent upserts on natural keys, rotatable tokens
+- [x] **Phase 25: Internal Agent HTTP API & Bearer Auth** — `/api/internal/agent/*` endpoints, token-hash auth middleware deriving `agent_id` from token, idempotent upserts on natural keys, rotatable tokens (completed 2026-05-12)
 - [ ] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.lux_worker` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads
 - [ ] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form
 - [ ] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path
@@ -101,8 +101,8 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 25-04-PLAN.md — Metadata + Fingerprint + Heartbeat routers + schemas + tests (Wave 3)
 - [x] 25-05-PLAN.md — Execution-log router (POST + PATCH monotonic) + schemas + tests (Wave 3)
 - [x] 25-06-PLAN.md — App wiring: register 5 routers in main.py + config knobs (Wave 4)
-- [ ] 25-07-PLAN.md — Gap closure CR-01: agent_metadata partial-PUT NULL clobber + regression test (Wave 1, gap_closure)
-- [ ] 25-08-PLAN.md — Gap closure CR-02: execution-log terminal-state idempotent retry + regression tests (Wave 1, gap_closure)
+- [x] 25-07-PLAN.md — Gap closure CR-01: agent_metadata partial-PUT NULL clobber + regression test (Wave 1, gap_closure)
+- [x] 25-08-PLAN.md — Gap closure CR-02: execution-log terminal-state idempotent retry + regression tests (Wave 1, gap_closure)
 **UI hint**: yes
 
 ### Phase 26: Task Code Reorg & HTTP-Backed Agent Worker
@@ -185,7 +185,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 22. Tracklist Integration Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 23. v3.0 Polish & Wiring Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
-| 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 0/? | Not started | - |
+| 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete   | 2026-05-12 |
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 0/? | Not started | - |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
 | 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
