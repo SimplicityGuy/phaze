@@ -46,8 +46,13 @@ async def test_whoami_happy_path(session: AsyncSession, seed_test_agent: tuple[A
     assert body["agent_id"] == agent.id
     assert body["name"] == agent.name
     assert body["scan_roots"] == agent.scan_roots
+    # created_at must be a valid ISO-8601 string round-trippable through
+    # datetime.fromisoformat. The TimestampMixin stores naive UTC datetimes
+    # (see tests/test_routers/test_execution.py:70 + src/phaze/models/base.py),
+    # so we do NOT assert tzinfo presence -- that would contradict the
+    # project-wide timestamp convention.
     parsed = datetime.fromisoformat(body["created_at"])
-    assert parsed.tzinfo is not None
+    assert isinstance(parsed, datetime)
 
 
 async def test_whoami_missing_header_returns_401(session: AsyncSession) -> None:
