@@ -12,12 +12,22 @@ Why local fixture overrides exist (Rule 3 deviation):
     Test 8 (``test_missing_auth_returns_401``) intentionally uses the
     production ``client`` fixture to verify the route is correctly 404 on the
     production app until Plan 06 wires it.
+
+Plan 26-12 update:
+    Handler refactor swapped the inline ``Queue.from_url(...)`` for the
+    lifespan-wired ``app.state.task_router`` (an ``AgentTaskRouter``). The
+    smoke-app fixture now installs an ``AsyncMock()`` at
+    ``app.state.task_router`` so the handler can call
+    ``await request.app.state.task_router.enqueue_for_agent(...)`` without
+    needing a real Redis connection. Assertions migrate from
+    ``mock_queue.enqueue.await_args_list`` to
+    ``mock_router.enqueue_for_agent.await_args_list``.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 import uuid
 
 from fastapi import FastAPI
@@ -26,7 +36,6 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func as sa_func, select
 
-from phaze.config import settings
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.routers import agent_files
@@ -40,29 +49,51 @@ if TYPE_CHECKING:
     from phaze.models.agent import Agent
 
 
-def _make_smoke_app(session: AsyncSession) -> FastAPI:
-    """Build a FastAPI app wiring agent_files.router so Wave-3 tests can call the real handler."""
+def _make_smoke_app(session: AsyncSession) -> tuple[FastAPI, AsyncMock]:
+    """Build a FastAPI app wiring agent_files.router so Wave-3 tests can call the real handler.
+
+    Returns the app AND the AsyncMock installed at ``app.state.task_router`` so the
+    test can introspect enqueue calls (Plan 26-12 refactor: handler now reads from
+    ``request.app.state.task_router`` instead of constructing a Queue inline).
+    """
     app = FastAPI(title="agent-files-smoke", version="test")
     app.include_router(agent_files.router)
     app.dependency_overrides[get_session] = lambda: session
-    return app
+    mock_router = AsyncMock()
+    app.state.task_router = mock_router
+    return app, mock_router
+
+
+@pytest_asyncio.fixture
+async def smoke_app_and_router(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> AsyncGenerator[tuple[AsyncClient, AsyncMock]]:
+    """Smoke-app fixture exposing both the test client AND the mock task_router.
+
+    Tests that need to assert against enqueue calls (e.g.,
+    ``test_auto_enqueue_only_for_inserts``) consume this fixture; tests that
+    only care about the HTTP response can use ``authenticated_client`` below,
+    which is a thin wrapper that drops the router handle.
+    """
+    _agent, raw_token = seed_test_agent
+    app, mock_router = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        yield ac, mock_router
 
 
 @pytest_asyncio.fixture
 async def authenticated_client(
-    session: AsyncSession,
-    seed_test_agent: tuple[Agent, str],
+    smoke_app_and_router: tuple[AsyncClient, AsyncMock],
 ) -> AsyncGenerator[AsyncClient]:
-    """LOCAL OVERRIDE of conftest.authenticated_client: smoke app with agent_files wired.
+    """LOCAL OVERRIDE of conftest.authenticated_client: drops the router handle for tests that don't need it.
 
     Replaces the conftest version (which uses ``create_app()`` and therefore lacks
     the agent_files router until Plan 06). Same Authorization header convention.
     """
-    _agent, raw_token = seed_test_agent
-    app = _make_smoke_app(session)
-    headers = {"Authorization": f"Bearer {raw_token}"}
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
-        yield ac
+    client, _ = smoke_app_and_router
+    yield client
 
 
 def _make_record(path: str = "/test/music/a.mp3", ext: str = "mp3", size: int = 100) -> dict[str, object]:
@@ -79,9 +110,7 @@ def _make_record(path: str = "/test/music/a.mp3", ext: str = "mp3", size: int = 
 @pytest.mark.asyncio
 async def test_upsert_happy_path(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     agent, _ = seed_test_agent
-    with patch("phaze.routers.agent_files.Queue") as MockQueue:
-        MockQueue.from_url.return_value = AsyncMock()
-        response = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record()]})
+    response = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record()]})
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["agent_id"] == agent.id
@@ -94,10 +123,8 @@ async def test_upsert_happy_path(authenticated_client: AsyncClient, seed_test_ag
 
 @pytest.mark.asyncio
 async def test_replay_no_duplicates(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
-    with patch("phaze.routers.agent_files.Queue") as MockQueue:
-        MockQueue.from_url.return_value = AsyncMock()
-        r1 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record()]})
-        r2 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record()]})
+    r1 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record()]})
+    r2 = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record()]})
     assert r1.status_code == 200
     assert r2.status_code == 200
     result = await session.execute(select(sa_func.count()).select_from(FileRecord))
@@ -105,50 +132,47 @@ async def test_replay_no_duplicates(authenticated_client: AsyncClient, seed_test
 
 
 @pytest.mark.asyncio
-async def test_auto_enqueue_only_for_inserts(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str]) -> None:
+async def test_auto_enqueue_only_for_inserts(smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]) -> None:
+    """D-21/D-22: handler delegates to ``app.state.task_router.enqueue_for_agent`` per INSERTed music/video row."""
+    client, mock_router = smoke_app_and_router
     agent, _ = seed_test_agent
     chunk = {"files": [_make_record(path="/test/music/a.mp3"), _make_record(path="/test/music/b.mp3")]}
-    with patch("phaze.routers.agent_files.Queue") as MockQueue:
-        mock_queue = AsyncMock()
-        MockQueue.from_url.return_value = mock_queue
-        response = await authenticated_client.post("/api/internal/agent/files", json=chunk)
+    response = await client.post("/api/internal/agent/files", json=chunk)
     assert response.status_code == 200
-    MockQueue.from_url.assert_called_once_with(settings.redis_url, name=f"phaze-agent-{agent.id}")
-    assert mock_queue.enqueue.await_count == 2
-    for call in mock_queue.enqueue.await_args_list:
-        args, kwargs = call
-        assert args[0] == "extract_file_metadata"
-        assert "file_id" in kwargs
-        uuid.UUID(kwargs["file_id"])
-    mock_queue.disconnect.assert_awaited_once()
+    assert mock_router.enqueue_for_agent.await_count == 2
+    for call in mock_router.enqueue_for_agent.await_args_list:
+        kwargs = call.kwargs
+        assert kwargs["agent_id"] == agent.id
+        assert kwargs["task_name"] == "extract_file_metadata"
+        payload = kwargs["payload"]
+        # payload is an ExtractMetadataPayload; introspect via attribute access
+        assert isinstance(payload.file_id, uuid.UUID)
+        assert payload.file_type == "mp3"
+        assert payload.agent_id == agent.id
+        assert payload.original_path.startswith("/test/music/")
 
 
 @pytest.mark.asyncio
-async def test_no_enqueue_for_updates(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str]) -> None:
+async def test_no_enqueue_for_updates(smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]) -> None:
+    client, mock_router = smoke_app_and_router
     chunk = {"files": [_make_record()]}
-    with patch("phaze.routers.agent_files.Queue") as MockQueue1:
-        mq1 = AsyncMock()
-        MockQueue1.from_url.return_value = mq1
-        r1 = await authenticated_client.post("/api/internal/agent/files", json=chunk)
-        assert r1.status_code == 200
-        assert mq1.enqueue.await_count == 1
-    with patch("phaze.routers.agent_files.Queue") as MockQueue2:
-        mq2 = AsyncMock()
-        MockQueue2.from_url.return_value = mq2
-        r2 = await authenticated_client.post("/api/internal/agent/files", json=chunk)
-        assert r2.status_code == 200
-        assert mq2.enqueue.await_count == 0
-        body = r2.json()
-        assert body["inserted"] == 0
-        assert body["upserted"] == 1
-        assert body["enqueued"] == 0
+    r1 = await client.post("/api/internal/agent/files", json=chunk)
+    assert r1.status_code == 200
+    assert mock_router.enqueue_for_agent.await_count == 1
+    mock_router.enqueue_for_agent.reset_mock()
+    r2 = await client.post("/api/internal/agent/files", json=chunk)
+    assert r2.status_code == 200
+    assert mock_router.enqueue_for_agent.await_count == 0
+    body = r2.json()
+    assert body["inserted"] == 0
+    assert body["upserted"] == 1
+    assert body["enqueued"] == 0
 
 
 @pytest.mark.asyncio
 async def test_extra_body_field_422(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str]) -> None:
     bad_record = {**_make_record(), "agent_id": "evil"}
-    with patch("phaze.routers.agent_files.Queue"):
-        response = await authenticated_client.post("/api/internal/agent/files", json={"files": [bad_record]})
+    response = await authenticated_client.post("/api/internal/agent/files", json={"files": [bad_record]})
     assert response.status_code == 422
     errors = response.json()["detail"]
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc"))[:4] == ["body", "files", 0, "agent_id"] for e in errors), errors
@@ -156,11 +180,10 @@ async def test_extra_body_field_422(authenticated_client: AsyncClient, seed_test
 
 @pytest.mark.asyncio
 async def test_agent_id_in_body_rejected(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str]) -> None:
-    with patch("phaze.routers.agent_files.Queue"):
-        response = await authenticated_client.post(
-            "/api/internal/agent/files",
-            json={"agent_id": "evil", "files": [_make_record()]},
-        )
+    response = await authenticated_client.post(
+        "/api/internal/agent/files",
+        json={"agent_id": "evil", "files": [_make_record()]},
+    )
     assert response.status_code == 422
     errors = response.json()["detail"]
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
@@ -169,8 +192,7 @@ async def test_agent_id_in_body_rejected(authenticated_client: AsyncClient, seed
 @pytest.mark.asyncio
 async def test_chunk_cap_exceeded_422(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str]) -> None:
     chunk = {"files": [_make_record(path=f"/test/music/{i:04d}.mp3") for i in range(1001)]}
-    with patch("phaze.routers.agent_files.Queue"):
-        response = await authenticated_client.post("/api/internal/agent/files", json=chunk)
+    response = await authenticated_client.post("/api/internal/agent/files", json=chunk)
     assert response.status_code == 422
 
 
@@ -188,9 +210,7 @@ async def test_missing_auth_returns_401(client: AsyncClient) -> None:
 async def test_same_chunk_duplicate_paths_dedup(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     rec1 = _make_record(path="/test/music/dup.mp3")
     rec2 = {**_make_record(path="/test/music/dup.mp3"), "file_size": 999}
-    with patch("phaze.routers.agent_files.Queue") as MockQueue:
-        MockQueue.from_url.return_value = AsyncMock()
-        response = await authenticated_client.post("/api/internal/agent/files", json={"files": [rec1, rec2]})
+    response = await authenticated_client.post("/api/internal/agent/files", json={"files": [rec1, rec2]})
     assert response.status_code == 200, response.text
     result = await session.execute(select(sa_func.count()).select_from(FileRecord))
     assert result.scalar_one() == 1
