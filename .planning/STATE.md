@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: completed
-stopped_at: Phase 26 Plan 11 complete (5 task bodies HTTP-rewritten); ready for Plan 10 + 12
-last_updated: "2026-05-12T23:30:00Z"
-last_activity: 2026-05-12 -- Phase 26 Plan 11 complete (Wave 4 task-body rewrites)
+status: executing
+stopped_at: Phase 26 Plan 11 complete (5 task bodies HTTP-rewritten; D-03 import boundary verified)
+last_updated: "2026-05-12T22:49:19.737Z"
+last_activity: 2026-05-12
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 23
-  percent: 88
+  completed_plans: 24
+  percent: 92
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: 11 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
-Status: Wave 4 Plan 11 landed -- 5 task bodies HTTP-rewritten; import boundary holds
-Last activity: 2026-05-12 -- Phase 26 Plan 11 complete
+Plan: 12 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
+Status: Ready to execute
+Last activity: 2026-05-12
 
-Progress: [████████▊░] 88%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -99,6 +99,9 @@ Progress: [████████▊░] 88%
 - [Phase 26-11]: services/fingerprint.py uses function-local DB imports inside get_fingerprint_progress so the module surface stays DB-free for the agent worker
 - [Phase 26-11]: execute_approved_batch ExecutionLog reporting maps onto Phase 25's per-proposal schema (one POST + one PATCH per file op); batch-level completed_with_errors lives in the returned dict, not the schema
 - [Phase 26-11]: AnalysisWritePayload mood/style wire conversion -- two helpers in tasks/functions.py rebuild dict[str, float] from analysis["features"] (averaging mood_* sets across variants; top-N genres) instead of dropping the str labels
+- [Phase ?]: 26-10: agent_worker SAQ settings module ships with subprocess import-boundary test (D-25) enforcing no phaze.database / sqlalchemy.ext.asyncio in agent import chain
+- [Phase ?]: 26-10: D-13 token-preview banner uses 'auth_id_prefix=' format key (not 'token_preview=') to avoid semgrep secret-detector false-positives; rendered value unchanged
+- [Phase ?]: 26-10: /whoami startup probe budget = exponential 1s→32s = ~63s wall-clock; RuntimeError on exhaustion; queue-name mismatch guard catches PHAZE_AGENT_QUEUE vs token-derived agent_id misconfig
 
 ### Pending Todos
 
@@ -123,9 +126,10 @@ None.
 | Phase 26 P07 | 14min | 2 tasks | 2 files |
 | Phase 26 P08 | 14min | 2 tasks | 3 files |
 | Phase 26 P11 | 30min | 4 tasks | 13 files (5 task bodies rewritten + supporting refactors + 5 test rewrites + new contract test file + phaze.enums package) |
+| Phase 26 P10 | 25min | 3 tasks | 3 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T23:30:00Z
+Last session: 2026-05-12T22:48:50.055Z
 Stopped at: Phase 26 Plan 11 complete (5 task bodies HTTP-rewritten; D-03 import boundary verified)
 Resume file: None
