@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: executing
-stopped_at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
-last_updated: "2026-05-12T21:31:07.730Z"
-last_activity: 2026-05-12 -- Phase 26 Plan 02 complete
+status: Wave 3 in progress -- Plan 07 complete; remaining Wave-3 plans (05/06/08) can run in parallel
+stopped_at: Phase 26 Plan 07 complete -- POST /tracklists with Redis idempotency landed
+last_updated: "2026-05-12T21:51:12Z"
+last_activity: 2026-05-12 -- Phase 26 Plan 07 complete
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 15
-  percent: 58
+  completed_plans: 18
+  percent: 69
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: 02 (complete) -- Wave 2 PhazeAgentClient + retry funnel + 4-class error hierarchy
-Status: Ready to start Plan 03 (parallel) or proceed through Wave 2 plans
-Last activity: 2026-05-12 -- Phase 26 Plan 02 complete
+Plan: 07 (complete) -- Wave 3 POST /api/internal/agent/tracklists with Stripe-style request-id idempotency in Redis
+Status: Wave 3 in progress -- Plan 07 complete; remaining Wave-3 plans (05/06/08) can run in parallel
+Last activity: 2026-05-12 -- Phase 26 Plan 07 complete
 
-Progress: [█████░░░░░] 58%
+Progress: [██████░░░░] 69%
 
 ## Performance Metrics
 
@@ -80,6 +80,11 @@ Progress: [█████░░░░░] 58%
 - [Phase 26-02]: Tenacity retry funnel via AsyncRetrying async-iterator (not @retry decorator) -- cleaner try/except integration for 4xx/5xx status-code mapping post-loop
 - [Phase 26-02]: PhazeAgentClient bearer token NEVER stored as instance attribute -- lives only inside httpx.AsyncClient.headers (T-26-02-I mitigation)
 - [Phase 26-02]: Parallelization-debt marker pattern: type: ignore[import-not-found] + warn_unused_ignores makes missing-cross-plan-schema diagnostic self-deleting on merge
+- [Phase 26-07]: Stripe-style request-id idempotency via Redis SET NX EX -- atomic lock-acquire + bounded-wait concurrent-writer poll (10*50ms -> 409) + cached-response fast-path; 1h TTL
+- [Phase 26-07]: `request.app.state.redis` thin pass-through dep keeps the Redis client lifecycle in main.py lifespan (Plan 26-12) while keeping the handler smoke-app-testable via direct `app.state.redis = client` assignment
+- [Phase 26-07]: Test-module-local Redis fixture (not conftest.py) confines Redis dependency to the one test suite that needs it -- avoids forcing every test to require Redis or pytest.skip plumbing
+- [Phase 26-07]: `sqlalchemy.update(Model)` is mypy-friendly; `Model.__table__.update()` trips `FromClause has no attribute "update"` because mypy types `__table__` as the abstract parent
+- [Phase 26-07]: Cached-response payload-hash check NOT added (T-26-07-T accept); single-operator trust model makes the silent-cached-mismatch scenario benign in practice
 
 ### Pending Todos
 
@@ -98,9 +103,10 @@ None.
 | 260414-quo | Add Discord notification to docker-publish.yml workflow mirroring discogsography pattern | 2026-04-14 | 9c5cedb | [260414-quo-add-discord-notification-to-docker-publi](./quick/260414-quo-add-discord-notification-to-docker-publi/) |
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
 | Phase 26 P02 | 9min | 2 tasks | 2 files |
+| Phase 26 P07 | 14min 31s | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T21:31:01.911Z
-Stopped at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
-Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-03-PLAN.md
+Last session: 2026-05-12T21:51:12Z
+Stopped at: Phase 26 Plan 07 complete -- POST /tracklists with Redis idempotency landed
+Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-05-PLAN.md
