@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: Ready to start Plan 05 (Wave 3 routers) -- Wave 3 router work can begin in parallel
-stopped_at: Phase 26 Plan 04 complete -- AgentTaskRouter (lazy per-agent Queue cache) landed
-last_updated: "2026-05-12T21:41:25Z"
-last_activity: 2026-05-12 -- Phase 26 Plan 04 complete
+status: Executing Wave 3 -- Plans 04 + 05 complete
+stopped_at: Phase 26 Wave 3 in progress
+last_updated: "2026-05-12T21:54:29.544Z"
+last_activity: 2026-05-12 -- Phase 26 Wave 3 plans landing
 progress:
   total_phases: 3
   completed_phases: 2
@@ -83,6 +83,8 @@ Progress: [███████░░░] 73%
 - [Phase 26-04]: AgentTaskRouter cache impl chose plain `dict[str, Queue]` over `functools.cache` (rejected: extra layer for single-instance service) and LRU (rejected: eviction without `.disconnect()` would leak Redis connections; bounded growth not needed for v4.0's 1-5 agent scale)
 - [Phase 26-04]: AgentTaskRouter integration tests use a real Redis (no fakeredis fallback) per D-30 -- SAQ Queue.from_url is not compatible with fakeredis at saq>=0.26.3
 - [Phase 26-04]: Per-agent SAQ queue naming invariant: `phaze-agent-<agent_id>` (D-18); agent_id is the kebab-case slug from Phase 24 D-01, Redis-safe by construction
+- [Phase 26-05]: Smoke-app pattern adopted for per-router contract tests; matches Phase 25 test_agent_metadata.py precedent and decouples Plan 26-12 wiring
+- [Phase 26-05]: /whoami response uses naive UTC created_at -- matches project-wide TimestampMixin convention; deferred timezone-aware migration to a future architectural plan
 
 ### Pending Todos
 
@@ -102,9 +104,10 @@ None.
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
 | Phase 26 P02 | 9min | 2 tasks | 2 files |
 | Phase 26 P04 | 5min | 2 tasks | 2 files |
+| Phase 26 P05 | 18min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T21:41:25Z
-Stopped at: Phase 26 Plan 04 complete -- AgentTaskRouter (lazy per-agent Queue cache) landed
-Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-05-PLAN.md
+Last session: 2026-05-12T21:54:29Z
+Stopped at: Phase 26 Wave 3 in progress
+Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/
