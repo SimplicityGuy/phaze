@@ -18,11 +18,20 @@ if TYPE_CHECKING:
 
 
 class ProposalStatus(enum.StrEnum):
-    """Status of a rename proposal."""
+    """Status of a rename proposal.
+
+    Phase 26 D-28 extends this enum with EXECUTED and FAILED to support the
+    state-machine transitions emitted by PATCH /api/internal/agent/proposals/{id}/state.
+    Transitions: APPROVED -> EXECUTED or APPROVED -> FAILED (terminal).
+    Re-PATCHing the same terminal state is a 200 idempotent no-op; other
+    transitions return 409.
+    """
 
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    EXECUTED = "executed"
+    FAILED = "failed"
 
 
 class RenameProposal(TimestampMixin, Base):

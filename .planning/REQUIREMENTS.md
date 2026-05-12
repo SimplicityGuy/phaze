@@ -39,8 +39,8 @@ Requirements for Distributed Agents. Each maps to roadmap phases.
 ### Task Execution
 
 - [ ] **TASK-01**: File-bound SAQ tasks (`process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `execute_approved_batch`) run only on agents; their bodies use an HTTP client to the application server instead of an `async_session`
-- [ ] **TASK-02**: Fileless SAQ tasks (`generate_proposals`, `match_tracklist_to_discogs`, `scrape_and_store_tracklist`, `search_tracklist`, `refresh_tracklists` cron) run only on the application-server worker and continue using direct Postgres access
-- [ ] **TASK-03**: Agent task job payloads carry all data the agent needs (`file_id`, `file_path`, `file_type`, model path, etc.) so jobs are self-contained snapshots at enqueue time; agents never read file state from the application server during job execution
+- [x] **TASK-02**: Fileless SAQ tasks (`generate_proposals`, `match_tracklist_to_discogs`, `scrape_and_store_tracklist`, `search_tracklist`, `refresh_tracklists` cron) run only on the application-server worker and continue using direct Postgres access
+- [x] **TASK-03**: Agent task job payloads carry all data the agent needs (`file_id`, `file_path`, `file_type`, model path, etc.) so jobs are self-contained snapshots at enqueue time; agents never read file state from the application server during job execution
 - [ ] **TASK-04**: Each file server runs its own audfprint and panako sidecars indexing only that file server's files; no cross-file-server fingerprint matching is supported in v4.0
 
 ### Distributed Execution
@@ -112,8 +112,8 @@ Explicitly excluded. Documented to prevent scope creep.
 | SCAN-03 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
 | SCAN-04 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
 | TASK-01 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
-| TASK-02 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
-| TASK-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| TASK-02 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
+| TASK-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
 | TASK-04 | Phase 28 — Distributed Execution Dispatch | Pending |
 | EXEC-01 | Phase 28 — Distributed Execution Dispatch | Pending |
 | EXEC-02 | Phase 28 — Distributed Execution Dispatch | Pending |

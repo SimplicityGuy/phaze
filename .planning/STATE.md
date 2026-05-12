@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: "Phase 25 shipped — PR #56"
-stopped_at: Phase 22 context gathered
-last_updated: "2026-05-12T04:06:29.028Z"
-last_activity: 2026-05-11
+status: executing
+stopped_at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
+last_updated: "2026-05-12T21:31:07.730Z"
+last_activity: 2026-05-12 -- Phase 26 Plan 02 complete
 progress:
-  total_phases: 2
+  total_phases: 3
   completed_phases: 2
-  total_plans: 13
-  completed_plans: 13
-  percent: 100
+  total_plans: 26
+  completed_plans: 15
+  percent: 58
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 25 — Internal Agent HTTP API + Bearer Auth
+**Current focus:** Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker
 
 ## Current Position
 
-Phase: 25
-Plan: Not started
-Status: Phase 25 shipped — PR #56
-Last activity: 2026-05-11
+Phase: 26
+Plan: 02 (complete) -- Wave 2 PhazeAgentClient + retry funnel + 4-class error hierarchy
+Status: Ready to start Plan 03 (parallel) or proceed through Wave 2 plans
+Last activity: 2026-05-12 -- Phase 26 Plan 02 complete
 
-Progress: [██████████] 100% (v3.0)
+Progress: [█████░░░░░] 58%
 
 ## Performance Metrics
 
@@ -73,6 +73,13 @@ Progress: [██████████] 100% (v3.0)
 - [Phase 21]: Dropped from __future__ annotations in CUE router to avoid FastAPI uuid runtime resolution issues
 - [Phase 21-03]: HX-Target header prefix matching for cross-page response routing (tracklist- prefix returns tracklist_card.html)
 - [Phase 21-03]: Dynamic _cue_version attribute on Tracklist ORM objects for UI-only display data
+- [Phase 26-01]: pydantic-settings v2 does NOT comma-split list[str] env vars natively -- Annotated[list[str], NoDecode] + @field_validator(mode="before") is the canonical workaround
+- [Phase 26-01]: pydantic-settings reads env vars by field name absent env_prefix -- AliasChoices(...) per-field is required to map PHAZE_AGENT_* env vars onto bare field names
+- [Phase 26-01]: Module-level `settings: ControlSettings = ...` keeps existing call sites' `settings.llm_*` reads type-checking; agent worker calls get_settings() / AgentSettings() directly per D-14
+- [Phase 26-01]: `Settings = ControlSettings` back-compat alias preserves `from phaze.config import Settings` for test files until they migrate
+- [Phase 26-02]: Tenacity retry funnel via AsyncRetrying async-iterator (not @retry decorator) -- cleaner try/except integration for 4xx/5xx status-code mapping post-loop
+- [Phase 26-02]: PhazeAgentClient bearer token NEVER stored as instance attribute -- lives only inside httpx.AsyncClient.headers (T-26-02-I mitigation)
+- [Phase 26-02]: Parallelization-debt marker pattern: type: ignore[import-not-found] + warn_unused_ignores makes missing-cross-plan-schema diagnostic self-deleting on merge
 
 ### Pending Todos
 
@@ -90,9 +97,10 @@ None.
 | 260410-kco | Add Docker image publishing to GHCR following discogsography pattern | 2026-04-10 | 3f91f93 | [260410-kco-add-docker-image-publishing-to-ghcr-foll](./quick/260410-kco-add-docker-image-publishing-to-ghcr-foll/) |
 | 260414-quo | Add Discord notification to docker-publish.yml workflow mirroring discogsography pattern | 2026-04-14 | 9c5cedb | [260414-quo-add-discord-notification-to-docker-publi](./quick/260414-quo-add-discord-notification-to-docker-publi/) |
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
+| Phase 26 P02 | 9min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-04-04T00:31:09.662Z
-Stopped at: Phase 22 context gathered
-Resume file: .planning/phases/22-tracklist-integration-fixes/22-CONTEXT.md
+Last session: 2026-05-12T21:31:01.911Z
+Stopped at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
+Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-03-PLAN.md
