@@ -118,10 +118,10 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 **Plans**: 13 plans
 - [x] 26-01-PLAN.md — Deps (tenacity + respx + mypy overrides) + settings split (Base/Control/Agent + get_settings) + enum extensions (ProposalStatus.EXECUTED/FAILED, FileState.MOVED/UNCHANGED) (Wave 1)
 - [x] 26-02-PLAN.md — PhazeAgentClient + 4-class error hierarchy + tenacity retry funnel + respx contract tests (Wave 2)
-- [ ] 26-03-PLAN.md — 5 new schema modules (agent_identity, agent_analysis, agent_tracklists, agent_proposals, agent_tasks) (Wave 2)
+- [x] 26-03-PLAN.md — 5 new schema modules (agent_identity, agent_analysis, agent_tracklists, agent_proposals, agent_tasks) (Wave 2)
 - [ ] 26-04-PLAN.md — AgentTaskRouter + Redis integration tests (Wave 2)
 - [ ] 26-05-PLAN.md — GET /api/internal/agent/whoami router + 4 contract tests (Wave 3)
-- [ ] 26-06-PLAN.md — PUT /api/internal/agent/analysis/{file_id} router (idempotent upsert) + 8 contract tests (Wave 3)
+- [x] 26-06-PLAN.md — PUT /api/internal/agent/analysis/{file_id} router (idempotent upsert) + 8 contract tests (Wave 3)
 - [ ] 26-07-PLAN.md — POST /api/internal/agent/tracklists router (Redis idempotency cache) + integration tests (Wave 3)
 - [ ] 26-08-PLAN.md — PATCH /api/internal/agent/proposals/{id}/state router (state-machine joint update) + 10 contract tests (Wave 3)
 - [ ] 26-09-PLAN.md — phaze.tasks.controller SAQ settings module (fileless tasks only) (Wave 4)
