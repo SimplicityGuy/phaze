@@ -8,10 +8,6 @@ import logging
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
-from sqlalchemy import func, select
-
-from phaze.models.file import FileRecord, FileState
-from phaze.models.fingerprint import FingerprintResult
 
 
 if TYPE_CHECKING:
@@ -263,7 +259,17 @@ async def get_fingerprint_progress(session: AsyncSession) -> dict[str, int]:
     - total: count of files eligible for fingerprinting (METADATA_EXTRACTED or later, excluding FAILED)
     - completed: count of files in FINGERPRINTED state
     - failed: count of fingerprint_results with status='failed'
+
+    DB imports are intentionally function-local: this service module is loaded
+    by the agent worker (which is forbidden from importing ``phaze.database`` /
+    ``phaze.models``). Only the controller invokes this function, so lazy
+    imports keep the structural invariant intact (Phase 26 Plan 11 / Plan 10).
     """
+    from sqlalchemy import func, select  # noqa: PLC0415
+
+    from phaze.models.file import FileRecord, FileState  # noqa: PLC0415
+    from phaze.models.fingerprint import FingerprintResult  # noqa: PLC0415
+
     # Total: files in states eligible for fingerprinting
     eligible_states = {
         FileState.METADATA_EXTRACTED,

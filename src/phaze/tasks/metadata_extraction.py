@@ -1,17 +1,25 @@
-"""SAQ task function for audio tag extraction via mutagen."""
+"""SAQ task: extract_file_metadata -- mutagen tag read, posted via HTTP (Phase 26 D-05).
+
+Reads tags from local disk via payload.original_path (NOT current_path -- D-24)
+and posts via ctx["api_client"].put_metadata.
+
+This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
+Enforced by tests/test_task_split.py (Plan 10).
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
-import uuid
-
-from sqlalchemy import select
+from typing import TYPE_CHECKING, Any
 
 from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.models.file import FileRecord, FileState
-from phaze.models.metadata import FileMetadata
+from phaze.schemas.agent_metadata import MetadataWriteRequest
+from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.metadata import extract_tags
+
+
+if TYPE_CHECKING:
+    from phaze.services.agent_client import PhazeAgentClient
 
 
 logger = logging.getLogger(__name__)
@@ -20,49 +28,32 @@ logger = logging.getLogger(__name__)
 _EXTRACTABLE_CATEGORIES = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
 
 
-async def extract_file_metadata(ctx: dict[str, Any], *, file_id: str) -> dict[str, Any]:
-    """Extract audio tags from a single file and store in FileMetadata.
+async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """Extract audio tags from a file on disk and PUT them via HTTP."""
+    payload = ExtractMetadataPayload.model_validate(kwargs)
 
-    Per D-10: extracts from music and video files (not companions).
-    Per D-11: files with no tags get empty FileMetadata row.
-    Per D-04: idempotent -- upserts FileMetadata.
-    Retries with exponential backoff are handled by SAQ queue configuration.
-    """
-    async with ctx["async_session"]() as session:
-        # 1. Fetch file record
-        result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(file_id)))
-        file_record = result.scalar_one_or_none()
-        if file_record is None:
-            return {"file_id": file_id, "status": "not_found"}
+    # Skip companion / unknown file types (parity with prior body)
+    ext = "." + payload.file_type.lower()
+    category = EXTENSION_MAP.get(ext, FileCategory.UNKNOWN)
+    if category not in _EXTRACTABLE_CATEGORIES:
+        return {"file_id": str(payload.file_id), "status": "skipped", "reason": "not_extractable"}
 
-        # 2. Skip companion files (per D-10)
-        ext = "." + file_record.file_type.lower()
-        category = EXTENSION_MAP.get(ext, FileCategory.UNKNOWN)
-        if category not in _EXTRACTABLE_CATEGORIES:
-            return {"file_id": file_id, "status": "skipped", "reason": "not_extractable"}
+    api: PhazeAgentClient = ctx["api_client"]
 
-        # 3. Extract tags (sync, I/O-bound header read)
-        tags = extract_tags(file_record.current_path)
+    # Sync mutagen call -- I/O bound header read on the local file
+    tags = extract_tags(payload.original_path)
 
-        # 4. Upsert FileMetadata row
-        existing = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_record.id))
-        metadata = existing.scalar_one_or_none()
-        if metadata is None:
-            metadata = FileMetadata(file_id=file_record.id)
-            session.add(metadata)
-
-        metadata.artist = tags.artist
-        metadata.title = tags.title
-        metadata.album = tags.album
-        metadata.year = tags.year
-        metadata.genre = tags.genre
-        metadata.track_number = tags.track_number
-        metadata.duration = tags.duration
-        metadata.bitrate = tags.bitrate
-        metadata.raw_tags = tags.raw_tags
-
-        # 5. Transition state to METADATA_EXTRACTED (per D-03)
-        file_record.state = FileState.METADATA_EXTRACTED
-
-        await session.commit()
-        return {"file_id": file_id, "status": "extracted"}
+    # Map to Phase 25 MetadataWriteRequest schema; PUT idempotent upsert (CR-01 field-level LWW)
+    body = MetadataWriteRequest(
+        artist=tags.artist,
+        title=tags.title,
+        album=tags.album,
+        year=tags.year,
+        genre=tags.genre,
+        track_number=tags.track_number,
+        duration=tags.duration,
+        bitrate=tags.bitrate,
+        raw_tags=tags.raw_tags,
+    )
+    await api.put_metadata(payload.file_id, body)
+    return {"file_id": str(payload.file_id), "status": "extracted"}

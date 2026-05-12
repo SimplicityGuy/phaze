@@ -1,4 +1,4 @@
-"""Tests for task functions."""
+"""Tests for the HTTP-rewritten process_file task (Phase 26 Plan 11)."""
 
 from __future__ import annotations
 
@@ -6,226 +6,178 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+from pydantic import ValidationError
 import pytest
 
-from phaze.tasks.functions import process_file
+from phaze.tasks.functions import (
+    _features_to_mood_dict,
+    _features_to_style_dict,
+    process_file,
+)
 
 
+# Mock essentia analyze_file return value matching analysis.py contract.
 MOCK_ANALYSIS: dict[str, Any] = {
     "bpm": 128.0,
     "musical_key": "C minor",
     "mood": "happy",
     "style": "Electronic/House",
-    "features": {"mood_acoustic": {}, "genre": {"predictions": []}},
+    "features": {
+        "mood_happy": {
+            "musicnn_msd": [{"label": "happy", "prediction": 0.8}, {"label": "not_happy", "prediction": 0.2}],
+            "musicnn_mtt": [{"label": "happy", "prediction": 0.7}, {"label": "not_happy", "prediction": 0.3}],
+            "vggish": [{"label": "happy", "prediction": 0.9}, {"label": "not_happy", "prediction": 0.1}],
+        },
+        "mood_sad": {
+            "musicnn_msd": [{"label": "sad", "prediction": 0.1}, {"label": "not_sad", "prediction": 0.9}],
+            "musicnn_mtt": [{"label": "sad", "prediction": 0.2}, {"label": "not_sad", "prediction": 0.8}],
+            "vggish": [{"label": "sad", "prediction": 0.1}, {"label": "not_sad", "prediction": 0.9}],
+        },
+        "genre": {
+            "predictions": [
+                {"label": "Electronic---House", "confidence": 0.9},
+                {"label": "Electronic---Techno", "confidence": 0.5},
+            ],
+        },
+    },
 }
 
 
-def _make_session_factory(mock_session: AsyncMock) -> MagicMock:
-    """Create a mock async_sessionmaker that returns a context manager yielding mock_session."""
-    factory = MagicMock()
-    cm = AsyncMock()
-    cm.__aenter__ = AsyncMock(return_value=mock_session)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    factory.return_value = cm
-    return factory
+def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
+    """Create a minimal SAQ context dict with an api_client mock."""
+    if api_client is None:
+        api_client = AsyncMock()
+        api_client.put_analysis = AsyncMock(return_value=MagicMock())
+    return {"process_pool": MagicMock(), "api_client": api_client}
 
 
-def _make_ctx(mock_session: AsyncMock | None = None) -> dict[str, Any]:
-    """Create a minimal SAQ context dict."""
-    if mock_session is None:
-        mock_session = AsyncMock()
-    return {"process_pool": MagicMock(), "async_session": _make_session_factory(mock_session), "_mock_session": mock_session}
+def _make_payload_kwargs(file_id: uuid.UUID | None = None, file_type: str = "mp3") -> dict[str, Any]:
+    return {
+        "file_id": str(file_id or uuid.uuid4()),
+        "original_path": "/music/track.mp3",
+        "file_type": file_type,
+        "agent_id": "test-agent",
+        "models_path": "/models",
+    }
 
 
-def _make_file_record(
-    file_id: uuid.UUID | None = None,
-    file_type: str = "mp3",
-    state: str = "discovered",
-    current_path: str = "/music/track.mp3",
-) -> MagicMock:
-    """Create a mock FileRecord."""
-    record = MagicMock()
-    record.id = file_id or uuid.uuid4()
-    record.file_type = file_type
-    record.state = state
-    record.current_path = current_path
-    return record
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+
+def test_features_to_mood_dict_returns_averaged_dict() -> None:
+    """_features_to_mood_dict averages positive-class predictions across variants."""
+    out = _features_to_mood_dict(MOCK_ANALYSIS["features"])
+    assert out is not None
+    # mood_happy: (0.8+0.7+0.9)/3 = 0.8
+    assert out["happy"] == pytest.approx(0.8, rel=1e-3)
+    # mood_sad: (0.1+0.2+0.1)/3 = 0.133
+    assert out["sad"] == pytest.approx(0.1333, rel=1e-2)
+
+
+def test_features_to_mood_dict_returns_none_for_empty() -> None:
+    """No mood sets -> None."""
+    assert _features_to_mood_dict({}) is None
+    assert _features_to_mood_dict({"genre": {"predictions": []}}) is None
+
+
+def test_features_to_style_dict_returns_normalized_labels() -> None:
+    """_features_to_style_dict replaces ``---`` with ``/`` in labels."""
+    out = _features_to_style_dict(MOCK_ANALYSIS["features"])
+    assert out is not None
+    assert out["Electronic/House"] == pytest.approx(0.9, rel=1e-3)
+    assert out["Electronic/Techno"] == pytest.approx(0.5, rel=1e-3)
+
+
+def test_features_to_style_dict_returns_none_for_empty() -> None:
+    """Missing/empty genre -> None."""
+    assert _features_to_style_dict({}) is None
+    assert _features_to_style_dict({"genre": {"predictions": []}}) is None
+    assert _features_to_style_dict({"genre": {}}) is None
+
+
+# ---------------------------------------------------------------------------
+# process_file behavior
+# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_calls_analyze(mock_pool: AsyncMock) -> None:
-    """process_file calls run_in_process_pool with analyze_file, file's current_path, and models_path."""
+async def test_process_file_calls_put_analysis(mock_pool: AsyncMock) -> None:
+    """process_file calls api.put_analysis with the right schema after running essentia."""
     file_id = uuid.uuid4()
-    file_record = _make_file_record(file_id=file_id)
-
-    mock_session = AsyncMock()
-
-    # First execute returns FileRecord, second returns None (no existing AnalysisResult)
-    mock_result_1 = MagicMock()
-    mock_result_1.scalar_one_or_none.return_value = file_record
-    mock_result_2 = MagicMock()
-    mock_result_2.scalar_one_or_none.return_value = None
-    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
-
     mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
 
-    ctx = _make_ctx(mock_session=mock_session)
-    await process_file(ctx, file_id=str(file_id))
+    ctx = _make_ctx(api_client=api)
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
 
-    mock_pool.assert_called_once()
-    call_args = mock_pool.call_args
-    # First positional arg is ctx, second is analyze_file function, third is path, fourth is models_path
-    assert call_args[0][2] == "/music/track.mp3"
-
-
-async def test_process_file_not_found() -> None:
-    """process_file for a non-existent file_id returns status 'not_found'."""
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_session.execute.return_value = mock_result
-
-    ctx = _make_ctx(mock_session=mock_session)
-    result = await process_file(ctx, file_id=str(uuid.uuid4()))
-
-    assert result["status"] == "not_found"
+    assert result["status"] == "analyzed"
+    assert result["file_id"] == str(file_id)
+    mock_pool.assert_awaited_once()
+    api.put_analysis.assert_awaited_once()
+    # Verify payload shape
+    awaited_call = api.put_analysis.await_args
+    assert awaited_call.args[0] == file_id
+    body = awaited_call.args[1]
+    assert body.bpm == 128.0
+    assert body.musical_key == "C minor"
+    assert isinstance(body.mood, dict)
+    assert isinstance(body.style, dict)
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
 async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
-    """process_file for a file with file_type not music returns status 'skipped' without calling analyze."""
-    file_id = uuid.uuid4()
-    file_record = _make_file_record(file_id=file_id, file_type="jpg")
+    """Non-music file_types short-circuit before pool + HTTP call."""
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    ctx = _make_ctx(api_client=api)
 
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = file_record
-    mock_session.execute.return_value = mock_result
-
-    ctx = _make_ctx(mock_session=mock_session)
-    result = await process_file(ctx, file_id=str(file_id))
+    result = await process_file(ctx, **_make_payload_kwargs(file_type="jpg"))
 
     assert result["status"] == "skipped"
-    mock_pool.assert_not_called()
+    assert result["reason"] == "not_music"
+    mock_pool.assert_not_awaited()
+    api.put_analysis.assert_not_awaited()
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_stores_analysis_result(mock_pool: AsyncMock) -> None:
-    """process_file upserts AnalysisResult with bpm, mood, style, musical_key, features from analyze_file return value."""
-    file_id = uuid.uuid4()
-    file_record = _make_file_record(file_id=file_id)
+async def test_process_file_propagates_pool_failure(mock_pool: AsyncMock) -> None:
+    """If essentia raises, process_file re-raises (SAQ will retry)."""
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    mock_pool.side_effect = RuntimeError("essentia died")
+    ctx = _make_ctx(api_client=api)
 
-    mock_session = AsyncMock()
+    with pytest.raises(RuntimeError, match="essentia died"):
+        await process_file(ctx, **_make_payload_kwargs())
+    api.put_analysis.assert_not_awaited()
 
-    mock_result_1 = MagicMock()
-    mock_result_1.scalar_one_or_none.return_value = file_record
-    mock_result_2 = MagicMock()
-    mock_result_2.scalar_one_or_none.return_value = None  # No existing analysis
-    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
 
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_propagates_http_failure(mock_pool: AsyncMock) -> None:
+    """If put_analysis raises (5xx after retries), process_file re-raises."""
     mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(side_effect=RuntimeError("server is down"))
+    ctx = _make_ctx(api_client=api)
 
-    ctx = _make_ctx(mock_session=mock_session)
-    result = await process_file(ctx, file_id=str(file_id))
-
-    assert result["status"] == "analyzed"
-    # Verify session.add was called (new AnalysisResult created)
-    mock_session.add.assert_called_once()
-    added_obj = mock_session.add.call_args[0][0]
-    assert added_obj.bpm == 128.0
-    assert added_obj.musical_key == "C minor"
-    assert added_obj.mood == "happy"
-    assert added_obj.style == "Electronic/House"
-    assert added_obj.features == MOCK_ANALYSIS["features"]
+    with pytest.raises(RuntimeError, match="server is down"):
+        await process_file(ctx, **_make_payload_kwargs())
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_updates_file_state(mock_pool: AsyncMock) -> None:
-    """process_file updates FileRecord.state to FileState.ANALYZED after successful analysis."""
-    file_id = uuid.uuid4()
-    file_record = _make_file_record(file_id=file_id)
+async def test_process_file_rejects_extra_kwargs(mock_pool: AsyncMock) -> None:
+    """ProcessFilePayload.extra='forbid' should reject unknown fields."""
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    ctx = _make_ctx(api_client=api)
 
-    mock_session = AsyncMock()
+    bad_kwargs = _make_payload_kwargs()
+    bad_kwargs["bogus_field"] = "x"
 
-    mock_result_1 = MagicMock()
-    mock_result_1.scalar_one_or_none.return_value = file_record
-    mock_result_2 = MagicMock()
-    mock_result_2.scalar_one_or_none.return_value = None
-    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
-
-    mock_pool.return_value = MOCK_ANALYSIS
-
-    ctx = _make_ctx(mock_session=mock_session)
-    await process_file(ctx, file_id=str(file_id))
-
-    assert file_record.state == "analyzed"
-
-
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_raises_on_failure(mock_pool: AsyncMock) -> None:
-    """process_file raises exception when analyze_file fails (SAQ handles retry)."""
-    mock_session = AsyncMock()
-
-    file_record = _make_file_record()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = file_record
-    mock_session.execute.return_value = mock_result
-
-    mock_pool.side_effect = RuntimeError("analysis failed")
-
-    ctx = _make_ctx(mock_session=mock_session)
-    with pytest.raises(RuntimeError, match="analysis failed"):
-        await process_file(ctx, file_id=str(uuid.uuid4()))
-
-
-# ---------------------------------------------------------------------------
-# VALIDATION.md named tests -- ANL-01+02 pipeline integration coverage
-# ---------------------------------------------------------------------------
-
-
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_analysis(mock_pool: AsyncMock) -> None:
-    """ANL-01+02: process_file calls analysis via run_in_process_pool and returns 'analyzed' status."""
-    file_id = uuid.uuid4()
-    file_record = _make_file_record(file_id=file_id)
-
-    mock_session = AsyncMock()
-
-    mock_result_1 = MagicMock()
-    mock_result_1.scalar_one_or_none.return_value = file_record
-    mock_result_2 = MagicMock()
-    mock_result_2.scalar_one_or_none.return_value = None
-    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
-
-    mock_pool.return_value = MOCK_ANALYSIS
-
-    ctx = _make_ctx(mock_session=mock_session)
-    result = await process_file(ctx, file_id=str(file_id))
-
-    # Pool was called with analyze_file and correct path
-    mock_pool.assert_called_once()
-    call_args = mock_pool.call_args[0]
-    assert call_args[2] == "/music/track.mp3"
-
-    # Result bpm and mood stored
-    added_obj = mock_session.add.call_args[0][0]
-    assert added_obj.bpm == 128.0
-    assert added_obj.mood == "happy"
-    assert result["status"] == "analyzed"
-
-
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_retry(mock_pool: AsyncMock) -> None:
-    """ANL-01+02: process_file raises exception when analysis fails; SAQ retries automatically."""
-    mock_session = AsyncMock()
-
-    file_record = _make_file_record()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = file_record
-    mock_session.execute.return_value = mock_result
-
-    mock_pool.side_effect = RuntimeError("process pool crashed")
-
-    ctx = _make_ctx(mock_session=mock_session)
-    with pytest.raises(RuntimeError, match="process pool crashed"):
-        await process_file(ctx, file_id=str(uuid.uuid4()))
+    with pytest.raises(ValidationError):
+        await process_file(ctx, **bad_kwargs)
+    mock_pool.assert_not_awaited()
+    api.put_analysis.assert_not_awaited()
