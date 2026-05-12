@@ -14,7 +14,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from phaze.models.execution import ExecutionStatus
+from phaze.enums.execution import ExecutionStatus
 
 
 class ExecutionLogCreate(BaseModel):

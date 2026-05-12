@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: Wave 3 complete -- All 5 plans (04-08) landed
-stopped_at: Phase 26 Wave 3 complete; ready for Wave 4
-last_updated: "2026-05-12T22:00:00Z"
-last_activity: 2026-05-12 -- Phase 26 Wave 3 complete
+status: completed
+stopped_at: Phase 26 Plan 11 complete (5 task bodies HTTP-rewritten); ready for Plan 10 + 12
+last_updated: "2026-05-12T23:30:00Z"
+last_activity: 2026-05-12 -- Phase 26 Plan 11 complete (Wave 4 task-body rewrites)
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 22
-  percent: 85
+  completed_plans: 23
+  percent: 88
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: Wave 3 complete (04-08 all landed)
-Status: Wave 3 complete -- ready for Wave 4 (controller + task rewrites)
-Last activity: 2026-05-12 -- Phase 26 Wave 3 complete
+Plan: 11 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
+Status: Wave 4 Plan 11 landed -- 5 task bodies HTTP-rewritten; import boundary holds
+Last activity: 2026-05-12 -- Phase 26 Plan 11 complete
 
-Progress: [████████░░] 85%
+Progress: [████████▊░] 88%
 
 ## Performance Metrics
 
@@ -94,6 +94,11 @@ Progress: [████████░░] 85%
 - [Phase 26-08]: Joint Proposal+FileRecord mutation uses single await session.commit() (RESEARCH Pitfall 6 invariant)
 - [Phase 26-08]: Idempotent same-state PATCH echoes current row state with ZERO DB writes -- does NOT bump updated_at on same-state retry
 - [Phase 26-08]: Mirror agent_execution.py PATCH structure byte-for-byte (Annotated[AsyncSession, Depends] dep pattern, session.get->404 pattern)
+- [Phase 26-11]: ExecutionStatus enum extracted to phaze.enums (DB-free); models/execution.py re-exports it. Schemas under phaze.schemas.agent_* now load without sqlalchemy/phaze.database -- the D-03 import boundary holds for the agent worker
+- [Phase 26-11]: scan_live_set drops in-process FileMetadata artist/title resolution; fingerprint-sourced tracklist rows land with artist=None,title=None. Known v3.0 UI regression deferred to a future Phase 27/28 controller-side enrichment task
+- [Phase 26-11]: services/fingerprint.py uses function-local DB imports inside get_fingerprint_progress so the module surface stays DB-free for the agent worker
+- [Phase 26-11]: execute_approved_batch ExecutionLog reporting maps onto Phase 25's per-proposal schema (one POST + one PATCH per file op); batch-level completed_with_errors lives in the returned dict, not the schema
+- [Phase 26-11]: AnalysisWritePayload mood/style wire conversion -- two helpers in tasks/functions.py rebuild dict[str, float] from analysis["features"] (averaging mood_* sets across variants; top-N genres) instead of dropping the str labels
 
 ### Pending Todos
 
@@ -117,9 +122,10 @@ None.
 | Phase 26 P06 | 13min | 3 tasks | 3 files |
 | Phase 26 P07 | 14min | 2 tasks | 2 files |
 | Phase 26 P08 | 14min | 2 tasks | 3 files |
+| Phase 26 P11 | 30min | 4 tasks | 13 files (5 task bodies rewritten + supporting refactors + 5 test rewrites + new contract test file + phaze.enums package) |
 
 ## Session Continuity
 
-Last session: 2026-05-12T22:00:00Z
-Stopped at: Phase 26 Wave 3 complete (Plans 04-08); ready for Wave 4
-Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/
+Last session: 2026-05-12T23:30:00Z
+Stopped at: Phase 26 Plan 11 complete (5 task bodies HTTP-rewritten; D-03 import boundary verified)
+Resume file: None
