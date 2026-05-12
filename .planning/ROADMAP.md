@@ -128,7 +128,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 26-10-PLAN.md — phaze.tasks.agent_worker SAQ settings module + tests/test_task_split.py subprocess import-boundary test (D-25) (Wave 5)
 - [x] 26-11-PLAN.md — Rewrite 5 file-bound task bodies (process_file, extract_file_metadata, fingerprint_file, scan_live_set, execute_approved_batch) to use ctx['api_client'] (Wave 4) -- COMPLETE 2026-05-12; D-03 import boundary verified; ExecutionStatus moved to phaze.enums; scan_live_set artist/title resolution removed (known v3.0 UI regression for future Phase 27/28 controller-side enrichment)
 - [x] 26-12-PLAN.md — main.py wiring (4 new include_router + app.state.task_router + app.state.redis) + agent_files.py refactor to AgentTaskRouter (Wave 5)
-- [ ] 26-13-PLAN.md — Delete worker.py + session.py + docker-compose.yml controller.settings + lux_worker→controller doc sweep (Wave 6)
+- [ ] 26-13-PLAN.md — Delete worker.py + session.py + docker-compose.yml controller.settings + doc sweep (legacy hostname-leaked name retired in favour of `controller`) (Wave 6)
 
 ### Phase 27: Watcher Service & User-Initiated Scan
 **Goal**: Each file server continuously streams new file arrivals to the application server, and the administrator can also trigger an explicit scan of any path on any agent from the admin UI.
@@ -161,7 +161,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 **Depends on**: Phase 28
 **Requirements**: DIST-01, AUTH-02, AUTH-03, OPS-02, OPS-03, OPS-04
 **Success Criteria** (what must be TRUE):
-  1. The application-server `docker-compose.yml` declares no `SCAN_PATH` or `MODELS_PATH` mount; starting the stack and attempting to read a music file from inside the `api` or `lux_worker` container fails (verified manually) and the application server has no way to read or write file content
+  1. The application-server `docker-compose.yml` declares no `SCAN_PATH` or `MODELS_PATH` mount; starting the stack and attempting to read a music file from inside the `api` or `controller` container fails (verified manually) and the application server has no way to read or write file content
   2. A new `docker-compose.agent.yml` brings up exactly `worker`, `watcher`, `audfprint`, and `panako` on a file server, configured via env (`PHAZE_API_URL`, `PHAZE_REDIS_URL`, `PHAZE_AGENT_TOKEN`, `PHAZE_AGENT_ID`) to reach the application server; running it on a second host registers the agent and begins watching
   3. All agent → application-server traffic uses HTTPS terminated by a self-signed certificate from an application-server-local internal CA; each agent's `httpx` client trusts the CA file and rejects untrusted certs (verified by swapping the CA and observing connection failure)
   4. Redis on the application server requires `requirepass` and is bound only to the private LAN interface; an attempt to connect from outside the LAN or without the password fails, and agents connect with `redis://default:<password>@<host>:6379`
