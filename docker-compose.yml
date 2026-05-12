@@ -16,14 +16,24 @@ services:
       redis:
         condition: service_healthy
 
+  # Application-server worker -- control role (fileless SAQ tasks only).
+  # Phase 26 D-04: replaces the legacy combined SAQ module; the file-bound
+  # half moves to per-agent `phaze.tasks.agent_worker.settings` workers shipped
+  # via docker-compose.agent.yml in Phase 29. PHAZE_ROLE=control selects
+  # ControlSettings in phaze.config.get_settings().
+  # audfprint + panako dependencies removed -- controller is fileless and the
+  # fingerprint sidecars are only reachable from the agent worker. Volumes are
+  # kept for now because the application-server image still contains code paths
+  # that reference SCAN_PATH / MODELS_PATH; Phase 29 will strip them.
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    command: uv run saq phaze.tasks.worker.settings
+    command: uv run saq phaze.tasks.controller.settings
     env_file: .env
     environment:
       - MODELS_PATH=/models
+      - PHAZE_ROLE=control
     volumes:
       - "${SCAN_PATH:-/data/music}:/data/music:ro"
       - "${MODELS_PATH:-./models}:/models:ro"
@@ -32,10 +42,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      audfprint:
-        condition: service_healthy
-      panako:
         condition: service_healthy
 
   postgres:

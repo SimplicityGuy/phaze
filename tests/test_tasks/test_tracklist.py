@@ -310,21 +310,21 @@ async def test_scrape_and_store_tracklist_not_found() -> None:
     assert result["tracks_found"] == 0
 
 
-def test_worker_settings_contains_tracklist_functions() -> None:
-    """SAQ worker settings functions includes search_tracklist and scrape_and_store_tracklist."""
-    from phaze.tasks.worker import settings as worker_settings
+def test_controller_settings_contains_tracklist_functions() -> None:
+    """SAQ controller settings functions includes search_tracklist + scrape_and_store_tracklist (Phase 26 D-03)."""
+    from phaze.tasks.controller import settings as controller_settings
 
-    func_names = [f.__name__ if hasattr(f, "__name__") else str(f) for f in worker_settings["functions"]]
+    func_names = [f.__name__ if hasattr(f, "__name__") else str(f) for f in controller_settings["functions"]]
     assert "search_tracklist" in func_names
     assert "scrape_and_store_tracklist" in func_names
 
 
-def test_worker_settings_has_cron_jobs() -> None:
-    """SAQ worker settings cron_jobs includes refresh_tracklists cron."""
-    from phaze.tasks.worker import settings as worker_settings
+def test_controller_settings_has_cron_jobs() -> None:
+    """SAQ controller settings cron_jobs includes refresh_tracklists cron (Phase 26 D-03)."""
+    from phaze.tasks.controller import settings as controller_settings
 
-    assert "cron_jobs" in worker_settings
-    assert len(worker_settings["cron_jobs"]) >= 1
+    assert "cron_jobs" in controller_settings
+    assert len(controller_settings["cron_jobs"]) >= 1
     # Check the cron job has the right function
-    cron_job = worker_settings["cron_jobs"][0]
+    cron_job = controller_settings["cron_jobs"][0]
     assert cron_job.function.__name__ == "refresh_tracklists"

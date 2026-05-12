@@ -1,11 +1,18 @@
-"""Tests for process pool lifecycle and helpers."""
+"""Tests for process pool lifecycle and helpers.
+
+The process pool is owned by ``phaze.tasks.agent_worker`` (Phase 26 D-03 +
+D-04): only the agent role runs CPU-bound essentia analysis, so the controller
+role does not need a process pool. The agent worker's startup/shutdown
+behaviour is exercised by tests/test_tasks/test_agent_startup_banner.py;
+this file covers the pool helpers themselves.
+"""
+
+from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from phaze.config import settings
 from phaze.tasks.pool import create_process_pool, run_in_process_pool
-from phaze.tasks.worker import shutdown, startup
 
 
 def test_create_process_pool_returns_executor() -> None:
@@ -18,65 +25,10 @@ def test_create_process_pool_returns_executor() -> None:
         pool.shutdown(wait=False)
 
 
-async def test_startup_creates_process_pool(tmp_path) -> None:
-    """startup(ctx) creates ctx['process_pool'] as a ProcessPoolExecutor."""
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
-    (models_dir / "test.pb").write_bytes(b"fake")
-
-    ctx: dict = {}
-    with (
-        patch("phaze.tasks.worker.app_settings") as mock_settings,
-        patch("phaze.tasks.worker.load_prompt_template", return_value="t"),
-        patch("phaze.tasks.worker.ProposalService"),
-        patch("phaze.tasks.worker.create_async_engine"),
-    ):
-        mock_settings.models_path = str(models_dir)
-        mock_settings.llm_model = "test"
-        mock_settings.llm_max_rpm = 30
-        mock_settings.database_url = "postgresql+asyncpg://test:test@localhost/test"
-        mock_settings.debug = False
-        mock_settings.audfprint_url = "http://audfprint:8001"
-        mock_settings.panako_url = "http://panako:8002"
-        mock_settings.discogsography_url = "http://discogsography:8000"
-        await startup(ctx)
-    try:
-        assert "process_pool" in ctx
-        assert isinstance(ctx["process_pool"], ProcessPoolExecutor)
-        assert "async_session" in ctx
-        assert "task_engine" in ctx
-    finally:
-        ctx["process_pool"].shutdown(wait=False)
-
-
-async def test_shutdown_calls_pool_shutdown() -> None:
-    """shutdown(ctx) calls process_pool.shutdown(wait=True) and disposes task_engine."""
-    mock_pool = MagicMock(spec=ProcessPoolExecutor)
-    mock_engine = AsyncMock()
-    ctx: dict = {"process_pool": mock_pool, "task_engine": mock_engine}
-    await shutdown(ctx)
-    mock_pool.shutdown.assert_called_once_with(wait=True)
-    mock_engine.dispose.assert_awaited_once()
-
-
-async def test_shutdown_closes_fingerprint_orchestrator_engines() -> None:
-    """shutdown(ctx) closes fingerprint orchestrator engines that have a close method."""
-    mock_pool = MagicMock(spec=ProcessPoolExecutor)
-    mock_engine = AsyncMock()
-    mock_adapter_with_close = AsyncMock()
-    mock_adapter_with_close.close = AsyncMock()
-    mock_adapter_no_close = MagicMock(spec=[])  # no close method
-    mock_orchestrator = MagicMock()
-    mock_orchestrator.engines = [mock_adapter_with_close, mock_adapter_no_close]
-    ctx: dict = {"process_pool": mock_pool, "task_engine": mock_engine, "fingerprint_orchestrator": mock_orchestrator}
-    await shutdown(ctx)
-    mock_adapter_with_close.close.assert_awaited_once()
-
-
 async def test_run_in_process_pool_executes_function() -> None:
     """run_in_process_pool calls run_in_executor and returns result."""
     pool = ProcessPoolExecutor(max_workers=1)
-    ctx: dict = {"process_pool": pool}
+    ctx: dict[str, object] = {"process_pool": pool}
     try:
         result = await run_in_process_pool(ctx, _double, 21)
         assert result == 42
