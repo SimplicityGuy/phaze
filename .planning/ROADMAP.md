@@ -100,7 +100,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 25-03-PLAN.md — Files router + xmax regression test + schemas + auto-enqueue (Wave 3)
 - [x] 25-04-PLAN.md — Metadata + Fingerprint + Heartbeat routers + schemas + tests (Wave 3)
 - [x] 25-05-PLAN.md — Execution-log router (POST + PATCH monotonic) + schemas + tests (Wave 3)
-- [ ] 25-06-PLAN.md — App wiring: register 5 routers in main.py + config knobs (Wave 4)
+- [x] 25-06-PLAN.md — App wiring: register 5 routers in main.py + config knobs (Wave 4)
 **UI hint**: yes
 
 ### Phase 26: Task Code Reorg & HTTP-Backed Agent Worker
