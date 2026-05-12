@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: Executing Wave 3 -- Plans 04 + 05 + 06 complete
+status: Executing Wave 3 -- Plans 04 + 05 + 06 + 07 complete
 stopped_at: Phase 26 Wave 3 in progress
 last_updated: "2026-05-12T21:54:29.544Z"
 last_activity: 2026-05-12 -- Phase 26 Wave 3 plans landing
@@ -10,8 +10,8 @@ progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 20
-  percent: 77
+  completed_plans: 21
+  percent: 81
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: Wave 3 plans landing (04, 05, 06 complete)
-Status: Executing Wave 3 -- Plans 04 + 05 + 06 complete
+Plan: Wave 3 plans landing (04, 05, 06, 07 complete)
+Status: Executing Wave 3 -- Plans 04 + 05 + 06 + 07 complete
 Last activity: 2026-05-12 -- Phase 26 Wave 3 plans landing
 
-Progress: [████████░░] 77%
+Progress: [████████░░] 81%
 
 ## Performance Metrics
 
@@ -87,6 +87,9 @@ Progress: [████████░░] 77%
 - [Phase 26-05]: /whoami response uses naive UTC created_at -- matches project-wide TimestampMixin convention; deferred timezone-aware migration to a future architectural plan
 - [Phase 26-06]: Overflow funnel pattern -- wire-format fields without a dedicated column (e.g. danceability, energy on AnalysisResult) merge into the row's `features` JSONB column rather than being dropped, preserving D-26's wire contract without an Alembic migration. Future migration can promote to dedicated columns.
 - [Phase 26-06]: Deterministic dict summarization -- `sorted(items, key=lambda kv: (-kv[1], kv[0]))[:N]` two-key sort is the canonical pattern for compacting classifier-score dicts into bounded, replay-safe strings. `reverse=True` single-key sort tiebreaks by insertion order which is non-deterministic.
+- [Phase 26-07]: Stripe-style request-id idempotency via Redis SET NX EX -- atomic lock-acquire + bounded-wait concurrent-writer poll (10*50ms -> 409) + cached-response fast-path; 1h TTL
+- [Phase 26-07]: `request.app.state.redis` thin pass-through dep keeps the Redis client lifecycle in main.py lifespan (Plan 26-12) while keeping the handler smoke-app-testable via direct `app.state.redis = client` assignment
+- [Phase 26-07]: `sqlalchemy.update(Model)` is mypy-friendly; `Model.__table__.update()` trips `FromClause has no attribute "update"` because mypy types `__table__` as the abstract parent
 
 ### Pending Todos
 
@@ -108,6 +111,7 @@ None.
 | Phase 26 P04 | 5min | 2 tasks | 2 files |
 | Phase 26 P05 | 18min | 2 tasks | 2 files |
 | Phase 26 P06 | 13min | 3 tasks | 3 files |
+| Phase 26 P07 | 14min | 2 tasks | 2 files |
 
 ## Session Continuity
 
