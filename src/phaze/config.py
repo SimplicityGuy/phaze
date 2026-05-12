@@ -1,11 +1,30 @@
-"""Pydantic settings configuration for Phaze."""
+"""Pydantic settings configuration for Phaze.
 
-from pydantic import SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+Phase 26 D-14: settings split into a Base class + two role-specific subclasses
+(ControlSettings, AgentSettings) selected at process boot via the `PHAZE_ROLE`
+env var. `get_settings()` is the single dispatch point; module-level
+`settings = get_settings()` is preserved for back-compat with existing
+`from phaze.config import settings` call sites.
+"""
+
+from enum import StrEnum
+from functools import lru_cache
+import os
+from typing import Annotated
+
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    """Application settings loaded from environment variables and .env file."""
+class Role(StrEnum):
+    """v4.0 role selector. Controller = application server (fileless tasks); Agent = file server (file-bound tasks)."""
+
+    CONTROL = "control"
+    AGENT = "agent"
+
+
+class BaseSettings(PydanticBaseSettings):
+    """Fields shared by both roles. Every existing call site `settings.<field>` resolves here unless overridden below."""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -23,41 +42,148 @@ class Settings(BaseSettings):
     # File discovery
     scan_path: str = "/data/music"
 
-    # Audio analysis models (per Phase 5)
+    # Audio analysis models
     models_path: str = "/models"
 
-    # File execution output (per Phase 9 D-08)
+    # File execution output
     output_path: str = "/data/output"
 
-    # Worker / task queue (per Phase 4 decisions D-01 through D-04)
-    worker_max_jobs: int = 8  # D-01: concurrent jobs per worker
-    worker_job_timeout: int = 600  # 10 min per file (generous for audio)
-    worker_max_retries: int = 4  # D-03: max_tries=4 (1 initial + 3 retries)
-    worker_process_pool_size: int = 4  # D-04: CPU-bound worker count
-    worker_health_check_interval: int = 60  # SAQ health check interval in seconds
-    worker_keep_result: int = 3600  # keep job results in Redis for 1 hour
+    # Worker / task queue
+    worker_max_jobs: int = 8
+    worker_job_timeout: int = 600
+    worker_max_retries: int = 4
+    worker_process_pool_size: int = 4
+    worker_health_check_interval: int = 60
+    worker_keep_result: int = 3600
 
     # Fingerprint service URLs (Docker service names)
     audfprint_url: str = "http://audfprint:8001"
     panako_url: str = "http://panako:8002"
 
-    # Discogsography service
+    # Discogsography service URL (shared base; concurrency-tunable on Control)
     discogsography_url: str = "http://discogsography:8000"
-    discogs_match_concurrency: int = 5
-
-    # LLM API keys
-    openai_api_key: SecretStr | None = None
-
-    # LLM configuration (Phase 6 -- per D-17, D-18, D-19)
-    llm_model: str = "claude-sonnet-4-20250514"
-    anthropic_api_key: SecretStr | None = None
-    llm_max_rpm: int = 30  # D-19: max LLM requests per minute
-    llm_batch_size: int = 10  # D-15: files per LLM call (research recommends 10)
-    llm_max_companion_chars: int = 3000  # Max chars per companion file content
 
     # Internal agent API (Phase 25)
-    agent_token_prefix: str = "phaze_agent_"  # noqa: S105  # nosec B105 -- token-namespace prefix, not a password
+    agent_token_prefix: str = "phaze_agent_"  # noqa: S105  # nosec B105
     agent_file_chunk_max: int = 1000
 
 
-settings = Settings()
+class ControlSettings(BaseSettings):
+    """Application-server role: LLM proposal generation, Discogs matching, fileless tasks."""
+
+    # Discogsography
+    discogs_match_concurrency: int = 5
+
+    # LLM API keys + config (Phase 6)
+    openai_api_key: SecretStr | None = None
+    anthropic_api_key: SecretStr | None = None
+    llm_model: str = "claude-sonnet-4-20250514"
+    llm_max_rpm: int = 30
+    llm_batch_size: int = 10
+    llm_max_companion_chars: int = 3000
+
+
+class AgentSettings(BaseSettings):
+    """File-server role: HTTP client to the application server, file-bound SAQ tasks.
+
+    Per D-14: `agent_api_url`, `agent_token`, and `scan_roots` are required when
+    `PHAZE_ROLE=agent`. The validator raises ValueError at construction time if
+    any is missing/empty so the agent worker fails fast with a clear error rather
+    than silently producing 401s or path-traversal rejections at runtime.
+
+    Env var names use the documented `PHAZE_AGENT_*` / `PHAZE_AGENT_SCAN_ROOTS`
+    naming via `validation_alias=AliasChoices(...)` per field. The bare field
+    names (e.g., `AGENT_API_URL`) are also accepted for in-process / pytest
+    monkeypatch convenience.
+    """
+
+    agent_api_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("PHAZE_AGENT_API_URL", "agent_api_url"),
+    )
+    agent_token: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("PHAZE_AGENT_TOKEN", "agent_token"),
+    )
+    scan_roots: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("PHAZE_AGENT_SCAN_ROOTS", "scan_roots"),
+        description=(
+            "Absolute filesystem paths the agent is permitted to read/write. "
+            "Used by execute_approved_batch (Plan 11) for path-traversal containment. "
+            "Set via env var PHAZE_AGENT_SCAN_ROOTS as a comma-separated list "
+            "(e.g., PHAZE_AGENT_SCAN_ROOTS=/data/music,/data/concerts). "
+            "`NoDecode` + `_split_scan_roots` (below) implements the comma-split — "
+            "pydantic-settings would otherwise try to JSON-decode the env value."
+        ),
+    )
+
+    @field_validator("scan_roots", mode="before")
+    @classmethod
+    def _split_scan_roots(cls, value: object) -> object:
+        """Comma-split `PHAZE_AGENT_SCAN_ROOTS` env input into a list[str].
+
+        pydantic-settings does NOT natively comma-split list[str] from env vars
+        (it expects JSON by default). This validator accepts a single string and
+        splits on commas, while leaving native list inputs (e.g., from
+        `AgentSettings(scan_roots=["/a"])`) untouched.
+        """
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @model_validator(mode="after")
+    def _enforce_required_agent_fields(self) -> "AgentSettings":
+        if not self.agent_api_url:
+            raise ValueError("PHAZE_AGENT_API_URL is required when PHAZE_ROLE=agent")
+        if not self.agent_token.get_secret_value():
+            raise ValueError("PHAZE_AGENT_TOKEN is required when PHAZE_ROLE=agent")
+        if not self.scan_roots:
+            raise ValueError("AgentSettings.scan_roots is required when PHAZE_ROLE=agent (set PHAZE_AGENT_SCAN_ROOTS=/path1,/path2)")
+        return self
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> BaseSettings:
+    """Return the role-specific settings instance for this process.
+
+    Reads `PHAZE_ROLE` from the env once (default: "control") and dispatches to the
+    matching subclass. The instance is cached via `lru_cache` so the singleton is
+    constructed exactly once per process.
+    """
+    role = os.environ.get("PHAZE_ROLE", "control")
+    if role == Role.AGENT.value:
+        return AgentSettings()
+    return ControlSettings()
+
+
+def _build_default_settings() -> ControlSettings:
+    """Construct the module-level singleton. Splits out from `get_settings()` so the
+    module-level type checks as `ControlSettings` — every existing call site reads
+    `settings.llm_*` / `settings.discogs_match_concurrency`, which live on
+    `ControlSettings`. When `PHAZE_ROLE=agent`, the agent worker should call
+    `get_settings()` explicitly (or import `AgentSettings`) rather than reading the
+    module-level singleton.
+    """
+    role = os.environ.get("PHAZE_ROLE", "control")
+    if role == Role.AGENT.value:
+        # Agent worker entry points should call get_settings() / AgentSettings()
+        # directly. The module-level singleton stays Control-typed; the worker's
+        # startup hook (Plan 10) will pull the AgentSettings instance via
+        # get_settings() and stash it at ctx["agent_settings"].
+        return ControlSettings()
+    return ControlSettings()
+
+
+# Module-level singleton preserves back-compat with `from phaze.config import settings`.
+# 37+ existing call sites rely on this -- do NOT remove without grep'ing every caller.
+# Typed as ControlSettings because the legacy `Settings` class was effectively the
+# Control superset; the agent worker uses `get_settings()` / `AgentSettings()` directly.
+settings: ControlSettings = _build_default_settings()
+
+# Back-compat alias: the pre-Phase-26 class name was `Settings`. Some test files
+# import the class directly (e.g., `from phaze.config import Settings`). Until those
+# call sites migrate to `ControlSettings` / `AgentSettings` / `get_settings()`, the
+# alias keeps them working — `Settings` resolves to `ControlSettings` (the superset
+# that contains every field the old monolithic class had).
+Settings = ControlSettings
