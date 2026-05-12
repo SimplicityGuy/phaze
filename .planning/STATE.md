@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: executing
-stopped_at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
-last_updated: "2026-05-12T21:31:07.730Z"
-last_activity: 2026-05-12 -- Phase 26 Plan 02 complete
+status: Ready to start Plan 05 (Wave 3 routers) -- Wave 3 router work can begin in parallel
+stopped_at: Phase 26 Plan 04 complete -- AgentTaskRouter (lazy per-agent Queue cache) landed
+last_updated: "2026-05-12T21:41:25Z"
+last_activity: 2026-05-12 -- Phase 26 Plan 04 complete
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 15
-  percent: 58
+  completed_plans: 19
+  percent: 73
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: 02 (complete) -- Wave 2 PhazeAgentClient + retry funnel + 4-class error hierarchy
-Status: Ready to start Plan 03 (parallel) or proceed through Wave 2 plans
-Last activity: 2026-05-12 -- Phase 26 Plan 02 complete
+Plan: 04 (complete) -- Wave 3 AgentTaskRouter (lazy per-agent SAQ Queue cache)
+Status: Ready to start Plan 05 (Wave 3 routers) -- Wave 3 router work can begin in parallel
+Last activity: 2026-05-12 -- Phase 26 Plan 04 complete
 
-Progress: [█████░░░░░] 58%
+Progress: [███████░░░] 73%
 
 ## Performance Metrics
 
@@ -80,6 +80,9 @@ Progress: [█████░░░░░] 58%
 - [Phase 26-02]: Tenacity retry funnel via AsyncRetrying async-iterator (not @retry decorator) -- cleaner try/except integration for 4xx/5xx status-code mapping post-loop
 - [Phase 26-02]: PhazeAgentClient bearer token NEVER stored as instance attribute -- lives only inside httpx.AsyncClient.headers (T-26-02-I mitigation)
 - [Phase 26-02]: Parallelization-debt marker pattern: type: ignore[import-not-found] + warn_unused_ignores makes missing-cross-plan-schema diagnostic self-deleting on merge
+- [Phase 26-04]: AgentTaskRouter cache impl chose plain `dict[str, Queue]` over `functools.cache` (rejected: extra layer for single-instance service) and LRU (rejected: eviction without `.disconnect()` would leak Redis connections; bounded growth not needed for v4.0's 1-5 agent scale)
+- [Phase 26-04]: AgentTaskRouter integration tests use a real Redis (no fakeredis fallback) per D-30 -- SAQ Queue.from_url is not compatible with fakeredis at saq>=0.26.3
+- [Phase 26-04]: Per-agent SAQ queue naming invariant: `phaze-agent-<agent_id>` (D-18); agent_id is the kebab-case slug from Phase 24 D-01, Redis-safe by construction
 
 ### Pending Todos
 
@@ -98,9 +101,10 @@ None.
 | 260414-quo | Add Discord notification to docker-publish.yml workflow mirroring discogsography pattern | 2026-04-14 | 9c5cedb | [260414-quo-add-discord-notification-to-docker-publi](./quick/260414-quo-add-discord-notification-to-docker-publi/) |
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
 | Phase 26 P02 | 9min | 2 tasks | 2 files |
+| Phase 26 P04 | 5min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T21:31:01.911Z
-Stopped at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
-Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-03-PLAN.md
+Last session: 2026-05-12T21:41:25Z
+Stopped at: Phase 26 Plan 04 complete -- AgentTaskRouter (lazy per-agent Queue cache) landed
+Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-05-PLAN.md
