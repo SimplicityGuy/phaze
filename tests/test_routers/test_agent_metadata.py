@@ -142,3 +142,82 @@ async def test_metadata_extra_field_422(seed_test_agent: tuple[Agent, str], sess
     assert response.status_code == 422
     errors = response.json()["detail"]
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
+
+
+@pytest.mark.asyncio
+async def test_metadata_partial_put_preserves_other_fields(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Gap closure CR-01 (25-VERIFICATION.md): partial PUT must NOT null unset fields.
+
+    Reproduction of the bug: PUT a full payload, then PUT a single field, and
+    confirm the unset fields survive. Before the CR-01 fix this test would
+    have failed with `title=None, year=None, album=None` after the partial PUT.
+    Asserts field-level last-write-wins (the natural read of D-14 for the
+    partial-payload case) is now true.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r_full = await ac.put(
+            f"/api/internal/agent/metadata/{file_id}",
+            json={"artist": "Aphex Twin", "title": "Xtal", "year": 1992, "album": "SAW85-92"},
+        )
+        r_partial = await ac.put(
+            f"/api/internal/agent/metadata/{file_id}",
+            json={"artist": "Aphex Twin v2"},
+        )
+
+    assert r_full.status_code == 200, r_full.text
+    assert r_partial.status_code == 200, r_partial.text
+
+    # Re-read directly from the DB so we bypass any response-side glossing.
+    # session needs an expire to drop cached row state from the earlier commits.
+    session.expire_all()
+    result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))
+    row = result.scalar_one()
+    # The partial PUT MUST update the explicitly-set field...
+    assert row.artist == "Aphex Twin v2", "partial PUT failed to update the set field"
+    # ...and MUST preserve every unset prior field (CR-01 regression).
+    assert row.title == "Xtal", f"CR-01 regression: title was clobbered to {row.title!r}"
+    assert row.year == 1992, f"CR-01 regression: year was clobbered to {row.year!r}"
+    assert row.album == "SAW85-92", f"CR-01 regression: album was clobbered to {row.album!r}"
+
+
+@pytest.mark.asyncio
+async def test_metadata_empty_put_is_noop_for_existing_row(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Gap closure CR-01 edge case: PUT with empty body `{}` against existing row -> 200, no field changes.
+
+    Empty model_dump(exclude_unset=True) means there are no fields to UPDATE.
+    The router falls back to `ON CONFLICT DO NOTHING` so Postgres doesn't
+    receive an empty SET clause. The pre-existing row must be untouched.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r_seed = await ac.put(
+            f"/api/internal/agent/metadata/{file_id}",
+            json={"artist": "Aphex Twin", "title": "Xtal"},
+        )
+        r_empty = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={})
+
+    assert r_seed.status_code == 200, r_seed.text
+    assert r_empty.status_code == 200, r_empty.text
+
+    session.expire_all()
+    result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))
+    row = result.scalar_one()
+    assert row.artist == "Aphex Twin"
+    assert row.title == "Xtal"
