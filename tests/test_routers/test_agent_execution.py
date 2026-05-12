@@ -272,3 +272,110 @@ async def test_extra_body_field_422(
     assert response.status_code == 422
     errors = response.json()["detail"]
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
+
+
+@pytest.mark.asyncio
+async def test_same_status_patch_terminal_allowed(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Gap closure CR-02 (25-VERIFICATION.md): COMPLETED -> COMPLETED PATCH must return 200.
+
+    Canonical idempotent retry case: agent writes COMPLETED, network glitch
+    swallows the 200, SAQ retries the job, agent re-sends the same PATCH.
+    Before the CR-02 fix this returned `409 "execution-log status is terminal"`.
+    After the fix it returns 200 and leaves the row in COMPLETED.
+
+    The verification report named this test `test_same_status_patch_terminal_allowed`
+    explicitly; this implementation matches that contract.
+    """
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        r_post = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="completed"),
+        )
+        assert r_post.status_code == 200, r_post.text
+
+        r_patch = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "completed"},
+        )
+        # CR-02: same-status retry against terminal MUST be 200 (idempotent).
+        assert r_patch.status_code == 200, f"CR-02 regression: COMPLETED -> COMPLETED PATCH returned {r_patch.status_code} {r_patch.text!r}"
+        assert r_patch.json()["status"] == "completed"
+
+    session.expire_all()
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    row = result.scalar_one()
+    assert row.status == ExecutionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_same_status_patch_terminal_failed_allowed(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Gap closure CR-02: FAILED -> FAILED PATCH must also return 200.
+
+    Symmetry with COMPLETED -> COMPLETED. Both terminal states must allow
+    same-status idempotent retry — the carve-out in the guard is
+    `cur in _TERMINAL and new != cur`, which applies equally to FAILED and
+    COMPLETED.
+    """
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        r_post = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="failed"),
+        )
+        assert r_post.status_code == 200, r_post.text
+
+        r_patch = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "failed"},
+        )
+        assert r_patch.status_code == 200, f"CR-02 regression: FAILED -> FAILED PATCH returned {r_patch.status_code} {r_patch.text!r}"
+        assert r_patch.json()["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_terminal_completed_to_failed_still_rejected(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Gap closure CR-02 boundary: COMPLETED -> FAILED is STILL 409 'is terminal'.
+
+    The CR-02 carve-out is narrow: ONLY same-status retries against terminal
+    rows are allowed. Crossing from one terminal state to another is still a
+    contract violation (the row's final disposition cannot be retroactively
+    changed) and MUST 409.
+
+    This test prevents a future refactor from over-broadening the carve-out
+    (e.g., accidentally allowing `cur in _TERMINAL and new in _TERMINAL`).
+    """
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="completed"),
+        )
+
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "failed"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "execution-log status is terminal"
