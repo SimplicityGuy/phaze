@@ -52,7 +52,7 @@ Requirements for Distributed Agents. Each maps to roadmap phases.
 
 ### Deployment & Operations
 
-- [ ] **OPS-01**: Both the application-server role and the agent role run from the same Docker image; `PHAZE_ROLE={control,agent}` (or equivalent env) selects which SAQ settings module is loaded and which startup resources are instantiated
+- [x] **OPS-01**: Both the application-server role and the agent role run from the same Docker image; `PHAZE_ROLE={control,agent}` (or equivalent env) selects which SAQ settings module is loaded and which startup resources are instantiated
 - [ ] **OPS-02**: A new `docker-compose.agent.yml` brings up only `worker`, `watcher`, `audfprint`, and `panako` on a file server, configured via env to point at the application server's Redis URL, API URL, and bearer token
 - [ ] **OPS-03**: Each file server runs `just download-models` once at setup to populate its own local `/models` volume; the application server no longer downloads or mounts models
 - [ ] **OPS-04**: Each agent posts a heartbeat to `/api/internal/agent/heartbeat` every 30 seconds; the application server updates `agents.last_seen_at` and exposes an "Agents" admin page listing each agent's status, queue depth, last seen, and revoked state
@@ -119,7 +119,7 @@ Explicitly excluded. Documented to prevent scope creep.
 | EXEC-02 | Phase 28 — Distributed Execution Dispatch | Pending |
 | EXEC-03 | Phase 28 — Distributed Execution Dispatch | Pending |
 | EXEC-04 | Phase 28 — Distributed Execution Dispatch | Pending |
-| OPS-01 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| OPS-01 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
 | OPS-02 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
 | OPS-03 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
 | OPS-04 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
