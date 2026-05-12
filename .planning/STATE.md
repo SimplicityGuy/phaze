@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: executing
-stopped_at: Phase 26 Plan 01 complete -- Wave 0 foundation landed
-last_updated: "2026-05-12T21:15:45.108Z"
-last_activity: 2026-05-12 -- Phase 26 Plan 01 complete
+stopped_at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
+last_updated: "2026-05-12T21:31:07.730Z"
+last_activity: 2026-05-12 -- Phase 26 Plan 02 complete
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 14
-  percent: 54
+  completed_plans: 15
+  percent: 58
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: 01 (complete) -- Wave 0 foundation
-Status: Ready to start Plan 02 (PhazeAgentClient + AgentApiError)
-Last activity: 2026-05-12 -- Phase 26 Plan 01 complete
+Plan: 02 (complete) -- Wave 2 PhazeAgentClient + retry funnel + 4-class error hierarchy
+Status: Ready to start Plan 03 (parallel) or proceed through Wave 2 plans
+Last activity: 2026-05-12 -- Phase 26 Plan 02 complete
 
-Progress: [█████░░░░░] 54%
+Progress: [█████░░░░░] 58%
 
 ## Performance Metrics
 
@@ -77,6 +77,9 @@ Progress: [█████░░░░░] 54%
 - [Phase 26-01]: pydantic-settings reads env vars by field name absent env_prefix -- AliasChoices(...) per-field is required to map PHAZE_AGENT_* env vars onto bare field names
 - [Phase 26-01]: Module-level `settings: ControlSettings = ...` keeps existing call sites' `settings.llm_*` reads type-checking; agent worker calls get_settings() / AgentSettings() directly per D-14
 - [Phase 26-01]: `Settings = ControlSettings` back-compat alias preserves `from phaze.config import Settings` for test files until they migrate
+- [Phase 26-02]: Tenacity retry funnel via AsyncRetrying async-iterator (not @retry decorator) -- cleaner try/except integration for 4xx/5xx status-code mapping post-loop
+- [Phase 26-02]: PhazeAgentClient bearer token NEVER stored as instance attribute -- lives only inside httpx.AsyncClient.headers (T-26-02-I mitigation)
+- [Phase 26-02]: Parallelization-debt marker pattern: type: ignore[import-not-found] + warn_unused_ignores makes missing-cross-plan-schema diagnostic self-deleting on merge
 
 ### Pending Todos
 
@@ -94,9 +97,10 @@ None.
 | 260410-kco | Add Docker image publishing to GHCR following discogsography pattern | 2026-04-10 | 3f91f93 | [260410-kco-add-docker-image-publishing-to-ghcr-foll](./quick/260410-kco-add-docker-image-publishing-to-ghcr-foll/) |
 | 260414-quo | Add Discord notification to docker-publish.yml workflow mirroring discogsography pattern | 2026-04-14 | 9c5cedb | [260414-quo-add-discord-notification-to-docker-publi](./quick/260414-quo-add-discord-notification-to-docker-publi/) |
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
+| Phase 26 P02 | 9min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T21:11:56Z
-Stopped at: Phase 26 Plan 01 complete -- Wave 0 foundation landed
-Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-02-PLAN.md
+Last session: 2026-05-12T21:31:01.911Z
+Stopped at: Phase 26 Plan 02 complete -- PhazeAgentClient + retry funnel landed
+Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-03-PLAN.md

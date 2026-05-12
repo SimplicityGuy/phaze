@@ -116,8 +116,8 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   4. Each agent worker pulls from a per-agent SAQ queue named `phaze-agent-<agent_id>`; the application-server enqueuer selects the queue from `FileRecord.agent_id` and a job enqueued for agent A never executes on agent B
   5. Agent task jobs carry a self-contained payload (`file_id`, `file_path`, `file_type`, model paths, agent metadata) sufficient to execute without any read-back to the application server during the job
 **Plans**: 13 plans
-- [ ] 26-01-PLAN.md — Deps (tenacity + respx + mypy overrides) + settings split (Base/Control/Agent + get_settings) + enum extensions (ProposalStatus.EXECUTED/FAILED, FileState.MOVED/UNCHANGED) (Wave 1)
-- [ ] 26-02-PLAN.md — PhazeAgentClient + 4-class error hierarchy + tenacity retry funnel + respx contract tests (Wave 2)
+- [x] 26-01-PLAN.md — Deps (tenacity + respx + mypy overrides) + settings split (Base/Control/Agent + get_settings) + enum extensions (ProposalStatus.EXECUTED/FAILED, FileState.MOVED/UNCHANGED) (Wave 1)
+- [x] 26-02-PLAN.md — PhazeAgentClient + 4-class error hierarchy + tenacity retry funnel + respx contract tests (Wave 2)
 - [ ] 26-03-PLAN.md — 5 new schema modules (agent_identity, agent_analysis, agent_tracklists, agent_proposals, agent_tasks) (Wave 2)
 - [ ] 26-04-PLAN.md — AgentTaskRouter + Redis integration tests (Wave 2)
 - [ ] 26-05-PLAN.md — GET /api/internal/agent/whoami router + 4 contract tests (Wave 3)
@@ -199,7 +199,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 23. v3.0 Polish & Wiring Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
-| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 0/13 | Not started | - |
+| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 2/13 | In Progress|  |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
 | 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |
