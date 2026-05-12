@@ -85,7 +85,7 @@ async def test_executed_joint_update(session: AsyncSession, seed_test_agent: tup
     assert body["current_path"] == "/new/proposed.mp3"
     # Verify DB state
     await session.commit()
-    await session.expire_all()
+    session.expire_all()
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
     f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert p.status == ProposalStatus.EXECUTED.value
@@ -107,7 +107,7 @@ async def test_failed_joint_update(session: AsyncSession, seed_test_agent: tuple
     assert body["proposal_state"] == "failed"
     assert body["file_state"] == "unchanged"
     await session.commit()
-    await session.expire_all()
+    session.expire_all()
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
     f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert p.status == ProposalStatus.FAILED.value
@@ -131,7 +131,7 @@ async def test_same_state_idempotent_no_op(session: AsyncSession, seed_test_agen
     assert r2.status_code == 200
     # Row stays EXECUTED
     await session.commit()
-    await session.expire_all()
+    session.expire_all()
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
     assert p.status == ProposalStatus.EXECUTED.value
 
