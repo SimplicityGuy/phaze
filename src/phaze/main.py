@@ -11,7 +11,25 @@ from sqlalchemy import text
 
 from phaze.config import settings
 from phaze.database import engine
-from phaze.routers import companion, cue, duplicates, execution, health, pipeline, preview, proposals, scan, search, tags, tracklists
+from phaze.routers import (
+    agent_execution,
+    agent_files,
+    agent_fingerprint,
+    agent_heartbeat,
+    agent_metadata,
+    companion,
+    cue,
+    duplicates,
+    execution,
+    health,
+    pipeline,
+    preview,
+    proposals,
+    scan,
+    search,
+    tags,
+    tracklists,
+)
 
 
 @asynccontextmanager
@@ -42,6 +60,12 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(tags.router)
     app.include_router(cue.router)
+    # Phase 25 internal-agent routers (D-10)
+    app.include_router(agent_files.router)
+    app.include_router(agent_metadata.router)
+    app.include_router(agent_fingerprint.router)
+    app.include_router(agent_execution.router)
+    app.include_router(agent_heartbeat.router)
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
     return app
 

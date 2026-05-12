@@ -55,5 +55,9 @@ class Settings(BaseSettings):
     llm_batch_size: int = 10  # D-15: files per LLM call (research recommends 10)
     llm_max_companion_chars: int = 3000  # Max chars per companion file content
 
+    # Internal agent API (Phase 25)
+    agent_token_prefix: str = "phaze_agent_"  # noqa: S105  # nosec B105 -- token-namespace prefix, not a password
+    agent_file_chunk_max: int = 1000
+
 
 settings = Settings()

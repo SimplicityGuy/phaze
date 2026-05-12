@@ -39,8 +39,22 @@ from tests.test_migrations.conftest import (
 
 @pytest.mark.asyncio
 async def test_agents_table_columns(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-01: agents table has the expected column set after head upgrade."""
-    expected = {"id", "name", "token_hash", "scan_roots", "last_seen_at", "revoked_at", "created_at", "updated_at"}
+    """DATA-01: agents table has the expected column set after head upgrade.
+
+    ``last_status`` was added by migration 014 (phase 25); the head-upgrade column
+    inventory now includes it.
+    """
+    expected = {
+        "id",
+        "name",
+        "token_hash",
+        "scan_roots",
+        "last_seen_at",
+        "revoked_at",
+        "last_status",
+        "created_at",
+        "updated_at",
+    }
     async with migrated_engine.connect() as conn:
         result = await conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'agents'"))
         columns = {row.column_name for row in result.all()}
