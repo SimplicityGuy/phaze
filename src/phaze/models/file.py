@@ -18,7 +18,17 @@ if TYPE_CHECKING:
 
 
 class FileState(enum.StrEnum):
-    """States in the file processing pipeline."""
+    """States in the file processing pipeline.
+
+    Phase 26 D-28 adds MOVED and UNCHANGED. Conceptually:
+    - MOVED  -- agent successfully copy-verified-deleted the file at the new path
+                (set jointly with ProposalStatus.EXECUTED via PATCH /proposals/{id}/state).
+    - UNCHANGED -- proposal execution failed (or was cancelled) and the file remains
+                   at its original path (set jointly with ProposalStatus.FAILED).
+    EXECUTED and FAILED are Phase 25-era state names retained for compatibility with
+    existing execution log emit paths; Phase 28's batch execution will adopt MOVED/UNCHANGED
+    when wiring the PATCH endpoint into the live dispatch loop.
+    """
 
     DISCOVERED = "discovered"
     METADATA_EXTRACTED = "metadata_extracted"
@@ -30,6 +40,8 @@ class FileState(enum.StrEnum):
     EXECUTED = "executed"
     FAILED = "failed"
     DUPLICATE_RESOLVED = "duplicate_resolved"
+    MOVED = "moved"
+    UNCHANGED = "unchanged"
 
 
 class FileRecord(TimestampMixin, Base):
