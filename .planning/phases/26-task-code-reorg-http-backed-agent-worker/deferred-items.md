@@ -1,36 +1,40 @@
-# Phase 26 — Deferred Items
+# Phase 26 — Deferred Items (out-of-scope discoveries during execution)
 
-Issues discovered during plan execution that fall outside the active plan's scope.
-Each item is logged with the plan that surfaced it; resolution belongs to a later
-plan or a follow-up cleanup wave.
+Issues discovered during Phase 26 plan execution that fall outside the active
+plan's scope. Each item is logged with the plan that surfaced it; resolution
+belongs to a later plan or a follow-up cleanup wave.
 
-## Item D-1: Full-suite test flakiness on integration DB fixtures
+## D-1: Full-suite test flakiness on integration DB fixtures
 
-- **Surfaced during:** Plan 26-05 (Wave 3, GET /whoami router); reconfirmed by 26-06, 26-07, 26-08
-- **Symptom:** Running `uv run pytest -q --no-cov` against the full suite (842
-  tests) produces ~56-131 errors and 2 failures, all of the form:
+- **Surfaced during:** Plans 26-05, 26-06, 26-07 (Wave 3 routers)
+- **Symptom:** Running `uv run pytest -q --no-cov` against the full suite
+  produces 56-131 errors and 2 failures of the form:
   - `sqlalchemy.exc.DBAPIError: connection was closed in the middle of operation`
   - `asyncpg.exceptions.ConnectionDoesNotExistError`
-  - `sqlalchemy.exc.IntegrityError: ... duplicate key value violates unique
+  - `sqlalchemy.exc.IntegrityError: duplicate key value violates unique
     constraint "agents_pkey"` (`legacy-application-server`)
-- **Reproducibility:** All affected tests pass cleanly when run in isolation
-  (verified for `tests/test_routers/test_agent_identity.py` — 4/4 pass in
-  isolation; same file shows 4 errors when bundled with the full suite).
+- **Reproducibility:** Affected tests pass cleanly when run in isolation.
 - **Root cause hypothesis:** The `async_engine` fixture in `tests/conftest.py`
-  drops + recreates schema per test and re-seeds the legacy agent; on parallel
-  collection or session reuse the engine teardown races with subsequent
-  fixtures, leaving Postgres connections in a half-closed state. The legacy
-  agent seed lacks `ON CONFLICT DO NOTHING` and collides on shared-DB re-use.
-- **Pre-existing:** Yes — present on the inherited `gsd/phase-26-…` branch tip
-  BEFORE any Wave 3 changes were applied. Verified by checking that the
-  same fixtures + ordering predate the Wave-3 work.
-- **Scope:** Out of scope for the Wave 3 router plans (each plan's
-  `files_modified` is router + its tests only).
-- **Recommendation:** Open a dedicated cleanup plan to (a) scope `async_engine`
-  to `session=session` (or use a per-test transactional rollback fixture in
-  place of full create_all/drop_all), and (b) gate the `legacy-application-server`
-  seed behind a `merge_into_session`/upsert so duplicate-seed contention
-  cannot fire.
-- **Verification of plan deliverables:** Each Wave 3 plan's tests exit 0
-  when run in isolation (e.g. `uv run pytest
-  tests/test_routers/test_agent_identity.py -x -q --no-cov`).
+  drops + recreates schema per test and re-seeds the legacy agent without
+  `ON CONFLICT DO NOTHING`. On parallel collection or session reuse, engine
+  teardown races leave Postgres connections half-closed and seeds collide.
+- **Pre-existing:** Yes — present on the inherited `gsd/phase-26-…` branch
+  before any Wave 3 changes.
+- **Recommendation:** Dedicated cleanup plan: (a) scope `async_engine` to
+  `scope="session"` or use per-test transactional rollback fixture in place
+  of full create_all/drop_all; (b) gate the `legacy-application-server` seed
+  behind an upsert (`INSERT ... ON CONFLICT DO NOTHING`).
+
+## D-2: `test_tags.py` UniqueViolation race in fixture setup
+
+- **Surfaced during:** Plan 26-08 (full test-suite run)
+- **Reproducer:** `uv run pytest tests/test_routers/test_tags.py -x --no-cov`
+- **Error:** `asyncpg.exceptions.UniqueViolationError: duplicate key value
+  violates unique constraint "pg_type_typname_nsp_index"`
+- **Root cause hypothesis:** `Base.metadata.create_all` can race against
+  leftover enum types from a previous interrupted run. Independent of
+  Phase 26 router work — reproduces on a clean tree.
+- **Suggested resolution:** Investigate whether `Base.metadata.drop_all`
+  properly drops custom enum types in `async_engine` teardown; consider
+  running each test module against a uniquely-named test schema; or wrap
+  `create_all` in a `DROP TYPE IF EXISTS … CASCADE` preamble.

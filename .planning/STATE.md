@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: Executing Wave 3 -- Plans 04 + 05 + 06 + 07 complete
-stopped_at: Phase 26 Wave 3 in progress
-last_updated: "2026-05-12T21:54:29.544Z"
-last_activity: 2026-05-12 -- Phase 26 Wave 3 plans landing
+status: Wave 3 complete -- All 5 plans (04-08) landed
+stopped_at: Phase 26 Wave 3 complete; ready for Wave 4
+last_updated: "2026-05-12T22:00:00Z"
+last_activity: 2026-05-12 -- Phase 26 Wave 3 complete
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 21
-  percent: 81
+  completed_plans: 22
+  percent: 85
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: Wave 3 plans landing (04, 05, 06, 07 complete)
-Status: Executing Wave 3 -- Plans 04 + 05 + 06 + 07 complete
-Last activity: 2026-05-12 -- Phase 26 Wave 3 plans landing
+Plan: Wave 3 complete (04-08 all landed)
+Status: Wave 3 complete -- ready for Wave 4 (controller + task rewrites)
+Last activity: 2026-05-12 -- Phase 26 Wave 3 complete
 
-Progress: [████████░░] 81%
+Progress: [████████░░] 85%
 
 ## Performance Metrics
 
@@ -90,6 +90,10 @@ Progress: [████████░░] 81%
 - [Phase 26-07]: Stripe-style request-id idempotency via Redis SET NX EX -- atomic lock-acquire + bounded-wait concurrent-writer poll (10*50ms -> 409) + cached-response fast-path; 1h TTL
 - [Phase 26-07]: `request.app.state.redis` thin pass-through dep keeps the Redis client lifecycle in main.py lifespan (Plan 26-12) while keeping the handler smoke-app-testable via direct `app.state.redis = client` assignment
 - [Phase 26-07]: `sqlalchemy.update(Model)` is mypy-friendly; `Model.__table__.update()` trips `FromClause has no attribute "update"` because mypy types `__table__` as the abstract parent
+- [Phase 26-08]: Cross-tenant guard placement: 403 returns BEFORE state-machine evaluation to prevent timing side-channel via 409 vs 403 (W1 / T-26-08-S2)
+- [Phase 26-08]: Joint Proposal+FileRecord mutation uses single await session.commit() (RESEARCH Pitfall 6 invariant)
+- [Phase 26-08]: Idempotent same-state PATCH echoes current row state with ZERO DB writes -- does NOT bump updated_at on same-state retry
+- [Phase 26-08]: Mirror agent_execution.py PATCH structure byte-for-byte (Annotated[AsyncSession, Depends] dep pattern, session.get->404 pattern)
 
 ### Pending Todos
 
@@ -112,9 +116,10 @@ None.
 | Phase 26 P05 | 18min | 2 tasks | 2 files |
 | Phase 26 P06 | 13min | 3 tasks | 3 files |
 | Phase 26 P07 | 14min | 2 tasks | 2 files |
+| Phase 26 P08 | 14min | 2 tasks | 3 files |
 
 ## Session Continuity
 
-Last session: 2026-05-12T21:54:29Z
-Stopped at: Phase 26 Wave 3 in progress
+Last session: 2026-05-12T22:00:00Z
+Stopped at: Phase 26 Wave 3 complete (Plans 04-08); ready for Wave 4
 Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/
