@@ -60,7 +60,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 
 - [ ] **Phase 24: Schema Foundation & Agent Registry** — `agents` table, `agent_id` columns on FileRecord/ScanBatch, two-step Alembic migration with legacy backfill
 - [x] **Phase 25: Internal Agent HTTP API & Bearer Auth** — `/api/internal/agent/*` endpoints, token-hash auth middleware deriving `agent_id` from token, idempotent upserts on natural keys, rotatable tokens (completed 2026-05-12)
-- [ ] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.controller` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads
+- [x] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.controller` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads (completed 2026-05-12)
 - [ ] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form
 - [ ] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path
 - [ ] **Phase 29: Deployment Hardening & Agents Admin** — strip `SCAN_PATH`/`MODELS_PATH` from application-server compose, self-signed HTTPS w/ internal CA, Redis `requirepass` + LAN binding, `docker-compose.agent.yml`, per-file-server model download, heartbeat + Agents admin page
@@ -128,7 +128,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 26-10-PLAN.md — phaze.tasks.agent_worker SAQ settings module + tests/test_task_split.py subprocess import-boundary test (D-25) (Wave 5)
 - [x] 26-11-PLAN.md — Rewrite 5 file-bound task bodies (process_file, extract_file_metadata, fingerprint_file, scan_live_set, execute_approved_batch) to use ctx['api_client'] (Wave 4) -- COMPLETE 2026-05-12; D-03 import boundary verified; ExecutionStatus moved to phaze.enums; scan_live_set artist/title resolution removed (known v3.0 UI regression for future Phase 27/28 controller-side enrichment)
 - [x] 26-12-PLAN.md — main.py wiring (4 new include_router + app.state.task_router + app.state.redis) + agent_files.py refactor to AgentTaskRouter (Wave 5)
-- [ ] 26-13-PLAN.md — Delete worker.py + session.py + docker-compose.yml controller.settings + doc sweep (legacy hostname-leaked name retired in favour of `controller`) (Wave 6)
+- [x] 26-13-PLAN.md — Delete worker.py + session.py + docker-compose.yml controller.settings + doc sweep (legacy hostname-leaked name retired in favour of `controller`) (Wave 6)
 
 ### Phase 27: Watcher Service & User-Initiated Scan
 **Goal**: Each file server continuously streams new file arrivals to the application server, and the administrator can also trigger an explicit scan of any path on any agent from the admin UI.
@@ -199,7 +199,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 23. v3.0 Polish & Wiring Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
-| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 11/13 | In Progress|  |
+| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
 | 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |
