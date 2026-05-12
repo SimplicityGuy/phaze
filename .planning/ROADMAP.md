@@ -124,10 +124,10 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 26-06-PLAN.md — PUT /api/internal/agent/analysis/{file_id} router (idempotent upsert) + 8 contract tests (Wave 3)
 - [x] 26-07-PLAN.md — POST /api/internal/agent/tracklists router (Redis idempotency cache) + integration tests (Wave 3)
 - [x] 26-08-PLAN.md — PATCH /api/internal/agent/proposals/{id}/state router (state-machine joint update) + 11 contract tests incl. W1 cross-tenant guard (Wave 3)
-- [ ] 26-09-PLAN.md — phaze.tasks.controller SAQ settings module (fileless tasks only) (Wave 4)
+- [x] 26-09-PLAN.md — phaze.tasks.controller SAQ settings module (fileless tasks only) (Wave 4)
 - [ ] 26-10-PLAN.md — phaze.tasks.agent_worker SAQ settings module + tests/test_task_split.py subprocess import-boundary test (D-25) (Wave 5)
 - [x] 26-11-PLAN.md — Rewrite 5 file-bound task bodies (process_file, extract_file_metadata, fingerprint_file, scan_live_set, execute_approved_batch) to use ctx['api_client'] (Wave 4) -- COMPLETE 2026-05-12; D-03 import boundary verified; ExecutionStatus moved to phaze.enums; scan_live_set artist/title resolution removed (known v3.0 UI regression for future Phase 27/28 controller-side enrichment)
-- [ ] 26-12-PLAN.md — main.py wiring (4 new include_router + app.state.task_router + app.state.redis) + agent_files.py refactor to AgentTaskRouter (Wave 5)
+- [x] 26-12-PLAN.md — main.py wiring (4 new include_router + app.state.task_router + app.state.redis) + agent_files.py refactor to AgentTaskRouter (Wave 5)
 - [ ] 26-13-PLAN.md — Delete worker.py + session.py + docker-compose.yml controller.settings + lux_worker→controller doc sweep (Wave 6)
 
 ### Phase 27: Watcher Service & User-Initiated Scan
@@ -199,7 +199,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 23. v3.0 Polish & Wiring Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
-| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 4/13 | In Progress|  |
+| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 11/13 | In Progress|  |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
 | 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |

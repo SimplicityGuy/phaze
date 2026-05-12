@@ -11,7 +11,7 @@ Requirements for Distributed Agents. Each maps to roadmap phases.
 
 - [ ] **DIST-01**: The application server runs the API, UI, Postgres, Redis, and a fileless SAQ worker; it has no `SCAN_PATH` or `MODELS_PATH` filesystem mounts and cannot read or write file content
 - [ ] **DIST-02**: Each file server runs one or more agents (SAQ worker + watcher + audfprint + panako sidecars) that hold local files and execute all file-bearing work locally
-- [ ] **DIST-03**: Each agent pulls jobs from a per-agent SAQ queue named `phaze-agent-<agent_id>` on the application server's Redis; the application server enqueues file-bound jobs onto the correct queue using `FileRecord.agent_id`
+- [x] **DIST-03**: Each agent pulls jobs from a per-agent SAQ queue named `phaze-agent-<agent_id>` on the application server's Redis; the application server enqueues file-bound jobs onto the correct queue using `FileRecord.agent_id`
 - [ ] **DIST-04**: Agents have zero direct Postgres access; every state change (file discovered, analysis result, fingerprint, execution log, heartbeat) is an authenticated HTTPS call to `/api/internal/agent/*` on the application server
 - [ ] **DIST-05**: Every `/api/internal/agent/*` endpoint is idempotent on retry; natural keys (`(agent_id, original_path)`, `file_id`, `proposal_id`, agent-generated log UUIDs) guarantee replay safety
 
@@ -96,7 +96,7 @@ Explicitly excluded. Documented to prevent scope creep.
 |-------------|-------|--------|
 | DIST-01 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
 | DIST-02 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
-| DIST-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Pending |
+| DIST-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
 | DIST-04 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
 | DIST-05 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
 | DATA-01 | Phase 24 — Schema Foundation & Agent Registry | Pending |
