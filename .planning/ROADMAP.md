@@ -96,7 +96,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   5. The API surface covers, at minimum, file upsert, metadata write, fingerprint write, execution-log create/patch, and heartbeat — all callable end-to-end with an HTTP client
 **Plans**: 6 plans
 - [x] 25-01-PLAN.md — Schema foundation: Agent.last_status JSONB + migration 014 + conftest fixtures (Wave 1)
-- [ ] 25-02-PLAN.md — Auth helper module (agent_auth.py) + AUTH-01/AUTH-04 tests (Wave 2)
+- [x] 25-02-PLAN.md — Auth helper module (agent_auth.py) + AUTH-01/AUTH-04 tests (Wave 2)
 - [ ] 25-03-PLAN.md — Files router + xmax regression test + schemas + auto-enqueue (Wave 3)
 - [ ] 25-04-PLAN.md — Metadata + Fingerprint + Heartbeat routers + schemas + tests (Wave 3)
 - [ ] 25-05-PLAN.md — Execution-log router (POST + PATCH monotonic) + schemas + tests (Wave 3)
