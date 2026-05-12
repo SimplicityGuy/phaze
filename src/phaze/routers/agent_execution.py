@@ -90,14 +90,16 @@ async def patch_execution_log(
     """Update an ExecutionLog row. Status transitions are monotonic (D-15).
 
     - 404 if `execution_log_id` does not exist
-    - 409 if current status is terminal (COMPLETED or FAILED) -- detail
-      `"execution-log status is terminal"` (this guard runs BEFORE the regress
-      check so operator triage can distinguish "agent retrying past terminal"
-      from "stale retry walks status backward").
+    - 409 if current status is terminal (COMPLETED or FAILED) AND the proposed
+      status differs from it -- detail `"execution-log status is terminal"`.
+      Note the `new != cur` carve-out: same-status PATCH against a terminal
+      row is the canonical idempotent retry case (agent writes COMPLETED ->
+      network glitch swallows the 200 -> SAQ retries -> agent re-sends the
+      same PATCH) and returns 200. Closes gap CR-02 (25-VERIFICATION.md).
     - 409 if proposed status regresses (e.g., IN_PROGRESS -> PENDING) -- detail
       `"execution-log status would regress"`.
-    - 200 otherwise (same-status PATCH allowed for idempotent retry; comparator
-      is strict `<`, NOT `<=`).
+    - 200 otherwise (same-status PATCH allowed for idempotent retry, including
+      for terminal rows; comparator is strict `<`, NOT `<=`).
     """
     existing = await session.get(ExecutionLog, execution_log_id)
     if existing is None:
@@ -107,8 +109,12 @@ async def patch_execution_log(
     cur = ExecutionStatus(existing.status)
     new = body.status  # already an ExecutionStatus instance (Pydantic-validated)
 
-    # D-15: terminal-state guard runs FIRST (early exit before regress check).
-    if cur in _TERMINAL:
+    # D-15: terminal-state guard runs FIRST, but only when the new status would
+    # actually mutate the row. Same-status PATCH against a terminal row is the
+    # canonical idempotent retry case (agent writes COMPLETED -> network glitch
+    # swallows the 200 -> SAQ retries the job -> agent re-sends same PATCH) and
+    # MUST return 200. Gap closure CR-02 (25-VERIFICATION.md).
+    if cur in _TERMINAL and new != cur:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="execution-log status is terminal")
 
     # D-15: monotonic guard -- `<` (not `<=`) so same-status retry is allowed.
