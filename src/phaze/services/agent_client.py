@@ -36,11 +36,9 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 if TYPE_CHECKING:
     import uuid
 
-    # Phase 26 Plan 03 schemas (parallel; lazy-imported at call time too).
-    # ``type: ignore[import-not-found]`` is parallelization debt: removed once Plan 03 merges.
-    # The ``warn_unused_ignores`` mypy flag (enabled in pyproject.toml) makes this a
-    # self-deleting tripwire -- once the schema modules exist, mypy errors on the ignore.
-    from phaze.schemas.agent_analysis import (  # type: ignore[import-not-found]
+    # Phase 26 Plan 03 schemas (now landed in this worktree — tripwire fired,
+    # `# type: ignore[import-not-found]` removed per the original tripwire contract).
+    from phaze.schemas.agent_analysis import (
         AnalysisWritePayload,
         AnalysisWriteResponse,
     )
@@ -55,13 +53,13 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
     from phaze.schemas.agent_fingerprint import FingerprintWriteRequest, FingerprintWriteResponse
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
-    from phaze.schemas.agent_identity import AgentIdentity  # type: ignore[import-not-found]
+    from phaze.schemas.agent_identity import AgentIdentity
     from phaze.schemas.agent_metadata import MetadataWriteRequest, MetadataWriteResponse
-    from phaze.schemas.agent_proposals import (  # type: ignore[import-not-found]
+    from phaze.schemas.agent_proposals import (
         ProposalStatePatch,
         ProposalStateResponse,
     )
-    from phaze.schemas.agent_tracklists import (  # type: ignore[import-not-found]
+    from phaze.schemas.agent_tracklists import (
         TracklistCreatePayload,
         TracklistCreateResponse,
     )
