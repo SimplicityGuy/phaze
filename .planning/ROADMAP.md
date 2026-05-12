@@ -121,7 +121,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 26-03-PLAN.md — 5 new schema modules (agent_identity, agent_analysis, agent_tracklists, agent_proposals, agent_tasks) (Wave 2)
 - [x] 26-04-PLAN.md — AgentTaskRouter + Redis integration tests (Wave 3)
 - [x] 26-05-PLAN.md — GET /api/internal/agent/whoami router + 4 contract tests (Wave 3)
-- [ ] 26-06-PLAN.md — PUT /api/internal/agent/analysis/{file_id} router (idempotent upsert) + 8 contract tests (Wave 3)
+- [x] 26-06-PLAN.md — PUT /api/internal/agent/analysis/{file_id} router (idempotent upsert) + 8 contract tests (Wave 3)
 - [ ] 26-07-PLAN.md — POST /api/internal/agent/tracklists router (Redis idempotency cache) + integration tests (Wave 3)
 - [ ] 26-08-PLAN.md — PATCH /api/internal/agent/proposals/{id}/state router (state-machine joint update) + 10 contract tests (Wave 3)
 - [ ] 26-09-PLAN.md — phaze.tasks.controller SAQ settings module (fileless tasks only) (Wave 4)

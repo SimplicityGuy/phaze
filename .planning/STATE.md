@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
-status: Executing Wave 3 -- Plans 04 + 05 complete
+status: Executing Wave 3 -- Plans 04 + 05 + 06 complete
 stopped_at: Phase 26 Wave 3 in progress
 last_updated: "2026-05-12T21:54:29.544Z"
 last_activity: 2026-05-12 -- Phase 26 Wave 3 plans landing
@@ -10,8 +10,8 @@ progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 19
-  percent: 73
+  completed_plans: 20
+  percent: 77
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 26
-Plan: 04 (complete) -- Wave 3 AgentTaskRouter (lazy per-agent SAQ Queue cache)
-Status: Ready to start Plan 05 (Wave 3 routers) -- Wave 3 router work can begin in parallel
-Last activity: 2026-05-12 -- Phase 26 Plan 04 complete
+Plan: Wave 3 plans landing (04, 05, 06 complete)
+Status: Executing Wave 3 -- Plans 04 + 05 + 06 complete
+Last activity: 2026-05-12 -- Phase 26 Wave 3 plans landing
 
-Progress: [███████░░░] 73%
+Progress: [████████░░] 77%
 
 ## Performance Metrics
 
@@ -85,6 +85,8 @@ Progress: [███████░░░] 73%
 - [Phase 26-04]: Per-agent SAQ queue naming invariant: `phaze-agent-<agent_id>` (D-18); agent_id is the kebab-case slug from Phase 24 D-01, Redis-safe by construction
 - [Phase 26-05]: Smoke-app pattern adopted for per-router contract tests; matches Phase 25 test_agent_metadata.py precedent and decouples Plan 26-12 wiring
 - [Phase 26-05]: /whoami response uses naive UTC created_at -- matches project-wide TimestampMixin convention; deferred timezone-aware migration to a future architectural plan
+- [Phase 26-06]: Overflow funnel pattern -- wire-format fields without a dedicated column (e.g. danceability, energy on AnalysisResult) merge into the row's `features` JSONB column rather than being dropped, preserving D-26's wire contract without an Alembic migration. Future migration can promote to dedicated columns.
+- [Phase 26-06]: Deterministic dict summarization -- `sorted(items, key=lambda kv: (-kv[1], kv[0]))[:N]` two-key sort is the canonical pattern for compacting classifier-score dicts into bounded, replay-safe strings. `reverse=True` single-key sort tiebreaks by insertion order which is non-deterministic.
 
 ### Pending Todos
 
@@ -105,6 +107,7 @@ None.
 | Phase 26 P02 | 9min | 2 tasks | 2 files |
 | Phase 26 P04 | 5min | 2 tasks | 2 files |
 | Phase 26 P05 | 18min | 2 tasks | 2 files |
+| Phase 26 P06 | 13min | 3 tasks | 3 files |
 
 ## Session Continuity
 
