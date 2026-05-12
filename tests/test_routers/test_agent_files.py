@@ -1,4 +1,18 @@
-"""DIST-04 / DIST-05 / D-16 / D-20 / D-22 / AUTH-01 tests for POST /api/internal/agent/files."""
+"""DIST-04 / DIST-05 / D-16 / D-20 / D-22 / AUTH-01 tests for POST /api/internal/agent/files.
+
+Why local fixture overrides exist (Rule 3 deviation):
+    Plan 25-03 ships ``src/phaze/routers/agent_files.py`` but does NOT wire it
+    into ``main.py`` -- that is Plan 25-06's job (Wave 4). The conftest.py
+    ``authenticated_client`` fixture uses ``create_app()``, so without local
+    overrides every router test would return 404. The local fixtures below
+    construct a self-contained FastAPI app that mounts ``agent_files.router``
+    and ``health.router`` so DIST-04 / DIST-05 / D-16 / D-20 / D-22 tests can
+    exercise the real handler in Wave 3, matching Plan 25-02's smoke-app
+    pattern (``tests/test_routers/test_agent_auth.py::_make_smoke_app``).
+    Test 8 (``test_missing_auth_returns_401``) intentionally uses the
+    production ``client`` fixture to verify the route is correctly 404 on the
+    production app until Plan 06 wires it.
+"""
 
 from __future__ import annotations
 
@@ -6,18 +20,49 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 import uuid
 
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 import pytest
+import pytest_asyncio
 from sqlalchemy import func as sa_func, select
 
 from phaze.config import settings
+from phaze.database import get_session
 from phaze.models.file import FileRecord
+from phaze.routers import agent_files
 
 
 if TYPE_CHECKING:
-    from httpx import AsyncClient
+    from collections.abc import AsyncGenerator
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.models.agent import Agent
+
+
+def _make_smoke_app(session: AsyncSession) -> FastAPI:
+    """Build a FastAPI app wiring agent_files.router so Wave-3 tests can call the real handler."""
+    app = FastAPI(title="agent-files-smoke", version="test")
+    app.include_router(agent_files.router)
+    app.dependency_overrides[get_session] = lambda: session
+    return app
+
+
+@pytest_asyncio.fixture
+async def authenticated_client(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> AsyncGenerator[AsyncClient]:
+    """LOCAL OVERRIDE of conftest.authenticated_client: smoke app with agent_files wired.
+
+    Replaces the conftest version (which uses ``create_app()`` and therefore lacks
+    the agent_files router until Plan 06). Same Authorization header convention.
+    """
+    _agent, raw_token = seed_test_agent
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        yield ac
 
 
 def _make_record(path: str = "/test/music/a.mp3", ext: str = "mp3", size: int = 100) -> dict[str, object]:
