@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Cross-Service Intelligence & File Enrichment
 status: executing
-stopped_at: Phase 26 context gathered
-last_updated: "2026-05-12T19:12:03.414Z"
-last_activity: 2026-05-12 -- Phase 26 planning complete
+stopped_at: Phase 26 Plan 01 complete -- Wave 0 foundation landed
+last_updated: "2026-05-12T21:15:45.108Z"
+last_activity: 2026-05-12 -- Phase 26 Plan 01 complete
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 26
-  completed_plans: 13
-  percent: 50
+  completed_plans: 14
+  percent: 54
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 25 — Internal Agent HTTP API + Bearer Auth
+**Current focus:** Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker
 
 ## Current Position
 
-Phase: 25
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-05-12 -- Phase 26 planning complete
+Phase: 26
+Plan: 01 (complete) -- Wave 0 foundation
+Status: Ready to start Plan 02 (PhazeAgentClient + AgentApiError)
+Last activity: 2026-05-12 -- Phase 26 Plan 01 complete
 
-Progress: [██████████] 100% (v3.0)
+Progress: [█████░░░░░] 54%
 
 ## Performance Metrics
 
@@ -73,6 +73,10 @@ Progress: [██████████] 100% (v3.0)
 - [Phase 21]: Dropped from __future__ annotations in CUE router to avoid FastAPI uuid runtime resolution issues
 - [Phase 21-03]: HX-Target header prefix matching for cross-page response routing (tracklist- prefix returns tracklist_card.html)
 - [Phase 21-03]: Dynamic _cue_version attribute on Tracklist ORM objects for UI-only display data
+- [Phase 26-01]: pydantic-settings v2 does NOT comma-split list[str] env vars natively -- Annotated[list[str], NoDecode] + @field_validator(mode="before") is the canonical workaround
+- [Phase 26-01]: pydantic-settings reads env vars by field name absent env_prefix -- AliasChoices(...) per-field is required to map PHAZE_AGENT_* env vars onto bare field names
+- [Phase 26-01]: Module-level `settings: ControlSettings = ...` keeps existing call sites' `settings.llm_*` reads type-checking; agent worker calls get_settings() / AgentSettings() directly per D-14
+- [Phase 26-01]: `Settings = ControlSettings` back-compat alias preserves `from phaze.config import Settings` for test files until they migrate
 
 ### Pending Todos
 
@@ -93,6 +97,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-12T16:09:18.156Z
-Stopped at: Phase 26 context gathered
-Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-CONTEXT.md
+Last session: 2026-05-12T21:11:56Z
+Stopped at: Phase 26 Plan 01 complete -- Wave 0 foundation landed
+Resume file: .planning/phases/26-task-code-reorg-http-backed-agent-worker/26-02-PLAN.md
