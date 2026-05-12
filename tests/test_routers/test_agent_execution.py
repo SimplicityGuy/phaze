@@ -1,0 +1,274 @@
+"""DIST-04 (4/5) + DIST-05 (4/5, 5/5) + D-13 + D-15 tests for /api/internal/agent/execution-log.
+
+Tests build their own self-contained FastAPI app via `_make_authed_client` so
+this Plan 25-05 suite is parallel-safe and does NOT depend on Plan 25-06 wiring
+the real router into `main.py`. Mirrors Plan 25-02's smoke-app strategy.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+import uuid
+
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+import pytest
+from sqlalchemy import func as sa_func, select
+
+from phaze.database import get_session
+from phaze.models.execution import ExecutionLog, ExecutionStatus
+from phaze.models.file import FileRecord, FileState
+from phaze.models.proposal import RenameProposal
+from phaze.routers.agent_execution import router as agent_execution_router
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.models.agent import Agent
+
+
+def _make_authed_app(session: AsyncSession) -> FastAPI:
+    """Build a small FastAPI app that includes the agent_execution router.
+
+    Why this instead of `authenticated_client`: the real `create_app()` does NOT
+    include the agent_execution router until Plan 25-06 wires it in. To keep
+    Plan 25-05 tests parallel-safe (and independent of Plan 06 landing order),
+    we build an inline FastAPI app per-test that mounts ONLY this router and
+    overrides `get_session` to use the test session.
+    """
+    app = FastAPI(title="smoke-agent-execution", version="test")
+    app.include_router(agent_execution_router)
+    app.dependency_overrides[get_session] = lambda: session
+    return app
+
+
+@pytest.fixture
+def authed_app(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> tuple[FastAPI, str]:
+    """Return (smoke FastAPI app with agent_execution router mounted, raw bearer token).
+
+    Depends on `seed_test_agent` so the bearer used by `_authed_client` is a
+    real agents-table row; depends on `session` so the dependency override
+    targets the same session that the test holds.
+    """
+    _agent, raw_token = seed_test_agent
+    return _make_authed_app(session), raw_token
+
+
+async def _authed_client(authed_app: tuple[FastAPI, str]) -> AsyncGenerator[AsyncClient]:
+    """Async context-managed AsyncClient with `Authorization: Bearer <raw_token>` pre-set."""
+    app, raw_token = authed_app
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        yield ac
+
+
+async def _seed_proposal_chain(session: AsyncSession, agent_id: str) -> tuple[uuid.UUID, uuid.UUID]:
+    """Seed FileRecord + RenameProposal so ExecutionLog FK constraints are satisfied.
+
+    Returns (file_id, proposal_id). Mirrors the verified shape from
+    `tests/test_routers/test_execution.py:45-58`. The only NOT NULL columns on
+    RenameProposal without defaults are `file_id` and `proposed_filename`; every
+    other column accepts NULL or a Python-side default. The FileRecord row is
+    associated with the caller's agent so multi-row tests don't trip the
+    `uq_files_agent_id_original_path` unique index.
+    """
+    file_id = uuid.uuid4()
+    proposal_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            id=file_id,
+            agent_id=agent_id,
+            sha256_hash="0" * 64,
+            original_path=f"/test/exec-{uuid.uuid4()}.mp3",
+            original_filename="test.mp3",
+            current_path=f"/test/exec-{uuid.uuid4()}.mp3",
+            file_type="mp3",
+            file_size=1234,
+            state=FileState.DISCOVERED,
+        )
+    )
+    await session.flush()
+    session.add(
+        RenameProposal(
+            id=proposal_id,
+            file_id=file_id,
+            proposed_filename="proposed.mp3",
+        )
+    )
+    await session.commit()
+    return file_id, proposal_id
+
+
+def _make_create_body(proposal_id: uuid.UUID, log_id: uuid.UUID | None = None, status: str = "pending") -> dict[str, object]:
+    """Build a valid POST body for /api/internal/agent/execution-log."""
+    return {
+        "id": str(log_id or uuid.uuid4()),
+        "proposal_id": str(proposal_id),
+        "operation": "move",
+        "source_path": "/test/music/a.mp3",
+        "destination_path": "/test/output/a.mp3",
+        "sha256_verified": False,
+        "status": status,
+    }
+
+
+@pytest.mark.asyncio
+async def test_execution_log_create_and_patch(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """DIST-04 (4/5): POST creates row; PATCH advances status forward."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        r_post = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="pending"),
+        )
+        assert r_post.status_code == 200, r_post.text
+        body_post = r_post.json()
+        assert body_post["agent_id"] == agent.id
+        assert body_post["execution_log_id"] == str(log_id)
+
+        r_patch = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "in_progress"},
+        )
+        assert r_patch.status_code == 200
+        body_patch = r_patch.json()
+        assert body_patch["status"] == "in_progress"
+
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    row = result.scalar_one()
+    assert row.status == ExecutionStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_create_replay_no_op(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """DIST-05 (4/5) + D-13: same agent-supplied id POSTed twice -> one row, no error."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+    payload = _make_create_body(proposal_id, log_id=log_id)
+
+    async for ac in _authed_client(authed_app):
+        r1 = await ac.post("/api/internal/agent/execution-log", json=payload)
+        r2 = await ac.post("/api/internal/agent/execution-log", json=payload)
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+
+    result = await session.execute(select(sa_func.count()).select_from(ExecutionLog).where(ExecutionLog.id == log_id))
+    assert result.scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_monotonic_regress_returns_409(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """DIST-05 (5/5) + D-15: IN_PROGRESS -> PENDING is regress -> 409 'would regress'."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="in_progress"),
+        )
+
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "pending"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "execution-log status would regress"
+
+
+@pytest.mark.asyncio
+async def test_terminal_state_rejects_patch(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """D-15: terminal-state COMPLETED rejects further PATCH with 409 'is terminal'."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="completed"),
+        )
+
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "in_progress"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "execution-log status is terminal"
+
+
+@pytest.mark.asyncio
+async def test_same_status_patch_allowed(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """D-15 footnote: same-status PATCH (IN_PROGRESS -> IN_PROGRESS) is allowed for retry idempotency."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="in_progress"),
+        )
+
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "in_progress"},
+        )
+        assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_patch_unknown_id_returns_404(authed_app: tuple[FastAPI, str]) -> None:
+    """PATCH against a fresh uuid that does not exist -> 404."""
+    async for ac in _authed_client(authed_app):
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{uuid.uuid4()}",
+            json={"status": "in_progress"},
+        )
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_extra_body_field_422(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """D-16: extra field on POST body -> 422 extra_forbidden."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+
+    bad_body = {**_make_create_body(proposal_id), "agent_id": "evil"}
+    async for ac in _authed_client(authed_app):
+        response = await ac.post("/api/internal/agent/execution-log", json=bad_body)
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
