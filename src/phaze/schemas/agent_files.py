@@ -12,6 +12,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from phaze.config import settings
+
+
+_CHUNK_MAX: int = settings.agent_file_chunk_max
+"""Server-side cap on chunk size. Configurable via ``AGENT_FILE_CHUNK_MAX`` env var.
+
+Resolved at module-import time; env override at runtime requires a process restart.
+"""
+
 
 class FileUpsertRecord(BaseModel):
     """Single file's metadata in a chunked upsert request."""
@@ -31,7 +40,7 @@ class FileUpsertChunk(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    files: list[FileUpsertRecord] = Field(min_length=1, max_length=1000)
+    files: list[FileUpsertRecord] = Field(min_length=1, max_length=_CHUNK_MAX)
 
 
 class FileUpsertResponse(BaseModel):
