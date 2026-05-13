@@ -109,3 +109,33 @@ revised: 2026-05-12
 - [x] `nyquist_compliant: true` set in frontmatter (per-task verify map populated)
 
 **Approval:** approved 2026-05-12
+
+---
+
+## Validation Audit 2026-05-12 (post-execution)
+
+Adversarial Nyquist audit run after Phase 26 execution completed. 5 gaps surfaced (see `26-NYQUIST.md`); all 5 closed in a single auditor pass.
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 5 |
+| Resolved | 5 |
+| Escalated | 0 |
+
+### Tests Added
+
+| Gap | Priority | Test File | Tests | Commit |
+|-----|----------|-----------|-------|--------|
+| GAP-1 | CRITICAL | `tests/test_config_role_split.py` (new) | 7 | `ac6e3b0` |
+| GAP-2 | HIGH | `tests/test_services/test_agent_client_endpoints.py` (new) | 5 | `1ea5261` |
+| GAP-3 | MEDIUM | `tests/test_services/test_agent_client.py` (added 1) | 1 | `3056a72` |
+| GAP-4 | MEDIUM | `tests/test_tasks/test_execute_approved_batch.py` (added 1) | 1 | `81182d1` |
+| GAP-5 | LOW | `tests/test_tasks/test_agent_startup_banner.py` (added 1) | 1 | `9179907` |
+
+**Total:** 15 new test assertions across 2 new files + 3 existing-file edits. All 15 pass in isolation; no impl changes required.
+
+### Coverage Status After Audit
+
+- `nyquist_compliant: true`
+- All Phase 26 requirements (DIST-03, TASK-01, TASK-02, TASK-03, OPS-01) have automated verification
+- Pre-existing infrastructure issues (D-1, D-2, D-3 in `deferred-items.md`) remain out of scope — they are CI environment gaps, not test gaps
