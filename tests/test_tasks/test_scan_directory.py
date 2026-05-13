@@ -1,7 +1,8 @@
 """Tests for the scan_directory SAQ task (Phase 27 Plan 04, D-11..D-13).
 
 Covers:
-- Extension filter (only EXTENSION_MAP categories: MUSIC + VIDEO + COMPANION; UNKNOWN dropped).
+- Extension filter (only MUSIC + VIDEO; UNKNOWN and COMPANION dropped -- matches
+  watcher's _EXTRACTABLE so manual-scan ingestion population == watcher ingestion population).
 - Exact chunking at AgentSettings.scan_chunk_size (default 500).
 - Per-chunk PATCH(processed_files=...) calls with monotonic counts.
 - Terminal PATCH(status='completed', total_files=N, processed_files=N).
@@ -50,7 +51,7 @@ def _touch(p: Path, size: int = 1) -> None:
 
 
 async def test_scan_directory_walks_known_extensions(tmp_path: Path) -> None:
-    """Only EXTENSION_MAP entries are posted; unknown extensions dropped."""
+    """Only MUSIC + VIDEO categories are posted; UNKNOWN and COMPANION extensions dropped."""
     from phaze.tasks.scan import scan_directory
 
     _touch(tmp_path / "a.mp3")
@@ -69,6 +70,60 @@ async def test_scan_directory_walks_known_extensions(tmp_path: Path) -> None:
     chunk = ctx["api_client"].upsert_files.await_args.args[0]
     file_types = {r.file_type for r in chunk.files}
     assert file_types == {"mp3", "flac", "mp4"}
+
+
+def test_scan_directory_extractable_set_is_music_and_video_only() -> None:
+    """CR-01 regression: _EXTRACTABLE must be exactly {MUSIC, VIDEO}.
+
+    Asserting the explicit set (not just behaviour) pins down the chosen filter so
+    that future schema widening of FileCategory (e.g., a new SUBTITLE category)
+    cannot silently change scan_directory's ingestion population without breaking
+    this test. The watcher uses the same frozenset (see
+    ``agent_watcher/observer.py``) and the auto-enqueue gate uses the same one
+    (``routers/agent_files.py``); the three sets MUST stay in lockstep.
+    """
+    from phaze.constants import FileCategory
+    from phaze.tasks.scan import _EXTRACTABLE
+
+    assert frozenset({FileCategory.MUSIC, FileCategory.VIDEO}) == _EXTRACTABLE
+
+
+async def test_scan_directory_drops_companion_files(tmp_path: Path) -> None:
+    """CR-01 regression: COMPANION extensions (.cue/.nfo/.txt/.jpg/.png/.m3u/...) are NOT posted.
+
+    The watcher drops these (see ``agent_watcher/observer.py``); scan_directory
+    must match so the LIVE-sentinel batch row population is identical to what
+    the operator-triggered scan produces. Otherwise a manual scan would insert
+    FileRecord rows for companion siblings that the watcher never discovers,
+    creating divergent ingestion sets between the two paths.
+    """
+    from phaze.tasks.scan import scan_directory
+
+    # One file from each COMPANION extension surveyed by EXTENSION_MAP. Plus a
+    # MUSIC file so the walk produces at least one upsert chunk to inspect.
+    _touch(tmp_path / "cover.jpg")
+    _touch(tmp_path / "art.jpeg")
+    _touch(tmp_path / "art.png")
+    _touch(tmp_path / "art.gif")
+    _touch(tmp_path / "playlist.m3u")
+    _touch(tmp_path / "playlist.m3u8")
+    _touch(tmp_path / "playlist.pls")
+    _touch(tmp_path / "info.nfo")
+    _touch(tmp_path / "notes.txt")
+    _touch(tmp_path / "tracks.cue")
+    _touch(tmp_path / "checksum.sfv")
+    _touch(tmp_path / "checksum.md5")
+    _touch(tmp_path / "song.mp3")
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result["status"] == "completed"
+    # Only song.mp3 survives the MUSIC+VIDEO filter.
+    assert result["files_posted"] == 1
+    chunk = ctx["api_client"].upsert_files.await_args.args[0]
+    assert len(chunk.files) == 1
+    assert chunk.files[0].original_filename == "song.mp3"
 
 
 async def test_scan_directory_chunks_at_500(tmp_path: Path) -> None:

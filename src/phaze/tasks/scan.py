@@ -57,6 +57,15 @@ test contexts that monkeypatch get_settings() or run under PHAZE_ROLE=control.
 """
 
 
+_EXTRACTABLE: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
+"""Extension categories that scan_directory ingests; matches the watcher's filter
+(``agent_watcher/observer.py``) and the controller-side auto-enqueue gate
+(``routers/agent_files.py``). COMPANION extensions (``.cue``, ``.nfo``, ``.txt``,
+images, playlists, ...) are deliberately excluded so the manual-scan ingestion
+set is identical to the watcher's ingestion set (Phase 27 CR-01).
+"""
+
+
 def _classify(filename: str) -> FileCategory:
     """Classify a filename by extension. Mirrors services.ingestion.classify_file but
     is duplicated here to keep the agent task module's import graph Postgres-free
@@ -155,7 +164,7 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False):
             for filename in filenames:
                 category = _classify(filename)
-                if category == FileCategory.UNKNOWN:
+                if category not in _EXTRACTABLE:
                     continue
 
                 full_path = Path(dirpath) / filename

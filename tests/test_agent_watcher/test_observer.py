@@ -37,6 +37,54 @@ def test_event_handler_filters_by_extension() -> None:
     assert args[1] == "/foo/b.mp3"
 
 
+def test_observer_extractable_set_is_music_and_video_only() -> None:
+    """CR-01 regression: watcher's _EXTRACTABLE must be exactly {MUSIC, VIDEO}.
+
+    The watcher's filter, scan_directory's filter, and the auto-enqueue gate in
+    ``routers/agent_files.py`` MUST stay in lockstep; otherwise the operator-
+    triggered ingestion population diverges from the watcher's ingestion
+    population (CR-01).
+    """
+    from phaze.agent_watcher.observer import _EXTRACTABLE
+    from phaze.constants import FileCategory
+
+    assert frozenset({FileCategory.MUSIC, FileCategory.VIDEO}) == _EXTRACTABLE
+
+
+def test_observer_drops_companion_files() -> None:
+    """CR-01 regression: COMPANION extensions (.cue/.nfo/.txt/.jpg/...) drop without dispatch.
+
+    Companion files must NOT enter the debouncer; otherwise the watcher would
+    POST FileRecord rows for COMPANION siblings, which would never be auto-
+    enqueued for metadata extraction. Today's filter is MUSIC+VIDEO; this test
+    pins the exhaustive companion-extension set down so a future schema change
+    that re-categorizes (say) ``.cue`` as MUSIC surfaces loudly.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    companion_extensions = (
+        ".cue",
+        ".nfo",
+        ".txt",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".m3u",
+        ".m3u8",
+        ".pls",
+        ".sfv",
+        ".md5",
+    )
+    for ext in companion_extensions:
+        handler.on_created(FileCreatedEvent(src_path=f"/foo/companion{ext}"))
+
+    assert loop.call_soon_threadsafe.call_count == 0
+    assert touch.call_count == 0
+
+
 def test_event_handler_ignores_directories() -> None:
     """DirCreatedEvent (is_directory=True) is dropped without any dispatch."""
     loop = MagicMock()
