@@ -21,6 +21,7 @@ from phaze.routers import (
     agent_identity,
     agent_metadata,
     agent_proposals,
+    agent_scan_batches,
     agent_tracklists,
     companion,
     cue,
@@ -95,6 +96,9 @@ def create_app() -> FastAPI:
     app.include_router(agent_analysis.router)
     app.include_router(agent_tracklists.router)
     app.include_router(agent_proposals.router)
+    # Phase 27 internal-agent router (D-10) -- Plan 06 will add pipeline_scans.router
+    # immediately after.
+    app.include_router(agent_scan_batches.router)
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
     return app
 

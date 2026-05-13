@@ -242,3 +242,22 @@ async def test_unknown_token_returns_403(session: AsyncSession, seed_test_agent:
     async with _make_client(session, token="phaze_agent_unknown-token-1234") as ac:  # noqa: S106
         r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"status": "completed"})
     assert r.status_code == 403
+
+
+def test_router_registered_in_main_app() -> None:
+    """Task 3: phaze.main.create_app() must include the agent_scan_batches router.
+
+    Asserts the PATCH /api/internal/agent/scan-batches/{batch_id} operation is
+    reachable on the production app -- not just the smoke-app fixture used by
+    the other tests in this file. This is the Plan 03 Task 3 wiring acceptance
+    check.
+    """
+    from phaze.main import create_app
+
+    app = create_app()
+    paths = [getattr(r, "path", "") for r in app.routes]
+    assert any("/api/internal/agent/scan-batches" in p for p in paths), f"agent_scan_batches.router not registered in create_app(); paths={paths}"
+
+    # Also confirm the PATCH operation has the right method binding.
+    matching = [r for r in app.routes if "/api/internal/agent/scan-batches" in getattr(r, "path", "")]
+    assert any("PATCH" in getattr(r, "methods", set()) for r in matching), "No PATCH method bound on the scan-batches route"
