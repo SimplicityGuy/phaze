@@ -16,13 +16,43 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import unicodedata
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from pydantic import ValidationError
 import pytest
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+
+@pytest.fixture(autouse=True)
+def _agent_env(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
+    """WR-04: pin PHAZE_ROLE=agent and clear get_settings()'s lru_cache.
+
+    ``_resolve_chunk_size`` reads ``get_settings()`` (an ``@lru_cache(maxsize=1)``
+    function). Under ``PHAZE_ROLE=control`` (the default in most test envs) the
+    helper falls through to ``_DEFAULT_SCAN_CHUNK_SIZE`` -- which means the
+    production ``AgentSettings.scan_chunk_size`` code path was never exercised
+    by chunking tests. Worse: an earlier test that set ``PHAZE_ROLE=agent`` via
+    monkeypatch could leave the lru_cache holding an AgentSettings instance
+    even after monkeypatch teardown, so test ordering silently shifted which
+    branch ran. Force the agent branch + clear the cache so every test gets a
+    fresh AgentSettings populated from the test env.
+    """
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test:8000")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-TOKEN-1234567890ab")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/tmp")  # noqa: S108 -- validator only checks non-empty list
+
+    from phaze.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
@@ -139,6 +169,33 @@ async def test_scan_directory_chunks_at_500(tmp_path: Path) -> None:
     assert ctx["api_client"].upsert_files.await_count == 3
     sizes = [len(call.args[0].files) for call in ctx["api_client"].upsert_files.await_args_list]
     assert sizes == [500, 500, 1]
+
+
+async def test_scan_directory_honors_agent_settings_chunk_size(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """WR-04 regression: PHAZE_SCAN_CHUNK_SIZE override is read from AgentSettings.
+
+    Previously the chunking tests ran under PHAZE_ROLE=control and exercised
+    ``_DEFAULT_SCAN_CHUNK_SIZE = 500`` -- the production code path that reads
+    ``AgentSettings.scan_chunk_size`` from ``PHAZE_SCAN_CHUNK_SIZE`` was never
+    tested. Override the env var to 3 and assert the chunks split at 3, not 500.
+    """
+    from phaze.config import get_settings
+    from phaze.tasks.scan import scan_directory
+
+    monkeypatch.setenv("PHAZE_SCAN_CHUNK_SIZE", "3")
+    # Invalidate the lru_cache so the override is observed by _resolve_chunk_size.
+    get_settings.cache_clear()
+
+    # Seven files -> three chunks of 3, 3, 1.
+    for i in range(7):
+        _touch(tmp_path / f"f{i:04d}.mp3")
+
+    ctx = _make_ctx()
+    await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert ctx["api_client"].upsert_files.await_count == 3
+    sizes = [len(call.args[0].files) for call in ctx["api_client"].upsert_files.await_args_list]
+    assert sizes == [3, 3, 1]
 
 
 async def test_scan_directory_patches_progress_after_each_chunk(tmp_path: Path) -> None:
