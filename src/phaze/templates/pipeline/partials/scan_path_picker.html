@@ -1,0 +1,49 @@
+{# Phase 27 Component 2 (UI-SPEC lines 210-251): HTMX swap target for the
+   agent-roots selector.
+
+   `agent` is None on first page load (pre-selection placeholder), or when the
+   chosen agent is missing/revoked/has no scan_roots (empty-state yellow surface
+   per UI-SPEC lines 245-250). Otherwise, render the scan_root <select> + the
+   subpath <input>.
+#}
+{% if agent is not defined or agent is none or not agent.scan_roots %}
+{% if agent is not defined or agent is none %}
+<div>
+    <label for="scan-root" class="block text-sm font-semibold text-gray-500 dark:text-gray-400 mb-1">
+        Scan root
+    </label>
+    <select id="scan-root" disabled
+            class="w-full text-sm rounded-md border border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel text-gray-400 dark:text-gray-500 px-3 py-2 cursor-not-allowed">
+        <option>Select an agent first</option>
+    </select>
+</div>
+{% else %}
+<div class="text-sm text-yellow-700 dark:text-yellow-400">
+    This agent has no scan roots configured. Update <code>agents.scan_roots</code> in the database and re-select the agent.
+</div>
+{% endif %}
+{% else %}
+<div>
+    <label for="scan-root" class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
+        Scan root
+    </label>
+    <select id="scan-root" name="scan_root" required
+            class="w-full text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+        <option value="" disabled selected>Select a scan root…</option>
+        {% for root in agent.scan_roots %}
+        <option value="{{ root }}">{{ root }}</option>
+        {% endfor %}
+    </select>
+</div>
+<div>
+    <label for="scan-subpath" class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
+        Subpath <span class="text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
+    </label>
+    <input id="scan-subpath" name="subpath" type="text"
+           placeholder="e.g. 2026-coachella/"
+           class="w-full text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-3 py-2 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        Optional. Appended to the scan root. Must not contain <code>..</code> path traversal.
+    </p>
+</div>
+{% endif %}

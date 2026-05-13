@@ -29,6 +29,7 @@ from phaze.routers import (
     execution,
     health,
     pipeline,
+    pipeline_scans,
     preview,
     proposals,
     scan,
@@ -96,9 +97,12 @@ def create_app() -> FastAPI:
     app.include_router(agent_analysis.router)
     app.include_router(agent_tracklists.router)
     app.include_router(agent_proposals.router)
-    # Phase 27 internal-agent router (D-10) -- Plan 06 will add pipeline_scans.router
-    # immediately after.
+    # Phase 27 internal-agent router (D-10).
     app.include_router(agent_scan_batches.router)
+    # Phase 27 admin-UI router (D-05..D-08): POST /pipeline/scans + the HTMX
+    # poll partial + the agent-roots swap. Distinct from `pipeline.router`,
+    # which serves the dashboard page and existing pipeline-stage triggers.
+    app.include_router(pipeline_scans.router)
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
     return app
 
