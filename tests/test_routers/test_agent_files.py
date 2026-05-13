@@ -214,3 +214,40 @@ async def test_same_chunk_duplicate_paths_dedup(authenticated_client: AsyncClien
     assert response.status_code == 200, response.text
     result = await session.execute(select(sa_func.count()).select_from(FileRecord))
     assert result.scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_no_enqueue_for_non_music_file_type(smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]) -> None:
+    """Non-music/video file types (e.g., .txt, .jpg) must skip the enqueue path even on INSERT."""
+    client, mock_router = smoke_app_and_router
+    chunk = {
+        "files": [
+            _make_record(path="/test/docs/readme.txt", ext="txt"),
+            _make_record(path="/test/docs/cover.jpg", ext="jpg"),
+        ],
+    }
+    response = await client.post("/api/internal/agent/files", json=chunk)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["inserted"] == 2
+    assert body["enqueued"] == 0
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_exception_does_not_abort_response(
+    smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]
+) -> None:
+    """Enqueue failure must be swallowed + counted as `enqueued=0` -- DB commit already succeeded."""
+    client, mock_router = smoke_app_and_router
+    mock_router.enqueue_for_agent.side_effect = RuntimeError("redis is sick")
+
+    chunk = {"files": [_make_record(path="/test/music/a.mp3")]}
+    response = await client.post("/api/internal/agent/files", json=chunk)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["inserted"] == 1
+    assert body["enqueued"] == 0
+    # Handler attempted the enqueue (got to the side_effect) before catching + continuing.
+    mock_router.enqueue_for_agent.assert_awaited_once()

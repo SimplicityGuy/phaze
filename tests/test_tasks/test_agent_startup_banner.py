@@ -112,3 +112,71 @@ async def test_agent_worker_startup_raises_on_queue_token_mismatch(
     ctx: dict[str, Any] = {}
     with pytest.raises(RuntimeError, match="queue/token mismatch"):
         await aw.startup(ctx)
+
+
+@pytest.mark.asyncio
+async def test_whoami_with_retry_raises_runtime_error_after_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_whoami_with_retry: every attempt raises AgentApiError -> RuntimeError after budget exhausted."""
+    from phaze.services.agent_client import AgentApiError
+    import phaze.tasks.agent_worker as aw
+
+    # Shrink the retry budget to keep the test fast (~0s sleep total).
+    monkeypatch.setattr(aw, "_WHOAMI_BACKOFF_S", (0.0, 0.0))
+
+    fake_client = AsyncMock()
+    fake_client.whoami = AsyncMock(side_effect=AgentApiError("simulated down"))
+
+    with pytest.raises(RuntimeError, match="exhausted retry budget"):
+        await aw._whoami_with_retry(fake_client)
+
+    # 2 backoff attempts + 1 final = 3 calls
+    assert fake_client.whoami.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_startup_raises_when_role_is_not_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """startup() must raise RuntimeError when get_settings() returns ControlSettings."""
+    import phaze.tasks.agent_worker as aw
+
+    # Return a non-AgentSettings instance so the isinstance() check trips.
+    monkeypatch.setattr(aw, "get_settings", lambda: MagicMock(name="ControlSettings"))
+
+    ctx: dict[str, Any] = {}
+    with pytest.raises(RuntimeError, match="agent_worker requires PHAZE_ROLE=agent"):
+        await aw.startup(ctx)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_pool_engines_and_client() -> None:
+    """shutdown() must shutdown the process pool, close each orchestrator engine, and close the api_client."""
+    import phaze.tasks.agent_worker as aw
+
+    pool = MagicMock()
+    engine_a = MagicMock()
+    engine_a.close = AsyncMock()
+    engine_b_no_close = MagicMock(spec=[])  # no .close attr -- exercise hasattr() False branch
+    orchestrator = MagicMock(engines=[engine_a, engine_b_no_close])
+    api_client = AsyncMock()
+    api_client.close = AsyncMock()
+
+    ctx: dict[str, Any] = {
+        "process_pool": pool,
+        "fingerprint_orchestrator": orchestrator,
+        "api_client": api_client,
+    }
+    await aw.shutdown(ctx)
+
+    pool.shutdown.assert_called_once_with(wait=True)
+    engine_a.close.assert_awaited_once()
+    api_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_tolerates_missing_ctx_keys() -> None:
+    """shutdown() must no-op when ctx is empty (none of the keys were set during startup)."""
+    import phaze.tasks.agent_worker as aw
+
+    # Should not raise.
+    await aw.shutdown({})

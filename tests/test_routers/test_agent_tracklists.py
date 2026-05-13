@@ -277,3 +277,46 @@ async def test_tracklist_unknown_token_returns_403(
             },
         )
     assert r.status_code == 403
+
+
+@pytest.mark.integration
+async def test_tracklist_concurrent_writer_returns_409_after_poll_exhaustion(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """Concurrent-writer path: req_key already locked + resp_key never populated -> 409 after poll budget."""
+    from phaze.routers.agent_tracklists import _REQ_PREFIX, _TTL_SECONDS
+
+    _agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, _agent.id)
+    request_id = uuid.uuid4()
+
+    # Simulate a concurrent writer that has acquired the lock but never written the response.
+    await redis_client.set(f"{_REQ_PREFIX}{request_id}", "1", nx=True, ex=_TTL_SECONDS)
+
+    # Reduce the poll budget so the test does not actually wait 500ms.
+    import phaze.routers.agent_tracklists as router_mod
+
+    original_max = router_mod._CONCURRENT_POLL_MAX_ATTEMPTS
+    original_interval = router_mod._CONCURRENT_POLL_INTERVAL_S
+    router_mod._CONCURRENT_POLL_MAX_ATTEMPTS = 2
+    router_mod._CONCURRENT_POLL_INTERVAL_S = 0.001
+    try:
+        async with _make_client(session, redis_client, raw_token) as ac:
+            r = await ac.post(
+                "/api/internal/agent/tracklists",
+                json={
+                    "file_id": str(file_id),
+                    "source": "fingerprint",
+                    "external_id": f"fp-concurrent-{file_id.hex[:8]}",
+                    "request_id": str(request_id),
+                    "tracks": [{"position": 1}],
+                },
+            )
+    finally:
+        router_mod._CONCURRENT_POLL_MAX_ATTEMPTS = original_max
+        router_mod._CONCURRENT_POLL_INTERVAL_S = original_interval
+
+    assert r.status_code == 409, r.text
+    assert "duplicate in-flight request" in r.text

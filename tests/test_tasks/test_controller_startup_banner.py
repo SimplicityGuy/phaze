@@ -47,3 +47,30 @@ async def test_controller_startup_logs_role_banner(
     assert "queue=controller" in text, f"banner missing queue=controller: {text!r}"
     # Verify the W4 fix landed: ctx["queue"] is stashed
     assert "queue" in ctx, "controller.startup did not stash ctx['queue'] (W4)"
+
+
+@pytest.mark.asyncio
+async def test_controller_shutdown_disposes_engine_and_closes_discogs_client() -> None:
+    """shutdown() must dispose task_engine and close discogs_client when present in ctx."""
+    from unittest.mock import AsyncMock
+
+    from phaze.tasks import controller
+
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    discogs_client = MagicMock()
+    discogs_client.close = AsyncMock()
+
+    ctx: dict[str, Any] = {"task_engine": engine, "discogs_client": discogs_client}
+    await controller.shutdown(ctx)
+
+    engine.dispose.assert_awaited_once()
+    discogs_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_controller_shutdown_tolerates_missing_ctx_keys() -> None:
+    """shutdown() must no-op when startup never ran (empty ctx)."""
+    from phaze.tasks import controller
+
+    await controller.shutdown({})

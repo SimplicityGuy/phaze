@@ -229,3 +229,107 @@ async def test_execute_approved_batch_requires_scan_roots(tmp_path: Path, monkey
     with pytest.raises(RuntimeError, match="scan_roots"):
         await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
     api.patch_proposal_state.assert_not_awaited()
+
+
+async def test_execute_approved_batch_tolerates_post_execution_log_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Best-effort: POST execution-log failure does NOT abort the file op (lines 105-108)."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.post_execution_log = AsyncMock(side_effect=RuntimeError("audit log down"))
+
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    # File op still ran and proposal still marked executed
+    assert result["status"] == "completed"
+    assert proposed_paths[0].exists()
+    assert not orig_paths[0].exists()
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "executed"
+
+
+async def test_execute_approved_batch_tolerates_patch_completed_log_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Best-effort: PATCH completed log failure does NOT prevent SUCCESS report (lines 140-141)."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.patch_execution_log = AsyncMock(side_effect=RuntimeError("patch died"))
+
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    # patch_proposal_state still called with executed state
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "executed"
+
+
+async def test_execute_approved_batch_tolerates_patch_failed_log_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Best-effort: PATCH failed log failure does NOT prevent FAILURE report (lines 173-174)."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+
+    # First PATCH (sets in_progress is via POST, second PATCH after file-op-failure goes to status=failed)
+    # Make patch_execution_log raise on EVERY call so the "failed log" branch raises.
+    api.patch_execution_log = AsyncMock(side_effect=RuntimeError("patch died"))
+
+    # Force file-op failure via missing source.
+    missing = tmp_path / "missing.mp3"
+    proposed = tmp_path / "new" / "missing.mp3"
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(missing),
+            proposed_path=str(proposed),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["error_count"] == 1
+    # Failure still reported via patch_proposal_state(failed)
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+
+
+async def test_execute_approved_batch_tolerates_failure_report_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Last-line defense: even if patch_proposal_state(failed) raises, the batch returns cleanly (lines 189-192)."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.patch_proposal_state = AsyncMock(side_effect=RuntimeError("state-machine API down"))
+
+    # Force file-op failure -- this exercises the failed-PATCH-of-failure path.
+    missing = tmp_path / "missing.mp3"
+    proposed = tmp_path / "new" / "missing.mp3"
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(missing),
+            proposed_path=str(proposed),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
+
+    # Should NOT raise -- the inner try/except wraps the failure report.
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["processed_count"] == 1
+    assert result["error_count"] == 1
+    # Handler reached patch_proposal_state (the side_effect fired) before swallowing.
+    api.patch_proposal_state.assert_awaited_once()

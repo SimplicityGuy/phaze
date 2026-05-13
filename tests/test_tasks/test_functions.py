@@ -97,6 +97,70 @@ def test_features_to_style_dict_returns_none_for_empty() -> None:
     assert _features_to_style_dict({"genre": {}}) is None
 
 
+def test_features_to_mood_dict_skips_malformed_prediction_entries() -> None:
+    """Mood loop must continue past KeyError / TypeError / ValueError on bad prediction shapes."""
+    features = {
+        "mood_happy": {
+            "v1": [{"label": "happy"}],  # KeyError on "prediction"
+            "v2": [{"label": "happy", "prediction": "not-a-number"}],  # ValueError on float()
+            "v3": [{"label": "happy", "prediction": 0.7}],  # OK
+        },
+    }
+    out = _features_to_mood_dict(features)
+    assert out is not None
+    # Only the OK variant contributes -> 0.7
+    assert out["happy"] == pytest.approx(0.7, rel=1e-3)
+
+
+def test_features_to_style_dict_skips_non_dict_entries() -> None:
+    """Style loop must skip predictions list entries that are not dicts."""
+    features = {
+        "genre": {
+            "predictions": [
+                "not-a-dict",  # non-dict entry -> continue
+                {"label": "Rock", "confidence": 0.5},
+            ],
+        },
+    }
+    out = _features_to_style_dict(features)
+    assert out is not None
+    assert list(out.keys()) == ["Rock"]
+    assert out["Rock"] == pytest.approx(0.5, rel=1e-3)
+
+
+def test_features_to_style_dict_skips_entries_missing_label_or_confidence() -> None:
+    """Style loop must skip entries with missing label or missing confidence."""
+    features = {
+        "genre": {
+            "predictions": [
+                {"label": "MissingConfidence"},  # no confidence -> skip
+                {"confidence": 0.5},  # no label -> skip
+                {"label": "Good", "confidence": 0.9},
+            ],
+        },
+    }
+    out = _features_to_style_dict(features)
+    assert out is not None
+    assert list(out.keys()) == ["Good"]
+    assert out["Good"] == pytest.approx(0.9, rel=1e-3)
+
+
+def test_features_to_style_dict_skips_non_numeric_confidence() -> None:
+    """Style loop must catch TypeError / ValueError when float(confidence) fails."""
+    features = {
+        "genre": {
+            "predictions": [
+                {"label": "Bad", "confidence": "not-a-float"},  # ValueError -> skip
+                {"label": "Good", "confidence": 0.42},
+            ],
+        },
+    }
+    out = _features_to_style_dict(features)
+    assert out is not None
+    assert list(out.keys()) == ["Good"]
+    assert out["Good"] == pytest.approx(0.42, rel=1e-3)
+
+
 # ---------------------------------------------------------------------------
 # process_file behavior
 # ---------------------------------------------------------------------------

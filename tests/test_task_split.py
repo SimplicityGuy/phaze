@@ -57,3 +57,36 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
         check=False,
     )
     assert result.returncode == 0, f"agent_worker import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
+def test_agent_worker_module_import_fails_when_phaze_agent_queue_unset() -> None:
+    """Module-import-time guard: missing PHAZE_AGENT_QUEUE raises RuntimeError before SAQ event loop starts.
+
+    Runs in a subprocess because the module-level Queue construction is one-shot
+    and would otherwise be cached for the whole pytest session via sys.modules.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ["PHAZE_ROLE"] = "agent"
+        os.environ["PHAZE_AGENT_API_URL"] = "http://localhost:8000"
+        os.environ["PHAZE_AGENT_TOKEN"] = "phaze_agent_test-token-1234567890abcdef"
+        os.environ["PHAZE_AGENT_SCAN_ROOTS"] = "/tmp"
+        os.environ["PHAZE_REDIS_URL"] = "redis://localhost:6379/0"
+        os.environ.pop("PHAZE_AGENT_QUEUE", None)
+        try:
+            import phaze.tasks.agent_worker  # noqa: F401
+        except RuntimeError as exc:
+            sys.stdout.write(str(exc))
+            sys.exit(0)
+        sys.exit(1)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"expected RuntimeError at import; got rc={result.returncode}\nstdout={result.stdout}\nstderr={result.stderr}"
+    assert "PHAZE_AGENT_QUEUE" in result.stdout

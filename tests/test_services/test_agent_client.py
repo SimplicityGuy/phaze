@@ -192,3 +192,59 @@ async def test_whoami_returns_agent_identity_model(client):  # type: ignore[no-u
     assert identity.name == "File Server 01"
     assert identity.scan_roots == ["/data/music"]
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_upsert_files_posts_chunk_and_parses_response(client):  # type: ignore[no-untyped-def]
+    from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord, FileUpsertResponse
+
+    record = FileUpsertRecord(
+        sha256_hash="0" * 64,
+        original_path="/m/a.mp3",
+        original_filename="a.mp3",
+        current_path="/m/a.mp3",
+        file_type="mp3",
+        file_size=1000,
+    )
+    chunk = FileUpsertChunk(files=[record])
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/files").mock(
+        return_value=httpx.Response(200, json={"agent_id": "a1", "upserted": 1, "inserted": 1, "enqueued": 1}),
+    )
+    resp = await client.upsert_files(chunk)
+    assert isinstance(resp, FileUpsertResponse)
+    assert resp.agent_id == "a1"
+    assert resp.upserted == 1
+    assert resp.inserted == 1
+    assert resp.enqueued == 1
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_put_metadata_uses_path_id_and_parses_response(client):  # type: ignore[no-untyped-def]
+    from phaze.schemas.agent_metadata import MetadataWriteRequest, MetadataWriteResponse
+
+    file_id = uuid.uuid4()
+    route = respx.put(f"{_BASE_URL}/api/internal/agent/metadata/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "a1", "file_id": str(file_id)}),
+    )
+    resp = await client.put_metadata(file_id, MetadataWriteRequest(artist="X", title="Y"))
+    assert isinstance(resp, MetadataWriteResponse)
+    assert resp.agent_id == "a1"
+    assert resp.file_id == file_id
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_put_fingerprint_includes_engine_in_url_and_parses_response(client):  # type: ignore[no-untyped-def]
+    from phaze.schemas.agent_fingerprint import FingerprintWriteRequest, FingerprintWriteResponse
+
+    file_id = uuid.uuid4()
+    engine = "audfprint"
+    route = respx.put(f"{_BASE_URL}/api/internal/agent/fingerprints/{file_id}/{engine}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "a1", "file_id": str(file_id), "engine": engine}),
+    )
+    resp = await client.put_fingerprint(file_id, engine, FingerprintWriteRequest(status="success"))
+    assert isinstance(resp, FingerprintWriteResponse)
+    assert resp.agent_id == "a1"
+    assert resp.engine == engine
+    assert route.call_count == 1
