@@ -118,6 +118,27 @@ class AgentSettings(BaseSettings):
         ),
     )
 
+    watcher_settle_seconds: int = Field(
+        default=10,
+        validation_alias=AliasChoices("PHAZE_WATCHER_SETTLE_SECONDS", "watcher_settle_seconds"),
+        description="Seconds a file's mtime must be stable before the watcher posts it (D-01).",
+    )
+    watcher_max_pending_seconds: int = Field(
+        default=3600,
+        validation_alias=AliasChoices("PHAZE_WATCHER_MAX_PENDING_SECONDS", "watcher_max_pending_seconds"),
+        description="Stuck-file cap; entries older than this are evicted from the pending set (D-02).",
+    )
+    watcher_sweep_interval_seconds: int = Field(
+        default=2,
+        validation_alias=AliasChoices("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "watcher_sweep_interval_seconds"),
+        description="How often the watcher's sweep task checks for settled files (D-01).",
+    )
+    scan_chunk_size: int = Field(
+        default=500,
+        validation_alias=AliasChoices("PHAZE_SCAN_CHUNK_SIZE", "scan_chunk_size"),
+        description="Number of FileUpsertRecord rows per chunk in scan_directory (D-11).",
+    )
+
     @field_validator("scan_roots", mode="before")
     @classmethod
     def _split_scan_roots(cls, value: object) -> object:

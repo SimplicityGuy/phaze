@@ -4,10 +4,10 @@ milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
 stopped_at: Phase 27 UI-SPEC approved
-last_updated: "2026-05-13T20:20:37.079Z"
-last_activity: 2026-05-13 -- Phase 27 planning complete
+last_updated: "2026-05-13T20:32:34.421Z"
+last_activity: 2026-05-13 -- Phase 27 execution started
 progress:
-  total_phases: 4
+  total_phases: 6
   completed_phases: 3
   total_plans: 33
   completed_plans: 26
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker
+**Current focus:** Phase 27 — watcher-service-user-initiated-scan
 
 ## Current Position
 
-Phase: 26 — COMPLETE
-Plan: 13 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
-Status: Ready to execute
-Last activity: 2026-05-13 -- Phase 27 planning complete
+Phase: 27 (watcher-service-user-initiated-scan) — EXECUTING
+Plan: 1 of 7
+Status: Executing Phase 27
+Last activity: 2026-05-13 -- Phase 27 execution started
 
 Progress: [██████████] 100%
 
