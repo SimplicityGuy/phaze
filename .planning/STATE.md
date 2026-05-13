@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Distributed Agents
-status: "Phase 26 shipped — PR #57"
+status: "Phase 26 shipped & merged (PR #57); ready for Phase 27"
 stopped_at: Phase 26 Wave 5 complete (Plans 10 + 12); ready for Wave 6 cleanup
-last_updated: "2026-05-13T02:09:29.849Z"
-last_activity: "2026-05-12 -- Phase 26 shipped (PR #57)"
+last_updated: "2026-05-13T04:34:22.194Z"
+last_activity: 2026-05-12 -- Phase 26 merged to main
 progress:
   total_phases: 3
   completed_phases: 3
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 Phase: 26 — COMPLETE
 Plan: 13 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
-Status: Phase 26 shipped — PR #57
-Last activity: 2026-05-12 -- Phase 26 shipped (PR #57)
+Status: Phase 26 shipped & merged (PR #57); ready for Phase 27
+Last activity: 2026-05-12 -- Phase 26 merged to main
 
 Progress: [██████████] 100%
 
