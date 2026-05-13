@@ -59,7 +59,7 @@ from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
-from phaze.tasks.scan import scan_live_set
+from phaze.tasks.scan import scan_directory, scan_live_set
 
 
 logger = logging.getLogger(__name__)
@@ -176,6 +176,7 @@ settings = {
         extract_file_metadata,
         fingerprint_file,
         scan_live_set,
+        scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
         execute_approved_batch,
     ],
     "concurrency": get_settings().worker_max_jobs,
