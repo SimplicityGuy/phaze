@@ -8,7 +8,7 @@ Schemas explicitly omit `agent_id` -- AUTH-01 mandates that agent_id comes
 from the bearer-token resolver, NEVER from the request body.
 """
 
-from __future__ import annotations
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,6 +41,7 @@ class FileUpsertChunk(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     files: list[FileUpsertRecord] = Field(min_length=1, max_length=_CHUNK_MAX)
+    batch_id: uuid.UUID | None = None  # Phase 27 D-09: present -> bind to batch; absent -> LIVE sentinel resolution
 
 
 class FileUpsertResponse(BaseModel):
