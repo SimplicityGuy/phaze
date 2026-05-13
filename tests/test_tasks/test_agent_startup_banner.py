@@ -71,3 +71,44 @@ async def test_agent_worker_startup_logs_role_banner_with_token_preview(
 
     # D-13: the secret bytes after the 12-char prefix MUST NOT appear anywhere in the logs.
     assert "SECRET-BYTES-ABCDEF1234567890" not in text, f"D-13 violation: secret portion leaked into logs: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_agent_worker_startup_raises_on_queue_token_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GAP-5 / Pitfall 1: startup() raises RuntimeError when PHAZE_AGENT_QUEUE does not match
+    agent_id returned by /whoami.
+
+    PHAZE_AGENT_QUEUE=phaze-agent-wrong-id  vs  whoami -> agent_id="correct-id"
+    Expected: RuntimeError with message matching "queue/token mismatch".
+    """
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_SECRET-BYTES-ABCDEF1234567890")
+    # Queue declares wrong agent id -- the mismatch under test
+    monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-wrong-id")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/var/empty")
+
+    from phaze.config import AgentSettings
+    import phaze.tasks.agent_worker as aw
+
+    fake_cfg = AgentSettings()
+    monkeypatch.setattr(aw, "get_settings", lambda: fake_cfg)
+
+    # whoami returns agent_id="correct-id" -- mismatch with PHAZE_AGENT_QUEUE suffix
+    fake_identity = type("AgentIdentity", (), {"agent_id": "correct-id"})()
+    fake_client = AsyncMock()
+    fake_client.whoami = AsyncMock(return_value=fake_identity)
+    fake_client.close = AsyncMock()
+    monkeypatch.setattr(aw, "PhazeAgentClient", lambda *_a, **_kw: fake_client)
+    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
+    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
+    monkeypatch.setattr(pathlib.Path, "is_dir", lambda _self: True)
+    monkeypatch.setattr(pathlib.Path, "glob", lambda _self, _pat: [pathlib.Path("/m/x.pb")])
+
+    ctx: dict[str, Any] = {}
+    with pytest.raises(RuntimeError, match="queue/token mismatch"):
+        await aw.startup(ctx)
