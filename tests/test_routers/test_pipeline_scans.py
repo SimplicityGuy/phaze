@@ -315,3 +315,177 @@ async def test_agent_roots_swap_unknown_agent_yields_empty_state(
     assert response.status_code == 200
     # Unknown agent renders the agent=None branch (placeholder "Select an agent first").
     assert "Select an agent first" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (template / UI-SPEC) tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dashboard_renders_trigger_scan_card(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET /pipeline/ surfaces the Trigger Scan card heading + agent dropdown + picker slot."""
+    ac, _ = smoke
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    assert 'id="trigger-scan-heading"' in response.text
+    assert ">Trigger Scan</h2>" in response.text
+    assert '<select id="scan-agent"' in response.text
+    assert 'id="scan-path-picker"' in response.text
+    # Agent option populated as "{name} ({id})" per CONTEXT D-Discretion.
+    assert "Test Agent (test-agent)" in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_renders_recent_scans_section(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET /pipeline/ surfaces the Recent Scans heading + empty state when no batches."""
+    ac, _ = smoke
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    assert 'id="recent-scans-heading"' in response.text
+    assert ">Recent Scans</h2>" in response.text
+    # No batches seeded -> empty state.
+    assert "No scans yet" in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_recent_scans_shows_failed_row_with_inline_error(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """Failed batch renders the second inline-error <tr> with red surface + error_message."""
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/oops/",
+        status=ScanStatus.FAILED.value,
+        total_files=0,
+        processed_files=0,
+        error_message="path missing",
+    )
+    session.add(batch)
+    await session.commit()
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    assert 'colspan="6"' in response.text
+    assert "bg-red-50" in response.text
+    assert "path missing" in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_recent_scans_excludes_live_batches(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """LIVE sentinel batches MUST be excluded from Recent Scans (CONTEXT D-05 / UI-SPEC line 401)."""
+    ac, _ = smoke
+    live_batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="<watcher>",
+        status=ScanStatus.LIVE.value,
+        total_files=0,
+        processed_files=0,
+    )
+    session.add(live_batch)
+    await session.commit()
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    # The LIVE sentinel must not surface; the table renders the empty state.
+    assert "<watcher>" not in response.text
+    assert "No scans yet" in response.text
+
+
+@pytest.mark.asyncio
+async def test_status_pill_running_uses_blue_surface(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """RUNNING status pill renders with bg-blue-100 dark:bg-blue-950 + aria-label."""
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/",
+        status=ScanStatus.RUNNING.value,
+        total_files=0,
+        processed_files=0,
+    )
+    session.add(batch)
+    await session.commit()
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    assert "bg-blue-100 dark:bg-blue-950" in response.text
+    assert 'aria-label="Status: running"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_status_pill_completed_uses_green_surface(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """COMPLETED status pill renders with bg-green-100."""
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/done/",
+        status=ScanStatus.COMPLETED.value,
+        total_files=5,
+        processed_files=5,
+    )
+    session.add(batch)
+    await session.commit()
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    assert "bg-green-100" in response.text
+    assert 'aria-label="Status: completed"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_status_pill_failed_uses_red_surface(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """FAILED status pill renders with bg-red-100."""
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/oops/",
+        status=ScanStatus.FAILED.value,
+        total_files=0,
+        processed_files=0,
+        error_message="oops",
+    )
+    session.add(batch)
+    await session.commit()
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    assert "bg-red-100" in response.text
+    assert 'aria-label="Status: failed"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_router_registered_in_main_app() -> None:
+    """pipeline_scans.router is registered in main.create_app() (production wiring)."""
+    from phaze.main import create_app
+
+    app = create_app()
+    paths = {route.path for route in app.routes if hasattr(route, "path")}  # type: ignore[attr-defined]
+    # All three handlers must be reachable on the production app.
+    assert "/pipeline/scans" in paths
+    assert "/pipeline/scans/{batch_id}" in paths
+    assert "/pipeline/scans/agent-roots" in paths
