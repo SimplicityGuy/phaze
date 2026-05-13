@@ -142,7 +142,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   5. The same upsert endpoint serves both bulk scans and per-file watcher events, and a re-walked path produces no duplicate FileRecord rows
 **Plans**: 7 plans
 - [x] 27-01-PLAN.md — Foundation: watchdog dep, AgentSettings watcher knobs, _shared/agent_bootstrap refactor, test scaffolding + extended import-boundary tests (Wave 0)
-- [ ] 27-02-PLAN.md — Schemas: FileUpsertChunk.batch_id, ScanBatchPatch/Response, ScanDirectoryPayload, TriggerScanForm (Wave 1)
+- [x] 27-02-PLAN.md — Schemas: FileUpsertChunk.batch_id, ScanBatchPatch/Response, ScanDirectoryPayload, TriggerScanForm (Wave 1)
 - [ ] 27-03-PLAN.md — Endpoints: PATCH /api/internal/agent/scan-batches + batch_id resolution in POST /files + patch_scan_batch client method + main.py wiring + contract tests (Wave 2)
 - [ ] 27-04-PLAN.md — Agent task: scan_directory(scan_path, batch_id) with chunking, per-chunk PATCH, terminal PATCH; registered in agent_worker.settings.functions (Wave 3)
 - [ ] 27-05-PLAN.md — Watcher package: phaze.agent_watcher (Debouncer, WatcherEventHandler, Poster, __main__); 16+ unit tests covering thread bridge, stuck-file cap, OSError vanish, LIVE-sentinel resolution (Wave 3)
@@ -207,6 +207,6 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
-| 27. Watcher Service & User-Initiated Scan | v4.0 | 1/7 | In Progress|  |
+| 27. Watcher Service & User-Initiated Scan | v4.0 | 2/7 | In Progress|  |
 | 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |
