@@ -24,6 +24,7 @@ populated; missing/revoked/empty agents render the yellow-surface empty state.
 """
 
 from datetime import UTC, datetime
+import logging
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 import unicodedata
@@ -40,6 +41,8 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
 
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -206,7 +209,21 @@ async def trigger_scan(
     await session.refresh(batch)
 
     # Enqueue scan_directory via AgentTaskRouter (Phase 26 D-19). On enqueue
-    # failure: roll back the batch and return 503 with the documented copy.
+    # failure: mark the batch FAILED and return 503 with the documented copy.
+    #
+    # WR-06: previously the failure path called ``session.delete(batch)`` +
+    # ``session.commit()``, but if THAT also raised (same network issue that
+    # broke the enqueue could have taken Postgres out, or the session was now
+    # in a tainted state), the exception escaped the handler -- FastAPI
+    # returned a generic 500 (losing the documented 503 copy) and the orphan
+    # RUNNING ScanBatch row stayed visible to Recent Scans forever (no agent
+    # would ever PATCH it because nothing was enqueued).
+    #
+    # Switch to "mark FAILED" instead of "delete". The operator now sees a
+    # FAILED row in Recent Scans with a clear error_message, which is more
+    # honest than silently deleting evidence of the attempt. Wrap the secondary
+    # commit in its own try/except so a Postgres-down scenario still produces
+    # the 503 envelope instead of bubbling to a 500.
     try:
         await request.app.state.task_router.enqueue_for_agent(
             agent_id=form.agent_id,
@@ -214,8 +231,17 @@ async def trigger_scan(
             payload=ScanDirectoryPayload(scan_path=joined, batch_id=batch.id, agent_id=form.agent_id),
         )
     except Exception:
-        await session.delete(batch)
-        await session.commit()
+        logger.exception("scan trigger: enqueue failed for batch=%s; marking FAILED", batch.id)
+        batch.status = ScanStatus.FAILED.value
+        batch.error_message = "controller could not enqueue scan to agent worker"
+        try:
+            await session.commit()
+        except Exception:
+            # Don't let a rollback-commit failure escape the handler; the
+            # operator's 503 envelope is more important than the orphan-row
+            # cleanup, and we already logged the original cause above.
+            logger.exception("scan trigger: secondary commit failed for batch=%s", batch.id)
+            await session.rollback()
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/scan_submit_error.html",

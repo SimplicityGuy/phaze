@@ -243,6 +243,38 @@ async def test_post_scans_scan_root_not_in_agent_roots(
 
 
 @pytest.mark.asyncio
+async def test_post_scans_enqueue_failure_marks_batch_failed(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """WR-06: enqueue failure flips batch to FAILED + returns 503 (no DELETE).
+
+    Previously the failure path tried to DELETE the just-created batch and
+    commit; if that secondary commit also raised, the original 500-via-
+    unhandled-exception bubble obscured the failure cause AND left an orphan
+    RUNNING row that no agent would ever PATCH. The new failure path marks
+    the batch FAILED instead, surfacing the attempt in Recent Scans for the
+    operator to triage.
+    """
+    ac, mock_router = smoke
+    mock_router.enqueue_for_agent.side_effect = RuntimeError("redis down")
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    assert response.status_code == 503, response.text
+    assert "could not enqueue the scan" in response.text
+
+    # The batch row survives but is FAILED with the documented error_message
+    # so the operator sees what happened in Recent Scans.
+    rows = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/2026/"))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == ScanStatus.FAILED.value
+    assert rows[0].error_message == "controller could not enqueue scan to agent worker"
+
+
+@pytest.mark.asyncio
 async def test_post_scans_rejects_partial_scan_root_prefix(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
