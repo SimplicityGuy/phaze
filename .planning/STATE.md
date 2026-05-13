@@ -1,6 +1,6 @@
 ---
 gsd_state_version: 1.0
-milestone: v3.0
+milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
 stopped_at: Phase 27 UI-SPEC approved
