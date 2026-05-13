@@ -146,6 +146,29 @@ async def test_connect_error_retries_then_raises_server_error(client):  # type: 
 
 
 @respx.mock
+async def test_bearer_token_absent_from_warning_logs_on_500(client, caplog):  # type: ignore[no-untyped-def]
+    """D-13: bearer token must never appear in WARNING logs emitted by _request() on HTTP failure.
+
+    A 500 triggers the WARNING path in _request(). Capture caplog at WARNING level and assert
+    the token string does NOT appear in any log record message.
+    """
+    import logging
+
+    from phaze.schemas.agent_analysis import AnalysisWritePayload
+
+    file_id = uuid.uuid4()
+    respx.put(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(500),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="phaze.services.agent_client"), pytest.raises(AgentApiServerError):
+        await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
+
+    warning_text = "\n".join(rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING)
+    assert _TOKEN not in warning_text, f"D-13 violation: bearer token appeared in WARNING log output: {warning_text!r}"
+
+
+@respx.mock
 async def test_whoami_returns_agent_identity_model(client):  # type: ignore[no-untyped-def]
     from datetime import datetime
 
