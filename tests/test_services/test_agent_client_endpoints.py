@@ -192,6 +192,49 @@ async def test_patch_execution_log_uses_correct_url_and_returns_response_model(c
 
 
 @respx.mock
+async def test_patch_scan_batch_uses_correct_url_and_exclude_unset(client):  # type: ignore[no-untyped-def]
+    """patch_scan_batch -> PATCH /api/internal/agent/scan-batches/{id}, exclude_unset=True (Phase 27 D-10)."""
+    from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
+
+    batch_id = uuid.uuid4()
+
+    route = respx.patch(f"{_BASE_URL}/api/internal/agent/scan-batches/{batch_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "batch_id": str(batch_id),
+                "agent_id": "agent-01",
+                "scan_path": "/data/music",
+                "status": "completed",
+                "total_files": 42,
+                "processed_files": 42,
+                "error_message": None,
+            },
+        ),
+    )
+
+    # Partial patch: only status + total_files set; processed_files + error_message
+    # must NOT appear in the wire body (exclude_unset=True).
+    payload = ScanBatchPatch(status="completed", total_files=42)
+
+    result = await client.patch_scan_batch(batch_id, payload)
+
+    assert route.called
+    assert route.call_count == 1
+    assert isinstance(result, ScanBatchPatchResponse), f"Expected ScanBatchPatchResponse, got {type(result)}"
+    assert result.batch_id == batch_id
+    assert result.status == "completed"
+    assert result.total_files == 42
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["status"] == "completed"
+    assert sent_body["total_files"] == 42
+    # exclude_unset=True -- processed_files + error_message were not set, so must not appear
+    assert "processed_files" not in sent_body, "processed_files should be excluded (exclude_unset=True)"
+    assert "error_message" not in sent_body, "error_message should be excluded (exclude_unset=True)"
+
+
+@respx.mock
 async def test_heartbeat_posts_to_correct_url_and_returns_none(client):  # type: ignore[no-untyped-def]
     """heartbeat -> POST /api/internal/agent/heartbeat with 204, no exception raised, None returned."""
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
