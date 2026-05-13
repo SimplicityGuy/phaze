@@ -144,8 +144,17 @@ async def main() -> None:
                 shutdown_event=shutdown_event,
             )
         finally:
+            # WR-07: bound the join with a timeout so a wedged watchdog thread
+            # (NFS stall, FUSE deadlock) cannot block ``docker compose down``
+            # indefinitely. ``threading.Thread.join()`` is blocking-by-default;
+            # 10s matches the typical container-shutdown grace period and is
+            # long enough for a healthy thread to drain. If the thread is still
+            # alive after the timeout we log a warning and proceed -- the
+            # container's process supervisor handles the final SIGKILL.
             observer.stop()
-            observer.join()
+            observer.join(timeout=10.0)
+            if observer.is_alive():
+                logger.warning("watcher: observer thread did not stop within 10s; abandoning")
     finally:
         await client.close()
 

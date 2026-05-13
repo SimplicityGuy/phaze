@@ -131,6 +131,8 @@ async def test_main_graceful_shutdown_on_sigterm(monkeypatch: pytest.MonkeyPatch
     fake_client.close = AsyncMock()
 
     fake_observer = MagicMock()
+    # WR-07: a healthy shutdown reports ``is_alive() is False`` after join.
+    fake_observer.is_alive.return_value = False
     monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
     monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
     monkeypatch.setattr(wmain, "Observer", MagicMock(return_value=fake_observer))
@@ -139,9 +141,43 @@ async def test_main_graceful_shutdown_on_sigterm(monkeypatch: pytest.MonkeyPatch
 
     await wmain.main()
 
-    # finally: block invoked stop + join + close
+    # finally: block invoked stop + join(timeout=10.0) + close
     fake_observer.stop.assert_called_once()
-    fake_observer.join.assert_called_once()
+    fake_observer.join.assert_called_once_with(timeout=10.0)
+    fake_client.close.assert_awaited_once()
+
+
+async def test_main_logs_warning_when_observer_does_not_stop(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """WR-07: a wedged watchdog thread does NOT hang the shutdown.
+
+    If ``observer.is_alive()`` still returns True after the bounded join,
+    the watcher logs a warning and proceeds to close the HTTP client. The
+    container's process supervisor handles the final SIGKILL -- the goal is
+    to never block ``docker compose down`` on an NFS stall / FUSE deadlock.
+    """
+    cfg = _build_agent_settings(monkeypatch)
+    identity = _build_identity(roots=["/x"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    fake_observer = MagicMock()
+    # Simulate a wedged thread: still alive after join returns.
+    fake_observer.is_alive.return_value = True
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "Observer", MagicMock(return_value=fake_observer))
+    real_event_cls = asyncio.Event
+    monkeypatch.setattr(wmain.asyncio, "Event", lambda: (lambda e: (e.set(), e)[1])(real_event_cls()))
+
+    with caplog.at_level(logging.WARNING, logger="phaze.agent_watcher.__main__"):
+        await wmain.main()
+
+    fake_observer.join.assert_called_once_with(timeout=10.0)
+    # Warning surfaced; client still closed (shutdown did not hang).
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "did not stop within" in text
     fake_client.close.assert_awaited_once()
 
 
