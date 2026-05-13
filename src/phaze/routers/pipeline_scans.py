@@ -166,6 +166,21 @@ async def trigger_scan(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
+    # WR-05: the form-submitted ``scan_root`` MUST itself be one of the agent's
+    # configured ``scan_roots``. Previously only the joined ``scan_root + '/' +
+    # subpath`` was validated against the prefix list, which allowed a partial
+    # match like ``scan_root="/data"`` + ``subpath="music/foo"`` to authorize
+    # ``/data/music/foo`` even though ``/data`` itself was never configured. The
+    # planning invariant documents ``scan_root rejected when not in selected
+    # agent's scan_roots``; tighten the check to require literal membership.
+    if form.scan_root not in agent.scan_roots:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/scan_submit_error.html",
+            context={"request": request, "error_message": "Selected scan root is not configured for this agent."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
     # D-06 prefix validation: joined path must match (or descend from) one of
     # the agent's configured scan_roots. Strip trailing slash on roots so
     # `"/data/music"` matches both `"/data/music"` and `"/data/music/2026"`.

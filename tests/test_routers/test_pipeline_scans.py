@@ -189,17 +189,18 @@ async def test_post_scans_path_outside_scan_root(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """T-27-03: scan_root not in agent.scan_roots (prefix-check fails) rejects with 400."""
+    """T-27-03: scan_root not in agent.scan_roots rejects with 400."""
     ac, mock_router = smoke
 
     # /data/photos is NOT in the seeded agent's scan_roots (which are
-    # /data/music + /data/videos). The prefix-check fails.
+    # /data/music + /data/videos). The literal-membership check fails.
     response = await ac.post(
         "/pipeline/scans",
         data={"agent_id": "test-agent", "scan_root": "/data/photos", "subpath": "vacation/"},
     )
     assert response.status_code == 400
-    assert "Resolved path is outside the selected scan root." in response.text
+    # WR-05: scan_root membership check fires before the prefix check.
+    assert "Selected scan root is not configured for this agent." in response.text
     assert await _count_batches(session) == 0
     mock_router.enqueue_for_agent.assert_not_awaited()
 
@@ -227,7 +228,7 @@ async def test_post_scans_scan_root_not_in_agent_roots(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """scan_root NOT in agent.scan_roots is treated as outside-root (prefix-check fails)."""
+    """WR-05: scan_root NOT literally in agent.scan_roots rejects with 400."""
     ac, mock_router = smoke
 
     response = await ac.post(
@@ -236,7 +237,36 @@ async def test_post_scans_scan_root_not_in_agent_roots(
         data={"agent_id": "test-agent", "scan_root": "/etc", "subpath": ""},
     )
     assert response.status_code == 400
-    assert "Resolved path is outside the selected scan root." in response.text
+    # WR-05: literal-membership check fires before the prefix check.
+    assert "Selected scan root is not configured for this agent." in response.text
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_scans_rejects_partial_scan_root_prefix(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """WR-05 regression: scan_root="/data" + subpath="music/foo" must reject.
+
+    The agent's scan_roots are ["/data/music", "/data/videos"]; "/data" alone
+    is a parent path that was never authorized. Previously the joined-path
+    prefix check passed because ``"/data/music/foo".startswith("/data/music/")``
+    is True, so the audit log would have recorded ``scan_root="/data"`` for a
+    scan against ``/data/music/foo`` -- a surprising mode where unconfigured
+    scan_roots can authorize sub-trees that happen to fall inside a configured
+    one. Tighten the validator to require literal membership.
+    """
+    ac, mock_router = smoke
+
+    response = await ac.post(
+        "/pipeline/scans",
+        # /data is the *parent* of a real scan_root but is not configured itself.
+        data={"agent_id": "test-agent", "scan_root": "/data", "subpath": "music/foo"},
+    )
+    assert response.status_code == 400
+    assert "Selected scan root is not configured for this agent." in response.text
+    assert await _count_batches(session) == 0
     mock_router.enqueue_for_agent.assert_not_awaited()
 
 
