@@ -17,6 +17,7 @@ from phaze.schemas.agent_tasks import (
     ExtractMetadataPayload,
     FingerprintFilePayload,
     ProcessFilePayload,
+    ScanDirectoryPayload,
     ScanLiveSetPayload,
 )
 
@@ -155,6 +156,58 @@ def test_scan_live_set_payload_minimal_valid() -> None:
 def test_scan_live_set_payload_field_set() -> None:
     fields = ScanLiveSetPayload.model_fields
     assert set(fields.keys()) == {"file_id", "original_path", "agent_id"}
+
+
+# -----------------------
+# ScanDirectoryPayload (Phase 27 D-14)
+# -----------------------
+
+
+def test_scan_directory_payload_minimal_valid() -> None:
+    """ScanDirectoryPayload carries the per-job snapshot the agent needs (D-14)."""
+    p = ScanDirectoryPayload(
+        scan_path="/data/music/2026",
+        batch_id=uuid.uuid4(),
+        agent_id="test-agent",
+    )
+    assert p.scan_path == "/data/music/2026"
+    assert p.agent_id == "test-agent"
+
+
+def test_scan_directory_payload_rejects_non_uuid_batch_id() -> None:
+    """Pydantic UUID coercion fails on arbitrary strings."""
+    with pytest.raises(pydantic.ValidationError):
+        ScanDirectoryPayload.model_validate(
+            {"scan_path": "/x", "batch_id": "not-uuid", "agent_id": "a"},
+        )
+
+
+def test_scan_directory_payload_rejects_unknown_field() -> None:
+    """extra='forbid' on every SAQ payload."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        ScanDirectoryPayload.model_validate(
+            {
+                "scan_path": "/x",
+                "batch_id": str(uuid.uuid4()),
+                "agent_id": "a",
+                "extra": "x",
+            },
+        )
+
+    assert any(e.get("type") == "extra_forbidden" for e in exc_info.value.errors())
+
+
+def test_scan_directory_payload_field_set() -> None:
+    """D-14: exactly three fields — scan_path, batch_id, agent_id."""
+    fields = ScanDirectoryPayload.model_fields
+    assert set(fields.keys()) == {"scan_path", "batch_id", "agent_id"}
+
+
+def test_scan_directory_payload_has_no_models_path_or_current_path() -> None:
+    """D-22/D-24 invariants extended to the new payload."""
+    fields = ScanDirectoryPayload.model_fields
+    assert "models_path" not in fields
+    assert "current_path" not in fields
 
 
 # -----------------------
@@ -305,6 +358,7 @@ def test_no_current_path_field_anywhere() -> None:
         ExtractMetadataPayload,
         FingerprintFilePayload,
         ScanLiveSetPayload,
+        ScanDirectoryPayload,
         ExecuteApprovedBatchPayload,
         ExecuteBatchProposalItem,
     )
@@ -318,5 +372,6 @@ def test_only_process_file_payload_has_models_path() -> None:
     assert "models_path" not in ExtractMetadataPayload.model_fields
     assert "models_path" not in FingerprintFilePayload.model_fields
     assert "models_path" not in ScanLiveSetPayload.model_fields
+    assert "models_path" not in ScanDirectoryPayload.model_fields
     assert "models_path" not in ExecuteApprovedBatchPayload.model_fields
     assert "models_path" not in ExecuteBatchProposalItem.model_fields

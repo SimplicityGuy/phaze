@@ -68,6 +68,23 @@ class ScanLiveSetPayload(BaseModel):
     agent_id: str
 
 
+class ScanDirectoryPayload(BaseModel):
+    """SAQ job: walk a directory on the agent and stream FileRecord chunks back via HTTP (Phase 27 D-14).
+
+    Carries the per-job snapshot the agent needs to walk `scan_path`, post
+    chunks of FileUpsertRecord to `POST /api/internal/agent/files` (binding
+    each chunk to `batch_id`), and PATCH the batch progress + final status.
+    D-23 forbids reading state back from the controller mid-job; everything
+    the agent needs is in this payload.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scan_path: str
+    batch_id: uuid.UUID
+    agent_id: str
+
+
 class ExecuteBatchProposalItem(BaseModel):
     """Per-proposal details carried inside ExecuteApprovedBatchPayload.proposals.
 
