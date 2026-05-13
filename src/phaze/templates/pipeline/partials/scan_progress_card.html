@@ -1,0 +1,57 @@
+{# Phase 27 Component 3 (UI-SPEC lines 253-329): three-state poll partial.
+
+   Pitfall 6 (terminal-state halt): the in-progress branch carries hx-trigger="every 2s"
+   AND hx-swap="outerHTML" AND hx-get="/pipeline/scans/{batch_id}". The COMPLETED
+   and FAILED branches OMIT all three -- because the swap is outerHTML, replacing
+   the in-progress fragment with a terminal one removes the polling trigger and
+   HTMX stops automatically.
+#}
+{% if batch.status == 'running' %}
+<div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
+     aria-live="polite"
+     hx-get="/pipeline/scans/{{ batch.id }}"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan in progress</h3>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
+    </div>
+    <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
+        {{ batch.processed_files }} / {{ batch.total_files or '?' }} files
+    </p>
+    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        {{ agent_name }} · {{ batch.scan_path }}
+    </p>
+</div>
+{% elif batch.status == 'completed' %}
+<div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
+     aria-live="polite">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan complete</h3>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: completed">COMPLETED</span>
+    </div>
+    <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
+        {{ batch.processed_files }} / {{ batch.total_files }} files
+    </p>
+    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        {{ agent_name }} · {{ batch.scan_path }}{% if elapsed_seconds is not none %} · finished in {{ elapsed_seconds }}s{% endif %}
+    </p>
+</div>
+{% elif batch.status == 'failed' %}
+<div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
+     aria-live="polite">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan failed</h3>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: failed">FAILED</span>
+    </div>
+    <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
+        {{ batch.processed_files }} / {{ batch.total_files or '?' }} files
+    </p>
+    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        {{ agent_name }} · {{ batch.scan_path }}
+    </p>
+    {% if batch.error_message %}
+    <p class="text-sm text-red-600 dark:text-red-400 mt-2">{{ batch.error_message }}</p>
+    {% endif %}
+</div>
+{% endif %}

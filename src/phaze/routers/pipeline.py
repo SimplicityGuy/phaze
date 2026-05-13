@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,10 +15,12 @@ from sqlalchemy import exists, select
 from phaze.config import settings
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
+from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
+from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
@@ -121,13 +124,46 @@ async def dashboard(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Render the pipeline dashboard page (per D-03)."""
+    """Render the pipeline dashboard page (per D-03).
+
+    Phase 27 D-05/D-06 extension: the dashboard now exposes ``agents`` (the
+    non-revoked agent list driving the Trigger Scan card dropdown) and
+    ``recent_scans`` (the last 10 non-LIVE ScanBatches with ``agent_name`` +
+    ``elapsed_seconds`` attached for the Recent Scans mini-table). The LIVE
+    sentinel batches are excluded -- they are an internal watcher-ingestion
+    state, not an operator-triggered event.
+    """
     stats = await get_pipeline_stats(session)
+
+    # Phase 27 D-05/D-06: agents for the Trigger Scan dropdown (non-revoked, ordered).
+    agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+    agents = (await session.execute(agents_stmt)).scalars().all()
+
+    # Phase 27 D-05 / UI-SPEC Component 4: last 10 non-LIVE ScanBatches.
+    # The LIVE sentinel is the watcher's terminal state -- excluded from the
+    # operator-facing Recent Scans table per UI-SPEC line 401.
+    recent_scans_stmt = select(ScanBatch).where(ScanBatch.status != ScanStatus.LIVE.value).order_by(ScanBatch.created_at.desc()).limit(10)
+    recent_scans_rows = list((await session.execute(recent_scans_stmt)).scalars().all())
+
+    # Resolve agent_name + elapsed_seconds per row via a dict lookup
+    # (avoids N+1; one indexed agents query above already loaded every agent).
+    agent_name_by_id = {a.id: a.name for a in agents}
+    now = datetime.now(UTC).replace(tzinfo=None)
+    for batch in recent_scans_rows:
+        # Attach as transient attrs for template consumption. Naive utcnow
+        # mirrors TimestampMixin's server-side naive UTC (models/base.py:27).
+        batch._agent_name = agent_name_by_id.get(batch.agent_id, batch.agent_id)  # type: ignore[attr-defined]
+        batch._elapsed_seconds = (  # type: ignore[attr-defined]
+            int((now - batch.created_at).total_seconds()) if batch.created_at else None
+        )
+
     context = {
         "request": request,
         "stats": stats,
         "current_page": "pipeline",
         "settings_batch_size": settings.llm_batch_size,
+        "agents": agents,
+        "recent_scans": recent_scans_rows,
     }
     return templates.TemplateResponse(request=request, name="pipeline/dashboard.html", context=context)
 
