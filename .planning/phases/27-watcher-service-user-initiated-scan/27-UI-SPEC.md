@@ -5,6 +5,8 @@ status: draft
 shadcn_initialized: false
 preset: none
 created: 2026-05-13
+revised: 2026-05-13
+revision: 1
 ---
 
 # Phase 27 — UI Design Contract
@@ -46,7 +48,15 @@ Inherited from Tailwind's default 4px scale. Phase 27 uses only the values alrea
 | 2xl | — | 48px | Not used by Phase 27 |
 | 3xl | — | 64px | Not used by Phase 27 |
 
-**Exceptions:** none.
+**Exceptions:** 1 — see below.
+
+### Spacing Exceptions
+
+| Token | Tailwind class | Computed | Where it appears | Justification |
+|-------|---------------|----------|------------------|---------------|
+| pill-padding-y | `py-0.5` | 2px | All Phase 27 status pills: Component 3 Scan Progress card status pill (running/completed/failed badge in card header), Component 4 Recent Scans table Status column, Component 5 `scan_status_pill.html` shared partial | Inherits the project-wide status pill geometry from `src/phaze/templates/tracklists/partials/status_badge.html` (lines 2/4/6 — every Proposed/Approved/Rejected pill uses `text-xs font-semibold px-2 py-0.5 rounded-full bg-*-100/950 text-*-700/400`). Phase 27 deliberately mirrors this so all status pills in the app remain visually identical. Deviating to `py-1` (4px, in scale) would make Phase 27 pills look subtly taller than existing tracklist pills — a visible regression for the operator on the same screen. The 2px deviation from the multiple-of-4 rule is the smaller of the two evils, and matches the only existing pill-geometry pattern in the codebase. |
+
+This is the ONLY Phase 27 spacing exception. Horizontal padding on every pill stays at `px-2` (8px, in scale). All other spacing in Phase 27 — card padding, form gap, table cell padding, vertical rhythm — uses the in-scale 4/8/16/24/32 tokens above with zero deviations.
 
 **Page vertical rhythm:** Phase 27's two new cards sit inside the existing `space-y-6` flow of `templates/pipeline/dashboard.html`. New card order: (1) Trigger Scan card → (2) Recent Scans mini-table → (3) existing `#pipeline-stats` → (4) existing `#pipeline-stages`. The new Scan Progress card lives **inside** the Trigger Scan card's submit-result slot (it does not get its own row).
 
@@ -114,9 +124,13 @@ Phase 27 uses **only colors already in the Phaze palette** (see `base.html` `@th
 
 **Note on `text-white` on `bg-blue-600`:** Phaze's custom `#00b0d8` is a lighter cyan than Tailwind's default `#2563eb`, producing a borderline 3.04:1 contrast for normal text. **For Phase 27's submit button, the button text uses `text-sm font-semibold` (14px @ weight 600) which under WCAG counts as "large bold text" requiring only 3:1.** Pass at 3.04:1, but tight — checker should re-verify if the rendered text shrinks. This matches the existing `bg-blue-600 text-white` button pattern in `stage_cards.html` line 19, so Phase 27 inherits the same risk as the rest of the app and does NOT diverge here.
 
+**Inherited contrast risk:** button label `text-white` on `bg-blue-600` measures 3.04:1 — passes AA large-bold (3:1 threshold for 14px @ weight 600), fails AA normal-text (4.5:1 threshold). This is an app-wide pattern established before Phase 27 (`stage_cards.html` line 19 uses the identical class string), not a Phase 27 regression. Project-level remediation (darken `bg-blue-600` to a `#0079a8`-class hue OR upsize the button text to 16px) is deferred to a future visual-polish phase. Phase 27 deliberately does NOT diverge.
+
 ---
 
 ## Component Contracts
+
+**Primary focal point:** the "Start Scan" submit button (Component 1, last form row). It is the **sole accent-colored element on the new dashboard surface** — every other Phase 27 element uses dominant white/dark backgrounds or secondary gray borders. The accent `bg-blue-600` button is therefore the unambiguous visual anchor of the Trigger Scan card and the operator's eye lands on it first after reading the card heading. The Recent Scans mini-table and Scan Progress card are deliberately monochromatic (status pills use surface-variant hues, not the saturated accent) so the CTA stays visually distinct. Executors must not introduce additional accent-colored elements in Phase 27 surfaces — doing so would dilute the focal point.
 
 ### Component 1: Trigger Scan card
 
@@ -268,6 +282,8 @@ The button uses the same indicator pattern as `stage_cards.html`. Disabled when 
 </div>
 ```
 
+(Note: `py-0.5` on the status pill is the documented Phase 27 spacing exception — see Spacing Exceptions table.)
+
 **Terminal state — COMPLETED:**
 ```html
 <div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
@@ -392,7 +408,7 @@ The button uses the same indicator pattern as `stage_cards.html`. Disabled when 
 
 **File:** `templates/pipeline/partials/scan_status_pill.html`
 
-Mirrors `templates/tracklists/partials/status_badge.html` exactly (same pill geometry, same color tokens, same letter-casing). Used in both Recent Scans rows and the Scan Progress card.
+Mirrors `templates/tracklists/partials/status_badge.html` exactly (same pill geometry, same color tokens, same letter-casing). Used in both Recent Scans rows and the Scan Progress card. The `py-0.5` vertical padding is the documented Phase 27 spacing exception (see Spacing Exceptions table) — deliberately inherited from the project-wide pill pattern.
 
 ```html
 {% if batch.status == 'running' %}
@@ -622,6 +638,15 @@ Modified files:
 |------|--------|
 | `src/phaze/templates/pipeline/dashboard.html` | Add `{% include "pipeline/partials/trigger_scan_card.html" %}` and `{% include "pipeline/partials/recent_scans_table.html" %}` above the existing `#pipeline-stats` div |
 | `src/phaze/templates/pipeline/partials/stats_bar.html` | Add OOB swap target rendering `recent_scans_table.html` into `#recent-scans` |
+
+---
+
+## Revision History
+
+| Revision | Date | Changes |
+|----------|------|---------|
+| draft | 2026-05-13 | Initial spec |
+| 1 | 2026-05-13 | Added `py-0.5` (2px) spacing exception with project-pattern justification (inherits from `tracklists/partials/status_badge.html`); added "Primary focal point" declaration to Component Contracts header; added inherited-contrast-risk paragraph to Color section. No re-asked questions; all changes inferred from existing CONTEXT D-05..D-08 + existing template patterns. |
 
 ---
 
