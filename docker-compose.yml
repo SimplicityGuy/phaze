@@ -44,6 +44,25 @@ services:
       redis:
         condition: service_healthy
 
+  # Phase 27 D-19: always-on watcher. Will move to docker-compose.agent.yml in Phase 29
+  # alongside the renamed worker (per Phase 26 D-04 plan). Image is the same as worker
+  # but entry point is python -m phaze.agent_watcher (NOT saq settings).
+  watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uv run python -m phaze.agent_watcher
+    env_file: .env
+    environment:
+      - PHAZE_ROLE=agent
+      # PHAZE_AGENT_API_URL, PHAZE_AGENT_TOKEN, PHAZE_AGENT_SCAN_ROOTS come from .env
+    volumes:
+      - "${SCAN_PATH:-/data/music}:/data/music:ro"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
   postgres:
     image: postgres:18-alpine
     environment:
