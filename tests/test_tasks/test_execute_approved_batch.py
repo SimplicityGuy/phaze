@@ -180,6 +180,37 @@ async def test_execute_approved_batch_sha256_mismatch(tmp_path: Path, monkeypatc
     assert not proposed_paths[1].exists()
 
 
+async def test_execute_approved_batch_original_path_escape_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """original_path escapes scan_root -> proposal fails, no file op attempted (GAP-4 / T-26-11-S1-mirror).
+
+    Mirrors test_execute_approved_batch_path_escape_rejected but flips which field carries the escape:
+    here original_path="/etc/shadow" (outside scan_root) while proposed_path is valid.
+    Verifies that _resolve_and_check_containment is enforced on BOTH paths, not just proposed_path.
+    """
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    _patch_settings(monkeypatch, [str(allowed_root)])
+    api = _make_api_client_mock()
+    proposed = allowed_root / "dest.mp3"
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path="/etc/shadow",  # outside scan_root -- GAP-4 escape via original_path
+            proposed_path=str(proposed),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["error_count"] == 1, f"Expected error_count=1, got {result['error_count']}"
+    assert result["status"] == "completed_with_errors"
+    # Proposed destination must not have been created (no file op attempted)
+    assert not proposed.exists(), "proposed destination was created despite original_path escape rejection"
+    # Failure reported via patch_proposal_state
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+
+
 async def test_execute_approved_batch_requires_scan_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Empty scan_roots is a mis-deployment -> RuntimeError before any file ops."""
     _patch_settings(monkeypatch, [])
