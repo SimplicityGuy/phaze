@@ -147,3 +147,47 @@ def test_event_handler_subscribes_to_created_and_modified() -> None:
     assert loop.call_soon_threadsafe.call_count == 2
     paths = [call.args[1] for call in loop.call_soon_threadsafe.call_args_list]
     assert paths == ["/foo/a.mp3", "/foo/b.mp3"]
+
+
+def test_event_handler_decodes_bytes_via_fs_encoding() -> None:
+    """WR-03 regression: bytes src_path decoded via os.fsdecode (filesystem encoding).
+
+    Previously the handler hardcoded ``decode("utf-8", errors="strict")``, which
+    silently dropped legitimate filenames on hosts where the filesystem
+    encoding is not UTF-8. ``os.fsdecode`` honors ``sys.getfilesystemencoding()``
+    and uses surrogateescape, so un-decodable bytes survive rather than vanish.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    # Bytes form of "/foo/song.mp3" -- the obvious UTF-8/ASCII overlap case.
+    handler.on_created(FileCreatedEvent(src_path=b"/foo/song.mp3"))
+
+    assert loop.call_soon_threadsafe.call_count == 1
+    args, _ = loop.call_soon_threadsafe.call_args
+    assert args[1] == "/foo/song.mp3"
+
+
+def test_event_handler_preserves_undecodable_bytes_via_surrogateescape() -> None:
+    """WR-03 regression: bytes that fail strict UTF-8 decode still surface (don't get dropped).
+
+    ``os.fsdecode`` uses surrogateescape, so a path containing a lone 0x80 byte
+    (invalid UTF-8) round-trips through a surrogate-encoded string and reaches
+    the debouncer. The downstream POST may still fail, but the path becomes
+    diagnosable in logs instead of silently disappearing at DEBUG level.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    # 0x80 alone is invalid UTF-8 (a continuation byte with no leading byte).
+    # Strict-UTF-8 decode would raise UnicodeDecodeError; os.fsdecode survives.
+    handler.on_created(FileCreatedEvent(src_path=b"/foo/bad\x80name.mp3"))
+
+    assert loop.call_soon_threadsafe.call_count == 1
+    args, _ = loop.call_soon_threadsafe.call_args
+    # Filename made it through; we don't assert exact spelling because
+    # surrogateescape maps the byte to a surrogate codepoint (U+DC80).
+    assert args[1].startswith("/foo/bad")
+    assert args[1].endswith("name.mp3")

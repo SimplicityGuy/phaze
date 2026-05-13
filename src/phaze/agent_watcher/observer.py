@@ -19,6 +19,7 @@ Observer's OS thread and the asyncio-owned :class:`Debouncer`. It:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 import unicodedata
@@ -52,16 +53,20 @@ class WatcherEventHandler(FileSystemEventHandler):
 
     def _filter_and_dispatch(self, src_path: bytes | str) -> None:
         # watchdog types ``src_path`` as ``bytes | str`` (some platforms emit
-        # bytes for non-UTF-8 filesystem names). Decode bytes via the
-        # filesystem encoding; if a name truly fails to decode, drop it --
-        # the controller's path-validation would reject it anyway.
+        # bytes for non-UTF-8 filesystem names). Decode via ``os.fsdecode`` so
+        # the system's filesystem encoding (``sys.getfilesystemencoding()``) is
+        # honored -- on hosts whose LANG is not UTF-8 (legacy ext4, older NFS,
+        # filesystems with pre-UTF-8 Latin-1 filenames) a hardcoded UTF-8 strict
+        # decode silently dropped legitimate music files. ``os.fsdecode`` uses
+        # surrogateescape by default, so un-decodable bytes survive into logs
+        # rather than vanishing. (WR-03)
         if not src_path:
             return
         if isinstance(src_path, bytes):
             try:
-                path_str = src_path.decode("utf-8", errors="strict")
-            except UnicodeDecodeError:
-                logger.debug("watcher: dropping undecodable bytes path; len=%d", len(src_path))
+                path_str = os.fsdecode(src_path)
+            except (UnicodeDecodeError, ValueError):
+                logger.warning("watcher: dropping path; cannot decode via fs encoding; len=%d", len(src_path))
                 return
         else:
             path_str = src_path
