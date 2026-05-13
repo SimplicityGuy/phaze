@@ -44,7 +44,9 @@ async def test_agent_worker_startup_logs_role_banner_with_token_preview(
     fake_client = AsyncMock()
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     fake_client.close = AsyncMock()
-    monkeypatch.setattr(aw, "PhazeAgentClient", lambda *_a, **_kw: fake_client)
+    # Phase 27 D-17: client construction moved to phaze.tasks._shared.agent_bootstrap.
+    # Patch agent_worker's local binding (imported via `from ... import construct_agent_client`).
+    monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
     monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
     monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
@@ -101,7 +103,8 @@ async def test_agent_worker_startup_raises_on_queue_token_mismatch(
     fake_client = AsyncMock()
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     fake_client.close = AsyncMock()
-    monkeypatch.setattr(aw, "PhazeAgentClient", lambda *_a, **_kw: fake_client)
+    # Phase 27 D-17: client construction moved to phaze.tasks._shared.agent_bootstrap.
+    monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
     monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
     monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
@@ -118,12 +121,19 @@ async def test_agent_worker_startup_raises_on_queue_token_mismatch(
 async def test_whoami_with_retry_raises_runtime_error_after_exhaustion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_whoami_with_retry: every attempt raises AgentApiError -> RuntimeError after budget exhausted."""
+    """whoami_with_retry: every attempt raises AgentApiError -> RuntimeError after budget exhausted.
+
+    Phase 27 D-17: the function now lives in phaze.tasks._shared.agent_bootstrap;
+    agent_worker exposes it via `whoami_with_retry as _whoami_with_retry` (back-compat alias).
+    The retry budget is read from the shared module's globals, so the monkeypatch
+    must target the shared module (not the agent_worker namespace).
+    """
     from phaze.services.agent_client import AgentApiError
+    import phaze.tasks._shared.agent_bootstrap as ab
     import phaze.tasks.agent_worker as aw
 
     # Shrink the retry budget to keep the test fast (~0s sleep total).
-    monkeypatch.setattr(aw, "_WHOAMI_BACKOFF_S", (0.0, 0.0))
+    monkeypatch.setattr(ab, "_WHOAMI_BACKOFF_S", (0.0, 0.0))
 
     fake_client = AsyncMock()
     fake_client.whoami = AsyncMock(side_effect=AgentApiError("simulated down"))

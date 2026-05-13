@@ -40,17 +40,20 @@ Docker invocation (Phase 29 docker-compose.agent.yml):
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from saq import Queue
 
 from phaze.config import AgentSettings, get_settings
-from phaze.services.agent_client import AgentApiError, PhazeAgentClient
 from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
+from phaze.tasks._shared.agent_bootstrap import (
+    _WHOAMI_BACKOFF_S,  # noqa: F401  # re-export for back-compat / test patching
+    construct_agent_client,
+    whoami_with_retry as _whoami_with_retry,
+)
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
@@ -59,34 +62,7 @@ from phaze.tasks.pool import create_process_pool
 from phaze.tasks.scan import scan_live_set
 
 
-if TYPE_CHECKING:
-    from phaze.schemas.agent_identity import AgentIdentity
-
-
 logger = logging.getLogger(__name__)
-
-
-_WHOAMI_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
-"""Bounded retry budget for the /whoami startup probe (~63s total wall-clock)."""
-
-
-async def _whoami_with_retry(client: PhazeAgentClient) -> AgentIdentity:
-    """Call client.whoami() with bounded exponential backoff. Raises RuntimeError on exhaustion."""
-    last_exc: Exception | None = None
-    for delay in _WHOAMI_BACKOFF_S:
-        try:
-            return await client.whoami()
-        except AgentApiError as e:
-            last_exc = e
-            logger.warning("/whoami probe failed: %s; retrying in %.1fs", e, delay)
-            await asyncio.sleep(delay)
-    # One final attempt with no delay.
-    try:
-        return await client.whoami()
-    except AgentApiError as e:
-        last_exc = e
-    msg = f"agent_worker /whoami probe exhausted retry budget (~63s); last error: {last_exc}"
-    raise RuntimeError(msg)
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -119,12 +95,8 @@ async def startup(ctx: dict[str, Any]) -> None:
         raise RuntimeError(msg)
     logger.info("Found %d model files in %s", len(pb_files), cfg.models_path)
 
-    # Step 2: Construct PhazeAgentClient.
-    client = PhazeAgentClient(
-        base_url=cfg.agent_api_url,
-        token=cfg.agent_token.get_secret_value(),
-        timeout=30.0,
-    )
+    # Step 2: Construct PhazeAgentClient (shared bootstrap helper -- Phase 27 D-17).
+    client = construct_agent_client(cfg)
     ctx["api_client"] = client
 
     # Step 3: /whoami probe with bounded retry.
