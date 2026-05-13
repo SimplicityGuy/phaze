@@ -141,3 +141,63 @@ def test_agent_settings_comma_splits_scan_roots(
 
     cfg = AgentSettings()
     assert cfg.scan_roots == ["/a", "/b", "/c"], f"scan_roots mismatch: {cfg.scan_roots!r}"
+
+
+# ----------------------------------------------------------------------
+# Phase 27-01: Watcher / scan_chunk_size knobs on AgentSettings (D-03, D-11)
+# ----------------------------------------------------------------------
+
+
+def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Helper: set the minimum env vars needed for AgentSettings() to construct."""
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    # Ensure no leftover watcher env vars from a previous test affect defaults.
+    for name in (
+        "PHAZE_WATCHER_SETTLE_SECONDS",
+        "PHAZE_WATCHER_MAX_PENDING_SECONDS",
+        "PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS",
+        "PHAZE_SCAN_CHUNK_SIZE",
+        "watcher_settle_seconds",
+        "watcher_max_pending_seconds",
+        "watcher_sweep_interval_seconds",
+        "scan_chunk_size",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_agent_settings_watcher_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default values for the four new knobs match D-03 / D-11."""
+    from phaze.config import AgentSettings
+
+    _agent_env(monkeypatch)
+    cfg = AgentSettings()
+    assert cfg.watcher_settle_seconds == 10
+    assert cfg.watcher_max_pending_seconds == 3600
+    assert cfg.watcher_sweep_interval_seconds == 2
+    assert cfg.scan_chunk_size == 500
+
+
+@pytest.mark.parametrize(
+    ("env_var", "field_name", "value"),
+    [
+        ("PHAZE_WATCHER_SETTLE_SECONDS", "watcher_settle_seconds", "42"),
+        ("PHAZE_WATCHER_MAX_PENDING_SECONDS", "watcher_max_pending_seconds", "7200"),
+        ("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "watcher_sweep_interval_seconds", "5"),
+        ("PHAZE_SCAN_CHUNK_SIZE", "scan_chunk_size", "250"),
+    ],
+)
+def test_agent_settings_watcher_env_var_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+    env_var: str,
+    field_name: str,
+    value: str,
+) -> None:
+    """Each PHAZE_* env var maps onto its bare field name via AliasChoices."""
+    from phaze.config import AgentSettings
+
+    _agent_env(monkeypatch)
+    monkeypatch.setenv(env_var, value)
+    cfg = AgentSettings()
+    assert getattr(cfg, field_name) == int(value), f"{field_name} != {value}"
