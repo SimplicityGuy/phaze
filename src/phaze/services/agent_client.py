@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         ProposalStatePatch,
         ProposalStateResponse,
     )
+    from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
     from phaze.schemas.agent_tracklists import (
         TracklistCreatePayload,
         TracklistCreateResponse,
@@ -291,6 +292,25 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ProposalStateResponse.model_validate(response.json())
+
+    async def patch_scan_batch(
+        self,
+        batch_id: uuid.UUID,
+        payload: ScanBatchPatch,
+    ) -> ScanBatchPatchResponse:
+        """PATCH /api/internal/agent/scan-batches/{batch_id} -- update batch status/counts (Phase 27 D-10).
+
+        Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12)
+        via the `_request` funnel -- 5xx retries, 4xx surface immediately.
+        """
+        from phaze.schemas.agent_scan_batches import ScanBatchPatchResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "PATCH",
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json=payload.model_dump(mode="json", exclude_unset=True),
+        )
+        return ScanBatchPatchResponse.model_validate(response.json())
 
     async def heartbeat(self, payload: HeartbeatRequest) -> None:
         """POST /api/internal/agent/heartbeat -- agent liveness ping (204 No Content)."""
