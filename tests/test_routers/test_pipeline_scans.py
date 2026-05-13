@@ -157,6 +157,34 @@ async def test_post_scans_subpath_rejects_dotdot(
 
 
 @pytest.mark.asyncio
+async def test_post_scans_subpath_allows_triple_dot_filename(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """WR-01 regression: subpath containing literal ``..`` as a non-component substring is allowed.
+
+    The traversal guard rejects ``..`` *path components* only; legitimate
+    filenames/directories containing the substring ``..`` (e.g.,
+    ``...thinking.mp3`` for triple-dot, ``Album...Live`` for torrent-archive
+    naming) must NOT 400. Previously the simple ``".." in joined`` substring
+    check rejected these false-positives.
+    """
+    ac, mock_router = smoke
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "...thinking.mp3"},
+    )
+    # Should succeed (200 RUNNING) -- the triple-dot filename is a legitimate
+    # path component and must not trip the traversal guard.
+    assert response.status_code == 200, response.text
+    assert "Scan in progress" in response.text
+    mock_router.enqueue_for_agent.assert_awaited_once()
+    call = mock_router.enqueue_for_agent.await_args
+    assert call.kwargs["payload"].scan_path == "/data/music/...thinking.mp3"
+
+
+@pytest.mark.asyncio
 async def test_post_scans_path_outside_scan_root(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,

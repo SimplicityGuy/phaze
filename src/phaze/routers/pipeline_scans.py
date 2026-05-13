@@ -24,7 +24,7 @@ populated; missing/revoked/empty agents render the yellow-surface empty state.
 """
 
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 import unicodedata
 import uuid
@@ -137,9 +137,16 @@ async def trigger_scan(
     form = TriggerScanForm(agent_id=agent_id, scan_root=scan_root, subpath=subpath)
 
     # Phase 27 D-06 + T-27-03: join, NFC-normalize, reject ".." traversal.
+    #
+    # WR-01: check ".." as a path *component*, not a substring. The simple
+    # ``".." in joined`` rejected any legitimate filename containing the literal
+    # substring ``..`` (e.g., ``"...thinking.mp3"``, ``"Album...Live"``,
+    # ``"..notes/file.mp3"``). Splitting on path separators and asserting that
+    # no component is exactly ``..`` blocks the intended traversal pattern
+    # (``../../etc/passwd``) without false-positives on triple-dot filenames.
     joined_raw = f"{form.scan_root.rstrip('/')}/{form.subpath.lstrip('/')}" if form.subpath else form.scan_root
     joined = unicodedata.normalize("NFC", joined_raw)
-    if ".." in joined:
+    if ".." in PurePosixPath(joined).parts:
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
