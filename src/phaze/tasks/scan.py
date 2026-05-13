@@ -1,4 +1,23 @@
-"""SAQ task function for scanning live sets via fingerprint matching."""
+"""SAQ task: scan_live_set -- fingerprint-query a live-set file, resolve tracklist, POST via HTTP (Phase 26 D-05, D-27).
+
+Sends results to POST /api/internal/agent/tracklists with an agent-generated
+request_id (UUID4) for Stripe-style idempotency. The same request_id must
+be reused on SAQ retries so the server returns the cached response.
+
+Per D-24: payload has NO current_path. The agent reads files via payload.original_path.
+For artist/title resolution that previously joined FileMetadata in-process, the
+agent now skips that join -- the controller (or a future enrichment task) can
+resolve metadata after the fact via the tracklist_tracks rows. This is acceptable
+because the v3.0 scan_live_set was the ONLY consumer of that join; future Phase
+28's batch dispatch can perform the enrichment on the controller side.
+
+W5 Option (b) per checker guidance: this is documented as a known v3.0 UI
+regression for fingerprint-sourced tracklists -- artist/title will appear as
+None in the tracklist review UI until controller-side enrichment lands.
+
+This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
+Enforced by tests/test_task_split.py (Plan 10).
+"""
 
 from __future__ import annotations
 
@@ -6,109 +25,59 @@ import logging
 from typing import TYPE_CHECKING, Any
 import uuid
 
-from sqlalchemy import func, select
-
-from phaze.models.file import FileRecord
-from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.schemas.agent_tasks import ScanLiveSetPayload
+from phaze.schemas.agent_tracklists import TracklistCreatePayload, TracklistTrackPayload
 
 
 if TYPE_CHECKING:
+    from phaze.services.agent_client import PhazeAgentClient
     from phaze.services.fingerprint import FingerprintOrchestrator
 
 
 logger = logging.getLogger(__name__)
 
 
-async def scan_live_set(ctx: dict[str, Any], *, file_id: str) -> dict[str, Any]:
-    """Scan a live set file via fingerprint matching and create a proposed tracklist.
+async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """Run fingerprint-query against a live-set file; POST tracklist via HTTP."""
+    payload = ScanLiveSetPayload.model_validate(kwargs)
 
-    Queries the fingerprint DB for matching tracks, resolves artist/title from
-    FileMetadata, and persists results as Tracklist + TracklistVersion + TracklistTrack
-    rows with source='fingerprint' and status='proposed'.
+    api: PhazeAgentClient = ctx["api_client"]
+    orchestrator: FingerprintOrchestrator = ctx["fingerprint_orchestrator"]
 
-    Re-scanning the same file creates a new TracklistVersion rather than a duplicate Tracklist.
-    Retries with exponential backoff are handled by SAQ queue configuration.
-    """
-    async with ctx["async_session"]() as session:
-        # 1. Look up file record
-        result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(file_id)))
-        file_record = result.scalar_one_or_none()
-        if file_record is None:
-            return {"file_id": file_id, "status": "not_found"}
+    matches = await orchestrator.combined_query(payload.original_path)
+    if not matches:
+        return {"file_id": str(payload.file_id), "status": "no_matches"}
 
-        # 2. Query fingerprint engines
-        orchestrator: FingerprintOrchestrator = ctx["fingerprint_orchestrator"]
-        matches = await orchestrator.combined_query(file_record.current_path)
+    # Build the wire payload. Idempotency key = stable UUID per file_id so SAQ retries
+    # of the same job collapse to one tracklist (server's Redis cache catches the replay).
+    # Using uuid5 with payload.file_id + a phase namespace; predictable across retries.
+    request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"phaze-scan-{payload.file_id}")
+    external_id = f"fp-{payload.file_id.hex[:12]}"
 
-        if not matches:
-            return {"file_id": file_id, "status": "no_matches"}
-
-        # 3. Resolve artist/title from FileMetadata for each match
-        for match in matches:
-            try:
-                track_uuid = uuid.UUID(match.track_id)
-                meta_result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == track_uuid))
-                metadata = meta_result.scalar_one_or_none()
-                if metadata is not None:
-                    match.resolved_artist = metadata.artist
-                    match.resolved_title = metadata.title
-            except (ValueError, AttributeError):
-                # track_id is not a valid UUID or lookup failed
-                pass
-
-        # 4. Check for existing tracklist (re-scan case)
-        external_id = f"fp-{file_record.id.hex[:12]}"
-        existing_result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
-        existing_tracklist = existing_result.scalar_one_or_none()
-
-        if existing_tracklist is not None:
-            # Re-scan: create new version
-            tracklist = existing_tracklist
-            max_version_result = await session.execute(
-                select(func.max(TracklistVersion.version_number)).where(TracklistVersion.tracklist_id == tracklist.id)
-            )
-            max_version = max_version_result.scalar_one_or_none() or 0
-            version_number = max_version + 1
-        else:
-            # New tracklist
-            tracklist = Tracklist(
-                external_id=external_id,
-                source_url="",
-                file_id=file_record.id,
-                source="fingerprint",
-                status="proposed",
-            )
-            session.add(tracklist)
-            await session.flush()
-            version_number = 1
-
-        # 5. Create version
-        version = TracklistVersion(
-            tracklist_id=tracklist.id,
-            version_number=version_number,
+    tracks = [
+        TracklistTrackPayload(
+            position=i + 1,
+            artist=None,  # metadata-join skipped on agent; controller can enrich
+            title=None,
+            timestamp=match.timestamp,
+            confidence=match.confidence,
         )
-        session.add(version)
-        await session.flush()
+        for i, match in enumerate(matches)
+    ]
 
-        # 6. Create tracks
-        for position, match in enumerate(matches, start=1):
-            track = TracklistTrack(
-                version_id=version.id,
-                position=position,
-                artist=match.resolved_artist,
-                title=match.resolved_title,
-                timestamp=match.timestamp,
-                confidence=match.confidence,
-            )
-            session.add(track)
+    response = await api.create_tracklist(
+        TracklistCreatePayload(
+            file_id=payload.file_id,
+            source="fingerprint",
+            external_id=external_id,
+            tracks=tracks,
+            request_id=request_id,
+        ),
+    )
 
-        # 7. Update latest_version_id
-        tracklist.latest_version_id = version.id
-
-        await session.commit()
-        return {
-            "file_id": file_id,
-            "status": "scanned",
-            "tracklist_id": str(tracklist.id),
-        }
+    return {
+        "file_id": str(payload.file_id),
+        "status": "scanned",
+        "tracklist_id": str(response.tracklist_id),
+        "version": response.version,
+    }

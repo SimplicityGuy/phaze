@@ -60,7 +60,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 
 - [ ] **Phase 24: Schema Foundation & Agent Registry** — `agents` table, `agent_id` columns on FileRecord/ScanBatch, two-step Alembic migration with legacy backfill
 - [x] **Phase 25: Internal Agent HTTP API & Bearer Auth** — `/api/internal/agent/*` endpoints, token-hash auth middleware deriving `agent_id` from token, idempotent upserts on natural keys, rotatable tokens (completed 2026-05-12)
-- [ ] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.lux_worker` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads
+- [x] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.controller` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads (completed 2026-05-12)
 - [ ] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form
 - [ ] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path
 - [ ] **Phase 29: Deployment Hardening & Agents Admin** — strip `SCAN_PATH`/`MODELS_PATH` from application-server compose, self-signed HTTPS w/ internal CA, Redis `requirepass` + LAN binding, `docker-compose.agent.yml`, per-file-server model download, heartbeat + Agents admin page
@@ -106,16 +106,29 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 **UI hint**: yes
 
 ### Phase 26: Task Code Reorg & HTTP-Backed Agent Worker
-**Goal**: SAQ task code is cleanly split between the application server (fileless) and agents (file-bound), with role-driven startup and per-agent queues so the same Docker image runs both roles correctly.
+**Goal**: SAQ task code is cleanly split between the application server (fileless `phaze.tasks.controller`) and agents (file-bound `phaze.tasks.agent_worker`), with role-driven startup and per-agent queues so the same Docker image runs both roles correctly. Three new internal-agent endpoints (`/whoami`, `PUT /analysis/{file_id}`, `POST /tracklists`, `PATCH /proposals/{id}/state`) close the contract gap from Phase 25 so the full file-bound task surface can run on agents.
 **Depends on**: Phase 25
 **Requirements**: DIST-03, TASK-01, TASK-02, TASK-03, OPS-01
 **Success Criteria** (what must be TRUE):
-  1. `phaze.tasks.lux_worker` exposes only fileless tasks (`generate_proposals`, `match_tracklist_to_discogs`, `scrape_and_store_tracklist`, `search_tracklist`, `refresh_tracklists` cron) and `phaze.tasks.agent_worker` exposes only file-bound tasks (`process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `execute_approved_batch`)
+  1. `phaze.tasks.controller` exposes only fileless tasks (`generate_proposals`, `match_tracklist_to_discogs`, `scrape_and_store_tracklist`, `search_tracklist`, `refresh_tracklists` cron) and `phaze.tasks.agent_worker` exposes only file-bound tasks (`process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `execute_approved_batch`)
   2. Setting `PHAZE_ROLE=control` boots the application-server worker with the fileless settings module and Postgres access; setting `PHAZE_ROLE=agent` boots the agent worker with the file-bound settings module and an HTTP client to the application server, with no Postgres driver loaded
   3. Every file-bound task body uses the HTTP client (no `async_session` import reachable in agent-worker code paths) and writes results via `/api/internal/agent/*`
   4. Each agent worker pulls from a per-agent SAQ queue named `phaze-agent-<agent_id>`; the application-server enqueuer selects the queue from `FileRecord.agent_id` and a job enqueued for agent A never executes on agent B
   5. Agent task jobs carry a self-contained payload (`file_id`, `file_path`, `file_type`, model paths, agent metadata) sufficient to execute without any read-back to the application server during the job
-**Plans**: TBD
+**Plans**: 13 plans
+- [x] 26-01-PLAN.md — Deps (tenacity + respx + mypy overrides) + settings split (Base/Control/Agent + get_settings) + enum extensions (ProposalStatus.EXECUTED/FAILED, FileState.MOVED/UNCHANGED) (Wave 1)
+- [x] 26-02-PLAN.md — PhazeAgentClient + 4-class error hierarchy + tenacity retry funnel + respx contract tests (Wave 2)
+- [x] 26-03-PLAN.md — 5 new schema modules (agent_identity, agent_analysis, agent_tracklists, agent_proposals, agent_tasks) (Wave 2)
+- [x] 26-04-PLAN.md — AgentTaskRouter + Redis integration tests (Wave 3)
+- [x] 26-05-PLAN.md — GET /api/internal/agent/whoami router + 4 contract tests (Wave 3)
+- [x] 26-06-PLAN.md — PUT /api/internal/agent/analysis/{file_id} router (idempotent upsert) + 8 contract tests (Wave 3)
+- [x] 26-07-PLAN.md — POST /api/internal/agent/tracklists router (Redis idempotency cache) + integration tests (Wave 3)
+- [x] 26-08-PLAN.md — PATCH /api/internal/agent/proposals/{id}/state router (state-machine joint update) + 11 contract tests incl. W1 cross-tenant guard (Wave 3)
+- [x] 26-09-PLAN.md — phaze.tasks.controller SAQ settings module (fileless tasks only) (Wave 4)
+- [x] 26-10-PLAN.md — phaze.tasks.agent_worker SAQ settings module + tests/test_task_split.py subprocess import-boundary test (D-25) (Wave 5)
+- [x] 26-11-PLAN.md — Rewrite 5 file-bound task bodies (process_file, extract_file_metadata, fingerprint_file, scan_live_set, execute_approved_batch) to use ctx['api_client'] (Wave 4) -- COMPLETE 2026-05-12; D-03 import boundary verified; ExecutionStatus moved to phaze.enums; scan_live_set artist/title resolution removed (known v3.0 UI regression for future Phase 27/28 controller-side enrichment)
+- [x] 26-12-PLAN.md — main.py wiring (4 new include_router + app.state.task_router + app.state.redis) + agent_files.py refactor to AgentTaskRouter (Wave 5)
+- [x] 26-13-PLAN.md — Delete worker.py + session.py + docker-compose.yml controller.settings + doc sweep (legacy hostname-leaked name retired in favour of `controller`) (Wave 6)
 
 ### Phase 27: Watcher Service & User-Initiated Scan
 **Goal**: Each file server continuously streams new file arrivals to the application server, and the administrator can also trigger an explicit scan of any path on any agent from the admin UI.
@@ -148,7 +161,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 **Depends on**: Phase 28
 **Requirements**: DIST-01, AUTH-02, AUTH-03, OPS-02, OPS-03, OPS-04
 **Success Criteria** (what must be TRUE):
-  1. The application-server `docker-compose.yml` declares no `SCAN_PATH` or `MODELS_PATH` mount; starting the stack and attempting to read a music file from inside the `api` or `lux_worker` container fails (verified manually) and the application server has no way to read or write file content
+  1. The application-server `docker-compose.yml` declares no `SCAN_PATH` or `MODELS_PATH` mount; starting the stack and attempting to read a music file from inside the `api` or `controller` container fails (verified manually) and the application server has no way to read or write file content
   2. A new `docker-compose.agent.yml` brings up exactly `worker`, `watcher`, `audfprint`, and `panako` on a file server, configured via env (`PHAZE_API_URL`, `PHAZE_REDIS_URL`, `PHAZE_AGENT_TOKEN`, `PHAZE_AGENT_ID`) to reach the application server; running it on a second host registers the agent and begins watching
   3. All agent → application-server traffic uses HTTPS terminated by a self-signed certificate from an application-server-local internal CA; each agent's `httpx` client trusts the CA file and rejects untrusted certs (verified by swapping the CA and observing connection failure)
   4. Redis on the application server requires `requirepass` and is bound only to the private LAN interface; an attempt to connect from outside the LAN or without the password fails, and agents connect with `redis://default:<password>@<host>:6379`
@@ -186,7 +199,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 23. v3.0 Polish & Wiring Fixes | v3.0 | 1/1 | Complete | 2026-04-04 |
 | 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
-| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 0/? | Not started | - |
+| 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
 | 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |

@@ -1,191 +1,106 @@
-"""Tests for SAQ batch execution task with Redis progress tracking."""
+"""Legacy aggregate-shape tests for execute_approved_batch (Phase 26 Plan 11).
+
+The detailed contract tests live in tests/test_tasks/test_execute_approved_batch.py
+(per Plan 11 acceptance criteria). This file preserves a couple of small smoke
+tests for the high-level success / partial-failure aggregate counts so that
+``uv run pytest tests/test_tasks/`` continues to cover the SAQ-entrypoint
+contract in two places.
+"""
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_proposal(proposal_id: uuid.UUID | None = None) -> MagicMock:
-    proposal = MagicMock()
-    proposal.id = proposal_id or uuid.uuid4()
-    proposal.file = MagicMock()
-    return proposal
+from phaze.config import AgentSettings
+from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
+from phaze.tasks.execution import execute_approved_batch
 
 
-def _make_ctx(redis: Any = None) -> dict[str, Any]:
-    """Create a minimal SAQ context dict with queue (containing Redis) and async_session."""
-    if redis is None:
-        redis = AsyncMock()
-    mock_queue = MagicMock()
-    mock_queue.redis = redis
-    mock_session = AsyncMock()
-    # async_sessionmaker() returns an AsyncSession context manager
-    mock_session_factory = MagicMock()
-    mock_session_cm = AsyncMock()
-    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session_cm.__aexit__ = AsyncMock(return_value=False)
-    mock_session_factory.return_value = mock_session_cm
-    return {"queue": mock_queue, "async_session": mock_session_factory, "_mock_session": mock_session}
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 
-# ---------------------------------------------------------------------------
-# Batch success
-# ---------------------------------------------------------------------------
+def _make_api_client_mock() -> AsyncMock:
+    api = AsyncMock()
+    api.post_execution_log = AsyncMock(return_value=MagicMock(execution_log_id=uuid.uuid4()))
+    api.patch_execution_log = AsyncMock(return_value=None)
+    api.patch_proposal_state = AsyncMock(return_value=None)
+    return api
 
 
-@patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-async def test_execute_approved_batch_success(
-    mock_get_proposals: AsyncMock,
-    mock_execute: AsyncMock,
-) -> None:
-    """Batch with 2 approved proposals, both succeed. Returns completed=2, failed=0."""
-    from phaze.tasks.execution import execute_approved_batch
-
-    proposals = [_make_proposal(), _make_proposal()]
-    mock_get_proposals.return_value = proposals
-    mock_execute.return_value = True
-
-    redis = AsyncMock()
-    ctx = _make_ctx(redis)
-
-    result = await execute_approved_batch(ctx)
-
-    assert result["completed"] == 2
-    assert result["failed"] == 0
-    assert result["total"] == 2
-    assert "batch_id" in result
-    assert mock_execute.call_count == 2
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, scan_roots: list[str]) -> None:
+    fake_cfg = MagicMock(spec=AgentSettings)
+    fake_cfg.scan_roots = scan_roots
+    monkeypatch.setattr("phaze.tasks.execution.get_settings", lambda: fake_cfg)
 
 
-# ---------------------------------------------------------------------------
-# Partial failure
-# ---------------------------------------------------------------------------
+async def test_execute_approved_batch_smoke_completed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2 proposals, both succeed -> aggregate status='completed'."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+
+    o1 = tmp_path / "a.mp3"
+    o2 = tmp_path / "b.mp3"
+    o1.write_bytes(b"a")
+    o2.write_bytes(b"b")
+    p1 = tmp_path / "moved" / "a.mp3"
+    p2 = tmp_path / "moved" / "b.mp3"
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(o1),
+            proposed_path=str(p1),
+        ),
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(o2),
+            proposed_path=str(p2),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-1", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["processed_count"] == 2
+    assert result["error_count"] == 0
 
 
-@patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-async def test_execute_approved_batch_partial_failure(
-    mock_get_proposals: AsyncMock,
-    mock_execute: AsyncMock,
-) -> None:
-    """Batch with 3 proposals, 1 fails. completed=2, failed=1. Processing continues (D-07)."""
-    from phaze.tasks.execution import execute_approved_batch
+async def test_execute_approved_batch_smoke_partial_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """1 succeeds + 1 missing-source-fails -> status='completed_with_errors', error_count=1."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
 
-    proposals = [_make_proposal(), _make_proposal(), _make_proposal()]
-    mock_get_proposals.return_value = proposals
-    mock_execute.side_effect = [True, False, True]
+    o_ok = tmp_path / "a.mp3"
+    o_ok.write_bytes(b"a")
+    p_ok = tmp_path / "moved" / "a.mp3"
 
-    redis = AsyncMock()
-    ctx = _make_ctx(redis)
+    o_missing = tmp_path / "missing.mp3"  # intentionally never created
+    p_missing = tmp_path / "moved" / "missing.mp3"
 
-    result = await execute_approved_batch(ctx)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(o_ok),
+            proposed_path=str(p_ok),
+        ),
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(o_missing),
+            proposed_path=str(p_missing),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-1", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
 
-    assert result["completed"] == 2
-    assert result["failed"] == 1
-    assert result["total"] == 3
-    # All 3 were processed (D-07 continue on failure)
-    assert mock_execute.call_count == 3
-
-
-# ---------------------------------------------------------------------------
-# Empty batch
-# ---------------------------------------------------------------------------
-
-
-@patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-async def test_execute_approved_batch_empty(
-    mock_get_proposals: AsyncMock,
-) -> None:
-    """No approved proposals. Returns completed=0, failed=0 immediately."""
-    from phaze.tasks.execution import execute_approved_batch
-
-    mock_get_proposals.return_value = []
-
-    redis = AsyncMock()
-    ctx = _make_ctx(redis)
-
-    result = await execute_approved_batch(ctx)
-
-    assert result["completed"] == 0
-    assert result["failed"] == 0
-    assert result["total"] == 0
-
-
-# ---------------------------------------------------------------------------
-# Redis progress updates
-# ---------------------------------------------------------------------------
-
-
-@patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-async def test_redis_progress_updates(
-    mock_get_proposals: AsyncMock,
-    mock_execute: AsyncMock,
-) -> None:
-    """Redis hash updated after each file. Status transitions from running to complete."""
-    from phaze.tasks.execution import execute_approved_batch
-
-    proposals = [_make_proposal(), _make_proposal()]
-    mock_get_proposals.return_value = proposals
-    mock_execute.return_value = True
-
-    redis = AsyncMock()
-    ctx = _make_ctx(redis)
-
-    result = await execute_approved_batch(ctx, batch_id="test-batch-123")
-
-    # Check Redis hset calls
-    hset_calls = redis.hset.call_args_list
-    assert len(hset_calls) >= 3  # initial + 2 updates + final status
-
-    # Initial call sets total and status=running
-    initial_call = hset_calls[0]
-    assert initial_call[0][0] == "exec:test-batch-123"
-    initial_mapping = initial_call[1]["mapping"]
-    assert initial_mapping["total"] == 2
-    assert initial_mapping["status"] == "running"
-
-    # Final status should be "complete"
-    last_call = hset_calls[-1]
-    last_mapping = last_call[1]["mapping"]
-    assert last_mapping["status"] == "complete"
-
-    # TTL set on key
-    redis.expire.assert_awaited()
-
-    assert result["batch_id"] == "test-batch-123"
-
-
-# ---------------------------------------------------------------------------
-# Batch generates UUID id
-# ---------------------------------------------------------------------------
-
-
-@patch("phaze.tasks.execution.execute_single_file", new_callable=AsyncMock)
-@patch("phaze.tasks.execution.get_approved_proposals", new_callable=AsyncMock)
-async def test_batch_generates_uuid_id(
-    mock_get_proposals: AsyncMock,
-    _mock_execute: AsyncMock,
-) -> None:
-    """execute_approved_batch generates a UUID batch_id if not provided."""
-    from phaze.tasks.execution import execute_approved_batch
-
-    mock_get_proposals.return_value = []
-
-    redis = AsyncMock()
-    ctx = _make_ctx(redis)
-
-    result = await execute_approved_batch(ctx)
-
-    batch_id = result["batch_id"]
-    # Should be a valid hex UUID (32 hex chars)
-    assert len(batch_id) == 32
-    uuid.UUID(batch_id)  # Validates it's a UUID hex string
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    assert result["processed_count"] == 2

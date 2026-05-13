@@ -20,7 +20,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 - Per-file-server fingerprint sidecars (no cross-file-server fingerprint matching — documented v1 limitation)
 - Group-by-file-server execution dispatch with per-PATCH ExecutionLog write-ahead audit preserved over HTTP
 - Per-agent bearer tokens with `agent_id` derived from token on the application server (never from request body), private LAN, self-signed HTTPS, Redis `requirepass` + LAN-bound interface
-- Task code reorg: `phaze.tasks.lux_worker` (fileless) vs `phaze.tasks.agent_worker` (file-bound); job payloads carry everything the agent needs
+- Task code reorg: `phaze.tasks.controller` (fileless, control role) vs `phaze.tasks.agent_worker` (file-bound, agent role); job payloads carry everything the agent needs
 - Two-step Alembic migration with `legacy-application-server` backfill so existing v3.0 data survives
 
 ## Current State

@@ -1,23 +1,24 @@
-"""ExecutionLog model - append-only audit trail for file operations."""
+"""ExecutionLog model - append-only audit trail for file operations.
+
+``ExecutionStatus`` is re-exported from :mod:`phaze.enums.execution` so the
+canonical definition can live in a DB-free module. Schemas under
+``phaze.schemas.agent_*`` import the enum from the DB-free location without
+transitively dragging in SQLAlchemy / the ORM Base (Phase 26 D-03 / Plan 11).
+"""
 
 from datetime import datetime
-import enum
 import uuid
 
 from sqlalchemy import Boolean, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from phaze.enums.execution import ExecutionStatus
 from phaze.models.base import Base, TimestampMixin
 
 
-class ExecutionStatus(enum.StrEnum):
-    """Status of a file operation execution."""
-
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
+# Re-export so legacy `from phaze.models.execution import ExecutionStatus` keeps working.
+__all__ = ["ExecutionLog", "ExecutionStatus"]
 
 
 class ExecutionLog(TimestampMixin, Base):
