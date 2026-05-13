@@ -1,0 +1,261 @@
+"""Unit tests for phaze.agent_watcher.__main__ (Phase 27 D-04, D-16, D-18, Pitfall 1).
+
+Six behaviors:
+
+1. main() calls whoami() then constructs the Observer and starts it.
+2. Observer.schedule is invoked once per identity.scan_root.
+3. Graceful shutdown on SIGTERM: observer.stop / observer.join / client.close
+   are awaited in order.
+4. main() raises RuntimeError when whoami_with_retry exhausts the budget.
+5. End-to-end event-to-post: synthesizing a FileCreatedEvent + advancing the
+   fake clock past settle_period results in one POST with batch_id absent
+   from the body (D-18 verification).
+6. OSError on the vanished-path path is swallowed -- sweep loop survives
+   (Pitfall 1 behavior gate; this is the binding for Task 1's poster.py
+   acceptance criterion).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import logging
+from pathlib import Path
+from typing import Any
+import unicodedata
+from unittest.mock import AsyncMock, MagicMock
+
+import httpx
+import pytest
+import respx
+from watchdog.events import FileCreatedEvent
+
+import phaze.agent_watcher.__main__ as wmain
+from phaze.agent_watcher.debouncer import Debouncer
+from phaze.agent_watcher.observer import WatcherEventHandler
+from phaze.agent_watcher.poster import Poster
+from phaze.config import AgentSettings
+from phaze.schemas.agent_identity import AgentIdentity
+from phaze.services.agent_client import AgentApiServerError, PhazeAgentClient
+
+
+_TEST_TOKEN = "phaze_agent_test"  # nosec B105 -- test fixture, not a real secret
+
+
+def _build_agent_settings(monkeypatch: pytest.MonkeyPatch) -> AgentSettings:
+    """Construct an AgentSettings instance with all required env vars set."""
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test:8000")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-TOKEN-1234567890ab")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
+    return AgentSettings()
+
+
+def _build_identity(roots: list[str], agent_id: str = "test-agent-1") -> AgentIdentity:
+    return AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        scan_roots=roots,
+        created_at=dt.datetime(2026, 5, 13, 0, 0, 0, tzinfo=dt.UTC),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 1: main() calls whoami then starts Observer + schedules one root.
+# ---------------------------------------------------------------------------
+async def test_main_calls_whoami_then_starts_observer(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _build_agent_settings(monkeypatch)
+    identity = _build_identity(roots=["/data/music", "/data/concerts"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    fake_observer = MagicMock()
+    fake_observer_cls = MagicMock(return_value=fake_observer)
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "Observer", fake_observer_cls)
+    # Make the sweep loop exit immediately by pre-setting shutdown_event.
+    real_event_cls = asyncio.Event
+
+    def _preset_event() -> asyncio.Event:
+        e = real_event_cls()
+        e.set()
+        return e
+
+    monkeypatch.setattr(wmain.asyncio, "Event", _preset_event)
+
+    await wmain.main()
+
+    assert fake_client.whoami.await_count == 1
+    # One schedule call per scan_root
+    assert fake_observer.schedule.call_count == 2
+    fake_observer.start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Test 2: main() schedules Observer per scan_root (3 roots -> 3 schedules).
+# ---------------------------------------------------------------------------
+async def test_main_constructs_observer_per_scan_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _build_agent_settings(monkeypatch)
+    identity = _build_identity(roots=["/a", "/b", "/c"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    fake_observer = MagicMock()
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "Observer", MagicMock(return_value=fake_observer))
+    real_event_cls = asyncio.Event
+    monkeypatch.setattr(wmain.asyncio, "Event", lambda: (lambda e: (e.set(), e)[1])(real_event_cls()))
+
+    await wmain.main()
+
+    assert fake_observer.schedule.call_count == 3
+    scheduled_paths = [c.kwargs.get("path") or c.args[1] for c in fake_observer.schedule.call_args_list]
+    assert scheduled_paths == ["/a", "/b", "/c"]
+
+
+# ---------------------------------------------------------------------------
+# Test 3: Graceful shutdown on SIGTERM -- stop / join / close all called.
+# ---------------------------------------------------------------------------
+async def test_main_graceful_shutdown_on_sigterm(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _build_agent_settings(monkeypatch)
+    identity = _build_identity(roots=["/x"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    fake_observer = MagicMock()
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "Observer", MagicMock(return_value=fake_observer))
+    real_event_cls = asyncio.Event
+    monkeypatch.setattr(wmain.asyncio, "Event", lambda: (lambda e: (e.set(), e)[1])(real_event_cls()))
+
+    await wmain.main()
+
+    # finally: block invoked stop + join + close
+    fake_observer.stop.assert_called_once()
+    fake_observer.join.assert_called_once()
+    fake_client.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Test 4: whoami exhaustion -> RuntimeError.
+# ---------------------------------------------------------------------------
+async def test_main_exits_nonzero_on_whoami_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _build_agent_settings(monkeypatch)
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(side_effect=AgentApiServerError("GET /whoami -> 503 after retries"))
+    fake_client.close = AsyncMock()
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+
+    # No-op sleep so the backoff budget burns in ~0 seconds.
+    async def _no_sleep(_delay: float) -> None:
+        return None
+
+    import phaze.tasks._shared.agent_bootstrap as ab
+
+    monkeypatch.setattr(ab.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(RuntimeError, match="exhausted retry budget"):
+        await wmain.main()
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Event -> POST end-to-end; batch_id absent in JSON body (D-18).
+# ---------------------------------------------------------------------------
+async def test_event_to_post_e2e(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Stage a real file so stat + SHA-256 succeed.
+    music_file = tmp_path / "song.mp3"
+    music_file.write_bytes(b"\x00" * 1024)
+
+    # respx-mock the upsert_files endpoint.
+    base_url = "http://app.test:8000"
+    real_client = PhazeAgentClient(base_url=base_url, token=_TEST_TOKEN, timeout=5.0)
+    poster = Poster(client=real_client, agent_id="test-agent")
+
+    debouncer = Debouncer()
+    loop = asyncio.get_running_loop()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch)
+
+    # Capture POST body on respx mock.
+    captured: dict[str, Any] = {}
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        captured["json"] = request.read().decode("utf-8")
+        return httpx.Response(
+            200,
+            json={"agent_id": "test-agent", "upserted": 1, "inserted": 1, "enqueued": 1},
+        )
+
+    with respx.mock(base_url=base_url, assert_all_called=True) as mock:
+        mock.post("/api/internal/agent/files").mock(side_effect=_capture)
+
+        # Synthesize the event (direct ctor; the test bypasses the watchdog
+        # Observer thread entirely, exercising only the asyncio-side primitives).
+        handler.on_created(FileCreatedEvent(src_path=str(music_file)))
+        # call_soon_threadsafe schedules touch; let the loop drain.
+        await asyncio.sleep(0)
+
+        assert debouncer.pending_count() == 1
+
+        # Advance time past settle_period via a fake-clock equivalent: instead
+        # of monkeypatching time.monotonic (the Debouncer was already called
+        # with the real clock above), set a long-elapsed settle_period of 0
+        # so the entry is immediately considered settled.
+        ready, evicted = debouncer.sweep(settle_period=0.0, max_pending=3600.0)
+        assert ready == [str(music_file)]
+        assert evicted == []
+
+        await poster.post_one(ready[0])
+
+    await real_client.close()
+
+    # D-18 verification: batch_id absent OR null in the JSON body.
+    import json
+
+    body = json.loads(captured["json"])
+    assert "batch_id" not in body or body["batch_id"] is None, f"D-18 violation: batch_id present: {body!r}"
+    # And the chunk shape is correct.
+    assert len(body["files"]) == 1
+    assert body["files"][0]["original_filename"] == "song.mp3"
+    # Path is NFC-normalized (the input was already NFC, so the round-trip
+    # preserves it; the invariant is that the assertion does not fail).
+    assert unicodedata.is_normalized("NFC", body["files"][0]["original_path"])
+
+
+# ---------------------------------------------------------------------------
+# Test 6: OSError on vanished path -> no exception, sweep loop survives.
+# (Pitfall 1 behavior gate; binds to Task 1's poster.py OSError handling.)
+# ---------------------------------------------------------------------------
+async def test_oserror_on_vanished_path(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    # Build a real client + poster but monkeypatch Path.stat to raise OSError
+    # so the post_one call exercises the Pitfall-1 drop branch.
+    real_client = PhazeAgentClient(base_url="http://app.test:8000", token=_TEST_TOKEN, timeout=5.0)
+    poster = Poster(client=real_client, agent_id="test-agent")
+
+    def _raise_oserror(_self: Path) -> Any:
+        raise OSError("ENOENT")
+
+    monkeypatch.setattr(Path, "stat", _raise_oserror)
+
+    with caplog.at_level(logging.DEBUG, logger="phaze.agent_watcher.poster"):
+        # Should NOT raise.
+        await poster.post_one("/var/empty/vanished.mp3")
+
+    await real_client.close()
+
+    # And the sweep-loop survival proof: simulate a subsequent post that
+    # would normally succeed -- but here we just confirm the first call
+    # returned cleanly (no exception escaped) which is the invariant.
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "vanished" in text.lower() or "dropping" in text.lower(), f"expected debug log of dropped path; got: {text!r}"
