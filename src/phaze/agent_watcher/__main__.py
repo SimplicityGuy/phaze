@@ -102,43 +102,51 @@ async def main() -> None:
     )
 
     client = construct_agent_client(cfg)
-    identity = await whoami_with_retry(client)
-
-    debouncer = Debouncer()
-    poster = Poster(client=client, agent_id=identity.agent_id)
-    shutdown_event = asyncio.Event()
-
-    loop = asyncio.get_running_loop()
-    # SIGINT / SIGTERM: both fire the same shutdown_event.set callback so the
-    # graceful shutdown sequence is identical regardless of which signal arrives.
+    # WR-02: wrap EVERYTHING after client construction in a try/finally so
+    # ``client.close()`` runs even if ``whoami_with_retry`` raises (auth fail or
+    # exhausted retry budget). Previously the client was constructed before the
+    # try/finally and the underlying httpx.AsyncClient would leak (ResourceWarning)
+    # on the startup-failure path -- a violation of the module-docstring's
+    # deterministic-close contract.
     try:
-        loop.add_signal_handler(signal.SIGINT, shutdown_event.set)
-        loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
-    except NotImplementedError:
-        # Windows / some asyncio policies disallow signal handlers; skip
-        # silently -- the container's process supervisor (compose) still
-        # delivers SIGTERM to the entrypoint, and asyncio.run() handles
-        # KeyboardInterrupt via its own machinery.
-        logger.debug("watcher: signal handlers not supported on this platform; skipping")
+        identity = await whoami_with_retry(client)
 
-    observer = Observer()
-    handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch)
-    for root in identity.scan_roots:
-        observer.schedule(handler, path=root, recursive=True)
-    observer.start()
+        debouncer = Debouncer()
+        poster = Poster(client=client, agent_id=identity.agent_id)
+        shutdown_event = asyncio.Event()
 
-    try:
-        await _sweep_loop(
-            debouncer=debouncer,
-            poster=poster,
-            sweep_interval=float(cfg.watcher_sweep_interval_seconds),
-            settle_period=float(cfg.watcher_settle_seconds),
-            max_pending=float(cfg.watcher_max_pending_seconds),
-            shutdown_event=shutdown_event,
-        )
+        loop = asyncio.get_running_loop()
+        # SIGINT / SIGTERM: both fire the same shutdown_event.set callback so the
+        # graceful shutdown sequence is identical regardless of which signal arrives.
+        try:
+            loop.add_signal_handler(signal.SIGINT, shutdown_event.set)
+            loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
+        except NotImplementedError:
+            # Windows / some asyncio policies disallow signal handlers; skip
+            # silently -- the container's process supervisor (compose) still
+            # delivers SIGTERM to the entrypoint, and asyncio.run() handles
+            # KeyboardInterrupt via its own machinery.
+            logger.debug("watcher: signal handlers not supported on this platform; skipping")
+
+        observer = Observer()
+        handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch)
+        for root in identity.scan_roots:
+            observer.schedule(handler, path=root, recursive=True)
+        observer.start()
+
+        try:
+            await _sweep_loop(
+                debouncer=debouncer,
+                poster=poster,
+                sweep_interval=float(cfg.watcher_sweep_interval_seconds),
+                settle_period=float(cfg.watcher_settle_seconds),
+                max_pending=float(cfg.watcher_max_pending_seconds),
+                shutdown_event=shutdown_event,
+            )
+        finally:
+            observer.stop()
+            observer.join()
     finally:
-        observer.stop()
-        observer.join()
         await client.close()
 
 

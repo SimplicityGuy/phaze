@@ -169,6 +169,12 @@ async def test_main_exits_nonzero_on_whoami_exhaustion(monkeypatch: pytest.Monke
     with pytest.raises(RuntimeError, match="exhausted retry budget"):
         await wmain.main()
 
+    # WR-02: even on whoami exhaustion (auth fail or exhausted retry budget) the
+    # client MUST still be closed before the RuntimeError propagates -- otherwise
+    # the underlying httpx.AsyncClient leaks (ResourceWarning) and the module's
+    # deterministic-close contract is violated.
+    fake_client.close.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Test 5: Event -> POST end-to-end; batch_id absent in JSON body (D-18).
