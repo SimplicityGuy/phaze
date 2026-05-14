@@ -38,15 +38,21 @@ import contextlib
 import logging
 import signal
 import sys
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 from phaze.agent_watcher.debouncer import Debouncer
 from phaze.agent_watcher.observer import WatcherEventHandler
 from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings, get_settings
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client, whoami_with_retry
+
+
+if TYPE_CHECKING:
+    from watchdog.observers.api import BaseObserver
 
 
 logger = logging.getLogger(__name__)
@@ -194,7 +200,17 @@ async def main() -> None:
             # KeyboardInterrupt via its own machinery.
             logger.debug("watcher: signal handlers not supported on this platform; skipping")
 
-        observer = Observer()
+        # Phase 27 UAT Gap 8: macOS docker bind mounts (rancher-desktop /
+        # Docker Desktop) do not propagate inotify events through 9p/virtiofs
+        # — the native Observer never fires. PollingObserver works on any
+        # filesystem at a modest CPU cost. Native Observer remains the default
+        # for production Linux file servers where inotify is fully functional.
+        observer: BaseObserver
+        if cfg.watcher_polling_mode:
+            logger.info("watcher: using PollingObserver (PHAZE_WATCHER_POLLING_MODE=true)")
+            observer = PollingObserver(timeout=cfg.watcher_sweep_interval_seconds)
+        else:
+            observer = Observer()
         handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch)
         for root in identity.scan_roots:
             observer.schedule(handler, path=root, recursive=True)

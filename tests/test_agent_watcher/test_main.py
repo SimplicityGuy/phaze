@@ -126,6 +126,84 @@ async def test_main_calls_whoami_then_starts_observer(monkeypatch: pytest.Monkey
     fake_observer.start.assert_called_once()
 
 
+async def test_main_uses_polling_observer_when_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 27 UAT Gap 8: PHAZE_WATCHER_POLLING_MODE=true must select PollingObserver.
+
+    macOS docker bind mounts (rancher-desktop / Docker Desktop) silently drop
+    inotify events through 9p/virtiofs — the native Observer schedules but
+    never fires. A regression that wired the flag to the WRONG observer
+    class (or ignored it entirely) would leave Mac devs unable to UAT the
+    watcher even on a fresh stack.
+    """
+    monkeypatch.setenv("PHAZE_WATCHER_POLLING_MODE", "true")
+    cfg = _build_agent_settings(monkeypatch)
+    assert cfg.watcher_polling_mode is True, "test precondition: flag should propagate to AgentSettings"
+    identity = _build_identity(roots=["/data/music"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    fake_polling_observer = MagicMock()
+    fake_polling_cls = MagicMock(return_value=fake_polling_observer)
+    fake_native_cls = MagicMock()  # native must NOT be called
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "PollingObserver", fake_polling_cls)
+    monkeypatch.setattr(wmain, "Observer", fake_native_cls)
+
+    real_event_cls = asyncio.Event
+
+    def _preset_event() -> asyncio.Event:
+        e = real_event_cls()
+        e.set()
+        return e
+
+    monkeypatch.setattr(wmain.asyncio, "Event", _preset_event)
+
+    await wmain.main()
+
+    fake_polling_cls.assert_called_once()
+    fake_native_cls.assert_not_called()
+    fake_polling_observer.schedule.assert_called_once()
+    fake_polling_observer.start.assert_called_once()
+
+
+async def test_main_uses_native_observer_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default (PHAZE_WATCHER_POLLING_MODE unset) selects native Observer, not Polling."""
+    cfg = _build_agent_settings(monkeypatch)
+    assert cfg.watcher_polling_mode is False, "test precondition: default must be false"
+    identity = _build_identity(roots=["/data/music"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    fake_polling_cls = MagicMock()
+    fake_native = MagicMock()
+    fake_native_cls = MagicMock(return_value=fake_native)
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "PollingObserver", fake_polling_cls)
+    monkeypatch.setattr(wmain, "Observer", fake_native_cls)
+
+    real_event_cls = asyncio.Event
+
+    def _preset_event() -> asyncio.Event:
+        e = real_event_cls()
+        e.set()
+        return e
+
+    monkeypatch.setattr(wmain.asyncio, "Event", _preset_event)
+
+    await wmain.main()
+
+    fake_native_cls.assert_called_once()
+    fake_polling_cls.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Test 2: main() schedules Observer per scan_root (3 roots -> 3 schedules).
 # ---------------------------------------------------------------------------

@@ -157,6 +157,16 @@ class AgentSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "watcher_sweep_interval_seconds"),
         description="How often the watcher's sweep task checks for settled files (D-01).",
     )
+    watcher_polling_mode: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PHAZE_WATCHER_POLLING_MODE", "watcher_polling_mode"),
+        description=(
+            "Use watchdog's PollingObserver instead of the native inotify backend. "
+            "Required for macOS docker bind mounts (rancher-desktop / Docker Desktop) "
+            "where inotify events do not propagate through 9p/virtiofs. Adds modest CPU "
+            "overhead (polls each watcher_sweep_interval_seconds) but works on any filesystem."
+        ),
+    )
     scan_chunk_size: int = Field(
         default=500,
         validation_alias=AliasChoices("PHAZE_SCAN_CHUNK_SIZE", "scan_chunk_size"),
