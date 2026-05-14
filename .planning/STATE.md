@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: shipped
-stopped_at: Phase 27 shipped — PR #59
-last_updated: "2026-05-14T18:55:00.000Z"
-last_activity: 2026-05-14 -- Phase 27 shipped (PR #59); 14 UAT gaps closed during live bring-up
+status: ready_to_plan
+stopped_at: Phase 27 merged (PR #59 → main)
+last_updated: "2026-05-14T19:50:00.000Z"
+last_activity: 2026-05-14 -- Phase 27 merged into main as commit 4efb4a4
 progress:
   total_phases: 6
   completed_phases: 5
