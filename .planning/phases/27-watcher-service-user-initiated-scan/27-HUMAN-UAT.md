@@ -3,15 +3,15 @@ status: testing
 phase: 27-watcher-service-user-initiated-scan
 source: [27-VERIFICATION.md]
 started: 2026-05-13T23:27:39Z
-updated: 2026-05-13T23:55:00Z
+updated: 2026-05-14T18:15:00Z
 ---
 
 ## Current Test
 
-number: 2
-name: Admin UI scan trigger → progress polling → terminal halt
+number: 3
+name: Visual layout verification of admin UI
 expected: |
-  Navigate to /pipeline/ admin UI. Select an agent and a path under its scan_roots. Trigger a scan. The card returns the scan_progress_card partial with RUNNING state and hx-trigger='every 2s'; the card auto-updates every 2s; when scan completes the card transitions to COMPLETED state and polling halts (no hx-trigger AND no hx-get in completed markup).
+  /pipeline/ dashboard renders Trigger Scan card above stats panel with agent dropdown, scan_root select, and subpath input. All UI-SPEC components (trigger_scan_card, scan_path_picker, recent_scans_table, scan_status_pill, scan_submit_error) render correctly per the UI-SPEC markup. Status pill colors match design tokens.
 awaiting: user response
 
 ## Tests
@@ -42,7 +42,22 @@ gaps_closed_during_uat:
 
 ### 2. Admin UI scan trigger → progress polling → terminal halt
 expected: Navigate to /pipeline/ admin UI. Select an agent and a path under its scan_roots. Trigger a scan. The card returns the scan_progress_card partial with RUNNING state and hx-trigger='every 2s'; the card auto-updates every 2s; when scan completes the card transitions to COMPLETED state and polling halts (no hx-trigger AND no hx-get in completed markup).
-result: [pending]
+result: pass
+note: |
+  PASSED 2026-05-14 after closing gap-13 (docker-compose missing agent-worker).
+  Verified end-to-end on rancher-desktop / linux-arm64:
+    - POST /pipeline/scans (200 OK) → INSERT scan_batches → SAQ enqueue
+      of scan_directory(batch_id=2b7e319c-...) on phaze-agent-dev-agent queue
+    - agent-worker (new compose service) consumed both queued jobs
+      (scan_directory + extract_file_metadata from Test 1's stuck file)
+      with status="complete"
+    - GET /pipeline/scans/{id} now returns the COMPLETED partial:
+        * green COMPLETED pill, "1 / 1 files"
+        * no hx-trigger attribute (polling halts)
+        * no hx-get attribute (polling halts)
+        * aria-live="polite" preserved
+gaps_closed_during_uat:
+  - "gap-13: docker-compose.yml had `worker` (controller queue only) and `watcher` (filesystem observer only) but no SAQ consumer for `phaze-agent-<agent_id>`. Added an `agent-worker` service running `saq phaze.tasks.agent_worker.settings` with PHAZE_ROLE=agent + PHAZE_AGENT_QUEUE=phaze-agent-dev-agent. Also made `phaze.services.analysis` import lazy in `phaze.tasks.functions` so the agent worker module is importable on linux-arm64 (where essentia-tensorflow is gated out by pyproject.toml platform markers)."
 
 ### 3. Visual layout verification of admin UI
 expected: /pipeline/ dashboard renders Trigger Scan card above stats panel with agent dropdown, scan_root select, and subpath input. All UI-SPEC components (trigger_scan_card, scan_path_picker, recent_scans_table, scan_status_pill, scan_submit_error) render correctly per the UI-SPEC markup. Status pill colors match design tokens.
@@ -51,9 +66,9 @@ result: [pending]
 ## Summary
 
 total: 3
-passed: 1
+passed: 2
 issues: 0
-pending: 2
+pending: 1
 skipped: 0
 blocked: 0
 

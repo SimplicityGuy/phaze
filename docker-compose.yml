@@ -63,6 +63,38 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # Phase 27 UAT gap-13: agent-side SAQ worker consuming the per-agent queue
+  # `phaze-agent-{agent_id}`. Without this, jobs the API enqueues
+  # (scan_directory, extract_file_metadata) sit in Redis with status="queued"
+  # because the `worker` service above only consumes the `controller` queue.
+  # Will move to docker-compose.agent.yml in Phase 29 alongside the watcher
+  # (per Phase 26 D-04 plan).
+  agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uv run saq phaze.tasks.agent_worker.settings
+    env_file: .env
+    environment:
+      - MODELS_PATH=/models
+      - PHAZE_ROLE=agent
+      # PHAZE_AGENT_QUEUE binds the SAQ worker to the per-agent queue named
+      # `phaze-agent-<agent_id>`. The dev seeder always creates `dev-agent`
+      # (see phaze.services.agent_bootstrap.ensure_dev_agent), so the queue is
+      # `phaze-agent-dev-agent`. Phase 29 will parameterize this per-agent when
+      # the worker moves to docker-compose.agent.yml.
+      - PHAZE_AGENT_QUEUE=phaze-agent-dev-agent
+      # PHAZE_AGENT_API_URL, PHAZE_AGENT_TOKEN, PHAZE_AGENT_SCAN_ROOTS come from .env
+    volumes:
+      - "${SCAN_PATH:-/data/music}:/data/music:ro"
+      - "${MODELS_PATH:-./models}:/models:ro"
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:18-alpine
     environment:

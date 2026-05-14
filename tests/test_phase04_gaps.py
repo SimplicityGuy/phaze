@@ -169,3 +169,44 @@ def test_docker_compose_worker_command_is_controller_settings() -> None:
         "Worker service must use 'uv run saq phaze.tasks.controller.settings' (Phase 26 D-04)"
     )
     assert "phaze.tasks.worker.settings" not in content, "Legacy phaze.tasks.worker.settings must be removed (Phase 26 D-04)"
+
+
+# ---------------------------------------------------------------------------
+# Phase 27 UAT gap-13: Docker Compose must include an agent-side SAQ worker
+# that consumes the per-agent queue. Without it, scan_directory and
+# extract_file_metadata jobs that the API enqueues sit in Redis forever
+# (the `worker` service above only consumes the `controller` queue), so
+# user-initiated scans never reach COMPLETED.
+# ---------------------------------------------------------------------------
+
+
+def test_docker_compose_has_agent_worker_consuming_agent_queue() -> None:
+    """docker-compose.yml has a service running 'saq phaze.tasks.agent_worker.settings' as PHAZE_ROLE=agent."""
+    import yaml
+
+    compose_file = Path(__file__).parent.parent / "docker-compose.yml"
+    assert compose_file.exists(), "docker-compose.yml not found at project root"
+
+    compose = yaml.safe_load(compose_file.read_text())
+    services = compose.get("services", {})
+
+    def env_has(svc_env: object, key: str, value: str) -> bool:
+        # Compose env may be a list ("KEY=VAL") or a dict.
+        if isinstance(svc_env, list):
+            return f"{key}={value}" in svc_env
+        if isinstance(svc_env, dict):
+            return svc_env.get(key) == value
+        return False
+
+    consumers = [
+        name
+        for name, spec in services.items()
+        if "saq phaze.tasks.agent_worker.settings" in str(spec.get("command", "")) and env_has(spec.get("environment"), "PHAZE_ROLE", "agent")
+    ]
+
+    assert consumers, (
+        "docker-compose.yml must include at least one service that runs "
+        "'uv run saq phaze.tasks.agent_worker.settings' with PHAZE_ROLE=agent. "
+        "Without it, scan_directory / extract_file_metadata jobs the API "
+        "enqueues onto 'phaze-agent-{agent_id}' have no consumer (Phase 27 UAT gap-13)."
+    )
