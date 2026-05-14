@@ -11,7 +11,7 @@ from saq import Queue
 from sqlalchemy import text
 
 from phaze.config import settings
-from phaze.database import engine
+from phaze.database import async_session, engine, run_migrations
 from phaze.routers import (
     agent_analysis,
     agent_execution,
@@ -37,6 +37,7 @@ from phaze.routers import (
     tags,
     tracklists,
 )
+from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 
 
@@ -53,9 +54,29 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     Shutdown is reverse-order (task_router, redis, queue) so the SAQ-backed router closes
     before the underlying default queue's Redis pool is gone.
+
+    Phase 27 UAT Gap 2/3: ``run_migrations`` and ``ensure_dev_agent`` run BEFORE
+    the queue / task_router / redis are wired so a fresh docker compose stack
+    can boot to a working state with one ``docker compose up``. Both are gated
+    by config knobs (``settings.auto_migrate`` and ``settings.dev_seed_agent``)
+    so operators can opt out in production.
     """
+    # Phase 27 UAT Gap 2: bring the schema to head BEFORE the engine is used
+    # for normal traffic. Idempotent + gated by settings.auto_migrate.
+    await run_migrations()
+
+    # Verify connectivity. The SELECT 1 also raises early with a clear error if
+    # the database is unreachable -- the lifespan crash surface aborts FastAPI
+    # startup instead of letting routers 500 later.
     async with engine.begin() as conn:
         await conn.execute(text("SELECT 1"))
+
+    # Phase 27 UAT Gap 3: seed a dev agent on a fresh agents table so the
+    # watcher can authenticate on first start. No-op on existing deployments
+    # (idempotent) and disabled by default (settings.dev_seed_agent=false).
+    async with async_session() as bootstrap_session:
+        await ensure_dev_agent(bootstrap_session)
+
     # SAQ default-queue (Phase 25) -- used by routers/scan.py
     _app.state.queue = Queue.from_url(settings.redis_url)
     # AgentTaskRouter -- per-agent SAQ enqueuer (Phase 26 Plan 04, D-20)
