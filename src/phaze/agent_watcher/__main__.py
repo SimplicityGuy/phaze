@@ -37,7 +37,9 @@ import asyncio
 import contextlib
 import logging
 import signal
+import sys
 
+from pydantic import ValidationError
 from watchdog.observers import Observer
 
 from phaze.agent_watcher.debouncer import Debouncer
@@ -48,6 +50,32 @@ from phaze.tasks._shared.agent_bootstrap import construct_agent_client, whoami_w
 
 
 logger = logging.getLogger(__name__)
+
+
+def _log_settings_validation_error(exc: ValidationError) -> None:
+    """Log a readable summary of which AgentSettings fields failed validation.
+
+    Phase 27 UAT Gap 5: when PHAZE_AGENT_API_URL (or similarly required env)
+    is missing, the raw pydantic ValidationError stack trace buries the
+    operator-actionable hint behind a wall of pydantic internals. This
+    helper extracts just the field name + reason from each error in the
+    pydantic.ValidationError and emits one ERROR line per failed field --
+    the operator-facing format. The original exception is still logged at
+    DEBUG for troubleshooting.
+
+    Designed to be the FIRST handler called when get_settings() raises;
+    `main_entrypoint` below routes ValidationError here and exits 1.
+    """
+    logger.error("phaze.agent_watcher: agent settings failed validation (%d issue(s))", len(exc.errors()))
+    for err in exc.errors():
+        # Pydantic error shape: {"loc": ("field",), "msg": "...", "type": "..."}
+        loc = ".".join(str(part) for part in err.get("loc", ()))
+        msg = err.get("msg", "<no message>")
+        # Map back to the documented env-var name (best-effort: pydantic-settings
+        # uses the field name in `loc`, e.g. `agent_api_url`).
+        env_hint = f"PHAZE_{loc.upper()}" if loc else "<unknown env var>"
+        logger.error("  - missing or invalid: %s (env: %s) -- %s", loc, env_hint, msg)
+    logger.debug("phaze.agent_watcher: full pydantic ValidationError follows", exc_info=exc)
 
 
 async def _sweep_loop(
@@ -85,8 +113,22 @@ async def _sweep_loop(
 
 
 async def main() -> None:
-    """Bootstrap the watcher process (D-16 startup sequence)."""
-    cfg = get_settings()
+    """Bootstrap the watcher process (D-16 startup sequence).
+
+    Phase 27 UAT Gap 5: the config read is wrapped so a pydantic
+    ``ValidationError`` (raised by ``AgentSettings`` when a required env var
+    is missing) is translated into a readable ERROR log + non-zero exit
+    BEFORE we reach the `whoami_with_retry` code path. Previously the
+    operator saw only a pydantic stack trace and the Pitfall-7
+    "auth invalid; check PHAZE_AGENT_TOKEN" hint never surfaced.
+    """
+    try:
+        cfg = get_settings()
+    except ValidationError as exc:
+        _log_settings_validation_error(exc)
+        # `sys.exit(1)` from inside `asyncio.run(main())` propagates as
+        # SystemExit -- the runtime exits non-zero so docker compose restarts.
+        sys.exit(1)
     if not isinstance(cfg, AgentSettings):
         msg = f"agent_watcher requires PHAZE_ROLE=agent; got {type(cfg).__name__}"
         raise RuntimeError(msg)
