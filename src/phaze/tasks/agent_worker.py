@@ -54,6 +54,7 @@ from phaze.tasks._shared.agent_bootstrap import (
     construct_agent_client,
     whoami_with_retry as _whoami_with_retry,
 )
+from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
@@ -167,6 +168,12 @@ if not _queue_name:
     msg = "PHAZE_AGENT_QUEUE env var is required for agent_worker. Expected form: phaze-agent-<agent_id>. See Phase 26 D-16."
     raise RuntimeError(msg)
 queue = Queue.from_url(get_settings().redis_url, name=_queue_name)
+# Phase 27 UAT Gap 1: SAQ 0.26.3's Worker.__init__ does NOT accept `timeout`,
+# `retries`, or `keep_result` -- those are per-Job settings. Apply the project's
+# policy defaults via a `before_enqueue` hook on the Queue so every enqueued
+# Job inherits the longer timeout / retry budget without breaking Worker
+# construction. See phaze.tasks._shared.queue_defaults for the hook body.
+queue.register_before_enqueue(apply_project_job_defaults)
 
 
 settings = {
@@ -180,9 +187,6 @@ settings = {
         execute_approved_batch,
     ],
     "concurrency": get_settings().worker_max_jobs,
-    "timeout": get_settings().worker_job_timeout,
-    "retries": get_settings().worker_max_retries,
-    "keep_result": get_settings().worker_keep_result,
     "startup": startup,
     "shutdown": shutdown,
 }

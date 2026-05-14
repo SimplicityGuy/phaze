@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from phaze.config import get_settings
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
+from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
@@ -95,6 +96,12 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 # Module-level Queue construction. SAQ's `saq <module>.settings` CLI imports
 # this module and reads `settings` as a top-level attribute (RESEARCH §A2).
 queue = Queue.from_url(get_settings().redis_url, name="controller")
+# Phase 27 UAT Gap 1: SAQ 0.26.3's Worker.__init__ does NOT accept `timeout`,
+# `retries`, or `keep_result` -- those are per-Job settings. Apply the project's
+# policy defaults via a `before_enqueue` hook on the Queue so every enqueued
+# Job inherits the longer timeout / retry budget without breaking Worker
+# construction. See phaze.tasks._shared.queue_defaults for the hook body.
+queue.register_before_enqueue(apply_project_job_defaults)
 
 
 settings = {
@@ -106,9 +113,6 @@ settings = {
         scrape_and_store_tracklist,
     ],
     "concurrency": get_settings().worker_max_jobs,
-    "timeout": get_settings().worker_job_timeout,
-    "retries": get_settings().worker_max_retries,
-    "keep_result": get_settings().worker_keep_result,
     "cron_jobs": [
         CronJob(refresh_tracklists, cron="0 3 1 * *"),  # type: ignore[type-var]
     ],
