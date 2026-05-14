@@ -80,9 +80,16 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     if not settings.dev_seed_agent:
         return None
 
-    existing_count = (await session.execute(select(func.count()).select_from(Agent))).scalar_one()
-    if existing_count > 0:
-        logger.debug("ensure_dev_agent: agents table non-empty (count=%d); no-op", existing_count)
+    # Count USABLE agents (not revoked, has a token_hash). Migration 012 inserts
+    # a `legacy-application-server` row with `revoked_at=NOW()` and
+    # `token_hash=NULL` as a marker — that row cannot authenticate and must not
+    # block dev-seeding. The check is "is there at least one agent the watcher
+    # could authenticate as?" — not "is the table empty?".
+    usable_count = (
+        await session.execute(select(func.count()).select_from(Agent).where(Agent.revoked_at.is_(None), Agent.token_hash.is_not(None)))
+    ).scalar_one()
+    if usable_count > 0:
+        logger.debug("ensure_dev_agent: %d usable agent(s) already exist; no-op", usable_count)
         return None
 
     # Token: operator-supplied or freshly generated.

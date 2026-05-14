@@ -66,24 +66,71 @@ async def test_ensure_dev_agent_seeds_when_table_empty(
 
 
 @pytest.mark.asyncio
-async def test_ensure_dev_agent_noop_when_agent_exists(
+async def test_ensure_dev_agent_noop_when_usable_agent_exists(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pre-existing agent row prevents seeding (idempotent)."""
-    # The shared `async_engine` fixture already seeded LEGACY_AGENT_ID -- exactly
-    # the "already-populated" precondition under test.
+    """A pre-existing USABLE agent (non-revoked, with token_hash) blocks seeding."""
+    # Replace conftest's tokenless legacy seed with a usable agent under test
+    legacy = await session.get(Agent, LEGACY_AGENT_ID)
+    if legacy is not None:
+        await session.delete(legacy)
+        await session.commit()
+    session.add(Agent(id="some-real-agent", name="some-real-agent", token_hash="fakehash" * 8, scan_roots=["/data/music"]))
+    await session.commit()
+
     monkeypatch.setattr(settings, "dev_seed_agent", True)
     monkeypatch.setattr(settings, "dev_agent_token", None)
 
     before_count = (await session.execute(select(func.count()).select_from(Agent))).scalar_one()
-    assert before_count >= 1, "test precondition: agents table must have legacy row"
-
     result = await ensure_dev_agent(session)
 
-    assert result is None, "ensure_dev_agent must return None when no seeding happened"
+    assert result is None, "ensure_dev_agent must return None when a usable agent already exists"
     after_count = (await session.execute(select(func.count()).select_from(Agent))).scalar_one()
     assert after_count == before_count, f"unexpected new rows: before={before_count} after={after_count}"
+
+
+@pytest.mark.asyncio
+async def test_ensure_dev_agent_seeds_past_revoked_legacy_marker(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Migration 012's revoked legacy-application-server row must NOT block dev seeding.
+
+    Migration 012 inserts a `legacy-application-server` agent with `revoked_at=NOW()`
+    and `token_hash=NULL` as a marker — that row cannot authenticate, so the
+    dev-seeder must still seed a usable `dev-agent` row past it. A naive
+    `count(*) > 0` check would no-op here and leave the watcher unable to authenticate.
+    """
+    from datetime import UTC, datetime
+
+    # Replace the tokenless test fixture legacy with the production-shaped revoked legacy
+    legacy = await session.get(Agent, LEGACY_AGENT_ID)
+    if legacy is not None:
+        await session.delete(legacy)
+        await session.commit()
+    session.add(
+        Agent(
+            id=LEGACY_AGENT_ID,
+            name=LEGACY_AGENT_ID,
+            token_hash=None,
+            revoked_at=datetime.now(UTC),
+            scan_roots=["/data/music"],
+        )
+    )
+    await session.commit()
+
+    monkeypatch.setattr(settings, "dev_seed_agent", True)
+    monkeypatch.setattr(settings, "dev_agent_token", None)
+
+    raw_token = await ensure_dev_agent(session)
+
+    assert raw_token is not None, "must seed past a revoked/tokenless legacy marker"
+    # Now table holds both: the revoked legacy marker AND the new dev-agent
+    count = (await session.execute(select(func.count()).select_from(Agent))).scalar_one()
+    assert count == 2, f"expected revoked legacy + new dev-agent, got count={count}"
+    dev = await session.get(Agent, "dev-agent")
+    assert dev is not None and dev.token_hash is not None and dev.revoked_at is None
 
 
 @pytest.mark.asyncio
