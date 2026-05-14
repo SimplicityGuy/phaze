@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" :class="$store.theme.dark ? 'dark' : ''">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,8 +18,10 @@
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
 
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4" integrity="sha384-qKt1F1k7v69ebd7q6Na1d2FGVMI+43GgA5hpfz7i+zDfrz8rIjXYu7majL1fXSeS" crossorigin="anonymous"></script>
+    <!-- Tailwind CSS — URL must pin a specific minor.patch (NOT just @4) so the SRI hash
+         doesn't drift when jsdelivr serves a newer point release. The browser blocks the
+         script on SRI mismatch and the whole page renders unstyled. -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.0" integrity="sha384-d5Pc0U2WLIrcpPz/5dTNl91xwJLvbdD+V3+kao+QnRyFRNDW1mKqxoM9b6fzPxsS" crossorigin="anonymous"></script>
 
     <!-- Jura font (design language primary) + Inter (body) -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Jura:wght@300;500&display=swap" rel="stylesheet">
@@ -33,8 +35,33 @@
     <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.9/dist/cdn.min.js" integrity="sha384-MEh8ZMZhsmD6/1Bd3kfTiGZoYIKR9u+BilQQWl5DOonh+pvKg6fP2AejtOozsZK8" crossorigin="anonymous"></script>
 
-    <!-- Theme store: auto/dark/light with localStorage persistence -->
+    <!-- Theme store: auto/dark/light with localStorage persistence.
+
+         Alpine v3 does NOT process `:class` on the <html> element unless
+         <html> carries an x-data directive (Alpine scans from <body> down).
+         A previous version bound `:class="$store.theme.dark ? 'dark' : ''"`
+         on <html> and it was silently inert — clicking the toggle changed
+         `mode` in the store but the .dark class was never added/removed
+         after the pre-flash script ran.
+
+         Fix: drive the .dark class directly via classList from one place
+         (`_applyTheme`). Both the toggle's set() and the OS-level
+         prefers-color-scheme listener (for auto mode) call it. -->
     <script>
+        function _applyTheme(mode) {
+            const isDark = mode === 'dark' || (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            document.documentElement.classList.toggle('dark', isDark);
+        }
+        // Prevent flash: apply dark class before Alpine loads.
+        (function() {
+            const mode = localStorage.getItem('phaze-theme') || 'auto';
+            _applyTheme(mode);
+        })();
+        // OS-level dark-mode preference change must update the page when in auto mode.
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            const mode = localStorage.getItem('phaze-theme') || 'auto';
+            if (mode === 'auto') _applyTheme('auto');
+        });
         document.addEventListener('alpine:init', () => {
             Alpine.store('theme', {
                 mode: localStorage.getItem('phaze-theme') || 'auto',
@@ -46,15 +73,10 @@
                 set(mode) {
                     this.mode = mode;
                     localStorage.setItem('phaze-theme', mode);
+                    _applyTheme(mode);
                 }
             });
         });
-        // Prevent flash: apply dark class before Alpine loads
-        (function() {
-            const mode = localStorage.getItem('phaze-theme') || 'auto';
-            const isDark = mode === 'dark' || (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-            if (isDark) document.documentElement.classList.add('dark');
-        })();
     </script>
 
     <style type="text/tailwindcss">

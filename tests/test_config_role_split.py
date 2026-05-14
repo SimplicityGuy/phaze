@@ -87,10 +87,15 @@ def test_get_settings_defaults_to_control_when_phaze_role_unset(
 def test_agent_settings_raises_when_api_url_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_API_URL is absent."""
+    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_API_URL is absent.
+
+    Empty-string setenv overrides the project ``.env`` (in docker-compose mode it
+    provides a real value); ``delenv`` alone is not enough because pydantic-settings
+    falls back to the ``.env`` file.
+    """
     from phaze.config import AgentSettings
 
-    monkeypatch.delenv("PHAZE_AGENT_API_URL", raising=False)
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "")
     monkeypatch.delenv("agent_api_url", raising=False)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
@@ -102,11 +107,14 @@ def test_agent_settings_raises_when_api_url_missing(
 def test_agent_settings_raises_when_token_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_TOKEN is absent."""
+    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_TOKEN is absent.
+
+    Empty-string setenv beats the project .env fallback in pydantic-settings.
+    """
     from phaze.config import AgentSettings
 
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
-    monkeypatch.delenv("PHAZE_AGENT_TOKEN", raising=False)
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "")
     monkeypatch.delenv("agent_token", raising=False)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
 
@@ -117,12 +125,15 @@ def test_agent_settings_raises_when_token_missing(
 def test_agent_settings_raises_when_scan_roots_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentSettings raises ValueError/ValidationError when scan_roots resolves to empty list."""
+    """AgentSettings raises ValueError/ValidationError when scan_roots resolves to empty list.
+
+    Empty-string setenv beats the project .env fallback in pydantic-settings.
+    """
     from phaze.config import AgentSettings
 
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
-    monkeypatch.delenv("PHAZE_AGENT_SCAN_ROOTS", raising=False)
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "")
     monkeypatch.delenv("scan_roots", raising=False)
 
     with pytest.raises((ValueError, ValidationError)):
@@ -141,3 +152,115 @@ def test_agent_settings_comma_splits_scan_roots(
 
     cfg = AgentSettings()
     assert cfg.scan_roots == ["/a", "/b", "/c"], f"scan_roots mismatch: {cfg.scan_roots!r}"
+
+
+# ----------------------------------------------------------------------
+# Phase 27-01: Watcher / scan_chunk_size knobs on AgentSettings (D-03, D-11)
+# ----------------------------------------------------------------------
+
+
+def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Helper: set the minimum env vars needed for AgentSettings() to construct.
+
+    Tests in this module assert on the documented default values (D-03 / D-11).
+    pydantic-settings reads ``os.environ`` AND ``.env`` files, and the project's
+    docker-compose ``.env`` overrides several watcher knobs to non-default
+    values (e.g., ``PHAZE_WATCHER_SETTLE_SECONDS=3``). ``delenv`` alone does
+    NOT clear those — pydantic-settings falls back to ``.env``. Setting each
+    knob to its documented default via ``setenv`` is the only way to fully
+    shadow the ``.env`` layer.
+    """
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    # Pin watcher knobs to their documented defaults so assertions in this
+    # module hold regardless of what's in the project's .env file.
+    monkeypatch.setenv("PHAZE_WATCHER_SETTLE_SECONDS", "10")
+    monkeypatch.setenv("PHAZE_WATCHER_MAX_PENDING_SECONDS", "3600")
+    monkeypatch.setenv("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "2")
+    monkeypatch.setenv("PHAZE_SCAN_CHUNK_SIZE", "500")
+    monkeypatch.setenv("PHAZE_WATCHER_POLLING_MODE", "false")
+    for name in ("watcher_settle_seconds", "watcher_max_pending_seconds", "watcher_sweep_interval_seconds", "scan_chunk_size"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_agent_settings_watcher_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default values for the four new knobs match D-03 / D-11."""
+    from phaze.config import AgentSettings
+
+    _agent_env(monkeypatch)
+    cfg = AgentSettings()
+    assert cfg.watcher_settle_seconds == 10
+    assert cfg.watcher_max_pending_seconds == 3600
+    assert cfg.watcher_sweep_interval_seconds == 2
+    assert cfg.scan_chunk_size == 500
+
+
+@pytest.mark.parametrize(
+    ("env_var", "field_name", "value"),
+    [
+        ("PHAZE_WATCHER_SETTLE_SECONDS", "watcher_settle_seconds", "42"),
+        ("PHAZE_WATCHER_MAX_PENDING_SECONDS", "watcher_max_pending_seconds", "7200"),
+        ("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "watcher_sweep_interval_seconds", "5"),
+        ("PHAZE_SCAN_CHUNK_SIZE", "scan_chunk_size", "250"),
+    ],
+)
+def test_agent_settings_watcher_env_var_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+    env_var: str,
+    field_name: str,
+    value: str,
+) -> None:
+    """Each PHAZE_* env var maps onto its bare field name via AliasChoices."""
+    from phaze.config import AgentSettings
+
+    _agent_env(monkeypatch)
+    monkeypatch.setenv(env_var, value)
+    cfg = AgentSettings()
+    assert getattr(cfg, field_name) == int(value), f"{field_name} != {value}"
+
+
+# ----------------------------------------------------------------------
+# Phase 27 UAT Gap 4: .env.example documents required + new env vars
+# ----------------------------------------------------------------------
+
+
+def _read_env_example() -> str:
+    """Read .env.example from the repo root (sibling of pyproject.toml)."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    env_path = repo_root / ".env.example"
+    return env_path.read_text(encoding="utf-8")
+
+
+def test_env_example_documents_all_required_agent_mode_vars() -> None:
+    """``.env.example`` must mention the three required PHAZE_AGENT_* env vars.
+
+    Gap 4: operators bringing up the watcher container had no obvious record
+    of which env vars are required vs optional. The required trio
+    (PHAZE_AGENT_API_URL, PHAZE_AGENT_TOKEN, PHAZE_AGENT_SCAN_ROOTS) MUST
+    appear in .env.example at minimum as comment lines with example values.
+    """
+    text = _read_env_example()
+    for key in ("PHAZE_AGENT_API_URL", "PHAZE_AGENT_TOKEN", "PHAZE_AGENT_SCAN_ROOTS"):
+        assert key in text, f".env.example missing required agent-mode key: {key}"
+
+
+def test_env_example_documents_auto_migrate_and_dev_seed() -> None:
+    """``.env.example`` must document the Gap 2/Gap 3 startup knobs."""
+    text = _read_env_example()
+    for key in ("PHAZE_AUTO_MIGRATE", "PHAZE_DEV_SEED_AGENT", "PHAZE_DEV_AGENT_TOKEN"):
+        assert key in text, f".env.example missing migration/seed knob: {key}"
+
+
+def test_env_example_explains_host_vs_container() -> None:
+    """``.env.example`` must call out the docker-service-name vs localhost distinction.
+
+    Operators running services with `uv run` on the host (rather than docker
+    compose) must change DATABASE_URL/REDIS_URL hostnames from `postgres`/
+    `redis` to `localhost`. This rule was not documented before Gap 4.
+    """
+    text = _read_env_example()
+    assert "localhost" in text, ".env.example must explain host-vs-container hostname swap"
+    assert "docker compose" in text.lower(), ".env.example must reference docker compose context"

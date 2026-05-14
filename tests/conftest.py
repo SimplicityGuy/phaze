@@ -20,6 +20,57 @@ TEST_DATABASE_URL = "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"
 DB_FIXTURES = {"async_engine", "session", "client", "authenticated_client", "seed_test_agent"}
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pydantic_settings_from_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sever every BaseSettings class's `.env` file loading for the test session.
+
+    pydantic-settings reads `.env` (relative to cwd) into every `BaseSettings()`
+    constructor. The project's `.env` in docker-compose mode pins runtime
+    overrides like `PHAZE_WATCHER_POLLING_MODE=true` and
+    `PHAZE_WATCHER_SETTLE_SECONDS=3`, which silently change which code path
+    tests exercise — defaults assertions fail, tests that mock only the native
+    `Observer` end up hitting `PollingObserver` and crashing on missing
+    `/data/music`.
+
+    The fix: point `env_file` at an empty tempfile for every Settings subclass
+    we own, for every test. ``monkeypatch.setattr`` on the class-level
+    ``model_config`` (a TypedDict) is enough — pydantic-settings reads it at
+    construction time. Tests can still ``monkeypatch.setenv(...)`` to inject
+    specific values; ``os.environ`` continues to take precedence over the
+    (now-empty) env_file.
+    """
+    from phaze.config import AgentSettings, ControlSettings
+
+    for cls in (ControlSettings, AgentSettings):
+        new_config = dict(cls.model_config)
+        new_config["env_file"] = None
+        monkeypatch.setattr(cls, "model_config", new_config)
+    # Also clear non-infrastructure env vars that the project's docker .env
+    # defines, so the OS env layer cannot leak into tests. We deliberately
+    # leave DATABASE_URL and REDIS_URL alone — integration-test fixtures
+    # depend on them being set to the test-DB connection string. The vars
+    # cleared here are all "feature toggle" / "tuning knob" overrides whose
+    # tests assert against documented defaults.
+    for var in (
+        "MODELS_PATH",
+        "SCAN_PATH",
+        "DEBUG",
+        "PHAZE_AUTO_MIGRATE",
+        "PHAZE_DEV_SEED_AGENT",
+        "PHAZE_DEV_AGENT_TOKEN",
+        "PHAZE_AGENT_API_URL",
+        "PHAZE_AGENT_TOKEN",
+        "PHAZE_AGENT_SCAN_ROOTS",
+        "PHAZE_ROLE",
+        "PHAZE_WATCHER_SETTLE_SECONDS",
+        "PHAZE_WATCHER_MAX_PENDING_SECONDS",
+        "PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS",
+        "PHAZE_WATCHER_POLLING_MODE",
+        "PHAZE_SCAN_CHUNK_SIZE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Auto-mark tests that use database fixtures as integration tests."""
     for item in items:

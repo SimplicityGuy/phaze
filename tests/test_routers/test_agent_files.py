@@ -38,6 +38,7 @@ from sqlalchemy import func as sa_func, select
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord
+from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import agent_files
 
 
@@ -75,8 +76,27 @@ async def smoke_app_and_router(
     ``test_auto_enqueue_only_for_inserts``) consume this fixture; tests that
     only care about the HTTP response can use ``authenticated_client`` below,
     which is a thin wrapper that drops the router handle.
+
+    Phase 27 D-09/D-18: the upsert handler now resolves the calling agent's
+    LIVE sentinel batch when ``batch_id`` is omitted on the wire. The Phase 24
+    invariant says one is seeded at agent-registration time; ``seed_test_agent``
+    pre-dates that flow, so we add the sentinel here to keep Phase 25/26 tests
+    behaviorally unchanged (no contract regression).
     """
-    _agent, raw_token = seed_test_agent
+    agent, raw_token = seed_test_agent
+    # Phase 27 D-09/D-18: pre-seed the LIVE sentinel so the upsert handler's
+    # absent-batch_id branch resolves it cleanly. Mirrors the Phase 24 D-11
+    # agent-registration side effect.
+    session.add(
+        ScanBatch(
+            agent_id=agent.id,
+            scan_path="<watcher>",
+            status=ScanStatus.LIVE.value,
+            total_files=0,
+            processed_files=0,
+        ),
+    )
+    await session.commit()
     app, mock_router = _make_smoke_app(session)
     headers = {"Authorization": f"Bearer {raw_token}"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:

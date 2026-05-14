@@ -67,6 +67,30 @@ class BaseSettings(PydanticBaseSettings):
     agent_token_prefix: str = "phaze_agent_"  # noqa: S105  # nosec B105
     agent_file_chunk_max: int = 1000
 
+    # Phase 27 UAT Gap 2: auto-run alembic upgrade head on api startup. Turn off
+    # in production environments where the operator wants manual migration
+    # control (e.g., to gate behind a maintenance window).
+    auto_migrate: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PHAZE_AUTO_MIGRATE", "auto_migrate"),
+        description="Run `alembic upgrade head` in the api lifespan startup.",
+    )
+
+    # Phase 27 UAT Gap 3: seed a dev agent on a fresh DB so the watcher can
+    # authenticate on first start. Disabled by default in production; the
+    # operator-supplied token (if set) overrides the random one printed at
+    # startup so the same token can be baked into the watcher's .env.
+    dev_seed_agent: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PHAZE_DEV_SEED_AGENT", "dev_seed_agent"),
+        description="On a fresh DB, seed a dev-agent so the watcher can authenticate.",
+    )
+    dev_agent_token: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_DEV_AGENT_TOKEN", "dev_agent_token"),
+        description="Optional fixed token for the dev-seeded agent (else random).",
+    )
+
 
 class ControlSettings(BaseSettings):
     """Application-server role: LLM proposal generation, Discogs matching, fileless tasks."""
@@ -116,6 +140,37 @@ class AgentSettings(BaseSettings):
             "`NoDecode` + `_split_scan_roots` (below) implements the comma-split — "
             "pydantic-settings would otherwise try to JSON-decode the env value."
         ),
+    )
+
+    watcher_settle_seconds: int = Field(
+        default=10,
+        validation_alias=AliasChoices("PHAZE_WATCHER_SETTLE_SECONDS", "watcher_settle_seconds"),
+        description="Seconds a file's mtime must be stable before the watcher posts it (D-01).",
+    )
+    watcher_max_pending_seconds: int = Field(
+        default=3600,
+        validation_alias=AliasChoices("PHAZE_WATCHER_MAX_PENDING_SECONDS", "watcher_max_pending_seconds"),
+        description="Stuck-file cap; entries older than this are evicted from the pending set (D-02).",
+    )
+    watcher_sweep_interval_seconds: int = Field(
+        default=2,
+        validation_alias=AliasChoices("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "watcher_sweep_interval_seconds"),
+        description="How often the watcher's sweep task checks for settled files (D-01).",
+    )
+    watcher_polling_mode: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PHAZE_WATCHER_POLLING_MODE", "watcher_polling_mode"),
+        description=(
+            "Use watchdog's PollingObserver instead of the native inotify backend. "
+            "Required for macOS docker bind mounts (rancher-desktop / Docker Desktop) "
+            "where inotify events do not propagate through 9p/virtiofs. Adds modest CPU "
+            "overhead (polls each watcher_sweep_interval_seconds) but works on any filesystem."
+        ),
+    )
+    scan_chunk_size: int = Field(
+        default=500,
+        validation_alias=AliasChoices("PHAZE_SCAN_CHUNK_SIZE", "scan_chunk_size"),
+        description="Number of FileUpsertRecord rows per chunk in scan_directory (D-11).",
     )
 
     @field_validator("scan_roots", mode="before")

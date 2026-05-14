@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v3.0
+milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 26 shipped & merged (PR #57); ready for Phase 27"
-stopped_at: Phase 26 Wave 5 complete (Plans 10 + 12); ready for Wave 6 cleanup
-last_updated: "2026-05-13T04:34:22.194Z"
-last_activity: 2026-05-12 -- Phase 26 merged to main
+status: shipped
+stopped_at: Phase 27 shipped — PR #59
+last_updated: "2026-05-14T18:55:00.000Z"
+last_activity: 2026-05-14 -- Phase 27 shipped (PR #59); 14 UAT gaps closed during live bring-up
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 26
-  completed_plans: 26
-  percent: 100
+  total_phases: 6
+  completed_phases: 5
+  total_plans: 33
+  completed_plans: 33
+  percent: 83
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker
+**Current focus:** Phase 27 — watcher-service-user-initiated-scan
 
 ## Current Position
 
-Phase: 26 — COMPLETE
-Plan: 13 of 13 (task-body HTTP rewrites complete; Plan 10 agent_worker + Plan 12 router/scan rewrite still pending)
-Status: Phase 26 shipped & merged (PR #57); ready for Phase 27
-Last activity: 2026-05-12 -- Phase 26 merged to main
+Phase: 28
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-05-14
 
 Progress: [██████████] 100%
 
@@ -36,7 +36,7 @@ Progress: [██████████] 100%
 
 **v1.0 Velocity:**
 
-- Total plans completed: 32
+- Total plans completed: 39
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -103,6 +103,15 @@ Progress: [██████████] 100%
 - [Phase ?]: 26-10: D-13 token-preview banner uses 'auth_id_prefix=' format key (not 'token_preview=') to avoid semgrep secret-detector false-positives; rendered value unchanged
 - [Phase ?]: 26-10: /whoami startup probe budget = exponential 1s→32s = ~63s wall-clock; RuntimeError on exhaustion; queue-name mismatch guard catches PHAZE_AGENT_QUEUE vs token-derived agent_id misconfig
 - [Phase ?]: [Phase 26-13] D-04+D-06 finalized: phaze.tasks.{worker,session} deleted with no back-compat shim; docker-compose worker service rewired to phaze.tasks.controller.settings under PHAZE_ROLE=control; lux_worker→controller doc sweep across PROJECT.md + ROADMAP.md
+- [Phase 27-01]: phaze.tasks._shared.agent_bootstrap centralizes whoami_with_retry + construct_agent_client; Pitfall 7 short-circuit on AgentApiAuthError closes the "bad token infinite-restart" failure mode
+- [Phase 27-01]: Four new AgentSettings fields (watcher_settle_seconds=10, watcher_max_pending_seconds=3600, watcher_sweep_interval_seconds=2, scan_chunk_size=500) with PHAZE_WATCHER_*/PHAZE_SCAN_CHUNK_SIZE env-var aliases via AliasChoices (Phase 26-01 pattern)
+- [Phase 27-02]: FileUpsertChunk.batch_id: UUID | None added; absent → controller resolves LIVE sentinel via uq_scan_batches_agent_id_live partial UQ; present → 403-before-state-machine cross-tenant guard (T-27-02)
+- [Phase 27-03]: PATCH /api/internal/agent/scan-batches/{batch_id} state machine: RUNNING→COMPLETED/FAILED only; LIVE rejected at schema layer (Literal); idempotent same-state PATCH echoes row with zero DB writes
+- [Phase 27-04]: scan_directory chunk size = 500; per-chunk PATCH progress; terminal status PATCH on completion or failure; per-file OSError skip (mirrors services/ingestion.py:65); module-private _classify duplicates EXTENSION_MAP lookup to keep agent-side scan.py Postgres-free (D-13 / D-25 invariant)
+- [Phase 27-05]: phaze.agent_watcher uses dict[str, _PendingEntry] + asyncio-owned single-loop sweep (time.monotonic clock); loop.call_soon_threadsafe is the ONLY sanctioned thread bridge from the watchdog Observer thread
+- [Phase 27-05]: Stuck-file cap = 3600s default (D-02 / T-27-05); evicted entries log WARNING but do NOT post; bounded in-memory cost. Watcher POSTs chunk-of-1 with batch_id OMITTED (not None) to trigger server-side LIVE-sentinel resolution (D-18)
+- [Phase 27-06]: HTMX poll-partial halt: terminal-state markup OMITS hx-trigger AND hx-get; outerHTML swap replaces the polling element entirely (Pitfall 6); cadence = every 2s for scan progress, every 5s for stats bar. Recent Scans mini-table uses transient _agent_name / _elapsed_seconds attrs on ORM rows to avoid N+1
+- [Phase 27-07]: Compose 'watcher' service lives in root docker-compose.yml; Phase 29 will move it + 'worker' to docker-compose.agent.yml; depends_on api: service_started (no healthcheck); restart: unless-stopped is the only liveness mechanism in Phase 27. Volume mount SCAN_PATH:/data/music:ro only (no MODELS_PATH/OUTPUT_PATH; watcher is fileless-write)
 
 ### Pending Todos
 
@@ -133,6 +142,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-12T23:05:23.667Z
-Stopped at: Phase 26 Wave 5 complete (Plans 10 + 12); ready for Wave 6 cleanup
-Resume file: None
+Last session: 2026-05-13T18:45:31.242Z
+Stopped at: Phase 27 UI-SPEC approved
+Resume file: .planning/phases/27-watcher-service-user-initiated-scan/27-UI-SPEC.md

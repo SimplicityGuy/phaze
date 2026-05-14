@@ -25,15 +25,16 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 ## Current State
 
-**v3.0 shipped 2026-04-04.** Cross-service intelligence and file enrichment complete.
+**v4.0 in progress.** Phases 24–27 complete; Phase 28 (Distributed Execution Dispatch) and 29 (Deployment Hardening & Agents Admin) remaining.
 
-- 8,000+ lines of Python across 23 phases, 52 plans total (v1.0-v3.0)
-- 650+ tests passing, 53/53 cumulative requirements satisfied (all milestones)
-- Tech stack: FastAPI, SQLAlchemy (async), SAQ, litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, HTMX + Tailwind
-- Docker Compose: api, worker, postgres, redis, audfprint, panako containers
-- 12 Alembic migrations, 12 SQLAlchemy models, 3 fingerprint service containers
-- Admin UI: proposals, duplicates, tracklists, pipeline dashboard, directory tree preview, unified search, Discogs linking, tag review, CUE management
-- v3.0 added: unified FTS search with faceted filtering, Discogs cross-service linking with fuzzy matching and bulk-link, format-aware tag writing with 4-layer cascade (Discogs > tracklist > metadata > filename), CUE sheet generation with Discogs REM enrichment
+- 8,000+ lines of Python across 27 phases, 56+ plans total (v1.0–v4.0 in progress)
+- 1,070 tests passing on phase-27 branch; 58/63 cumulative requirements satisfied (DIST-02, SCAN-01..04 newly satisfied in Phase 27)
+- Tech stack: FastAPI, SQLAlchemy (async), SAQ, litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, watchdog, HTMX + Tailwind
+- Docker Compose: api, worker, postgres, redis, audfprint, panako, **watcher** containers
+- 13 Alembic migrations, 13 SQLAlchemy models (Agents added in Phase 24), 3 fingerprint service containers
+- Admin UI: proposals, duplicates, tracklists, pipeline dashboard with **Trigger Scan card**, directory tree preview, unified search, Discogs linking, tag review, CUE management
+- v3.0 (shipped 2026-04-04): unified FTS search with faceted filtering, Discogs cross-service linking with fuzzy matching and bulk-link, format-aware tag writing with 4-layer cascade, CUE sheet generation with Discogs REM enrichment
+- v4.0 (in progress, Phases 24–27): Agents table + token-based auth; internal HTTP API (`/api/internal/agent/*`) with bearer auth + cross-tenant 403-before-state-machine guards; `phaze.tasks.controller` vs `phaze.tasks.agent_worker` task code split; per-agent SAQ queue (`phaze-agent-<id>`); always-on `phaze-agent-watcher` service with watchdog + settle/debounce + LIVE-sentinel ScanBatch; user-initiated `scan_directory` task with chunked HTTP upserts; admin UI to trigger scans on any agent
 
 ## Previous State
 
@@ -169,4 +170,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-11 starting v4.0 milestone — Distributed Agents*
+*Last updated: 2026-05-14 — Phase 27 (Watcher Service & User-Initiated Scan) complete; 4/6 v4.0 phases done*

@@ -22,12 +22,26 @@ from typing import TYPE_CHECKING, Any
 
 from phaze.schemas.agent_analysis import AnalysisWritePayload
 from phaze.schemas.agent_tasks import ProcessFilePayload
-from phaze.services.analysis import analyze_file
 from phaze.tasks.pool import run_in_process_pool
 
 
 if TYPE_CHECKING:
     from phaze.services.agent_client import PhazeAgentClient
+
+
+# Phase 27 UAT gap-13: defer the essentia-bound import to call time. essentia-tensorflow
+# is platform-gated in pyproject.toml ("sys_platform != 'linux' or platform_machine == 'x86_64'"),
+# so it is intentionally absent on linux-arm64. Loading this module at SAQ worker
+# startup must NOT fail when essentia is missing -- only process_file calls need it.
+# scan_directory and extract_file_metadata are registered on the same agent worker and
+# never touch essentia.
+def _load_analyze_file() -> Any:
+    # Deliberate function-scoped import -- module load must succeed on
+    # linux-arm64 where essentia-tensorflow is not installed. See module
+    # docstring above for the platform-marker rationale.
+    from phaze.services.analysis import analyze_file  # noqa: PLC0415
+
+    return analyze_file
 
 
 _MUSIC_FILE_TYPES = frozenset({"mp3", "flac", "ogg", "m4a", "wav", "aiff", "wma", "aac", "opus"})
@@ -110,7 +124,7 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # CPU-bound analysis in process pool (D-23: original_path is in the payload, no read-back)
     analysis = await run_in_process_pool(
         ctx,
-        analyze_file,
+        _load_analyze_file(),
         payload.original_path,
         payload.models_path,
     )

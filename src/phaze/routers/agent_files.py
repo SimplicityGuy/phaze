@@ -17,8 +17,8 @@ from typing import Annotated, Any
 import unicodedata
 import uuid
 
-from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy import Executable, literal_column
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import Executable, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
+from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
@@ -54,6 +55,35 @@ async def upsert_files(
       natural keys within one statement.
     - Returns `(upserted, inserted, enqueued)` counts.
     """
+    # Phase 27 D-09 + D-18 + D-21: resolve batch_id BEFORE the records loop.
+    # Cross-tenant guard returns 403 BEFORE any FileRecord insert -- mirrors the
+    # Phase 26 D-08 placement in agent_proposals.py:62-76 (and the new
+    # agent_scan_batches.py PATCH handler). T-27-02 mitigation: a leaked
+    # batch_id cannot be probed by attempting an upsert, because the 403
+    # rejection precedes the records loop.
+    if body.batch_id is not None:
+        batch = await session.get(ScanBatch, body.batch_id)
+        if batch is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
+        if batch.agent_id != agent.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="scan batch does not belong to authenticated agent",
+            )
+        resolved_batch_id = batch.id
+    else:
+        # D-18: batch_id omitted -> resolve the calling agent's LIVE sentinel
+        # batch from the bearer-token-derived agent_id. The partial unique index
+        # `uq_scan_batches_agent_id_live` guarantees exactly one row exists for
+        # any registered agent (Phase 24 D-11 + D-12), so `.scalar_one()` is
+        # safe -- a missing sentinel is an operator-actionable invariant
+        # violation (500-level), not a 4xx contract failure.
+        stmt = select(ScanBatch.id).where(
+            ScanBatch.agent_id == agent.id,
+            ScanBatch.status == ScanStatus.LIVE.value,
+        )
+        resolved_batch_id = (await session.execute(stmt)).scalar_one()
+
     # 1. Build raw record dicts with agent_id stamped from auth dep (NEVER from body)
     raw_records: list[dict[str, Any]] = []
     for r in body.files:
@@ -63,6 +93,7 @@ async def upsert_files(
         data["agent_id"] = agent.id  # AUTH-01 -- stamped from auth, NEVER from body
         data["state"] = FileState.DISCOVERED  # server stamps initial state
         data["id"] = uuid.uuid4()  # server-generates new id; ON CONFLICT preserves existing id
+        data["batch_id"] = resolved_batch_id  # Phase 27 D-09/D-18 -- server resolves; never from body
         raw_records.append(data)
 
     # 2. RESEARCH Pitfall 4: same-chunk dedup on (original_path) -- last write wins.

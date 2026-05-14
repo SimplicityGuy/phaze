@@ -22,7 +22,12 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False preserves application loggers across migration
+    # runs. With the default True, fileConfig disables every Python logger not
+    # listed in alembic.ini (only root/sqlalchemy/alembic), which kills pytest
+    # caplog capture for phaze.* loggers in any test that runs after a migration
+    # test in the same process.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Target metadata for autogenerate support
 target_metadata = Base.metadata

@@ -61,7 +61,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [ ] **Phase 24: Schema Foundation & Agent Registry** — `agents` table, `agent_id` columns on FileRecord/ScanBatch, two-step Alembic migration with legacy backfill
 - [x] **Phase 25: Internal Agent HTTP API & Bearer Auth** — `/api/internal/agent/*` endpoints, token-hash auth middleware deriving `agent_id` from token, idempotent upserts on natural keys, rotatable tokens (completed 2026-05-12)
 - [x] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.controller` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads (completed 2026-05-12)
-- [ ] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form
+- [x] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form (completed 2026-05-13)
 - [ ] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path
 - [ ] **Phase 29: Deployment Hardening & Agents Admin** — strip `SCAN_PATH`/`MODELS_PATH` from application-server compose, self-signed HTTPS w/ internal CA, Redis `requirepass` + LAN binding, `docker-compose.agent.yml`, per-file-server model download, heartbeat + Agents admin page
 
@@ -140,7 +140,14 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   3. A file whose `mtime` is still changing is **not** posted; only after the configured settle period (default 10s) of stable `mtime` does the watcher compute SHA-256 and stream the record (verified by writing a file slowly and observing no early upsert)
   4. From the admin UI, an administrator can choose `(agent, scan_path)` and trigger a scan; this enqueues `scan_directory(scan_path, batch_id)` onto the chosen agent's queue and the agent streams discovered files back in chunks (e.g., 500 records per request), with `extract_file_metadata` enqueued per new music/video file before the scan completes
   5. The same upsert endpoint serves both bulk scans and per-file watcher events, and a re-walked path produces no duplicate FileRecord rows
-**Plans**: TBD
+**Plans**: 7 plans
+- [x] 27-01-PLAN.md — Foundation: watchdog dep, AgentSettings watcher knobs, _shared/agent_bootstrap refactor, test scaffolding + extended import-boundary tests (Wave 0)
+- [x] 27-02-PLAN.md — Schemas: FileUpsertChunk.batch_id, ScanBatchPatch/Response, ScanDirectoryPayload, TriggerScanForm (Wave 1)
+- [x] 27-03-PLAN.md — Endpoints: PATCH /api/internal/agent/scan-batches + batch_id resolution in POST /files + patch_scan_batch client method + main.py wiring + contract tests (Wave 2)
+- [x] 27-04-PLAN.md — Agent task: scan_directory(scan_path, batch_id) with chunking, per-chunk PATCH, terminal PATCH; registered in agent_worker.settings.functions (Wave 3)
+- [x] 27-05-PLAN.md — Watcher package: phaze.agent_watcher (Debouncer, WatcherEventHandler, Poster, __main__); 16+ unit tests covering thread bridge, stuck-file cap, OSError vanish, LIVE-sentinel resolution (Wave 3)
+- [x] 27-06-PLAN.md — Admin UI: routers/pipeline_scans.py (POST + GET progress + GET agent-roots HTMX swap), 6 partial templates, dashboard.html extension + 10 contract tests (Wave 3)
+- [x] 27-07-PLAN.md — Deployment + docs: docker-compose watcher service, .env.example knobs, per-service README, STATE.md accumulation (Wave 5)
 **UI hint**: yes
 
 ### Phase 28: Distributed Execution Dispatch
@@ -200,6 +207,6 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 24. Schema Foundation & Agent Registry | v4.0 | 0/5 | Not started | - |
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
-| 27. Watcher Service & User-Initiated Scan | v4.0 | 0/? | Not started | - |
+| 27. Watcher Service & User-Initiated Scan | v4.0 | 7/7 | Complete    | 2026-05-14 |
 | 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |
