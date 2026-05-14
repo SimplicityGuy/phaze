@@ -10,7 +10,7 @@ Requirements for Distributed Agents. Each maps to roadmap phases.
 ### Topology & Boundary
 
 - [ ] **DIST-01**: The application server runs the API, UI, Postgres, Redis, and a fileless SAQ worker; it has no `SCAN_PATH` or `MODELS_PATH` filesystem mounts and cannot read or write file content
-- [ ] **DIST-02**: Each file server runs one or more agents (SAQ worker + watcher + audfprint + panako sidecars) that hold local files and execute all file-bearing work locally
+- [x] **DIST-02**: Each file server runs one or more agents (SAQ worker + watcher + audfprint + panako sidecars) that hold local files and execute all file-bearing work locally
 - [x] **DIST-03**: Each agent pulls jobs from a per-agent SAQ queue named `phaze-agent-<agent_id>` on the application server's Redis; the application server enqueues file-bound jobs onto the correct queue using `FileRecord.agent_id`
 - [ ] **DIST-04**: Agents have zero direct Postgres access; every state change (file discovered, analysis result, fingerprint, execution log, heartbeat) is an authenticated HTTPS call to `/api/internal/agent/*` on the application server
 - [ ] **DIST-05**: Every `/api/internal/agent/*` endpoint is idempotent on retry; natural keys (`(agent_id, original_path)`, `file_id`, `proposal_id`, agent-generated log UUIDs) guarantee replay safety
@@ -31,10 +31,10 @@ Requirements for Distributed Agents. Each maps to roadmap phases.
 
 ### Scan & Watcher
 
-- [ ] **SCAN-01**: The administrator can trigger a scan of a specific path on a specific agent from the admin UI; the application server enqueues `scan_directory(scan_path, batch_id)` onto the chosen agent's queue
-- [ ] **SCAN-02**: As an agent walks the scan path, it streams discovered file records to the application server in chunks (e.g., 500 records per request); the application server upserts each chunk and enqueues `extract_file_metadata` per new music/video file before the scan completes
-- [ ] **SCAN-03**: Each file server runs an always-on `phaze-agent-watcher` service that observes its configured roots with the `watchdog` library; new file events stream to the application server via the same scan-batch upsert endpoint, attributed to a per-agent sentinel `ScanBatch`
-- [ ] **SCAN-04**: The watcher waits for a file's `mtime` to be stable for a configurable settle period (default 10s) before computing SHA-256 and posting it; partial / in-progress writes are not propagated
+- [x] **SCAN-01**: The administrator can trigger a scan of a specific path on a specific agent from the admin UI; the application server enqueues `scan_directory(scan_path, batch_id)` onto the chosen agent's queue
+- [x] **SCAN-02**: As an agent walks the scan path, it streams discovered file records to the application server in chunks (e.g., 500 records per request); the application server upserts each chunk and enqueues `extract_file_metadata` per new music/video file before the scan completes
+- [x] **SCAN-03**: Each file server runs an always-on `phaze-agent-watcher` service that observes its configured roots with the `watchdog` library; new file events stream to the application server via the same scan-batch upsert endpoint, attributed to a per-agent sentinel `ScanBatch`
+- [x] **SCAN-04**: The watcher waits for a file's `mtime` to be stable for a configurable settle period (default 10s) before computing SHA-256 and posting it; partial / in-progress writes are not propagated
 
 ### Task Execution
 
@@ -95,7 +95,7 @@ Explicitly excluded. Documented to prevent scope creep.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | DIST-01 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
-| DIST-02 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
+| DIST-02 | Phase 27 — Watcher Service & User-Initiated Scan | Complete |
 | DIST-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
 | DIST-04 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
 | DIST-05 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
@@ -107,10 +107,10 @@ Explicitly excluded. Documented to prevent scope creep.
 | AUTH-02 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
 | AUTH-03 | Phase 29 — Deployment Hardening & Agents Admin | Pending |
 | AUTH-04 | Phase 25 — Internal Agent HTTP API & Bearer Auth | Pending |
-| SCAN-01 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
-| SCAN-02 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
-| SCAN-03 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
-| SCAN-04 | Phase 27 — Watcher Service & User-Initiated Scan | Pending |
+| SCAN-01 | Phase 27 — Watcher Service & User-Initiated Scan | Complete |
+| SCAN-02 | Phase 27 — Watcher Service & User-Initiated Scan | Complete |
+| SCAN-03 | Phase 27 — Watcher Service & User-Initiated Scan | Complete |
+| SCAN-04 | Phase 27 — Watcher Service & User-Initiated Scan | Complete |
 | TASK-01 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
 | TASK-02 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
 | TASK-03 | Phase 26 — Task Code Reorg & HTTP-Backed Agent Worker | Complete |
