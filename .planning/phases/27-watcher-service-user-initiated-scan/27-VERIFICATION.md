@@ -1,27 +1,35 @@
 ---
 phase: 27-watcher-service-user-initiated-scan
-verified: 2026-05-13T00:00:00Z
-status: human_needed
+verified: 2026-05-14T18:40:00Z
+status: pass
 score: 5/5 must-haves verified
 overrides_applied: 0
+human_verification_completed: 2026-05-14T18:35:00Z
+human_verification_artifact: 27-HUMAN-UAT.md
 human_verification:
   - test: "Start docker compose with the watcher service and drop a new music file into the watched root"
     expected: "After the settle period (10s), a new FileRecord appears in Postgres under the agent's LIVE ScanBatch with (agent_id, original_path) as the natural key; no duplicate rows on re-drop"
     why_human: "Requires a running Docker environment with a live postgres, api, and watcher container; the settle-period timer must elapse in real time; database state must be inspected post-event"
+    result: pass
+    closed_gaps: 9
   - test: "Trigger a scan from /pipeline/ admin UI by selecting an agent and path, then monitor progress"
     expected: "POST /pipeline/scans returns the scan_progress_card partial with RUNNING state and hx-trigger='every 2s'; the card auto-updates every 2s; when scan completes the card transitions to COMPLETED state and polling halts (no hx-trigger in completed markup)"
     why_human: "Requires a running browser + live stack; HTMX polling behavior and DOM swap are not verifiable programmatically"
+    result: pass
+    closed_gaps: ["gap-13"]
   - test: "Visual inspection: /pipeline/ dashboard renders Trigger Scan card above stats panel with agent dropdown, scan_root select, and subpath input"
     expected: "All UI-SPEC components (trigger_scan_card, scan_path_picker, recent_scans_table, scan_status_pill, scan_submit_error) render correctly per the UI-SPEC markup"
     why_human: "Visual/layout correctness requires a browser; HTMX agent-dropdown swap requires real HTTP round-trip"
+    result: pass
+    closed_gaps: ["gap-14"]
 ---
 
 # Phase 27: Watcher Service & User-Initiated Scan Verification Report
 
 **Phase Goal:** Each file server continuously streams new file arrivals to the application server, and the administrator can also trigger an explicit scan of any path on any agent from the admin UI.
-**Verified:** 2026-05-13T00:00:00Z
-**Status:** human_needed
-**Re-verification:** No — initial verification
+**Verified:** 2026-05-14T18:40:00Z (initial: 2026-05-13)
+**Status:** pass
+**Re-verification:** Promoted from `human_needed` → `pass` after live UAT on rancher-desktop / linux-arm64 closed 14 gaps and all three human-verification checkpoints passed (see `27-HUMAN-UAT.md`).
 
 ## Goal Achievement
 
