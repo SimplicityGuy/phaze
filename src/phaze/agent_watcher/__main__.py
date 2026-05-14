@@ -112,6 +112,26 @@ async def _sweep_loop(
             await asyncio.wait_for(shutdown_event.wait(), timeout=sweep_interval)
 
 
+def _configure_logging() -> None:
+    """Attach a stdout StreamHandler to the root logger.
+
+    The watcher runs via ``asyncio.run(main())`` and never goes through
+    uvicorn, so without an explicit handler EVERY ``logger.info/error/...``
+    call is swallowed and operators see an empty ``docker logs`` stream
+    even when the process is alive and posting files. Phase 27 UAT Gap 7
+    surfaced this: a healthy watcher was indistinguishable from a hung one.
+
+    Idempotent: re-running adds no duplicate handler.
+    """
+    root = logging.getLogger()
+    if any(isinstance(h, logging.StreamHandler) and h.stream is sys.stdout for h in root.handlers):
+        return
+    handler = logging.StreamHandler(stream=sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
 async def main() -> None:
     """Bootstrap the watcher process (D-16 startup sequence).
 
@@ -121,7 +141,11 @@ async def main() -> None:
     BEFORE we reach the `whoami_with_retry` code path. Previously the
     operator saw only a pydantic stack trace and the Pitfall-7
     "auth invalid; check PHAZE_AGENT_TOKEN" hint never surfaced.
+
+    Phase 27 UAT Gap 7: ``_configure_logging`` attaches a stdout handler so
+    every subsequent log line actually reaches ``docker logs``.
     """
+    _configure_logging()
     try:
         cfg = get_settings()
     except ValidationError as exc:

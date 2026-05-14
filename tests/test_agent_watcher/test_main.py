@@ -50,6 +50,38 @@ def _build_agent_settings(monkeypatch: pytest.MonkeyPatch) -> AgentSettings:
     return AgentSettings()
 
 
+def test_configure_logging_attaches_stdout_handler() -> None:
+    """Phase 27 UAT Gap 7: stdout handler must exist after _configure_logging.
+
+    Before this fix the watcher's logger.info/error calls went to /dev/null
+    because asyncio.run(main()) doesn't invoke uvicorn's logging config.
+    Operators saw an empty `docker logs phaze-watcher-1` even when the
+    watcher was healthy and processing events.
+    """
+    import sys
+
+    # Snapshot + reset root handlers so the test is hermetic
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        for h in before:
+            root.removeHandler(h)
+        wmain._configure_logging()
+        stdout_handlers = [h for h in root.handlers if isinstance(h, logging.StreamHandler) and h.stream is sys.stdout]
+        assert len(stdout_handlers) == 1, f"expected exactly one stdout handler, got {len(stdout_handlers)}"
+        assert root.level <= logging.INFO, f"root level must be <= INFO; got {root.level}"
+        # Idempotency: calling again does not add a second stdout handler
+        wmain._configure_logging()
+        stdout_handlers_after = [h for h in root.handlers if isinstance(h, logging.StreamHandler) and h.stream is sys.stdout]
+        assert len(stdout_handlers_after) == 1, "configure_logging must be idempotent"
+    finally:
+        # Restore prior handler set
+        for h in list(root.handlers):
+            root.removeHandler(h)
+        for h in before:
+            root.addHandler(h)
+
+
 def _build_identity(roots: list[str], agent_id: str = "test-agent-1") -> AgentIdentity:
     return AgentIdentity(
         agent_id=agent_id,
