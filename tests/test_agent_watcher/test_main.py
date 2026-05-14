@@ -477,6 +477,180 @@ async def test_oserror_on_vanished_path(monkeypatch: pytest.MonkeyPatch, caplog:
 # the sweep-loop survival contract.
 
 
+# ---------------------------------------------------------------------------
+# Coverage gap fills (Codecov PR #59): __main__.py:105-118, 163-164, 196-201
+# ---------------------------------------------------------------------------
+
+
+async def test_sweep_loop_posts_ready_logs_evicted_then_exits(caplog: pytest.LogCaptureFixture) -> None:
+    """_sweep_loop iterates once when shutdown_event is preset, then returns.
+
+    Covers __main__.py:105-118 — the full loop body: sweep call, post_one
+    on ready entries, warning log on evicted entries, swallow Exception
+    raised by post_one, and the wait_for(timeout=sweep_interval) tick.
+    """
+    shutdown = asyncio.Event()
+    # PRE-set so the `while not shutdown_event.is_set():` is False the first
+    # time. We bypass the loop body that way. Trick: keep it unset for ONE
+    # iteration by clearing inside a side_effect-ed sweep, then setting it
+    # before the wait_for tick fires.
+    fake_debouncer = MagicMock()
+    # Two ready (one will succeed, one will raise to cover line 110-111)
+    # and one evicted (covers line 112-113).
+    fake_debouncer.sweep = MagicMock(return_value=(["/data/music/a.mp3", "/data/music/b.mp3"], ["/data/music/stuck.mp3"]))
+
+    fake_poster = MagicMock()
+    call_state = {"n": 0}
+
+    async def _post_one(path: str) -> None:
+        call_state["n"] += 1
+        if path.endswith("b.mp3"):
+            raise RuntimeError("simulated post failure (sweep loop survival contract)")
+        # On the second successful post, set shutdown so the loop exits cleanly
+        # after the wait_for tick.
+        shutdown.set()
+
+    fake_poster.post_one = _post_one
+
+    with caplog.at_level(logging.WARNING, logger="phaze.agent_watcher.__main__"):
+        await wmain._sweep_loop(
+            debouncer=fake_debouncer,
+            poster=fake_poster,
+            sweep_interval=0.01,
+            settle_period=0.0,
+            max_pending=3600.0,
+            shutdown_event=shutdown,
+        )
+
+    # Both ready paths were attempted (the failing one did not abort the loop).
+    assert call_state["n"] >= 2
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    # The evicted path produced a WARNING.
+    assert "stuck.mp3" in text and "max_pending" in text, f"expected eviction warning; got: {text!r}"
+    # The exception from post_one was captured (not propagated).
+    assert "post failed" in text, f"expected post-failure log; got: {text!r}"
+
+
+async def test_sweep_loop_outer_except_swallows_sweep_failure(caplog: pytest.LogCaptureFixture) -> None:
+    """_sweep_loop outer-except (__main__.py:114-115).
+
+    If debouncer.sweep ITSELF raises (not just an individual post_one — those
+    are already wrapped by an inner try/except), the loop must log and
+    continue rather than crashing the watcher. The shutdown_event check on
+    the next iteration takes the loop down cleanly.
+    """
+    shutdown = asyncio.Event()
+    fake_debouncer = MagicMock()
+    state = {"sweeps": 0}
+
+    def _sweep_then_set_shutdown(**_kwargs: Any) -> tuple[list[str], list[str]]:
+        state["sweeps"] += 1
+        # First sweep raises (line 114-115); set shutdown so the loop exits
+        # on the next iteration via the while-guard.
+        shutdown.set()
+        raise RuntimeError("debouncer.sweep exploded")
+
+    fake_debouncer.sweep = _sweep_then_set_shutdown
+
+    fake_poster = MagicMock()
+
+    with caplog.at_level(logging.ERROR, logger="phaze.agent_watcher.__main__"):
+        await wmain._sweep_loop(
+            debouncer=fake_debouncer,
+            poster=fake_poster,
+            sweep_interval=0.01,
+            settle_period=0.0,
+            max_pending=3600.0,
+            shutdown_event=shutdown,
+        )
+
+    assert state["sweeps"] == 1
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "sweep iteration failed" in text, f"expected outer-except log; got: {text!r}"
+
+
+async def test_main_raises_when_settings_is_not_agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wrong-role guard (__main__.py:163-164).
+
+    Even after the ValidationError catch on line 157 succeeds (i.e.,
+    get_settings() returns *something*), the watcher must still refuse to
+    run unless that something is an AgentSettings instance. This prevents
+    a misconfigured ControlSettings (or some future role) from silently
+    starting the watcher's observer machinery without the required
+    PHAZE_AGENT_* fields.
+    """
+
+    # Return a plain object (NOT AgentSettings). The logging configure step
+    # runs first; we just need to bypass the ValidationError catch.
+    class _NotAgentSettings:
+        pass
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: _NotAgentSettings())
+    monkeypatch.setattr(wmain, "_configure_logging", lambda: None)
+
+    with pytest.raises(RuntimeError, match="agent_watcher requires PHAZE_ROLE=agent"):
+        await wmain.main()
+
+
+async def test_main_swallows_signal_handler_not_implemented(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """Platform fallback (__main__.py:196-201).
+
+    On Windows / some asyncio policies, loop.add_signal_handler raises
+    NotImplementedError. The watcher must continue starting up — the
+    container's process supervisor (docker compose) still delivers SIGTERM
+    to the entrypoint. Verifies the DEBUG log fires AND that main() still
+    reaches the observer.start path (sweep loop is short-circuited via the
+    pre-set shutdown_event trick).
+    """
+    cfg = _build_agent_settings(monkeypatch)
+    identity = _build_identity(roots=["/data/music"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+    fake_observer = MagicMock()
+    fake_observer_cls = MagicMock(return_value=fake_observer)
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "Observer", fake_observer_cls)
+
+    # Pre-set the shutdown event so _sweep_loop exits immediately.
+    real_event_cls = asyncio.Event
+
+    def _preset_event() -> asyncio.Event:
+        e = real_event_cls()
+        e.set()
+        return e
+
+    monkeypatch.setattr(wmain.asyncio, "Event", _preset_event)
+
+    # Force loop.add_signal_handler to raise NotImplementedError. We patch
+    # at the running loop level via a custom get_running_loop side effect.
+    real_get_running_loop = asyncio.get_running_loop
+
+    def _wrapped_get_running_loop() -> asyncio.AbstractEventLoop:
+        loop = real_get_running_loop()
+
+        def _boom(*_args: Any, **_kwargs: Any) -> None:
+            raise NotImplementedError("signal handlers unsupported on this platform")
+
+        loop.add_signal_handler = _boom  # type: ignore[method-assign]
+        return loop
+
+    monkeypatch.setattr(wmain.asyncio, "get_running_loop", _wrapped_get_running_loop)
+
+    with caplog.at_level(logging.DEBUG, logger="phaze.agent_watcher.__main__"):
+        await wmain.main()  # MUST NOT raise
+
+    # The platform-fallback DEBUG log fired (operators see this in
+    # `docker logs` when running on Windows or a policy-restricted loop).
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "signal handlers not supported" in text.lower(), f"missing platform-fallback DEBUG log: {text!r}"
+    # Observer still started — the NotImplementedError did not abort the bootstrap.
+    fake_observer.start.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("exc_cls", "expected_log_fragment"),
     [
