@@ -43,7 +43,17 @@ _TEST_TOKEN = "phaze_agent_test"  # nosec B105 -- test fixture, not a real secre
 
 
 def _build_agent_settings(monkeypatch: pytest.MonkeyPatch) -> AgentSettings:
-    """Construct an AgentSettings instance with all required env vars set."""
+    """Construct an AgentSettings instance with all required env vars set.
+
+    pydantic-settings reads ``.env`` files in addition to ``os.environ`` —
+    that lets the project's docker-mode ``.env`` (with values like
+    ``PHAZE_WATCHER_POLLING_MODE=true``) silently leak into tests that
+    mock only the native ``Observer``. Explicit ``setenv`` here takes
+    precedence over ``.env`` and pins the defaults each test asserts
+    against. Tests that need a non-default value (e.g. polling=true) MUST
+    setenv that value AFTER calling this helper.
+    """
+    monkeypatch.setenv("PHAZE_WATCHER_POLLING_MODE", "false")
     monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test:8000")
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-TOKEN-1234567890ab")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
@@ -135,8 +145,10 @@ async def test_main_uses_polling_observer_when_flag_set(monkeypatch: pytest.Monk
     class (or ignored it entirely) would leave Mac devs unable to UAT the
     watcher even on a fresh stack.
     """
+    _build_agent_settings(monkeypatch)
+    # Override AFTER helper so the helper's `polling_mode=false` default doesn't win.
     monkeypatch.setenv("PHAZE_WATCHER_POLLING_MODE", "true")
-    cfg = _build_agent_settings(monkeypatch)
+    cfg = AgentSettings()
     assert cfg.watcher_polling_mode is True, "test precondition: flag should propagate to AgentSettings"
     identity = _build_identity(roots=["/data/music"])
 
@@ -401,8 +413,10 @@ async def test_main_logs_actionable_error_on_missing_env(
     per-field summary at ERROR level, and exits 1.
     """
     monkeypatch.setenv("PHAZE_ROLE", "agent")
-    # Intentionally leave PHAZE_AGENT_API_URL unset -- the validator should trip.
-    monkeypatch.delenv("PHAZE_AGENT_API_URL", raising=False)
+    # Force the validator to trip: setenv to empty string takes precedence over
+    # the project .env (which in docker-compose mode supplies a real value).
+    # delenv alone is not enough because pydantic-settings falls back to .env.
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "")
     monkeypatch.delenv("agent_api_url", raising=False)
     # Provide the other required vars so the failure is isolated to API_URL.
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-abc123")

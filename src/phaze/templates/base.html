@@ -18,8 +18,10 @@
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
 
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4" integrity="sha384-qKt1F1k7v69ebd7q6Na1d2FGVMI+43GgA5hpfz7i+zDfrz8rIjXYu7majL1fXSeS" crossorigin="anonymous"></script>
+    <!-- Tailwind CSS — URL must pin a specific minor.patch (NOT just @4) so the SRI hash
+         doesn't drift when jsdelivr serves a newer point release. The browser blocks the
+         script on SRI mismatch and the whole page renders unstyled. -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.0" integrity="sha384-d5Pc0U2WLIrcpPz/5dTNl91xwJLvbdD+V3+kao+QnRyFRNDW1mKqxoM9b6fzPxsS" crossorigin="anonymous"></script>
 
     <!-- Jura font (design language primary) + Inter (body) -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Jura:wght@300;500&display=swap" rel="stylesheet">

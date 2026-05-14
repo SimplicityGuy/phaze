@@ -87,10 +87,15 @@ def test_get_settings_defaults_to_control_when_phaze_role_unset(
 def test_agent_settings_raises_when_api_url_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_API_URL is absent."""
+    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_API_URL is absent.
+
+    Empty-string setenv overrides the project ``.env`` (in docker-compose mode it
+    provides a real value); ``delenv`` alone is not enough because pydantic-settings
+    falls back to the ``.env`` file.
+    """
     from phaze.config import AgentSettings
 
-    monkeypatch.delenv("PHAZE_AGENT_API_URL", raising=False)
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "")
     monkeypatch.delenv("agent_api_url", raising=False)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
@@ -102,11 +107,14 @@ def test_agent_settings_raises_when_api_url_missing(
 def test_agent_settings_raises_when_token_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_TOKEN is absent."""
+    """AgentSettings raises ValueError/ValidationError when PHAZE_AGENT_TOKEN is absent.
+
+    Empty-string setenv beats the project .env fallback in pydantic-settings.
+    """
     from phaze.config import AgentSettings
 
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
-    monkeypatch.delenv("PHAZE_AGENT_TOKEN", raising=False)
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "")
     monkeypatch.delenv("agent_token", raising=False)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
 
@@ -117,12 +125,15 @@ def test_agent_settings_raises_when_token_missing(
 def test_agent_settings_raises_when_scan_roots_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentSettings raises ValueError/ValidationError when scan_roots resolves to empty list."""
+    """AgentSettings raises ValueError/ValidationError when scan_roots resolves to empty list.
+
+    Empty-string setenv beats the project .env fallback in pydantic-settings.
+    """
     from phaze.config import AgentSettings
 
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
-    monkeypatch.delenv("PHAZE_AGENT_SCAN_ROOTS", raising=False)
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "")
     monkeypatch.delenv("scan_roots", raising=False)
 
     with pytest.raises((ValueError, ValidationError)):
@@ -149,21 +160,27 @@ def test_agent_settings_comma_splits_scan_roots(
 
 
 def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Helper: set the minimum env vars needed for AgentSettings() to construct."""
+    """Helper: set the minimum env vars needed for AgentSettings() to construct.
+
+    Tests in this module assert on the documented default values (D-03 / D-11).
+    pydantic-settings reads ``os.environ`` AND ``.env`` files, and the project's
+    docker-compose ``.env`` overrides several watcher knobs to non-default
+    values (e.g., ``PHAZE_WATCHER_SETTLE_SECONDS=3``). ``delenv`` alone does
+    NOT clear those — pydantic-settings falls back to ``.env``. Setting each
+    knob to its documented default via ``setenv`` is the only way to fully
+    shadow the ``.env`` layer.
+    """
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
-    # Ensure no leftover watcher env vars from a previous test affect defaults.
-    for name in (
-        "PHAZE_WATCHER_SETTLE_SECONDS",
-        "PHAZE_WATCHER_MAX_PENDING_SECONDS",
-        "PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS",
-        "PHAZE_SCAN_CHUNK_SIZE",
-        "watcher_settle_seconds",
-        "watcher_max_pending_seconds",
-        "watcher_sweep_interval_seconds",
-        "scan_chunk_size",
-    ):
+    # Pin watcher knobs to their documented defaults so assertions in this
+    # module hold regardless of what's in the project's .env file.
+    monkeypatch.setenv("PHAZE_WATCHER_SETTLE_SECONDS", "10")
+    monkeypatch.setenv("PHAZE_WATCHER_MAX_PENDING_SECONDS", "3600")
+    monkeypatch.setenv("PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS", "2")
+    monkeypatch.setenv("PHAZE_SCAN_CHUNK_SIZE", "500")
+    monkeypatch.setenv("PHAZE_WATCHER_POLLING_MODE", "false")
+    for name in ("watcher_settle_seconds", "watcher_max_pending_seconds", "watcher_sweep_interval_seconds", "scan_chunk_size"):
         monkeypatch.delenv(name, raising=False)
 
 
