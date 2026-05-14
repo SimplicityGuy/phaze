@@ -1,18 +1,14 @@
 ---
-status: testing
+status: complete
 phase: 27-watcher-service-user-initiated-scan
 source: [27-VERIFICATION.md]
 started: 2026-05-13T23:27:39Z
-updated: 2026-05-14T18:15:00Z
+updated: 2026-05-14T18:35:00Z
 ---
 
 ## Current Test
 
-number: 3
-name: Visual layout verification of admin UI
-expected: |
-  /pipeline/ dashboard renders Trigger Scan card above stats panel with agent dropdown, scan_root select, and subpath input. All UI-SPEC components (trigger_scan_card, scan_path_picker, recent_scans_table, scan_status_pill, scan_submit_error) render correctly per the UI-SPEC markup. Status pill colors match design tokens.
-awaiting: user response
+[testing complete]
 
 ## Tests
 
@@ -61,14 +57,25 @@ gaps_closed_during_uat:
 
 ### 3. Visual layout verification of admin UI
 expected: /pipeline/ dashboard renders Trigger Scan card above stats panel with agent dropdown, scan_root select, and subpath input. All UI-SPEC components (trigger_scan_card, scan_path_picker, recent_scans_table, scan_status_pill, scan_submit_error) render correctly per the UI-SPEC markup. Status pill colors match design tokens.
-result: [pending]
+result: pass
+note: |
+  PASSED 2026-05-14 after closing gap-14 (dashboard 500 on tz-aware created_at,
+  sibling of gap-12). Verified the 5 UI-SPEC components render correctly:
+    - Trigger Scan card with agent dropdown, scan-root select, subpath input
+    - Scan Path Picker HTMX swap (target #scan-path-picker)
+    - Scan Progress card with green COMPLETED pill, "1 / 1 files" copy
+    - Recent Scans mini-table populated with the dev-agent /data/music row
+    - Status pill geometry matches the project-wide pattern
+      (text-xs font-semibold px-2 py-0.5 rounded-full)
+gaps_closed_during_uat:
+  - "gap-14: pipeline.dashboard carried an inline duplicate of the pre-gap-12 tz-naive antipattern. Promoted _elapsed_seconds → elapsed_seconds (shared helper); both routers now use the same definition. Added AST-based regression test that catches the antipattern in any router file."
 
 ## Summary
 
 total: 3
-passed: 2
+passed: 3
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
