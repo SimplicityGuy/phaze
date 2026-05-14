@@ -164,6 +164,39 @@ async def test_ensure_dev_agent_uses_env_token_when_set(
 
 
 @pytest.mark.asyncio
+async def test_ensure_dev_agent_uses_phaze_agent_scan_roots_env_when_set(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 27 UAT Gap 10: PHAZE_AGENT_SCAN_ROOTS env overrides settings.scan_path.
+
+    In docker-compose mode SCAN_PATH is the host path (bind-mount source),
+    while PHAZE_AGENT_SCAN_ROOTS is the in-container path the watcher walks.
+    Without this override the dev-seeder writes the host path to the agent's
+    scan_roots column and the watcher then crashes with FileNotFoundError
+    when its watchdog Observer tries to schedule the non-existent path.
+    """
+    legacy = await session.get(Agent, LEGACY_AGENT_ID)
+    if legacy is not None:
+        await session.delete(legacy)
+        await session.commit()
+
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music,/data/concerts")
+    monkeypatch.setattr(settings, "dev_seed_agent", True)
+    monkeypatch.setattr(settings, "dev_agent_token", None)
+    monkeypatch.setattr(settings, "scan_path", "/wrong/host/path")  # must be ignored
+
+    raw_token = await ensure_dev_agent(session)
+
+    assert raw_token is not None
+    seeded = await session.get(Agent, "dev-agent")
+    assert seeded is not None
+    assert seeded.scan_roots == ["/data/music", "/data/concerts"], (
+        f"agent scan_roots should come from PHAZE_AGENT_SCAN_ROOTS, got {seeded.scan_roots!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_ensure_dev_agent_disabled_in_prod(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
