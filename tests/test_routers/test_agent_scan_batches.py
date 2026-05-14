@@ -177,6 +177,41 @@ async def test_batch_not_found_404(session: AsyncSession, seed_test_agent: tuple
 
 
 @pytest.mark.asyncio
+async def test_defensive_live_409_when_literal_bypassed(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Coverage gap fill (Codecov PR #59): agent_scan_batches.py:99.
+
+    The Pydantic Literal["running","completed","failed"] rejects "live" at 422,
+    so the in-handler defensive check normally cannot fire. This test bypasses
+    the Literal via ``ScanBatchPatch.model_construct`` and invokes the handler
+    function directly to pin the defensive 409 branch — if a future schema
+    widening (e.g., adding "live" to the Literal) accidentally exposes the
+    transition, the handler still refuses with 409.
+    """
+    from fastapi import HTTPException
+
+    from phaze.routers.agent_scan_batches import patch_scan_batch
+    from phaze.schemas.agent_scan_batches import ScanBatchPatch
+
+    agent, _ = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    # model_construct skips Literal validation; this is the only way to reach
+    # the defensive 409 branch in the handler body.
+    rogue = ScanBatchPatch.model_construct(status="live")
+
+    with pytest.raises(HTTPException) as excinfo:
+        await patch_scan_batch(batch_id=batch_id, body=rogue, agent=agent, session=session)
+
+    assert excinfo.value.status_code == 409
+    assert "LIVE" in excinfo.value.detail or "live" in excinfo.value.detail.lower()
+
+    # DB unchanged.
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.status == ScanStatus.RUNNING.value
+
+
+@pytest.mark.asyncio
 async def test_extra_field_422(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
     """extra='forbid' rejects unknown fields."""
     agent, raw_token = seed_test_agent

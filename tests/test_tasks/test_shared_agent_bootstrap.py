@@ -160,3 +160,46 @@ async def test_whoami_with_retry_exhausts_on_server_error(monkeypatch: pytest.Mo
     assert fake_client.whoami.call_count == 7, f"expected 7 whoami calls, got {fake_client.whoami.call_count}"
     # The 6 sleep calls correspond to the entries in _WHOAMI_BACKOFF_S.
     assert sleep_calls == list(ab._WHOAMI_BACKOFF_S), f"sleep budget mismatch: {sleep_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap fill (Codecov PR #59): agent_bootstrap.py:105-107
+# Pitfall 7 — the existing short-circuit test covers AgentApiAuthError on the
+# FIRST attempt (inside the for-loop). Lines 105-107 are the FINAL no-delay
+# attempt's AgentApiAuthError branch — only reachable when 401/403 surfaces
+# *after* all 6 backoff entries have been spent on transient AgentApiServer-
+# Errors. This regression-pins that path: an admin who rotates the token
+# mid-bootstrap (turning a transient 503 into a permanent 401 on the final
+# retry) still surfaces the Pitfall-7 hint rather than the generic
+# "exhausted retry budget" message.
+# ---------------------------------------------------------------------------
+
+
+async def test_whoami_with_retry_short_circuits_on_auth_error_in_final_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """AgentApiAuthError on the FINAL no-delay attempt raises RuntimeError
+    with the Pitfall-7 hint (agent_bootstrap.py:105-107)."""
+    fake_client = AsyncMock()
+    # First 6 attempts: AgentApiServerError (so we consume the backoff budget
+    # and reach the final no-delay attempt). 7th attempt: AgentApiAuthError.
+    fake_client.whoami = AsyncMock(
+        side_effect=[
+            *(AgentApiServerError(f"GET /whoami -> 503 attempt {i}") for i in range(6)),
+            AgentApiAuthError("GET /whoami -> 401 after token rotation"),
+        ]
+    )
+
+    async def _fake_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(ab.asyncio, "sleep", _fake_sleep)
+
+    with caplog.at_level(logging.ERROR, logger="phaze.tasks._shared.agent_bootstrap"), pytest.raises(RuntimeError, match="rejected by server"):
+        await ab.whoami_with_retry(fake_client)
+
+    assert fake_client.whoami.call_count == 7, "must invoke final attempt before raising"
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    # Pitfall-7 hint surfaces the actionable env-var name (not just "401").
+    assert "PHAZE_AGENT_TOKEN" in text or "auth invalid" in text, f"missing Pitfall-7 hint in log: {text!r}"

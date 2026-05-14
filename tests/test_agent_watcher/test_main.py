@@ -36,7 +36,7 @@ from phaze.agent_watcher.observer import WatcherEventHandler
 from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings
 from phaze.schemas.agent_identity import AgentIdentity
-from phaze.services.agent_client import AgentApiServerError, PhazeAgentClient
+from phaze.services.agent_client import AgentApiClientError, AgentApiError, AgentApiServerError, PhazeAgentClient
 
 
 _TEST_TOKEN = "phaze_agent_test"  # nosec B105 -- test fixture, not a real secret
@@ -465,3 +465,50 @@ async def test_oserror_on_vanished_path(monkeypatch: pytest.MonkeyPatch, caplog:
     # returned cleanly (no exception escaped) which is the invariant.
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "vanished" in text.lower() or "dropping" in text.lower(), f"expected debug log of dropped path; got: {text!r}"
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap fills (Codecov PR #59): poster.py:94-99 (4xx / 5xx / catch-all)
+# ---------------------------------------------------------------------------
+# Each of these tests stages a real file (so stat + SHA-256 succeed and we
+# actually reach the upsert_files call), then monkeypatches the client's
+# upsert_files coroutine to raise one of the three AgentApi* exception
+# branches. The invariant under test is "no exception escapes post_one" —
+# the sweep-loop survival contract.
+
+
+@pytest.mark.parametrize(
+    ("exc_cls", "expected_log_fragment"),
+    [
+        (AgentApiClientError, "4xx posting"),
+        (AgentApiServerError, "5xx posting"),
+        (AgentApiError, "unknown error posting"),
+    ],
+)
+async def test_post_one_swallows_agent_api_error_branches(
+    exc_cls: type[Exception],
+    expected_log_fragment: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Each AgentApi* exception branch in poster.post_one drops the chunk
+    without re-raising (poster.py:94-99). Sweep loop survival contract."""
+    music_file = tmp_path / "song.mp3"
+    music_file.write_bytes(b"\x00" * 64)
+
+    real_client = PhazeAgentClient(base_url="http://app.test:8000", token=_TEST_TOKEN, timeout=5.0)
+    poster = Poster(client=real_client, agent_id="test-agent")
+
+    async def _raise(*_args: Any, **_kwargs: Any) -> None:
+        raise exc_cls(f"forced {exc_cls.__name__}")
+
+    monkeypatch.setattr(real_client, "upsert_files", _raise)
+
+    with caplog.at_level(logging.ERROR, logger="phaze.agent_watcher.poster"):
+        await poster.post_one(str(music_file))  # must NOT raise
+
+    await real_client.close()
+
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert expected_log_fragment in text, f"expected fragment {expected_log_fragment!r} in poster log; got: {text!r}"

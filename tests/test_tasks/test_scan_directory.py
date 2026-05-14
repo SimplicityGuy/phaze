@@ -102,6 +102,29 @@ async def test_scan_directory_walks_known_extensions(tmp_path: Path) -> None:
     assert file_types == {"mp3", "flac", "mp4"}
 
 
+def test_resolve_chunk_size_falls_back_when_not_agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Coverage gap fill (Codecov PR #59): scan.py:82.
+
+    When get_settings() returns ControlSettings (PHAZE_ROLE=control) rather than
+    AgentSettings, _resolve_chunk_size MUST return the documented default of
+    500 rather than crashing trying to read .scan_chunk_size off a control
+    settings object. This branch is defensive: scan_directory is registered
+    only on the agent worker today, but module-level imports across both
+    roles are still possible (test_task_split.py runs under PHAZE_ROLE=control,
+    for example).
+    """
+    from phaze.config import ControlSettings
+    from phaze.tasks import scan as scan_mod
+
+    monkeypatch.setenv("PHAZE_ROLE", "control")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://app.test:8000")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-control")
+    fake_cfg = ControlSettings()
+    monkeypatch.setattr(scan_mod, "get_settings", lambda: fake_cfg)
+
+    assert scan_mod._resolve_chunk_size() == scan_mod._DEFAULT_SCAN_CHUNK_SIZE
+
+
 def test_scan_directory_extractable_set_is_music_and_video_only() -> None:
     """CR-01 regression: _EXTRACTABLE must be exactly {MUSIC, VIDEO}.
 

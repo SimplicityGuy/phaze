@@ -12,12 +12,18 @@ Five behaviors mirror 27-PATTERNS.md lines 1211-1215:
 
 from __future__ import annotations
 
+import os
+from typing import TYPE_CHECKING
 import unicodedata
 from unittest.mock import MagicMock
 
-from watchdog.events import DirCreatedEvent, FileCreatedEvent, FileModifiedEvent
+from watchdog.events import DirCreatedEvent, DirModifiedEvent, FileCreatedEvent, FileModifiedEvent
 
 from phaze.agent_watcher.observer import WatcherEventHandler
+
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_event_handler_filters_by_extension() -> None:
@@ -191,3 +197,61 @@ def test_event_handler_preserves_undecodable_bytes_via_surrogateescape() -> None
     # surrogateescape maps the byte to a surrogate codepoint (U+DC80).
     assert args[1].startswith("/foo/bad")
     assert args[1].endswith("name.mp3")
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap fills (Codecov PR #59): observer.py:64, 68-70, 90
+# ---------------------------------------------------------------------------
+
+
+def test_event_handler_drops_empty_src_path() -> None:
+    """Empty src_path short-circuits the filter (observer.py:64)."""
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_created(FileCreatedEvent(src_path=""))
+    handler.on_modified(FileModifiedEvent(src_path=""))
+
+    assert loop.call_soon_threadsafe.call_count == 0
+    assert touch.call_count == 0
+
+
+def test_event_handler_drops_path_when_fsdecode_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un-decodable bytes (os.fsdecode raises) drop with a WARNING (observer.py:68-70).
+
+    os.fsdecode with surrogateescape is intentionally lenient — to reach the
+    except branch we monkeypatch it to raise. This covers the defensive log+drop
+    path so an exotic future filesystem encoding (or a fsdecode regression)
+    cannot silently propagate up the handler.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    def _boom(_b: bytes) -> str:
+        raise UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid")
+
+    monkeypatch.setattr(os, "fsdecode", _boom)
+
+    handler.on_created(FileCreatedEvent(src_path=b"/foo/bad.mp3"))
+
+    assert loop.call_soon_threadsafe.call_count == 0
+    assert touch.call_count == 0
+
+
+def test_event_handler_ignores_directories_in_on_modified() -> None:
+    """DirModifiedEvent fires no callback (observer.py:90).
+
+    Mirrors ``test_event_handler_ignores_directories`` but for ``on_modified``
+    — without this, the directory-event guard in ``on_modified`` was
+    structurally identical but uncovered.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_modified(DirModifiedEvent(src_path="/foo"))
+
+    assert loop.call_soon_threadsafe.call_count == 0
+    assert touch.call_count == 0
