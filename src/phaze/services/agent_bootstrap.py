@@ -36,6 +36,7 @@ from sqlalchemy import func, select
 
 from phaze.config import settings
 from phaze.models.agent import Agent
+from phaze.models.scan_batch import ScanBatch
 
 
 if TYPE_CHECKING:
@@ -105,6 +106,19 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
         scan_roots=[settings.scan_path],
     )
     session.add(agent)
+    # Migration 012 seeds a LIVE sentinel ScanBatch for the legacy agent so
+    # POST /api/internal/agent/files can resolve `batch_id=None` via the partial
+    # uq_scan_batches_agent_id_live index. The dev-seeded agent needs the same
+    # sentinel — otherwise the watcher's chunk-of-1 upserts get NoResultFound
+    # at the controller's `scalar_one()` LIVE-batch lookup.
+    sentinel_batch = ScanBatch(
+        agent_id=_DEV_AGENT_ID,
+        scan_path="<watcher>",
+        status="live",
+        total_files=0,
+        processed_files=0,
+    )
+    session.add(sentinel_batch)
     await session.commit()
 
     # INFO-level so the bearer is visible in `docker compose logs api` but not

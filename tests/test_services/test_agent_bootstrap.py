@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 
 from phaze.config import settings
 from phaze.models.agent import LEGACY_AGENT_ID, Agent
+from phaze.models.scan_batch import ScanBatch
 from phaze.services.agent_bootstrap import ensure_dev_agent
 
 
@@ -63,6 +64,12 @@ async def test_ensure_dev_agent_seeds_when_table_empty(
     # Token is stored as sha256 -- verify by recomputing.
     expected_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     assert seeded.token_hash == expected_hash, "stored hash does not match sha256(token)"
+
+    # Phase 27 UAT Gap 9: a LIVE-sentinel ScanBatch must accompany the agent
+    # so the controller's POST /files batch_id resolution finds a target row.
+    # Without this, watcher chunk-of-1 upserts crash with NoResultFound.
+    live = (await session.execute(select(ScanBatch).where(ScanBatch.agent_id == "dev-agent", ScanBatch.status == "live"))).scalar_one()
+    assert live.scan_path == "<watcher>", "LIVE sentinel must use the canonical scan_path marker"
 
 
 @pytest.mark.asyncio
