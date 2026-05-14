@@ -408,6 +408,82 @@ async def test_scan_directory_rejects_extra_kwargs(tmp_path: Path) -> None:
     assert ctx["api_client"].patch_scan_batch.await_count == 0
 
 
+# ---------------------------------------------------------------------------
+# Coverage gap fills (Codecov PR #59): scan.py:212-225 — D-12 controller-down path
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_directory_aborts_with_failed_patch_on_server_error(tmp_path: Path) -> None:
+    """5xx after retries (D-12) aborts the walk and surfaces a `failed` terminal PATCH
+    with the controller error message (scan.py:212-222).
+
+    The outer SAQ retry policy handles the broader recovery; this test pins the
+    in-task abort contract: walk stops, a final patch_scan_batch(status='failed')
+    is attempted, and the return shape is `{"status": "failed", "reason":
+    "controller_5xx"}`.
+    """
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.scan import scan_directory
+
+    _touch(tmp_path / "a.mp3")
+    _touch(tmp_path / "b.flac")
+
+    api = AsyncMock()
+    api.upsert_files = AsyncMock(side_effect=AgentApiServerError("POST /files -> 503 after retries"))
+    # patch_scan_batch must SUCCEED on the terminal-failed call so we cover the
+    # outer except + inner try/success path (not the inner except).
+    api.patch_scan_batch = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    payload = _make_payload_kwargs(str(tmp_path))
+    result = await scan_directory(ctx, **payload)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "controller_5xx"
+    # `files_posted` tracks files scanned-into-batch, not files persisted server-side
+    # (the 5xx interrupts the persistence handshake but the local counter already
+    # advanced). We staged 2 files; the failure surfaces both.
+    assert result["files_posted"] == 2
+
+    # Terminal failed-PATCH ran exactly once with the controller-error message.
+    assert api.patch_scan_batch.await_count == 1
+    failed_patch = api.patch_scan_batch.await_args.args[1]
+    assert failed_patch.status == "failed"
+    assert failed_patch.error_message is not None
+    assert "Controller error" in failed_patch.error_message
+
+
+async def test_scan_directory_terminal_failed_patch_also_fails(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """If the terminal failed-PATCH ALSO raises AgentApiServerError, scan_directory
+    still returns the documented failure envelope (scan.py:223-225) and does NOT
+    re-raise. The outer SAQ retry policy is the next line of defense.
+    """
+    import logging as _logging
+
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.scan import scan_directory
+
+    _touch(tmp_path / "a.mp3")
+
+    api = AsyncMock()
+    api.upsert_files = AsyncMock(side_effect=AgentApiServerError("POST /files -> 503"))
+    api.patch_scan_batch = AsyncMock(side_effect=AgentApiServerError("PATCH /scan-batches -> 503"))
+    ctx = _make_ctx(api_client=api)
+
+    payload = _make_payload_kwargs(str(tmp_path))
+    with caplog.at_level(_logging.ERROR, logger="phaze.tasks.scan"):
+        result = await scan_directory(ctx, **payload)
+
+    # `files_posted` reflects the local scan counter at the moment of failure
+    # (one .mp3 file was staged before upsert_files raised); the documented
+    # return-shape contract is the three keys, not the counter value.
+    assert result == {"status": "failed", "files_posted": 1, "reason": "controller_5xx"}
+    # The "terminal failed-PATCH also failed" message MUST surface so operators
+    # see both failures in the log when triaging.
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "terminal failed-PATCH also failed" in text, f"missing inner-except log: {text!r}"
+
+
 def test_scan_directory_registered_in_agent_worker_settings() -> None:
     """Task 2: scan_directory must be reachable via SAQ task-name resolution on agent_worker.
 

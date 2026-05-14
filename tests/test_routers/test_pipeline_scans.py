@@ -385,6 +385,123 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
     assert rows[0].error_message == "controller could not enqueue scan to agent worker"
 
 
+# ---------------------------------------------------------------------------
+# Coverage gap fills (Codecov PR #59): pipeline_scans.py:120, 207, 255-260
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_scan_progress_unknown_id_returns_404(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET /pipeline/scans/{unknown_id} returns 404 (pipeline_scans.py:120)."""
+    ac, _ = smoke
+    unknown_id = uuid.uuid4()
+    response = await ac.get(f"/pipeline/scans/{unknown_id}")
+    assert response.status_code == 404
+    # Detail surfaces in the error envelope so operators can correlate logs to UI.
+    assert "scan batch not found" in response.text.lower()
+
+
+async def test_post_scans_prefix_mismatch_via_direct_handler_invocation(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive prefix check (pipeline_scans.py:207-212).
+
+    The prefix-mismatch branch is structurally defensive: the literal-membership
+    check on line 195 dominates the normal failure mode, and well-formed
+    subpaths always join to a path that starts with the scan_root. To reach
+    the prefix-fail branch we monkeypatch ``unicodedata.normalize`` so the
+    NFC pass rewrites the joined path out from under the prefix predicate
+    (simulating a hypothetical normalization edge case that today's inputs
+    cannot produce). Pins the 400 envelope so a real future normalization
+    quirk surfaces as a clean 400, not a 500 or a silent enqueue.
+    """
+    ac, mock_router = smoke
+
+    from phaze.routers import pipeline_scans as ps_mod
+
+    original_normalize = ps_mod.unicodedata.normalize
+
+    def _normalize_rewriting_joined(form: str, text: str) -> str:
+        # Only rewrite the joined path; leave the agent-side normalize
+        # passes alone so the literal-membership check still passes.
+        if text.startswith("/data/music/"):
+            return "/elsewhere/x"  # force prefix mismatch on the joined path
+        return original_normalize(form, text)
+
+    monkeypatch.setattr(ps_mod.unicodedata, "normalize", _normalize_rewriting_joined)
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    assert response.status_code == 400, response.text
+    assert "Resolved path is outside the selected scan root." in response.text
+    assert await _count_batches(session) == 0
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_scans_enqueue_failure_with_secondary_commit_also_failing(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WR-06 inner-except: when enqueue fails AND the secondary commit also
+    raises, the handler MUST still return the 503 envelope (no 500 escape).
+
+    Covers pipeline_scans.py:255-260 — the defensive ``try/except`` around
+    ``await session.commit()`` after marking the batch FAILED. A Postgres-down
+    scenario can plausibly knock out the secondary commit too; the operator's
+    503 envelope is more important than the orphan-row cleanup.
+    """
+    import logging as _logging
+
+    ac, mock_router = smoke
+    mock_router.enqueue_for_agent.side_effect = RuntimeError("redis down")
+
+    # Force the SECOND commit (the one that flips batch -> FAILED) to raise.
+    # The first commit happens earlier (saves the initial RUNNING batch); we
+    # want that to succeed so we reach the inner try/except.
+    original_commit = session.commit
+    call_state = {"n": 0}
+
+    async def _commit_fails_on_nth_call() -> None:
+        call_state["n"] += 1
+        if call_state["n"] >= 2:
+            raise RuntimeError("postgres down")
+        await original_commit()
+
+    monkeypatch.setattr(session, "commit", _commit_fails_on_nth_call)
+    rollback_calls = {"n": 0}
+    original_rollback = session.rollback
+
+    async def _record_rollback() -> None:
+        rollback_calls["n"] += 1
+        await original_rollback()
+
+    monkeypatch.setattr(session, "rollback", _record_rollback)
+
+    with caplog.at_level(_logging.ERROR, logger="phaze.routers.pipeline_scans"):
+        response = await ac.post(
+            "/pipeline/scans",
+            data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+        )
+
+    # 503 envelope still surfaces; no 500 leak.
+    assert response.status_code == 503, response.text
+    assert "could not enqueue the scan" in response.text
+    # The secondary-commit failure was logged for triage.
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "secondary commit failed" in text, f"missing secondary-commit log: {text!r}"
+    # Rollback executed at least once (the handler explicitly issues it on failure).
+    assert rollback_calls["n"] >= 1
+
+
 @pytest.mark.asyncio
 async def test_post_scans_rejects_partial_scan_root_prefix(
     smoke: tuple[AsyncClient, AsyncMock],
