@@ -201,3 +201,49 @@ def test_agent_settings_watcher_env_var_aliases(
     monkeypatch.setenv(env_var, value)
     cfg = AgentSettings()
     assert getattr(cfg, field_name) == int(value), f"{field_name} != {value}"
+
+
+# ----------------------------------------------------------------------
+# Phase 27 UAT Gap 4: .env.example documents required + new env vars
+# ----------------------------------------------------------------------
+
+
+def _read_env_example() -> str:
+    """Read .env.example from the repo root (sibling of pyproject.toml)."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    env_path = repo_root / ".env.example"
+    return env_path.read_text(encoding="utf-8")
+
+
+def test_env_example_documents_all_required_agent_mode_vars() -> None:
+    """``.env.example`` must mention the three required PHAZE_AGENT_* env vars.
+
+    Gap 4: operators bringing up the watcher container had no obvious record
+    of which env vars are required vs optional. The required trio
+    (PHAZE_AGENT_API_URL, PHAZE_AGENT_TOKEN, PHAZE_AGENT_SCAN_ROOTS) MUST
+    appear in .env.example at minimum as comment lines with example values.
+    """
+    text = _read_env_example()
+    for key in ("PHAZE_AGENT_API_URL", "PHAZE_AGENT_TOKEN", "PHAZE_AGENT_SCAN_ROOTS"):
+        assert key in text, f".env.example missing required agent-mode key: {key}"
+
+
+def test_env_example_documents_auto_migrate_and_dev_seed() -> None:
+    """``.env.example`` must document the Gap 2/Gap 3 startup knobs."""
+    text = _read_env_example()
+    for key in ("PHAZE_AUTO_MIGRATE", "PHAZE_DEV_SEED_AGENT", "PHAZE_DEV_AGENT_TOKEN"):
+        assert key in text, f".env.example missing migration/seed knob: {key}"
+
+
+def test_env_example_explains_host_vs_container() -> None:
+    """``.env.example`` must call out the docker-service-name vs localhost distinction.
+
+    Operators running services with `uv run` on the host (rather than docker
+    compose) must change DATABASE_URL/REDIS_URL hostnames from `postgres`/
+    `redis` to `localhost`. This rule was not documented before Gap 4.
+    """
+    text = _read_env_example()
+    assert "localhost" in text, ".env.example must explain host-vs-container hostname swap"
+    assert "docker compose" in text.lower(), ".env.example must reference docker compose context"

@@ -32,12 +32,21 @@ async def test_lifespan_creates_queue_on_startup() -> None:
     with (
         patch("phaze.main.Queue") as mock_queue_cls,
         patch("phaze.main.engine") as mock_engine,
+        # Phase 27 UAT Gap 2 / Gap 3: lifespan now also invokes run_migrations
+        # and ensure_dev_agent. Patch them out so this test stays unit-level.
+        patch("phaze.main.run_migrations", new=AsyncMock()),
+        patch("phaze.main.ensure_dev_agent", new=AsyncMock(return_value=None)),
+        patch("phaze.main.async_session") as mock_async_session,
     ):
         mock_queue_cls.from_url.return_value = mock_queue
         mock_conn = AsyncMock()
         mock_engine.begin.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_engine.begin.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_engine.dispose = AsyncMock()
+        # async_session() is used as `async with async_session() as s:` inside
+        # the lifespan -- give it a context-manager protocol that yields a mock.
+        mock_async_session.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
 
         from phaze.main import lifespan
 
@@ -61,12 +70,18 @@ async def test_lifespan_disconnects_queue_on_shutdown() -> None:
     with (
         patch("phaze.main.Queue") as mock_queue_cls,
         patch("phaze.main.engine") as mock_engine,
+        # Phase 27 UAT Gap 2 / Gap 3: see test_lifespan_creates_queue_on_startup above.
+        patch("phaze.main.run_migrations", new=AsyncMock()),
+        patch("phaze.main.ensure_dev_agent", new=AsyncMock(return_value=None)),
+        patch("phaze.main.async_session") as mock_async_session,
     ):
         mock_queue_cls.from_url.return_value = mock_queue
         mock_conn = AsyncMock()
         mock_engine.begin.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_engine.begin.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_engine.dispose = AsyncMock()
+        mock_async_session.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
 
         from phaze.main import lifespan
 

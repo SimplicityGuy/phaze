@@ -12,6 +12,43 @@ uv run python -m phaze.agent_watcher
 
 The Dockerfile's same image runs both the SAQ agent worker (`uv run saq phaze.tasks.agent_worker.settings`) and the watcher; the compose service distinguishes by `command:`.
 
+## Fresh Install Quickstart
+
+The watcher requires a registered agent in the `agents` table. On a brand-new docker compose stack (empty database), use the dev-seeded agent path to get up and running:
+
+1. `cp .env.example .env`
+2. Open `.env`. The default DATABASE_URL and REDIS_URL use the docker-service hostnames (`postgres`, `redis`) — leave them as-is when running via `docker compose up`. If you instead run any service via `uv run` on the host, switch the hostnames to `localhost`.
+3. Enable dev-agent seeding and pick a fixed token so you can paste it into the watcher config in one shot:
+   ```
+   PHAZE_DEV_SEED_AGENT=true
+   PHAZE_DEV_AGENT_TOKEN=phaze_agent_<32 urlsafe-base64 bytes>
+   ```
+   If you leave `PHAZE_DEV_AGENT_TOKEN` empty, the api will generate a random one and log it at INFO — you can grab it from `docker compose logs api`.
+4. Set the watcher's auth + scan roots in the same `.env`:
+   ```
+   PHAZE_AGENT_API_URL=http://api:8000
+   PHAZE_AGENT_TOKEN=phaze_agent_<same token you set above>
+   PHAZE_AGENT_SCAN_ROOTS=/data/music
+   ```
+5. Bring up the data plane:
+   ```
+   docker compose up -d postgres redis
+   ```
+6. Bring up the api + worker. The api lifespan runs `alembic upgrade head` and seeds the dev agent automatically:
+   ```
+   docker compose up -d api worker
+   docker compose logs api  # look for: "seeded dev agent id=dev-agent ..."
+   ```
+7. Bring up the watcher (image is the same as `worker`, but the command is `python -m phaze.agent_watcher`):
+   ```
+   docker compose up -d watcher
+   ```
+8. Drop an MP3 into the scan path (mounted to `/data/music` inside the watcher container). After the 10s settle window, the watcher posts the file to the api:
+   ```
+   docker logs watcher --tail=20  # look for: POST /api/internal/agent/files -> 200
+   ```
+9. (Production checklist) Once the dev path is working, flip `PHAZE_DEV_SEED_AGENT=false`, provision real agents via the management CLI, and rotate `PHAZE_AGENT_TOKEN`.
+
 ## Required env vars
 
 - `PHAZE_ROLE=agent` -- selects the agent settings module via `get_settings()`

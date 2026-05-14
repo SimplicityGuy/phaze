@@ -276,6 +276,46 @@ async def test_event_to_post_e2e(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
+# Test 5b (Phase 27 UAT Gap 5): missing required env -> actionable log + exit 1.
+# ---------------------------------------------------------------------------
+async def test_main_logs_actionable_error_on_missing_env(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Gap 5: ``PHAZE_AGENT_API_URL`` missing must log an ERROR + exit 1.
+
+    Previously the watcher died with a raw pydantic ValidationError stack
+    trace, drowning the operator-actionable hint that
+    ``whoami_with_retry`` would otherwise surface. The fix wraps the
+    ``get_settings()`` call in a try/except ValidationError, logs a clear
+    per-field summary at ERROR level, and exits 1.
+    """
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    # Intentionally leave PHAZE_AGENT_API_URL unset -- the validator should trip.
+    monkeypatch.delenv("PHAZE_AGENT_API_URL", raising=False)
+    monkeypatch.delenv("agent_api_url", raising=False)
+    # Provide the other required vars so the failure is isolated to API_URL.
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-abc123")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
+
+    # Clear the get_settings lru_cache so the patched env is honored.
+    from phaze.config import get_settings
+
+    get_settings.cache_clear()
+
+    with caplog.at_level(logging.ERROR, logger="phaze.agent_watcher.__main__"), pytest.raises(SystemExit) as excinfo:
+        await wmain.main()
+
+    assert excinfo.value.code == 1, f"expected exit code 1, got {excinfo.value.code!r}"
+
+    text = "\n".join(rec.getMessage() for rec in caplog.records)
+    # Operator must be able to find the failed variable name in the log.
+    assert "PHAZE_AGENT_API_URL" in text or "agent_api_url" in text, f"missing-var log does not mention PHAZE_AGENT_API_URL: {text!r}"
+    # ... and the log must use words operators search for when triaging.
+    assert ("missing" in text.lower()) or ("required" in text.lower()), f"missing-var log lacks 'missing'/'required' keyword: {text!r}"
+
+
+# ---------------------------------------------------------------------------
 # Test 6: OSError on vanished path -> no exception, sweep loop survives.
 # (Pitfall 1 behavior gate; binds to Task 1's poster.py OSError handling.)
 # ---------------------------------------------------------------------------
