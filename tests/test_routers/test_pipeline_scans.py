@@ -89,6 +89,70 @@ async def _count_batches(session: AsyncSession) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Unit: _elapsed_seconds must handle production TIMESTAMP WITH TIME ZONE
+# ---------------------------------------------------------------------------
+
+
+def test_elapsed_seconds_handles_tz_aware_created_at() -> None:
+    """Phase 27 UAT Test 2: _elapsed_seconds must NOT crash on tz-aware datetimes.
+
+    The production postgres schema declares `created_at` as TIMESTAMP WITH TIME
+    ZONE (from Alembic migrations), so asyncpg materializes it as a tz-aware
+    `datetime`. Earlier code did `datetime.now(UTC).replace(tzinfo=None) -
+    batch.created_at`, which crashes with
+    `TypeError: can't subtract offset-naive and offset-aware datetimes` —
+    the scan_progress endpoint then returned 500 and the admin UI's polling
+    card went blank.
+
+    Test fixtures use SQLAlchemy's `create_all` which generates TIMESTAMP
+    WITHOUT TIME ZONE columns, hiding the divergence. This unit test forces
+    a tz-aware `created_at` regardless of DB schema so the bug surfaces.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import _elapsed_seconds
+
+    aware = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.RUNNING.value,
+        total_files=0,
+        processed_files=0,
+    )
+    aware.created_at = datetime.now(UTC) - timedelta(seconds=42)
+
+    elapsed = _elapsed_seconds(aware)
+    # Allow generous slack for clock drift between the assignment and the call.
+    assert 40 <= elapsed <= 60, f"expected elapsed near 42s, got {elapsed}"
+
+
+def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:
+    """Defensive fallback: a tz-naive `created_at` (e.g. from a fixture) is treated as UTC.
+
+    Test schemas use TIMESTAMP WITHOUT TIME ZONE so loaded ScanBatch rows
+    have tz-naive `created_at`. The helper must still produce a meaningful
+    elapsed value rather than crashing or returning negative numbers.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import _elapsed_seconds
+
+    naive = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.RUNNING.value,
+        total_files=0,
+        processed_files=0,
+    )
+    naive.created_at = (datetime.now(UTC) - timedelta(seconds=42)).replace(tzinfo=None)
+
+    elapsed = _elapsed_seconds(naive)
+    assert 40 <= elapsed <= 60, f"expected elapsed near 42s, got {elapsed}"
+
+
+# ---------------------------------------------------------------------------
 # Task 1 (router contract) tests
 # ---------------------------------------------------------------------------
 

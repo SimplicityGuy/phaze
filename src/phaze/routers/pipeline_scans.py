@@ -53,14 +53,22 @@ router = APIRouter(prefix="/pipeline/scans", tags=["pipeline"])
 def _elapsed_seconds(batch: ScanBatch) -> int:
     """Compute integer seconds elapsed since `batch.created_at`.
 
-    `TimestampMixin.created_at` is server-side naive UTC (`func.now()` without
-    timezone() wrapping), so we compute "now" via `datetime.now(UTC)` and
-    strip the tzinfo to keep the comparison consistent. `created_at` is
-    NOT NULL at the ORM layer (Mapped[datetime] without `| None`), so no
-    None branch is needed.
+    The actual postgres column type is `TIMESTAMP WITH TIME ZONE` (asyncpg
+    materializes that as a tz-aware `datetime` with `tzinfo=UTC`), so we
+    compare aware-to-aware. A previous implementation stripped tzinfo from
+    `now` to match an assumed-naive `created_at` and crashed with
+    `TypeError: can't subtract offset-naive and offset-aware datetimes`.
+    `created_at` is NOT NULL at the ORM layer (Mapped[datetime] without
+    `| None`), so no None branch is needed.
+
+    If `created_at` is unexpectedly tz-naive (e.g., a model loaded from a
+    test fixture that bypassed the DB type coercion), assume UTC so the
+    subtraction still produces a meaningful elapsed value.
     """
-    now_naive = datetime.now(UTC).replace(tzinfo=None)
-    return int((now_naive - batch.created_at).total_seconds())
+    created_at = batch.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return int((datetime.now(UTC) - created_at).total_seconds())
 
 
 @router.get("/agent-roots", response_class=HTMLResponse)
