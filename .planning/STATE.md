@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: ready_to_plan
-stopped_at: Phase 27 UI-SPEC approved
-last_updated: "2026-05-13T20:32:34.421Z"
-last_activity: 2026-05-13 -- Phase 27 execution started
+status: shipped
+stopped_at: Phase 27 shipped — PR #59
+last_updated: "2026-05-14T18:55:00.000Z"
+last_activity: 2026-05-14 -- Phase 27 shipped (PR #59); 14 UAT gaps closed during live bring-up
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 33
-  completed_plans: 26
-  percent: 67
+  completed_plans: 33
+  percent: 83
 ---
 
 # Project State
