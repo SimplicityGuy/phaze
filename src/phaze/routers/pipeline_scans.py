@@ -50,7 +50,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/pipeline/scans", tags=["pipeline"])
 
 
-def _elapsed_seconds(batch: ScanBatch) -> int:
+def elapsed_seconds(batch: ScanBatch) -> int:
     """Compute integer seconds elapsed since `batch.created_at`.
 
     The actual postgres column type is `TIMESTAMP WITH TIME ZONE` (asyncpg
@@ -64,6 +64,14 @@ def _elapsed_seconds(batch: ScanBatch) -> int:
     If `created_at` is unexpectedly tz-naive (e.g., a model loaded from a
     test fixture that bypassed the DB type coercion), assume UTC so the
     subtraction still produces a meaningful elapsed value.
+
+    Phase 27 UAT gap-14: shared helper -- previously a private
+    `_elapsed_seconds` here was duplicated inline in
+    `phaze.routers.pipeline.dashboard`. The duplicate carried the
+    pre-gap-12 antipattern (`datetime.now(UTC).replace(tzinfo=None) -
+    batch.created_at`) and crashed the dashboard the first time the
+    Recent Scans table loaded a real tz-aware row. Now both routers
+    import this one definition.
     """
     created_at = batch.created_at
     if created_at.tzinfo is None:
@@ -118,7 +126,7 @@ async def scan_progress(
             "request": request,
             "batch": batch,
             "agent_name": agent.name if agent is not None else batch.agent_id,
-            "elapsed_seconds": _elapsed_seconds(batch),
+            "elapsed_seconds": elapsed_seconds(batch),
         },
     )
 

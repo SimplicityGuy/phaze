@@ -110,7 +110,7 @@ def test_elapsed_seconds_handles_tz_aware_created_at() -> None:
     """
     from datetime import UTC, datetime, timedelta
 
-    from phaze.routers.pipeline_scans import _elapsed_seconds
+    from phaze.routers.pipeline_scans import elapsed_seconds
 
     aware = ScanBatch(
         id=uuid.uuid4(),
@@ -122,9 +122,56 @@ def test_elapsed_seconds_handles_tz_aware_created_at() -> None:
     )
     aware.created_at = datetime.now(UTC) - timedelta(seconds=42)
 
-    elapsed = _elapsed_seconds(aware)
+    elapsed = elapsed_seconds(aware)
     # Allow generous slack for clock drift between the assignment and the call.
     assert 40 <= elapsed <= 60, f"expected elapsed near 42s, got {elapsed}"
+
+
+def test_no_router_uses_tz_naive_now_antipattern() -> None:
+    """Phase 27 UAT gap-14: no router file may strip tzinfo from `datetime.now(UTC)`.
+
+    Gap-12 fixed this in `pipeline_scans._elapsed_seconds` but a sibling copy
+    lived inline in `pipeline.dashboard` and crashed the Recent Scans table
+    the first time it loaded a real tz-aware `created_at`. Both routers now
+    share `phaze.routers.pipeline_scans.elapsed_seconds` -- the helper compares
+    aware-to-aware. This test forbids the regression antipattern across the
+    entire router package so a third sibling cannot reappear silently.
+    """
+    from pathlib import Path
+
+    routers_dir = Path(__file__).parent.parent.parent / "src" / "phaze" / "routers"
+    offenders: list[str] = []
+    for py in routers_dir.rglob("*.py"):
+        text = py.read_text()
+        # Strip the docstrings/comments to keep the test from flagging the
+        # very explanation lines that ARE supposed to call out the antipattern.
+        # We only care about call sites in executable code, not narrative prose.
+        # A simple line-by-line filter: ignore lines whose first non-whitespace
+        # char is `#` or that sit inside triple-quoted strings. The latter is
+        # too coarse to parse precisely without an AST walk, so we just scan
+        # the AST for matching Call expressions instead.
+        import ast
+
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            # Match `<expr>.replace(tzinfo=None)` where `<expr>` is a
+            # `datetime.now(...)` call.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "replace"
+                and any(kw.arg == "tzinfo" and isinstance(kw.value, ast.Constant) and kw.value.value is None for kw in node.keywords)
+                and isinstance(node.func.value, ast.Call)
+                and isinstance(node.func.value.func, ast.Attribute)
+                and node.func.value.func.attr == "now"
+            ):
+                offenders.append(f"{py.relative_to(routers_dir.parent.parent.parent)}:{node.lineno}")
+
+    assert not offenders, (
+        "Routers must not strip tzinfo from datetime.now() -- production "
+        "`created_at` is TIMESTAMP WITH TIME ZONE (tz-aware). Use "
+        "phaze.routers.pipeline_scans.elapsed_seconds instead. Offenders: " + ", ".join(offenders)
+    )
 
 
 def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:
@@ -136,7 +183,7 @@ def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:
     """
     from datetime import UTC, datetime, timedelta
 
-    from phaze.routers.pipeline_scans import _elapsed_seconds
+    from phaze.routers.pipeline_scans import elapsed_seconds
 
     naive = ScanBatch(
         id=uuid.uuid4(),
@@ -148,7 +195,7 @@ def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:
     )
     naive.created_at = (datetime.now(UTC) - timedelta(seconds=42)).replace(tzinfo=None)
 
-    elapsed = _elapsed_seconds(naive)
+    elapsed = elapsed_seconds(naive)
     assert 40 <= elapsed <= 60, f"expected elapsed near 42s, got {elapsed}"
 
 

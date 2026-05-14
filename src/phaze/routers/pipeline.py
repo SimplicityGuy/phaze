@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +20,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.routers.pipeline_scans import elapsed_seconds
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
@@ -147,15 +147,14 @@ async def dashboard(
 
     # Resolve agent_name + elapsed_seconds per row via a dict lookup
     # (avoids N+1; one indexed agents query above already loaded every agent).
+    # elapsed_seconds is the gap-14 shared helper -- the actual postgres column
+    # type is TIMESTAMP WITH TIME ZONE so we MUST compare aware-to-aware
+    # (see phaze.routers.pipeline_scans.elapsed_seconds docstring).
     agent_name_by_id = {a.id: a.name for a in agents}
-    now = datetime.now(UTC).replace(tzinfo=None)
     for batch in recent_scans_rows:
-        # Attach as transient attrs for template consumption. Naive utcnow
-        # mirrors TimestampMixin's server-side naive UTC (models/base.py:27).
+        # Attach as transient attrs for template consumption.
         batch._agent_name = agent_name_by_id.get(batch.agent_id, batch.agent_id)  # type: ignore[attr-defined]
-        batch._elapsed_seconds = (  # type: ignore[attr-defined]
-            int((now - batch.created_at).total_seconds()) if batch.created_at else None
-        )
+        batch._elapsed_seconds = elapsed_seconds(batch) if batch.created_at else None  # type: ignore[attr-defined]
 
     context = {
         "request": request,
