@@ -117,8 +117,8 @@ def test_single_agent_renders_one_row_with_running_pill() -> None:
             },
         ],
     )
-    # One <tr> in the body.
-    assert html.count("<tr") == 1
+    # One body row (the header <tr> + one body <tr> = 2 total).
+    assert html.count("<tr") == 2
     # RUNNING pill with blue surface (UI-SPEC pill rules).
     assert "RUNNING" in html
     assert "bg-blue-100" in html
@@ -141,7 +141,8 @@ def test_multi_agent_renders_rows_in_dispatch_order() -> None:
             {"agent_id": "agent-ccc", "name": "Gamma", "completed": 5, "failed": 0, "total": 5},
         ],
     )
-    assert html.count("<tr") == 3
+    # 1 header <tr> + 3 body <tr> = 4 total.
+    assert html.count("<tr") == 4
     # Ordering: Alpha appears before Beta which appears before Gamma in the rendered html.
     pos_alpha = html.find("Alpha")
     pos_beta = html.find("Beta")
@@ -273,13 +274,21 @@ def test_progress_has_dual_sse_close_listeners() -> None:
 
 def test_progress_has_agents_table_swap_slot() -> None:
     """The progress card must contain an sse-swap='agents_table' slot wrapping the table partial."""
-    html = _render_progress(total=10, subjobs_expected=2, agents=[])
+    html = _render_progress(
+        total=10,
+        subjobs_expected=2,
+        agents=[{"agent_id": "agent-a", "name": "Alpha", "completed": 0, "failed": 0, "total": 10}],
+    )
     assert 'sse-swap="agents_table"' in html
 
 
 def test_progress_has_dispatch_summary_swap_slot() -> None:
     """The dispatch summary heading is an sse-swap='dispatch_summary' target per UI-SPEC C1 step 2."""
-    html = _render_progress(total=10, subjobs_expected=2, agents=[])
+    html = _render_progress(
+        total=10,
+        subjobs_expected=2,
+        agents=[{"agent_id": "agent-a", "name": "Alpha", "completed": 0, "failed": 0, "total": 10}],
+    )
     assert 'sse-swap="dispatch_summary"' in html
 
 
@@ -288,3 +297,9 @@ def test_progress_sse_connect_points_at_batch_id() -> None:
     html = _render_progress(batch_id="cafef00d-cafe-f00d-cafe-f00dcafef00d")
     assert "sse-connect=" in html
     assert "/execution/progress/cafef00d-cafe-f00d-cafe-f00dcafef00d" in html
+
+
+def test_progress_empty_state_when_no_agents() -> None:
+    """skipped_revoked=0 and no agents -> 'No approved proposals to execute.' per UI-SPEC empty-state row."""
+    html = _render_progress(skipped_revoked=0, agents=[])
+    assert "No approved proposals to execute." in html
