@@ -128,6 +128,8 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - **Scale**: Must handle ~200K files efficiently — batch processing and parallelization required
 - **Naming format**: Live sets: `{Artist} - Live @ {Venue|Event} {YYYY.MM.DD}.{ext}`, Album tracks: `{Artist} - {Track #} - {Track Title}.{ext}`
 
+**Per-agent fingerprint indices (v4.0).** Each file server's `audfprint` and `panako` sidecars index ONLY that file server's local files. Duplicate audio content landing on different file servers will NOT cross-match. Cross-file-server fingerprint matching is XAGENT-01 (deferred to a post-v4.0 milestone). The Duplicate Resolution admin UI surfaces this constraint as an inline, per-session-dismissible banner on every page load so the operator interprets fingerprint-derived results with this scope in mind.
+
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
