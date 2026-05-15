@@ -42,6 +42,9 @@ if TYPE_CHECKING:
         AnalysisWriteResponse,
     )
 
+    # Phase 28 schema (D-06).
+    from phaze.schemas.agent_exec_batches import ExecBatchProgressPayload
+
     # Phase 25 schemas (already exist).
     from phaze.schemas.agent_execution import (
         ExecutionLogCreate,
@@ -311,6 +314,28 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ScanBatchPatchResponse.model_validate(response.json())
+
+    async def post_exec_batch_progress(
+        self,
+        batch_id: uuid.UUID,
+        payload: ExecBatchProgressPayload,
+    ) -> None:
+        """POST /api/internal/agent/exec-batches/{batch_id}/progress -- per-proposal terminal progress (Phase 28 D-05).
+
+        Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12)
+        via the ``_request`` funnel -- 5xx retries, 4xx surface immediately.
+        Caller in ``tasks/execution._execute_one`` (Plan 28-05) should swallow
+        ``AgentApiError`` after retries (D-16); the underlying file ops are
+        already committed and the per-proposal PATCH has already landed via
+        ``patch_proposal_state``. Returns ``None`` (no response body -- the
+        endpoint returns 200 with empty Response per D-05).
+        """
+        await self._request(
+            "POST",
+            f"/api/internal/agent/exec-batches/{batch_id}/progress",
+            json=payload.model_dump(mode="json"),
+        )
+        return None
 
     async def heartbeat(self, payload: HeartbeatRequest) -> None:
         """POST /api/internal/agent/heartbeat -- agent liveness ping (204 No Content)."""
