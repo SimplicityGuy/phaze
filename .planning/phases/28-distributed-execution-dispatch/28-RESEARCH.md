@@ -1078,7 +1078,12 @@ class ExecBatchProgressPayload(BaseModel):
 - `.planning/phases/26-task-code-reorg-http-backed-agent-worker/26-CONTEXT.md`
 - `.planning/phases/27-watcher-service-user-initiated-scan/27-CONTEXT.md`
 
-## Open Questions / Landmines
+## Open Questions / Landmines (RESOLVED)
+
+All HIGH and MEDIUM landmines were resolved during planning. Plan assignments below:
+- **L6 / L22 (HIGH)** → resolved in **Plan 28-05** (execution_log_id + progress_request_id persisted in `ctx['job'].meta`; SAQ retry reuses UUIDs)
+- **L19 (MEDIUM)** → resolved in **Plan 28-06** (banner partial included on `templates/duplicates/list.html` per D-14; user-confirmed during CONTEXT phase)
+- **L23 (MEDIUM)** → resolved in **Plan 28-05** (SAQ `Job.meta` + `Job.update()` API verified against `.venv/lib/python3.13/site-packages/saq/job.py` lines 295-310; closure annotated in plan's `<read_first>` block)
 
 | # | Severity | Item | Resolution |
 |---|----------|------|-----------|
