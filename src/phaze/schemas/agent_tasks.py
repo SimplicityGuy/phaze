@@ -115,3 +115,4 @@ class ExecuteApprovedBatchPayload(BaseModel):
     batch_id: uuid.UUID
     agent_id: str
     proposals: list[ExecuteBatchProposalItem] = Field(min_length=1, max_length=500)
+    sub_batch_index: int = 0  # Phase 28 D-10 -- 0-based; default preserves legacy callers
