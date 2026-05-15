@@ -161,7 +161,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   4. The execution UI exposes a per-agent breakdown (which agent handled which sub-batch, with its own counts) for debugging without requiring database access
   5. Each file server's audfprint and panako sidecars index only that file server's files; fingerprint queries during execution-adjacent flows resolve against the local sidecar and the limitation (no cross-file-server fingerprint matching) is documented in the admin UI / docs
 **Plans**: 6 plans
-- [ ] 28-01-PLAN.md — Wave 0: test scaffolding + new dirs + audfprint/panako allow-list validator + sub_batch_index schema field
+- [x] 28-01-PLAN.md — Wave 0: test scaffolding + new dirs + audfprint/panako allow-list validator + sub_batch_index schema field
 - [ ] 28-02-PLAN.md — Wave 1: ExecBatchProgressPayload + agent_exec_batches router + main.py wiring + PhazeAgentClient.post_exec_batch_progress (contract tests)
 - [ ] 28-03-PLAN.md — Wave 1: execution_dispatch service (group-by-agent + revoked filter + chunking) + grouping unit tests
 - [ ] 28-04-PLAN.md — Wave 2: start_execution rewrite + SSE generator extension + agents_table.html + progress.html rewrite + revoked banner
@@ -214,5 +214,5 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 7/7 | Complete    | 2026-05-14 |
-| 28. Distributed Execution Dispatch | v4.0 | 0/6 | Not started | - |
+| 28. Distributed Execution Dispatch | v4.0 | 1/6 | In Progress|  |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |
