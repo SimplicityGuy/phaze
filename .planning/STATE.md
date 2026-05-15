@@ -4,8 +4,8 @@ milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
 stopped_at: Phase 28 UI-SPEC approved
-last_updated: "2026-05-15T17:54:58.209Z"
-last_activity: 2026-05-15 -- Phase 28 planning complete
+last_updated: "2026-05-15T21:49:27.865Z"
+last_activity: 2026-05-15 -- Phase 28 execution started
 progress:
   total_phases: 6
   completed_phases: 4
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 27 — watcher-service-user-initiated-scan
+**Current focus:** Phase 28 — distributed-execution-dispatch
 
 ## Current Position
 
-Phase: 28
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-05-15 -- Phase 28 planning complete
+Phase: 28 (distributed-execution-dispatch) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 28
+Last activity: 2026-05-15 -- Phase 28 execution started
 
 Progress: [██████████] 100%
 
