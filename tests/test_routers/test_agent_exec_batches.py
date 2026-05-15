@@ -40,6 +40,25 @@ if TYPE_CHECKING:
 
 _REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
 
+# Worktree-isolation note: Plan 28-02 runs in parallel with Plan 28-03. The two
+# pytest processes share the default `phaze_test` Postgres database, and the
+# project's `tests/conftest.py:async_engine` fixture races on inserting the
+# `legacy-application-server` Agent row at fixture setup. To prevent the
+# collision without modifying the shared conftest, we honour
+# `PHAZE_TEST_DATABASE_URL_28_02` if set (the orchestrator/operator points
+# this at a worktree-dedicated database) by monkeypatching the conftest
+# module attribute BEFORE the `async_engine` fixture reads it.
+_OVERRIDE_DB_URL = os.environ.get("PHAZE_TEST_DATABASE_URL_28_02")
+
+
+@pytest.fixture(autouse=True)
+def _override_test_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point `tests.conftest.TEST_DATABASE_URL` at a worktree-dedicated DB if set."""
+    if _OVERRIDE_DB_URL:
+        import tests.conftest as _conftest
+
+        monkeypatch.setattr(_conftest, "TEST_DATABASE_URL", _OVERRIDE_DB_URL)
+
 
 @pytest_asyncio.fixture
 async def redis_client() -> AsyncGenerator[redis_async.Redis]:
