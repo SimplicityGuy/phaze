@@ -1,4 +1,4 @@
-"""SAQ task: execute_approved_batch -- per-proposal local file ops + HTTP state reporting (Phase 26 B2 Option A).
+"""SAQ task: execute_approved_batch -- per-proposal local file ops + HTTP state reporting (Phase 26 B2 Option A + Phase 28 D-03/D-15).
 
 Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposal:
 1. Validate `proposed_path` is contained within an agent scan_root (T-26-11-S1 path-traversal guard).
@@ -8,9 +8,27 @@ Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposa
 5. Delete the original.
 6. PATCH /execution-log/{id} with status='completed' (or 'failed').
 7. PATCH /proposals/{id}/state with proposal_state=executed, file_state=moved, current_path=proposed_path.
+8. POST /exec-batches/{batch_id}/progress with terminal_step + failed_at_step (Phase 28 D-03).
 
-On any per-proposal IO error: PATCH execution-log status='failed' + PATCH proposal_state='failed' + error_message + continue with the rest.
+On any per-proposal IO error: PATCH execution-log status='failed' + PATCH proposal_state='failed' + POST
+exec-batch progress with terminal_step="failed" + error_message + continue with the rest.
 The batch returns aggregate processed/error counts; cross-proposal failures are isolated.
+
+Phase 28 changes (Plan 28-05):
+- BOTH ``execution_log_id`` AND ``progress_request_id`` are persisted in ``ctx['job'].meta`` so
+  SAQ retries reuse the same UUIDs per proposal (closes L6/L22; delivers D-15). The meta-key
+  convention is ``log_id:{proposal_id}`` / ``req_id:{proposal_id}``. UUIDs are written as
+  strings (SAQ serializes ``meta`` via JSON-compatible types).
+- ``_execute_one`` tracks a local ``current_step`` variable through the copy/verify/delete
+  transitions; the except clause uses ``_classify_failure_step`` to map exc + current_step to
+  the literal ``failed_at_step`` posted to the new progress endpoint.
+- ``error_message`` on failed ExecutionLog PATCHes adopts the ``"<step>: <reason>"`` prefix
+  convention (D-01 contract).
+- Each terminal proposal POSTs to ``/api/internal/agent/exec-batches/{batch_id}/progress``;
+  the LAST item of a sub-batch sets ``sub_batch_terminal=True`` so the controller can detect
+  ``subjobs_completed == subjobs_expected`` and promote the batch status.
+- Progress POST failures (after the agent_client's tenacity retries) log WARNING and do NOT
+  raise -- file ops are already committed via ``patch_proposal_state`` (D-16).
 
 NOTE on schema mapping: Phase 25's ExecutionLog schema is per-proposal (one row per file op),
 not per-batch. Plan 11 invariants (one POST at start, per-proposal state PATCH, one PATCH at
@@ -27,11 +45,12 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 import uuid
 
 from phaze.config import AgentSettings, get_settings
 from phaze.enums.execution import ExecutionStatus
+from phaze.schemas.agent_exec_batches import ExecBatchProgressPayload
 from phaze.schemas.agent_execution import ExecutionLogCreate, ExecutionLogPatch
 from phaze.schemas.agent_proposals import ProposalStatePatch
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
@@ -42,6 +61,11 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+# Literal type alias for the three terminal sub-steps tracked by _execute_one.
+# Matches ExecBatchProgressPayload.failed_at_step (Phase 28 D-06).
+FailedAtStep = Literal["copy", "verify", "delete"]
 
 
 def _resolve_and_check_containment(candidate: str, scan_roots: list[str]) -> Path:
@@ -71,10 +95,30 @@ def _sha256_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> FailedAtStep:
+    """Map (current_step, exc) -> the ``failed_at_step`` literal for the progress POST.
+
+    Phase 28 RESEARCH L9 + PATTERNS L594: most failures map directly to
+    ``current_step`` (set by the body as it progresses through copy -> verify ->
+    delete). The one nuance is the sha256-mismatch ValueError raised by the
+    verify branch: even though the agent enters that branch with
+    ``current_step="verify"`` already, we encode the rule explicitly so a
+    refactor that re-orders the body cannot regress the contract.
+    """
+    text = str(exc)
+    if "sha256 mismatch" in text:
+        return "verify"
+    return current_step
+
+
 async def _execute_one(
     api: PhazeAgentClient,
     item: ExecuteBatchProposalItem,
     scan_roots: list[str],
+    payload: ExecuteApprovedBatchPayload,
+    is_last: bool,
+    execution_log_id: uuid.UUID,
+    progress_request_id: uuid.UUID,
 ) -> bool:
     """Execute one proposal. Returns True on success, False on any failure.
 
@@ -85,8 +129,12 @@ async def _execute_one(
     4. Copy + delete.
     5. PATCH execution-log (status=completed | failed).
     6. PATCH proposal-state (executed | failed).
+    7. POST exec-batch progress (terminal_step=deleted | failed) -- Phase 28 D-03.
+
+    The two UUID arguments (``execution_log_id`` and ``progress_request_id``)
+    come from ``execute_approved_batch`` which loaded them from ``ctx['job'].meta``
+    so SAQ retries reuse the same per-proposal values (closes L6/L22; delivers D-15).
     """
-    execution_log_id = uuid.uuid4()
     sha_verified = item.sha256_hash is not None
     # Always POST the in-progress audit row first -- this is the durable trail
     # that survives a crash mid-copy.
@@ -107,13 +155,19 @@ async def _execute_one(
         # file op so we don't leave the user with stalled state. Best-effort.
         logger.warning("execute_approved_batch: could not record start log for %s: %s", item.proposal_id, exc)
 
+    # Phase 28: track which sub-step is currently executing so the failure
+    # handler can map exception -> failed_at_step without inspecting types.
+    current_step: FailedAtStep = "copy"
     try:
         # 2. Path-traversal guard for both original_path and proposed_path
+        # current_step="copy" covers path-resolve (a failure here means "the
+        # copy couldn't begin" -- matches operator intuition).
         original = _resolve_and_check_containment(item.original_path, scan_roots)
         proposed = _resolve_and_check_containment(item.proposed_path, scan_roots)
 
         # 3. Optional sha256 verify (caller may supply None to skip)
         if item.sha256_hash is not None:
+            current_step = "verify"
             actual = _sha256_of_file(original)
             if actual != item.sha256_hash:
                 msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual}"
@@ -122,10 +176,12 @@ async def _execute_one(
         # 4. Copy original -> proposed (mkdir parent as needed). os.replace would
         # also work but copy+delete leaves the original intact until the copy is
         # committed.
+        current_step = "copy"
         proposed.parent.mkdir(parents=True, exist_ok=True)
         proposed.write_bytes(original.read_bytes())
 
         # 5. Delete the original
+        current_step = "delete"
         original.unlink()
 
         # 6a. PATCH execution log to completed
@@ -153,21 +209,52 @@ async def _execute_one(
                 current_path=str(proposed),
             ),
         )
+
+        # 7. Phase 28 D-03: per-proposal terminal progress POST (success path).
+        # Fire-and-forget: D-16 says swallow + log WARNING on failure because the
+        # file ops + per-proposal PATCH have already committed.
+        try:
+            await api.post_exec_batch_progress(
+                payload.batch_id,
+                ExecBatchProgressPayload(
+                    request_id=progress_request_id,
+                    batch_id=payload.batch_id,
+                    agent_id=payload.agent_id,
+                    sub_batch_index=payload.sub_batch_index,
+                    proposal_id=item.proposal_id,
+                    terminal_step="deleted",
+                    sub_batch_terminal=is_last,
+                ),
+            )
+        except Exception as progress_exc:
+            logger.warning(
+                "execute_approved_batch: progress POST failed for %s: %s",
+                item.proposal_id,
+                progress_exc,
+            )
+
         return True
     except Exception as exc:
+        # Phase 28: classify the failure step BEFORE any PATCH so both the
+        # error_message prefix (D-01) and the progress POST failed_at_step
+        # (D-06) come from one source of truth.
+        failed_step: FailedAtStep = _classify_failure_step(current_step, exc)
+        formatted_error = f"{failed_step}: {exc!s}"[:500]
+
         logger.warning(
-            "execute_approved_batch: proposal %s failed: %s",
+            "execute_approved_batch: proposal %s failed at step=%s: %s",
             item.proposal_id,
+            failed_step,
             exc,
             exc_info=True,
         )
-        # 6a-failed. PATCH execution log to failed
+        # 6a-failed. PATCH execution log to failed (D-01 "<step>: <reason>" prefix).
         try:
             await api.patch_execution_log(
                 execution_log_id,
                 ExecutionLogPatch(
                     status=ExecutionStatus.FAILED,
-                    error_message=str(exc)[:500],
+                    error_message=formatted_error,
                 ),
             )
         except Exception as patch_exc:
@@ -183,7 +270,7 @@ async def _execute_one(
                 ProposalStatePatch(
                     proposal_state="failed",
                     file_state=None,
-                    error_message=str(exc)[:500],
+                    error_message=formatted_error,
                 ),
             )
         except Exception as report_exc:
@@ -194,15 +281,81 @@ async def _execute_one(
                 item.proposal_id,
                 report_exc,
             )
+
+        # 7-failed. Phase 28 D-03: per-proposal terminal progress POST (failure path).
+        try:
+            await api.post_exec_batch_progress(
+                payload.batch_id,
+                ExecBatchProgressPayload(
+                    request_id=progress_request_id,
+                    batch_id=payload.batch_id,
+                    agent_id=payload.agent_id,
+                    sub_batch_index=payload.sub_batch_index,
+                    proposal_id=item.proposal_id,
+                    terminal_step="failed",
+                    failed_at_step=failed_step,
+                    sub_batch_terminal=is_last,
+                ),
+            )
+        except Exception as progress_exc:
+            logger.warning(
+                "execute_approved_batch: progress POST failed for %s: %s",
+                item.proposal_id,
+                progress_exc,
+            )
+
         return False
 
 
-async def execute_approved_batch(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-    """Per-agent sub-batch executor (B2 Option A -- full implementation).
+def _load_or_seed_uuids(
+    job: Any,
+    proposals: list[ExecuteBatchProposalItem],
+) -> tuple[dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, uuid.UUID], dict[str, str], bool]:
+    """Read per-proposal UUIDs from ``job.meta`` or generate fresh ones.
 
-    Validates payload (extra='forbid'), executes each proposal with failure
-    isolation, and returns aggregate counts. Cross-proposal failures are
-    isolated: one bad file does NOT fail the batch.
+    Returns ``(log_ids_by_proposal, req_ids_by_proposal, updated_meta, changed)``
+    where ``changed`` is True iff any keys were newly seeded (caller is responsible
+    for persisting via ``await job.update(meta=updated_meta)``). UUIDs in meta are
+    stored as strings; in-memory they're returned as ``uuid.UUID`` objects.
+
+    Phase 28 L6/L22/D-15 contract: on a SAQ retry the same ``job`` is reloaded
+    from Redis with ``meta`` already populated, so this function returns the
+    existing UUIDs and ``changed=False`` -- caller skips the ``job.update`` call
+    AND the underlying ExecutionLog INSERT / progress HINCRBY both dedup via
+    server-side idempotency (INSERT ON CONFLICT + SET NX EX).
+    """
+    existing_meta: dict[str, str] = dict(getattr(job, "meta", None) or {})
+    log_ids: dict[uuid.UUID, uuid.UUID] = {}
+    req_ids: dict[uuid.UUID, uuid.UUID] = {}
+    changed = False
+    for item in proposals:
+        log_key = f"log_id:{item.proposal_id}"
+        req_key = f"req_id:{item.proposal_id}"
+        if log_key in existing_meta:
+            log_ids[item.proposal_id] = uuid.UUID(existing_meta[log_key])
+        else:
+            new_log_id = uuid.uuid4()
+            existing_meta[log_key] = str(new_log_id)
+            log_ids[item.proposal_id] = new_log_id
+            changed = True
+        if req_key in existing_meta:
+            req_ids[item.proposal_id] = uuid.UUID(existing_meta[req_key])
+        else:
+            new_req_id = uuid.uuid4()
+            existing_meta[req_key] = str(new_req_id)
+            req_ids[item.proposal_id] = new_req_id
+            changed = True
+    return log_ids, req_ids, existing_meta, changed
+
+
+async def execute_approved_batch(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """Per-agent sub-batch executor (B2 Option A -- full implementation + Phase 28 D-03/D-15).
+
+    Validates payload (extra='forbid'), seeds retry-stable per-proposal UUIDs
+    in ``ctx['job'].meta`` (so SAQ retries reuse the same ``execution_log_id``
+    and ``progress_request_id`` per proposal), then executes each proposal with
+    failure isolation. Cross-proposal failures are isolated: one bad file does
+    NOT fail the batch.
     """
     payload = ExecuteApprovedBatchPayload.model_validate(kwargs)
     api: PhazeAgentClient = ctx["api_client"]
@@ -215,10 +368,34 @@ async def execute_approved_batch(ctx: dict[str, Any], **kwargs: Any) -> dict[str
         msg = "agent has no scan_roots configured; cannot execute batch"
         raise RuntimeError(msg)
 
+    # Phase 28 L6/L22 + D-15: load retry-stable UUIDs from SAQ job meta (or seed if absent).
+    # Legacy callers (Phase 26 in-memory test fixtures) may pass a ctx without 'job' -- in that
+    # case we fall back to generating fresh UUIDs per call. The fall-back has no SAQ retry
+    # semantics (which legacy callers don't have anyway) and matches Phase 26 B2 behavior.
+    job = ctx.get("job")
+    if job is not None:
+        log_ids, req_ids, updated_meta, changed = _load_or_seed_uuids(job, list(payload.proposals))
+        if changed:
+            await job.update(meta=updated_meta)
+    else:
+        logger.debug("execute_approved_batch: ctx has no 'job' key -- using fresh UUIDs (legacy ctx).")
+        log_ids = {item.proposal_id: uuid.uuid4() for item in payload.proposals}
+        req_ids = {item.proposal_id: uuid.uuid4() for item in payload.proposals}
+
     processed = 0
     errors = 0
-    for item in payload.proposals:
-        ok = await _execute_one(api, item, scan_roots)
+    total = len(payload.proposals)
+    for idx, item in enumerate(payload.proposals):
+        is_last = idx == total - 1
+        ok = await _execute_one(
+            api,
+            item,
+            scan_roots,
+            payload,
+            is_last,
+            log_ids[item.proposal_id],
+            req_ids[item.proposal_id],
+        )
         processed += 1
         if not ok:
             errors += 1
