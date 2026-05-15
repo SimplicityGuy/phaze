@@ -1,14 +1,501 @@
-"""Tests for agent-side execute_approved_batch progress POSTs (Phase 28 D-03, D-15).
+"""Tests for agent-side execute_approved_batch progress POSTs (Phase 28 D-03, D-15, D-16, L6/L22).
 
-Wave 0 stub — the agent-side task body changes (one `api.post_exec_batch_progress`
-per proposal at terminal state, `sub_batch_terminal=true` on the last item, idempotent
-`request_id` persisted in SAQ state) land in Plan 28-05. This stub anchors the file
-path so Nyquist sampling can resolve test ID 28-V-25.
+Covers:
+
+* One ``api.post_exec_batch_progress`` per proposal at terminal state (D-03).
+* Success path: ``terminal_step="deleted"`` with ``failed_at_step=None``.
+* Failure paths: ``terminal_step="failed"`` with ``failed_at_step`` derived from
+  the tracked ``current_step`` variable + ``_classify_failure_step`` helper:
+  - path-traversal -> ``"copy"`` (path-resolve happens during current_step="copy").
+  - sha256 mismatch -> ``"verify"`` (current_step="verify" before the hash check).
+  - delete failure -> ``"delete"`` (current_step="delete" set before ``original.unlink()``).
+* ``sub_batch_terminal=True`` only on the LAST item of the sub-batch (D-07).
+* Progress POST failures after tenacity retries log WARNING and do NOT raise (D-16).
+* Both ``execution_log_id`` AND ``progress_request_id`` UUIDs are persisted in
+  ``ctx['job'].meta`` via ``await ctx['job'].update(meta=...)`` and re-used on
+  SAQ retry (closes L6/L22, delivers D-15).
+* Failed ``ExecutionLog.error_message`` uses the ``"<step>: <reason>"`` prefix
+  convention (D-01 contract).
 """
 
 from __future__ import annotations
 
-import pytest
+import hashlib
+import logging
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
+import uuid
+
+from phaze.config import AgentSettings
+from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
+from phaze.services.agent_client import AgentApiServerError
+from phaze.tasks.execution import execute_approved_batch
 
 
-pytest.skip("Wave 0 stub — implementation lands in Plan 28-05", allow_module_level=True)
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
+
+
+def _make_api_client_mock() -> AsyncMock:
+    """Mock PhazeAgentClient with all 4 methods used by execute_approved_batch (Phase 28)."""
+    api = AsyncMock()
+    api.post_execution_log = AsyncMock(return_value=MagicMock(execution_log_id=uuid.uuid4()))
+    api.patch_execution_log = AsyncMock(return_value=None)
+    api.patch_proposal_state = AsyncMock(return_value=None)
+    api.post_exec_batch_progress = AsyncMock(return_value=None)
+    return api
+
+
+def _make_job_mock(initial_meta: dict[str, str] | None = None) -> MagicMock:
+    """Mock SAQ Job with a writeable ``meta`` dict and an async ``update`` method."""
+    job = MagicMock()
+    job.meta = dict(initial_meta or {})
+    job.update = AsyncMock(return_value=None)
+    return job
+
+
+def _seed_files(tmp_path: Path, count: int) -> tuple[list[Path], list[Path]]:
+    """Create ``count`` orig files under ``tmp_path/orig`` and target paths under ``tmp_path/new``."""
+    orig_paths: list[Path] = []
+    proposed_paths: list[Path] = []
+    for i in range(count):
+        o = tmp_path / "orig" / f"track{i}.mp3"
+        o.parent.mkdir(parents=True, exist_ok=True)
+        o.write_bytes(f"audio-content-{i}".encode())
+        n = tmp_path / "new" / f"track{i}.mp3"
+        orig_paths.append(o)
+        proposed_paths.append(n)
+    return orig_paths, proposed_paths
+
+
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, scan_roots: list[str]) -> None:
+    """Stub ``get_settings()`` to return an AgentSettings-shaped mock with given scan_roots."""
+    fake_cfg = MagicMock(spec=AgentSettings)
+    fake_cfg.scan_roots = scan_roots
+    monkeypatch.setattr("phaze.tasks.execution.get_settings", lambda: fake_cfg)
+
+
+def _payload_from_call(call: object) -> object:
+    """Extract the ``ExecBatchProgressPayload`` second positional or kwarg from a mock call."""
+    args = getattr(call, "args", ()) or ()
+    kwargs = getattr(call, "kwargs", {}) or {}
+    if len(args) >= 2:
+        return args[1]
+    if "payload" in kwargs:
+        return kwargs["payload"]
+    msg = f"could not extract ExecBatchProgressPayload from call {call!r}"
+    raise AssertionError(msg)
+
+
+# ---------------------------------------------------------------------------
+# 28-V-06 — success path: ONE progress POST with terminal_step="deleted"
+# ---------------------------------------------------------------------------
+
+
+async def test_success_emits_one_deleted_progress_post(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """28-V-06: single-proposal success -> 1 post_exec_batch_progress with terminal_step='deleted' + sub_batch_terminal=True."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "deleted"
+    assert sent.failed_at_step is None
+    assert sent.sub_batch_terminal is True
+    assert sent.proposal_id == proposals[0].proposal_id
+    assert sent.agent_id == "agent-a"
+    assert sent.batch_id == payload.batch_id
+
+
+# ---------------------------------------------------------------------------
+# 28-V-07 — failure path: terminal_step="failed" + failed_at_step derived from current_step
+# ---------------------------------------------------------------------------
+
+
+async def test_failure_emits_failed_progress_post_with_failed_at_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """28-V-07: path-traversal happens during current_step='copy' -> failed_at_step='copy'."""
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    _patch_settings(monkeypatch, [str(allowed_root)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig = allowed_root / "ok.mp3"
+    orig.write_bytes(b"x")
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig),
+            proposed_path="/etc/passwd",  # outside scan_root -> path-traversal ValueError
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "failed"
+    assert sent.failed_at_step == "copy"
+    assert sent.sub_batch_terminal is True
+
+
+async def test_sha256_mismatch_maps_to_failed_at_verify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """sha256 mismatch raised while current_step='verify' -> failed_at_step='verify'."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+            sha256_hash="0" * 64,  # wrong hash forces sha256 mismatch
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "failed"
+    assert sent.failed_at_step == "verify"
+
+
+async def test_delete_failure_maps_to_failed_at_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """unlink() raises after a successful copy -> failed_at_step='delete'."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+
+    # Monkeypatch Path.unlink to raise OSError ONLY when the orig file path is targeted.
+    from pathlib import Path as _Path
+
+    real_unlink = _Path.unlink
+    target = orig_paths[0].resolve()
+
+    def fail_unlink(self: _Path, *args: object, **kwargs: object) -> None:
+        if self == target:
+            msg = "simulated delete failure"
+            raise OSError(msg)
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, "unlink", fail_unlink)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "failed"
+    assert sent.failed_at_step == "delete"
+
+
+# ---------------------------------------------------------------------------
+# 28-V-08 — sub_batch_terminal True only on the LAST item
+# ---------------------------------------------------------------------------
+
+
+async def test_sub_batch_terminal_set_on_last_item_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """28-V-08: 3 proposals -> 3 POSTs; only the last has sub_batch_terminal=True."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 3)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(o),
+            proposed_path=str(p),
+        )
+        for o, p in zip(orig_paths, proposed_paths, strict=True)
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert api.post_exec_batch_progress.await_count == 3
+    terminal_flags = [_payload_from_call(c).sub_batch_terminal for c in api.post_exec_batch_progress.await_args_list]
+    assert terminal_flags == [False, False, True]
+    # Every POST should also carry terminal_step="deleted" on the happy path.
+    steps = [_payload_from_call(c).terminal_step for c in api.post_exec_batch_progress.await_args_list]
+    assert steps == ["deleted", "deleted", "deleted"]
+
+
+# ---------------------------------------------------------------------------
+# D-16 — progress POST failure logs WARNING and does not raise
+# ---------------------------------------------------------------------------
+
+
+async def test_progress_post_failure_logs_warning_but_does_not_raise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """D-16: if the progress POST fails after retries, swallow + log WARNING."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.post_exec_batch_progress = AsyncMock(side_effect=AgentApiServerError("progress endpoint down"))
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.WARNING, logger="phaze.tasks.execution"):
+        result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    # File op committed despite the progress POST failure.
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    assert proposed_paths[0].exists()
+    assert not orig_paths[0].exists()
+    # WARNING was logged citing the progress POST.
+    assert any("progress POST failed" in record.getMessage() for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# L6/L22 + D-15 — SAQ-meta-backed UUIDs (execution_log_id + progress_request_id)
+# ---------------------------------------------------------------------------
+
+
+async def test_uuids_persisted_in_job_meta_on_first_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First run with empty job.meta -> job.update called with all 4 UUID keys."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 2)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(o),
+            proposed_path=str(p),
+        )
+        for o, p in zip(orig_paths, proposed_paths, strict=True)
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    # job.update was called -- at least once, with the merged meta dict.
+    assert job.update.await_count >= 1
+    last_meta = job.update.await_args.kwargs["meta"]
+    for item in proposals:
+        assert f"log_id:{item.proposal_id}" in last_meta
+        assert f"req_id:{item.proposal_id}" in last_meta
+        # Stored as strings (so SAQ can serialize via json).
+        assert isinstance(last_meta[f"log_id:{item.proposal_id}"], str)
+        assert isinstance(last_meta[f"req_id:{item.proposal_id}"], str)
+        # Strings are valid UUIDs.
+        uuid.UUID(last_meta[f"log_id:{item.proposal_id}"])
+        uuid.UUID(last_meta[f"req_id:{item.proposal_id}"])
+
+
+async def test_uuids_reused_from_job_meta_on_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-seeded job.meta -> UUIDs re-used; job.update NOT called; POST'd UUIDs match."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+
+    proposal_id = uuid.uuid4()
+    preseeded_log_id = uuid.uuid4()
+    preseeded_req_id = uuid.uuid4()
+    job = _make_job_mock(
+        initial_meta={
+            f"log_id:{proposal_id}": str(preseeded_log_id),
+            f"req_id:{proposal_id}": str(preseeded_req_id),
+        },
+    )
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=proposal_id,
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    # Both keys were already present -> NO update call (closes L6/L22).
+    job.update.assert_not_awaited()
+
+    # ExecutionLog POST re-used the preseeded log_id.
+    assert api.post_execution_log.await_count == 1
+    post_payload = api.post_execution_log.await_args.args[0]
+    assert post_payload.id == preseeded_log_id
+
+    # post_exec_batch_progress re-used the preseeded request_id.
+    assert api.post_exec_batch_progress.await_count == 1
+    progress_payload = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert progress_payload.request_id == preseeded_req_id
+
+
+# ---------------------------------------------------------------------------
+# D-01 — error_message uses the "<step>: <reason>" prefix
+# ---------------------------------------------------------------------------
+
+
+async def test_error_message_uses_step_reason_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-01: failed PATCH execution-log error_message starts with '<step>: '."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+            sha256_hash="0" * 64,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    # patch_execution_log was called with status=FAILED + error_message starting with 'verify: '
+    failed_patches = [c for c in api.patch_execution_log.await_args_list if c.args[1].error_message is not None]
+    assert len(failed_patches) == 1
+    err = failed_patches[0].args[1].error_message
+    assert err.startswith("verify: "), f"expected 'verify: ' prefix, got: {err!r}"
+
+
+# ---------------------------------------------------------------------------
+# Sanity: progress request_id used on a single proposal matches what the POST sent
+# (covers the "ExecutionLog POST and progress POST use SEPARATE UUIDs" invariant).
+# ---------------------------------------------------------------------------
+
+
+async def test_execution_log_and_progress_use_distinct_uuids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """log_id (passed to post_execution_log) is distinct from request_id (passed to progress POST)."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    log_post = api.post_execution_log.await_args.args[0]
+    progress_post = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert log_post.id != progress_post.request_id
+
+
+# ---------------------------------------------------------------------------
+# Sanity: legacy ctx (no 'job' key) still works -- backward-compat with Phase 26 tests.
+# This guarantees the regression test surface (test_execute_approved_batch.py) keeps
+# passing even though it predates the SAQ-meta lift.
+# ---------------------------------------------------------------------------
+
+
+async def test_legacy_ctx_without_job_does_not_break(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ctx without 'job' -> still executes; UUIDs are freshly generated; no AttributeError."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    # Progress POST still fires (uses freshly-generated request_id).
+    assert api.post_exec_batch_progress.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Sanity check: the helper file actually rebuilt the file successfully.
+# ---------------------------------------------------------------------------
+
+
+async def test_correct_sha256_still_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the correct sha256 supplied, verify passes and terminal_step is 'deleted'."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    correct_hash = hashlib.sha256(orig_paths[0].read_bytes()).hexdigest()
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+            sha256_hash=correct_hash,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "deleted"
+    assert sent.failed_at_step is None
