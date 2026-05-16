@@ -45,7 +45,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from saq import Queue
+from saq import CronJob, Queue
 
 from phaze.config import AgentSettings, get_settings
 from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
@@ -59,6 +59,7 @@ from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
+from phaze.tasks.heartbeat import heartbeat_tick
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.scan import scan_directory, scan_live_set
@@ -181,6 +182,13 @@ settings = {
         scan_live_set,
         scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
         execute_approved_batch,
+        heartbeat_tick,  # Phase 29 D-08: SAQ-dispatched 30s cron handler
+    ],
+    "cron_jobs": [
+        # Phase 29 D-08 + RESEARCH Critical Discovery #2: trailing-seconds
+        # 6-field form (croniter 6.x default). "*/30 * * * * *" would fire
+        # every second. Smoke-tested at module import time via croniter.
+        CronJob(heartbeat_tick, cron="* * * * * */30", unique=True, timeout=10),  # type: ignore[type-var]
     ],
     "concurrency": get_settings().worker_max_jobs,
     "startup": startup,
