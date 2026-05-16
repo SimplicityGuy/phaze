@@ -107,34 +107,17 @@ async def test_lifespan_disconnects_queue_on_shutdown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_startup_raises_if_models_dir_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Agent-worker startup fails fast if models directory does not exist."""
+async def test_agent_startup_invokes_ensure_models_present_after_whoami(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 29 D-21: agent_worker.startup delegates the models check to
+    ensure_models_present and invokes it AFTER /whoami succeeds (RESEARCH
+    <specifics> line 906 -- auth fails fast before spending 5min on the 150MB
+    download). The old fail-fast RuntimeError("Models directory not found")
+    behaviour is REPLACED, not duplicated.
+    """
     monkeypatch.setenv("PHAZE_ROLE", "agent")
     monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
-    monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test")
-    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
-    monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
-
-    from phaze.config import AgentSettings
-    import phaze.tasks.agent_worker as aw
-
-    missing = tmp_path / "nonexistent"
-    fake_cfg = AgentSettings()
-    fake_cfg.models_path = str(missing)  # type: ignore[misc]
-    monkeypatch.setattr(aw, "get_settings", lambda: fake_cfg)
-
-    with pytest.raises(RuntimeError, match="Models directory not found"):
-        await aw.startup({})
-
-
-@pytest.mark.asyncio
-async def test_agent_startup_raises_if_no_pb_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Agent-worker startup fails fast if models directory has no .pb files."""
-    monkeypatch.setenv("PHAZE_ROLE", "agent")
-    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
-    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
-    monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+    monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-id")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
     monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
 
@@ -142,14 +125,75 @@ async def test_agent_startup_raises_if_no_pb_files(tmp_path: Path, monkeypatch: 
     import phaze.tasks.agent_worker as aw
 
     models_dir = tmp_path / "models"
-    models_dir.mkdir()
-    (models_dir / "readme.txt").write_text("empty")
-
     fake_cfg = AgentSettings()
     fake_cfg.models_path = str(models_dir)  # type: ignore[misc]
     monkeypatch.setattr(aw, "get_settings", lambda: fake_cfg)
 
-    with pytest.raises(RuntimeError, match=r"No \.pb model files"):
+    # Order tracking: whoami must run BEFORE ensure_models_present (D-21 specifics).
+    call_order: list[str] = []
+    fake_identity = MagicMock(agent_id="test-id")
+    fake_client = AsyncMock()
+
+    async def fake_whoami() -> object:
+        call_order.append("whoami")
+        return fake_identity
+
+    fake_client.whoami = fake_whoami
+    fake_client.close = AsyncMock()
+    monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
+    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
+
+    def fake_ensure(models_path: Path) -> None:
+        call_order.append("ensure_models_present")
+        assert models_path == models_dir, "ensure_models_present must receive cfg.models_path"
+
+    monkeypatch.setattr(aw, "ensure_models_present", fake_ensure)
+
+    await aw.startup({})
+
+    assert call_order == ["whoami", "ensure_models_present"], f"expected whoami then ensure_models_present, got: {call_order}"
+
+
+@pytest.mark.asyncio
+async def test_agent_startup_propagates_ensure_models_present_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A RuntimeError from ensure_models_present propagates out of startup so
+    the container exits non-zero and restart: unless-stopped retries
+    (T-29-05-02 / Phase 29 D-21 failure mode).
+    """
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+    monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-id")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
+    monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+
+    from phaze.config import AgentSettings
+    import phaze.tasks.agent_worker as aw
+
+    fake_cfg = AgentSettings()
+    fake_cfg.models_path = str(tmp_path / "models")  # type: ignore[misc]
+    monkeypatch.setattr(aw, "get_settings", lambda: fake_cfg)
+
+    fake_identity = MagicMock(agent_id="test-id")
+    fake_client = AsyncMock()
+    fake_client.whoami = AsyncMock(return_value=fake_identity)
+    fake_client.close = AsyncMock()
+    monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
+    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
+
+    def boom(_models_path: Path) -> None:
+        msg = "Model download failed: simulated network failure"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(aw, "ensure_models_present", boom)
+
+    with pytest.raises(RuntimeError, match="Model download failed"):
         await aw.startup({})
 
 
