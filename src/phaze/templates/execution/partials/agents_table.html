@@ -1,0 +1,61 @@
+{# Phase 28 Component 2 (UI-SPEC C2): per-agent execution rollup table.
+
+   Rendered:
+     1. Server-side at first response of POST /execution/start (no empty-flash).
+     2. As the SSE `agents_table` event payload on every poll tick.
+
+   The context object is a list of dicts (one per agent in dispatch_summary order):
+     - agent_id (str)
+     - name (str)
+     - completed (int)
+     - failed (int)
+     - total (int)
+
+   Status pill ladder (UI-SPEC C2):
+     - PENDING  (completed + failed == 0)
+     - RUNNING  (completed + failed <  total)
+     - COMPLETE (completed + failed == total AND failed == 0)
+     - ERRORS   (completed + failed == total AND failed > 0)
+#}
+{% if not agents %}
+<p class="text-sm text-gray-500 dark:text-gray-400 italic">No active sub-jobs.</p>
+{% else %}
+<div class="overflow-x-auto">
+    <table class="w-full text-sm text-left">
+        <caption class="sr-only">Per-agent execution progress</caption>
+        <thead class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase border-b border-gray-200 dark:border-phaze-border">
+            <tr>
+                <th scope="col" class="px-4 py-3">Agent</th>
+                <th scope="col" class="px-4 py-3">Status</th>
+                <th scope="col" class="px-4 py-3">Completed</th>
+                <th scope="col" class="px-4 py-3">Failed</th>
+                <th scope="col" class="px-4 py-3">Total</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+            {% for agent in agents %}
+            <tr class="hover:bg-gray-50 dark:hover:bg-phaze-panel/60">
+                <td class="px-4 py-3">
+                    <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 block">{{ agent.name }}</span>
+                    <span class="font-mono text-xs text-gray-500 dark:text-gray-400 block">{{ agent.agent_id }}</span>
+                </td>
+                <td class="px-4 py-3">
+                    {% if agent.completed + agent.failed == 0 %}
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400" aria-label="Status: pending">PENDING</span>
+                    {% elif agent.completed + agent.failed < agent.total %}
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
+                    {% elif agent.failed == 0 %}
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: complete">COMPLETE</span>
+                    {% else %}
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: errors">ERRORS</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.completed }}</td>
+                <td class="px-4 py-3 font-mono text-sm {% if agent.failed > 0 %}text-red-600 dark:text-red-400 font-semibold{% else %}text-gray-700 dark:text-gray-300{% endif %}">{{ agent.failed }}</td>
+                <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.total }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}

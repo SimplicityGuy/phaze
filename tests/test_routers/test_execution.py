@@ -115,39 +115,48 @@ async def test_audit_log_empty_state(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_execute_approved(client: AsyncClient) -> None:
-    """POST /execution/start returns HTML with SSE progress container."""
-    # Mock queue on the app
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    """POST /execution/start returns HTML with SSE progress container.
+
+    Phase 28: dispatch now writes to ``app.state.redis`` and enqueues per-agent
+    via ``app.state.task_router.enqueue_for_agent``. With no approved proposals
+    seeded, ``groups`` is empty -- the controller renders the progress card
+    with the empty-state copy, no Redis seed, no enqueues.
+    """
+    mock_task_router = AsyncMock()
+    mock_redis = AsyncMock()
+    client._transport.app.state.task_router = mock_task_router  # type: ignore[union-attr]
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
     response = await client.post("/execution/start")
     assert response.status_code == 200
     assert "sse-connect" in response.text
     assert "execution/progress/" in response.text
-    mock_queue.enqueue.assert_called_once()
-    call_args = mock_queue.enqueue.call_args
-    assert call_args.args[0] == "execute_approved_batch"
+    # Empty fixture DB -> no enqueues.
+    mock_task_router.enqueue_for_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_sse_progress(client: AsyncClient) -> None:
-    """GET /execution/progress/{batch_id} returns text/event-stream content type."""
+    """GET /execution/progress/{batch_id} returns text/event-stream content type.
+
+    Phase 28: the SSE reader switched from ``queue.redis`` to ``app.state.redis``
+    (decode_responses=True, returns str directly).
+    """
     batch_id = uuid.uuid4().hex
 
-    # Mock queue with Redis hgetall that returns progress data
     mock_redis = MagicMock()
     mock_redis.hgetall = AsyncMock(
         return_value={
-            b"total": b"10",
-            b"completed": b"5",
-            b"failed": b"0",
-            b"status": b"complete",
-        }
+            "total": "10",
+            "completed": "5",
+            "failed": "0",
+            "status": "complete",
+            "subjobs_expected": "1",
+            "started_at": "2026-05-15T00:00:00+00:00",
+            "dispatch_summary": "[]",
+        },
     )
-    mock_queue = MagicMock()
-    mock_queue.redis = mock_redis
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
     response = await client.get(f"/execution/progress/{batch_id}")
     assert response.status_code == 200
@@ -181,9 +190,10 @@ async def test_audit_log_stats_in_filter_tabs(client: AsyncClient, session: Asyn
 @pytest.mark.asyncio
 async def test_collision_gate_blocks_execution(client: AsyncClient) -> None:
     """POST /execution/start returns collision block HTML when collisions exist."""
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    mock_task_router = AsyncMock()
+    mock_redis = AsyncMock()
+    client._transport.app.state.task_router = mock_task_router  # type: ignore[union-attr]
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
     with patch("phaze.routers.execution.detect_collisions", new_callable=AsyncMock) as mock_detect:
         mock_detect.return_value = [("performances/artists/Disclosure/file.mp3", 2)]
@@ -192,15 +202,21 @@ async def test_collision_gate_blocks_execution(client: AsyncClient) -> None:
     assert response.status_code == 200
     assert "Path collisions detected" in response.text
     assert "performances/artists/Disclosure/file.mp3" in response.text
-    mock_queue.enqueue.assert_not_called()
+    mock_task_router.enqueue_for_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
-    """POST /execution/start proceeds with execution when no collisions detected."""
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    """POST /execution/start proceeds with the progress card when no collisions detected.
+
+    Phase 28: with no approved proposals seeded, dispatch fans out to zero agents
+    and returns the progress card with the empty-state copy. The pre-Phase-28
+    expectation that a single ``queue.enqueue`` fired was Phase-25 behavior.
+    """
+    mock_task_router = AsyncMock()
+    mock_redis = AsyncMock()
+    client._transport.app.state.task_router = mock_task_router  # type: ignore[union-attr]
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
     with patch("phaze.routers.execution.detect_collisions", new_callable=AsyncMock) as mock_detect:
         mock_detect.return_value = []
@@ -208,4 +224,5 @@ async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     assert "sse-connect" in response.text
-    mock_queue.enqueue.assert_called_once()
+    # No approved proposals in this empty fixture -> no enqueues.
+    mock_task_router.enqueue_for_agent.assert_not_awaited()

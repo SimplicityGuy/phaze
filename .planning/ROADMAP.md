@@ -62,7 +62,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] **Phase 25: Internal Agent HTTP API & Bearer Auth** — `/api/internal/agent/*` endpoints, token-hash auth middleware deriving `agent_id` from token, idempotent upserts on natural keys, rotatable tokens (completed 2026-05-12)
 - [x] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.controller` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads (completed 2026-05-12)
 - [x] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form (completed 2026-05-13)
-- [ ] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path
+- [x] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path (completed 2026-05-15)
 - [ ] **Phase 29: Deployment Hardening & Agents Admin** — strip `SCAN_PATH`/`MODELS_PATH` from application-server compose, self-signed HTTPS w/ internal CA, Redis `requirepass` + LAN binding, `docker-compose.agent.yml`, per-file-server model download, heartbeat + Agents admin page
 
 ## Phase Details
@@ -160,7 +160,13 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   3. The application server owns the `exec:{batch_id}` Redis hash and serves SSE progress from a single aggregated key; the admin UI shows unified `total / completed / failed` counts that match the sum across all participating agents
   4. The execution UI exposes a per-agent breakdown (which agent handled which sub-batch, with its own counts) for debugging without requiring database access
   5. Each file server's audfprint and panako sidecars index only that file server's files; fingerprint queries during execution-adjacent flows resolve against the local sidecar and the limitation (no cross-file-server fingerprint matching) is documented in the admin UI / docs
-**Plans**: TBD
+**Plans**: 6 plans
+- [x] 28-01-PLAN.md — Wave 0: test scaffolding + new dirs + audfprint/panako allow-list validator + sub_batch_index schema field
+- [x] 28-02-PLAN.md — Wave 1: ExecBatchProgressPayload + agent_exec_batches router + main.py wiring + PhazeAgentClient.post_exec_batch_progress (contract tests)
+- [x] 28-03-PLAN.md — Wave 1: execution_dispatch service (group-by-agent + revoked filter + chunking) + grouping unit tests
+- [x] 28-04-PLAN.md — Wave 2: start_execution rewrite + SSE generator extension + agents_table.html + progress.html rewrite + revoked banner
+- [x] 28-05-PLAN.md — Wave 2: tasks/execution.py — per-proposal terminal progress POST + SAQ-meta UUID lift (closes L6/L22) + _classify_failure_step + <step>: <reason> error_message
+- [x] 28-06-PLAN.md — Wave 3: cross_fs_fingerprint_notice.html partial + duplicates/list.html inclusion + PROJECT.md Constraints paragraph + STATE.md accumulation
 **UI hint**: yes
 
 ### Phase 29: Deployment Hardening & Agents Admin
@@ -208,5 +214,5 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 25. Internal Agent HTTP API & Bearer Auth | v4.0 | 8/8 | Complete    | 2026-05-12 |
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 7/7 | Complete    | 2026-05-14 |
-| 28. Distributed Execution Dispatch | v4.0 | 0/? | Not started | - |
+| 28. Distributed Execution Dispatch | v4.0 | 6/6 | Complete   | 2026-05-15 |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 0/? | Not started | - |

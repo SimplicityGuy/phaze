@@ -1,0 +1,24 @@
+{# Phase 28 D-04 + UI-SPEC C1 step 3: SSE payload for the `progress` event.
+   The HTML fragment HTMX swaps into the <span sse-swap="progress"> slot
+   inside progress.html on every poll tick.
+
+   Context:
+     - total (int)
+     - completed (int)
+     - failed (int)
+
+   The Failed counter's value text gets `text-red-600 dark:text-red-400`
+   coloring when `failed > 0` (UI-SPEC C1 step 3).
+#}
+<div>
+    <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Total</div>
+    <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ total }}</div>
+</div>
+<div>
+    <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Completed</div>
+    <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ completed }}</div>
+</div>
+<div>
+    <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Failed</div>
+    <div class="text-xl font-semibold {% if failed > 0 %}text-red-600 dark:text-red-400{% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed }}</div>
+</div>

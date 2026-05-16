@@ -1,4 +1,86 @@
-<div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-6" hx-ext="sse" sse-connect="/execution/progress/{{ batch_id }}" aria-live="polite">
-    <span class="text-gray-800 dark:text-gray-200 text-xl font-semibold" sse-swap="progress">Waiting for execution to start...</span>
+{# Phase 28 Component 1 (UI-SPEC C1): rewritten execution progress card.
+
+   Replaces the Phase 25 one-line "Waiting for execution to start..." span with
+   a card that surfaces:
+     - Conditional revoked-agents banner (UI-SPEC C4) when skipped_revoked > 0
+     - Dispatch summary heading (sse-swap target for first-connect SSE event)
+     - Aggregate counter row (sse-swap="progress" — backward-compat event name)
+     - Per-agent rollup table (sse-swap="agents_table") — server-rendered at
+       first response so there is no empty-flash; SSE re-renders every tick.
+     - Dual sse-close listeners for "complete" and "complete_with_errors"
+
+   Context contract (POST /execution/start template-response):
+     - batch_id (str): parent UUID
+     - skipped_revoked (int): count of approved-proposal rows filtered by
+       Agent.revoked_at IS NOT NULL (D-09 step 2). Drives the orange banner.
+     - revoked_agents (list[dict]): optional per-revoked-agent breakdown for
+       the banner sub-list. Each dict: agent_id, name, count.
+     - total (int): sum of all per-agent proposals at dispatch time
+     - completed (int): post-init counter value (0 at first render)
+     - failed (int): post-init counter value (0 at first render)
+     - subjobs_expected (int): ceil(N/500) summed across agents
+     - agents (list[dict]): first-render per-agent rollup rows
+       (same shape as agents_table.html context)
+     - status (str): "running" at first render
+#}
+<div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-6 border border-gray-200 dark:border-phaze-border"
+     hx-ext="sse"
+     sse-connect="/execution/progress/{{ batch_id }}"
+     aria-live="polite">
+
+    {% if skipped_revoked and skipped_revoked > 0 %}
+    {# UI-SPEC C4: revoked-agents banner — orange surface, warning glyph, role=alert. #}
+    <div role="alert" class="bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-900 rounded-lg p-4 mb-4">
+        <div class="flex items-center gap-2">
+            <span class="text-orange-600 dark:text-orange-400">&#9888;</span>
+            <h3 class="text-sm font-semibold text-orange-800 dark:text-orange-300">Some proposals skipped</h3>
+        </div>
+        <p class="text-sm text-orange-700 dark:text-orange-400 mt-1">
+            {{ skipped_revoked }} approved proposal{{ 's' if skipped_revoked != 1 else '' }} could not be dispatched because {{ 'their agents have' if skipped_revoked != 1 else 'its agent has' }} been revoked. Re-route or re-propose these files to dispatch them.
+        </p>
+        {% if revoked_agents %}
+        <ul class="list-disc ml-4 mt-2">
+            {% for agent in revoked_agents %}
+            <li class="text-sm text-orange-700 dark:text-orange-400">{{ agent.name }} (<span class="font-mono text-xs">{{ agent.agent_id }}</span>) -- {{ agent.count }} proposal{{ 's' if agent.count != 1 else '' }} skipped</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if not agents %}
+    {# Empty-state copy when no agents survived the revoked filter. UI-SPEC copywriting row. #}
+    <p class="text-sm text-gray-500 dark:text-gray-400">No approved proposals to execute.</p>
+    {% else %}
+
+    {# Dispatch summary heading (sse-swap="dispatch_summary" — first-connect SSE event replaces inner text). #}
+    <span sse-swap="dispatch_summary" class="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-4 block">
+        Dispatched {{ total }} proposal{{ 's' if total != 1 else '' }} across {{ agents|length }} agent{{ 's' if agents|length != 1 else '' }} ({{ subjobs_expected }} sub-job{{ 's' if subjobs_expected != 1 else '' }})
+    </span>
+
+    {# Aggregate counter row (sse-swap="progress" — preserves Phase 25 event name). #}
+    <span sse-swap="progress" class="flex items-baseline gap-8">
+        <div>
+            <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Total</div>
+            <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ total }}</div>
+        </div>
+        <div>
+            <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Completed</div>
+            <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ completed }}</div>
+        </div>
+        <div>
+            <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Failed</div>
+            <div class="text-xl font-semibold {% if failed > 0 %}text-red-600 dark:text-red-400{% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed }}</div>
+        </div>
+    </span>
+
+    {# Per-agent table (sse-swap="agents_table" — SSE re-renders every tick). #}
+    <div sse-swap="agents_table" class="mt-6 block">
+        {% include "execution/partials/agents_table.html" %}
+    </div>
+    {% endif %}
+
+    {# Dual SSE close listeners — terminal status closes the stream. #}
     <span sse-swap="complete" sse-close="complete"></span>
+    <span sse-swap="complete_with_errors" sse-close="complete_with_errors"></span>
 </div>

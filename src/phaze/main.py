@@ -14,6 +14,7 @@ from phaze.config import settings
 from phaze.database import async_session, engine, run_migrations
 from phaze.routers import (
     agent_analysis,
+    agent_exec_batches,
     agent_execution,
     agent_files,
     agent_fingerprint,
@@ -120,6 +121,9 @@ def create_app() -> FastAPI:
     app.include_router(agent_proposals.router)
     # Phase 27 internal-agent router (D-10).
     app.include_router(agent_scan_batches.router)
+    # Phase 28 internal-agent router (D-05): per-proposal terminal-state progress reporting
+    # — the single mutation point for exec:{batch_id} Redis hash (D-02).
+    app.include_router(agent_exec_batches.router)
     # Phase 27 admin-UI router (D-05..D-08): POST /pipeline/scans + the HTMX
     # poll partial + the agent-roots swap. Distinct from `pipeline.router`,
     # which serves the dashboard page and existing pipeline-stage triggers.

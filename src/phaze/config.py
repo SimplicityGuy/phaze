@@ -11,6 +11,7 @@ from enum import StrEnum
 from functools import lru_cache
 import os
 from typing import Annotated
+from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, SettingsConfigDict
@@ -59,6 +60,34 @@ class BaseSettings(PydanticBaseSettings):
     # Fingerprint service URLs (Docker service names)
     audfprint_url: str = "http://audfprint:8001"
     panako_url: str = "http://panako:8002"
+
+    @field_validator("audfprint_url", "panako_url")
+    @classmethod
+    def _enforce_localhost_only(cls, value: str) -> str:
+        """Phase 28 D-12 / TASK-04: fingerprint sidecars MUST be local to the file server.
+
+        Per XAGENT-01 (deferred): cross-file-server fingerprint matching is not
+        supported in v4.0. Each file server's audfprint+panako indices contain
+        only that file server's files. Reject any URL whose host isn't
+        127.0.0.1 / localhost / a Docker-compose service name on the agent's
+        private network. The Docker-compose defaults (`http://audfprint:8001`,
+        `http://panako:8002`) are accepted because they resolve via the agent
+        container's compose network — never cross-host.
+
+        Lives on `BaseSettings` so both `ControlSettings` and `AgentSettings`
+        inherit the guard at construction time.
+        """
+        parsed = urlparse(value)
+        allowed_hosts = {"localhost", "127.0.0.1", "audfprint", "panako"}
+        if parsed.hostname not in allowed_hosts:
+            msg = (
+                f"audfprint_url/panako_url must point to a host on the agent's "
+                f"local Compose network (got host={parsed.hostname!r}; allowed="
+                f"{sorted(allowed_hosts)}). Cross-file-server fingerprint matching "
+                f"is not supported in v4.0 -- see XAGENT-01."
+            )
+            raise ValueError(msg)
+        return value
 
     # Discogsography service URL (shared base; concurrency-tunable on Control)
     discogsography_url: str = "http://discogsography:8000"

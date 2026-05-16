@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: ready_to_plan
-stopped_at: Phase 27 merged (PR #59 → main)
-last_updated: "2026-05-14T19:50:00.000Z"
-last_activity: 2026-05-14 -- Phase 27 merged into main as commit 4efb4a4
+status: "Phase 28 shipped — PR #62"
+stopped_at: "Phase 28 shipped (PR #62)"
+last_updated: "2026-05-16T03:22:43.584Z"
+last_activity: 2026-05-15 -- Phase 28 shipped
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 33
-  completed_plans: 33
-  percent: 83
+  completed_phases: 4
+  total_plans: 39
+  completed_plans: 34
+  percent: 87
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Phase 27 — watcher-service-user-initiated-scan
+**Current focus:** Phase 28 — distributed-execution-dispatch
 
 ## Current Position
 
-Phase: 28
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-05-14
+Phase: 28 (distributed-execution-dispatch) — EXECUTING
+Plan: 1 of 6
+Status: Phase 28 shipped — PR #62
+Last activity: 2026-05-15 -- Phase 28 shipped
 
 Progress: [██████████] 100%
 
@@ -112,6 +112,12 @@ Progress: [██████████] 100%
 - [Phase 27-05]: Stuck-file cap = 3600s default (D-02 / T-27-05); evicted entries log WARNING but do NOT post; bounded in-memory cost. Watcher POSTs chunk-of-1 with batch_id OMITTED (not None) to trigger server-side LIVE-sentinel resolution (D-18)
 - [Phase 27-06]: HTMX poll-partial halt: terminal-state markup OMITS hx-trigger AND hx-get; outerHTML swap replaces the polling element entirely (Pitfall 6); cadence = every 2s for scan progress, every 5s for stats bar. Recent Scans mini-table uses transient _agent_name / _elapsed_seconds attrs on ORM rows to avoid N+1
 - [Phase 27-07]: Compose 'watcher' service lives in root docker-compose.yml; Phase 29 will move it + 'worker' to docker-compose.agent.yml; depends_on api: service_started (no healthcheck); restart: unless-stopped is the only liveness mechanism in Phase 27. Volume mount SCAN_PATH:/data/music:ro only (no MODELS_PATH/OUTPUT_PATH; watcher is fileless-write)
+- [Phase 28-01]: Fingerprint URL allow-list validator (`_enforce_localhost_only` on BaseSettings) blocks non-localhost `audfprint_url`/`panako_url` at config load (D-12 / TASK-04); `ExecuteApprovedBatchPayload.sub_batch_index: int = 0` schema field (D-10) — agent worker reports which chunk of a per-agent dispatch it owns
+- [Phase 28-02]: `POST /api/internal/agent/exec-batches/{batch_id}/progress` handler order is part of the spec: 401→403(cross-tenant)→404(missing hash)→403(agent not in dispatch)→Redis-SET-NX dedup→HINCRBY per D-07; sub_batch_terminal=true promotes status when `subjobs_completed == subjobs_expected`
+- [Phase 28-03]: Dispatch grouping uses in-Python `defaultdict(list)` over SQL `GROUP BY ... jsonb_agg(...)` — v4.0 scale (1-5 agents × ≤10K proposals) makes the type-safe path cheaper than DB aggregation; `Agent.revoked_at.is_(None)` filter applied both in JOIN and in skipped-count query
+- [Phase 28-04]: SSE payloads rendered as 3 separate Jinja partials (`dispatch_summary_inline.html`, `agents_table.html`, `progress_row_inline.html`) via `_render_partial()` helper through `Jinja2Templates.TemplateResponse(...).body.decode()` — Semgrep XSS-lint requires this over bare `Environment.get_template().render()`
+- [Phase 28-05]: `_load_or_seed_uuids(job, proposals)` persists BOTH `execution_log_id` and `progress_request_id` per-proposal UUIDs in `ctx['job'].meta` via single `await job.update(meta=...)` so SAQ retries reuse them (closes L6/L22, delivers D-15); failure progress POSTs use D-16 fire-and-forget (WARNING-on-failure swallow because file ops already committed); error_message format is `"<step>: <reason>"` (D-01)
+- [Phase 28-06]: `cross_fs_fingerprint_notice.html` banner is dismissible per session only (no localStorage); included on `duplicates/list.html` as first child of the `space-y-6` div above `<h1>`; PROJECT.md Constraints paragraph documents XAGENT-01 (deferred cross-file-server fingerprint matching)
 
 ### Pending Todos
 
@@ -142,6 +148,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-13T18:45:31.242Z
-Stopped at: Phase 27 UI-SPEC approved
-Resume file: .planning/phases/27-watcher-service-user-initiated-scan/27-UI-SPEC.md
+Last session: 2026-05-15T00:12:04.513Z
+Stopped at: Phase 28 shipped (PR #62)
+Resume file: .planning/phases/28-distributed-execution-dispatch/28-UI-SPEC.md

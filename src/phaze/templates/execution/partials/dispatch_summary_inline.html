@@ -1,0 +1,10 @@
+{# Phase 28 D-11: server-rendered SSE payload for the dispatch_summary event.
+   The HTML fragment HTMX swaps into the <span sse-swap="dispatch_summary">
+   slot inside progress.html on FIRST SSE connect only.
+
+   Context:
+     - total (int): total proposals across all agents
+     - agents (list[dict]): one entry per agent in dispatch order
+     - subjobs_expected (int): ceil(N/500) summed across agents
+#}
+Dispatched {{ total }} proposal{{ 's' if total != 1 else '' }} across {{ agents|length }} agent{{ 's' if agents|length != 1 else '' }} ({{ subjobs_expected }} sub-job{{ 's' if subjobs_expected != 1 else '' }})
