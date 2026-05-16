@@ -1,15 +1,27 @@
 ---
+# Application-server compose. Phase 29 hardening (D-05, D-17, D-19):
+#   - Only the application-server services live here: {api, worker, postgres, redis}.
+#   - The watcher, agent-worker, and audfprint/panako sidecar services live in
+#     docker-compose.agent.yml (deployed on the file server in Plan 04+).
+#   - api + worker have NO music/model/output file mounts (DIST-01). The api
+#     container only mounts ./certs/ so the cert bootstrap (Plan 01) can read
+#     and write the auto-generated CA + leaf certificates.
+#   - Redis is hardened per D-05: --requirepass with REDIS_PASSWORD env var
+#     (fail-fast at compose-parse time), LAN-bound port via REDIS_BIND_IP,
+#     and an authenticated healthcheck with --no-auth-warning.
 services:
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    command: uv run uvicorn phaze.main:app --host 0.0.0.0 --port 8000
+    command: uv run python -m phaze.entrypoint
     ports:
       - "${API_PORT:-8000}:8000"
     env_file: .env
     volumes:
-      - "${SCAN_PATH:-/data/music}:/data/music:ro"
+      # ./certs/ is bind-mounted rw so phaze.cert_bootstrap can generate the
+      # CA + leaf certificates on first start (idempotent on subsequent starts).
+      - "${CA_PATH:-./certs}:/certs:rw"
     depends_on:
       postgres:
         condition: service_healthy
@@ -17,14 +29,10 @@ services:
         condition: service_healthy
 
   # Application-server worker -- control role (fileless SAQ tasks only).
-  # Phase 26 D-04: replaces the legacy combined SAQ module; the file-bound
-  # half moves to per-agent `phaze.tasks.agent_worker.settings` workers shipped
-  # via docker-compose.agent.yml in Phase 29. PHAZE_ROLE=control selects
-  # ControlSettings in phaze.config.get_settings().
-  # audfprint + panako dependencies removed -- controller is fileless and the
-  # fingerprint sidecars are only reachable from the agent worker. Volumes are
-  # kept for now because the application-server image still contains code paths
-  # that reference SCAN_PATH / MODELS_PATH; Phase 29 will strip them.
+  # Phase 29 D-17: the agent-side counterpart lives in docker-compose.agent.yml.
+  # PHAZE_ROLE=control selects ControlSettings in phaze.config.get_settings().
+  # No volume mounts: the controller is fileless and never touches SCAN_PATH,
+  # MODELS_PATH, or OUTPUT_PATH (DIST-01).
   worker:
     build:
       context: .
@@ -32,68 +40,12 @@ services:
     command: uv run saq phaze.tasks.controller.settings
     env_file: .env
     environment:
-      - MODELS_PATH=/models
       - PHAZE_ROLE=control
-    volumes:
-      - "${SCAN_PATH:-/data/music}:/data/music:ro"
-      - "${MODELS_PATH:-./models}:/models:ro"
-      - "${OUTPUT_PATH:-/data/output}:/data/output:rw"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-
-  # Phase 27 D-19: always-on watcher. Will move to docker-compose.agent.yml in Phase 29
-  # alongside the renamed worker (per Phase 26 D-04 plan). Image is the same as worker
-  # but entry point is python -m phaze.agent_watcher (NOT saq settings).
-  watcher:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: uv run python -m phaze.agent_watcher
-    env_file: .env
-    environment:
-      - PHAZE_ROLE=agent
-      # PHAZE_AGENT_API_URL, PHAZE_AGENT_TOKEN, PHAZE_AGENT_SCAN_ROOTS come from .env
-    volumes:
-      - "${SCAN_PATH:-/data/music}:/data/music:ro"
-    depends_on:
-      api:
-        condition: service_started
-    restart: unless-stopped
-
-  # Phase 27 UAT gap-13: agent-side SAQ worker consuming the per-agent queue
-  # `phaze-agent-{agent_id}`. Without this, jobs the API enqueues
-  # (scan_directory, extract_file_metadata) sit in Redis with status="queued"
-  # because the `worker` service above only consumes the `controller` queue.
-  # Will move to docker-compose.agent.yml in Phase 29 alongside the watcher
-  # (per Phase 26 D-04 plan).
-  agent-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: uv run saq phaze.tasks.agent_worker.settings
-    env_file: .env
-    environment:
-      - MODELS_PATH=/models
-      - PHAZE_ROLE=agent
-      # PHAZE_AGENT_QUEUE binds the SAQ worker to the per-agent queue named
-      # `phaze-agent-<agent_id>`. The dev seeder always creates `dev-agent`
-      # (see phaze.services.agent_bootstrap.ensure_dev_agent), so the queue is
-      # `phaze-agent-dev-agent`. Phase 29 will parameterize this per-agent when
-      # the worker moves to docker-compose.agent.yml.
-      - PHAZE_AGENT_QUEUE=phaze-agent-dev-agent
-      # PHAZE_AGENT_API_URL, PHAZE_AGENT_TOKEN, PHAZE_AGENT_SCAN_ROOTS come from .env
-    volumes:
-      - "${SCAN_PATH:-/data/music}:/data/music:ro"
-      - "${MODELS_PATH:-./models}:/models:ro"
-    depends_on:
-      api:
-        condition: service_started
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
 
   postgres:
     image: postgres:18-alpine
@@ -117,43 +69,26 @@ services:
 
   redis:
     image: redis:8-alpine
+    # Phase 29 D-05 / AUTH-03: --requirepass with REDIS_PASSWORD interpolation
+    # (`${VAR:?msg}` fails fast at compose-parse time if unset). The agent-side
+    # half of AUTH-03 lives in AgentSettings._enforce_redis_password_in_production
+    # (Plan 02): production agents reject passwordless redis_url.
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD required}"
     ports:
-      - "6379:6379"
+      # Bind to loopback in dev; production overrides REDIS_BIND_IP to the
+      # app-server's LAN IP (e.g. 192.168.1.10) so agents on other hosts reach
+      # it. WITHOUT an explicit IP prefix, docker binds to 0.0.0.0.
+      - "${REDIS_BIND_IP:-127.0.0.1}:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # --no-auth-warning suppresses redis-cli's stderr warning about passing
+      # the password on the command line. The ping itself still requires auth.
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  audfprint:
-    build:
-      context: .
-      dockerfile: services/audfprint/Dockerfile.audfprint
-    volumes:
-      - "${SCAN_PATH:-/data/music}:/data/music:ro"
-      - audfprint_data:/data/fprint
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
-  panako:
-    build:
-      context: .
-      dockerfile: services/panako/Dockerfile.panako
-    volumes:
-      - "${SCAN_PATH:-/data/music}:/data/music:ro"
-      - panako_data:/data/fprint
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
 volumes:
   pgdata:
-  audfprint_data:
-  panako_data:
