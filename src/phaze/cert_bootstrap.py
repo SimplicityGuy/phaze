@@ -85,6 +85,7 @@ def _generate_ca(cn: str) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]
     key = ec.generate_private_key(ec.SECP256R1())
     subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     now = datetime.datetime.now(datetime.UTC)
+    ski = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -108,6 +109,11 @@ def _generate_ca(cn: str) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]
             ),
             critical=True,
         )
+        # SubjectKeyIdentifier on the CA is the key that leaves below reference
+        # via AuthorityKeyIdentifier. Python 3.13's ssl module rejects the
+        # validation chain with "Missing Authority Key Identifier" if either
+        # extension is missing -- see test_correct_ca_succeeds.
+        .add_extension(ski, critical=False)
         .sign(key, hashes.SHA256())
     )
     return key, cert
@@ -122,6 +128,11 @@ def _generate_leaf(
     """Generate a CA-signed leaf cert (ECDSA P-256, 2-year validity)."""
     leaf_key = ec.generate_private_key(ec.SECP256R1())
     now = datetime.datetime.now(datetime.UTC)
+    # AuthorityKeyIdentifier ties the leaf to the CA's SubjectKeyIdentifier --
+    # required by Python 3.13's TLS verification path (test_correct_ca_succeeds
+    # fails with "Missing Authority Key Identifier" without these extensions).
+    aki = x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key())
+    ski = x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key())
     leaf_cert = (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)]))
@@ -145,6 +156,15 @@ def _generate_leaf(
                 decipher_only=False,
             ),
             critical=True,
+        )
+        .add_extension(aki, critical=False)
+        .add_extension(ski, critical=False)
+        # ExtendedKeyUsage: server-auth required by Python 3.13's strict TLS
+        # validation. Without it, the leaf is recognized as a generic cert
+        # but rejected when presented to a TLS client expecting a server cert.
+        .add_extension(
+            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
         )
         .sign(ca_key, hashes.SHA256())
     )
