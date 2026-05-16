@@ -167,6 +167,18 @@
                    class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'audit' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
                     Audit Log
                 </a>
+                {# Phase 29 plan 07: operator-facing /admin/agents liveness page.
+                   WARNING-1: short-slug nav-key convention — the live Audit Log
+                   link above uses `current_page == 'audit'` (NOT `'audit_log'`),
+                   so this new link uses `'admin_agents'` (NOT `'admin_agents_log'`
+                   or `'admin_agents_page'`). The new aria-current="page" attribute
+                   is a forward-looking accessibility upgrade; the other 9 nav
+                   links above are intentionally NOT retrofitted in this PR. #}
+                <a href="/admin/agents"
+                   {% if current_page == 'admin_agents' %}aria-current="page"{% endif %}
+                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'admin_agents' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
+                    Agents
+                </a>
             </div>
 
             <!-- Theme toggle -->
