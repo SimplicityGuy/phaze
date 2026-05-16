@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 28 shipped — PR #62"
-stopped_at: Phase 29 context gathered
-last_updated: "2026-05-16T17:17:33.543Z"
-last_activity: 2026-05-15 -- Phase 28 shipped
+status: executing
+stopped_at: Phase 29 UI-SPEC approved
+last_updated: "2026-05-16T21:35:14.012Z"
+last_activity: 2026-05-16 -- Phase 29 planning complete
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 39
+  total_plans: 47
   completed_plans: 40
   percent: 83
 ---
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 Phase: 28 (distributed-execution-dispatch) — EXECUTING
 Plan: 1 of 6
-Status: Phase 28 shipped — PR #62
-Last activity: 2026-05-15 -- Phase 28 shipped
+Status: Ready to execute
+Last activity: 2026-05-16 -- Phase 29 planning complete
 
 Progress: [██████████] 100%
 
@@ -148,6 +148,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-16T17:17:33.537Z
-Stopped at: Phase 29 context gathered
-Resume file: .planning/phases/29-deployment-hardening-agents-admin/29-CONTEXT.md
+Last session: 2026-05-16T18:00:22.911Z
+Stopped at: Phase 29 UI-SPEC approved
+Resume file: .planning/phases/29-deployment-hardening-agents-admin/29-UI-SPEC.md
