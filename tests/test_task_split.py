@@ -234,3 +234,48 @@ def test_shared_bootstrap_stays_postgres_free() -> None:
         check=False,
     )
     assert result.returncode == 0, f"shared bootstrap import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
+def test_model_bootstrap_stays_postgres_free() -> None:
+    """Phase 29 D-21 invariant: phaze.tasks._shared.model_bootstrap is Postgres-free.
+
+    Parallel to test_shared_bootstrap_stays_postgres_free (which covers
+    agent_bootstrap.py only). The model_bootstrap module imports:
+    - stdlib (logging, pathlib)
+    - phaze.scripts.download_models (which imports httpx only)
+
+    None of those pull in phaze.database, phaze.tasks.session, or
+    sqlalchemy.ext.asyncio. This test fails CI if the model_bootstrap module
+    is later extended with a Postgres-touching import (e.g., to track
+    download progress in the DB).
+
+    Phase 29 BLOCKER-1 resolution.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.tasks._shared.model_bootstrap  # noqa: F401
+
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"model_bootstrap import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
