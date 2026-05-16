@@ -24,18 +24,25 @@ jobs:
     strategy:
       matrix:
         include:
+          # Phase 29 D-15 / D-16: the api image is pulled by docker-compose.agent.yml's
+          # worker + watcher services via the bare-repo URL
+          # ghcr.io/simplicityguy/phaze:<tag> (no /api sub-path), so we override
+          # image_suffix to "" for api and keep the sub-path for the sidecars.
           - name: api
             dockerfile: Dockerfile
             context: .
             use_cache: true
+            image_suffix: ""
           - name: audfprint
             dockerfile: services/audfprint/Dockerfile.audfprint
             context: .
             use_cache: true
+            image_suffix: "/audfprint"
           - name: panako
             dockerfile: services/panako/Dockerfile.panako
             context: .
             use_cache: true
+            image_suffix: "/panako"
 
     steps:
       - name: "\u23F1\uFE0F Start timer"
@@ -90,9 +97,19 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.name }}
+          # Phase 29 D-15: matrix.image_suffix is "" for the api image (bare-repo
+          # URL ghcr.io/simplicityguy/phaze pulled by docker-compose.agent.yml)
+          # and "/<name>" for the sidecars. This keeps the api URL aligned with
+          # the agent.yml image: line.
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.image_suffix }}
+          # Phase 29 D-16 + WARNING-4: tag strategy is verified by
+          # tests/test_deployment/test_agent_compose.py::test_docker_publish_workflow_tags_both_latest_and_version
+          # which asserts BOTH a `:latest` and a `:v<version>` tag are produced.
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
             type=ref,event=branch
             type=ref,event=pr
             type=schedule,pattern={{date 'YYYYMMDD'}}
