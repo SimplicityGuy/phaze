@@ -225,14 +225,22 @@ def test_docker_compose_worker_command_is_controller_settings() -> None:
 
 
 def test_docker_compose_has_agent_worker_consuming_agent_queue() -> None:
-    """docker-compose.yml has a service running 'saq phaze.tasks.agent_worker.settings' as PHAZE_ROLE=agent."""
+    """A compose file declares a service running 'saq phaze.tasks.agent_worker.settings' as PHAZE_ROLE=agent.
+
+    Phase 29 D-15/D-17 split the compose surface in two:
+      - docker-compose.yml          — application-server-only services (api, worker=control, postgres, redis).
+      - docker-compose.agent.yml    — file-server-only services (worker=agent, watcher, audfprint, panako).
+    The agent-worker now lives in docker-compose.agent.yml; this test scans
+    BOTH files so the Phase 27 UAT gap-13 invariant (an agent-side SAQ
+    consumer exists somewhere in the deployment surface) stays codified.
+    """
     import yaml
 
-    compose_file = Path(__file__).parent.parent / "docker-compose.yml"
-    assert compose_file.exists(), "docker-compose.yml not found at project root"
-
-    compose = yaml.safe_load(compose_file.read_text())
-    services = compose.get("services", {})
+    root_dir = Path(__file__).parent.parent
+    compose_files = [
+        root_dir / "docker-compose.yml",
+        root_dir / "docker-compose.agent.yml",
+    ]
 
     def env_has(svc_env: object, key: str, value: str) -> bool:
         # Compose env may be a list ("KEY=VAL") or a dict.
@@ -242,15 +250,23 @@ def test_docker_compose_has_agent_worker_consuming_agent_queue() -> None:
             return svc_env.get(key) == value
         return False
 
-    consumers = [
-        name
-        for name, spec in services.items()
-        if "saq phaze.tasks.agent_worker.settings" in str(spec.get("command", "")) and env_has(spec.get("environment"), "PHAZE_ROLE", "agent")
-    ]
+    consumers: list[str] = []
+    for compose_file in compose_files:
+        if not compose_file.exists():
+            continue
+        compose = yaml.safe_load(compose_file.read_text())
+        services = compose.get("services", {}) or {}
+        for name, spec in services.items():
+            command = str(spec.get("command", ""))
+            if "saq phaze.tasks.agent_worker.settings" in command and env_has(spec.get("environment"), "PHAZE_ROLE", "agent"):
+                consumers.append(f"{compose_file.name}::{name}")
 
     assert consumers, (
-        "docker-compose.yml must include at least one service that runs "
+        "No compose file declares a service running "
         "'uv run saq phaze.tasks.agent_worker.settings' with PHAZE_ROLE=agent. "
-        "Without it, scan_directory / extract_file_metadata jobs the API "
-        "enqueues onto 'phaze-agent-{agent_id}' have no consumer (Phase 27 UAT gap-13)."
+        "Phase 29 moved the agent-worker out of docker-compose.yml and into "
+        "docker-compose.agent.yml (D-15 / D-17). Without an agent-side SAQ "
+        "consumer somewhere in the deployment surface, scan_directory / "
+        "extract_file_metadata jobs the API enqueues onto "
+        "'phaze-agent-{agent_id}' have no consumer (Phase 27 UAT gap-13)."
     )

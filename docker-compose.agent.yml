@@ -1,0 +1,74 @@
+---
+# docker-compose.agent.yml — file-server-host compose (Phase 29 D-15).
+#
+# Standalone file. The operator runs:
+#   docker compose -f docker-compose.agent.yml up -d
+# on a file server (no other compose file needed).
+#
+# Service split — only file-server-local services live here:
+#   worker     — agent-side SAQ worker (PHAZE_ROLE=agent). Pulls from GHCR.
+#   watcher    — directory watcher (PHAZE_ROLE=agent). Pulls from GHCR.
+#   audfprint  — fingerprint sidecar (build context, not on GHCR per D-15).
+#   panako     — fingerprint sidecar (build context, not on GHCR per D-15).
+#
+# Invariants (asserted by tests/test_deployment/test_agent_compose.py):
+#   - No DATABASE_URL on any service (DIST-04: agents reach Postgres only via
+#     the application server's HTTP API).
+#   - No postgres or redis service here (agents connect to the app-server's).
+#   - ${SCAN_PATH:?SCAN_PATH required} fail-fast on ALL 4 services — docker
+#     compose up errors at parse time on a misconfigured host (WARNING-2/-3).
+#   - MODELS_PATH bind mount is rw on worker + watcher (D-21 auto-download).
+#   - CA_PATH bind mount is ro everywhere (operator-distributed CA cert).
+#
+# Image tag pinning (D-16): default `latest` is convenient for first-time
+# operators. Production should pin to a specific version tag via
+# `PHAZE_IMAGE_TAG=v4.0.0` in .env. The docker-publish.yml workflow tags both
+# `:latest` and `:v<version>` on tagged releases (verified by
+# test_docker_publish_workflow_tags_both_latest_and_version).
+
+services:
+  worker:
+    image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}
+    command: uv run saq phaze.tasks.agent_worker.settings
+    env_file: .env
+    environment:
+      - PHAZE_ROLE=agent
+    volumes:
+      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
+      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${CA_PATH:-./certs}:/certs:ro"
+    restart: unless-stopped
+
+  watcher:
+    image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}
+    command: uv run python -m phaze.agent_watcher
+    env_file: .env
+    environment:
+      - PHAZE_ROLE=agent
+    volumes:
+      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
+      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${CA_PATH:-./certs}:/certs:ro"
+    restart: unless-stopped
+
+  audfprint:
+    build:
+      context: .
+      dockerfile: services/audfprint/Dockerfile.audfprint
+    volumes:
+      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
+      - audfprint_data:/data/fprint
+    restart: unless-stopped
+
+  panako:
+    build:
+      context: .
+      dockerfile: services/panako/Dockerfile.panako
+    volumes:
+      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
+      - panako_data:/data/fprint
+    restart: unless-stopped
+
+volumes:
+  audfprint_data:
+  panako_data:
