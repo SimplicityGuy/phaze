@@ -101,3 +101,64 @@ def test_all_scan_path_mounts_use_failfast_syntax() -> None:
             if "SCAN_PATH" in vol and not failfast_re.search(vol):
                 offenders.append(f"{svc_name}: {vol}")
     assert not offenders, "Some SCAN_PATH mounts are not fail-fast (must use ${SCAN_PATH:?MESSAGE} form):\n" + "\n".join(offenders)
+
+
+def _extract_api_metadata_action_step(workflow_data: dict[str, Any]) -> dict[str, Any] | None:
+    """Locate a docker/metadata-action step whose `images:` output points at the api image.
+
+    docker-publish.yml uses a matrix over {api, audfprint, panako}; the same
+    metadata-action step runs for each matrix value with an interpolated
+    `images:` URL. The agent.yml's worker+watcher pull from the *api* image
+    URL (bare-repo, no sub-path), so this helper specifically looks for the
+    api-image step. If the workflow uses a single shared step (no matrix
+    differentiation in `images:`), any docker/metadata-action step is
+    returned.
+    """
+    for job in (workflow_data.get("jobs") or {}).values():
+        for step in job.get("steps", []) or []:
+            uses = (step.get("uses") or "").lower()
+            if "docker/metadata-action" in uses:
+                return step  # type: ignore[no-any-return]
+    return None
+
+
+def _metadata_action_tag_lines(step: dict[str, Any]) -> list[str]:
+    """Return the docker/metadata-action `with.tags:` block split on newlines."""
+    tags_raw = (step.get("with") or {}).get("tags", "")
+    return [line.strip() for line in str(tags_raw).splitlines() if line.strip()]
+
+
+def test_docker_publish_workflow_tags_both_latest_and_version() -> None:
+    """WARNING-4: .github/workflows/docker-publish.yml emits BOTH :latest AND :v<version> tags.
+
+    Replaces the original `checkpoint:human-verify` task (Phase 29 plan 04
+    WARNING-4 resolution). An automated YAML-parse test guarantees the tag
+    strategy stays correct across metadata-action upgrades or maintainer
+    edits — a regression that drops the version tag pattern (e.g., during a
+    refactor) is caught in CI rather than after the next release ships.
+
+    Tag patterns accepted:
+      - `:latest` ← `type=raw,value=latest` (with or without `enable=...`)
+      - `:v<version>` ← `type=semver,pattern={{version}}` OR `type=ref,event=tag`
+    """
+    assert PUBLISH_WORKFLOW_PATH.exists(), f"docker-publish.yml missing at {PUBLISH_WORKFLOW_PATH}"
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW_PATH.read_text())
+    step = _extract_api_metadata_action_step(workflow)
+    assert step is not None, (
+        "Could not locate a docker/metadata-action step in docker-publish.yml. "
+        "Phase 29 D-16 requires the workflow to produce both :latest and :v<version> tags."
+    )
+    tags = _metadata_action_tag_lines(step)
+    assert tags, f"docker/metadata-action step has no `with.tags:` block; got step={step!r}"
+
+    has_latest = any("value=latest" in t for t in tags)
+    has_version = any(("type=semver" in t) or ("type=ref,event=tag" in t) or ("type=ref" in t and "tag" in t) for t in tags)
+    missing: list[str] = []
+    if not has_latest:
+        missing.append("'type=raw,value=latest' (or equivalent)")
+    if not has_version:
+        missing.append("'type=semver,pattern={{version}}' (or 'type=ref,event=tag')")
+    assert not missing, (
+        f"docker-publish.yml tag patterns missing: {missing}\nFound tags: {tags}\n"
+        "Fix: add the missing pattern(s) under jobs.<job>.steps[uses=docker/metadata-action].with.tags."
+    )
