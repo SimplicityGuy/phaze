@@ -181,13 +181,13 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
   5. Running `just download-models` on a fresh file server populates that host's local `/models` volume; the application-server image neither downloads nor mounts models
   6. Each agent posts a heartbeat to `/api/internal/agent/heartbeat` every 30 seconds; the Agents admin page lists every registered agent with name, status (alive/stale/revoked), queue depth, and last-seen timestamp, and refreshes without requiring a manual page reload
 **Plans**: 8 plans
-- [ ] 29-01-PLAN.md — TLS termination + cert bootstrap (cryptography dep, cert_bootstrap, entrypoint, agent_ca_file/api_tls_sans/verify=) + D-04 wrong-CA integration test (Wave 1)
-- [ ] 29-02-PLAN.md — AgentSettings agent_env field + production-mode redis_url password validator (Wave 1)
-- [ ] 29-03-PLAN.md — Root docker-compose.yml strip mounts + delete watcher/agent-worker/audfprint/panako + redis hardening + .env.example + filesystem-isolation YAML-parse tests (Wave 1)
+- [x] 29-01-PLAN.md — TLS termination + cert bootstrap (cryptography dep, cert_bootstrap, entrypoint, agent_ca_file/api_tls_sans/verify=) + D-04 wrong-CA integration test (Wave 1)
+- [x] 29-02-PLAN.md — AgentSettings agent_env field + production-mode redis_url password validator (Wave 1)
+- [x] 29-03-PLAN.md — Root docker-compose.yml strip mounts + delete watcher/agent-worker/audfprint/panako + redis hardening + .env.example + filesystem-isolation YAML-parse tests (Wave 1)
 - [ ] 29-04-PLAN.md — docker-compose.agent.yml (4 services: worker, watcher, audfprint, panako) + .env.example.agent + agent-compose YAML-parse tests + docker-publish.yml tag verification (Wave 2)
-- [ ] 29-05-PLAN.md — Models auto-download: phaze.scripts.download_models Python helper + phaze.tasks._shared.model_bootstrap + agent_worker/watcher startup wiring + bash shim rewrite (Wave 2)
+- [x] 29-05-PLAN.md — Models auto-download: phaze.scripts.download_models Python helper + phaze.tasks._shared.model_bootstrap + agent_worker/watcher startup wiring + bash shim rewrite (Wave 2)
 - [ ] 29-06-PLAN.md — Heartbeat caller: phaze.tasks.heartbeat.heartbeat_tick + SAQ CronJob registration in agent_worker.settings (trailing-seconds cron form per Critical Discovery #2) (Wave 3)
-- [ ] 29-07-PLAN.md — Agents admin page: constants + services.agent_liveness + utils.humanize + routers.admin_agents + 3 Jinja templates + base.html nav link + main.py registration (Wave 3)
+- [x] 29-07-PLAN.md — Agents admin page: constants + services.agent_liveness + utils.humanize + routers.admin_agents + 3 Jinja templates + base.html nav link + main.py registration (Wave 3)
 - [ ] 29-08-PLAN.md — Justfile recipes (up-agent, up-all) + docs/deployment.md + PROJECT.md Deployment subsection + scripts/update-project.sh touch + blocking human-verify checkpoint (Wave 4)
 **UI hint**: yes
 
@@ -223,4 +223,4 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 7/7 | Complete    | 2026-05-14 |
 | 28. Distributed Execution Dispatch | v4.0 | 6/6 | Complete   | 2026-05-15 |
-| 29. Deployment Hardening & Agents Admin | v4.0 | 0/8 | Not started | - |
+| 29. Deployment Hardening & Agents Admin | v4.0 | 5/8 | In Progress|  |
