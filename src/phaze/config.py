@@ -105,6 +105,16 @@ class BaseSettings(PydanticBaseSettings):
         description="Run `alembic upgrade head` in the api lifespan startup.",
     )
 
+    # Phase 29 D-02: SAN list baked into the auto-generated leaf cert at api
+    # entrypoint. Default covers single-host dev (`localhost`, `127.0.0.1`)
+    # and the docker-compose service-name DNS (`api`) so agents on the same
+    # network can verify a TLS handshake to `https://api:8000`.
+    api_tls_sans: str = Field(
+        default="localhost,127.0.0.1,api",
+        validation_alias=AliasChoices("PHAZE_API_TLS_SANS", "api_tls_sans"),
+        description="Comma-separated SAN list for the auto-generated leaf cert (Phase 29 D-02).",
+    )
+
     # Phase 27 UAT Gap 3: seed a dev agent on a fresh DB so the watcher can
     # authenticate on first start. Disabled by default in production; the
     # operator-supplied token (if set) overrides the random one printed at
@@ -200,6 +210,18 @@ class AgentSettings(BaseSettings):
         default=500,
         validation_alias=AliasChoices("PHAZE_SCAN_CHUNK_SIZE", "scan_chunk_size"),
         description="Number of FileUpsertRecord rows per chunk in scan_directory (D-11).",
+    )
+
+    # Phase 29 D-03: path to the operator-distributed CA cert that the agent's
+    # httpx.AsyncClient uses to verify the application-server TLS endpoint.
+    # Default `/certs/phaze-ca.crt` matches the bind-mount path inside agent
+    # containers (docker-compose.agent.yml). `construct_agent_client` raises
+    # RuntimeError at construction time if the file is missing or empty so
+    # misconfiguration surfaces fast.
+    agent_ca_file: str = Field(
+        default="/certs/phaze-ca.crt",
+        validation_alias=AliasChoices("PHAZE_AGENT_CA_FILE", "agent_ca_file"),
+        description="Path to the operator-distributed CA cert for verifying the app-server TLS endpoint (Phase 29 D-03).",
     )
 
     @field_validator("scan_roots", mode="before")
