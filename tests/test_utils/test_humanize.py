@@ -90,15 +90,22 @@ def test_relative_time_boundaries(delta_seconds: int, expected: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_relative_time_truncates_not_rounds_89_7_seconds() -> None:
-    """UI-SPEC LOCKED line 248: 89.7s → '89s ago', NOT '1m ago'.
+def test_relative_time_truncates_not_rounds_within_seconds_bucket() -> None:
+    """UI-SPEC truncation rule: int() truncates toward zero, NOT round.
 
-    int() truncates toward zero. round() would produce '90s' (still <60? no,
-    >=60 → '1m'). The LOCKED behavior is int-truncate so the user sees the
-    last visible threshold cross.
+    UI-SPEC LOCKED line 248 spells the rule with a "89.7s → '89s ago'" example,
+    but 89.7s lies in the [60, 3600) minutes bucket per the LOCKED output
+    table on lines 232-241 (the table is the authoritative contract). The
+    truncation rule itself is verified here with a value INSIDE the seconds
+    bucket so both LOCKED invariants hold: ``int()`` truncates (59.7 → 59,
+    not round to 60 which would cross the bucket boundary), AND the
+    [0, 60) seconds bucket is respected. This is the Rule-1 reconciliation
+    of the UI-SPEC documentation defect (the 89.7 prose example is
+    internally inconsistent with its own bucket table — see plan 29-07
+    SUMMARY deviation log).
     """
-    dt = NOW - timedelta(seconds=89.7)
-    assert relative_time(dt, now=NOW) == "89s ago"
+    dt = NOW - timedelta(seconds=59.7)
+    assert relative_time(dt, now=NOW) == "59s ago"
 
 
 def test_relative_time_truncates_fractional_minutes() -> None:
