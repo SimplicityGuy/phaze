@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 from pydantic import SecretStr
@@ -24,17 +25,32 @@ from phaze.services.agent_client import AgentApiAuthError, AgentApiServerError, 
 from phaze.tasks._shared import agent_bootstrap as ab
 
 
-def _build_agent_settings(monkeypatch: pytest.MonkeyPatch) -> AgentSettings:
-    """Build an AgentSettings instance bypassing env-var resolution."""
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def _build_agent_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AgentSettings:
+    """Build an AgentSettings instance bypassing env-var resolution.
+
+    Phase 29 D-03: construct_agent_client validates ``agent_ca_file`` and
+    passes it through to ``httpx.AsyncClient(verify=...)``, which loads the
+    PEM at client-construction time. The fixture therefore generates a real
+    CA via the same cert_bootstrap module the production entrypoint uses.
+    """
+    from phaze.cert_bootstrap import ensure_certs_present
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv="localhost,127.0.0.1")
+    ca_file = tmp_path / "phaze-ca.crt"
     monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://app.test:8000")
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-xyz")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
+    monkeypatch.setenv("PHAZE_AGENT_CA_FILE", str(ca_file))
     return AgentSettings()
 
 
-def test_construct_agent_client_uses_cfg_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_construct_agent_client_uses_cfg_fields(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """construct_agent_client(cfg) returns a PhazeAgentClient with base_url/token from cfg."""
-    cfg = _build_agent_settings(monkeypatch)
+    cfg = _build_agent_settings(monkeypatch, tmp_path)
 
     client = ab.construct_agent_client(cfg)
 
@@ -56,11 +72,12 @@ def test_construct_agent_client_uses_cfg_fields(monkeypatch: pytest.MonkeyPatch)
 def test_construct_agent_client_does_not_log_secret(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """T-27-04 mitigation: construct_agent_client must not emit any log line that
     includes the cleartext bearer token. Verified by sweeping caplog for the
     secret bytes."""
-    cfg = _build_agent_settings(monkeypatch)
+    cfg = _build_agent_settings(monkeypatch, tmp_path)
     # Override the token with a synthetic secret bytes pattern we can grep for.
     cfg = cfg.model_copy(update={"agent_token": SecretStr("phaze_agent_BYTES-1234-ABCDEF")})
 
