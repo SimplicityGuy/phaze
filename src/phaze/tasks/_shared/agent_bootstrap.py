@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from phaze.services.agent_client import AgentApiAuthError, AgentApiError, PhazeAgentClient
@@ -49,11 +50,22 @@ def construct_agent_client(cfg: AgentSettings) -> PhazeAgentClient:
     bearer in the ``httpx.AsyncClient`` default headers (never as an instance
     attribute -- Phase 26 D-13 / T-26-02-I hardening). The cleartext value
     must not escape this function (T-27-04 mitigation).
+
+    Phase 29 D-03: validate ``cfg.agent_ca_file`` at construction time and
+    pass it through to ``PhazeAgentClient(verify=...)``. A non-existent or
+    zero-byte CA file raises :class:`RuntimeError` so misconfiguration
+    surfaces fast rather than at the first HTTPS request (which would
+    otherwise spin the container in a restart loop).
     """
+    ca_path = Path(cfg.agent_ca_file)
+    if not ca_path.exists() or ca_path.stat().st_size == 0:
+        msg = f"CA file empty or unreadable: {cfg.agent_ca_file}"
+        raise RuntimeError(msg)
     return PhazeAgentClient(
         base_url=cfg.agent_api_url,
         token=cfg.agent_token.get_secret_value(),
         timeout=30.0,
+        verify=cfg.agent_ca_file,
     )
 
 
