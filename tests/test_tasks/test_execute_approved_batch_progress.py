@@ -499,3 +499,229 @@ async def test_correct_sha256_still_succeeds(tmp_path: Path, monkeypatch: pytest
     sent = _payload_from_call(api.post_exec_batch_progress.await_args)
     assert sent.terminal_step == "deleted"
     assert sent.failed_at_step is None
+
+
+# ---------------------------------------------------------------------------
+# Failure-resilience coverage (Phase 28 patch-coverage fill)
+#
+# These tests assert the WARN-and-continue contract of each best-effort
+# audit/PATCH/progress call inside ``_execute_one`` and the outer batch
+# scan_roots precondition. They round out coverage of the lines that
+# Codecov flagged as missing in PR #62.
+# ---------------------------------------------------------------------------
+
+
+async def test_empty_scan_roots_raises_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Agent mis-deployed with empty scan_roots -> RuntimeError BEFORE any file op."""
+    _patch_settings(monkeypatch, [])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path="/music/x.mp3",
+            proposed_path="/music/y.mp3",
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="agent has no scan_roots configured"):
+        await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    api.patch_execution_log.assert_not_called()
+    api.post_exec_batch_progress.assert_not_called()
+
+
+async def test_post_execution_log_failure_is_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Start-of-op audit log POST raises -> WARNING logged, file op still attempted."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.post_execution_log = AsyncMock(side_effect=AgentApiServerError("upstream 503"))
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.WARNING):
+        await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert any("could not record start log" in r.message for r in caplog.records)
+    assert proposed_paths[0].exists()
+    assert not orig_paths[0].exists()
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "deleted"
+
+
+async def test_patch_completed_log_failure_is_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """patch_execution_log raising on the success path still produces a 'deleted' progress POST."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.patch_execution_log = AsyncMock(side_effect=AgentApiServerError("upstream 503"))
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.WARNING):
+        await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert any("could not patch completed log" in r.message for r in caplog.records)
+    api.patch_proposal_state.assert_awaited()
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "deleted"
+
+
+async def test_patch_failed_log_failure_is_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """patch_execution_log raising on the FAILED path still produces a 'failed' progress POST."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.patch_execution_log = AsyncMock(side_effect=AgentApiServerError("upstream 503"))
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+            sha256_hash="0" * 64,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.WARNING):
+        await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert any("could not patch failed log" in r.message for r in caplog.records)
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "failed"
+    assert sent.failed_at_step == "verify"
+
+
+async def test_patch_proposal_state_failed_report_failure_is_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """patch_proposal_state raising on the FAILED report still produces a 'failed' progress POST."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.patch_proposal_state = AsyncMock(side_effect=AgentApiServerError("upstream 503"))
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+            sha256_hash="0" * 64,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.ERROR):
+        await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert any("failed to report failure" in r.message for r in caplog.records)
+    assert api.post_exec_batch_progress.await_count == 1
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "failed"
+
+
+async def test_progress_post_failure_on_success_path_is_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """post_exec_batch_progress raising on the SUCCESS path -> WARNING logged, batch still completes."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.post_exec_batch_progress = AsyncMock(side_effect=AgentApiServerError("upstream 503"))
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.WARNING):
+        result = await execute_approved_batch(
+            {"api_client": api, "job": job},
+            **payload.model_dump(mode="json"),
+        )
+
+    assert any("progress POST failed" in r.message for r in caplog.records)
+    assert proposed_paths[0].exists()
+    assert not orig_paths[0].exists()
+    assert result["status"] == "completed"
+
+
+async def test_progress_post_failure_on_failure_path_is_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """post_exec_batch_progress raising on the FAILED path -> WARNING logged, batch still completes."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    api.post_exec_batch_progress = AsyncMock(side_effect=AgentApiServerError("upstream 503"))
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path=str(proposed_paths[0]),
+            sha256_hash="0" * 64,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.WARNING):
+        result = await execute_approved_batch(
+            {"api_client": api, "job": job},
+            **payload.model_dump(mode="json"),
+        )
+
+    assert any("progress POST failed" in r.message for r in caplog.records)
+    # One failed proposal -> batch result is "completed_with_errors", not "completed".
+    assert result["status"] == "completed_with_errors"
