@@ -63,7 +63,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] **Phase 26: Task Code Reorg & HTTP-Backed Agent Worker** — split `phaze.tasks.controller` (fileless) from `phaze.tasks.agent_worker` (file-bound), `PHAZE_ROLE` env-driven startup, per-agent SAQ queue (`phaze-agent-<id>`), self-contained job payloads (completed 2026-05-12)
 - [x] **Phase 27: Watcher Service & User-Initiated Scan** — new `phaze-agent-watcher` compose service, watchdog with mtime settle/debounce, sentinel `LIVE` ScanBatch per agent, admin-triggered scan form (completed 2026-05-13)
 - [x] **Phase 28: Distributed Execution Dispatch** — group-by-agent approval dispatch, per-operation ExecutionLog PATCH, unified SSE progress aggregating across agents, per-agent fingerprint sidecars in execution path (completed 2026-05-15)
-- [ ] **Phase 29: Deployment Hardening & Agents Admin** — strip `SCAN_PATH`/`MODELS_PATH` from application-server compose, self-signed HTTPS w/ internal CA, Redis `requirepass` + LAN binding, `docker-compose.agent.yml`, per-file-server model download, heartbeat + Agents admin page
+- [x] **Phase 29: Deployment Hardening & Agents Admin** — strip `SCAN_PATH`/`MODELS_PATH` from application-server compose, self-signed HTTPS w/ internal CA, Redis `requirepass` + LAN binding, `docker-compose.agent.yml`, per-file-server model download, heartbeat + Agents admin page (completed 2026-05-17)
 
 ## Phase Details
 
@@ -188,7 +188,7 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 - [x] 29-05-PLAN.md — Models auto-download: phaze.scripts.download_models Python helper + phaze.tasks._shared.model_bootstrap + agent_worker/watcher startup wiring + bash shim rewrite (Wave 2)
 - [x] 29-06-PLAN.md — Heartbeat caller: phaze.tasks.heartbeat.heartbeat_tick + SAQ CronJob registration in agent_worker.settings (trailing-seconds cron form per Critical Discovery #2) (Wave 3)
 - [x] 29-07-PLAN.md — Agents admin page: constants + services.agent_liveness + utils.humanize + routers.admin_agents + 3 Jinja templates + base.html nav link + main.py registration (Wave 3)
-- [ ] 29-08-PLAN.md — Justfile recipes (up-agent, up-all) + docs/deployment.md + PROJECT.md Deployment subsection + scripts/update-project.sh touch + blocking human-verify checkpoint (Wave 4)
+- [x] 29-08-PLAN.md — Justfile recipes (up-agent, up-all) + docs/deployment.md + PROJECT.md Deployment subsection + scripts/update-project.sh touch + blocking human-verify checkpoint (Wave 4)
 **UI hint**: yes
 
 ## Progress
@@ -223,4 +223,4 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 7/7 | Complete    | 2026-05-14 |
 | 28. Distributed Execution Dispatch | v4.0 | 6/6 | Complete   | 2026-05-15 |
-| 29. Deployment Hardening & Agents Admin | v4.0 | 7/8 | In Progress|  |
+| 29. Deployment Hardening & Agents Admin | v4.0 | 8/8 | Complete   | 2026-05-17 |
