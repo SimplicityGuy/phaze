@@ -223,4 +223,4 @@ Full details: `.planning/milestones/v3.0-ROADMAP.md`
 | 26. Task Code Reorg & HTTP-Backed Agent Worker | v4.0 | 13/13 | Complete   | 2026-05-12 |
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 7/7 | Complete    | 2026-05-14 |
 | 28. Distributed Execution Dispatch | v4.0 | 6/6 | Complete   | 2026-05-15 |
-| 29. Deployment Hardening & Agents Admin | v4.0 | 8/8 | Complete   | 2026-05-17 |
+| 29. Deployment Hardening & Agents Admin | v4.0 | 8/8 | Complete    | 2026-05-17 |
