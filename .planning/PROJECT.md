@@ -2,52 +2,56 @@
 
 ## What This Is
 
-A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus) and concert video streams, analyzes them for BPM/mood/style/key, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. Built as a Docker Compose stack with FastAPI, arq workers, PostgreSQL, and Redis. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
+A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus) and concert video streams, analyzes them for BPM/mood/style/key, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. As of v4.0, phaze runs as a **two-host distributed system**: an application server (API, UI, Postgres, Redis, fileless workers, no file mounts) and one or more file-server agents that own the music/video files locally, pull jobs from per-agent SAQ queues, and write every state change back over authenticated HTTPS. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
 
 ## Core Value
 
-Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
-
-## Current Milestone: v4.0 Distributed Agents
-
-**Goal:** Split phaze into an application server (control plane: API, UI, Postgres, Redis, fileless workers) and one or more file servers (remote hosts running agents that own the music/video files, pull jobs locally, and write results back via HTTP) — so files can live anywhere while decisions stay on a single server.
-
-**Target features:**
-- Per-agent SAQ workers on each file server, pulling from the application server's Redis; absolute HTTP-only write-back boundary (no Postgres on file servers)
-- `agent_id` stamped on `FileRecord` at scan time; unique key `(agent_id, original_path)`; new `agents` table with token-based auth
-- Same Docker image, env-driven role; new `docker-compose.agent.yml` for file servers (worker + watcher + audfprint + panako); application server loses its `SCAN_PATH` + `MODELS_PATH` mounts
-- User-initiated scan (UI form) + always-on `phaze-agent-watcher` service on each file server (watchdog lib, settle/debounce, sentinel scan batch)
-- Per-file-server fingerprint sidecars (no cross-file-server fingerprint matching — documented v1 limitation)
-- Group-by-file-server execution dispatch with per-PATCH ExecutionLog write-ahead audit preserved over HTTP
-- Per-agent bearer tokens with `agent_id` derived from token on the application server (never from request body), private LAN, self-signed HTTPS, Redis `requirepass` + LAN-bound interface
-- Task code reorg: `phaze.tasks.controller` (fileless, control role) vs `phaze.tasks.agent_worker` (file-bound, agent role); job payloads carry everything the agent needs
-- Two-step Alembic migration with `legacy-application-server` backfill so existing v3.0 data survives
+Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
 ## Current State
 
-**v4.0 in progress.** Phases 24–27 complete; Phase 28 (Distributed Execution Dispatch) and 29 (Deployment Hardening & Agents Admin) remaining.
+**v4.0 Distributed Agents shipped 2026-05-17.** Phaze now runs across two hosts: a control-plane application server and one or more file-server agents. Planning next milestone.
 
-- 8,000+ lines of Python across 27 phases, 56+ plans total (v1.0–v4.0 in progress)
-- 1,070 tests passing on phase-27 branch; 58/63 cumulative requirements satisfied (DIST-02, SCAN-01..04 newly satisfied in Phase 27)
-- Tech stack: FastAPI, SQLAlchemy (async), SAQ, litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, watchdog, HTMX + Tailwind
-- Docker Compose: api, worker, postgres, redis, audfprint, panako, **watcher** containers
-- 13 Alembic migrations, 13 SQLAlchemy models (Agents added in Phase 24), 3 fingerprint service containers
-- Admin UI: proposals, duplicates, tracklists, pipeline dashboard with **Trigger Scan card**, directory tree preview, unified search, Discogs linking, tag review, CUE management
-- v3.0 (shipped 2026-04-04): unified FTS search with faceted filtering, Discogs cross-service linking with fuzzy matching and bulk-link, format-aware tag writing with 4-layer cascade, CUE sheet generation with Discogs REM enrichment
-- v4.0 (in progress, Phases 24–27): Agents table + token-based auth; internal HTTP API (`/api/internal/agent/*`) with bearer auth + cross-tenant 403-before-state-machine guards; `phaze.tasks.controller` vs `phaze.tasks.agent_worker` task code split; per-agent SAQ queue (`phaze-agent-<id>`); always-on `phaze-agent-watcher` service with watchdog + settle/debounce + LIVE-sentinel ScanBatch; user-initiated `scan_directory` task with chunked HTTP upserts; admin UI to trigger scans on any agent
+- ~14,300 lines of Python source + ~28,000 lines of tests across 29 phases, 94+ plans total (v1.0–v4.0)
+- Tech stack: FastAPI, SQLAlchemy (async), SAQ + Redis (per-agent queues), litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, watchdog, cryptography (self-signed CA), tenacity, respx, HTMX + Tailwind + Alpine.js
+- Two Docker Compose stacks: `docker-compose.yml` (app-server: api with TLS via internal CA, controller worker, postgres, redis with `requirepass` + LAN bind, no file mounts) and `docker-compose.agent.yml` (file-server: agent worker, watcher, audfprint + panako sidecars)
+- 14 Alembic migrations, 14 SQLAlchemy models (Agents added in v4.0), per-file-server fingerprint sidecars
+- Internal API surface: `/api/internal/agent/*` with token-hash bearer auth, idempotent natural-key upserts, 403-before-state-machine cross-tenant guards, 30s heartbeat
+- Admin UI: proposals, duplicates (with cross-FS fingerprint notice), tracklists, pipeline dashboard with **Trigger Scan card**, unified search, Discogs linking, tag review, CUE management, **Agents** page with liveness + queue depth
+- Operator workflow: `just up` (app-server), `just up-agent` (each file-server), `just up-all` (single-host dev); full deployment walkthrough in `docs/deployment.md`
 
 ## Previous State
+
+<details>
+<summary>v3.0 shipped 2026-04-04</summary>
+
+Single-host enrichment milestone: unified FTS search with faceted filtering, Discogs cross-service linking with fuzzy matching and bulk-link, format-aware tag writing with 4-layer cascade (tracklist > discogs > metadata > filename) and verify-after-write, CUE sheet generation with fingerprint-preferred timestamps and Discogs REM enrichment.
+
+- 6 phases, 11 plans
+- 13 Alembic migrations, 13 SQLAlchemy models
+- TagWriteLog audit, DiscogsLink with confidence scoring, three-entity UNION ALL search (file/tracklist/discogs)
+
+</details>
+
+<details>
+<summary>v2.0 shipped 2026-04-02</summary>
+
+Metadata enrichment & tracklist integration. Audio tag extraction (mutagen), AI destination paths with collision detection, duplicate resolution UI, 1001Tracklists integration with monthly cron, dual fingerprint service (audfprint + Panako) with batch ingestion.
+
+- 6 phases, 16 plans, 538 tests passing
+- ~5,966 lines of Python added
+
+</details>
 
 <details>
 <summary>v1.0 shipped 2026-03-30</summary>
 
 Full pipeline operational: scan → analyze → propose → approve → execute.
 
-- 7,975 lines of Python across 11 phases, 24 plans
-- 282 tests passing, 19/19 requirements satisfied
+- 11 phases, 24 plans, 282 tests passing
+- ~7,975 lines of Python
 - Tech stack: FastAPI, SQLAlchemy (async), arq, litellm, essentia-tensorflow, HTMX + Tailwind
-- Docker Compose: api, worker, postgres, redis containers with health checks
-- 4 Alembic migrations, 6 SQLAlchemy models, 28 file extensions classified
+- 4 Alembic migrations, 6 SQLAlchemy models
 
 </details>
 
@@ -64,7 +68,7 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ File type classification (music, video, companion) — v1.0 Phase 2
 - ✓ Companion files linked to media files via directory proximity — v1.0 Phase 3
 - ✓ Exact duplicate detection via SHA256 hash grouping — v1.0 Phase 3
-- ✓ arq + Redis task queue with bounded worker pool, retry with backoff, process pool — v1.0 Phase 4
+- ✓ arq + Redis task queue with bounded worker pool, retry with backoff, process pool — v1.0 Phase 4 (replaced by SAQ in v4.0)
 - ✓ BPM detection for music files — v1.0 Phase 5
 - ✓ Mood and style classification for music files — v1.0 Phase 5
 - ✓ Analysis runs in parallel across worker pool — v1.0 Phase 4
@@ -89,42 +93,52 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ Write corrected tags to destination copies with review UI, verify-after-write, and audit logging — v3.0 Phase 20
 - ✓ CUE sheet generation from tracklist data with fingerprint-preferred timestamps and Discogs REM enrichment — v3.0 Phase 21
 
+- ✓ File servers run agents that own files locally; the application server orchestrates and stores all state — v4.0 Phase 24-29
+- ✓ HTTP-only boundary between agents and the application server (no shared filesystem, no shared database access) — v4.0 Phase 25-26
+- ✓ Per-agent bearer token auth with `agent_id` derived from token, never from request body — v4.0 Phase 25
+- ✓ Continuous file watcher service on each file server that streams new arrivals to the application server — v4.0 Phase 27
+- ✓ Distributed approval execution: group approved proposals by agent and dispatch one sub-batch per file server — v4.0 Phase 28
+- ✓ Self-signed HTTPS via internal CA + Redis `requirepass` + LAN bind + per-file-server fingerprint sidecars — v4.0 Phase 29
+- ✓ Same Docker image for both roles via `PHAZE_ROLE={control,agent}` env; new `docker-compose.agent.yml` for file servers — v4.0 Phase 26, 29
+- ✓ 30s heartbeat + Agents admin page with liveness, queue depth, last-seen — v4.0 Phase 29
+
 ### Active
 
-- File servers run agents that own files locally; the application server orchestrates and stores all state — v4.0
-- HTTP-only boundary between agents and the application server (no shared filesystem, no shared database access) — v4.0
-- Per-agent bearer token auth with `agent_id` derived from token, never from request body — v4.0
-- Continuous file watcher service on each file server that streams new arrivals to the application server — v4.0
-- Distributed approval execution: group approved proposals by agent and dispatch one sub-batch per file server — v4.0
+_To be defined by the next milestone via `/gsd:new-milestone`._
 
 ### Out of Scope
 
-- Cross-file-server fingerprint matching — per-agent fingerprint DB only in v4.0; document as limitation, defer to a later milestone
-- Delete / move / rename detection in the file watcher — v4.0 watcher only handles `created` events; deferred
-- Watcher catch-up on startup (rescan files that landed while watcher was down) — out of scope for v4.0; manual user-initiated scan covers this
+- Cross-file-server fingerprint matching — per-agent fingerprint DB only in v4.0; documented as v4.0 limitation, tracked as XAGENT-01, deferred to a later milestone
+- Cross-file-server execution batches (moves spanning hosts) — XAGENT-02, deferred
+- Delete / move / rename detection in the file watcher — v4.0 watcher only handles `created` events; tracked as WATCH-05/06, deferred
+- Watcher catch-up on startup (rescan files that landed while watcher was down) — WATCH-07; manual user-initiated scan covers this in v4.0
+- mTLS in addition to bearer tokens for the agent boundary — OPS-05, deferred
+- Multi-tenant agent self-service registration — OPS-06; today operator pre-seeds tokens
+- Agent metric scraping endpoint (Prometheus-compatible) — OPS-07, deferred
 - Natural language querying across services — deferred
 - Acoustic near-duplicate detection via fingerprint similarity — deferred
-- Cross-reference fingerprint matches with 1001tracklists — partially addressed by Discogs linking in v3.0, full cross-ref deferred
-- Public network access — private network only
+- Public network access — private LAN only
 - Offline mode — real-time server tool, not a desktop app
+- Files transferred between application server and file server — v4.0 keeps files local to file servers; transfer would defeat the boundary
+- Postgres replication / read-replica on file server — agents stay HTTP-only (Option II in v4.0 grilling was rejected)
+- Tailscale / mesh networking — plain private LAN chosen in v4.0 (Q10b)
 
 ## Context
 
-- v1.0 + v2.0 shipped: full pipeline from scan → tag extract → analyze → propose (filename + path) → approve → execute
+- v1.0–v4.0 shipped: full pipeline from scan → tag extract → analyze → propose (filename + path) → approve → execute, now distributed across application server + file-server agents
 - ~200K files total, mix of music files and full concert video streams
 - Concert videos are primarily recordings of live streams (YouTube streams from festivals, etc.)
 - FileMetadata fully populated via mutagen tag extraction (ID3/Vorbis/MP4/FLAC/OPUS)
-- Shared async engine pool eliminates per-invocation engine creation
-- Dual fingerprint service (audfprint + Panako) with weighted scoring (60/40, 70% single-engine cap)
-- 1001tracklists integration operational with monthly refresh cron
-- This is a personal tool running on a home server, not a multi-user SaaS
+- Dual fingerprint service (audfprint + Panako) per file server with weighted scoring (60/40, 70% single-engine cap); no cross-file-server matching in v4.0
+- 1001tracklists integration operational with monthly refresh cron (runs on app-server controller worker)
+- This is a personal tool running on a private home LAN, not a multi-user SaaS
 
 ## Constraints
 
 - **Language**: Python 3.13 exclusively
 - **Package manager**: uv only
-- **Deployment**: Docker Compose on home server, private network
-- **Database**: PostgreSQL
+- **Deployment**: Docker Compose on private LAN; two-host topology (app-server + file-server agents)
+- **Database**: PostgreSQL (app-server only; agents have zero direct DB access)
 - **Scale**: Must handle ~200K files efficiently — batch processing and parallelization required
 - **Naming format**: Live sets: `{Artist} - Live @ {Venue|Event} {YYYY.MM.DD}.{ext}`, Album tracks: `{Artist} - {Track #} - {Track Title}.{ext}`
 
@@ -145,7 +159,7 @@ Locked invariants (Phase 29):
 - `docker-compose.agent.yml` enforces `${SCAN_PATH:?SCAN_PATH required}` on all four services — compose parse fails fast on a misconfigured file-server host.
 - Operator workflow: `just up` (app-server), `just up-agent` (each file-server), `just up-all` (single-host dev). Full walkthrough in `docs/deployment.md`.
 
-Deferred to a future ops phase: mTLS for the agent boundary, agent self-registration UI, Prometheus metrics scrape endpoint, automated CA rotation. See REQUIREMENTS.md §"Future Requirements → Operational Polish" (OPS-05..OPS-07).
+Deferred to a future ops phase: mTLS for the agent boundary, agent self-registration UI, Prometheus metrics scrape endpoint, automated CA rotation. See `.planning/milestones/v4.0-REQUIREMENTS.md` §"Future Requirements → Operational Polish" (OPS-05..OPS-07).
 
 ## Key Decisions
 
@@ -156,20 +170,26 @@ Deferred to a future ops phase: mTLS for the agent boundary, agent self-registra
 | Human-in-the-loop approval | No file moves without admin review — safety for a large, irreplaceable collection | ✓ Good — approval UI with undo prevents mistakes |
 | Containerized services | Clean separation of concerns, reproducible deployment on home server | ✓ Good — Docker Compose with health checks works reliably |
 | HTMX over React SPA | Single-user admin tool doesn't need SPA complexity | ✓ Good — zero build step, CDN delivery, full interactivity |
-| arq over Celery | Async-first, simple config, Redis-native — single user doesn't need Celery complexity | ✓ Good — maintenance mode but stable |
+| arq over Celery | Async-first, simple config, Redis-native — single user doesn't need Celery complexity | — Replaced — migrated to SAQ in v4.0 prep; arq was in maintenance mode and SAQ has active development + per-agent queue affordances |
+| SAQ over arq (v4.0) | Active maintenance, built-in web UI, native per-queue worker model | ✓ Good — clean fit for per-agent `phaze-agent-<id>` queues |
 | essentia-tensorflow for analysis | 34 pre-trained models, BPM/key/mood/style in one library | ✓ Good — baked into Docker image, process pool execution |
 | litellm for LLM abstraction | Provider flexibility without vendor lock-in | ⚠️ Revisit — supply chain incident on 1.82.7/1.82.8, pin aggressively |
-| copy-verify-delete protocol | Never direct move — SHA256 verification before deleting original | ✓ Good — safety for irreplaceable collection |
-| State machine on FileRecord | Explicit state transitions (DISCOVERED→ANALYZED→PROPOSED→APPROVED→EXECUTED) | ✓ Good — enables pipeline dashboard stage counts |
+| copy-verify-delete protocol | Never direct move — SHA256 verification before deleting original | ✓ Good — safety for irreplaceable collection, preserved across the v4.0 HTTP boundary via per-operation PATCH |
+| State machine on FileRecord | Explicit state transitions (DISCOVERED→ANALYZED→PROPOSED→APPROVED→EXECUTED→MOVED/UNCHANGED/FAILED) | ✓ Good — enables pipeline dashboard stage counts |
 | mutagen for tag read/write | Zero-dependency, supports all major tag formats | ✓ Good — reliable across ID3/Vorbis/MP4/FLAC/OPUS |
 | audfprint + Panako hybrid | Complement each other: landmark-based vs tempo-robust | ✓ Good — weighted orchestrator with per-engine results |
 | rapidfuzz for fuzzy matching | Fast token_set_ratio for tracklist-to-file matching | ✓ Good — weighted scoring with artist/event/date |
-| Long-running fingerprint containers | HTTP API over subprocess calls for fingerprint services | ✓ Good — persistent DBs, Docker Compose integration |
-| Distributed agents (v4.0) | Files stay on file servers; application server owns API, UI, Postgres, Redis | 🆕 Decided pre-v4.0 — enables remote file storage without losing centralized control |
-| HTTP-only agent boundary (v4.0) | Agents have zero Postgres access; all writes go through `/api/internal/agent/*` | 🆕 Decided pre-v4.0 — seals DB inside application server, agents are version-skew tolerant |
-| One SAQ queue per agent (v4.0) | `phaze-agent-<id>` queue per file server; enqueuer picks queue by `FileRecord.agent_id` | 🆕 Decided pre-v4.0 — matches SAQ's native pull model, clean per-agent maintenance |
-| Per-agent bearer token auth (v4.0) | `agent_id` derived from token lookup on application server, never from request body | 🆕 Decided pre-v4.0 — eliminates spoofing risk, supports per-agent rotation |
-| Per-agent fingerprint DB (v4.0) | Each file server runs its own audfprint+panako sidecars indexing only its files | 🆕 Decided pre-v4.0 — no cross-file-server fingerprint matching in v1; SHA-256 dedup still works |
+| Long-running fingerprint containers | HTTP API over subprocess calls for fingerprint services | ✓ Good — persistent DBs, Docker Compose integration; now per-file-server in v4.0 |
+| Distributed agents (v4.0) | Files stay on file servers; application server owns API, UI, Postgres, Redis | ✓ Good — v4.0 shipped end-to-end; two-host topology operational with strict HTTP-only boundary |
+| HTTP-only agent boundary (v4.0) | Agents have zero Postgres access; all writes go through `/api/internal/agent/*` | ✓ Good — `test_agent_worker_does_not_import_phaze_database` subprocess gate enforces the boundary at CI time |
+| One SAQ queue per agent (v4.0) | `phaze-agent-<id>` queue per file server; enqueuer picks queue by `FileRecord.agent_id` | ✓ Good — matches SAQ's native pull model, clean per-agent maintenance |
+| Per-agent bearer token auth (v4.0) | `agent_id` derived from token lookup on application server, never from request body | ✓ Good — partial-index `ix_agents_token_hash_active WHERE revoked_at IS NULL` gives O(1) lookup; revoke = instant block |
+| Per-agent fingerprint DB (v4.0) | Each file server runs its own audfprint+panako sidecars indexing only its files | ⚠️ Revisit — known v4.0 limitation; XAGENT-01 deferred. Operator banner mitigates UX surprise |
+| Self-signed internal CA (v4.0) | Generated in api container on first start; public cert distributed by operator via scp | ✓ Good — no DNS dependency, no public ACME, no rotation pain for single-user LAN |
+| Redis `requirepass` + LAN bind (v4.0) | App-server Redis is broker + cache; password + interface bind is the minimal credible hardening on a private LAN | ✓ Good — `AgentSettings` fail-fast in production prevents passwordless misconfig |
+| Group-by-agent execution dispatch (v4.0) | In-Python `defaultdict(list)` over SQL `GROUP BY` — at 1-5 agents × ≤10K proposals, type-safe path is cheaper than DB aggregation | ✓ Good — preserves write-ahead `ExecutionLog` audit over HTTP boundary via per-operation PATCH |
+| Pre-uvicorn entrypoint shim (v4.0) | Cert bootstrap then `execvp uvicorn` so signals + PID-1 propagate cleanly | ✓ Good — clean Docker stop semantics, no double-process tree |
+| Two-step Alembic migration (v4.0) | 012 adds + backfills, 013 enforces NOT NULL + swaps UQ — preserves v3.0 data via `legacy-application-server` seed | ✓ Good — round-trip downgrade smoke gate caught the boundary; zero data loss in production migration |
 
 ## Evolution
 
@@ -189,4 +209,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-14 — Phase 27 (Watcher Service & User-Initiated Scan) complete; 4/6 v4.0 phases done*
+*Last updated: 2026-05-17 after v4.0 milestone*

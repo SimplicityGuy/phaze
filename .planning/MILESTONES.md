@@ -1,5 +1,34 @@
 # Milestones
 
+## v4.0 Distributed Agents (Shipped: 2026-05-17)
+
+**Phases completed:** 6 phases, 47 plans
+
+**Delivered:** Phaze is now a two-host system — an application-server control plane (API, UI, Postgres, Redis, fileless workers; no file mounts) and one or more file-server agents that own music/video files locally, pull jobs from per-agent SAQ queues, and write every state change back over authenticated HTTPS.
+
+**Key accomplishments:**
+
+- `agents` table + `agent_id` columns on FileRecord/ScanBatch, two-step Alembic migration (012 add+backfill, 013 NOT NULL+UQ swap) with `legacy-application-server` seed preserving v3.0 corpus end-to-end
+- Internal `/api/internal/agent/*` HTTP surface (files, metadata, fingerprint, analysis, tracklists, proposals, execution-log, scan-batches, exec-batches, heartbeat, whoami) with token-hash auth deriving `agent_id` from bearer token — never from request body — and 403-before-state-machine cross-tenant guard on every multi-tenant route
+- Idempotent natural-key upserts across the agent surface: `(agent_id, original_path)`, `file_id`, `proposal_id`, agent-generated log UUIDs; replays produce zero duplicate rows and zero same-state DB writes
+- Task code split: `phaze.tasks.controller` (fileless: generate_proposals, tracklist scrapers, refresh cron) vs `phaze.tasks.agent_worker` (file-bound: process_file, extract_file_metadata, fingerprint_file, scan_live_set, execute_approved_batch); subprocess import-boundary test enforces no `phaze.database` in the agent chain
+- `PHAZE_ROLE={control,agent}` env-driven settings split (ControlSettings vs AgentSettings via `get_settings()` factory); same Docker image for both roles; per-agent SAQ queue (`phaze-agent-<id>`); AgentTaskRouter picks queue from `FileRecord.agent_id`
+- `PhazeAgentClient` with tenacity retry funnel, 4-class error hierarchy, bearer token never stored as instance attribute (lives only in httpx headers); respx contract tests across all routes
+- `phaze-agent-watcher` service: watchdog observer + asyncio-owned single-loop sweep, mtime settle (10s default) + stuck-file cap (3600s); LIVE-sentinel ScanBatch per agent; admin "Trigger Scan" form with HTMX agent-roots swap + 2s/5s polling partials
+- `scan_directory` agent task with chunked HTTP upserts (500/chunk), per-chunk PATCH progress, terminal PATCH; same `/files` endpoint serves bulk scans and per-file watcher events
+- Distributed execution dispatch: group-by-`FileRecord.agent_id` (in-Python `defaultdict`), one `execute_approved_batch` sub-job per affected agent under shared parent `batch_id`; per-proposal terminal progress POST; SAQ-meta UUID lift for retry-safe `execution_log_id` and `progress_request_id`
+- Unified SSE progress aggregating across agents (3 Jinja partials rendered via `_render_partial()` for Semgrep XSS compliance); per-agent breakdown table; revoked-agent banner
+- Per-file-server fingerprint sidecars (audfprint + panako allow-list validator blocks non-localhost URLs at config load); cross-file-server fingerprint matching documented as v4.0 limitation with dismissible banner on Duplicate Resolution page
+- Self-signed internal CA + leaf x509 generated on first start in the api container via `phaze.cert_bootstrap` + pre-uvicorn entrypoint shim (signals/PID-1 propagate cleanly); `PhazeAgentClient` honors `verify=` kwarg defaulting to `AgentSettings.agent_ca_file`; wrong-CA → ConnectError integration test
+- Redis hardening: `requirepass` + `${REDIS_BIND_IP:-127.0.0.1}` LAN bind on app-server compose; `AgentSettings` rejects passwordless `redis_url` at boot when `PHAZE_AGENT_ENV=production`
+- Application-server `docker-compose.yml` stripped of `SCAN_PATH`/`MODELS_PATH` mounts and watcher/audfprint/panako services; YAML-parse tests enforce filesystem isolation
+- New `docker-compose.agent.yml` (4 services: worker, watcher, audfprint, panako) + `.env.example.agent`; `${SCAN_PATH:?...}` fail-fast on misconfigured file-server hosts; docker-publish.yml extended for both compose-file image tags
+- `phaze.scripts.download_models` Python helper + `phaze.tasks._shared.model_bootstrap` wired into agent_worker/watcher startup (rejects partial-download `.part` state); `just download-models` populates per-file-server `/models` volume
+- 30-second SAQ CronJob heartbeat from each agent updating `agents.last_seen_at`; Agents admin page (`/admin/agents`) with liveness classifier (alive/stale/revoked), queue depth, last-seen humanize helper; HTMX 5s auto-refresh
+- Operator workflow: `just up` (app-server), `just up-agent` (each file-server), `just up-all` (single-host dev); full deployment walkthrough in `docs/deployment.md`; PROJECT.md Constraints + Deployment subsections updated
+
+---
+
 ## v3.0 Cross-Service Intelligence & File Enrichment (Shipped: 2026-04-04)
 
 **Phases completed:** 4 phases, 11 plans, 22 tasks

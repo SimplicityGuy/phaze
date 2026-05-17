@@ -3,31 +3,31 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
 status: milestone_complete
-stopped_at: Milestone complete (Phase 29 was final phase)
-last_updated: 2026-05-17T00:34:05.466Z
-last_activity: 2026-05-16 -- Phase 29 execution started
+stopped_at: Milestone v4.0 shipped 2026-05-17
+last_updated: 2026-05-17T00:00:00Z
+last_activity: 2026-05-17 -- v4.0 milestone archived
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 47
-  completed_plans: 48
-  percent: 83
+  completed_plans: 47
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-02)
+See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
-**Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review.
-**Current focus:** Milestone complete
+**Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
+**Current focus:** Planning next milestone (run `/gsd:new-milestone`)
 
 ## Current Position
 
-Phase: 29
-Plan: Not started
-Status: Milestone complete
+Phase: v4.0 complete (Phases 24–29 all shipped)
+Plan: -
+Status: Milestone complete; awaiting next-milestone scoping
 Last activity: 2026-05-17
 
 Progress: [██████████] 100%
@@ -50,74 +50,24 @@ Progress: [██████████] 100%
 - Tests: 538 passing
 - LOC: 5,966 Python
 
+**v3.0 Velocity:**
+
+- Total plans completed: 11
+- Total phases: 6
+- Timeline: 2 days (2026-04-03 -> 2026-04-04)
+
+**v4.0 Velocity:**
+
+- Total plans completed: 47
+- Total phases: 6
+- Timeline: ~43 days (2026-04-03 -> 2026-05-17 incl. discuss/research/UI design per phase)
+- LOC: ~23,242 Python lines added / 1,677 deleted (180 files changed since v3.0 tag)
+
 ## Accumulated Context
 
 ### Decisions
 
-- v3.0 scope: Search, Discogs Linking, Tag Writing, CUE Sheets -- enrichment layer, not pipeline extension
-- FileState enum NOT extended -- enrichment tracked via TagWriteLog and DiscogsLink tables
-- Zero new pip dependencies -- httpx, mutagen, rapidfuzz, SQLAlchemy already in pyproject.toml
-- Discogs integration routes through discogsography HTTP API only, never direct Discogs API
-- Search UI: HTMX partial detection via truthy HX-Request header check
-- Search UI: Alpine.js collapsible filter panel pattern (x-data showFilters boolean)
-- [Phase 19]: Confidence blending: 0.6 token_set_ratio + 0.4 API relevance, denormalized Discogs metadata in DiscogsLink
-- [Phase 19]: Discogs results excluded when file_state filter active, matching tracklist exclusion pattern
-- [Phase 19]: Three-entity UNION ALL search: file (blue), tracklist (green), discogs_release (purple) pill colors
-- [Phase 19]: Discogs UI: HTMX candidate lifecycle with accept/dismiss, auto-dismiss siblings, bulk-link top candidate
-- [Phase 20-tag-writing]: Mock-based tests for OGG/M4A formats, real MP3 for end-to-end write/verify
-- [Phase 20-tag-writing]: Tracklist date.year is fallback-only for year field (does not override metadata year)
-- [Phase 20-tag-writing]: Inline edits are transient (client-side), no server session storage for edited proposed values
-- [Phase 20-tag-writing]: Tag row partial with OOB toast for post-write HTMX swap response
-- [Phase 20-tag-writing]: Server-side fallback for empty form data in Write Tags endpoint; ID-based HTMX targeting over closest tr
-- [Phase 21]: CueTrackData uses dataclass not Pydantic for zero-overhead service input
-- [Phase 21]: Dropped from __future__ annotations in CUE router to avoid FastAPI uuid runtime resolution issues
-- [Phase 21-03]: HX-Target header prefix matching for cross-page response routing (tracklist- prefix returns tracklist_card.html)
-- [Phase 21-03]: Dynamic _cue_version attribute on Tracklist ORM objects for UI-only display data
-- [Phase 26-01]: pydantic-settings v2 does NOT comma-split list[str] env vars natively -- Annotated[list[str], NoDecode] + @field_validator(mode="before") is the canonical workaround
-- [Phase 26-01]: pydantic-settings reads env vars by field name absent env_prefix -- AliasChoices(...) per-field is required to map PHAZE_AGENT_* env vars onto bare field names
-- [Phase 26-01]: Module-level `settings: ControlSettings = ...` keeps existing call sites' `settings.llm_*` reads type-checking; agent worker calls get_settings() / AgentSettings() directly per D-14
-- [Phase 26-01]: `Settings = ControlSettings` back-compat alias preserves `from phaze.config import Settings` for test files until they migrate
-- [Phase 26-02]: Tenacity retry funnel via AsyncRetrying async-iterator (not @retry decorator) -- cleaner try/except integration for 4xx/5xx status-code mapping post-loop
-- [Phase 26-02]: PhazeAgentClient bearer token NEVER stored as instance attribute -- lives only inside httpx.AsyncClient.headers (T-26-02-I mitigation)
-- [Phase 26-02]: Parallelization-debt marker pattern: type: ignore[import-not-found] + warn_unused_ignores makes missing-cross-plan-schema diagnostic self-deleting on merge
-- [Phase 26-04]: AgentTaskRouter cache impl chose plain `dict[str, Queue]` over `functools.cache` (rejected: extra layer for single-instance service) and LRU (rejected: eviction without `.disconnect()` would leak Redis connections; bounded growth not needed for v4.0's 1-5 agent scale)
-- [Phase 26-04]: AgentTaskRouter integration tests use a real Redis (no fakeredis fallback) per D-30 -- SAQ Queue.from_url is not compatible with fakeredis at saq>=0.26.3
-- [Phase 26-04]: Per-agent SAQ queue naming invariant: `phaze-agent-<agent_id>` (D-18); agent_id is the kebab-case slug from Phase 24 D-01, Redis-safe by construction
-- [Phase 26-05]: Smoke-app pattern adopted for per-router contract tests; matches Phase 25 test_agent_metadata.py precedent and decouples Plan 26-12 wiring
-- [Phase 26-05]: /whoami response uses naive UTC created_at -- matches project-wide TimestampMixin convention; deferred timezone-aware migration to a future architectural plan
-- [Phase 26-06]: Overflow funnel pattern -- wire-format fields without a dedicated column (e.g. danceability, energy on AnalysisResult) merge into the row's `features` JSONB column rather than being dropped, preserving D-26's wire contract without an Alembic migration. Future migration can promote to dedicated columns.
-- [Phase 26-06]: Deterministic dict summarization -- `sorted(items, key=lambda kv: (-kv[1], kv[0]))[:N]` two-key sort is the canonical pattern for compacting classifier-score dicts into bounded, replay-safe strings. `reverse=True` single-key sort tiebreaks by insertion order which is non-deterministic.
-- [Phase 26-07]: Stripe-style request-id idempotency via Redis SET NX EX -- atomic lock-acquire + bounded-wait concurrent-writer poll (10*50ms -> 409) + cached-response fast-path; 1h TTL
-- [Phase 26-07]: `request.app.state.redis` thin pass-through dep keeps the Redis client lifecycle in main.py lifespan (Plan 26-12) while keeping the handler smoke-app-testable via direct `app.state.redis = client` assignment
-- [Phase 26-07]: `sqlalchemy.update(Model)` is mypy-friendly; `Model.__table__.update()` trips `FromClause has no attribute "update"` because mypy types `__table__` as the abstract parent
-- [Phase 26-08]: Cross-tenant guard placement: 403 returns BEFORE state-machine evaluation to prevent timing side-channel via 409 vs 403 (W1 / T-26-08-S2)
-- [Phase 26-08]: Joint Proposal+FileRecord mutation uses single await session.commit() (RESEARCH Pitfall 6 invariant)
-- [Phase 26-08]: Idempotent same-state PATCH echoes current row state with ZERO DB writes -- does NOT bump updated_at on same-state retry
-- [Phase 26-08]: Mirror agent_execution.py PATCH structure byte-for-byte (Annotated[AsyncSession, Depends] dep pattern, session.get->404 pattern)
-- [Phase 26-11]: ExecutionStatus enum extracted to phaze.enums (DB-free); models/execution.py re-exports it. Schemas under phaze.schemas.agent_* now load without sqlalchemy/phaze.database -- the D-03 import boundary holds for the agent worker
-- [Phase 26-11]: scan_live_set drops in-process FileMetadata artist/title resolution; fingerprint-sourced tracklist rows land with artist=None,title=None. Known v3.0 UI regression deferred to a future Phase 27/28 controller-side enrichment task
-- [Phase 26-11]: services/fingerprint.py uses function-local DB imports inside get_fingerprint_progress so the module surface stays DB-free for the agent worker
-- [Phase 26-11]: execute_approved_batch ExecutionLog reporting maps onto Phase 25's per-proposal schema (one POST + one PATCH per file op); batch-level completed_with_errors lives in the returned dict, not the schema
-- [Phase 26-11]: AnalysisWritePayload mood/style wire conversion -- two helpers in tasks/functions.py rebuild dict[str, float] from analysis["features"] (averaging mood_* sets across variants; top-N genres) instead of dropping the str labels
-- [Phase ?]: 26-10: agent_worker SAQ settings module ships with subprocess import-boundary test (D-25) enforcing no phaze.database / sqlalchemy.ext.asyncio in agent import chain
-- [Phase ?]: 26-10: D-13 token-preview banner uses 'auth_id_prefix=' format key (not 'token_preview=') to avoid semgrep secret-detector false-positives; rendered value unchanged
-- [Phase ?]: 26-10: /whoami startup probe budget = exponential 1s→32s = ~63s wall-clock; RuntimeError on exhaustion; queue-name mismatch guard catches PHAZE_AGENT_QUEUE vs token-derived agent_id misconfig
-- [Phase ?]: [Phase 26-13] D-04+D-06 finalized: phaze.tasks.{worker,session} deleted with no back-compat shim; docker-compose worker service rewired to phaze.tasks.controller.settings under PHAZE_ROLE=control; lux_worker→controller doc sweep across PROJECT.md + ROADMAP.md
-- [Phase 27-01]: phaze.tasks._shared.agent_bootstrap centralizes whoami_with_retry + construct_agent_client; Pitfall 7 short-circuit on AgentApiAuthError closes the "bad token infinite-restart" failure mode
-- [Phase 27-01]: Four new AgentSettings fields (watcher_settle_seconds=10, watcher_max_pending_seconds=3600, watcher_sweep_interval_seconds=2, scan_chunk_size=500) with PHAZE_WATCHER_*/PHAZE_SCAN_CHUNK_SIZE env-var aliases via AliasChoices (Phase 26-01 pattern)
-- [Phase 27-02]: FileUpsertChunk.batch_id: UUID | None added; absent → controller resolves LIVE sentinel via uq_scan_batches_agent_id_live partial UQ; present → 403-before-state-machine cross-tenant guard (T-27-02)
-- [Phase 27-03]: PATCH /api/internal/agent/scan-batches/{batch_id} state machine: RUNNING→COMPLETED/FAILED only; LIVE rejected at schema layer (Literal); idempotent same-state PATCH echoes row with zero DB writes
-- [Phase 27-04]: scan_directory chunk size = 500; per-chunk PATCH progress; terminal status PATCH on completion or failure; per-file OSError skip (mirrors services/ingestion.py:65); module-private _classify duplicates EXTENSION_MAP lookup to keep agent-side scan.py Postgres-free (D-13 / D-25 invariant)
-- [Phase 27-05]: phaze.agent_watcher uses dict[str, _PendingEntry] + asyncio-owned single-loop sweep (time.monotonic clock); loop.call_soon_threadsafe is the ONLY sanctioned thread bridge from the watchdog Observer thread
-- [Phase 27-05]: Stuck-file cap = 3600s default (D-02 / T-27-05); evicted entries log WARNING but do NOT post; bounded in-memory cost. Watcher POSTs chunk-of-1 with batch_id OMITTED (not None) to trigger server-side LIVE-sentinel resolution (D-18)
-- [Phase 27-06]: HTMX poll-partial halt: terminal-state markup OMITS hx-trigger AND hx-get; outerHTML swap replaces the polling element entirely (Pitfall 6); cadence = every 2s for scan progress, every 5s for stats bar. Recent Scans mini-table uses transient _agent_name / _elapsed_seconds attrs on ORM rows to avoid N+1
-- [Phase 27-07]: Compose 'watcher' service lives in root docker-compose.yml; Phase 29 will move it + 'worker' to docker-compose.agent.yml; depends_on api: service_started (no healthcheck); restart: unless-stopped is the only liveness mechanism in Phase 27. Volume mount SCAN_PATH:/data/music:ro only (no MODELS_PATH/OUTPUT_PATH; watcher is fileless-write)
-- [Phase 28-01]: Fingerprint URL allow-list validator (`_enforce_localhost_only` on BaseSettings) blocks non-localhost `audfprint_url`/`panako_url` at config load (D-12 / TASK-04); `ExecuteApprovedBatchPayload.sub_batch_index: int = 0` schema field (D-10) — agent worker reports which chunk of a per-agent dispatch it owns
-- [Phase 28-02]: `POST /api/internal/agent/exec-batches/{batch_id}/progress` handler order is part of the spec: 401→403(cross-tenant)→404(missing hash)→403(agent not in dispatch)→Redis-SET-NX dedup→HINCRBY per D-07; sub_batch_terminal=true promotes status when `subjobs_completed == subjobs_expected`
-- [Phase 28-03]: Dispatch grouping uses in-Python `defaultdict(list)` over SQL `GROUP BY ... jsonb_agg(...)` — v4.0 scale (1-5 agents × ≤10K proposals) makes the type-safe path cheaper than DB aggregation; `Agent.revoked_at.is_(None)` filter applied both in JOIN and in skipped-count query
-- [Phase 28-04]: SSE payloads rendered as 3 separate Jinja partials (`dispatch_summary_inline.html`, `agents_table.html`, `progress_row_inline.html`) via `_render_partial()` helper through `Jinja2Templates.TemplateResponse(...).body.decode()` — Semgrep XSS-lint requires this over bare `Environment.get_template().render()`
-- [Phase 28-05]: `_load_or_seed_uuids(job, proposals)` persists BOTH `execution_log_id` and `progress_request_id` per-proposal UUIDs in `ctx['job'].meta` via single `await job.update(meta=...)` so SAQ retries reuse them (closes L6/L22, delivers D-15); failure progress POSTs use D-16 fire-and-forget (WARNING-on-failure swallow because file ops already committed); error_message format is `"<step>: <reason>"` (D-01)
-- [Phase 28-06]: `cross_fs_fingerprint_notice.html` banner is dismissible per session only (no localStorage); included on `duplicates/list.html` as first child of the `space-y-6` div above `<h1>`; PROJECT.md Constraints paragraph documents XAGENT-01 (deferred cross-file-server fingerprint matching)
+(Full milestone decision log archived in `.planning/milestones/v4.0-ROADMAP.md` Milestone Summary. Current-cycle decisions accumulate here.)
 
 ### Pending Todos
 
@@ -125,8 +75,8 @@ None.
 
 ### Blockers/Concerns
 
-- Phase 19: Verify discogsography `/api/search` response shape before writing adapter (research flag)
-- arq replaced by SAQ -- all new task code must use SAQ conventions
+- 29-HUMAN-UAT.md: real two-host production smoke is verified-docs-only; deferred until file-server hardware is available
+- Tech debt parked in v4.0 audit: WR-01..WR-04 (Phase 29), WR-03 (Phase 28 UI), P28-RACE-01 — see `.planning/milestones/v4.0-MILESTONE-AUDIT.md`
 
 ### Quick Tasks Completed
 
@@ -135,19 +85,9 @@ None.
 | 260410-kco | Add Docker image publishing to GHCR following discogsography pattern | 2026-04-10 | 3f91f93 | [260410-kco-add-docker-image-publishing-to-ghcr-foll](./quick/260410-kco-add-docker-image-publishing-to-ghcr-foll/) |
 | 260414-quo | Add Discord notification to docker-publish.yml workflow mirroring discogsography pattern | 2026-04-14 | 9c5cedb | [260414-quo-add-discord-notification-to-docker-publi](./quick/260414-quo-add-discord-notification-to-docker-publi/) |
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
-| Phase 26 P02 | 9min | 2 tasks | 2 files |
-| Phase 26 P04 | 5min | 2 tasks | 2 files |
-| Phase 26 P05 | 18min | 2 tasks | 2 files |
-| Phase 26 P06 | 13min | 3 tasks | 3 files |
-| Phase 26 P07 | 14min | 2 tasks | 2 files |
-| Phase 26 P08 | 14min | 2 tasks | 3 files |
-| Phase 26 P11 | 30min | 4 tasks | 13 files (5 task bodies rewritten + supporting refactors + 5 test rewrites + new contract test file + phaze.enums package) |
-| Phase 26 P10 | 25min | 3 tasks | 3 files |
-| Phase 26 P12 | 7m 25s | 2 tasks | 3 files |
-| Phase 26 P13 | 11m | 2 tasks | 8 files |
 
 ## Session Continuity
 
-Last session: 2026-05-16T18:00:22.911Z
-Stopped at: Phase 29 UI-SPEC approved
-Resume file: .planning/phases/29-deployment-hardening-agents-admin/29-UI-SPEC.md
+Last session: 2026-05-17 -- milestone v4.0 archived
+Stopped at: Awaiting `/gsd:new-milestone` for next milestone scope
+Resume file: -
