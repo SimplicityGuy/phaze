@@ -48,10 +48,17 @@ def test_ensure_models_present_populated_no_op(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A populated models directory short-circuits before invoking ``download_to``."""
+    """A fully-populated models directory short-circuits before invoking ``download_to``.
+
+    Phase 29 CR-03: "populated" now means count-equals-expected (34 .pb files),
+    not "any .pb file present". Write all expected files so the short-circuit
+    branch is exercised.
+    """
     import phaze.tasks._shared.model_bootstrap as mb
 
-    (tmp_path / "test_model.pb").touch()
+    expected = mb._EXPECTED_MODEL_COUNT
+    for idx in range(expected):
+        (tmp_path / f"model_{idx:03d}.pb").touch()
 
     mock = MagicMock()
     monkeypatch.setattr(mb, "download_to", mock)
@@ -61,7 +68,42 @@ def test_ensure_models_present_populated_no_op(
 
     mock.assert_not_called()
     text = "\n".join(rec.getMessage() for rec in caplog.records)
-    assert "Models present (1 weight files" in text, f"expected 'Models present' log, got: {text!r}"
+    assert f"Models present ({expected} weight files" in text, f"expected 'Models present' log, got: {text!r}"
+
+
+def test_ensure_models_present_partial_triggers_redownload(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 29 CR-03: a partial models directory (some .pb files but not all) re-runs download.
+
+    Previously, the bootstrap short-circuited on *any* .pb file present, so an
+    interrupted first download (e.g., 1/34 files written) left every subsequent
+    start skipping the re-download and the agent silently broken at analysis
+    time. This test pins the new behavior: partial state triggers download_to
+    and logs a WARNING with the observed/expected counts.
+    """
+    import phaze.tasks._shared.model_bootstrap as mb
+
+    # 1 out of N: clearly partial.
+    (tmp_path / "first_model.pb").touch()
+    assert len(list(tmp_path.glob("*.pb"))) < mb._EXPECTED_MODEL_COUNT
+
+    completed = MagicMock()
+
+    def fake_download(target: Path) -> None:
+        completed(target)
+
+    monkeypatch.setattr(mb, "download_to", fake_download)
+
+    with caplog.at_level(logging.WARNING, logger="phaze.tasks._shared.model_bootstrap"):
+        mb.ensure_models_present(tmp_path)
+
+    completed.assert_called_once_with(tmp_path)
+    text = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "Partial model state" in text, f"expected partial-state WARNING, got: {text!r}"
+    assert f"1/{mb._EXPECTED_MODEL_COUNT}" in text, f"expected observed/expected counts in WARNING, got: {text!r}"
 
 
 def test_ensure_models_present_download_failure(
