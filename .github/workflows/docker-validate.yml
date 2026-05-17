@@ -65,7 +65,28 @@ jobs:
 
       - name: 🐳 Validate docker-compose.yml
         run: |
-          echo "🔍 Validating Docker Compose configuration..."
-          touch .env
-          docker compose config --quiet
+          echo "🔍 Validating application-server docker-compose.yml..."
+          # Phase 29 added fail-fast ${VAR:?} guards on REDIS_PASSWORD.
+          # Supply placeholders so compose-parse can resolve interpolation.
+          printf '%s\n' \
+            'REDIS_PASSWORD=ci-validate-placeholder' \
+            'REDIS_BIND_IP=127.0.0.1' \
+            > .env
+          docker compose -f docker-compose.yml config --quiet
           echo "✅ docker-compose.yml is valid"
+
+      - name: 🐳 Validate docker-compose.agent.yml
+        run: |
+          echo "🔍 Validating agent (file-server) docker-compose.agent.yml..."
+          # Phase 29 file-server compose requires SCAN_PATH on all 4 services;
+          # supply placeholders so compose-parse can resolve interpolation.
+          printf '%s\n' \
+            'SCAN_PATH=/tmp/phaze-ci-scan-placeholder' \
+            'MODELS_PATH=/tmp/phaze-ci-models-placeholder' \
+            'PHAZE_API_URL=https://app-server.example:8000' \
+            'PHAZE_REDIS_URL=redis://default:ci-placeholder@app-server.example:6379/0' \
+            'PHAZE_AGENT_TOKEN=phaze_agent_ci-placeholder' \
+            'PHAZE_AGENT_ID=ci-agent' \
+            > .env.agent
+          docker compose -f docker-compose.agent.yml --env-file .env.agent config --quiet
+          echo "✅ docker-compose.agent.yml is valid"
