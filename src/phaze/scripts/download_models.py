@@ -107,6 +107,6 @@ def download_to(target_dir: Path) -> None:
         _download_one(f"{_GENRE_BASE}/{model}.json", target_dir / f"{model}.json")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover  # CLI invocation guard
     target = Path(sys.argv[1] if len(sys.argv) > 1 else "./models")
     download_to(target)

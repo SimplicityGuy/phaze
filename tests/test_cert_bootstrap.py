@@ -115,6 +115,31 @@ def test_parse_san_entries_mixed_dns_and_ip() -> None:
     assert isinstance(result[2], x509.DNSName) and result[2].value == "api"
 
 
+def test_unparseable_existing_certs_trigger_regeneration(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test 8: when all 4 files exist but the CA cert (or leaf) does not parse,
+    `ensure_certs_present` logs `existing certs unparseable; regenerating` and
+    rewrites all four. Closes the WARNING-8 regeneration branch (lines 202-203)
+    that the happy-path tests cannot reach."""
+    # Pre-populate all 4 expected paths with garbage so `all(p.exists())` is
+    # True, but `x509.load_pem_x509_certificate` raises ValueError.
+    for name in ("phaze-ca.crt", "phaze-ca.key", "phaze-server.crt", "phaze-server.key"):
+        (tmp_path / name).write_text("NOT-A-CERT")
+
+    with caplog.at_level(logging.WARNING, logger="phaze.cert_bootstrap"):
+        ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    # The regeneration warning fired.
+    assert any(r.levelname == "WARNING" and "existing certs unparseable" in r.getMessage() for r in caplog.records), (
+        f"Expected the 'unparseable; regenerating' warning; got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+    # And the four files now parse cleanly.
+    x509.load_pem_x509_certificate((tmp_path / "phaze-ca.crt").read_bytes())
+    x509.load_pem_x509_certificate((tmp_path / "phaze-server.crt").read_bytes())
+    serialization.load_pem_private_key((tmp_path / "phaze-ca.key").read_bytes(), password=None)
+    serialization.load_pem_private_key((tmp_path / "phaze-server.key").read_bytes(), password=None)
+
+
 def test_banner_emitted_via_logger_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test 7 (WARNING-8): banner MUST be emitted via logger.warning() per CONTEXT D-02 D-discretion 'Both'.
 
