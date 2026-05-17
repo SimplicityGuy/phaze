@@ -30,10 +30,23 @@ class BaseSettings(PydanticBaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Database
-    database_url: str = "postgresql+asyncpg://phaze:phaze@postgres:5432/phaze"
+    # Phase 29 CR-02: bind PHAZE_DATABASE_URL via validation_alias so the operator-
+    # facing env-var name documented in .env.example actually overrides the default.
+    # Without this, pydantic-settings only accepts the bare `DATABASE_URL` form.
+    database_url: str = Field(
+        default="postgresql+asyncpg://phaze:phaze@postgres:5432/phaze",
+        validation_alias=AliasChoices("PHAZE_DATABASE_URL", "DATABASE_URL", "database_url"),
+    )
 
     # Redis
-    redis_url: str = "redis://redis:6379/0"
+    # Phase 29 CR-02: bind PHAZE_REDIS_URL via validation_alias so the agent-side
+    # `_enforce_redis_password_in_production` validator actually sees operator-supplied
+    # credentials. Without the alias the env var is silently ignored and the
+    # production agent fails to start with the misleading "requires a password" error.
+    redis_url: str = Field(
+        default="redis://redis:6379/0",
+        validation_alias=AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url"),
+    )
 
     # Application
     debug: bool = False
@@ -257,6 +270,20 @@ class AgentSettings(BaseSettings):
             raise ValueError("PHAZE_AGENT_TOKEN is required when PHAZE_ROLE=agent")
         if not self.scan_roots:
             raise ValueError("AgentSettings.scan_roots is required when PHAZE_ROLE=agent (set PHAZE_AGENT_SCAN_ROOTS=/path1,/path2)")
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_https_in_production(self) -> "AgentSettings":
+        """Phase 29 CR-01: production refuses non-HTTPS agent_api_url.
+
+        Agent → app-server traffic carries the bearer token in plaintext if the
+        URL scheme is `http://`. `.env.example.agent` documents this guard but
+        the original Plan 02 only landed the Redis-password validator. Without
+        the HTTPS guard a misconfigured production agent silently posts the
+        bearer in cleartext on the LAN.
+        """
+        if self.agent_env == "production" and not self.agent_api_url.lower().startswith("https://"):
+            raise ValueError("agent_env=production requires https:// for agent_api_url (Phase 29 CR-01)")
         return self
 
     @model_validator(mode="after")
