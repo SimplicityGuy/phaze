@@ -94,6 +94,73 @@
 
 ---
 
+## Milestone: v4.0 — Distributed Agents
+
+**Shipped:** 2026-05-17
+**Phases:** 6 | **Plans:** 47
+
+### What Was Built
+- `agents` table + `agent_id` columns on FileRecord/ScanBatch with two-step Alembic migration (012 add+backfill via `legacy-application-server` seed, 013 NOT NULL + UQ swap) preserving v3.0 corpus end-to-end
+- `/api/internal/agent/*` HTTP surface (15+ routes: files, metadata, analysis, fingerprint, tracklists, proposals, execution-log, scan-batches, exec-batches, heartbeat, whoami) with token-hash bearer auth deriving `agent_id` from token; 403-before-state-machine cross-tenant guard on every multi-tenant PATCH
+- Task code split: `phaze.tasks.controller` (fileless) vs `phaze.tasks.agent_worker` (file-bound) under `PHAZE_ROLE={control,agent}`; per-agent SAQ queue (`phaze-agent-<id>`); subprocess import-boundary test catches `phaze.database` leaks
+- `PhazeAgentClient` with tenacity retry funnel + 4-class error hierarchy + respx contract tests; bearer token never instance-attribute (lives in httpx headers only)
+- `phaze-agent-watcher` service: watchdog observer + asyncio-owned single-loop sweep with mtime settle (10s default) + stuck-file cap (3600s); LIVE-sentinel ScanBatch per agent; admin "Trigger Scan" form
+- Distributed execution dispatch: group-by-`FileRecord.agent_id` in-Python `defaultdict`, one `execute_approved_batch` sub-job per agent under shared parent `batch_id`; per-proposal terminal progress POST with SAQ-meta UUID lift for retry safety; unified SSE aggregated by app-server
+- Self-signed internal CA + leaf x509 generated on first start by `phaze.cert_bootstrap`; pre-uvicorn entrypoint shim execvp's uvicorn (clean PID-1 signal propagation); `PhazeAgentClient.verify=` honors `AgentSettings.agent_ca_file`
+- Redis `requirepass` + `${REDIS_BIND_IP:-127.0.0.1}` LAN bind; `AgentSettings` rejects passwordless `redis_url` in production at boot
+- App-server compose stripped of `SCAN_PATH`/`MODELS_PATH` mounts; new `docker-compose.agent.yml` (4 services); per-file-server `just download-models` + auto-bootstrap; 30s heartbeat cron; `/admin/agents` page with liveness classifier
+- Migration from arq → SAQ (built-in web UI, per-queue worker model, active maintenance)
+
+### What Worked
+- The discuss-phase questioning loop on Phase 24 ("two-step migration vs single-step") surfaced the `legacy-application-server` backfill strategy BEFORE writing any SQL — saved a full re-plan
+- Subprocess import-boundary tests (D-25) are the cheapest possible way to enforce architectural invariants: one test catches every accidental `phaze.database` leak into agent code at CI time
+- The 403-before-state-machine guard pattern, repeated across Phases 25-08 / 27-02 / 28-02, is now a project-wide convention for multi-tenant PATCH routes
+- Phase 27 watcher: the asyncio-owned single-loop sweep + `loop.call_soon_threadsafe` thread bridge is the entire concurrency story — no locks, no race conditions in tests
+- Phase 28 SAQ-meta UUID lift (persist `execution_log_id` + `progress_request_id` in `job.meta` for retry idempotency) closed two latent retry-correctness bugs (L6/L22) that wouldn't surface in unit tests
+- Phase 29 entrypoint shim pattern (bootstrap → `execvp uvicorn`) is the canonical answer to "Docker PID-1 signal handling with pre-start work" — no double-process tree
+- Per-phase PR convention kept main clean through 6 phases (PRs #52, #56, #57, #59, #62 + this PR for #29)
+- Wave-based parallelization with worktree executors gave 3-4x throughput on phases with independent plans (especially Phase 25 wave 3, Phase 26 waves 3-5)
+
+### What Was Inefficient
+- Phase 24 plan numbering went from `[ ]` to `[x]` on phase-branch but the ROADMAP.md progress table wasn't synced to main — surfaced again by the v4.0 audit as documentation drift; needed a follow-up commit before milestone close
+- REQUIREMENTS.md traceability table was left with 13 stale `| Pending |` rows after Phases 24-28 merged; audit caught it but the drift could have been prevented by a CI gate that checks REQUIREMENTS.md against `find-phase --status passed`
+- VERIFICATION.md naming inconsistency: Phase 24 wrote `VERIFICATION.md` (unprefixed) while Phases 25-29 wrote `{N}-VERIFICATION.md` — breaks the `gsd-sdk query find-phase` discovery pattern; convention should be enforced by the verifier agent
+- Phase 26 ballooned to 13 plans (split into 6 waves) — the contract gap surfaced in Phase 25 (`/whoami`, `PUT /analysis`, `POST /tracklists`, `PATCH /proposals/{id}/state`) wasn't visible at Phase 25 plan time; a "contract completeness check" between planning waves would have absorbed those 4 plans into Phase 25
+- Phase 29 human-UAT was deferred to "verified-docs-only" because real two-host hardware wasn't available — milestone shipped with a documented production-smoke gap rather than a real one
+- Compose-template work (docker-compose.agent.yml + .env.example.agent + YAML-parse tests) repeated across Phases 27, 29 — could have lived in a single dedicated infra plan
+
+### Patterns Established
+- **Settings split via `get_settings()` factory** (Phase 26-01): `BaseSettings` + `ControlSettings(BaseSettings)` + `AgentSettings(BaseSettings)` with module-level `settings: ControlSettings = ...` for back-compat and call sites that pick via `get_settings()`
+- **`AliasChoices(PHAZE_*, bare_field)` per pydantic-settings field** (Phase 26-01): canonical pattern for env-var naming without a global `env_prefix`
+- **`Annotated[list[str], NoDecode] + @field_validator(mode="before")`** (Phase 26-01): canonical pattern for comma-split env vars (pydantic-settings v2 does NOT do this natively)
+- **Subprocess import-boundary tests** (Phase 26-10, 27-01, 29-01): `subprocess.run([sys.executable, "-c", "import phaze.tasks.agent_worker"])` + assert `phaze.database` not in `sys.modules` — extends per phase as new modules join the agent chain
+- **403-before-state-machine cross-tenant guard** (Phases 25-08 / 27-02 / 28-02): handler order is part of the spec; prevents timing side-channel via 409-vs-403 latency difference
+- **Idempotent same-state PATCH echoes row with zero DB writes** (Phase 26-08, 27-03): no `updated_at` bump on same-state retry
+- **Smoke-app per-router contract test pattern** (Phase 25-04, 26-05): `FastAPI()` + `include_router(...)` + `app.state.X = Y` decouples handler tests from the full main.py wiring
+- **Overflow funnel for wire-format fields without a column** (Phase 26-06): non-column response fields merge into existing JSONB column rather than dropping
+- **`_render_partial()` helper through `Jinja2Templates.TemplateResponse(...).body.decode()`** (Phase 28-04): Semgrep XSS-lint requires this over bare `Environment.get_template().render()`
+- **Pre-uvicorn entrypoint shim** (Phase 29-01): bootstrap-then-`execvp` for clean PID-1 signal propagation
+- **`${VAR:?...}` compose fail-fast** (Phase 29-04): forces compose parse failure on misconfigured host before any container starts
+- **HTMX poll-partial halt by OMITTING `hx-trigger`** (Phase 27-06): terminal-state markup drops the polling attrs; outerHTML swap replaces the polling element entirely
+- **In-Python `defaultdict(list)` over SQL `GROUP BY`** (Phase 28-03): at v4.0 scale (1-5 agents × ≤10K proposals), type-safe path is cheaper than DB aggregation
+
+### Key Lessons
+1. **Enforce architectural invariants with subprocess import-boundary tests** — the single test catches every `phaze.database` leak at CI time; the alternative (manual review) does not scale
+2. **The discuss-phase questioning loop is highest ROI on schema/migration phases** — getting the two-step migration shape locked in Phase 24 prevented a full re-plan when v3.0 data preservation was raised
+3. **Documentation drift gates need automation** — manual REQUIREMENTS.md / ROADMAP.md sync after PR merge consistently lags; a CI gate that cross-checks REQUIREMENTS.md against `find-phase --status passed` would close this
+4. **VERIFICATION.md naming convention must be enforced by the verifier agent** — Phase 24's unprefixed `VERIFICATION.md` broke the discovery pattern and required a documentation drift commit at milestone close
+5. **Plan a "contract completeness check" between waves on API-heavy phases** — Phase 26 absorbed 4 extra plans (`/whoami`, `PUT /analysis`, `POST /tracklists`, `PATCH /proposals/{id}/state`) that should have lived in Phase 25
+6. **Human-UAT defer policy needs explicit acceptance criteria upfront** — Phase 29's "verified-docs-only" exit was the right call given missing hardware, but it should have been declared at plan time, not at verify time
+7. **Per-phase PR convention scales to large milestones** — 6 phases, 6 PRs, main never broken; the discipline pays off most on phases that mutate shared modules (config, main.py, docker-compose.yml)
+8. **Per-agent SAQ queues fit perfectly when the queue name comes from a stable resource ID** — `phaze-agent-<id>` from `FileRecord.agent_id` made the enqueue path a single field lookup, no routing logic needed
+
+### Cost Observations
+- Model mix: ~60% opus (execution + planning on complex phases like 26), ~30% sonnet (verification, contract tests, doc work), ~10% haiku (quick checks, status updates)
+- Notable: Phase 26 (13 plans, 6 waves) used the most tokens of any v4.0 phase due to the contract-gap discovery + per-router plan splits — a "contract completeness" pre-check could have collapsed this back to ~9 plans
+- Worktree parallelization saved meaningful wall-clock on Phases 25 (wave 3, 5 parallel routers) and 26 (waves 3-5) — orchestrator stays focused on integration while executors work independently
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -102,16 +169,24 @@
 |-----------|--------|-------|------------|
 | v1.0 | 11 | 24 | Established GSD workflow, branching strategy, Nyquist validation |
 | v2.0 | 6 | 16 | Research phases before planning, dual-service architecture, HTMX patterns matured |
+| v3.0 | 6 | 11 | Enrichment layer (search, Discogs, tag writing, CUE) on stable foundation; HTMX OOB swaps + Alpine.js patterns reused everywhere |
+| v4.0 | 6 | 47 | Two-host distributed architecture (HTTP-only agent boundary, per-agent SAQ queues, internal CA, settings split via `get_settings()` factory); subprocess import-boundary tests enforce invariants; 4× plan count from contract-heavy API surface |
 
 ### Cumulative Quality
 
-| Milestone | Tests | LOC | Phases |
-|-----------|-------|-----|--------|
+| Milestone | Tests | LOC (Python src) | Phases |
+|-----------|-------|------------------|--------|
 | v1.0 | 282 | 7,975 | 11 |
-| v2.0 | 538 | 5,966 | 6 |
+| v2.0 | 538 | 5,966 added | 6 |
+| v3.0 | (unrecorded) | (single-host enrichment) | 6 |
+| v4.0 | (full suite passing) | ~14,300 src + ~28,000 tests cumulative; ~23,242 lines added since v3.0 tag | 6 |
 
 ### Top Lessons (Verified Across Milestones)
 
-1. Integration testing at pipeline boundaries catches gaps that unit tests miss (v1.0 audit gaps, v2.0 clean audit)
-2. Documentation conventions established early save cleanup phases later (v1.0 SUMMARY frontmatter, v2.0 Nyquist frontmatter)
-3. Research phases for unfamiliar domains prevent rework (v2.0 fingerprint architecture research)
+1. Integration testing at pipeline boundaries catches gaps that unit tests miss (v1.0 audit gaps, v2.0 clean audit, v4.0 cross-tenant guards)
+2. Documentation conventions established early save cleanup phases later (v1.0 SUMMARY frontmatter, v2.0 Nyquist frontmatter, v4.0 VERIFICATION.md prefixing)
+3. Research phases for unfamiliar domains prevent rework (v2.0 fingerprint architecture, v4.0 pydantic-settings v2 quirks + cryptography x509 generation)
+4. The discuss-phase questioning loop is highest ROI on schema/migration phases (v4.0 Phase 24 two-step migration shape was locked before any SQL was written)
+5. Subprocess import-boundary tests are the cheapest enforcement of architectural invariants — established in v4.0, should generalize to any future "this module must not import that module" rule
+6. Per-phase PR convention scales — held through 29 phases across 4 milestones, main never broken
+7. Documentation drift gates need automation — manual REQUIREMENTS.md / ROADMAP.md sync after PR merge consistently lags; surfaced in v2.0, v3.0, and v4.0 audits
