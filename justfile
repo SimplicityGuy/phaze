@@ -11,6 +11,16 @@ install:
 up:
     docker compose up -d
 
+[doc('Start file-server agent stack (standalone docker-compose.agent.yml)')]
+[group('dev')]
+up-agent:
+    docker compose -f docker-compose.agent.yml up -d
+
+[doc('Start both stacks on one host (developer convenience)')]
+[group('dev')]
+up-all:
+    docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d
+
 [doc('Stop all services')]
 [group('dev')]
 down:

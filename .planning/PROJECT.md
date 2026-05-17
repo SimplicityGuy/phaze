@@ -130,6 +130,23 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 **Per-agent fingerprint indices (v4.0).** Each file server's `audfprint` and `panako` sidecars index ONLY that file server's local files. Duplicate audio content landing on different file servers will NOT cross-match. Cross-file-server fingerprint matching is XAGENT-01 (deferred to a post-v4.0 milestone). The Duplicate Resolution admin UI surfaces this constraint as an inline, per-session-dismissible banner on every page load so the operator interprets fingerprint-derived results with this scope in mind.
 
+### Deployment (v4.0 — Distributed Agents)
+
+Phaze v4.0 production runs as **two Docker Compose files on two private-LAN hosts**:
+
+- **Application server** (`docker-compose.yml`): `api` (uvicorn-direct TLS via internal CA), `worker` (fileless controller-role SAQ worker), `postgres`, `redis` (password-auth + LAN-bound port). **No file mounts** beyond `./certs/` — the app-server has no way to read or write music/video file content (DIST-01).
+- **File servers** (`docker-compose.agent.yml`, one stack per file-server host): `worker` (agent-role SAQ worker), `watcher` (watchdog-based file event poster), `audfprint` + `panako` (local fingerprint sidecars). Holds the music/video library locally; reaches the app-server over HTTPS for every state change.
+
+Locked invariants (Phase 29):
+
+- All agent → app-server traffic uses **HTTPS** terminated by uvicorn against a self-signed internal CA generated in the app-server's `api` container on first start. Operators distribute the public CA cert (`phaze-ca.crt`) to each file server via scp/rsync; the CA private key (`phaze-ca.key`, mode 0600) never leaves the app-server.
+- **Redis** on the app-server requires `requirepass` and is bound to the private LAN IP (or loopback in dev). Agents connect with `redis://default:<password>@<host>:6379`. In `PHAZE_AGENT_ENV=production`, `AgentSettings` rejects a passwordless `redis_url` at boot.
+- **0 new pip dependencies** beyond `cryptography` (added Phase 29 for cert generation).
+- `docker-compose.agent.yml` enforces `${SCAN_PATH:?SCAN_PATH required}` on all four services — compose parse fails fast on a misconfigured file-server host.
+- Operator workflow: `just up` (app-server), `just up-agent` (each file-server), `just up-all` (single-host dev). Full walkthrough in `docs/deployment.md`.
+
+Deferred to a future ops phase: mTLS for the agent boundary, agent self-registration UI, Prometheus metrics scrape endpoint, automated CA rotation. See REQUIREMENTS.md §"Future Requirements → Operational Polish" (OPS-05..OPS-07).
+
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
