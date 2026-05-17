@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Agents - Phaze{% endblock %}
+{% block skip_link %}
+<a href="#agents-table-section" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 dark:bg-blue-700 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to agents table</a>
+{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-semibold leading-tight">Agents</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400">
+        Live status of every registered file-server agent. Refreshes every 5 seconds.
+    </p>
+    {% include "admin/partials/agents_table.html" %}
+</div>
+
+{# BLOCKER-2 (MANDATORY): UI-SPEC §Error / Failure-Tolerant Refresh — status: approved.
+   Attaches once at page load. Writes localStorage `phaze:agents:lastError` ISO timestamp
+   on htmx:responseError or htmx:sendError targeting #agents-table-section. Clears the
+   key on a successful htmx:afterSwap so transient failures do not pin the red banner.
+   localStorage calls are wrapped in try/catch so private-mode / quota errors degrade
+   silently (T-29-07-10 mitigation). #}
+<script>
+(function() {
+    const TARGET_ID = 'agents-table-section';
+    const STORAGE_KEY = 'phaze:agents:lastError';
+
+    function isOurTarget(evt) {
+        const target = evt.detail && evt.detail.target;
+        return target && target.id === TARGET_ID;
+    }
+    function recordFailure(evt) {
+        if (!isOurTarget(evt)) return;
+        try { localStorage.setItem(STORAGE_KEY, new Date().toISOString()); }
+        catch (e) { /* private-mode/quota: degrade silently */ }
+    }
+    function clearFailureOnSuccess(evt) {
+        if (!isOurTarget(evt)) return;
+        try { localStorage.removeItem(STORAGE_KEY); }
+        catch (e) { /* ignore */ }
+    }
+    document.body.addEventListener('htmx:responseError', recordFailure);
+    document.body.addEventListener('htmx:sendError', recordFailure);
+    document.body.addEventListener('htmx:afterSwap', clearFailureOnSuccess);
+})();
+</script>
+{% endblock %}

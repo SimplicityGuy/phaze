@@ -13,6 +13,7 @@ dependencies = [
     "saq[redis]>=0.26.3",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.14.3",
+    "cryptography>=46.0.0,<49",
     "essentia-tensorflow>=2.1b6.dev1389; sys_platform != 'linux' or platform_machine == 'x86_64'",
     "fastapi>=0.136.1",
     "httpx>=0.28.1",

@@ -10,7 +10,7 @@ env var. `get_settings()` is the single dispatch point; module-level
 from enum import StrEnum
 from functools import lru_cache
 import os
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
@@ -30,10 +30,23 @@ class BaseSettings(PydanticBaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Database
-    database_url: str = "postgresql+asyncpg://phaze:phaze@postgres:5432/phaze"
+    # Phase 29 CR-02: bind PHAZE_DATABASE_URL via validation_alias so the operator-
+    # facing env-var name documented in .env.example actually overrides the default.
+    # Without this, pydantic-settings only accepts the bare `DATABASE_URL` form.
+    database_url: str = Field(
+        default="postgresql+asyncpg://phaze:phaze@postgres:5432/phaze",
+        validation_alias=AliasChoices("PHAZE_DATABASE_URL", "DATABASE_URL", "database_url"),
+    )
 
     # Redis
-    redis_url: str = "redis://redis:6379/0"
+    # Phase 29 CR-02: bind PHAZE_REDIS_URL via validation_alias so the agent-side
+    # `_enforce_redis_password_in_production` validator actually sees operator-supplied
+    # credentials. Without the alias the env var is silently ignored and the
+    # production agent fails to start with the misleading "requires a password" error.
+    redis_url: str = Field(
+        default="redis://redis:6379/0",
+        validation_alias=AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url"),
+    )
 
     # Application
     debug: bool = False
@@ -105,6 +118,16 @@ class BaseSettings(PydanticBaseSettings):
         description="Run `alembic upgrade head` in the api lifespan startup.",
     )
 
+    # Phase 29 D-02: SAN list baked into the auto-generated leaf cert at api
+    # entrypoint. Default covers single-host dev (`localhost`, `127.0.0.1`)
+    # and the docker-compose service-name DNS (`api`) so agents on the same
+    # network can verify a TLS handshake to `https://api:8000`.
+    api_tls_sans: str = Field(
+        default="localhost,127.0.0.1,api",
+        validation_alias=AliasChoices("PHAZE_API_TLS_SANS", "api_tls_sans"),
+        description="Comma-separated SAN list for the auto-generated leaf cert (Phase 29 D-02).",
+    )
+
     # Phase 27 UAT Gap 3: seed a dev agent on a fresh DB so the watcher can
     # authenticate on first start. Disabled by default in production; the
     # operator-supplied token (if set) overrides the random one printed at
@@ -158,6 +181,17 @@ class AgentSettings(BaseSettings):
         default=SecretStr(""),
         validation_alias=AliasChoices("PHAZE_AGENT_TOKEN", "agent_token"),
     )
+    # Phase 29 D-06: deployment-mode selector. `production` triggers the
+    # `_enforce_redis_password_in_production` model_validator below, which refuses
+    # passwordless `redis_url` so a misconfigured production agent fails fast at
+    # startup rather than connecting to an unsecured Redis. `dev` (the default)
+    # preserves Pitfall 7: fresh clones must `docker compose up` without
+    # supplying a Redis password.
+    agent_env: Literal["dev", "production"] = Field(
+        default="dev",
+        validation_alias=AliasChoices("PHAZE_AGENT_ENV", "agent_env"),
+        description="Deployment mode. Production refuses passwordless Redis URLs (Phase 29 D-06).",
+    )
     scan_roots: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         validation_alias=AliasChoices("PHAZE_AGENT_SCAN_ROOTS", "scan_roots"),
@@ -202,6 +236,18 @@ class AgentSettings(BaseSettings):
         description="Number of FileUpsertRecord rows per chunk in scan_directory (D-11).",
     )
 
+    # Phase 29 D-03: path to the operator-distributed CA cert that the agent's
+    # httpx.AsyncClient uses to verify the application-server TLS endpoint.
+    # Default `/certs/phaze-ca.crt` matches the bind-mount path inside agent
+    # containers (docker-compose.agent.yml). `construct_agent_client` raises
+    # RuntimeError at construction time if the file is missing or empty so
+    # misconfiguration surfaces fast.
+    agent_ca_file: str = Field(
+        default="/certs/phaze-ca.crt",
+        validation_alias=AliasChoices("PHAZE_AGENT_CA_FILE", "agent_ca_file"),
+        description="Path to the operator-distributed CA cert for verifying the app-server TLS endpoint (Phase 29 D-03).",
+    )
+
     @field_validator("scan_roots", mode="before")
     @classmethod
     def _split_scan_roots(cls, value: object) -> object:
@@ -224,6 +270,40 @@ class AgentSettings(BaseSettings):
             raise ValueError("PHAZE_AGENT_TOKEN is required when PHAZE_ROLE=agent")
         if not self.scan_roots:
             raise ValueError("AgentSettings.scan_roots is required when PHAZE_ROLE=agent (set PHAZE_AGENT_SCAN_ROOTS=/path1,/path2)")
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_https_in_production(self) -> "AgentSettings":
+        """Phase 29 CR-01: production refuses non-HTTPS agent_api_url.
+
+        Agent → app-server traffic carries the bearer token in plaintext if the
+        URL scheme is `http://`. `.env.example.agent` documents this guard but
+        the original Plan 02 only landed the Redis-password validator. Without
+        the HTTPS guard a misconfigured production agent silently posts the
+        bearer in cleartext on the LAN.
+        """
+        if self.agent_env == "production" and not self.agent_api_url.lower().startswith("https://"):
+            raise ValueError("agent_env=production requires https:// for agent_api_url (Phase 29 CR-01)")
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_redis_password_in_production(self) -> "AgentSettings":
+        """D-06: production refuses passwordless redis_url.
+
+        Phase 29 AUTH-03 pairs this client-side guard with the server-side
+        `requirepass` + LAN-bound port hardening landing in Plan 03. Together
+        they ensure a misconfigured production agent fails fast at startup
+        rather than silently connecting to an unsecured Redis. `dev` (default)
+        permits passwordless URLs so `docker compose up` works on a fresh clone
+        without any extra env-var ceremony (RESEARCH §Pitfall 7).
+
+        `urlparse` resolves URL-encoded passwords correctly; a truly malformed
+        URL falls through to a SAQ connection failure at queue construction time.
+        """
+        if self.agent_env == "production":
+            parsed = urlparse(self.redis_url)
+            if not parsed.password:
+                raise ValueError("agent_env=production requires a password in redis_url (Phase 29 D-06)")
         return self
 
 

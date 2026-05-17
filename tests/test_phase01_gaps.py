@@ -21,7 +21,9 @@ def test_settings_database_url_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_settings_redis_url_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings.redis_url defaults to the Docker Compose redis address."""
+    monkeypatch.delenv("PHAZE_REDIS_URL", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("redis_url", raising=False)
     s = Settings(_env_file=None)
     assert s.redis_url == "redis://redis:6379/0"
 

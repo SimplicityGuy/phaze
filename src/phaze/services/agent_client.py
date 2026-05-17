@@ -34,6 +34,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 
 
 if TYPE_CHECKING:
+    import ssl
     import uuid
 
     # Phase 26 Plan 03 schemas (now merged; type: ignore tripwires retired).
@@ -121,13 +122,29 @@ class PhazeAgentClient:
         token: str,
         *,
         timeout: float = 30.0,
+        verify: ssl.SSLContext | str | bool = True,
         _client: httpx.AsyncClient | None = None,
     ) -> None:
+        """Construct the client.
+
+        Phase 29 D-03/D-04: ``verify`` is threaded through to
+        ``httpx.AsyncClient(verify=...)``. Accepts an ``ssl.SSLContext``,
+        a file path string pointing at a CA bundle, or a bool. Default
+        ``True`` preserves backwards compatibility with all existing
+        respx-based tests (RESEARCH Pitfall 10) -- respx mocks below
+        the TLS layer so cert validation is bypassed there.
+
+        Production callers (``construct_agent_client`` in
+        ``phaze.tasks._shared.agent_bootstrap``) pass
+        ``verify=cfg.agent_ca_file`` so the agent's httpx client trusts
+        the operator-distributed internal CA and rejects any other.
+        """
         self.base_url = base_url
         self._client = _client or httpx.AsyncClient(
             base_url=base_url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
+            verify=verify,
         )
 
     async def close(self) -> None:

@@ -54,7 +54,11 @@ async def test_agent_worker_startup_logs_role_banner_with_token_preview(
 
     # Patch models-dir check so we don't need real .pb files mounted.
     monkeypatch.setattr(pathlib.Path, "is_dir", lambda _self: True)
-    monkeypatch.setattr(pathlib.Path, "glob", lambda _self, _pat: [pathlib.Path("/m/x.pb")])
+    # Phase 29 CR-03: ensure_models_present now compares against an expected
+    # weight-file count (34), so the prior "glob returns one fake .pb" trick
+    # triggers a partial-state re-download. Patch the bootstrap directly --
+    # these tests are about the banner / queue-mismatch logic, not models.
+    monkeypatch.setattr(aw, "ensure_models_present", lambda _models_dir: None)
 
     ctx: dict[str, Any] = {}
     with caplog.at_level(logging.INFO, logger="phaze.tasks.agent_worker"):
@@ -110,7 +114,11 @@ async def test_agent_worker_startup_raises_on_queue_token_mismatch(
     monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
     monkeypatch.setattr(pathlib.Path, "is_dir", lambda _self: True)
-    monkeypatch.setattr(pathlib.Path, "glob", lambda _self, _pat: [pathlib.Path("/m/x.pb")])
+    # Phase 29 CR-03: ensure_models_present now compares against an expected
+    # weight-file count (34), so the prior "glob returns one fake .pb" trick
+    # triggers a partial-state re-download. Patch the bootstrap directly --
+    # these tests are about the banner / queue-mismatch logic, not models.
+    monkeypatch.setattr(aw, "ensure_models_present", lambda _models_dir: None)
 
     ctx: dict[str, Any] = {}
     with pytest.raises(RuntimeError, match="queue/token mismatch"):

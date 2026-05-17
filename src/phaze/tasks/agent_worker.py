@@ -45,7 +45,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from saq import Queue
+from saq import CronJob, Queue
 
 from phaze.config import AgentSettings, get_settings
 from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
@@ -54,10 +54,12 @@ from phaze.tasks._shared.agent_bootstrap import (
     construct_agent_client,
     whoami_with_retry as _whoami_with_retry,
 )
+from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
+from phaze.tasks.heartbeat import heartbeat_tick
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.scan import scan_directory, scan_live_set
@@ -85,23 +87,18 @@ async def startup(ctx: dict[str, Any]) -> None:
         os.environ.get("PHAZE_AGENT_QUEUE", "<unset>"),
     )
 
-    # Step 1: Models check (mirror worker.py:30-39).
-    models_dir = Path(cfg.models_path)
-    if not models_dir.is_dir():
-        msg = f"Models directory not found: {cfg.models_path}. Run 'just download-models' to populate it."
-        raise RuntimeError(msg)
-    pb_files = list(models_dir.glob("*.pb"))
-    if not pb_files:
-        msg = f"No .pb model files in {cfg.models_path}. Run 'just download-models' to populate it."
-        raise RuntimeError(msg)
-    logger.info("Found %d model files in %s", len(pb_files), cfg.models_path)
-
     # Step 2: Construct PhazeAgentClient (shared bootstrap helper -- Phase 27 D-17).
     client = construct_agent_client(cfg)
     ctx["api_client"] = client
 
     # Step 3: /whoami probe with bounded retry.
     identity = await _whoami_with_retry(client)
+
+    # Step 3a (Phase 29 D-21): ensure essentia weights present; download on empty.
+    # Placed AFTER whoami so auth fails fast (~60s) instead of after a 5min download.
+    # WORKER-ONLY (Phase 29 WARNING-7): the watcher does not call this -- only the
+    # worker owns the download to avoid a .part-file race on fresh /models volumes.
+    ensure_models_present(Path(cfg.models_path))
 
     # Step 4: Queue-name mismatch guard (Pitfall 1).
     expected_queue = f"phaze-agent-{identity.agent_id}"
@@ -185,6 +182,13 @@ settings = {
         scan_live_set,
         scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
         execute_approved_batch,
+        heartbeat_tick,  # Phase 29 D-08: SAQ-dispatched 30s cron handler
+    ],
+    "cron_jobs": [
+        # Phase 29 D-08 + RESEARCH Critical Discovery #2: trailing-seconds
+        # 6-field form (croniter 6.x default). "*/30 * * * * *" would fire
+        # every second. Smoke-tested at module import time via croniter.
+        CronJob(heartbeat_tick, cron="* * * * * */30", unique=True, timeout=10),  # type: ignore[type-var]
     ],
     "concurrency": get_settings().worker_max_jobs,
     "startup": startup,

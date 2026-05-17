@@ -13,6 +13,7 @@ from sqlalchemy import text
 from phaze.config import settings
 from phaze.database import async_session, engine, run_migrations
 from phaze.routers import (
+    admin_agents,
     agent_analysis,
     agent_exec_batches,
     agent_execution,
@@ -128,6 +129,11 @@ def create_app() -> FastAPI:
     # poll partial + the agent-roots swap. Distinct from `pipeline.router`,
     # which serves the dashboard page and existing pipeline-stage triggers.
     app.include_router(pipeline_scans.router)
+    # Phase 29 admin-UI router (D-11..D-14): GET /admin/agents (operator-facing
+    # liveness page) + GET /admin/agents/_table (HTMX 5s poll partial). The
+    # router is read-only and does NOT use get_authenticated_agent (consistent
+    # with other admin-UI routers on the private LAN).
+    app.include_router(admin_agents.router)
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
     return app
 

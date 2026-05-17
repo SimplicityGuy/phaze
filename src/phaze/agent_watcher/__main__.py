@@ -183,6 +183,14 @@ async def main() -> None:
     try:
         identity = await whoami_with_retry(client)
 
+        # Phase 29 D-21 + WARNING-7: the watcher intentionally does NOT call
+        # ensure_models_present. The worker (phaze.tasks.agent_worker.startup)
+        # owns the download on a fresh /models volume; the watcher cannot
+        # dispatch analysis jobs without a worker anyway, and having both
+        # entry points race on .part files in /models would be wasteful.
+        # If a future plan needs models on the watcher side, gate via a
+        # filelock and only one entry point downloads.
+
         debouncer = Debouncer()
         poster = Poster(client=client, agent_id=identity.agent_id)
         shutdown_event = asyncio.Event()

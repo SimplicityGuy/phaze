@@ -48,3 +48,20 @@ EXTENSION_MAP: dict[str, FileCategory] = {
 
 BULK_INSERT_BATCH_SIZE: int = 1000
 """Number of records per bulk INSERT batch for database ingestion."""
+
+AGENT_LIVENESS_ALIVE_SECONDS: int = 90
+"""Phase 29 D-12: seconds since `last_seen_at` below which an agent is 'alive'.
+
+The threshold is 3x the heartbeat cadence (30s) so a single missed beat does
+not flip an otherwise-healthy agent to 'stale'. Shared by the classifier
+(``phaze.services.agent_liveness.classify``), the UI render, and the
+classify-matrix tests so every consumer reads the same source of truth.
+"""
+
+AGENT_LIVENESS_STALE_SECONDS: int = 300
+"""Phase 29 D-12: seconds since `last_seen_at` below which an agent is 'stale';
+deltas ``>= AGENT_LIVENESS_STALE_SECONDS`` classify as 'dead'.
+
+5 minutes of missed heartbeats (~10 beats) is the LOCKED threshold for treating
+a worker as ineffective. Shared by the classifier and the matrix tests.
+"""
