@@ -45,47 +45,47 @@ jobs:
             image_suffix: "/panako"
 
     steps:
-      - name: "\u23F1\uFE0F Start timer"
+      - name: "⏱️ Start timer"
         id: timer
         run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: "\U0001F3F7\uFE0F Set lowercase image name"
+      - name: "🏷️ Set lowercase image name"
         id: image
         env:
           REPO: ${{ github.repository }}
         run: |
           echo "IMAGE_NAME=$(echo "$REPO" | tr "[:upper:]" "[:lower:]")" >> "$GITHUB_ENV"
 
-      - name: "\U0001F500 Checkout repository"
-        uses: actions/checkout@v6
+      - name: "🔀 Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: "\U0001F9F9 Free disk space"
+      - name: "🧹 Free disk space"
         run: |
-          echo "\U0001F4CA Disk space before cleanup:"
+          echo "📊 Disk space before cleanup:"
           df -h
 
-          echo "\U0001F5D1\uFE0F Removing unnecessary software..."
+          echo "🗑️ Removing unnecessary software..."
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
 
-          echo "\U0001F9F9 Cleaning Docker..."
+          echo "🧹 Cleaning Docker..."
           docker system prune -af --volumes || true
 
-          echo "\U0001F4CA Disk space after cleanup:"
+          echo "📊 Disk space after cleanup:"
           df -h
 
-      - name: "\U0001F512 Log in to the GitHub Container Registry"
+      - name: "🔒 Log in to the GitHub Container Registry"
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "\U0001F4BE Setup Docker build cache"
+      - name: "💾 Setup Docker build cache"
         id: docker-cache
         uses: ./.github/actions/docker-build-cache
         with:
@@ -93,9 +93,9 @@ jobs:
           dockerfile-path: ${{ matrix.dockerfile }}
           use-cache: ${{ matrix.use_cache }}
 
-      - name: "\U0001F4CA Extract metadata (tags, labels) for Docker"
+      - name: "📊 Extract metadata (tags, labels) for Docker"
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
         with:
           # Phase 29 D-15: matrix.image_suffix is "" for the api image (bare-repo
           # URL ghcr.io/simplicityguy/phaze pulled by docker-compose.agent.yml)
@@ -114,16 +114,16 @@ jobs:
             type=ref,event=pr
             type=schedule,pattern={{date 'YYYYMMDD'}}
 
-      - name: "\U0001F527 Set up Docker Buildx"
-        uses: docker/setup-buildx-action@v4
+      - name: "🔧 Set up Docker Buildx"
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
         with:
           platforms: linux/amd64
           driver-opts: |
             image=moby/buildkit:latest
             network=host
 
-      - name: "\U0001F680 Build and push Docker image - phaze/${{ matrix.name }}"
-        uses: docker/build-push-action@v7
+      - name: "🚀 Build and push Docker image - phaze/${{ matrix.name }}"
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -147,23 +147,23 @@ jobs:
       -  # Temp fix
         # https://github.com/docker/build-push-action/issues/252
         # https://github.com/moby/buildkit/issues/1896
-        name: "\U0001F4BE Move cache"
+        name: "💾 Move cache"
         if: ${{ matrix.use_cache }}
         run: |
           rm -rf ${{ runner.temp }}/.buildx-cache
           mv ${{ runner.temp }}/.buildx-cache-new ${{ runner.temp }}/.buildx-cache
 
-      - name: "\U0001F9F9 Cleanup build artifacts"
+      - name: "🧹 Cleanup build artifacts"
         if: always()
         run: |
-          echo "\U0001F5D1\uFE0F Pruning Docker build cache..."
+          echo "🗑️ Pruning Docker build cache..."
           docker buildx prune -f --filter until=1h || true
           docker system prune -f --filter until=1h || true
 
-          echo "\U0001F4CA Remaining disk space:"
+          echo "📊 Remaining disk space:"
           df -h
 
-      - name: "\U0001F4CA Collect metrics"
+      - name: "📊 Collect metrics"
         if: always()
         env:
           START_TIME: ${{ steps.timer.outputs.start_time }}
