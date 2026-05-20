@@ -7,6 +7,8 @@
 # - Python package dependencies via uv (all version types)
 # - Dependency floors in pyproject.toml, raised to match the locked versions
 # - Service dependencies (audfprint, panako)
+# - Node.js dependencies (any package.json; no-op while phaze is CDN-based)
+# - uv binary pin in Dockerfiles + setup-uv action SHA pin in workflows
 # - Pre-commit hooks to latest versions (with frozen SHAs)
 # - Docker base images (managed by Dependabot)
 #
@@ -664,6 +666,52 @@ update_service_packages() {
   done
 }
 
+# === Node.js Dependency Updates ===
+
+# Update Node.js dependencies for any package.json in the tree. phaze is
+# currently CDN-based (HTMX/Tailwind, no Node build), so this normally no-ops —
+# it keeps the script symmetric with the discogsography reference and ready if a
+# frontend with a package.json is ever added.
+update_node_packages() {
+  print_section "$EMOJI_PACKAGE" "Updating Node.js Dependencies"
+
+  # Discover package.json files (skip vendored / tooling dirs)
+  local pkg_files=()
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] && pkg_files+=("$pkg")
+  done < <(find . -maxdepth 2 -name package.json \
+    -not -path './node_modules/*' -not -path './.git/*' -not -path './.claude/*' 2>/dev/null)
+
+  if [[ ${#pkg_files[@]} -eq 0 ]]; then
+    print_info "No package.json found, skipping Node.js updates"
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    print_warning "npm not installed, skipping Node.js updates"
+    return 0
+  fi
+
+  local pkg pkg_dir
+  for pkg in "${pkg_files[@]}"; do
+    pkg_dir=$(dirname "$pkg")
+    if [[ "$DRY_RUN" == true ]]; then
+      print_info "[DRY RUN] Would update npm packages in $pkg_dir"
+      continue
+    fi
+    backup_file "$pkg"
+    backup_file "$pkg_dir/package-lock.json"
+    print_info "Updating npm packages in $pkg_dir..."
+    if (cd "$pkg_dir" && npm update --save && npm install >/dev/null 2>&1); then
+      print_success "Updated $pkg_dir (package.json + package-lock.json)"
+      FILE_CHANGES+=("$pkg_dir/package.json: Updated npm dependencies")
+      CHANGES_MADE=true
+    else
+      print_warning "Failed to update npm packages in $pkg_dir"
+    fi
+  done
+}
+
 # === Sweep pip-audit Ignores ===
 
 sweep_pip_audit_ignores() {
@@ -998,6 +1046,7 @@ main() {
   sync_dependency_floors
   flag_capped_dependencies
   update_service_packages
+  update_node_packages
   sweep_pip_audit_ignores
   sweep_osv_scanner_ignores
   run_tests
