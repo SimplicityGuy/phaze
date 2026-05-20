@@ -6,7 +6,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  PYTHON_VERSION: "3.13"
+  PYTHON_VERSION: "3.14"
 
 concurrency:
   group: docker-publish-${{ github.workflow }}-${{ github.ref }}

@@ -263,7 +263,7 @@ Called from the CI `docker-publish` job, which runs only after `aggregate-result
 - Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:v<version>`.
 - Builds with `provenance: true` and `sbom: true` for supply-chain attestation, on `linux/amd64`.
 
-The single-stage `Dockerfile` (`FROM python:3.13-slim AS base`) installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
+The single-stage `Dockerfile` (`FROM python:3.14-slim AS base`) installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
 
 You can also build/push manually with `just`: `just docker-build`, `just docker-validate` (hadolint), `just docker-compose-validate`, and `just image-push` (requires a `gh` token with `packages:write`).
 

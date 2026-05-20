@@ -16,7 +16,7 @@ docker compose build panako
 
 The Dockerfile uses a multi-stage build:
 1. **Stage 1 (JDK):** Clones the Panako repository and builds the shadow JAR with Gradle
-2. **Stage 2 (Runtime):** Python 3.13-slim with JRE-only runtime, FFmpeg, and the FastAPI wrapper
+2. **Stage 2 (Runtime):** Python 3.14-slim with JRE-only runtime, FFmpeg, and the FastAPI wrapper
 
 ## API Endpoints
 

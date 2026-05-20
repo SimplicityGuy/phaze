@@ -15,9 +15,9 @@ command. Configuration details live in [Configuration](configuration.md).
 | **Docker + Docker Compose** | Compose v2 | Runs the Postgres, Redis, API, and worker containers | https://docs.docker.com/get-docker/ |
 | **uv** | latest | Python package manager (replaces `pip`) | https://docs.astral.sh/uv/ |
 | **just** | latest | Command runner for all project recipes | https://just.systems/ |
-| **Python** | `>=3.13,<3.14` | Application runtime (managed by `uv`) | https://www.python.org/ |
+| **Python** | `>=3.14,<3.15` | Application runtime (managed by `uv`) | https://www.python.org/ |
 
-The `requires-python = ">=3.13,<3.14"` constraint is enforced by `pyproject.toml`.
+The `requires-python = ">=3.14,<3.15"` constraint is enforced by `pyproject.toml`.
 `uv sync` provisions a matching interpreter if one is not already on your machine.
 
 > **macOS note:** essentia-tensorflow only ships Linux x86_64 wheels. On Apple Silicon
