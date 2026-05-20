@@ -79,7 +79,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     # The variable name keeps `token_preview` for grepability of the D-13 invariant
     # in the codebase; the format-string key is "auth_id_prefix" (no secret keywords)
     # so static analyzers don't flag the format literal itself as a leak.
-    token_preview = cfg.agent_token.get_secret_value()[:12] + "..."  # nosec B105
+    token_preview = cfg.agent_token.get_secret_value()[:12] + "..."
     logger.info(
         "phaze.tasks.agent_worker startup role=agent api=%s auth_id_prefix=%s queue=%s",
         cfg.agent_api_url,

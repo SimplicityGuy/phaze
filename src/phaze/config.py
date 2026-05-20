@@ -106,7 +106,7 @@ class BaseSettings(PydanticBaseSettings):
     discogsography_url: str = "http://discogsography:8000"
 
     # Internal agent API (Phase 25)
-    agent_token_prefix: str = "phaze_agent_"  # noqa: S105  # nosec B105
+    agent_token_prefix: str = "phaze_agent_"  # noqa: S105
     agent_file_chunk_max: int = 1000
 
     # Phase 27 UAT Gap 2: auto-run alembic upgrade head on api startup. Turn off

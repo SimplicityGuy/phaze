@@ -49,6 +49,11 @@ def main() -> None:
     # the install prefix. S606 (untrusted-input-shell) is not applicable here:
     # this is a Python ``os.execvp``, not a shell. S607 (partial-path) is the
     # explicit choice -- the alternative is fragility.
+    # bind_host is hoisted to its own statement so the B104/S104 suppression sits
+    # on a single line. A bandit suppression placed inside the multi-line execvp()
+    # arg list gets smeared across every sibling line, producing spurious
+    # "encountered, but no failed test" warnings on the unrelated literals.
+    bind_host = "0.0.0.0"  # noqa: S104  # nosec B104  # container-bound; bind-IP enforced at Docker port level
     os.execvp(  # noqa: S606  # nosec B606 B607  # PATH-resolved `uv`; not a shell
         "uv",  # noqa: S607
         [
@@ -57,7 +62,7 @@ def main() -> None:
             "uvicorn",
             "phaze.main:app",
             "--host",
-            "0.0.0.0",  # noqa: S104  # nosec B104  # container-bound; bind-IP enforced at Docker port level
+            bind_host,
             "--port",
             "8000",
             "--ssl-keyfile",
