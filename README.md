@@ -134,7 +134,7 @@ cd phaze
 uv sync
 cp .env.example .env          # Edit to configure paths and API keys
 just download-models           # Required for audio analysis
-just up                        # Start all services
+just up-all                    # Start all services (core + agent stacks)
 just db-upgrade                # Run database migrations
 curl http://localhost:8000/health   # Verify: {"status": "ok"}
 ```
@@ -144,8 +144,10 @@ curl http://localhost:8000/health   # Verify: {"status": "ok"}
 | 🌐 **Web UI**    | http://localhost:8000   | None                        |
 | 🐘 **PostgreSQL**| `localhost:5432`        | `phaze` / `phaze`           |
 | 🔴 **Redis**     | `localhost:6379`        | None                        |
-| 🎵 **Audfprint** | http://localhost:8001   | None                        |
-| 🎧 **Panako**    | http://localhost:8002   | None                        |
+| 🎵 **Audfprint** | `audfprint:8001` (agent stack) | None                   |
+| 🎧 **Panako**    | `panako:8002` (agent stack)    | None                   |
+
+> **Fingerprint sidecars:** `audfprint` and `panako` run in the agent stack (`docker-compose.agent.yml`) with no published host ports. Reach them on the Docker network at `audfprint:8001` / `panako:8002`; start them with `just up-agent` (agent stack only) or `just up-all` (both stacks on one host).
 
 See the [Quick Start Guide](docs/quick-start.md) for prerequisites, local development setup, and environment configuration.
 
