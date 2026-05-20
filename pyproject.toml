@@ -164,7 +164,7 @@ environments = [
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
-    "greenlet>=3.5.0",
+    "greenlet>=3.5.1",
     "httpx>=0.28.1",
     "mypy>=2.1.0",
     "pip-audit>=2.10.0",
