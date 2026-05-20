@@ -3,6 +3,7 @@ FROM python:3.13-slim AS base
 WORKDIR /app
 
 # System deps
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git \
     && rm -rf /var/lib/apt/lists/*

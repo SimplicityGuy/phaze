@@ -1,6 +1,7 @@
 # Stage 1: Build Panako JAR
 FROM eclipse-temurin:17-jdk-jammy AS builder
 
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -14,6 +15,7 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # System deps
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*

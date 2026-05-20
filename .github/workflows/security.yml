@@ -15,13 +15,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: 🔀 Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: 📦 Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
 
       - name: 🐍 Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: "3.13"
 
@@ -40,7 +40,7 @@ jobs:
         run: just security
 
       - name: 🌐 Run osv-scanner
-        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
 
   semgrep:
     name: Semgrep CE Scan
@@ -51,7 +51,7 @@ jobs:
     if: github.actor != 'dependabot[bot]'
     steps:
       - name: 🔀 Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: 🔬 Run semgrep scan
         run: >-
@@ -75,7 +75,7 @@ jobs:
         if: always()
 
       - name: 📤 Upload SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba  # v4.35.5
         with:
           sarif_file: semgrep.sarif
         if: always()
@@ -86,12 +86,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: 🔀 Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
 
       - name: 🔑 Run TruffleHog
-        uses: trufflesecurity/trufflehog@v3.95.3
+        uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab  # v3.95.3
         with:
           path: ./
           extra_args: --only-verified
@@ -102,10 +102,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: 🔀 Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: 🛡️ Run trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -114,7 +114,7 @@ jobs:
           severity: HIGH,CRITICAL
 
       - name: 📤 Upload trivy SARIF results
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba  # v4.35.5
         if: always()
         with:
           sarif_file: trivy-results.sarif

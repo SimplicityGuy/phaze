@@ -10,7 +10,8 @@
 # - Node.js dependencies (any package.json; no-op while phaze is CDN-based)
 # - uv binary pin in Dockerfiles + setup-uv action SHA pin in workflows
 # - Pre-commit hooks to latest versions (with frozen SHAs)
-# - Docker base images (managed by Dependabot)
+# - Docker dependency review (FROM base images, uv image, compose service
+#   images; base-image tags tracked by Dependabot, apt packages distro-managed)
 #
 # It also flags capped dependencies (those with a `,<X` upper bound) that have
 # a newer release available beyond the cap, so they can be reviewed manually.
@@ -23,8 +24,9 @@
 #                 `>=` floors (this includes major bumps). It never raises the
 #                 floors themselves, so sync_dependency_floors() does that after
 #                 the lock so pyproject.toml minimums track what is locked.
-#   uv binary:    Dockerfiles pin `ghcr.io/astral-sh/uv:latest`; the setup-uv
-#                 GitHub Action is tracked by Dependabot. Nothing to bump here.
+#   uv binary:    update_uv_version() pins the uv image in Dockerfiles to the
+#                 latest uv release and SHA-pins the setup-uv action (with a
+#                 `# vX.Y` comment) in workflows.
 #
 # Usage: ./scripts/update-project.sh [options]
 #
@@ -377,6 +379,44 @@ update_uv_version() {
   fi
 }
 
+# === Docker Base Images ===
+
+# Surface every dependency embedded in Dockerfiles and compose files so nothing
+# is missed. Division of labour:
+#   - uv binary image      -> bumped by update_uv_version()
+#   - Python base image    -> bumped by update_python_version() (--python)
+#   - other base images (e.g. eclipse-temurin) + compose service images
+#     (postgres, redis, ...) -> tracked by Dependabot's docker group
+#   - apt packages         -> intentionally unpinned (distro-managed)
+# This step reports them all so the full Docker dependency surface is visible.
+update_docker_images() {
+  print_section "$EMOJI_DOCKER" "Reviewing Docker Dependencies"
+
+  local dockerfiles=("Dockerfile") svc_dir df compose matches
+  for svc_dir in "${SERVICE_DIRS[@]}"; do
+    for df in "$svc_dir"/Dockerfile*; do
+      [[ -f "$df" ]] && dockerfiles+=("$df")
+    done
+  done
+
+  print_info "Base + tool images in Dockerfiles:"
+  for df in "${dockerfiles[@]}"; do
+    [[ -f "$df" ]] || continue
+    matches=$(grep -nE "^FROM |ghcr.io/astral-sh/uv:" "$df" 2>/dev/null) || true
+    [[ -n "$matches" ]] && echo "$matches" | sed "s|^|  $df:|"
+  done
+
+  print_info "Service images in docker-compose:"
+  for compose in docker-compose*.yml; do
+    [[ -f "$compose" ]] || continue
+    matches=$(grep -nE "^[[:space:]]*image:" "$compose" 2>/dev/null) || true
+    [[ -n "$matches" ]] && echo "$matches" | sed "s|^|  $compose:|"
+  done
+
+  print_info "uv image -> update_uv_version | Python base -> --python"
+  print_info "Other FROM tags + compose images -> Dependabot docker group | apt packages -> distro-managed (unpinned)"
+}
+
 # === Pre-commit Hooks ===
 
 update_precommit_hooks() {
@@ -450,7 +490,8 @@ sync_dependency_floors() {
   [[ "$DRY_RUN" == true ]] && apply_val=0
 
   local output
-  output=$(APPLY="$apply_val" uv run python - <<'PY'
+  output=$(
+    APPLY="$apply_val" uv run python - <<'PY'
 import os
 import re
 import tomllib
@@ -524,7 +565,7 @@ if apply and changes:
     pyproject.write_text("".join(out))
 print(f"FLOORS_CHANGED={len(changes)}")
 PY
-)
+  )
 
   echo "$output" | grep -E "^BUMPED " | sed 's/^BUMPED /  /' || true
 
@@ -569,7 +610,8 @@ flag_capped_dependencies() {
   outdated=$(uv pip list --outdated 2>/dev/null) || true
 
   local output
-  output=$(OUTDATED="$outdated" uv run python - <<'PY'
+  output=$(
+    OUTDATED="$outdated" uv run python - <<'PY'
 import os
 import re
 import tomllib
@@ -619,7 +661,7 @@ for name, cap in sorted(caps.items()):
         flagged += 1
 print(f"CAPPED_FLAGGED={flagged}")
 PY
-)
+  )
 
   local flagged
   flagged=$(echo "$output" | sed -n 's/^CAPPED_FLAGGED=//p')
@@ -1041,6 +1083,7 @@ main() {
   verify_components
   update_python_version
   update_uv_version
+  update_docker_images
   update_precommit_hooks
   update_python_packages
   sync_dependency_floors
