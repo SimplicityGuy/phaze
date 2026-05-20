@@ -5,10 +5,19 @@
 # This script provides a safe and comprehensive way to update:
 # - Python version across all project files (including services)
 # - Python package dependencies via uv (all version types)
+# - Dependency floors in pyproject.toml, raised to match the locked versions
 # - Service dependencies (audfprint, panako)
 # - UV package manager version in Dockerfiles and GitHub workflows
 # - Pre-commit hooks to latest versions (with frozen SHAs)
 # - Docker base images to latest versions
+#
+# It also flags capped dependencies (those with a `,<X` upper bound) that have
+# a newer release available beyond the cap, so they can be reviewed manually.
+#
+# `uv lock --upgrade` only refreshes uv.lock within the existing `>=` floors; it
+# never raises the floors themselves (that is Dependabot's job). The floor-sync
+# step closes that gap so pyproject.toml floors track what is actually locked,
+# which keeps the declared minimums honest and reduces churn from Dependabot.
 #
 # Tool invocations delegate to `just` commands wherever possible, keeping the
 # justfile as the single source of truth for command definitions.
@@ -273,6 +282,203 @@ update_python_packages() {
     else
       print_success "All packages are at latest compatible versions"
     fi
+  fi
+}
+
+# === Dependency Floor Sync ===
+
+# Raise the `>=` floors in pyproject.toml to match the versions actually pinned
+# in uv.lock. `uv lock --upgrade` refreshes the lockfile within the existing
+# floors but never raises the floors themselves; this closes that gap so the
+# declared minimums track what is actually resolved.
+sync_dependency_floors() {
+  print_section "$EMOJI_PACKAGE" "Syncing Dependency Floors"
+
+  local apply_val=1
+  [[ "$DRY_RUN" == true ]] && apply_val=0
+
+  local output
+  output=$(APPLY="$apply_val" uv run python - <<'PY'
+import os
+import re
+import tomllib
+from pathlib import Path
+
+apply = os.environ.get("APPLY") == "1"
+
+try:
+    from packaging.version import InvalidVersion, Version
+
+    def strictly_newer(candidate: str, current: str) -> bool:
+        try:
+            return Version(candidate) > Version(current)
+        except InvalidVersion:
+            # uv.lock always resolves at or above the floor, so default to True.
+            return True
+except ImportError:  # packaging should be present, but never block on it.
+
+    def strictly_newer(candidate: str, current: str) -> bool:
+        return True
+
+
+lock = tomllib.loads(Path("uv.lock").read_text())
+locked = {p["name"].lower().replace("_", "-"): p["version"] for p in lock.get("package", [])}
+
+pyproject = Path("pyproject.toml")
+lines = pyproject.read_text().splitlines(keepends=True)
+
+dep_block = re.compile(r"^(dependencies|dev)\s*=\s*\[\s*$")
+entry = re.compile(r'^(?P<indent>\s*)"(?P<spec>[^"]+)"(?P<trail>,?\s*)$')
+spec_re = re.compile(
+    r"^(?P<name>[A-Za-z0-9._-]+(?:\[[A-Za-z0-9._,-]+\])?)"
+    r"(?P<specs>[<>=!~][^;]*)?"
+    r"(?P<marker>;.*)?$"
+)
+floor_re = re.compile(r">=\s*([^,;\s]+)")
+
+out: list[str] = []
+in_block = False
+changes: list[tuple[str, str, str]] = []
+for line in lines:
+    if not in_block and dep_block.match(line.strip()):
+        in_block = True
+        out.append(line)
+        continue
+    if in_block and line.strip() == "]":
+        in_block = False
+        out.append(line)
+        continue
+    matched = entry.match(line) if in_block else None
+    if matched:
+        parsed = spec_re.match(matched.group("spec"))
+        specs = parsed.group("specs") if parsed else None
+        if parsed and specs:
+            base = parsed.group("name").split("[")[0].lower().replace("_", "-")
+            locked_version = locked.get(base)
+            floor = floor_re.search(specs)
+            if locked_version and floor:
+                current = floor.group(1)
+                if current != locked_version and strictly_newer(locked_version, current):
+                    new_specs = specs[: floor.start(1)] + locked_version + specs[floor.end(1) :]
+                    new_spec = parsed.group("name") + new_specs + (parsed.group("marker") or "")
+                    changes.append((base, current, locked_version))
+                    out.append(f'{matched.group("indent")}"{new_spec}"{matched.group("trail")}')
+                    continue
+    out.append(line)
+
+for base, old, new in changes:
+    print(f"BUMPED {base} {old} -> {new}")
+if apply and changes:
+    pyproject.write_text("".join(out))
+print(f"FLOORS_CHANGED={len(changes)}")
+PY
+)
+
+  echo "$output" | grep -E "^BUMPED " | sed 's/^BUMPED /  /' || true
+
+  local changed
+  changed=$(echo "$output" | sed -n 's/^FLOORS_CHANGED=//p')
+  changed=${changed:-0}
+
+  if [[ "$DRY_RUN" == true ]]; then
+    if [[ "$changed" -gt 0 ]]; then
+      print_info "[DRY RUN] Would raise $changed dependency floor(s) to match uv.lock"
+    else
+      print_success "[DRY RUN] All dependency floors already match uv.lock"
+    fi
+    return
+  fi
+
+  if [[ "$changed" -gt 0 ]]; then
+    # Re-lock so uv.lock's recorded requirement metadata matches the new floors.
+    uv lock >/dev/null 2>&1 || uv lock
+    CHANGES_MADE=true
+    print_success "Raised $changed dependency floor(s) to match uv.lock"
+  else
+    print_success "All dependency floors already match uv.lock"
+  fi
+}
+
+# === Flag Capped Dependencies ===
+
+# Warn about dependencies pinned with a `,<X` upper bound that now have a newer
+# release available beyond that cap. `uv lock --upgrade` cannot cross a cap, so
+# raising it is a deliberate human decision.
+flag_capped_dependencies() {
+  print_section "$EMOJI_VERIFY" "Checking Capped Dependencies"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_info "[DRY RUN] Would flag capped dependencies with releases beyond their cap"
+    return
+  fi
+
+  local outdated
+  outdated=$(uv pip list --outdated 2>/dev/null) || true
+
+  local output
+  output=$(OUTDATED="$outdated" uv run python - <<'PY'
+import os
+import re
+import tomllib
+from pathlib import Path
+
+try:
+    from packaging.version import InvalidVersion, Version
+
+    def at_or_beyond_cap(latest: str, cap: str) -> bool:
+        try:
+            return Version(latest) >= Version(cap)
+        except InvalidVersion:
+            return True
+except ImportError:
+
+    def at_or_beyond_cap(latest: str, cap: str) -> bool:
+        return True
+
+
+data = tomllib.loads(Path("pyproject.toml").read_text())
+specs: list[str] = list(data.get("project", {}).get("dependencies", []))
+for group in data.get("dependency-groups", {}).values():
+    specs.extend(s for s in group if isinstance(s, str))
+
+name_re = re.compile(r"^([A-Za-z0-9._-]+)")
+cap_re = re.compile(r"<\s*([0-9][^,;\s]*)")
+caps: dict[str, str] = {}
+for spec in specs:
+    name_match = name_re.match(spec)
+    cap_match = cap_re.search(spec.split(";")[0])
+    if name_match and cap_match:
+        caps[name_match.group(1).lower().replace("_", "-")] = cap_match.group(1)
+
+latest: dict[str, str] = {}
+for raw in os.environ.get("OUTDATED", "").splitlines():
+    parts = raw.split()
+    if len(parts) >= 3 and parts[0] != "Package" and not parts[0].startswith("-"):
+        latest[parts[0].lower().replace("_", "-")] = parts[2]
+
+flagged = 0
+for name, cap in sorted(caps.items()):
+    if name == "phaze":
+        continue
+    newest = latest.get(name)
+    if newest and at_or_beyond_cap(newest, cap):
+        print(f"FLAG {name}: {newest} available, capped at <{cap}")
+        flagged += 1
+print(f"CAPPED_FLAGGED={flagged}")
+PY
+)
+
+  local flagged
+  flagged=$(echo "$output" | sed -n 's/^CAPPED_FLAGGED=//p')
+  flagged=${flagged:-0}
+
+  if [[ "$flagged" -gt 0 ]]; then
+    while IFS= read -r line; do
+      print_warning "${line#FLAG }"
+    done < <(echo "$output" | grep -E "^FLAG ")
+    print_info "Raise the cap in pyproject.toml manually, then re-run: just lock-upgrade && just sync"
+  else
+    print_success "No capped dependencies have releases beyond their cap"
   fi
 }
 
@@ -549,6 +755,8 @@ update_python_version
 update_uv_version
 update_precommit_hooks
 update_python_packages
+sync_dependency_floors
+flag_capped_dependencies
 update_service_packages
 update_docker_images
 sweep_pip_audit_ignores
