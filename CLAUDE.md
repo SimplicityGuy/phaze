@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**phaze** — A music alignment tool. Python 3.13, MIT licensed.
+**phaze** — A music alignment tool. Python 3.14, MIT licensed.
 
 ## Development Setup
 
-- **Python**: 3.13 exclusively
+- **Python**: 3.14 exclusively
 - **Package manager**: `uv` only — never use bare `pip`, `python`, `pytest`, or `mypy`. Always prefix with `uv run`.
 - **Pre-commit**: Must be installed and active. All hooks must pass before commits.
 
@@ -29,7 +29,7 @@ pre-commit run --all-files # Run all pre-commit hooks
 
 ### Ruff Configuration
 
-Line length: 150. Target: Python 3.13.
+Line length: 150. Ruff lint `target-version` is `py313` — intentionally one minor behind the 3.14 runtime. Python 3.14's PEP 649 deferred annotations make ruff's `TC`/`UP037` rewrites want to move type-only imports into `TYPE_CHECKING` blocks and unquote annotations, which breaks Pydantic/SQLAlchemy/FastAPI (they resolve annotations at runtime via `get_type_hints`). Keep `py313` until those rewrites are safe.
 
 **Enabled rule sets**: `ARG`, `B`, `C4`, `E`, `F`, `I`, `PLC`, `PTH`, `RUF`, `S`, `SIM`, `T20`, `TCH`, `UP`, `W`, `W191`
 
@@ -45,7 +45,7 @@ Line length: 150. Target: Python 3.13.
 
 ```toml
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -119,7 +119,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 
 ### Constraints
 
-- **Language**: Python 3.13 exclusively
+- **Language**: Python 3.14 exclusively
 - **Package manager**: uv only
 - **Deployment**: Docker Compose on home server, private network
 - **Database**: PostgreSQL
@@ -135,7 +135,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 ### Core Technologies
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| Python | 3.13 | Runtime | Project constraint. All recommended libraries support 3.13. |
+| Python | 3.14 | Runtime | Project constraint. essentia-tensorflow dev1438+ ships cp314 wheels only, requiring Python 3.14. |
 | FastAPI | >=0.135.2 | Web framework / API | De facto standard for async Python APIs. Native async, auto-generated OpenAPI docs, Pydantic integration, SSE support for real-time UI updates. Massive ecosystem and community. |
 | SQLAlchemy | >=2.0.48 | ORM / database toolkit | Industry standard Python ORM. Full async support via `create_async_engine` + asyncpg driver. Declarative models, relationship management, migration support via Alembic. |
 | asyncpg | >=0.30.0 | PostgreSQL async driver | Fastest Python PostgreSQL driver. Purpose-built for asyncio. Used as SQLAlchemy's async backend. |
@@ -147,7 +147,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Library | Version | Purpose | Why Recommended |
 |---------|---------|---------|-----------------|
 | mutagen | >=1.47.0 | Audio metadata read/write | The standard for audio tag manipulation in Python. Supports ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF. Zero dependencies. Read AND write capability needed for renaming workflows. |
-| essentia-tensorflow | >=2.1b6.dev1389 | Audio feature extraction (BPM, key, mood, style) | Comprehensive MIR library with pre-trained TensorFlow models. Beat tracking, tempo estimation, key detection, mood/style classification. Used for all audio analysis in the main application. |
+| essentia-tensorflow | >=2.1b6.dev1438 | Audio feature extraction (BPM, key, mood, style) | Comprehensive MIR library with pre-trained TensorFlow models. Beat tracking, tempo estimation, key detection, mood/style classification. Used for all audio analysis in the main application. |
 | pyacoustid | >=1.3.0 | Audio fingerprinting | Python bindings for Chromaprint/AcoustID. Identifies tracks via acoustic fingerprint, enables deduplication of differently-named identical audio. Complements sha256 hash dedup. |
 | chromaprint (system) | latest | Fingerprint generation | C library required by pyacoustid. Install via system package manager or include in Docker image. Provides `fpcalc` binary. |
 | FFmpeg (system) | 8.x | Audio/video processing | Required for audio decoding and video stream metadata extraction via ffprobe. Install in Docker image. |
@@ -215,7 +215,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Package A | Compatible With | Notes |
 |-----------|-----------------|-------|
 | SQLAlchemy >=2.0.48 | asyncpg >=0.30.0 | Use `postgresql+asyncpg://` connection string. Some older asyncpg versions (0.29.x) had issues with `create_async_engine`. |
-| essentia-tensorflow >=2.1b6.dev1389 | Python 3.13 | Only available on Linux x86_64. Use platform marker `sys_platform != 'linux' or platform_machine == 'x86_64'` in dependencies. |
+| essentia-tensorflow >=2.1b6.dev1438 | Python 3.14 | dev1438+ ships cp314 wheels only (macOS arm64/x86_64 + linux x86_64; no linux/arm64). Keep platform marker `sys_platform != 'linux' or platform_machine == 'x86_64'` in dependencies. |
 | FastAPI >=0.135.2 | Pydantic >=2.10 | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
 | FastAPI >=0.135.2 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
 | Alembic >=1.18.4 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
@@ -235,7 +235,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Web UI (HTMX + Jinja2) | HIGH | Well-proven pattern for Python admin tools. No build step, no JS framework complexity |
 ## Sources
 - [mutagen on PyPI](https://pypi.org/project/mutagen/) -- version 1.47.0 verified
-- [essentia on PyPI](https://pypi.org/project/essentia-tensorflow/) -- version 2.1b6.dev1389, used for audio analysis
+- [essentia on PyPI](https://pypi.org/project/essentia-tensorflow/) -- version 2.1b6.dev1438, used for audio analysis
 - [pyacoustid on PyPI](https://pypi.org/project/pyacoustid/) -- version 1.3.0 verified
 - [FastAPI releases](https://github.com/fastapi/fastapi/releases) -- version 0.135.2 verified
 - [SQLAlchemy on PyPI](https://pypi.org/project/SQLAlchemy/) -- version 2.0.48 verified

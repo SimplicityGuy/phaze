@@ -9,7 +9,7 @@
 
 <br><br>
 
-[![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze) ![License: MIT](https://img.shields.io/github/license/SimplicityGuy/phaze) ![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)
+[![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze) ![License: MIT](https://img.shields.io/github/license/SimplicityGuy/phaze) ![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)
 
 **A music collection organizer that ingests music and concert files, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.**
 
@@ -124,7 +124,7 @@ stateDiagram-v2
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose v2
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - [just](https://just.systems/) (command runner)
-- Python 3.13
+- Python 3.14
 
 ### Setup
 
@@ -204,7 +204,7 @@ GitHub Actions runs on every push and PR:
 
 | Category       | Technology                              | Purpose                              |
 |----------------|-----------------------------------------|--------------------------------------|
-| **Runtime**    | Python 3.13                             | Application runtime                  |
+| **Runtime**    | Python 3.14                             | Application runtime                  |
 | **Web**        | FastAPI + Uvicorn                       | Async API server                     |
 | **Database**   | PostgreSQL 18 + SQLAlchemy + asyncpg    | Primary data store (async ORM)       |
 | **Migrations** | Alembic (async template)                | Database schema management           |
