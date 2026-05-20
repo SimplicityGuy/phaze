@@ -429,9 +429,15 @@ update_precommit_hooks() {
 
   backup_file ".pre-commit-config.yaml"
   if just update-hooks; then
-    print_success "Pre-commit hooks updated with frozen SHAs"
-    FILE_CHANGES+=(".pre-commit-config.yaml: Updated hooks to latest (frozen SHAs)")
-    CHANGES_MADE=true
+    # Only report a change if autoupdate actually rewrote the config — `just
+    # update-hooks` succeeds even when every hook is already at its latest SHA.
+    if git diff --quiet -- .pre-commit-config.yaml 2>/dev/null; then
+      print_success "Pre-commit hooks already up to date"
+    else
+      print_success "Pre-commit hooks updated with frozen SHAs"
+      FILE_CHANGES+=(".pre-commit-config.yaml: Updated hooks to latest (frozen SHAs)")
+      CHANGES_MADE=true
+    fi
   else
     print_warning "Failed to update pre-commit hooks"
   fi
