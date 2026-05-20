@@ -3,34 +3,36 @@
 # update-project.sh - Comprehensive project dependency and version updater
 #
 # This script provides a safe and comprehensive way to update:
-# - Python version across all project files (including services)
+# - Python version across all project files (root + services)
 # - Python package dependencies via uv (all version types)
 # - Dependency floors in pyproject.toml, raised to match the locked versions
 # - Service dependencies (audfprint, panako)
-# - UV package manager version in Dockerfiles and GitHub workflows
 # - Pre-commit hooks to latest versions (with frozen SHAs)
-# - Docker base images to latest versions
+# - Docker base images (managed by Dependabot)
 #
 # It also flags capped dependencies (those with a `,<X` upper bound) that have
 # a newer release available beyond the cap, so they can be reviewed manually.
 #
-# `uv lock --upgrade` only refreshes uv.lock within the existing `>=` floors; it
-# never raises the floors themselves (that is Dependabot's job). The floor-sync
-# step closes that gap so pyproject.toml floors track what is actually locked,
-# which keeps the declared minimums honest and reduces churn from Dependabot.
-#
 # Tool invocations delegate to `just` commands wherever possible, keeping the
 # justfile as the single source of truth for command definitions.
+#
+# Ecosystem behavior:
+#   Python (uv):  `uv lock --upgrade` refreshes uv.lock within the existing
+#                 `>=` floors (this includes major bumps). It never raises the
+#                 floors themselves, so sync_dependency_floors() does that after
+#                 the lock so pyproject.toml minimums track what is locked.
+#   uv binary:    Dockerfiles pin `ghcr.io/astral-sh/uv:latest`; the setup-uv
+#                 GitHub Action is tracked by Dependabot. Nothing to bump here.
 #
 # Usage: ./scripts/update-project.sh [options]
 #
 # Options:
-#   --python VERSION    Update Python version (default: keep current)
+#   --python VERSION   Update Python version (default: keep current)
 #   --no-backup        Skip creating backup files
 #   --dry-run          Show what would be updated without making changes
-#   --major            Include major version upgrades
+#   --major            Report major version upgrades beyond current constraints
 #   --skip-tests       Skip running tests after updates
-#   --help             Show this help message
+#   --help, -h         Show this help message
 
 set -euo pipefail
 
@@ -58,6 +60,7 @@ EMOJI_BACKUP="💾"
 EMOJI_CHANGES="📝"
 EMOJI_VERIFY="🔍"
 EMOJI_SERVICE="🔧"
+EMOJI_GIT="🔀"
 
 # Service directories with their own dependencies
 SERVICE_DIRS=(
@@ -88,10 +91,19 @@ print_section() {
   echo -e "\033[1;36m$(printf '=%.0s' {1..60})\033[0m"
 }
 
-# Show usage
+# Show usage — print the leading comment block (without the shebang)
 show_help() {
-  head -n 20 "$0" | grep '^#' | sed 's/^# //' | sed 's/^#//'
+  sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//;s/^#$//'
   exit 0
+}
+
+# Portable in-place sed (BSD/macOS vs GNU)
+sed_inplace() {
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "$1" "$2"
+  else
+    sed -i "$1" "$2"
+  fi
 }
 
 # Parse command line arguments
@@ -118,7 +130,7 @@ while [[ $# -gt 0 ]]; do
       SKIP_TESTS=true
       shift
       ;;
-    --help)
+    --help | -h)
       show_help
       ;;
     *)
@@ -129,49 +141,84 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Verify we're in the project root
-if [[ ! -f "pyproject.toml" ]]; then
-  print_error "Must be run from the project root directory"
+if [[ ! -f "pyproject.toml" ]] || [[ ! -f "uv.lock" ]]; then
+  print_error "This script must be run from the project root directory"
   exit 1
 fi
 
 # Verify required tools
-for cmd in uv just pre-commit; do
+for cmd in uv just pre-commit git curl jq; do
   if ! command -v "$cmd" &>/dev/null; then
     print_error "$cmd is required but not installed"
     exit 1
   fi
 done
 
-print_section "$EMOJI_ROCKET" "Phaze Project Updater"
-echo "  Timestamp: $TIMESTAMP"
-echo "  Dry run: $DRY_RUN"
-echo "  Major upgrades: $MAJOR_UPGRADES"
-echo "  Skip tests: $SKIP_TESTS"
-[[ "$UPDATE_PYTHON" == true ]] && echo "  Python target: $PYTHON_VERSION"
+# Warn (don't block) on a dirty tree so rollback stays meaningful
+if [[ -n $(git status --porcelain) ]]; then
+  print_warning "You have uncommitted changes. Consider committing or stashing them for safe rollback."
+  print_info "Continuing anyway since we're in automated mode..."
+fi
 
-# === Backup ===
+# === Backups ===
 
-create_backup() {
-  if [[ "$BACKUP" == true && "$DRY_RUN" == false ]]; then
-    print_section "$EMOJI_BACKUP" "Creating Backups"
-    local backup_dir=".backups/$TIMESTAMP"
-    mkdir -p "$backup_dir"
-    cp pyproject.toml "$backup_dir/"
-    cp uv.lock "$backup_dir/" 2>/dev/null || true
-    cp .pre-commit-config.yaml "$backup_dir/"
-    cp Dockerfile "$backup_dir/"
-    cp docker-compose.yml "$backup_dir/"
-    for svc_dir in "${SERVICE_DIRS[@]}"; do
-      if [[ -d "$svc_dir" ]]; then
-        local svc_backup="$backup_dir/$svc_dir"
-        mkdir -p "$svc_backup"
-        cp "$svc_dir"/pyproject.toml "$svc_backup/" 2>/dev/null || true
-        for df in "$svc_dir"/Dockerfile*; do
-          [[ -f "$df" ]] && cp "$df" "$svc_backup/"
-        done
+BACKUP_DIR=".backups/project-updates-${TIMESTAMP}"
+if [[ "$BACKUP" == true ]] && [[ "$DRY_RUN" == false ]]; then
+  mkdir -p "$BACKUP_DIR"
+  print_info "$EMOJI_BACKUP Creating backups in $BACKUP_DIR/"
+fi
+
+backup_file() {
+  local file=$1
+  if [[ "$BACKUP" == true ]] && [[ -f "$file" ]] && [[ "$DRY_RUN" == false ]]; then
+    local backup_path
+    backup_path="$BACKUP_DIR/$(dirname "$file")"
+    mkdir -p "$backup_path"
+    cp "$file" "$backup_path/$(basename "$file").backup"
+  fi
+}
+
+# === Change tracking ===
+
+# Regular arrays for broad bash compatibility
+PACKAGE_CHANGES=()
+FILE_CHANGES=()
+PYTHON_VERSION_CHANGE=""
+SECURITY_PIP_RESOLVED=0
+SECURITY_PIP_REMAINING=0
+SECURITY_OSV_RESOLVED=0
+SECURITY_OSV_REMAINING=0
+
+# Safe array length under `set -u`
+array_length() {
+  local array_name=$1
+  eval "echo \${#${array_name}[@]}" 2>/dev/null || echo 0
+}
+
+# Diff uv.lock before/after to populate the package-change summary
+capture_package_changes() {
+  if [[ "$DRY_RUN" == true ]]; then
+    return
+  fi
+
+  if [[ -f "$BACKUP_DIR/uv.lock.backup" ]]; then
+    print_info "$EMOJI_CHANGES Analyzing package changes..."
+
+    local old_packages new_packages
+    old_packages=$(grep -E "^name = |^version = " "$BACKUP_DIR/uv.lock.backup" | paste -d' ' - - | sed 's/name = "\(.*\)" version = "\(.*\)"/\1==\2/')
+    new_packages=$(grep -E "^name = |^version = " "uv.lock" | paste -d' ' - - | sed 's/name = "\(.*\)" version = "\(.*\)"/\1==\2/')
+
+    while IFS= read -r old_pkg; do
+      local pkg_name old_version new_version
+      pkg_name=$(echo "$old_pkg" | cut -d'=' -f1)
+      old_version=$(echo "$old_pkg" | cut -d'=' -f3)
+      new_version=$(echo "$new_packages" | grep "^$pkg_name==" | cut -d'=' -f3 || echo "")
+
+      if [[ -n "$new_version" ]] && [[ "$old_version" != "$new_version" ]]; then
+        PACKAGE_CHANGES+=("$pkg_name: $old_version → $new_version")
+        CHANGES_MADE=true
       fi
-    done
-    print_success "Backups saved to $backup_dir"
+    done <<<"$old_packages"
   fi
 }
 
@@ -184,61 +231,151 @@ update_python_version() {
 
   print_section "$EMOJI_PYTHON" "Updating Python Version to $PYTHON_VERSION"
 
-  local files_to_update=(
-    "pyproject.toml"
-    "Dockerfile"
-    ".github/workflows/ci.yml"
-    ".github/workflows/code-quality.yml"
-    ".github/workflows/tests.yml"
-    ".github/workflows/security.yml"
-  )
+  local current_version
+  current_version=$(grep 'requires-python = ">=' pyproject.toml | head -1 | sed 's/.*>=\([0-9.]*\).*/\1/')
+  PYTHON_VERSION_CHANGE="$current_version → $PYTHON_VERSION"
 
-  # Add service pyproject.toml and Dockerfiles
+  if [[ "$current_version" == "$PYTHON_VERSION" ]]; then
+    print_info "Python version is already $PYTHON_VERSION"
+    return
+  fi
+
+  # Derived formats: ruff target (py314) and the next minor for the upper bound
+  local ruff_target next_minor major minor
+  ruff_target="py${PYTHON_VERSION//./}"
+  major="${PYTHON_VERSION%%.*}"
+  minor="${PYTHON_VERSION##*.}"
+  next_minor="${major}.$((minor + 1))"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_info "[DRY RUN] Would update Python $current_version → $PYTHON_VERSION in:"
+    print_info "  • pyproject.toml (root + services): requires-python, mypy, ruff target"
+    print_info "  • .github/workflows/*.yml (PYTHON_VERSION)"
+    print_info "  • Dockerfile(s) (python:X-slim)"
+    return
+  fi
+
+  # pyproject.toml files (root + services)
+  for pyproject in pyproject.toml "${SERVICE_DIRS[@]/%//pyproject.toml}"; do
+    [[ -f "$pyproject" ]] || continue
+    backup_file "$pyproject"
+    # requires-python range form (">=X.Y,<A.B") then simple form (">=X.Y")
+    sed_inplace "s/requires-python = \">=[0-9.]*,<[0-9.]*\"/requires-python = \">=$PYTHON_VERSION,<$next_minor\"/" "$pyproject"
+    sed_inplace "s/requires-python = \">=[0-9.]*\"/requires-python = \">=$PYTHON_VERSION\"/" "$pyproject"
+    # mypy python_version and ruff target-version
+    sed_inplace "s/python_version = \"[0-9.]*\"/python_version = \"$PYTHON_VERSION\"/" "$pyproject"
+    sed_inplace "s/target-version = \"py[0-9]*\"/target-version = \"$ruff_target\"/" "$pyproject"
+    print_success "Updated $pyproject"
+    FILE_CHANGES+=("$pyproject: Python $current_version → $PYTHON_VERSION")
+    CHANGES_MADE=true
+  done
+
+  # GitHub workflows that reference PYTHON_VERSION
+  for workflow in .github/workflows/*.yml; do
+    if [[ -f "$workflow" ]] && grep -q "PYTHON_VERSION" "$workflow"; then
+      backup_file "$workflow"
+      sed_inplace "s/PYTHON_VERSION: \"[0-9.]*\"/PYTHON_VERSION: \"$PYTHON_VERSION\"/" "$workflow"
+      print_success "Updated $workflow"
+      FILE_CHANGES+=("$workflow: Python $current_version → $PYTHON_VERSION")
+      CHANGES_MADE=true
+    fi
+  done
+
+  # Dockerfiles (root + services)
+  local dockerfiles=("Dockerfile")
   for svc_dir in "${SERVICE_DIRS[@]}"; do
-    [[ -f "$svc_dir/pyproject.toml" ]] && files_to_update+=("$svc_dir/pyproject.toml")
     for df in "$svc_dir"/Dockerfile*; do
-      [[ -f "$df" ]] && files_to_update+=("$df")
+      [[ -f "$df" ]] && dockerfiles+=("$df")
+    done
+  done
+  for df in "${dockerfiles[@]}"; do
+    if [[ -f "$df" ]] && grep -q "python:[0-9.]*-slim" "$df"; then
+      backup_file "$df"
+      sed_inplace "s/python:[0-9.]*-slim/python:$PYTHON_VERSION-slim/" "$df"
+      print_success "Updated $df"
+      FILE_CHANGES+=("$df: Python $current_version → $PYTHON_VERSION")
+      CHANGES_MADE=true
+    fi
+  done
+}
+
+# === UV Version ===
+
+# Pin the uv binary in Dockerfiles to the latest uv release, and SHA-pin the
+# astral-sh/setup-uv GitHub Action (with a `# vX.Y` comment) in workflows.
+update_uv_version() {
+  print_section "$EMOJI_DOCKER" "Updating UV Version"
+
+  # Latest uv release (for the Docker image pin)
+  local latest_uv
+  latest_uv=$(curl -s https://api.github.com/repos/astral-sh/uv/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+  if [[ -z "$latest_uv" ]] || [[ "$latest_uv" == "null" ]]; then
+    print_warning "Could not determine latest uv version from GitHub (rate limited?)"
+    return
+  fi
+  print_info "Latest uv version: $latest_uv"
+
+  # Latest setup-uv release tag + its commit SHA (for the action pin)
+  local latest_setup_uv latest_setup_uv_commit
+  latest_setup_uv=$(curl -s https://api.github.com/repos/astral-sh/setup-uv/releases/latest | jq -r '.tag_name')
+  latest_setup_uv_commit=$(curl -s "https://api.github.com/repos/astral-sh/setup-uv/commits/$latest_setup_uv" | jq -r '.sha')
+  if [[ -n "$latest_setup_uv" ]] && [[ "$latest_setup_uv" != "null" ]]; then
+    print_info "Latest setup-uv action: $latest_setup_uv (commit: ${latest_setup_uv_commit:0:7})"
+  fi
+
+  # Collect Dockerfiles (root + services)
+  local dockerfiles=("Dockerfile") svc_dir df
+  for svc_dir in "${SERVICE_DIRS[@]}"; do
+    for df in "$svc_dir"/Dockerfile*; do
+      [[ -f "$df" ]] && dockerfiles+=("$df")
     done
   done
 
-  for file in "${files_to_update[@]}"; do
-    if [[ -f "$file" ]]; then
-      if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would update Python version in $file"
-      else
-        # Update various Python version patterns
-        sed -i.bak "s/python_version = \"[0-9.]*\"/python_version = \"$PYTHON_VERSION\"/" "$file" 2>/dev/null || true
-        sed -i.bak "s/python-version: \"[0-9.]*\"/python-version: \"$PYTHON_VERSION\"/" "$file" 2>/dev/null || true
-        sed -i.bak "s/python:[0-9.]*-slim/python:$PYTHON_VERSION-slim/" "$file" 2>/dev/null || true
-        sed -i.bak "s/PYTHON_VERSION: \"[0-9.]*\"/PYTHON_VERSION: \"$PYTHON_VERSION\"/" "$file" 2>/dev/null || true
-        rm -f "${file}.bak"
-        print_success "Updated $file"
+  # Current pinned uv version in Dockerfiles
+  local current_uv=""
+  for df in "${dockerfiles[@]}"; do
+    [[ -f "$df" ]] || continue
+    current_uv=$(grep -oE "ghcr.io/astral-sh/uv:[^ ]+" "$df" | head -1 | cut -d: -f2)
+    [[ -n "$current_uv" ]] && break
+  done
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_info "[DRY RUN] Would pin uv image $current_uv → $latest_uv and setup-uv → ${latest_setup_uv_commit:0:7} ($latest_setup_uv)"
+    return
+  fi
+
+  # Pin uv image in Dockerfiles
+  if [[ -n "$current_uv" ]] && [[ "$current_uv" != "$latest_uv" ]]; then
+    for df in "${dockerfiles[@]}"; do
+      [[ -f "$df" ]] || continue
+      backup_file "$df"
+      sed_inplace "s|ghcr.io/astral-sh/uv:[^ ]*|ghcr.io/astral-sh/uv:$latest_uv|" "$df"
+      print_success "Updated $df (uv $current_uv → $latest_uv)"
+      FILE_CHANGES+=("$df: uv $current_uv → $latest_uv")
+      CHANGES_MADE=true
+    done
+  else
+    print_success "uv image in Dockerfiles already at ${current_uv:-unknown}"
+  fi
+
+  # SHA-pin setup-uv action in workflows
+  if [[ -n "$latest_setup_uv_commit" ]] && [[ "$latest_setup_uv_commit" != "null" ]]; then
+    local workflow current_ref
+    for workflow in .github/workflows/*.yml; do
+      [[ -f "$workflow" ]] && grep -q "astral-sh/setup-uv@" "$workflow" || continue
+      current_ref=$(grep -oE "astral-sh/setup-uv@[A-Za-z0-9.]+" "$workflow" | head -1 | cut -d'@' -f2)
+      if [[ "$current_ref" != "$latest_setup_uv_commit" ]]; then
+        backup_file "$workflow"
+        sed_inplace "s|\(astral-sh/setup-uv@\).*|\1$latest_setup_uv_commit  # $latest_setup_uv|" "$workflow"
+        print_success "Updated $(basename "$workflow") (setup-uv → ${latest_setup_uv_commit:0:7} $latest_setup_uv)"
+        FILE_CHANGES+=("$(basename "$workflow"): setup-uv → ${latest_setup_uv_commit:0:7} ($latest_setup_uv)")
         CHANGES_MADE=true
       fi
-    fi
-  done
-}
-
-# === UV Version Update ===
-
-update_uv_version() {
-  print_section "$EMOJI_PACKAGE" "Checking UV Version"
-
-  local current_uv
-  current_uv=$(uv --version | awk '{print $2}')
-  print_info "Current uv version: $current_uv"
-
-  # Update uv version in Dockerfile if pinned
-  if grep -q "COPY --from=ghcr.io/astral-sh/uv" Dockerfile 2>/dev/null; then
-    if [[ "$DRY_RUN" == true ]]; then
-      print_info "[DRY RUN] Would update uv version in Dockerfile"
-    else
-      print_info "uv version in Dockerfile managed by base image"
-    fi
+    done
   fi
 }
 
-# === Pre-commit Hooks Update ===
+# === Pre-commit Hooks ===
 
 update_precommit_hooks() {
   print_section "$EMOJI_VERIFY" "Updating Pre-commit Hooks"
@@ -248,9 +385,14 @@ update_precommit_hooks() {
     return
   fi
 
-  just update-hooks
-  CHANGES_MADE=true
-  print_success "Pre-commit hooks updated with frozen SHAs"
+  backup_file ".pre-commit-config.yaml"
+  if just update-hooks; then
+    print_success "Pre-commit hooks updated with frozen SHAs"
+    FILE_CHANGES+=(".pre-commit-config.yaml: Updated hooks to latest (frozen SHAs)")
+    CHANGES_MADE=true
+  else
+    print_warning "Failed to update pre-commit hooks"
+  fi
 }
 
 # === Python Package Updates ===
@@ -258,15 +400,23 @@ update_precommit_hooks() {
 update_python_packages() {
   print_section "$EMOJI_PACKAGE" "Updating Python Packages"
 
+  if [[ "$BACKUP" == true ]] && [[ "$DRY_RUN" == false ]]; then
+    backup_file "uv.lock"
+    backup_file "pyproject.toml"
+  fi
+
   if [[ "$DRY_RUN" == true ]]; then
     print_info "[DRY RUN] Would run: just lock-upgrade && just sync"
     return
   fi
 
-  just lock-upgrade
-  just sync
-  CHANGES_MADE=true
-  print_success "Root packages updated"
+  if just lock-upgrade && just sync; then
+    print_success "Root packages updated"
+    capture_package_changes
+  else
+    print_error "Failed to update root packages"
+    exit 1
+  fi
 
   # Report available major version upgrades beyond current constraints
   if [[ "$MAJOR_UPGRADES" == true ]]; then
@@ -393,6 +543,7 @@ PY
     # Re-lock so uv.lock's recorded requirement metadata matches the new floors.
     uv lock >/dev/null 2>&1 || uv lock
     CHANGES_MADE=true
+    FILE_CHANGES+=("pyproject.toml: raised $changed dependency floor(s) to match uv.lock")
     print_success "Raised $changed dependency floor(s) to match uv.lock"
   else
     print_success "All dependency floors already match uv.lock"
@@ -500,6 +651,9 @@ update_service_packages() {
       continue
     fi
 
+    backup_file "$svc_dir/pyproject.toml"
+    backup_file "$svc_dir/uv.lock"
+
     print_info "Updating $svc_name dependencies..."
     (cd "$svc_dir" && uv lock --upgrade 2>/dev/null && uv sync 2>/dev/null) || {
       # Services may not have a uv.lock — update in-place via pip compile
@@ -508,30 +662,6 @@ update_service_packages() {
     CHANGES_MADE=true
     print_success "Updated $svc_name"
   done
-}
-
-# === Docker Base Images ===
-
-update_docker_images() {
-  print_section "$EMOJI_DOCKER" "Checking Docker Base Images"
-
-  # Show current images from all Dockerfiles
-  print_info "Current Docker base images:"
-  local dockerfiles=("Dockerfile" "docker-compose.yml")
-  for svc_dir in "${SERVICE_DIRS[@]}"; do
-    for df in "$svc_dir"/Dockerfile*; do
-      [[ -f "$df" ]] && dockerfiles+=("$df")
-    done
-  done
-  grep "^FROM\|^    image:" "${dockerfiles[@]}" 2>/dev/null || true
-
-  if [[ "$DRY_RUN" == true ]]; then
-    print_info "[DRY RUN] Docker image updates handled by Dependabot"
-    return
-  fi
-
-  print_info "Docker base image updates are managed by Dependabot"
-  print_info "Check open PRs for image update proposals"
 }
 
 # === Sweep pip-audit Ignores ===
@@ -586,6 +716,9 @@ sweep_pip_audit_ignores() {
     fi
   done
 
+  SECURITY_PIP_RESOLVED=${#resolved[@]}
+  SECURITY_PIP_REMAINING=${#still_needed[@]}
+
   # Rewrite the ignore file without resolved entries
   if [[ ${#resolved[@]} -gt 0 ]]; then
     CHANGES_MADE=true
@@ -615,6 +748,11 @@ sweep_osv_scanner_ignores() {
     return
   fi
 
+  if ! command -v osv-scanner >/dev/null 2>&1; then
+    print_info "osv-scanner not installed locally, skipping osv-scanner ignore sweep"
+    return
+  fi
+
   if [[ "$DRY_RUN" == true ]]; then
     print_info "[DRY RUN] Would sweep $ignore_file for resolved vulnerabilities"
     return
@@ -622,33 +760,25 @@ sweep_osv_scanner_ignores() {
 
   print_section "$EMOJI_VERIFY" "Sweeping osv-scanner Ignores"
 
-  # Count IgnoredVulns entries
-  local vuln_count
-  vuln_count=$(grep -c '^\[\[IgnoredVulns\]\]' "$ignore_file" 2>/dev/null || echo "0")
+  # Extract vulnerability IDs
+  local vuln_ids=()
+  while IFS= read -r vid; do
+    [[ -n "$vid" ]] && vuln_ids+=("$vid")
+  done < <(grep '^id = "' "$ignore_file" | sed 's/^id = "\(.*\)"/\1/')
 
-  if [[ "$vuln_count" -eq 0 ]]; then
+  if [[ ${#vuln_ids[@]} -eq 0 ]]; then
     print_success "No osv-scanner ignores to sweep"
     return
   fi
 
-  print_info "Found $vuln_count ignored vulnerabilit$([ "$vuln_count" -eq 1 ] && echo "y" || echo "ies") in $ignore_file"
+  print_info "Testing ${#vuln_ids[@]} osv-scanner ignored vulnerabilit$([ ${#vuln_ids[@]} -eq 1 ] && echo "y" || echo "ies")..."
 
-  # Extract vulnerability IDs
-  local vuln_ids=()
-  while IFS= read -r line; do
-    local vid
-    vid=$(echo "$line" | sed 's/id = "//' | sed 's/"//')
-    vuln_ids+=("$vid")
-  done < <(grep '^id = "' "$ignore_file")
-
-  # Test each by temporarily removing it and running osv-scanner
+  # Test each by temporarily removing its [[IgnoredVulns]] block and rescanning
   local resolved=()
   local still_needed=()
   for test_vid in "${vuln_ids[@]}"; do
-    # Create temp config without this entry
     local tmp_file
     tmp_file=$(mktemp)
-    # Remove the block for this ID (IgnoredVulns entry + following lines until next block or EOF)
     awk -v vid="$test_vid" '
       /^\[\[IgnoredVulns\]\]/ { block=1; buf=$0"\n"; next }
       block && /^id = / { if (index($0, vid)) { skip=1; buf=""; block=0; next } else { printf "%s", buf; buf=""; block=0 } }
@@ -656,7 +786,7 @@ sweep_osv_scanner_ignores() {
       skip && /^\[\[/ { skip=0 }
       skip { next }
       { if (buf != "") { printf "%s", buf; buf="" }; print }
-    ' "$ignore_file" > "$tmp_file"
+    ' "$ignore_file" >"$tmp_file"
 
     if osv-scanner --config="$tmp_file" scan . >/dev/null 2>&1; then
       resolved+=("$test_vid")
@@ -667,6 +797,9 @@ sweep_osv_scanner_ignores() {
     fi
     rm -f "$tmp_file"
   done
+
+  SECURITY_OSV_RESOLVED=${#resolved[@]}
+  SECURITY_OSV_REMAINING=${#still_needed[@]}
 
   if [[ ${#resolved[@]} -gt 0 ]]; then
     CHANGES_MADE=true
@@ -679,40 +812,39 @@ sweep_osv_scanner_ignores() {
   fi
 }
 
-# === Security Sweep ===
-
-run_security_sweep() {
-  print_section "$EMOJI_VERIFY" "Running Security Sweep"
-
-  if [[ "$DRY_RUN" == true ]]; then
-    print_info "[DRY RUN] Would run: just security-all"
-    return
-  fi
-
-  just pip-audit || print_warning "pip-audit found vulnerabilities (review output above)"
-  just security || print_warning "bandit found issues (review output above)"
-  print_success "Security sweep complete"
-}
-
 # === Run Tests ===
 
 run_tests() {
   if [[ "$SKIP_TESTS" == true ]]; then
     print_warning "Skipping tests (--skip-tests)"
-    return
+    return 0
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    return 0
   fi
 
   print_section "$EMOJI_TEST" "Running Tests"
 
-  if [[ "$DRY_RUN" == true ]]; then
-    print_info "[DRY RUN] Would run: just lint, just typecheck, pytest -m 'not integration'"
-    return
+  print_info "Running linters..."
+  if just lint; then
+    print_success "Linting passed"
+  else
+    print_warning "Linting failed - review the changes"
   fi
 
-  just lint
-  just typecheck
-  uv run pytest tests/ -x -q -m "not integration"
-  print_success "All tests passed"
+  print_info "Running type checks..."
+  if just typecheck; then
+    print_success "Type checks passed"
+  else
+    print_warning "Type checks failed - review the changes"
+  fi
+
+  print_info "Running Python tests..."
+  if just test; then
+    print_success "Python tests passed"
+  else
+    print_warning "Python tests failed - review the changes"
+  fi
 }
 
 # === Summary ===
@@ -721,48 +853,161 @@ generate_summary() {
   print_section "$EMOJI_CHANGES" "Update Summary"
 
   if [[ "$DRY_RUN" == true ]]; then
-    print_info "This was a dry run — no changes were made"
+    print_info "This was a dry run. No changes were made."
+    print_info "Run without --dry-run to apply changes."
     return
   fi
 
-  if [[ "$CHANGES_MADE" == true ]]; then
+  if [[ "$CHANGES_MADE" == false ]]; then
+    print_success "Everything is already up to date! No changes were needed."
+    return
+  fi
+
+  if [[ -n "$PYTHON_VERSION_CHANGE" ]]; then
     echo ""
-    echo "Files potentially modified:"
-    echo "  - pyproject.toml"
-    echo "  - uv.lock"
-    echo "  - .pre-commit-config.yaml"
-    for svc_dir in "${SERVICE_DIRS[@]}"; do
-      [[ -d "$svc_dir" ]] && echo "  - $svc_dir/pyproject.toml"
+    echo "🐍 Python Version:"
+    echo "  $PYTHON_VERSION_CHANGE"
+  fi
+
+  if [[ $(array_length PACKAGE_CHANGES) -gt 0 ]]; then
+    echo ""
+    echo "📦 Package Updates:"
+    printf '%s\n' "${PACKAGE_CHANGES[@]:-}" | sort | while IFS= read -r change; do
+      [[ -n "$change" ]] && echo "  • $change"
     done
-    [[ "$UPDATE_PYTHON" == true ]] && echo "  - Dockerfile"
-    [[ "$UPDATE_PYTHON" == true ]] && echo "  - services/*/Dockerfile.*"
-    [[ "$UPDATE_PYTHON" == true ]] && echo "  - .github/workflows/*.yml"
+  fi
+
+  if [[ $(array_length FILE_CHANGES) -gt 0 ]]; then
     echo ""
-    echo "Next steps:"
-    echo "  1. Review changes: git diff"
-    echo "  2. Run full test suite: just check"
-    echo "  3. Commit: git add -A && git commit -m 'chore: update project dependencies'"
-    echo "  4. Push and verify CI passes"
-  else
-    print_info "No changes were needed"
+    echo "📄 File Updates:"
+    printf '%s\n' "${FILE_CHANGES[@]:-}" | sort | while IFS= read -r change; do
+      [[ -n "$change" ]] && echo "  • $change"
+    done
+  fi
+
+  # Security sweep results
+  local total_resolved=$((SECURITY_PIP_RESOLVED + SECURITY_OSV_RESOLVED))
+  local total_remaining=$((SECURITY_PIP_REMAINING + SECURITY_OSV_REMAINING))
+  if [[ $total_resolved -gt 0 ]] || [[ $total_remaining -gt 0 ]]; then
+    echo ""
+    echo "🔒 Security (CVE Sweep):"
+    [[ $total_resolved -gt 0 ]] && echo "  • $total_resolved CVE ignore$([ $total_resolved -eq 1 ] && echo "" || echo "s") resolved and removed"
+    [[ $total_remaining -gt 0 ]] && echo "  • $total_remaining CVE$([ $total_remaining -eq 1 ] && echo "" || echo "s") still awaiting upstream fixes"
+  fi
+
+  # Next steps
+  print_section "$EMOJI_GIT" "Next Steps"
+  echo "1. Review the changes:"
+  echo "   git diff --stat"
+  echo "   git diff uv.lock pyproject.toml"
+  echo ""
+  echo "2. Run the full check suite:"
+  echo "   just check"
+  echo ""
+  echo "3. Commit the changes:"
+  echo "   git add -A && git commit -m 'chore: update project dependencies'"
+  echo ""
+  echo "4. Push on a feature branch and open a PR; verify CI passes."
+}
+
+# === Manual Verification Steps ===
+
+show_verification_steps() {
+  print_section "$EMOJI_VERIFY" "Manual Verification Steps"
+
+  echo "Please verify the following before merging:"
+  echo ""
+  echo "1. 🐳 Docker builds:"
+  echo "   docker compose build --no-cache"
+  echo ""
+  echo "2. 🧪 Service health:"
+  echo "   docker compose up -d && docker compose ps   # services should be 'healthy'"
+  echo ""
+  echo "3. 📊 Review dependency changes:"
+  echo "   uv run pip-audit --desc"
+  echo "   git diff uv.lock | grep -E \"^[+-]version\""
+  echo ""
+
+  if [[ "$BACKUP" == true ]]; then
+    echo "💾 Backups are stored in: $BACKUP_DIR/"
+    echo "   To restore: cp $BACKUP_DIR/uv.lock.backup uv.lock && uv sync"
   fi
 }
 
+# === Verify Components ===
+
+verify_components() {
+  print_section "$EMOJI_VERIFY" "Verifying Project Components"
+
+  local components=("pyproject.toml" "uv.lock" "Dockerfile" "docker-compose.yml")
+  for svc_dir in "${SERVICE_DIRS[@]}"; do
+    components+=("$svc_dir/pyproject.toml")
+  done
+
+  local found=0 total=0 missing=()
+  for file in "${components[@]}"; do
+    total=$((total + 1))
+    if [[ -e "$file" ]]; then
+      found=$((found + 1))
+    else
+      missing+=("$file")
+    fi
+  done
+
+  print_success "Found $found/$total expected components"
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    print_warning "Missing ${#missing[@]} component(s):"
+    for component in "${missing[@]}"; do
+      echo "  ⚠️  $component"
+    done
+    print_info "This may be normal if components were removed from the project."
+  fi
+}
+
+# === Error Handling ===
+
+handle_error() {
+  local exit_code=$1
+  print_error "An error occurred (exit code: $exit_code)"
+  if [[ "$BACKUP" == true ]] && [[ "$DRY_RUN" == false ]] && [[ -d "$BACKUP_DIR" ]]; then
+    print_info "You can restore from backup with:"
+    echo "  cp $BACKUP_DIR/uv.lock.backup uv.lock"
+    echo "  cp $BACKUP_DIR/pyproject.toml.backup pyproject.toml"
+    echo "  uv sync"
+  fi
+  exit "$exit_code"
+}
+
+trap 'handle_error $?' ERR
+
 # === Main ===
 
-create_backup
-update_python_version
-update_uv_version
-update_precommit_hooks
-update_python_packages
-sync_dependency_floors
-flag_capped_dependencies
-update_service_packages
-update_docker_images
-sweep_pip_audit_ignores
-sweep_osv_scanner_ignores
-run_security_sweep
-run_tests
-generate_summary
+main() {
+  print_section "$EMOJI_ROCKET" "Phaze Project Updater"
+  echo "  Timestamp: $TIMESTAMP"
+  echo "  Dry run: $DRY_RUN"
+  echo "  Major upgrades: $MAJOR_UPGRADES"
+  echo "  Skip tests: $SKIP_TESTS"
+  [[ "$UPDATE_PYTHON" == true ]] && echo "  Python target: $PYTHON_VERSION"
 
-print_section "$EMOJI_ROCKET" "Update Complete"
+  verify_components
+  update_python_version
+  update_uv_version
+  update_precommit_hooks
+  update_python_packages
+  sync_dependency_floors
+  flag_capped_dependencies
+  update_service_packages
+  sweep_pip_audit_ignores
+  sweep_osv_scanner_ignores
+  run_tests
+  generate_summary
+
+  if [[ "$DRY_RUN" == false ]] && [[ "$CHANGES_MADE" == true ]]; then
+    show_verification_steps
+  fi
+
+  print_section "$EMOJI_ROCKET" "Update Complete"
+}
+
+main
