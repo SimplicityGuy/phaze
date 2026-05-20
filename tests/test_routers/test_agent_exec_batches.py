@@ -15,6 +15,7 @@ The endpoint contract (handler ordering is part of the spec):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import secrets
@@ -564,6 +565,82 @@ async def test_sub_batch_terminal_does_not_promote_when_not_last_subjob(
     h = await redis_client.hgetall(f"exec:{batch_id}")
     assert h["status"] == "running"
     assert h["subjobs_completed"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Issue #61: concurrent terminal sub-jobs must keep status consistent with failed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_concurrent_sub_batch_terminals_keep_status_consistent_with_failed(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """Issue #61: >=3 concurrent terminal POSTs (one failed) leave status consistent with the failed count.
+
+    Drives 3 sub-jobs (2 succeed, 1 fails), all ``sub_batch_terminal=True``,
+    against a real Redis via ``asyncio.gather`` (the issue's acceptance scenario).
+    With ``subjobs_expected=3`` the batch becomes terminal when the 3rd
+    ``subjobs_completed`` lands; the final ``status`` MUST be
+    ``complete_with_errors`` (consistent with ``failed==1``), never ``complete``.
+
+    Stage 6 promotes ``status`` via a single atomic Lua script (issue #61) so the
+    read of (subjobs_completed, subjobs_expected, failed) and the conditional HSET
+    cannot interleave with another connection. Driven over many rounds with fresh
+    batch ids to surface any concurrency regression.
+    """
+    agent, raw_token = seed_test_agent
+    url_tmpl = "/api/internal/agent/exec-batches/{}/progress"
+
+    async with _make_client(session, redis_client, raw_token) as ac:
+        for round_idx in range(25):
+            batch_id = uuid.uuid4()
+            await _seed_exec_hash(
+                redis_client,
+                batch_id,
+                agent.id,
+                subjobs_expected=3,
+                subjobs_completed=0,
+            )
+            bodies = [
+                _make_progress_body(
+                    batch_id=batch_id,
+                    agent_id=agent.id,
+                    terminal_step="deleted",
+                    sub_batch_terminal=True,
+                    sub_batch_index=0,
+                ),
+                _make_progress_body(
+                    batch_id=batch_id,
+                    agent_id=agent.id,
+                    terminal_step="deleted",
+                    sub_batch_terminal=True,
+                    sub_batch_index=1,
+                ),
+                _make_progress_body(
+                    batch_id=batch_id,
+                    agent_id=agent.id,
+                    terminal_step="failed",
+                    failed_at_step="copy",
+                    sub_batch_terminal=True,
+                    sub_batch_index=2,
+                ),
+            ]
+            url = url_tmpl.format(batch_id)
+            responses = await asyncio.gather(*(ac.post(url, json=b) for b in bodies))
+            assert all(r.status_code == 200 for r in responses), [r.text for r in responses]
+
+            h = await redis_client.hgetall(f"exec:{batch_id}")
+            assert h["subjobs_completed"] == "3", f"round {round_idx}: {h}"
+            assert h["failed"] == "1", f"round {round_idx}: {h}"
+            assert h["completed"] == "2", f"round {round_idx}: {h}"
+            # The invariant: a promoted status MUST agree with the failed count.
+            assert h["status"] == "complete_with_errors", (
+                f"round {round_idx}: status={h['status']!r} with failed={h['failed']!r} "
+                f"-- a stale-read promotion slipped through (issue #61 regression)"
+            )
 
 
 # ---------------------------------------------------------------------------
