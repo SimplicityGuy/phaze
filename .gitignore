@@ -225,3 +225,6 @@ models/
 
 # graphify cache
 graphify-out/cache/
+
+# Vim
+*.swp

@@ -166,7 +166,7 @@ async def main() -> None:
     # D-13 invariant: token preview is FIRST 12 CHARS + "..." -- never the full bearer.
     # The format-string key is "auth_id_prefix" (no secret keywords) so static
     # analyzers do not flag the format literal itself as a leak.
-    token_preview = cfg.agent_token.get_secret_value()[:12] + "..."  # nosec B105
+    token_preview = cfg.agent_token.get_secret_value()[:12] + "..."
     logger.info(
         "phaze.agent_watcher startup role=agent api=%s auth_id_prefix=%s",
         cfg.agent_api_url,

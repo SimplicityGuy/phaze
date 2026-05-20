@@ -47,12 +47,51 @@ if TYPE_CHECKING:
     # async return types; it is never used at runtime.
     from collections.abc import Awaitable
 
+    from redis.commands.core import AsyncScript
+
 
 router = APIRouter(prefix="/api/internal/agent/exec-batches", tags=["agent-internal"])
 
 
 _REQ_PREFIX = "exec_progress_req:"
 _TTL_SECONDS = 3600  # 1-hour idempotency window (D-15)
+
+
+# Lua: atomically read the sub-batch counters and promote `status` in a SINGLE
+# round-trip (issue #61). The prior three-HGET-then-conditional-HSET sequence
+# had a window where a concurrent terminal POST could observe
+# ``subjobs_completed == subjobs_expected`` while another sub-job's ``failed``
+# HINCRBY had not yet landed, then HSET ``status="complete"`` over a batch that
+# actually had a failure -- the operator's SSE close-event would say "complete"
+# with ``failed >= 1``. Redis executes the script atomically, so the read of
+# (subjobs_completed, subjobs_expected, failed) and the conditional HSET cannot
+# interleave with any other connection. Mirrors the D-04 / D-07 read-then-write
+# semantics exactly (only the atomicity is added). Returns 1 if status was
+# promoted, 0 otherwise; the caller does not use the result.
+_PROMOTE_STATUS_LUA = """
+local key = KEYS[1]
+local sc = tonumber(redis.call('HGET', key, 'subjobs_completed') or '0')
+local se = tonumber(redis.call('HGET', key, 'subjobs_expected') or '0')
+if sc ~= se then return 0 end
+local failed = tonumber(redis.call('HGET', key, 'failed') or '0')
+local new_status = (failed == 0) and 'complete' or 'complete_with_errors'
+redis.call('HSET', key, 'status', new_status)
+return 1
+"""
+
+# redis-py computes the script SHA when ``register_script`` is called. There is
+# no Redis handle at import time, so register lazily on first use and cache the
+# AsyncScript so subsequent terminal POSTs reuse the EVALSHA fast-path. The live
+# client is passed at call time, so the cached script survives client recycling.
+_promote_status_script: "AsyncScript | None" = None
+
+
+def _get_promote_status_script(redis_client: redis_async.Redis) -> "AsyncScript":
+    """Return the cached status-promotion script, registering it on first call."""
+    global _promote_status_script
+    if _promote_status_script is None:
+        _promote_status_script = redis_client.register_script(_PROMOTE_STATUS_LUA)
+    return _promote_status_script
 
 
 async def _get_redis(request: Request) -> redis_async.Redis:
@@ -186,15 +225,15 @@ async def post_exec_batch_progress(
             await cast("Awaitable[int]", pipe.hincrby(key, "subjobs_completed", 1))
         await pipe.execute()
 
-    # ---- Stage 6: terminal-status detection. ONLY fires when the agent
-    # marks this as its last proposal in the sub-batch -- avoids polling
-    # the equality check on every progress POST (D-07 final clause).
+    # ---- Stage 6: terminal-status detection + promotion (D-07 final clause).
+    # ONLY fires when the agent marks this as its last proposal in the
+    # sub-batch -- avoids polling the equality check on every progress POST.
+    # The read-then-write is delegated to a Lua script so it executes
+    # atomically on the Redis server; under >=3 concurrent terminal sub-jobs
+    # this is what prevents a stale `failed` read from promoting a failed
+    # batch to "complete" (issue #61).
     if body.sub_batch_terminal:
-        sc = int(await cast("Awaitable[str | None]", redis_client.hget(key, "subjobs_completed")) or 0)
-        se = int(await cast("Awaitable[str | None]", redis_client.hget(key, "subjobs_expected")) or 0)
-        if sc == se:
-            failed = int(await cast("Awaitable[str | None]", redis_client.hget(key, "failed")) or 0)
-            new_status = "complete" if failed == 0 else "complete_with_errors"
-            await cast("Awaitable[int]", redis_client.hset(key, "status", new_status))
+        promote_status = _get_promote_status_script(redis_client)
+        await promote_status(keys=[key], client=redis_client)
 
     return Response(status_code=status.HTTP_200_OK)

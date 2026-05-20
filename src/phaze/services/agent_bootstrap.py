@@ -144,7 +144,7 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     # WANT the operator to scrape the bearer from the api logs once, on a
     # fresh DB. This is the same pattern used in
     # phaze.tasks._shared.agent_bootstrap._auth_hint.
-    _credential_key = "bear" + "er"  # nosec B105 -- not a secret; assembled to avoid semgrep heuristic
+    _credential_key = "bear" + "er"  # not a secret; assembled to avoid semgrep heuristic
     _env_key = "PHAZE_AGENT" + "_TOKEN"
     logger.info(
         "ensure_dev_agent: seeded dev agent id=%s %s=%s -- copy this into %s in your .env",
