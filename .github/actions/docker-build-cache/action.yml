@@ -29,7 +29,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: "\U0001F4BE Setup Docker cache paths"
+    - name: "💾 Setup Docker cache paths"
       id: cache-setup
       shell: bash
       env:
@@ -44,7 +44,7 @@ runs:
           echo "cache-to=" >> $GITHUB_OUTPUT
         fi
 
-    - name: "\U0001F4BE Cache Docker layers"
+    - name: "💾 Cache Docker layers"
       id: docker-cache
       if: inputs.use-cache == 'true'
       uses: actions/cache@v5
