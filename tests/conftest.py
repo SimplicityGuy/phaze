@@ -72,9 +72,19 @@ def _isolate_pydantic_settings_from_env_file(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Auto-mark tests that use database fixtures as integration tests."""
+    """Auto-mark tests that require external services as integration tests.
+
+    Two triggers, because the migration suite reaches Postgres two ways:
+      * any test consuming a DB-backed fixture (``DB_FIXTURES``), and
+      * every test under ``tests/test_migrations/`` -- those run Alembic against a
+        live Postgres, some via the ``migrated_engine`` fixture and some by building
+        their own engine against ``MIGRATIONS_TEST_DATABASE_URL`` inline.
+
+    Without the path rule the direct-engine migration tests escape the marker and
+    break ``pytest -m 'not integration'`` when no database is running.
+    """
     for item in items:
-        if DB_FIXTURES & set(getattr(item, "fixturenames", ())):
+        if DB_FIXTURES & set(getattr(item, "fixturenames", ())) or "test_migrations" in item.path.parts:
             item.add_marker(pytest.mark.integration)
 
 
