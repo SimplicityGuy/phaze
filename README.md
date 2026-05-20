@@ -1,3 +1,4 @@
+<!-- generated-by: gsd-doc-writer -->
 <div align="center">
 
 <picture>
@@ -8,18 +9,7 @@
 
 <br><br>
 
-[![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze)
-![License: MIT](https://img.shields.io/github/license/SimplicityGuy/phaze)
-![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)
-[![uv](https://img.shields.io/badge/uv-package%20manager-orange?logo=python)](https://github.com/astral-sh/uv)
-[![just](https://img.shields.io/badge/just-task%20runner-blue)](https://just.systems)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![mypy](https://img.shields.io/badge/mypy-checked-blue)](http://mypy-lang.org/)
-[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
-[![Bandit](https://img.shields.io/badge/security-bandit-yellow.svg)](https://github.com/PyCQA/bandit)
-[![Docker](https://img.shields.io/badge/docker-ready-blue?logo=docker)](https://www.docker.com/)
-[![Claude Code](https://img.shields.io/badge/Claude%20Code-powered-orange?logo=anthropic&logoColor=white)](https://claude.ai/code)
+[![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze) ![License: MIT](https://img.shields.io/github/license/SimplicityGuy/phaze) ![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)
 
 **A music collection organizer that ingests music and concert files, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.**
 
@@ -144,7 +134,7 @@ cd phaze
 uv sync
 cp .env.example .env          # Edit to configure paths and API keys
 just download-models           # Required for audio analysis
-just up                        # Start all services
+just up-all                    # Start all services (core + agent stacks)
 just db-upgrade                # Run database migrations
 curl http://localhost:8000/health   # Verify: {"status": "ok"}
 ```
@@ -154,8 +144,10 @@ curl http://localhost:8000/health   # Verify: {"status": "ok"}
 | 🌐 **Web UI**    | http://localhost:8000   | None                        |
 | 🐘 **PostgreSQL**| `localhost:5432`        | `phaze` / `phaze`           |
 | 🔴 **Redis**     | `localhost:6379`        | None                        |
-| 🎵 **Audfprint** | http://localhost:8001   | None                        |
-| 🎧 **Panako**    | http://localhost:8002   | None                        |
+| 🎵 **Audfprint** | `audfprint:8001` (agent stack) | None                   |
+| 🎧 **Panako**    | `panako:8002` (agent stack)    | None                   |
+
+> **Fingerprint sidecars:** `audfprint` and `panako` run in the agent stack (`docker-compose.agent.yml`) with no published host ports. Reach them on the Docker network at `audfprint:8001` / `panako:8002`; start them with `just up-agent` (agent stack only) or `just up-all` (both stacks on one host).
 
 See the [Quick Start Guide](docs/quick-start.md) for prerequisites, local development setup, and environment configuration.
 
