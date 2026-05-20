@@ -1,0 +1,16 @@
+# osv-scanner vulnerability ignore configuration for the audfprint service.
+#
+# osv-scanner applies each osv-scanner.toml only to lockfiles in its own
+# directory tree, so this file (next to services/audfprint/uv.lock) is required
+# for the recursive CI scan to honor the ignore below. It is NOT covered by the
+# root update-project.sh osv sweep — review manually if joblib ever ships a fix.
+#
+# Only add entries when no fix is available upstream.
+
+[[IgnoredVulns]]
+# joblib 1.5.3 (transitive dependency) — CVE-2024-34997: code execution when
+# joblib.load reads a crafted joblib artifact. OSV marks ALL versions affected
+# with no fixed release; 1.5.3 is already the latest. audfprint only loads its
+# own local, trusted model files — never untrusted input.
+id = "PYSEC-2024-277"
+reason = "No fix available upstream (all joblib versions affected) — audfprint loads only local trusted model files (2026-05-20)"

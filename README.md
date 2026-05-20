@@ -183,6 +183,24 @@ just pre-commit       # Run all pre-commit hooks
 
 See `just --list` for the full command reference.
 
+#### 🧪 Running integration tests locally
+
+The full suite needs a real PostgreSQL and Redis. `just integration-test` spins up self-contained,
+disposable containers, runs the entire suite (including `tests/test_migrations/`), and tears them
+down automatically:
+
+```bash
+just integration-test   # one-shot: start ephemeral Postgres + Redis, run full suite, clean up
+just test-db            # start the ephemeral services and leave them running (iterative work)
+just test-db-down       # stop and remove the ephemeral services
+```
+
+The ephemeral services listen on **5433** (Postgres) and **6380** (Redis) to avoid colliding with a
+dev database/cache on the default 5432/6379. Override the ports with `PHAZE_TEST_DB_PORT` and
+`PHAZE_TEST_REDIS_PORT`. The test database URLs honor the `TEST_DATABASE_URL` and
+`MIGRATIONS_TEST_DATABASE_URL` env vars (Redis via `PHAZE_REDIS_URL`); with nothing set they default
+to `localhost:5432`, matching CI.
+
 ### 🔍 Code Quality
 
 - **Linter/Formatter:** [Ruff](https://docs.astral.sh/ruff/) (150-char line length, double quotes)

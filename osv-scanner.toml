@@ -1,13 +1,14 @@
-# osv-scanner vulnerability ignore configuration
+# osv-scanner vulnerability ignore configuration (root uv.lock)
 #
-# Entries here are ignored during osv-scanner runs in CI.
+# Entries here are ignored for the ROOT lockfile during osv-scanner runs in CI.
 # The update-project.sh sweep_osv_scanner_ignores() function automatically
 # re-tests each entry after dependency upgrades and removes resolved ones.
 #
+# NOTE: osv-scanner applies each osv-scanner.toml only to lockfiles in its own
+# directory tree. Ignores for sub-project lockfiles live next to that lockfile,
+# e.g. services/audfprint/osv-scanner.toml.
+#
 # Only add entries when no fix is available upstream.
-
-[[IgnoredVulns]]
-# pygments 2.19.2 — ReDoS in AdlLexer (local access only), no fix available
-# Also tracked as CVE-2026-4539 in .pip-audit-ignores
-id = "GHSA-5239-wwwm-4pmq"
-reason = "No fix available upstream — local access only ReDoS in AdlLexer (2026-03-28)"
+#
+# No root-level ignores currently — pygments GHSA-5239-wwwm-4pmq was resolved by
+# the upgrade to pygments 2.20.0.

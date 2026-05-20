@@ -1,6 +1,15 @@
 # Phaze - Music alignment tool
 # Run `just` to see all available commands
 
+# Host port for the ephemeral integration-test Postgres (5433 avoids the dev DB on 5432)
+test_db_port := env_var_or_default("PHAZE_TEST_DB_PORT", "5433")
+# Fixed container name for the ephemeral integration-test Postgres
+test_db_container := "phaze-test-db"
+# Host port for the ephemeral integration-test Redis (6380 avoids a dev Redis on 6379)
+test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
+# Fixed container name for the ephemeral integration-test Redis
+test_redis_container := "phaze-test-redis"
+
 [doc('Install all dependencies')]
 [group('dev')]
 install:
@@ -55,6 +64,91 @@ test-ci:
 [group('test')]
 test-file FILE:
     uv run pytest {{FILE}} -x -v
+
+[doc('Start ephemeral Postgres + Redis for integration tests (ports PHAZE_TEST_DB_PORT/PHAZE_TEST_REDIS_PORT, defaults 5433/6380)')]
+[group('test')]
+test-db:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    container="{{test_db_container}}"
+    port="{{test_db_port}}"
+    redis_container="{{test_redis_container}}"
+    redis_port="{{test_redis_port}}"
+    if [ "$(docker inspect -f '{{{{.State.Running}}}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+        echo "🐘 ${container} already running on port ${port}"
+    else
+        docker rm -f "$container" >/dev/null 2>&1 || true
+        echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
+        docker run -d --name "$container" \
+            -e POSTGRES_USER=phaze \
+            -e POSTGRES_PASSWORD=phaze \
+            -e POSTGRES_DB=phaze_test \
+            -p "${port}:5432" \
+            postgres:18-alpine >/dev/null
+    fi
+    if [ "$(docker inspect -f '{{{{.State.Running}}}}' "$redis_container" 2>/dev/null || echo false)" = "true" ]; then
+        echo "🟥 ${redis_container} already running on port ${redis_port}"
+    else
+        docker rm -f "$redis_container" >/dev/null 2>&1 || true
+        echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port}..."
+        docker run -d --name "$redis_container" \
+            -p "${redis_port}:6379" \
+            redis:7-alpine >/dev/null
+    fi
+    echo "⏳ Waiting for Postgres to accept connections..."
+    for _ in $(seq 1 30); do
+        if docker exec "$container" pg_isready -U phaze -d phaze_test >/dev/null 2>&1; then
+            db_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${db_ready:-0}" != "1" ]; then
+        echo "❌ ${container} did not become ready within 30s" >&2
+        docker logs "$container" >&2 || true
+        exit 1
+    fi
+    echo "⏳ Waiting for Redis to accept connections..."
+    for _ in $(seq 1 30); do
+        if docker exec "$redis_container" redis-cli ping >/dev/null 2>&1; then
+            redis_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${redis_ready:-0}" != "1" ]; then
+        echo "❌ ${redis_container} did not become ready within 30s" >&2
+        docker logs "$redis_container" >&2 || true
+        exit 1
+    fi
+    docker exec "$container" psql -U phaze -d phaze_test -tc \
+        "SELECT 1 FROM pg_database WHERE datname = 'phaze_migrations_test'" \
+        | grep -q 1 \
+        || docker exec "$container" psql -U phaze -d phaze_test \
+            -c "CREATE DATABASE phaze_migrations_test OWNER phaze;" >/dev/null
+    echo "✅ ${container} ready on localhost:${port} (phaze_test + phaze_migrations_test)"
+    echo "✅ ${redis_container} ready on localhost:${redis_port}"
+
+[doc('Stop and remove the ephemeral integration-test Postgres + Redis')]
+[group('test')]
+test-db-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker rm -f "{{test_db_container}}" >/dev/null 2>&1 || true
+    docker rm -f "{{test_redis_container}}" >/dev/null 2>&1 || true
+    echo "🧹 Removed {{test_db_container}} + {{test_redis_container}}"
+
+[doc('Run the full suite against self-contained ephemeral Postgres + Redis (auto teardown)')]
+[group('test')]
+integration-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just test-db
+    trap 'just test-db-down' EXIT
+    export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
+    export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
+    export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
+    uv run pytest tests/ -q
 
 [doc('Run ruff linter')]
 [group('lint')]

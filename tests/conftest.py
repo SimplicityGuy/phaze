@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 import hashlib
+import os
 import secrets
 
 from httpx import ASGITransport, AsyncClient
@@ -15,7 +16,7 @@ from phaze.models.agent import LEGACY_AGENT_ID, Agent
 from phaze.models.base import Base
 
 
-TEST_DATABASE_URL = "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test")
 
 DB_FIXTURES = {"async_engine", "session", "client", "authenticated_client", "seed_test_agent"}
 

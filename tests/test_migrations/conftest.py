@@ -20,6 +20,7 @@ calls. ``_patched_settings_database_url`` is the small helper that does that.
 import asyncio
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
+import os
 from pathlib import Path
 
 from alembic.config import Config
@@ -31,7 +32,10 @@ from alembic import command
 from phaze.config import settings
 
 
-MIGRATIONS_TEST_DATABASE_URL = "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_migrations_test"
+MIGRATIONS_TEST_DATABASE_URL = os.environ.get(
+    "MIGRATIONS_TEST_DATABASE_URL",
+    "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_migrations_test",
+)
 ALEMBIC_INI_PATH = Path(__file__).resolve().parents[2] / "alembic.ini"
 
 
