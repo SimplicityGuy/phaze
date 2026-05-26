@@ -3,7 +3,7 @@ FROM python:3.14-slim AS base
 WORKDIR /app
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /bin/
 
 # Install dependencies first (cache layer)
 COPY pyproject.toml uv.lock ./
