@@ -20,7 +20,7 @@ dependencies = [
     # Capped on purpose: litellm had a supply-chain attack (malicious 1.82.7/1.82.8,
     # Mar 2026) and ships frequent breaking minors, so CLAUDE.md mandates aggressive
     # pinning. The cap confines uv to the vetted 1.85.x line; raise it deliberately.
-    "litellm>=1.85.1,<1.86.0",
+    "litellm>=1.85.2,<1.86.0",
     "lxml>=6.1.1",
     "mutagen>=1.47.0",
     "numpy>=2.4.6",
@@ -173,5 +173,5 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
-    "ruff>=0.15.14",
+    "ruff>=0.15.15",
 ]
