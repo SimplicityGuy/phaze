@@ -261,6 +261,7 @@ Called from the CI `docker-publish` job, which runs only after `aggregate-result
 - Builds the same three images in a matrix and pushes to GHCR. `push` is `true` for non-PR events.
 - The `api` image publishes to the bare repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s `worker` + `watcher` can pull it directly; the sidecars publish under `/audfprint` and `/panako` suffixes.
 - Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:v<version>`.
+- Release tags MUST be 3-part semver (`vX.Y.Z`, e.g. `v4.0.0`) — `ci.yml` triggers the publish pipeline on `push` of a `v*.*.*` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part semver ref. A 2-part tag (`v4.0`) will not match the trigger and will not publish version-pinnable images.
 - Builds with `provenance: true` and `sbom: true` for supply-chain attestation, on `linux/amd64`.
 
 The single-stage `Dockerfile` (`FROM python:3.14-slim AS base`) installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
@@ -359,7 +360,7 @@ For first-time setup, `PHAZE_IMAGE_TAG=latest` pulls the most recent tagged rele
 PHAZE_IMAGE_TAG=v4.0.0
 ```
 
-Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:v<version>` on tagged releases.
+Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:v<version>` on tagged releases. The pin MUST be a 3-part `vX.Y.Z` value matching a published release tag (`ci.yml` only publishes on `push` of a `v*.*.*` tag).
 
 ## Pre-warming models (skip the first-start wait)
 
