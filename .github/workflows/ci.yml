@@ -4,6 +4,7 @@ name: CI
 on:
   push:
     branches: ["**"]
+    tags: ["v*.*.*"]
   pull_request:
     branches: ["**"]
 
@@ -37,14 +38,16 @@ jobs:
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
           if [[ "${EVENT_NAME}" == "schedule" ]] || \
-             [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+             [[ "${EVENT_NAME}" == "workflow_dispatch" ]] || \
+             [[ "${REF_TYPE}" == "tag" ]]; then
             echo "code-changed=true" >> "${GITHUB_OUTPUT}"
-            echo "⚙️ Scheduled/manual build — running full pipeline"
+            echo "⚙️ Scheduled/manual/tag build — running full pipeline"
             exit 0
           fi
 
