@@ -34,6 +34,7 @@ import yaml
 COMPOSE_PATH = Path(__file__).resolve().parents[2] / "docker-compose.agent.yml"
 PUBLISH_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "docker-publish.yml"
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
+CLEANUP_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "cleanup-images.yml"
 
 
 def _load_agent_compose() -> dict[str, Any]:
@@ -268,4 +269,37 @@ def test_ci_detect_changes_survives_force_push() -> None:
         "detect-changes filter step must fall back to `git diff origin/main...HEAD` when the "
         "before-SHA is unreachable (force-push); without this fallback a force-pushed branch "
         f"cannot compute changed files and CI errors out. run script was:\n{run}"
+    )
+
+
+def test_cleanup_package_list_matches_published_images() -> None:
+    """GHCR-RECONCILE: cleanup-images.yml prunes exactly the packages docker-publish.yml ships.
+
+    Derives the published GHCR package set from docker-publish.yml's build matrix
+    (``("phaze" + image_suffix).rstrip("/")`` over each ``matrix.include`` entry,
+    where the empty api suffix collapses to the bare-repo ``phaze`` package) and
+    asserts it equals cleanup-images.yml's ``matrix.package`` set. If either
+    workflow drifts — a new published image without a cleanup entry, or a cleanup
+    entry for an unpublished/orphan path (e.g. the historical ``phaze/api``) — the
+    symmetric difference pinpoints exactly which side diverged.
+    """
+    assert PUBLISH_WORKFLOW_PATH.exists(), f"docker-publish.yml missing at {PUBLISH_WORKFLOW_PATH}"
+    assert CLEANUP_WORKFLOW_PATH.exists(), f"cleanup-images.yml missing at {CLEANUP_WORKFLOW_PATH}"
+
+    publish = yaml.safe_load(PUBLISH_WORKFLOW_PATH.read_text())
+    matrix_include = publish["jobs"]["build-and-push"]["strategy"]["matrix"]["include"]
+    published_packages = {("phaze" + entry["image_suffix"]).rstrip("/") for entry in matrix_include}
+
+    cleanup = yaml.safe_load(CLEANUP_WORKFLOW_PATH.read_text())
+    cleanup_packages = set(cleanup["jobs"]["cleanup"]["strategy"]["matrix"]["package"])
+
+    only_published = published_packages - cleanup_packages
+    only_cleanup = cleanup_packages - published_packages
+    assert published_packages == cleanup_packages, (
+        "Publish/cleanup GHCR package sets diverged.\n"
+        f"  published (docker-publish.yml): {sorted(published_packages)}\n"
+        f"  cleanup   (cleanup-images.yml): {sorted(cleanup_packages)}\n"
+        f"  published but never pruned: {sorted(only_published)}\n"
+        f"  pruned but never published: {sorted(only_cleanup)}\n"
+        "Fix: keep cleanup-images.yml's matrix.package in sync with docker-publish.yml's image_suffix set."
     )
