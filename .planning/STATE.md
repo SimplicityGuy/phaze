@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: v4.0 complete (Phases 24–29 all shipped)
 Plan: -
 Status: Milestone complete; awaiting next-milestone scoping
-Last activity: 2026-05-20 - Completed quick task 260520-bcl: dedicated local integration-test database
+Last activity: 2026-06-06 - Completed quick task 260606-mpm: fix release tags not publishing version-tagged Docker images to GHCR
 
 Progress: [██████████] 100%
 
@@ -86,6 +86,7 @@ None.
 | 260414-quo | Add Discord notification to docker-publish.yml workflow mirroring discogsography pattern | 2026-04-14 | 9c5cedb | [260414-quo-add-discord-notification-to-docker-publi](./quick/260414-quo-add-discord-notification-to-docker-publi/) |
 | 260502-lqb | Remove Discord notification step from docker-publish.yml workflow | 2026-05-02 | ea84be2 | [260502-lqb-remove-discord-notification-step-from-do](./quick/260502-lqb-remove-discord-notification-step-from-do/) |
 | 260520-bcl | Dedicated local integration-test database on a non-colliding port (env-configurable URLs + `just integration-test`/`test-db` recipes) | 2026-05-20 | adc2970 | [260520-bcl-dedicated-local-integration-test-databas](./quick/260520-bcl-dedicated-local-integration-test-databas/) |
+| 260606-mpm | Fix release tags not publishing version-tagged Docker images to GHCR (push:tags trigger, tag-ref change detection, strengthened guard test, doc pin fixes) | 2026-06-06 | b811a9e | [260606-mpm-fix-release-tags-not-publishing-version-](./quick/260606-mpm-fix-release-tags-not-publishing-version-/) |
 
 ## Session Continuity
 
