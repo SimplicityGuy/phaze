@@ -33,6 +33,7 @@ import yaml
 
 COMPOSE_PATH = Path(__file__).resolve().parents[2] / "docker-compose.agent.yml"
 PUBLISH_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "docker-publish.yml"
+CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
 
 
 def _load_agent_compose() -> dict[str, Any]:
@@ -161,4 +162,84 @@ def test_docker_publish_workflow_tags_both_latest_and_version() -> None:
     assert not missing, (
         f"docker-publish.yml tag patterns missing: {missing}\nFound tags: {tags}\n"
         "Fix: add the missing pattern(s) under jobs.<job>.steps[uses=docker/metadata-action].with.tags."
+    )
+
+
+def _load_ci_workflow_triggers(data: dict[Any, Any]) -> dict[str, Any]:
+    """Return the ``on:`` trigger mapping from a parsed CI workflow.
+
+    PyYAML parses the bare ``on:`` key as the boolean ``True`` in some
+    documents, so the string key ``"on"`` may be absent. Fall back to the
+    boolean ``True`` key before giving up.
+    """
+    triggers = data.get("on", data.get(True))
+    assert isinstance(triggers, dict), f"ci.yml `on:` block did not parse as a mapping; got {triggers!r}"
+    return triggers
+
+
+def _ci_detect_changes_filter_step() -> dict[str, Any]:
+    """Locate the ``detect-changes`` job's ``id: filter`` step in ci.yml."""
+    assert CI_WORKFLOW_PATH.exists(), f"ci.yml missing at {CI_WORKFLOW_PATH}"
+    data = yaml.safe_load(CI_WORKFLOW_PATH.read_text())
+    detect = (data.get("jobs") or {}).get("detect-changes")
+    assert isinstance(detect, dict), "ci.yml is missing the `detect-changes` job"
+    for step in detect.get("steps", []) or []:
+        if step.get("id") == "filter":
+            return step  # type: ignore[no-any-return]
+    raise AssertionError("ci.yml `detect-changes` job has no step with `id: filter`")
+
+
+def test_ci_workflow_triggers_on_version_tags() -> None:
+    """Release fix: ci.yml fires on a 3-part semver tag push (and still on branches).
+
+    Without ``on.push.tags``, pushing a release tag runs NO workflow, so
+    docker-publish never builds the version-tagged GHCR image and the
+    documented ``PHAZE_IMAGE_TAG=vX.Y.Z`` pin is unusable. This test fails if
+    the tag trigger is dropped, and also guards that branch CI is not lost in
+    the process.
+    """
+    assert CI_WORKFLOW_PATH.exists(), f"ci.yml missing at {CI_WORKFLOW_PATH}"
+    data = yaml.safe_load(CI_WORKFLOW_PATH.read_text())
+    triggers = _load_ci_workflow_triggers(data)
+    push = triggers.get("push")
+    assert isinstance(push, dict), f"ci.yml `on.push` must be a mapping; got {push!r}"
+
+    tags = push.get("tags")
+    assert isinstance(tags, list) and any("v*.*.*" in str(t) for t in tags), (
+        f'ci.yml must trigger on 3-part semver tags. Add `on.push.tags: ["v*.*.*"]` so release-tag pushes run the publish pipeline; got tags={tags!r}'
+    )
+
+    branches = push.get("branches")
+    assert isinstance(branches, list) and branches, (
+        f"ci.yml lost its `on.push.branches` trigger — the tag edit must not drop branch CI; got branches={branches!r}"
+    )
+
+
+def test_ci_detect_changes_forces_code_changed_on_tags() -> None:
+    """Release fix: detect-changes forces ``code-changed=true`` for tag refs.
+
+    The ``docker-publish`` job gates on ``code-changed == 'true'``. A tag push
+    carries no file diff against a base, so without an explicit tag-ref
+    early-exit the diff logic would compute ``code-changed=false`` and SKIP
+    docker-publish — the image would never ship. This test fails if the
+    tag-ref forcing is removed.
+    """
+    step = _ci_detect_changes_filter_step()
+
+    env = step.get("env") or {}
+    assert isinstance(env, dict), f"detect-changes filter step has no env mapping; got {env!r}"
+    ref_var_wired = any(("ref_type" in str(v).lower()) or (key in {"REF", "REF_NAME"} and "github.ref" in str(v).lower()) for key, v in env.items())
+    assert ref_var_wired, (
+        "detect-changes filter step must wire a ref-type/ref variable "
+        "(e.g. `REF_TYPE: ${{ github.ref_type }}`) so the run script can detect tag pushes; "
+        f"got env={env!r}"
+    )
+
+    run = str(step.get("run") or "")
+    run_lower = run.lower()
+    has_tag_check = ("ref_type" in run_lower) or ('"tag"' in run_lower) or ("refs/tags" in run_lower)
+    assert has_tag_check and "code-changed=true" in run, (
+        "detect-changes filter step must force `code-changed=true` for tag refs; otherwise a release-tag "
+        "push computes code-changed=false and the docker-publish job is skipped, so the version-tagged "
+        f"image never publishes. run script was:\n{run}"
     )
