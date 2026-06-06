@@ -15,7 +15,7 @@ The repo ships three compose files plus a dev override:
 | File | Host | Services | Notes |
 |------|------|----------|-------|
 | `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api` (DIST-01). |
-| `docker-compose.agent.yml` | File server (one per host) | `worker` (agent role), `watcher`, `audfprint`, `panako` | `worker`/`watcher` pull `ghcr.io/simplicityguy/phaze` from GHCR; sidecars build locally. |
+| `docker-compose.agent.yml` | File server (one per host) | `worker` (agent role), `watcher`, `audfprint`, `panako` | All four services pull from GHCR via `PHAZE_IMAGE_TAG`: `worker`/`watcher` from `ghcr.io/simplicityguy/phaze`, `audfprint`/`panako` from the `/audfprint` + `/panako` sub-paths. Each sidecar keeps a commented dev-only `build:` fallback. |
 | `docker-compose.override.yml` | Application server (dev only) | overlays `api` + `worker` | Auto-merged by `docker compose` in dev. Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`. Do **not** rely on it in production (the override skips the cert-bootstrap entrypoint). |
 
 ### Application-server services (`docker-compose.yml`)
@@ -35,8 +35,8 @@ The repo ships three compose files plus a dev override:
 |---------|---------------|---------|------|
 | `worker` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`). |
 | `watcher` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run python -m phaze.agent_watcher` | Always-on directory watcher (`PHAZE_ROLE=agent`). |
-| `audfprint` | build `services/audfprint/Dockerfile.audfprint` | (image default) | Fingerprint sidecar. Not on GHCR — built on the file-server host. |
-| `panako` | build `services/panako/Dockerfile.panako` | (image default) | Fingerprint sidecar. Not on GHCR — built on the file-server host. |
+| `audfprint` | `ghcr.io/simplicityguy/phaze/audfprint:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
+| `panako` | `ghcr.io/simplicityguy/phaze/panako:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
 
 All four services mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** (agents reach the app-server's Redis directly and Postgres only via the HTTP API — DIST-04) and **no `DATABASE_URL`** on any agent service.
 
@@ -154,7 +154,7 @@ A sentinel `LIVE` ScanBatch row is auto-created the first time the agent posts a
 
 ## Step 4 — Populate the file-server `.env`
 
-On the **file-server host**:
+On the **file-server host**, get the compose file and the `.env` template. All four agent images are pulled from GHCR, so the checkout is only needed for `docker-compose.agent.yml` + `.env.example.agent` (and optionally if you want to build a sidecar from source via the commented dev-only `build:` fallback) — not to build the sidecars for a normal deployment:
 
 ```bash
 git clone https://github.com/simplicityguy/phaze.git
