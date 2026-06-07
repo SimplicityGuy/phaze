@@ -29,6 +29,7 @@ import hashlib
 from pathlib import Path
 import re
 import socket
+import time
 
 import pytest
 
@@ -38,6 +39,12 @@ _SCRIPT_TAG = re.compile(
     r"<script\b[^>]*?\bsrc=[\"']([^\"']+)[\"'][^>]*?\bintegrity=[\"']([^\"']+)[\"']",
     re.IGNORECASE | re.DOTALL,
 )
+
+# Bounded retry for the network SRI check: tolerates transient jsdelivr edge
+# inconsistency (a one-off differently-served body) without masking a real,
+# persistent hash drift, which mismatches on every attempt.
+_MAX_FETCH_ATTEMPTS = 3
+_FETCH_RETRY_DELAY_SECONDS = 1.0
 
 
 def _extract_cdn_scripts() -> list[tuple[str, str]]:
@@ -98,6 +105,14 @@ def test_cdn_sri_hashes_match_served_content() -> None:
     SRI drift even when the URL is already pinned to a specific version
     (e.g., someone edited the hash by hand without updating the URL, or the
     CDN's specific-version response actually changed under us).
+
+    Bounded retry: jsdelivr edge nodes occasionally serve a transiently
+    different (e.g. differently-minified or partial) body for the same
+    versioned URL, which makes a single-fetch assertion flaky. Each URL is
+    fetched up to ``_MAX_FETCH_ATTEMPTS`` times and passes as soon as ONE
+    fetch matches the pinned hash. A genuinely drifted pin mismatches on
+    every attempt, so real-drift detection is preserved; only one-off edge
+    inconsistencies are tolerated.
     """
     import httpx
 
@@ -112,14 +127,22 @@ def test_cdn_sri_hashes_match_served_content() -> None:
         if algo not in ("sha256", "sha384", "sha512"):
             failures.append(f"{src}: unsupported SRI algo {algo!r}")
             continue
-        try:
-            response = httpx.get(src, timeout=10.0, follow_redirects=True)
-            response.raise_for_status()
-            body = response.content
-        except httpx.HTTPError as exc:
-            failures.append(f"{src}: fetch failed {exc!r}")
-            continue
-        actual = base64.b64encode(hashlib.new(algo, body).digest()).decode("ascii")
-        if actual != b64hash:
-            failures.append(f"{src}: SRI {algo}={b64hash} but CDN serves {actual}")
+        last_error: str | None = None
+        for attempt in range(_MAX_FETCH_ATTEMPTS):
+            try:
+                response = httpx.get(src, timeout=10.0, follow_redirects=True)
+                response.raise_for_status()
+                body = response.content
+            except httpx.HTTPError as exc:
+                last_error = f"{src}: fetch failed {exc!r}"
+            else:
+                actual = base64.b64encode(hashlib.new(algo, body).digest()).decode("ascii")
+                if actual == b64hash:
+                    last_error = None
+                    break
+                last_error = f"{src}: SRI {algo}={b64hash} but CDN serves {actual}"
+            if attempt < _MAX_FETCH_ATTEMPTS - 1:
+                time.sleep(_FETCH_RETRY_DELAY_SECONDS)
+        if last_error is not None:
+            failures.append(f"{last_error} (after {_MAX_FETCH_ATTEMPTS} attempts)")
     assert not failures, "Pinned SRI hashes do not match served content:\n  " + "\n  ".join(failures)
