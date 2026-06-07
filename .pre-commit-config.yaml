@@ -23,8 +23,13 @@ repos:
         args: [--allow-missing-credentials]
       - id: detect-private-key
       - id: end-of-file-fixer
+        # Don't reformat vendored third-party assets — must stay byte-identical
+        # to the audited upstream build (see static/vendor/ and base.html).
+        exclude: ^src/phaze/static/vendor/
       - id: mixed-line-ending
+        exclude: ^src/phaze/static/vendor/
       - id: trailing-whitespace
+        exclude: ^src/phaze/static/vendor/
       - id: pretty-format-json
         args: [--autofix, --indent=2]
         # Skip generated artifacts (planning graphs, graphify output)
