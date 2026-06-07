@@ -243,3 +243,29 @@ def test_ci_detect_changes_forces_code_changed_on_tags() -> None:
         "push computes code-changed=false and the docker-publish job is skipped, so the version-tagged "
         f"image never publishes. run script was:\n{run}"
     )
+
+
+def test_ci_detect_changes_survives_force_push() -> None:
+    """Force-push fix: detect-changes falls back to ``origin/main...HEAD`` when before-SHA is gone.
+
+    On a force-pushed branch the push event carries ``github.event.before`` set to
+    the pre-force-push tip, which is unreachable in the fresh ``fetch-depth: 0``
+    clone. Running ``git diff "${BEFORE_SHA}" "${HEAD_SHA}"`` against it dies with
+    ``fatal: bad object <old-tip>`` (exit 128), failing the whole job. The filter
+    step must probe reachability (``git cat-file -e``) and fall back to the
+    default-branch diff (``origin/main...HEAD``). This test fails if that
+    reachability fallback is removed.
+    """
+    step = _ci_detect_changes_filter_step()
+
+    run = str(step.get("run") or "")
+    assert "git cat-file -e" in run, (
+        "detect-changes filter step must probe whether `github.event.before` is reachable "
+        "via `git cat-file -e`; otherwise a force-pushed branch hits `fatal: bad object` and "
+        f"detect-changes fails with exit 128. run script was:\n{run}"
+    )
+    assert "origin/main..." in run, (
+        "detect-changes filter step must fall back to `git diff origin/main...HEAD` when the "
+        "before-SHA is unreachable (force-push); without this fallback a force-pushed branch "
+        f"cannot compute changed files and CI errors out. run script was:\n{run}"
+    )
