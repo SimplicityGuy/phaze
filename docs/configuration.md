@@ -18,6 +18,34 @@ Phaze splits settings into a shared `BaseSettings` class plus two role-specific 
 
 **Env var binding:** most fields bind to the uppercased field name (e.g., `scan_path` ← `SCAN_PATH`). Several fields are bound to an explicit `PHAZE_*` alias via `validation_alias=AliasChoices(...)`, in which case the `PHAZE_*` form is the documented operator-facing name and the bare name still works for in-process / test convenience. Both forms are listed below where they differ.
 
+## Secrets via files (`_FILE` convention)
+
+Every **secret-bearing** setting also accepts a `<VAR>_FILE` sibling that points at a file containing the secret — the same convention used by the official Postgres/Redis images and our sibling service `discogsography`. This lets a deployment share a single Docker/Swarm secret (`/run/secrets/...`), a Kubernetes secret mount, or a SOPS-decrypted file with Phaze without inlining the cleartext into an env var.
+
+The secret-bearing fields and their `_FILE` siblings:
+
+| Field | Roles | `_FILE` variables (any one works) |
+|-------|-------|-----------------------------------|
+| `anthropic_api_key` | control | `ANTHROPIC_API_KEY_FILE` |
+| `openai_api_key`    | control | `OPENAI_API_KEY_FILE` |
+| `database_url`      | all     | `PHAZE_DATABASE_URL_FILE`, `DATABASE_URL_FILE` |
+| `redis_url`         | all     | `PHAZE_REDIS_URL_FILE`, `REDIS_URL_FILE` |
+| `agent_token`       | agent   | `PHAZE_AGENT_TOKEN_FILE`, `AGENT_TOKEN_FILE` |
+
+Semantics (implemented by the shared `_resolve_secret_files` validator in `config.py`, which derives the `_FILE` names from each field's existing aliases):
+
+- **One `_FILE` per accepted env name.** A field bound to both `PHAZE_DATABASE_URL` and `DATABASE_URL` honors `PHAZE_DATABASE_URL_FILE` **and** `DATABASE_URL_FILE`.
+- **Precedence:** an explicitly-set direct env var always wins over its `_FILE` sibling. The file is read only when the direct var is unset.
+- **Newline stripping:** surrounding whitespace and trailing newlines are stripped (`.strip()`). This is critical for `PHAZE_AGENT_TOKEN` — the *entire* wire string (prefix included) is hashed by `phaze.routers.agent_auth.hash_token`, so a stray `\n` from a heredoc/`echo`-created secret file would otherwise make the hash never match (a permanent 401).
+- **Fail-fast:** if a `_FILE` var is set but the path is missing or unreadable, startup raises a `ValidationError` naming the variable and path — it never silently falls back to an empty secret.
+- Resolution runs **before** the required-field and production guards (`_enforce_required_agent_fields`, the HTTPS/Redis-password validators), so a `_FILE`-sourced `PHAZE_AGENT_TOKEN` satisfies the required-field guard. `SecretStr` fields stay `SecretStr` (masked in logs/reprs) after resolution.
+
+Example (Docker secret mounted at `/run/secrets/anthropic_api_key`):
+
+```bash
+ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY needed
+```
+
 ## Core settings (all roles)
 
 | Variable                          | Required | Default                                                  | Description                                                                 |
