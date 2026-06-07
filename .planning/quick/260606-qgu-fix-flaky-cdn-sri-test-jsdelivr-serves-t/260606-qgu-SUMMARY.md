@@ -2,35 +2,39 @@
 status: complete
 ---
 
-# Quick Task 260606-qgu — Fix flaky CDN SRI test
+# Quick Task 260606-qgu — Fix flaky CDN SRI test (Tailwind)
 
 ## Outcome
 
-Fixed the intermittently-failing `tests/test_base_html_sri.py::test_cdn_sri_hashes_match_served_content` **without weakening Subresource Integrity**.
+`tests/test_base_html_sri.py::test_cdn_sri_hashes_match_served_content` failed intermittently/persistently in CI for the Tailwind `<script>`. Root-caused and fixed by **self-hosting the audited Tailwind build** — no SRI weakening, deterministic delivery.
 
-## DEVIATION from plan (important)
+## Investigation (two rejected approaches before the real fix)
 
-The PLAN proposed **multi-hash SRI** — listing a second hash (`sha384-AIH1kL7…`, the body served to GitHub's CI runner) alongside the audited `sha384-d5Pc0U2…` in `base.html`. During execution an automated **security review flagged this HIGH: "Weakened Subresource Integrity (SRI bypass)"** — pinning a second, un-audited hash lets more than one body satisfy SRI.
+1. **Multi-hash SRI** (original plan) — list both the local hash (`d5Pc0U2…`) and the CI-edge hash (`AIH1kL7…`) in `base.html`. **Rejected:** an automated security review flagged it HIGH "Weakened SRI (bypass)" — pinning an un-audited second body weakens the integrity guarantee. Correct.
+2. **`Accept-Encoding: identity` in the test** — hypothesis was that CI hashed compressed bytes. **Rejected:** CI still served `AIH1kL7…` with identity, and that hash can't be reproduced locally via any encoding. So it's a genuinely different *body*, not a compression artifact.
 
-Investigation proved the security review correct and the multi-hash premise wrong:
+## Root cause
 
-- The bare jsdelivr URL `@tailwindcss/browser@4.3.0` resolves to the immutable static file `/dist/index.global.min.js`; its canonical (decoded) SHA-384 is **always** `d5Pc0U2…` (stable locally, == bare URL == explicit file).
-- `AIH1kL7…` (and the brotli/gzip raw hashes) are **compressed representations** of that same file, not a distinct build. `httpx.get(...).content` returns *compressed* bytes when the client advertises an encoding it can't transparently decode (brotli, when no brotli lib is installed — the CI situation).
-- Browsers compute SRI over the **decoded** resource, so a browser always validates against `d5Pc0U2…`. There was **no production risk**, and the single hash is correct.
+jsDelivr **minifies the bare package URL** `@tailwindcss/browser@4.3.0` on the fly (file header: "Minified by jsDelivr using Terser v5.39.0"). Different jsDelivr edges run different Terser versions → **different bytes for the same versioned URL across edges**. So a single SRI hash can never match everywhere, and SRI could block the stylesheet for a client routed to a divergent edge.
 
-So the multi-hash approach was discarded (its worktree commits were never merged). `base.html` is unchanged (keeps the single audited hash).
+## Fix (self-host)
 
-## Actual change
+- Vendored the audited build `@tailwindcss/browser@4.3.0/dist/index.global.min.js` (the explicit pre-built file, `sha384-d5Pc0U2…`, 273477 bytes) to `src/phaze/static/vendor/tailwindcss-browser-4.3.0.min.js`.
+- `base.html` now loads it same-origin from `/static/vendor/...` (no SRI/crossorigin needed). The app already mounts `/static` (`main.py:137`); the wheel/Docker ship `src/phaze/static/`.
+- `.pre-commit-config.yaml`: excluded `src/phaze/static/vendor/` from end-of-file-fixer / mixed-line-ending / trailing-whitespace so the vendored bytes stay identical to upstream (verified post-commit: still `d5Pc0U2…`).
+- The remaining CDN scripts (htmx, htmx-sse, alpine) are explicit pre-built files (byte-stable) and keep their SRI hashes; the SRI tests still guard them. The earlier `Accept-Encoding: identity` test change is kept (deterministic for those).
 
-`tests/test_base_html_sri.py` — the live integration test now fetches with `headers={"Accept-Encoding": "identity"}`, so it hashes the same canonical decoded bytes the browser validates. Deterministic across environments regardless of installed compression libs. The https-only guard, algo allowlist, and bounded retry are preserved; real pin-drift (a body matching none of the pinned hash) still fails.
+Benefits: deterministic CI, no per-edge SRI risk, and the admin UI's core stylesheet works on an isolated/private homelab network with no internet.
 
 ## Verification
 
-- `uv run pytest tests/test_base_html_sri.py -m "" -q` → 3 passed (incl. live fetch)
-- `uv run ruff check` / `uv run mypy` → clean
-- `base.html` contains 0 occurrences of the compressed-byte hash — single audited hash only; SRI not weakened.
+- `uv run pytest tests/test_base_html_sri.py -m "" -q` → 3 passed (now scoped to htmx/htmx-sse/alpine; Tailwind is same-origin so it drops out of the CDN-SRI checks)
+- `uv run ruff check .` / `uv run mypy .` clean; frozen-SHA pre-commit green, no `--no-verify`
+- Vendored file sha384 == audited `d5Pc0U2…` after commit (hook exclude verified)
 
 ## Files
 
-- `tests/test_base_html_sri.py` (edited)
-- `src/phaze/templates/base.html` (intentionally unchanged)
+- `src/phaze/static/vendor/tailwindcss-browser-4.3.0.min.js` (new, vendored)
+- `src/phaze/templates/base.html` (CDN → self-hosted)
+- `.pre-commit-config.yaml` (exclude vendor dir from whitespace/EOF hooks)
+- `tests/test_base_html_sri.py` (Accept-Encoding: identity — kept for remaining CDN scripts)
