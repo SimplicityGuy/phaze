@@ -53,8 +53,8 @@ jobs:
 
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
-          elif [[ "${BEFORE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
-            # First push to a new branch — compare against default branch
+          elif [[ "${BEFORE_SHA}" == "0000000000000000000000000000000000000000" ]] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            # New branch (zero SHA) or force-pushed branch whose before-SHA is gone — compare against default branch
             CHANGED_FILES=$(git diff --name-only "origin/main...${HEAD_SHA}")
           else
             CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}" "${HEAD_SHA}")
