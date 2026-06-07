@@ -318,6 +318,27 @@ Production-critical variables:
 | `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (`v4.0.0`) in production rather than `latest`. |
 | `SCAN_PATH` | file-server | The music-library root, bind-mounted read-only into all agent services. Compose parse fails if unset. |
 
+### Secrets via files (Docker secrets)
+
+Every secret-bearing variable accepts a `<VAR>_FILE` sibling that points at a file holding the value, so you can mount a Docker/Swarm secret (or a Kubernetes secret / SOPS-decrypted file) instead of inlining cleartext into the environment. Supported: `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (each also via its `PHAZE_*` alias where one exists), and `PHAZE_AGENT_TOKEN` / `AGENT_TOKEN`. See [docs/configuration.md → Secrets via files](configuration.md#secrets-via-files-_file-convention) for the precedence and newline-stripping rules.
+
+Example — mount the Anthropic key as a Docker secret on the app server and reference it by path (no `ANTHROPIC_API_KEY` in the environment):
+
+```yaml
+# docker-compose.yml (app server)
+secrets:
+  anthropic_api_key:
+    file: ./secrets/anthropic_api_key   # contents: the raw sk-ant-... key
+
+services:
+  api:
+    secrets: [anthropic_api_key]
+    environment:
+      ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
+```
+
+The same pattern works for the agent's bearer token on a file server — mount the secret and set `PHAZE_AGENT_TOKEN_FILE=/run/secrets/phaze_agent_token`. The file's trailing newline is stripped, so the hashed wire string still matches the `token_hash` row (a stray `\n` would otherwise cause a permanent 401). A `_FILE` path that is missing or unreadable fails fast at startup with a clear error.
+
 ## Rollback Procedure
 
 There is no automated rollback in CI — rollback is a manual re-deploy of a previously published image tag.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phaze"
-version = "0.1.0"
+version = "4.0.1"
 description = "A music alignment tool"
 license = "MIT"
 requires-python = ">=3.14,<3.15"
@@ -25,6 +25,10 @@ dependencies = [
     "mutagen>=1.47.0",
     "numpy>=2.4.6",
     "pydantic-settings>=2.14.1",
+    # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
+    # secret resolution. Already installed transitively via pydantic-settings' env_file
+    # support; declared explicitly so the direct import is not a transitive accident.
+    "python-dotenv>=1.0.0",
     "python-multipart>=0.0.32",
     "rapidfuzz>=3.14.5",
     "sqlalchemy>=2.0.50",

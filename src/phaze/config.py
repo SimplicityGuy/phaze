@@ -10,11 +10,53 @@ env var. `get_settings()` is the single dispatch point; module-level
 from enum import StrEnum
 from functools import lru_cache
 import os
-from typing import Annotated, Literal
+from pathlib import Path
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
+from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, SettingsConfigDict
+
+
+def _direct_env_names(field_name: str, field_info: Any) -> list[str]:
+    """Return the env-var names a field accepts directly: its ``validation_alias``
+    string choices, plus the bare field name when not already covered.
+
+    The ``<VAR>_FILE`` sibling names are derived from this set so the file-secret
+    convention stays consistent with whatever aliases a field already honors.
+    """
+    alias = field_info.validation_alias
+    if isinstance(alias, AliasChoices):
+        names = [choice for choice in alias.choices if isinstance(choice, str)]
+    elif isinstance(alias, str):
+        names = [alias]
+    else:
+        names = []
+    if field_name not in names:
+        names.append(field_name)
+    return names
+
+
+def _resolution_env(model_config: SettingsConfigDict) -> dict[str, str]:
+    """Build the case-insensitive name->value map used to resolve `_FILE` secrets.
+
+    Mirrors pydantic-settings' own precedence: values from the process environment
+    win over values declared in the configured `.env` file(s). Both layers are
+    consulted so a `<VAR>_FILE` (or its direct sibling) declared in `.env` — the
+    way every other documented var in `.env.example` is consumed — is honored, not
+    just process-env vars injected by Docker/Kubernetes.
+    """
+    merged: dict[str, str] = {}
+    env_file = model_config.get("env_file")
+    if env_file:
+        encoding = model_config.get("env_file_encoding") or "utf-8"
+        paths = [env_file] if isinstance(env_file, (str, os.PathLike)) else list(env_file)
+        for path in paths:
+            if path and Path(path).is_file():
+                merged.update({key: value for key, value in dotenv_values(path, encoding=encoding).items() if value is not None})
+    merged.update(os.environ)  # process env wins over .env
+    return {key.upper(): value for key, value in merged.items()}
 
 
 class Role(StrEnum):
@@ -28,6 +70,71 @@ class BaseSettings(PydanticBaseSettings):
     """Fields shared by both roles. Every existing call site `settings.<field>` resolves here unless overridden below."""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # v4.0.1: secret-bearing fields that honor the `<VAR>_FILE` convention
+    # (Docker/Swarm secrets, Kubernetes mounts, SOPS). Subclasses extend this set;
+    # the shared `_resolve_secret_files` before-validator reads each field's
+    # `<ALIAS>_FILE` siblings when the direct env var is unset. `database_url` and
+    # `redis_url` live here because both carry credentials and exist on both roles.
+    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = frozenset({"database_url", "redis_url"})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_secret_files(cls, data: Any) -> Any:
+        """Resolve `<VAR>_FILE` secrets before any required-field / production guard.
+
+        For each field in `SECRET_FILE_FIELDS`, if no direct env var (or value from
+        another already-merged source) is present but a `<ALIAS>_FILE` sibling is
+        set, read the secret from that path. The file's surrounding whitespace is
+        stripped (`.strip()`) so a heredoc/echo-created secret with a trailing
+        newline hashes identically to an operator-typed env var — critical for
+        `PHAZE_AGENT_TOKEN`, whose entire wire string is hashed by `hash_token`.
+
+        Runs as `mode="before"` so the resolved value flows through field
+        validation (SecretStr coercion) and into the `mode="after"` guards
+        (`_enforce_required_agent_fields`, the production validators). A missing or
+        unreadable `<ALIAS>_FILE` path raises `ValueError` (surfaced as a
+        `ValidationError`) naming the variable and path — never a silent fallback.
+
+        The `<ALIAS>_FILE` vars are read from the process env and the configured
+        `.env` file (they are not model fields, so `extra="ignore"` never sees
+        them) and matched case-insensitively to mirror pydantic-settings' default
+        env handling; the process env wins over `.env`.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        env_upper = _resolution_env(cls.model_config)
+        present_upper = {str(key).upper() for key in data}
+
+        for field_name in cls.SECRET_FILE_FIELDS:
+            field_info = cls.model_fields.get(field_name)
+            if field_info is None:
+                continue
+
+            env_names = _direct_env_names(field_name, field_info)
+            # Precedence: an explicitly-set direct env var (or a value already
+            # merged from another source into `data`) always wins over `_FILE`.
+            if any(name.upper() in present_upper or name.upper() in env_upper for name in env_names):
+                continue
+
+            for env_name in env_names:
+                file_var = f"{env_name.upper()}_FILE"
+                if file_var not in env_upper:
+                    continue
+                path = env_upper[file_var]
+                try:
+                    contents = Path(path).read_text(encoding="utf-8")
+                except OSError as exc:
+                    msg = f"{file_var} points to {path!r} which could not be read: {exc}"
+                    raise ValueError(msg) from exc
+                # Inject under the field name; every in-scope field is matched
+                # either by name (no alias) or by an AliasChoices that includes
+                # the bare field name, so this key always resolves.
+                data[field_name] = contents.strip()
+                break
+
+        return data
 
     # Database
     # Phase 29 CR-02: bind PHAZE_DATABASE_URL via validation_alias so the operator-
@@ -147,6 +254,9 @@ class BaseSettings(PydanticBaseSettings):
 class ControlSettings(BaseSettings):
     """Application-server role: LLM proposal generation, Discogs matching, fileless tasks."""
 
+    # v4.0.1: add the LLM API keys to the inherited database_url/redis_url set.
+    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {"openai_api_key", "anthropic_api_key"}
+
     # Discogsography
     discogs_match_concurrency: int = 5
 
@@ -172,6 +282,9 @@ class AgentSettings(BaseSettings):
     names (e.g., `AGENT_API_URL`) are also accepted for in-process / pytest
     monkeypatch convenience.
     """
+
+    # v4.0.1: add the bearer token to the inherited database_url/redis_url set.
+    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {"agent_token"}
 
     agent_api_url: str = Field(
         default="",
