@@ -106,13 +106,18 @@ def test_cdn_sri_hashes_match_served_content() -> None:
     (e.g., someone edited the hash by hand without updating the URL, or the
     CDN's specific-version response actually changed under us).
 
-    Bounded retry: jsdelivr edge nodes occasionally serve a transiently
-    different (e.g. differently-minified or partial) body for the same
-    versioned URL, which makes a single-fetch assertion flaky. Each URL is
-    fetched up to ``_MAX_FETCH_ATTEMPTS`` times and passes as soon as ONE
-    fetch matches the pinned hash. A genuinely drifted pin mismatches on
-    every attempt, so real-drift detection is preserved; only one-off edge
-    inconsistencies are tolerated.
+    Encoding: the browser computes SRI over the DECODED resource bytes, so the
+    test must hash the same thing. We request ``Accept-Encoding: identity`` to
+    force the CDN to return the uncompressed file. Without this, a client that
+    advertises an encoding it cannot transparently decode (e.g. ``br`` when no
+    brotli library is installed — the situation on CI runners) ends up hashing
+    the *compressed* bytes, which never match the SRI hash a browser validates.
+    That mismatch was a false positive, not a real drift; forcing identity makes
+    the comparison deterministic across environments.
+
+    Bounded retry: a one-off network blip / partial response is retried up to
+    ``_MAX_FETCH_ATTEMPTS`` times; a genuinely drifted pin mismatches on every
+    attempt, so real-drift detection is preserved.
     """
     import httpx
 
@@ -130,7 +135,10 @@ def test_cdn_sri_hashes_match_served_content() -> None:
         last_error: str | None = None
         for attempt in range(_MAX_FETCH_ATTEMPTS):
             try:
-                response = httpx.get(src, timeout=10.0, follow_redirects=True)
+                # Accept-Encoding: identity → hash the decoded bytes the browser
+                # validates SRI against, not a compression-dependent encoding the
+                # client may fail to decode (CI brotli false positive).
+                response = httpx.get(src, timeout=10.0, follow_redirects=True, headers={"Accept-Encoding": "identity"})
                 response.raise_for_status()
                 body = response.content
             except httpx.HTTPError as exc:
