@@ -114,6 +114,7 @@ These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=a
 | `PHAZE_AGENT_API_URL` (or `AGENT_API_URL`)    | **Yes**  | (empty) | Base URL of the application server (e.g., `http://api:8000` in Compose). In `production` mode this must be `https://`. |
 | `PHAZE_AGENT_TOKEN` (or `AGENT_TOKEN`)        | **Yes**  | (empty) | Bearer token (`SecretStr`) issued at agent registration. Must match the stored hash in the `agents` table. Format: `phaze_agent_<32 urlsafe-base64 bytes>`. |
 | `PHAZE_AGENT_SCAN_ROOTS` (or `SCAN_ROOTS`)    | **Yes**  | (empty) | Comma-separated list of absolute paths the agent may read/write, used for path-traversal containment (e.g., `/data/music,/data/concerts`). |
+| `PHAZE_AGENT_QUEUE` (or `AGENT_QUEUE`)        | **Yes**  | (empty) | SAQ queue the agent worker consumes. By convention it MUST equal `phaze-agent-<PHAZE_AGENT_ID>`. There is **no queue column** on the `agents` table: both the control plane and the agent worker derive the queue name from the agent_id. At startup `phaze.tasks.agent_worker` resolves the agent_id from the token via `/whoami` and asserts `PHAZE_AGENT_QUEUE == f"phaze-agent-{agent_id}"`, exiting non-zero on mismatch. Use the exact value printed by `phaze agents add` (see [deployment.md](deployment.md) Step 3). |
 
 ### Optional agent fields
 

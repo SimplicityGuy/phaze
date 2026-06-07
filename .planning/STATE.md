@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: v4.0 complete (Phases 24–29 all shipped)
 Plan: -
 Status: Milestone complete; awaiting next-milestone scoping
-Last activity: 2026-06-06 - Completed quick task 260606-qgu: fix flaky CDN SRI test (encoding)
+Last activity: 2026-06-06 - Completed quick task 260606-nha: phaze agents add CLI
 
 Progress: [██████████] 100%
 
@@ -91,6 +91,7 @@ None.
 | 260606-pjd | Make ci.yml detect-changes robust to force-push: fall back to origin/main diff when github.event.before is unreachable (+ guard test) | 2026-06-06 | d89a00b | [260606-pjd-make-ci-yml-detect-changes-robust-to-for](./quick/260606-pjd-make-ci-yml-detect-changes-robust-to-for/) |
 | 260606-n0y | Reconcile GHCR image paths: cleanup targets canonical bare `phaze`, orphan `phaze/api` documented as deprecated, publish/cleanup parity guard test | 2026-06-06 | a993aea | [260606-n0y-reconcile-ghcr-image-paths-stop-orphanin](./quick/260606-n0y-reconcile-ghcr-image-paths-stop-orphanin/) |
 | 260606-n7g | Switch audfprint/panako sidecars in docker-compose.agent.yml to pull published GHCR images (commented build fallback); update deployment docs + tests | 2026-06-06 | 95cd630 | [260606-n7g-switch-audfprint-panako-sidecars-in-dock](./quick/260606-n7g-switch-audfprint-panako-sidecars-in-dock/) |
+| 260606-nha | Add `phaze agents add` management CLI (token mint + sha256 hash + id-charset validation + queue-name output) and document PHAZE_AGENT_QUEUE = phaze-agent-<agent_id> convention | 2026-06-06 | 602488a | [260606-nha-add-a-phaze-agents-add-management-cli-ge](./quick/260606-nha-add-a-phaze-agents-add-management-cli-ge/) |
 
 ## Session Continuity
 
