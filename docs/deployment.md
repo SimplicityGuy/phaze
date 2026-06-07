@@ -128,29 +128,62 @@ Or use rsync, ansible, or any one-time file transfer mechanism. The operator-dis
 
 ## Step 3 — Register an agent and mint a token
 
-On the **app-server host**, in a psql session (or via your preferred SQL client):
+On the **app-server host**, run the bundled `phaze agents add` management CLI (it
+ships with the application image; run it inside the API container or any
+environment that has the `phaze` package installed and `DATABASE_URL` configured):
+
+```bash
+phaze agents add \
+    --id fileserver-east \
+    --name "File Server East" \
+    --scan-roots /data/music,/data/concerts
+```
+
+The CLI mints a strong bearer token, stores only its sha256 hash in the `agents`
+table, and prints two things you need:
+
+- **The cleartext token** — printed **exactly once**. **Save it now — it is NOT
+  recoverable from the database** (only the hash is stored). This is the value
+  you put in `PHAZE_AGENT_TOKEN` on the file-server side (Step 4).
+- **The derived queue name** `phaze-agent-fileserver-east` — put this in
+  `PHAZE_AGENT_QUEUE` on the file-server side (Step 4). The queue name is always
+  `phaze-agent-<agent_id>`; the agent worker asserts this at startup and exits if
+  it disagrees, so copy the value the CLI printed.
+
+The `--id` must match `^[a-z0-9]+(-[a-z0-9]+)*$` (the `agents.id` charset
+constraint); the CLI rejects an invalid id (or a non-absolute scan root) with a
+non-zero exit **before** touching the database, and reports a friendly error if
+the id already exists. `--name` defaults to the titleized id when omitted.
+
+A sentinel `LIVE` ScanBatch row is auto-created the first time the agent posts a file.
+
+<details>
+<summary>Under the hood / SQL fallback (no CLI access)</summary>
+
+`phaze agents add` is equivalent to inserting the row by hand. If you only have a
+psql session, generate a token and insert its sha256 hash (the **full** wire
+string, prefix included) yourself:
+
+```bash
+python -c "import secrets; print('phaze_agent_' + secrets.token_urlsafe(32))"
+```
 
 ```sql
 INSERT INTO agents (id, name, token_hash, scan_roots, created_at)
 VALUES (
     'fileserver-east',
     'File Server East',
-    -- token_hash is sha256() of the chosen plaintext token
+    -- token_hash is sha256() of the chosen plaintext token (prefix included)
     encode(sha256('phaze_agent_REPLACE_WITH_RANDOM_32_URLSAFE'::bytea), 'hex'),
     '["/data/music", "/data/concerts"]'::jsonb,
     now()
 );
 ```
 
-The plaintext token (the part you sha256) is what you put in `.env` on the file-server side. **Save it now — it is not recoverable from the database** (only the hash is stored).
+Same rules apply: save the plaintext token (only the hash is stored), and the
+agent's queue name is `phaze-agent-fileserver-east`.
 
-Generate a strong token before running the INSERT:
-
-```bash
-python -c "import secrets; print('phaze_agent_' + secrets.token_urlsafe(32))"
-```
-
-A sentinel `LIVE` ScanBatch row is auto-created the first time the agent posts a file.
+</details>
 
 ## Step 4 — Populate the file-server `.env`
 
@@ -168,7 +201,7 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
 - `PHAZE_REDIS_URL=redis://default:<REDIS_PASSWORD>@<app-server-lan-ip>:6379/0`
 - `PHAZE_AGENT_ID=fileserver-east`
 - `PHAZE_AGENT_TOKEN=<the plaintext token from Step 3>`
-- `PHAZE_AGENT_QUEUE=phaze-agent-fileserver-east`
+- `PHAZE_AGENT_QUEUE=phaze-agent-fileserver-east` — by convention this MUST equal `phaze-agent-<agent_id>` (the value `phaze agents add` printed in Step 3). There is no queue column on the `agents` table; the worker derives the expected name from the token's agent_id and exits non-zero on mismatch.
 - `PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`
 - `PHAZE_AGENT_ENV=production`
 - `SCAN_PATH=/path/to/your/music/library`
