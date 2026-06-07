@@ -5,11 +5,13 @@
 #   docker compose -f docker-compose.agent.yml up -d
 # on a file server (no other compose file needed).
 #
-# Service split — only file-server-local services live here:
+# Service split — only file-server-local services live here. All four agent
+# images are pulled from GHCR (published by docker-publish.yml); each sidecar
+# keeps a commented-out `build:` block as a local-dev-only fallback:
 #   worker     — agent-side SAQ worker (PHAZE_ROLE=agent). Pulls from GHCR.
 #   watcher    — directory watcher (PHAZE_ROLE=agent). Pulls from GHCR.
-#   audfprint  — fingerprint sidecar (build context, not on GHCR per D-15).
-#   panako     — fingerprint sidecar (build context, not on GHCR per D-15).
+#   audfprint  — fingerprint sidecar (PHAZE_ROLE n/a). Pulls from GHCR (audfprint image).
+#   panako     — fingerprint sidecar (PHAZE_ROLE n/a). Pulls from GHCR (panako image).
 #
 # Invariants (asserted by tests/test_deployment/test_agent_compose.py):
 #   - No DATABASE_URL on any service (DIST-04: agents reach Postgres only via
@@ -52,18 +54,22 @@ services:
     restart: unless-stopped
 
   audfprint:
-    build:
-      context: .
-      dockerfile: services/audfprint/Dockerfile.audfprint
+    image: ghcr.io/simplicityguy/phaze/audfprint:${PHAZE_IMAGE_TAG:-latest}
+    # Local-dev override — build from source instead of pulling GHCR:
+    # build:
+    #   context: .
+    #   dockerfile: services/audfprint/Dockerfile.audfprint
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - audfprint_data:/data/fprint
     restart: unless-stopped
 
   panako:
-    build:
-      context: .
-      dockerfile: services/panako/Dockerfile.panako
+    image: ghcr.io/simplicityguy/phaze/panako:${PHAZE_IMAGE_TAG:-latest}
+    # Local-dev override — build from source instead of pulling GHCR:
+    # build:
+    #   context: .
+    #   dockerfile: services/panako/Dockerfile.panako
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - panako_data:/data/fprint

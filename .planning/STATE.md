@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: v4.0 complete (Phases 24–29 all shipped)
 Plan: -
 Status: Milestone complete; awaiting next-milestone scoping
-Last activity: 2026-06-06 - Completed quick task 260606-n0y: reconcile GHCR image paths
+Last activity: 2026-06-06 - Completed quick task 260606-n7g: sidecars pull from GHCR
 
 Progress: [██████████] 100%
 
@@ -89,6 +89,7 @@ None.
 | 260606-mpm | Fix release tags not publishing version-tagged Docker images to GHCR (push:tags trigger, tag-ref change detection, strengthened guard test, doc pin fixes) | 2026-06-06 | b811a9e | [260606-mpm-fix-release-tags-not-publishing-version-](./quick/260606-mpm-fix-release-tags-not-publishing-version-/) |
 | 260606-pjd | Make ci.yml detect-changes robust to force-push: fall back to origin/main diff when github.event.before is unreachable (+ guard test) | 2026-06-06 | d89a00b | [260606-pjd-make-ci-yml-detect-changes-robust-to-for](./quick/260606-pjd-make-ci-yml-detect-changes-robust-to-for/) |
 | 260606-n0y | Reconcile GHCR image paths: cleanup targets canonical bare `phaze`, orphan `phaze/api` documented as deprecated, publish/cleanup parity guard test | 2026-06-06 | a993aea | [260606-n0y-reconcile-ghcr-image-paths-stop-orphanin](./quick/260606-n0y-reconcile-ghcr-image-paths-stop-orphanin/) |
+| 260606-n7g | Switch audfprint/panako sidecars in docker-compose.agent.yml to pull published GHCR images (commented build fallback); update deployment docs + tests | 2026-06-06 | 95cd630 | [260606-n7g-switch-audfprint-panako-sidecars-in-dock](./quick/260606-n7g-switch-audfprint-panako-sidecars-in-dock/) |
 
 ## Session Continuity
 

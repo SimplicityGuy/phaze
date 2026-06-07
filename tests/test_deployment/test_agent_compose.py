@@ -2,7 +2,7 @@
 
 Pure YAML-parse tests for the file-server-host compose file (no docker daemon).
 
-Covers four invariants for ``docker-compose.agent.yml``:
+Covers five invariants for ``docker-compose.agent.yml``:
 
 1. Top-level ``services`` is exactly ``{worker, watcher, audfprint, panako}``.
 2. No agent service declares ``DATABASE_URL`` or a ``depends_on`` reference to
@@ -12,8 +12,13 @@ Covers four invariants for ``docker-compose.agent.yml``:
    fail-fast ``${VAR:?MESSAGE}`` operator (catches a future YAML drift to
    ``${SCAN_PATH:-/data/music}`` loose-default form which would silently let
    ``docker compose up`` succeed on a misconfigured host).
+5. All four agent services pull a ``ghcr.io/simplicityguy/phaze`` image pinned
+   via ``${PHAZE_IMAGE_TAG...}`` — ``worker``/``watcher`` from the bare repo and
+   ``audfprint``/``panako`` from the ``/audfprint`` + ``/panako`` sub-paths. This
+   guards against a regression back to a local ``build:`` block on the sidecars
+   (a service with only ``build:`` and no ``image:`` fails the guard).
 
-A fifth test (WARNING-4) parses ``.github/workflows/docker-publish.yml`` and
+A sixth test (WARNING-4) parses ``.github/workflows/docker-publish.yml`` and
 asserts the ``docker/metadata-action`` step emits BOTH a ``:latest`` tag and a
 ``:v<version>`` tag pattern.
 
@@ -103,6 +108,33 @@ def test_all_scan_path_mounts_use_failfast_syntax() -> None:
             if "SCAN_PATH" in vol and not failfast_re.search(vol):
                 offenders.append(f"{svc_name}: {vol}")
     assert not offenders, "Some SCAN_PATH mounts are not fail-fast (must use ${SCAN_PATH:?MESSAGE} form):\n" + "\n".join(offenders)
+
+
+def test_all_agent_services_pull_from_ghcr() -> None:
+    """All four agent services pull a GHCR image pinned via PHAZE_IMAGE_TAG.
+
+    Guards against a regression where a sidecar reverts to a local ``build:``
+    block (and drops ``image:``), which would force every file-server host to
+    carry the full phaze source context just to build the fingerprint sidecars.
+
+    ``worker``/``watcher`` pull the bare repo (``ghcr.io/simplicityguy/phaze``);
+    ``audfprint``/``panako`` pull the ``/audfprint`` + ``/panako`` sub-paths
+    (matching the docker-publish.yml matrix ``image_suffix`` values). ``yaml.safe_load``
+    does not interpolate, so the raw ``${PHAZE_IMAGE_TAG...}`` token is visible.
+    """
+    data = _load_agent_compose()
+    expected_image_paths = {
+        "worker": "ghcr.io/simplicityguy/phaze",
+        "watcher": "ghcr.io/simplicityguy/phaze",
+        "audfprint": "ghcr.io/simplicityguy/phaze/audfprint",
+        "panako": "ghcr.io/simplicityguy/phaze/panako",
+    }
+    for svc_name, expected_path in expected_image_paths.items():
+        svc = data["services"][svc_name]
+        image = svc.get("image")
+        assert image, f"agent service {svc_name} must declare an image: pulling from GHCR (no bare build:); got {svc!r}"
+        assert image.startswith(f"{expected_path}:"), f"agent service {svc_name} image must be {expected_path}:<tag>; got {image!r}"
+        assert "PHAZE_IMAGE_TAG" in image, f"agent service {svc_name} image must pin the tag via ${{PHAZE_IMAGE_TAG...}}; got {image!r}"
 
 
 def _extract_api_metadata_action_step(workflow_data: dict[str, Any]) -> dict[str, Any] | None:
