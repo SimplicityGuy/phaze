@@ -12,7 +12,7 @@ dependencies = [
     "alembic>=1.18.4",
     "saq[redis]>=0.26.4",
     "asyncpg>=0.31.0",
-    "beautifulsoup4>=4.14.3",
+    "beautifulsoup4>=4.15.0",
     "cryptography>=48.0.0",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
     "fastapi>=0.136.3",
@@ -28,7 +28,7 @@ dependencies = [
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
     # secret resolution. Already installed transitively via pydantic-settings' env_file
     # support; declared explicitly so the direct import is not a transitive accident.
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.2.2",
     "python-multipart>=0.0.32",
     "rapidfuzz>=3.14.5",
     "sqlalchemy>=2.0.50",
