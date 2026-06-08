@@ -23,6 +23,7 @@ can resolve `Annotated[AsyncSession, Depends(get_session)]` at app-build time
 (matches the agent_execution.py / agent_proposals.py convention).
 """
 
+from datetime import UTC, datetime
 from typing import Annotated
 import uuid
 
@@ -113,6 +114,15 @@ async def patch_scan_batch(
     # 6. Apply explicit-set mutations only (default-None values do NOT clobber).
     for field, value in set_fields.items():
         setattr(batch, field, value)
+
+    # 7. Stamp completed_at on the FIRST terminal transition so the admin UI's
+    # elapsed timer freezes (incident 260608). The idempotent same-state no-op
+    # returned at step 3 (so a same-state PATCH never stamps it); LIVE is
+    # rejected at step 4; RUNNING is non-terminal. Guarding on `completed_at is
+    # None` keeps it idempotent across repeated terminal PATCHes (first wins).
+    if body.status is not None and ScanStatus(body.status) in {ScanStatus.COMPLETED, ScanStatus.FAILED} and batch.completed_at is None:
+        batch.completed_at = datetime.now(UTC)
+
     await session.commit()
     await session.refresh(batch)
     return _row_to_response(batch)

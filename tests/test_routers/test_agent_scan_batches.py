@@ -279,6 +279,74 @@ async def test_unknown_token_returns_403(session: AsyncSession, seed_test_agent:
     assert r.status_code == 403
 
 
+# ---------------------------------------------------------------------------
+# Incident 260608: completed_at terminal-timestamp stamping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_terminal_completed_stamps_completed_at(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """RUNNING -> COMPLETED stamps completed_at in the same commit."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "completed", "total_files": 3, "processed_files": 3},
+        )
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_terminal_failed_stamps_completed_at(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """RUNNING -> FAILED stamps completed_at."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "failed", "error_message": "Permission denied"},
+        )
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_processed_files_only_leaves_completed_at_null(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """A non-terminal PATCH (processed_files only, still RUNNING) leaves completed_at NULL."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"processed_files": 2})
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.status == ScanStatus.RUNNING.value
+    assert b.completed_at is None
+
+
+@pytest.mark.asyncio
+async def test_same_state_patch_does_not_stamp_completed_at(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Idempotent same-state PATCH (status='running' on a RUNNING batch) never stamps completed_at."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"status": "running"})
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.completed_at is None
+
+
 def test_router_registered_in_main_app() -> None:
     """Task 3: phaze.main.create_app() must include the agent_scan_batches router.
 
