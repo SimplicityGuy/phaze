@@ -158,10 +158,23 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         )
         return {"status": "failed", "files_posted": 0, "reason": "scan_path_not_a_directory"}
 
+    # os.walk silently swallows a PermissionError raised while reading a
+    # directory unless an onerror callback is supplied. Without it, a fully
+    # unreadable tree (e.g. media owned by uid 1000, mode 700, scanned by a
+    # container running as a different uid) returns status=completed/0-files --
+    # indistinguishable from a genuinely empty directory. This was the exact
+    # failure mode that hid the 260608 incident. Collect every walk error so we
+    # can fail loudly on a zero-access scan and warn once on partial access.
+    walk_errors: list[OSError] = []
+
+    def _on_walk_error(exc: OSError) -> None:
+        walk_errors.append(exc)
+        logger.warning("scan_directory: cannot read directory during walk: %s", exc)
+
     batch: list[FileUpsertRecord] = []
     total = 0
     try:
-        for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False):
+        for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=_on_walk_error):
             for filename in filenames:
                 category = _classify(filename)
                 if category not in _EXTRACTABLE:
@@ -201,6 +214,33 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         if batch:
             await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
             await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=total))
+
+        # Zero-access scan: the walk produced no files AND hit at least one
+        # directory read error. Surface this as a terminal failure that names
+        # the scan_path, the error count, and the first error, and points at
+        # the likely container-UID/ownership cause. This makes the incident's
+        # silent failure mode impossible to hide again.
+        if total == 0 and walk_errors:
+            error_message = (
+                f"Scanned 0 files but hit {len(walk_errors)} directory read error(s) "
+                f"(first: {walk_errors[0]}). The agent container user likely cannot read "
+                f"{payload.scan_path} -- check file ownership/permissions vs the container UID."
+            )
+            await api.patch_scan_batch(
+                payload.batch_id,
+                ScanBatchPatch(status="failed", error_message=error_message),
+            )
+            return {"status": "failed", "files_posted": 0, "reason": "walk_permission_errors"}
+
+        # Partial access: some directories were unreadable but >=1 file was
+        # found. Complete normally, logging a SINGLE summarizing warning rather
+        # than flooding the log with one line per skipped directory.
+        if walk_errors:
+            logger.warning(
+                "scan_directory: completed with partial access -- %d director(ies) skipped (first: %s)",
+                len(walk_errors),
+                walk_errors[0],
+            )
 
         # Terminal success PATCH.
         await api.patch_scan_batch(

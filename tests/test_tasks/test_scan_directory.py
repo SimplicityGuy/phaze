@@ -484,6 +484,84 @@ async def test_scan_directory_terminal_failed_patch_also_fails(tmp_path: Path, c
     assert "terminal failed-PATCH also failed" in text, f"missing inner-except log: {text!r}"
 
 
+# ---------------------------------------------------------------------------
+# Incident 260608: zero-access / partial-access walks (scan.py onerror handler)
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_directory_root_unreadable_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Walk root raises PermissionError (onerror) AND total==0 -> terminal failed PATCH.
+
+    This is the exact incident failure mode: the agent container user could not
+    read the media tree, os.walk swallowed the PermissionError, and the scan
+    reported completed/0-files -- indistinguishable from a genuinely empty dir.
+    The onerror handler must surface this as status='failed' with a
+    permission-pointing message and reason='walk_permission_errors'.
+    """
+    from phaze.tasks import scan as scan_module
+    from phaze.tasks.scan import scan_directory
+
+    scan_path = str(tmp_path)
+
+    def fake_walk(path: object, followlinks: bool = False, onerror: object = None) -> object:
+        exc = PermissionError(f"[Errno 13] Permission denied: '{scan_path}'")
+        exc.filename = scan_path
+        if onerror is not None:
+            onerror(exc)  # type: ignore[operator]
+        return
+        yield  # pragma: no cover -- makes fake_walk a generator that yields nothing
+
+    monkeypatch.setattr(scan_module.os, "walk", fake_walk)
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(scan_path))
+
+    assert result == {"status": "failed", "files_posted": 0, "reason": "walk_permission_errors"}
+    # No files were ever posted.
+    assert ctx["api_client"].upsert_files.await_count == 0
+    # The terminal PATCH carried status='failed' with a permission-pointing message.
+    body = ctx["api_client"].patch_scan_batch.await_args.args[1]
+    assert body.status == "failed"
+    assert body.error_message is not None
+    assert scan_path in body.error_message
+    assert "ownership" in body.error_message.lower() or "permission" in body.error_message.lower()
+
+
+async def test_scan_directory_partial_access_still_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Some subdirs error via onerror but >=1 file found -> completed + single warning.
+
+    A partial-access scan (one unreadable subdir, but readable files elsewhere)
+    must still complete successfully and log exactly one summarizing warning so
+    the operator knows directories were skipped without flooding the log.
+    """
+    import logging as _logging
+
+    from phaze.tasks import scan as scan_module
+    from phaze.tasks.scan import scan_directory
+
+    _touch(tmp_path / "good.mp3")
+
+    def fake_walk(path: object, followlinks: bool = False, onerror: object = None) -> object:
+        exc = PermissionError("[Errno 13] Permission denied: '/blocked/subdir'")
+        exc.filename = "/blocked/subdir"
+        if onerror is not None:
+            onerror(exc)  # type: ignore[operator]
+        yield (str(tmp_path), [], ["good.mp3"])
+
+    monkeypatch.setattr(scan_module.os, "walk", fake_walk)
+
+    ctx = _make_ctx()
+    with caplog.at_level(_logging.WARNING, logger="phaze.tasks.scan"):
+        result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result["status"] == "completed"
+    assert result["files_posted"] == 1
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "partial access" in text, f"missing partial-access warning: {text!r}"
+
+
 def test_scan_directory_registered_in_agent_worker_settings() -> None:
     """Task 2: scan_directory must be reachable via SAQ task-name resolution on agent_worker.
 
