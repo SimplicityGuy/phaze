@@ -55,7 +55,11 @@ def ensure_models_present(models_dir: Path) -> None:
 
     Failures during the download are wrapped in :class:`RuntimeError` so the
     agent_worker container exits non-zero and the ``restart: unless-stopped``
-    policy retries (T-29-05-02).
+    policy retries (T-29-05-02). The wrapped cause is the per-file
+    ``RuntimeError`` raised by ``_download_one`` after exhausting its in-process
+    retries (260608-i21), so the surfaced message names the specific file and the
+    attempt count -- a transient TLS/handshake/read drop or a 5xx is retried in
+    place and no longer reaches this wrap.
     """
     pb_files = list(models_dir.glob("*.pb"))
     if len(pb_files) >= _EXPECTED_MODEL_COUNT:
