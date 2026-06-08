@@ -1,8 +1,10 @@
-"""Tests for ``phaze.tasks._shared.model_bootstrap.ensure_models_present`` (Phase 29 D-21).
+"""Tests for ``phaze.tasks._shared.model_bootstrap.ensure_models_present`` (260608-jbg).
 
-Three LOCKED cases per PATTERNS lines 1077-1090:
-- empty-dir -> ``download_to`` is invoked, INFO log surfaces the download notice
-- populated -> ``download_to`` is NOT invoked, INFO log surfaces the "Models present" line
+Always-validate contract (the count gate was removed in 260608-jbg):
+- any dir (empty/partial/full) -> ``download_to`` is invoked exactly once; the
+  per-file HEAD size validation lives in ``download_to`` (proven in
+  tests/test_scripts/test_download_models.py case d), not here
+- the startup INFO log reflects the ~3.1 GB / 34-file reality, NOT "150MB"/"2-5min"
 - network-fail -> ``RuntimeError("Model download failed")`` wrapping the underlying exception
 """
 
@@ -20,12 +22,19 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def _assert_estimate_log(text: str) -> None:
+    """The startup log must reflect the ~3.1 GB / 34-file reality, not the stale estimate."""
+    assert "3.1 GB" in text, f"expected the corrected ~3.1 GB estimate, got: {text!r}"
+    assert "150MB" not in text, f"stale 150MB estimate must be gone, got: {text!r}"
+    assert "2-5min" not in text, f"stale 2-5min estimate must be gone, got: {text!r}"
+
+
 def test_ensure_models_present_empty_dir_downloads(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An empty models directory triggers ``download_to`` and logs the start banner."""
+    """An empty models directory triggers ``download_to`` and logs the corrected estimate."""
     import phaze.tasks._shared.model_bootstrap as mb
 
     def fake_download(target: Path) -> None:
@@ -39,25 +48,23 @@ def test_ensure_models_present_empty_dir_downloads(
         mb.ensure_models_present(tmp_path)
 
     mock.assert_called_once_with(tmp_path)
-    text = "\n".join(rec.getMessage() for rec in caplog.records)
-    assert "downloading essentia weights" in text, f"expected start banner in logs, got: {text!r}"
+    _assert_estimate_log("\n".join(rec.getMessage() for rec in caplog.records))
 
 
-def test_ensure_models_present_populated_no_op(
+def test_ensure_models_present_populated_still_calls_download_to(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fully-populated models directory short-circuits before invoking ``download_to``.
+    """A fully-populated dir still calls ``download_to`` once (no count short-circuit).
 
-    Phase 29 CR-03: "populated" now means count-equals-expected (34 .pb files),
-    not "any .pb file present". Write all expected files so the short-circuit
-    branch is exercised.
+    260608-jbg: the count gate is gone. ``download_to`` owns the per-file HEAD size
+    validation and issues no GET when sizes match (proven in download_models case d),
+    so a valid set returns without error after a single ``download_to`` call here.
     """
     import phaze.tasks._shared.model_bootstrap as mb
 
-    expected = mb._EXPECTED_MODEL_COUNT
-    for idx in range(expected):
+    for idx in range(mb._EXPECTED_MODEL_COUNT):
         (tmp_path / f"model_{idx:03d}.pb").touch()
 
     mock = MagicMock()
@@ -66,23 +73,19 @@ def test_ensure_models_present_populated_no_op(
     with caplog.at_level(logging.INFO, logger="phaze.tasks._shared.model_bootstrap"):
         mb.ensure_models_present(tmp_path)
 
-    mock.assert_not_called()
-    text = "\n".join(rec.getMessage() for rec in caplog.records)
-    assert f"Models present ({expected} weight files" in text, f"expected 'Models present' log, got: {text!r}"
+    mock.assert_called_once_with(tmp_path)
+    _assert_estimate_log("\n".join(rec.getMessage() for rec in caplog.records))
 
 
-def test_ensure_models_present_partial_triggers_redownload(
+def test_ensure_models_present_partial_still_calls_download_to(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Phase 29 CR-03: a partial models directory (some .pb files but not all) re-runs download.
+    """260608-jbg: a partial dir calls ``download_to`` once -- no special partial branch.
 
-    Previously, the bootstrap short-circuited on *any* .pb file present, so an
-    interrupted first download (e.g., 1/34 files written) left every subsequent
-    start skipping the re-download and the agent silently broken at analysis
-    time. This test pins the new behavior: partial state triggers download_to
-    and logs a WARNING with the observed/expected counts.
+    A truncated file can satisfy a glob count, so the old count gate was removed.
+    Completeness is decided entirely by ``download_to``'s per-file size validation,
+    so a partial dir is handled identically to an empty or full one here.
     """
     import phaze.tasks._shared.model_bootstrap as mb
 
@@ -90,20 +93,12 @@ def test_ensure_models_present_partial_triggers_redownload(
     (tmp_path / "first_model.pb").touch()
     assert len(list(tmp_path.glob("*.pb"))) < mb._EXPECTED_MODEL_COUNT
 
-    completed = MagicMock()
+    mock = MagicMock()
+    monkeypatch.setattr(mb, "download_to", mock)
 
-    def fake_download(target: Path) -> None:
-        completed(target)
+    mb.ensure_models_present(tmp_path)
 
-    monkeypatch.setattr(mb, "download_to", fake_download)
-
-    with caplog.at_level(logging.WARNING, logger="phaze.tasks._shared.model_bootstrap"):
-        mb.ensure_models_present(tmp_path)
-
-    completed.assert_called_once_with(tmp_path)
-    text = "\n".join(rec.getMessage() for rec in caplog.records)
-    assert "Partial model state" in text, f"expected partial-state WARNING, got: {text!r}"
-    assert f"1/{mb._EXPECTED_MODEL_COUNT}" in text, f"expected observed/expected counts in WARNING, got: {text!r}"
+    mock.assert_called_once_with(tmp_path)
 
 
 def test_ensure_models_present_download_failure(
@@ -134,43 +129,26 @@ def test_download_models_classifier_count_matches_bash() -> None:
     assert GENRE_MODELS == ("discogs-effnet-bs64-1",)
 
 
-def test_download_one_is_idempotent_when_dest_exists(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``_download_one`` short-circuits when ``dest`` already exists -- no network call."""
-    from phaze.scripts import download_models
-
-    dest = tmp_path / "already_here.pb"
-    dest.write_bytes(b"existing-bytes")
-
-    # If httpx.stream is invoked, the test fails -- it must not be touched.
-    def boom(*_args: object, **_kwargs: object) -> object:
-        msg = "httpx.stream must not be called when dest exists"
-        raise AssertionError(msg)
-
-    monkeypatch.setattr(download_models.httpx, "stream", boom)
-
-    download_models._download_one("https://example.invalid/never-fetched.pb", dest)
-
-    assert dest.read_bytes() == b"existing-bytes"
-
-
 def test_download_to_creates_pb_and_json_pairs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``download_to`` produces a .pb + .json file pair for every classifier and genre model."""
+    """``download_to`` routes a .pb + .json pair through ``_ensure_present`` for every model.
+
+    260608-jbg: ``download_to`` no longer calls ``_download_one`` directly -- the
+    validate-or-download decision lives in ``_ensure_present`` -- so this patches
+    that boundary instead.
+    """
     from phaze.scripts import download_models
 
     fetched: list[tuple[str, Path]] = []
 
-    def fake_download_one(url: str, dest: Path) -> None:
+    def fake_ensure_present(url: str, dest: Path) -> None:
         fetched.append((url, dest))
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"\x00")
 
-    monkeypatch.setattr(download_models, "_download_one", fake_download_one)
+    monkeypatch.setattr(download_models, "_ensure_present", fake_ensure_present)
 
     download_models.download_to(tmp_path)
 

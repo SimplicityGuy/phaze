@@ -15,7 +15,8 @@ Race avoidance (Phase 29 WARNING-7):
     fresh /models volumes.
 
 Public exports:
-    - ensure_models_present(models_dir): idempotent .pb-file check + download-on-empty
+    - ensure_models_present(models_dir): always-validate (per-file HEAD size check
+      via download_to) + (re-)download missing/truncated files
 """
 
 from __future__ import annotations
@@ -34,24 +35,26 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_MODEL_COUNT = len(CLASSIFIER_MODELS) + len(GENRE_MODELS)
-"""Total `.pb` weight files the production agent must have on disk.
+"""Total weight files the production agent must have on disk.
 
-Compared against the count of `*.pb` files in `models_dir` to detect partial
-downloads. The previous implementation skipped re-download whenever *any*
-`.pb` file existed, so an interrupted first run (e.g., 1/34 files written)
-permanently left the agent broken because every subsequent start short-
-circuited. See Phase 29 CR-03.
+Used only for the operator-facing startup estimate. It is NOT a completeness
+gate: a glob count cannot tell a truncated `.pb` from a full one, so a count
+short-circuit blessed corrupt files as "present" (260608-jbg). Completeness is
+now "all canonical files present AND size-valid", enforced per file by
+``download_to``'s HEAD ``Content-Length`` validation (`_ensure_present`).
 """
 
 
 def ensure_models_present(models_dir: Path) -> None:
-    """Skip if all expected .pb files exist; else download. Raises RuntimeError on failure.
+    """Validate every weight file's size and (re-)download as needed.
 
-    Completeness contract (Phase 29 CR-03): the directory is treated as
-    "populated" only when the count of `*.pb` files meets or exceeds
-    `_EXPECTED_MODEL_COUNT`. A non-empty-but-incomplete directory logs a
-    WARNING and re-invokes ``download_to``, which is idempotent at the
-    per-file level (existing files are skipped by `_download_one`).
+    Always-validate contract (260608-jbg): there is no glob-count short-circuit.
+    ``download_to`` is invoked unconditionally and performs the per-file integrity
+    check -- it issues a HEAD per expected file, keeps any file whose on-disk byte
+    size matches the server ``Content-Length`` (no GET), and re-downloads a missing
+    or truncated one. A fully valid on-disk set therefore returns without an
+    operator restart, while a correctly-named-but-truncated `.pb` (which the old
+    count gate accepted) is detected and replaced.
 
     Failures during the download are wrapped in :class:`RuntimeError` so the
     agent_worker container exits non-zero and the ``restart: unless-stopped``
@@ -61,25 +64,16 @@ def ensure_models_present(models_dir: Path) -> None:
     attempt count -- a transient TLS/handshake/read drop or a 5xx is retried in
     place and no longer reaches this wrap.
     """
-    pb_files = list(models_dir.glob("*.pb"))
-    if len(pb_files) >= _EXPECTED_MODEL_COUNT:
-        logger.info("Models present (%d weight files at %s)", len(pb_files), models_dir)
-        return
-    if pb_files:
-        logger.warning(
-            "Partial model state at %s: %d/%d .pb files present; re-running download to complete",
-            models_dir,
-            len(pb_files),
-            _EXPECTED_MODEL_COUNT,
-        )
-    else:
-        logger.info(
-            "%s is empty; downloading essentia weights (~150MB, takes 2-5min on first start)...",
-            models_dir,
-        )
+    logger.info(
+        "Validating essentia weights at %s (~3.1 GB across %d files). A fresh download is "
+        "multi-GB and can take many minutes (longer on a slow link) -- a legitimate transfer "
+        "is not a hang.",
+        models_dir,
+        _EXPECTED_MODEL_COUNT,
+    )
     try:
         download_to(models_dir)
     except Exception as exc:
         msg = f"Model download failed: {exc}"
         raise RuntimeError(msg) from exc
-    logger.info("Models downloaded successfully to %s", models_dir)
+    logger.info("Models present and size-validated at %s", models_dir)
