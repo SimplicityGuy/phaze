@@ -115,6 +115,14 @@ async def patch_scan_batch(
     for field, value in set_fields.items():
         setattr(batch, field, value)
 
+    # 6b. PRIMARY heartbeat (PR4): every real (non-no-op) applied PATCH advances
+    # the scan -- the agent's scan_directory task PATCHes processed_files each
+    # chunk. Stamp last_progress_at here, AFTER the same-state no-op early-return
+    # at step 3 (so an idempotent PATCH never bumps the heartbeat) and AFTER the
+    # set_fields apply loop. This drives the UI activity indicator and feeds the
+    # control-side stall reaper's freshness check.
+    batch.last_progress_at = datetime.now(UTC)
+
     # 7. Stamp completed_at on the FIRST terminal transition so the admin UI's
     # elapsed timer freezes (incident 260608). The idempotent same-state no-op
     # returned at step 3 (so a same-state PATCH never stamps it); LIVE is

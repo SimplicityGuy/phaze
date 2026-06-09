@@ -247,6 +247,9 @@ async def trigger_scan(
         status=ScanStatus.RUNNING.value,
         total_files=0,
         processed_files=0,
+        # PR4: a freshly-created RUNNING batch starts with a heartbeat so the
+        # stall reaper does not immediately consider it stalled.
+        last_progress_at=datetime.now(UTC),
     )
     session.add(batch)
     await session.commit()

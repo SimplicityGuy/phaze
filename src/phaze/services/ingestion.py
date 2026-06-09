@@ -153,6 +153,9 @@ async def run_scan(
             status=ScanStatus.RUNNING,
             total_files=0,
             processed_files=0,
+            # PR4: stamp the heartbeat on create so the stall reaper does not
+            # immediately consider a freshly-started legacy scan stalled.
+            last_progress_at=datetime.now(UTC),
         )
         session.add(batch)
         await session.commit()
@@ -187,6 +190,7 @@ async def run_scan(
                     status=ScanStatus.COMPLETED,
                     processed_files=upserted,
                     completed_at=datetime.now(UTC),
+                    last_progress_at=datetime.now(UTC),
                 )
             )
             await session.commit()
@@ -206,6 +210,7 @@ async def run_scan(
                     status=ScanStatus.FAILED,
                     error_message=str(exc),
                     completed_at=datetime.now(UTC),
+                    last_progress_at=datetime.now(UTC),
                 )
             )
             await session.commit()
