@@ -168,11 +168,19 @@ class BaseSettings(PydanticBaseSettings):
     # worker's every-minute reaper cron (reap_stalled_scans). Lives on
     # BaseSettings so both roles parse it, but only the control worker registers
     # and runs the reaper. The UI flips to an amber "stalled?" warning at half
-    # this threshold so the operator sees a warning before the hard reap.
+    # this threshold (12h) so the operator sees a warning before the hard reap.
+    #
+    # Default is 24h (86400s): scan_directory is a long-running BULK job with NO
+    # fixed SAQ wall-clock timeout (it enqueues with timeout=0 -> unbounded), so
+    # the progress-based stall reaper is the SOLE liveness guard. A single slow
+    # chunk -- e.g. SHA-256 hashing a multi-GB concert video on a network mount --
+    # can legitimately take many minutes between progress PATCHes; a generous 24h
+    # window ensures such a healthy, progressing scan is never falsely reaped.
+    # Override via PHAZE_SCAN_STALL_SECONDS / SCAN_STALL_SECONDS.
     scan_stall_seconds: int = Field(
-        default=600,
+        default=86400,
         validation_alias=AliasChoices("PHAZE_SCAN_STALL_SECONDS", "SCAN_STALL_SECONDS", "scan_stall_seconds"),
-        description="Seconds with no progress before a RUNNING scan is reaped as stalled.",
+        description="Seconds with no progress before a RUNNING scan is reaped as stalled (default 24h).",
     )
 
     # Audio analysis models

@@ -43,3 +43,15 @@ def test_models_path_default() -> None:
     """models_path defaults to /models."""
     s = Settings()
     assert s.models_path == "/models"
+
+
+def test_scan_stall_seconds_default() -> None:
+    """scan_stall_seconds defaults to 86400 (24h).
+
+    scan_directory runs with no SAQ wall-clock timeout (timeout=0 -> unbounded),
+    so the progress-based stall reaper is the sole liveness guard. A 24h window
+    ensures a healthy, slow-but-progressing bulk archive walk (e.g. hashing a
+    multi-GB file on a network mount) is never falsely reaped.
+    """
+    s = Settings()
+    assert s.scan_stall_seconds == 86400
