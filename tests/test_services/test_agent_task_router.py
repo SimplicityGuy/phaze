@@ -13,6 +13,9 @@ Assertions:
    same agent_id (cache identity invariant).
 3. close() disconnects every cached Queue and empties the cache.
 4. enqueue_for_file delegates correctly using FileRecord.agent_id.
+5. _queue_for() registers apply_project_job_defaults as a before_enqueue hook
+   on every per-agent Queue (quick-260609-f96 regression guard against the
+   10s scan_directory TimeoutError).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import pytest
 
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
 
 _REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
@@ -72,6 +76,22 @@ async def test_lazy_queue_cache_reuses_instance(router) -> None:  # type: ignore
     q1 = router._queue_for("agent-cache-test")
     q2 = router._queue_for("agent-cache-test")
     assert q1 is q2, "queue cache must return identity on repeated calls"
+
+
+@pytest.mark.integration
+async def test_queue_registers_job_defaults_hook(router) -> None:  # type: ignore[no-untyped-def]
+    """Per-agent queues must register the timeout-bumping before_enqueue hook.
+
+    Regression guard for quick-260609-f96: AgentTaskRouter._queue_for previously
+    built per-agent queues without registering apply_project_job_defaults, so
+    agent-dispatched jobs (notably scan_directory) inherited SAQ 0.26.3's 10s
+    default timeout and were cancelled with asyncio.TimeoutError after 10s. The
+    per-agent dispatch path must register the hook just like controller.py and
+    agent_worker.py do. SAQ stores before_enqueue callbacks in the
+    `_before_enqueues` dict keyed by id(callback) (verified against saq 0.26.3).
+    """
+    queue = router._queue_for("agent-timeout-test")
+    assert apply_project_job_defaults in queue._before_enqueues.values()
 
 
 @pytest.mark.integration

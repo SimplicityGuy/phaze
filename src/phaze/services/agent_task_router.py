@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 from saq import Queue
 import structlog
 
+from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -65,10 +67,22 @@ class AgentTaskRouter:
         Queue name format is ``phaze-agent-<agent_id>`` per Phase 26 D-18.
         """
         if agent_id not in self._queues:
-            self._queues[agent_id] = Queue.from_url(
+            queue = Queue.from_url(
                 self._redis_url,
                 name=f"phaze-agent-{agent_id}",
             )
+            # Phase 27 UAT Gap 1: SAQ 0.26.3's Worker.__init__ does NOT accept `timeout`,
+            # `retries`, or `keep_result` -- those are per-Job settings. Apply the project's
+            # policy defaults via a `before_enqueue` hook on the Queue so every enqueued
+            # Job inherits the longer timeout / retry budget without breaking Worker
+            # construction. See phaze.tasks._shared.queue_defaults for the hook body.
+            # quick-260609-f96: the controller (controller.py) and agent worker (agent_worker.py)
+            # both register this hook, but this per-agent dispatch path did not -- so
+            # agent-dispatched jobs (notably scan_directory) inherited SAQ's 10s default
+            # and were cancelled with asyncio.TimeoutError after exactly 10s. Register once
+            # here, only on first construction per agent_id (never re-registered on cache hits).
+            queue.register_before_enqueue(apply_project_job_defaults)
+            self._queues[agent_id] = queue
         return self._queues[agent_id]
 
     async def enqueue_for_agent(
