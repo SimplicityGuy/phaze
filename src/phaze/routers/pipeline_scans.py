@@ -49,6 +49,11 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 router = APIRouter(prefix="/pipeline/scans", tags=["pipeline"])
 
+# Terminal states freeze the elapsed timer; RUNNING/LIVE keep ticking. ScanStatus
+# is a StrEnum, so `batch.status` (a plain str) compares/hashes by value against
+# these members -- `batch.status in _TERMINAL_STATUSES` works directly.
+_TERMINAL_STATUSES = frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED})
+
 
 def elapsed_seconds(batch: ScanBatch) -> int:
     """Compute integer seconds elapsed since `batch.created_at`.
@@ -65,9 +70,18 @@ def elapsed_seconds(batch: ScanBatch) -> int:
     test fixture that bypassed the DB type coercion), assume UTC so the
     subtraction still produces a meaningful elapsed value.
 
-    Incident 260608: once `completed_at` is set (terminal batch), the elapsed
-    value freezes at `completed_at - created_at` instead of tracking the wall
-    clock forever. The same tz-naive->UTC safety is applied to `completed_at`.
+    Incident 260608/260609: the elapsed value freezes for terminal batches in
+    two cases, in this precedence:
+
+      1. `completed_at` is set -> freeze at `completed_at - created_at`.
+      2. else if the batch is terminal (COMPLETED/FAILED) but `completed_at`
+         is NULL (legacy / pre-backfill rows -- incident 260609) -> freeze at
+         `updated_at - created_at`, the recorded transition time. If
+         `updated_at` is somehow also NULL, fall back to `now` so this never
+         crashes.
+
+    A RUNNING (non-terminal) batch keeps tracking `now - created_at`. The same
+    tz-naive->UTC safety is applied to `completed_at` and `updated_at`.
 
     Phase 27 UAT gap-14: shared helper -- previously a private
     `_elapsed_seconds` here was duplicated inline in
@@ -81,7 +95,13 @@ def elapsed_seconds(batch: ScanBatch) -> int:
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=UTC)
 
-    end = batch.completed_at if batch.completed_at is not None else datetime.now(UTC)
+    if batch.completed_at is not None:
+        end = batch.completed_at
+    elif batch.status in _TERMINAL_STATUSES:
+        # Terminal row whose completed_at was never stamped: freeze at updated_at.
+        end = batch.updated_at if batch.updated_at is not None else datetime.now(UTC)
+    else:
+        end = datetime.now(UTC)
     if end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
     return int((end - created_at).total_seconds())
