@@ -70,6 +70,7 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 | `WORKER_PROCESS_POOL_SIZE`    | No       | `4`     | CPU-bound process pool size.                         |
 | `WORKER_HEALTH_CHECK_INTERVAL`| No       | `60`    | SAQ health-check interval in seconds.                |
 | `WORKER_KEEP_RESULT`          | No       | `3600`  | Seconds SAQ retains a finished job's result.         |
+| `PHAZE_SCAN_STALL_SECONDS` (or `SCAN_STALL_SECONDS`) | No | `600` | Seconds with no progress before a RUNNING scan is reaped as stalled by the control worker's every-minute cron. Lives on `BaseSettings`, so both roles parse it, but only the control worker runs the reaper. The admin UI flips a RUNNING scan to an amber "stalled?" indicator at **half** this threshold, before the hard reap. |
 
 ## Logging / observability (all roles)
 

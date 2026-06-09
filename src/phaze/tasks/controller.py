@@ -34,6 +34,7 @@ from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
+from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
@@ -118,10 +119,14 @@ settings = {
         match_tracklist_to_discogs,
         search_tracklist,
         scrape_and_store_tracklist,
+        reap_stalled_scans,
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
         CronJob(refresh_tracklists, cron="0 3 1 * *"),  # type: ignore[type-var]
+        # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
+        # 5-field standard cron form, matching refresh_tracklists above.
+        CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]
     ],
     "startup": startup,
     "shutdown": shutdown,

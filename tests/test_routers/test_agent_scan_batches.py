@@ -347,6 +347,66 @@ async def test_same_state_patch_does_not_stamp_completed_at(session: AsyncSessio
     assert b.completed_at is None
 
 
+# ---------------------------------------------------------------------------
+# PR4: last_progress_at heartbeat stamping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_progress_patch_stamps_last_progress_at(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """A real PATCH advancing processed_files stamps last_progress_at."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"processed_files": 7})
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.status == ScanStatus.RUNNING.value
+    assert b.last_progress_at is not None, "a real applied PATCH must stamp the heartbeat"
+
+
+@pytest.mark.asyncio
+async def test_terminal_patch_stamps_last_progress_at(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """A terminal RUNNING -> COMPLETED PATCH stamps last_progress_at too."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "completed", "total_files": 4, "processed_files": 4},
+        )
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.last_progress_at is not None
+
+
+@pytest.mark.asyncio
+async def test_same_state_no_op_does_not_stamp_last_progress_at(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """An idempotent same-state PATCH (status='running' on a RUNNING batch) does NOT stamp last_progress_at.
+
+    The no-op echo returns BEFORE any write, so the heartbeat (NULL on seed)
+    stays NULL -- a repeated same-state PATCH must not bump the heartbeat.
+    """
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    # Confirm the seed left last_progress_at NULL.
+    await session.commit()
+    session.expire_all()
+    seeded = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert seeded.last_progress_at is None
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"status": "running"})
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.last_progress_at is None, "same-state no-op PATCH must NOT stamp the heartbeat"
+
+
 def test_router_registered_in_main_app() -> None:
     """Task 3: phaze.main.create_app() must include the agent_scan_batches router.
 

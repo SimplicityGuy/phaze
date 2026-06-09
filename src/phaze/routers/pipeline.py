@@ -20,7 +20,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
-from phaze.routers.pipeline_scans import elapsed_seconds
+from phaze.routers.pipeline_scans import elapsed_seconds, is_scan_stalled, seconds_since_progress
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
@@ -155,6 +155,11 @@ async def dashboard(
         # Attach as transient attrs for template consumption.
         batch._agent_name = agent_name_by_id.get(batch.agent_id, batch.agent_id)  # type: ignore[attr-defined]
         batch._elapsed_seconds = elapsed_seconds(batch) if batch.created_at else None  # type: ignore[attr-defined]
+        # PR4: activity indicator attrs for the Recent Scans table (green pulse +
+        # "·Ns ago" while progressing; amber "stalled?" once quiet past the warn
+        # threshold). Only RUNNING rows render the affordance in the template.
+        batch._seconds_since_progress = seconds_since_progress(batch) if batch.created_at else None  # type: ignore[attr-defined]
+        batch._is_stalled = is_scan_stalled(batch)  # type: ignore[attr-defined]
 
     context = {
         "request": request,

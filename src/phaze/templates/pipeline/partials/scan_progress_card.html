@@ -14,7 +14,19 @@
      hx-swap="outerHTML">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan in progress</h3>
-        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
+        <div class="flex items-center gap-2">
+            {# PR4 live affordance: a green dot pulses each 2s poll while the scan
+               progresses; flips amber once the heartbeat is older than the UI warn
+               threshold (half the reaper's scan_stall_seconds). The dot is purely
+               decorative (aria-hidden); the card's aria-live="polite" carries the
+               state to assistive tech. #}
+            {% if is_stalled %}
+            <span class="inline-block h-2 w-2 rounded-full bg-amber-500 dark:bg-amber-400" aria-hidden="true"></span>
+            {% else %}
+            <span class="inline-block h-2 w-2 rounded-full bg-green-500 dark:bg-green-400 animate-pulse" aria-hidden="true"></span>
+            {% endif %}
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
+        </div>
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
         {{ batch.processed_files }} / {{ batch.total_files or '?' }} files
@@ -22,6 +34,11 @@
     <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
         {{ agent_name }} · {{ batch.scan_path }}
     </p>
+    {% if is_stalled %}
+    <p class="text-xs text-amber-600 dark:text-amber-400 mt-1">stalled? no activity for {{ seconds_since_progress }}s</p>
+    {% else %}
+    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">last activity {{ seconds_since_progress }}s ago</p>
+    {% endif %}
 </div>
 {% elif batch.status == 'completed' %}
 <div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"

@@ -303,3 +303,69 @@ def test_progress_empty_state_when_no_agents() -> None:
     """skipped_revoked=0 and no agents -> 'No approved proposals to execute.' per UI-SPEC empty-state row."""
     html = _render_progress(skipped_revoked=0, agents=[])
     assert "No approved proposals to execute." in html
+
+
+# ---------------------------------------------------------------------------
+# PR4: scan_progress_card.html RUNNING-branch live activity affordance
+# ---------------------------------------------------------------------------
+
+
+def _render_scan_progress_card(
+    *,
+    status: str = "running",
+    is_stalled: bool = False,
+    seconds_since_progress: int = 5,
+    elapsed_seconds: int | None = 0,
+) -> str:
+    """Render the pipeline scan_progress_card.html partial with the given context."""
+    from types import SimpleNamespace
+
+    batch = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000000",
+        status=status,
+        processed_files=3,
+        total_files=10,
+        scan_path="/data/music",
+        error_message=None,
+    )
+    response = _templates.TemplateResponse(
+        request=_fake_request(),
+        name="pipeline/partials/scan_progress_card.html",
+        context={
+            "batch": batch,
+            "agent_name": "Test Agent",
+            "elapsed_seconds": elapsed_seconds,
+            "is_stalled": is_stalled,
+            "seconds_since_progress": seconds_since_progress,
+        },
+    )
+    return response.body.decode()
+
+
+def test_scan_card_running_renders_green_pulse_and_last_activity() -> None:
+    """A progressing RUNNING card shows the green pulsing dot + 'last activity Ns ago'."""
+    html = _render_scan_progress_card(status="running", is_stalled=False, seconds_since_progress=8)
+    assert "animate-pulse" in html
+    assert "bg-green-500" in html
+    assert "last activity 8s ago" in html
+    assert "stalled?" not in html
+    # Pitfall 6: the RUNNING branch still carries the polling trigger.
+    assert 'hx-trigger="every 2s"' in html
+
+
+def test_scan_card_running_stalled_renders_amber_warning() -> None:
+    """A stalled RUNNING card swaps to the amber dot + 'stalled?' treatment."""
+    html = _render_scan_progress_card(status="running", is_stalled=True, seconds_since_progress=350)
+    assert "bg-amber-500" in html
+    assert "stalled?" in html
+    assert "no activity for 350s" in html
+    # The green pulse is replaced, not added alongside.
+    assert "animate-pulse" not in html
+
+
+def test_scan_card_terminal_branches_have_no_polling_trigger() -> None:
+    """COMPLETED/FAILED branches OMIT hx-trigger so HTMX polling halts (Pitfall 6)."""
+    for status in ("completed", "failed"):
+        html = _render_scan_progress_card(status=status, elapsed_seconds=12)
+        assert "hx-trigger" not in html, f"{status} branch must not poll"
+        assert "animate-pulse" not in html, f"{status} branch must not show the live pulse"

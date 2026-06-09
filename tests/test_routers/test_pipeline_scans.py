@@ -952,3 +952,85 @@ async def test_router_registered_in_main_app() -> None:
     assert "/pipeline/scans" in paths
     assert "/pipeline/scans/{batch_id}" in paths
     assert "/pipeline/scans/agent-roots" in paths
+
+
+# ---------------------------------------------------------------------------
+# PR4: seconds_since_progress / is_scan_stalled helpers (pure, tz-safe)
+# ---------------------------------------------------------------------------
+
+
+def _running_batch(last_progress_at: object) -> ScanBatch:
+    """Build an unsaved RUNNING ScanBatch with the given last_progress_at."""
+    b = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.RUNNING.value,
+        total_files=0,
+        processed_files=0,
+    )
+    b.last_progress_at = last_progress_at  # type: ignore[assignment]
+    return b
+
+
+def test_seconds_since_progress_uses_last_progress_at() -> None:
+    """seconds_since_progress measures from last_progress_at when present (tz-aware)."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import seconds_since_progress
+
+    b = _running_batch(datetime.now(UTC) - timedelta(seconds=42))
+    assert 40 <= seconds_since_progress(b) <= 60
+
+
+def test_seconds_since_progress_falls_back_to_created_at() -> None:
+    """With last_progress_at NULL, seconds_since_progress falls back to created_at."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import seconds_since_progress
+
+    b = _running_batch(None)
+    b.created_at = datetime.now(UTC) - timedelta(seconds=42)
+    assert 40 <= seconds_since_progress(b) <= 60
+
+
+def test_seconds_since_progress_handles_tz_naive_as_utc() -> None:
+    """A tz-naive last_progress_at (test-schema TIMESTAMP WITHOUT TIME ZONE) is assumed UTC."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import seconds_since_progress
+
+    b = _running_batch((datetime.now(UTC) - timedelta(seconds=42)).replace(tzinfo=None))
+    assert 40 <= seconds_since_progress(b) <= 60
+
+
+def test_is_scan_stalled_true_when_quiet_past_warn_threshold() -> None:
+    """A RUNNING batch quiet past half scan_stall_seconds (default 600 -> 300s) is stalled."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import is_scan_stalled
+
+    b = _running_batch(datetime.now(UTC) - timedelta(seconds=400))
+    assert is_scan_stalled(b) is True
+
+
+def test_is_scan_stalled_false_when_fresh() -> None:
+    """A RUNNING batch with a recent heartbeat is not stalled."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import is_scan_stalled
+
+    b = _running_batch(datetime.now(UTC) - timedelta(seconds=10))
+    assert is_scan_stalled(b) is False
+
+
+def test_is_scan_stalled_false_for_non_running() -> None:
+    """Only RUNNING batches can be 'stalled' in the UI sense; terminal/LIVE return False."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import is_scan_stalled
+
+    for status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.LIVE):
+        b = _running_batch(datetime.now(UTC) - timedelta(days=1))
+        b.status = status.value
+        assert is_scan_stalled(b) is False, f"{status} must never be UI-stalled"
