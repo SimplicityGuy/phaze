@@ -40,6 +40,7 @@ Docker invocation (Phase 29 docker-compose.agent.yml):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -94,11 +95,16 @@ async def startup(ctx: dict[str, Any]) -> None:
     # Step 3: /whoami probe with bounded retry.
     identity = await _whoami_with_retry(client)
 
-    # Step 3a (Phase 29 D-21): ensure essentia weights present; download on empty.
-    # Placed AFTER whoami so auth fails fast (~60s) instead of after a 5min download.
-    # WORKER-ONLY (Phase 29 WARNING-7): the watcher does not call this -- only the
-    # worker owns the download to avoid a .part-file race on fresh /models volumes.
-    ensure_models_present(Path(cfg.models_path))
+    # Step 3a (Phase 29 D-21 / 260608-u8g): ensure essentia weights present.
+    # The healthy path is a pure local os.stat size-manifest check (zero network,
+    # near-instant). Placed AFTER whoami so auth fails fast (~60s). WORKER-ONLY
+    # (Phase 29 WARNING-7): the watcher does not call this -- only the worker owns
+    # the download to avoid a .part-file race on fresh /models volumes.
+    # asyncio.to_thread keeps even the rare repair path (network + time.sleep
+    # backoff) off the event loop, preventing the scan_directory job
+    # starvation/timeout that motivated this change (260608-u8g). to_thread accepts
+    # a sync callable and propagates its return value and exceptions unchanged.
+    await asyncio.to_thread(ensure_models_present, Path(cfg.models_path))
 
     # Step 4: Queue-name mismatch guard (Pitfall 1).
     expected_queue = f"phaze-agent-{identity.agent_id}"

@@ -15,8 +15,16 @@ Race avoidance (Phase 29 WARNING-7):
     fresh /models volumes.
 
 Public exports:
-    - ensure_models_present(models_dir): always-validate (per-file HEAD size check
-      via download_to) + (re-)download missing/truncated files
+    - ensure_models_present(models_dir): local size-manifest validation (per-file
+      os.stat compare via download_to) + (re-)download missing/wrong-size files
+
+Local-validation contract (260608-u8g, supersedes 260608-jbg): the healthy path is
+now a pure ``os.stat`` size-manifest check -- ZERO network, near-instant -- and the
+network is touched ONLY to repair a missing or wrong-size file. The previous
+contract issued a remote ``HEAD`` per weight file on EVERY boot; inside the async
+startup hook that blocked the event loop for minutes whenever essentia.upf.edu's TLS
+flaked, starving the ``scan_directory`` SAQ job. That per-boot remote validation was
+removed because it depended on a flaky remote and blocked startup.
 """
 
 from __future__ import annotations
@@ -41,20 +49,24 @@ Used only for the operator-facing startup estimate. It is NOT a completeness
 gate: a glob count cannot tell a truncated `.pb` from a full one, so a count
 short-circuit blessed corrupt files as "present" (260608-jbg). Completeness is
 now "all canonical files present AND size-valid", enforced per file by
-``download_to``'s HEAD ``Content-Length`` validation (`_ensure_present`).
+``download_to``'s local size-manifest comparison (`_ensure_present_local`, 260608-u8g).
 """
 
 
 def ensure_models_present(models_dir: Path) -> None:
     """Validate every weight file's size and (re-)download as needed.
 
-    Always-validate contract (260608-jbg): there is no glob-count short-circuit.
+    Local-validation contract (260608-u8g): there is no glob-count short-circuit.
     ``download_to`` is invoked unconditionally and performs the per-file integrity
-    check -- it issues a HEAD per expected file, keeps any file whose on-disk byte
-    size matches the server ``Content-Length`` (no GET), and re-downloads a missing
-    or truncated one. A fully valid on-disk set therefore returns without an
-    operator restart, while a correctly-named-but-truncated `.pb` (which the old
-    count gate accepted) is detected and replaced.
+    check -- but the healthy path is now a pure ``os.stat`` comparison against a
+    baked-in size manifest (ZERO network, near-instant). It keeps any file whose
+    on-disk byte size matches the manifest (no HTTP call) and re-downloads only a
+    missing or wrong-size one. A fully valid on-disk set therefore returns instantly
+    without touching the network, while a correctly-named-but-truncated `.pb` (which
+    the old count gate accepted) is detected and replaced. The per-boot remote
+    ``HEAD`` validation (260608-jbg) was removed because it blocked the async startup
+    event loop and depended on a flaky remote; the rare repair GET still validates
+    the streamed byte count against the server ``Content-Length``.
 
     Failures during the download are wrapped in :class:`RuntimeError` so the
     agent_worker container exits non-zero and the ``restart: unless-stopped``

@@ -1,18 +1,18 @@
-"""Tests for `phaze.scripts.download_models` (Phase 29 D-21 / 260608-i21 / 260608-jbg).
+"""Tests for `phaze.scripts.download_models` (Phase 29 D-21 / 260608-i21 / 260608-u8g).
 
-Covers the download + size-validation behaviour:
+Covers the local-validation + repair behaviour:
 - `_download_one` streams to `<dest>.part` and atomically renames on success
 - `_download_one` fails fast on 4xx and retries transient/5xx/truncated reads
-- `_with_retries` is the single bounded-retry implementation shared by HEAD + GET
-- `_head_content_length` / `_try_head_size` read the server Content-Length, bound
-  the HEAD with the same timeout/retry machinery, and degrade gracefully
-- `_ensure_present` validates on-disk byte size against the HEAD Content-Length:
-  keeps a valid file (no GET), re-downloads a truncated one, and falls back when
-  the size is unobtainable
-- `download_to` walks both CLASSIFIER_MODELS and GENRE_MODELS, HEAD-validating and
-  only GETting missing/mismatched files under the documented Essentia URL bases
+- `_with_retries` is the single bounded-retry implementation behind the repair GET
+- `MANIFEST` is built programmatically from the model tuples and covers exactly 68
+  files with the authoritative byte sizes
+- `_ensure_present_local` compares the on-disk byte size against the baked-in
+  manifest size: keeps a correct-size file (zero network), re-downloads a
+  missing or wrong-size one
+- `download_to` walks both CLASSIFIER_MODELS and GENRE_MODELS; a fully valid set
+  issues ZERO HTTP requests, and only a missing/mismatched file is GET-repaired
 
-Uses `respx` (already a dev dep — see `pyproject.toml`) to intercept HEAD + GET.
+Uses `respx` (already a dev dep — see `pyproject.toml`) to intercept GET.
 `download_models.time.sleep` is monkeypatched to a no-op counter so there is ZERO
 real network I/O and ZERO real sleep.
 """
@@ -29,10 +29,9 @@ from phaze.scripts import download_models
 from phaze.scripts.download_models import (
     CLASSIFIER_MODELS,
     GENRE_MODELS,
+    MANIFEST,
     _download_one,
-    _ensure_present,
-    _head_content_length,
-    _try_head_size,
+    _ensure_present_local,
     download_to,
 )
 
@@ -57,7 +56,7 @@ def _patch_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 # --------------------------------------------------------------------------- #
-# _download_one (always-fetch; the size-based skip lives in _ensure_present)  #
+# _download_one (repair path; the size-based skip lives in _ensure_present_local)
 # --------------------------------------------------------------------------- #
 
 
@@ -220,209 +219,90 @@ def test_download_one_retries_truncated_read_then_succeeds(
 
 
 # --------------------------------------------------------------------------- #
-# _head_content_length / _try_head_size                                       #
+# MANIFEST (programmatically derived from the model tuples; 260608-u8g)        #
+# --------------------------------------------------------------------------- #
+
+
+def test_manifest_covers_exactly_68_files() -> None:
+    """MANIFEST has exactly (classifier + genre) * 2 == 68 entries with the spot sizes."""
+    assert len(MANIFEST) == len(CLASSIFIER_MODELS) * 2 + len(GENRE_MODELS) * 2 == 68
+
+    # .pb spot sizes: common musicnn, the lone msd-1 outlier, vggish, discogs effnet.
+    assert MANIFEST["mood_acoustic-musicnn-msd-2.pb"] == 3239548
+    assert MANIFEST["voice_instrumental-musicnn-msd-1.pb"] == 3239625
+    assert MANIFEST["danceability-vggish-audioset-1.pb"] == 288629030
+    assert MANIFEST["discogs-effnet-bs64-1.pb"] == 18366619
+
+    # .json spot sizes.
+    assert MANIFEST["discogs-effnet-bs64-1.json"] == 14990
+    assert MANIFEST["mood_acoustic-musicnn-msd-2.json"] == 3078
+
+    # Every entry is a .pb or .json keyed by a known stem.
+    assert all(name.endswith((".pb", ".json")) for name in MANIFEST)
+
+
+# --------------------------------------------------------------------------- #
+# _ensure_present_local (local-validation decision; 260608-u8g)               #
 # --------------------------------------------------------------------------- #
 
 
 @respx.mock
-def test_head_content_length_returns_size(tmp_path: Path) -> None:
-    """A HEAD 200 with Content-Length yields that integer size."""
-    url = "https://example.test/sized.pb"
-    respx.head(url).mock(return_value=httpx.Response(200, headers={"Content-Length": "4096"}))
-
-    assert _head_content_length(url) == 4096
-
-
-@respx.mock
-def test_head_content_length_absent_header_returns_none(tmp_path: Path) -> None:
-    """A HEAD 200 with no Content-Length yields None (unobtainable size)."""
-    url = "https://example.test/no-length.pb"
-    respx.head(url).mock(return_value=httpx.Response(200))
-
-    assert _head_content_length(url) is None
-
-
-@respx.mock
-def test_head_timeout_retries_bounded_then_raises(
+def test_ensure_present_local_keeps_correct_size_file_zero_network(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Case (a): a HEAD that times out on every attempt retries a BOUNDED number of times.
-
-    The HEAD route call_count MUST equal _MAX_ATTEMPTS — never an unbounded block —
-    mirroring the GET bound proven by test_download_one_raises_after_exhausting_attempts.
-    """
-    url = "https://example.test/hang.pb"
-    sleeps = _patch_sleep(monkeypatch)
-
-    route = respx.head(url).mock(side_effect=httpx.ConnectTimeout("stalled TLS"))
-
-    with pytest.raises(RuntimeError, match=r"HEAD .*hang\.pb") as excinfo:
-        _head_content_length(url)
-
-    assert f"{download_models._MAX_ATTEMPTS} attempts" in str(excinfo.value)
-    assert route.call_count == download_models._MAX_ATTEMPTS, "HEAD retries must be bounded by _MAX_ATTEMPTS"
-    assert len(sleeps) == download_models._MAX_ATTEMPTS - 1, "one backoff between each pair of attempts"
-
-
-@respx.mock
-def test_head_5xx_retried_then_succeeds(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A 503 HEAD then a 200 with Content-Length → retried, returns the size."""
-    url = "https://example.test/head-5xx.pb"
-    sleeps = _patch_sleep(monkeypatch)
-
-    respx.head(url).mock(
-        side_effect=[
-            httpx.Response(503),
-            httpx.Response(200, headers={"Content-Length": "1234"}),
-        ]
-    )
-
-    assert _head_content_length(url) == 1234
-    assert len(sleeps) == 1
-
-
-@respx.mock
-def test_head_4xx_fails_fast(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A 4xx HEAD propagates HTTPStatusError without retrying (fail fast)."""
-    url = "https://example.test/head-404.pb"
-    _patch_sleep(monkeypatch)
-
-    route = respx.head(url).mock(return_value=httpx.Response(404))
-
-    with pytest.raises(httpx.HTTPStatusError):
-        _head_content_length(url)
-
-    assert route.call_count == 1, "a 4xx HEAD must fail fast without retrying"
-
-
-@respx.mock
-def test_try_head_size_degrades_to_none_on_exhausted_head(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A HEAD that exhausts retries degrades to None (never crashes the caller)."""
-    url = "https://example.test/degrade.pb"
-    dest = tmp_path / "degrade.pb"
-    _patch_sleep(monkeypatch)
-
-    respx.head(url).mock(side_effect=httpx.ConnectTimeout("stalled"))
-
-    assert _try_head_size(url, dest) is None
-
-
-@respx.mock
-def test_try_head_size_degrades_to_none_on_4xx(tmp_path: Path) -> None:
-    """A 4xx HEAD degrades to None via _try_head_size rather than propagating."""
-    url = "https://example.test/degrade-404.pb"
-    dest = tmp_path / "degrade-404.pb"
-    respx.head(url).mock(return_value=httpx.Response(404))
-
-    assert _try_head_size(url, dest) is None
-
-
-# --------------------------------------------------------------------------- #
-# _ensure_present (validate-or-download decision)                             #
-# --------------------------------------------------------------------------- #
-
-
-@respx.mock
-def test_ensure_present_keeps_valid_file_no_get(tmp_path: Path) -> None:
-    """Valid-keep: on-disk size == HEAD Content-Length → keep, issue NO GET."""
+    """Correct-size file -> pure os.stat, ZERO httpx.stream call."""
     url = "https://example.test/valid.pb"
     dest = tmp_path / "valid.pb"
     payload = b"already-valid-bytes"
     dest.write_bytes(payload)
 
-    respx.head(url).mock(return_value=httpx.Response(200, headers={"Content-Length": str(len(payload))}))
-    get_route = respx.get(url).mock(return_value=httpx.Response(200, content=b"REPLACED"))
+    def _boom(*_a: object, **_kw: object) -> object:
+        raise AssertionError("a correct-size file must NOT trigger any network call")
 
-    _ensure_present(url, dest)
+    monkeypatch.setattr(download_models.httpx, "stream", _boom)
+    monkeypatch.setattr(download_models.httpx, "head", _boom)
 
-    assert dest.read_bytes() == payload, "a valid file must be left untouched"
-    assert get_route.call_count == 0, "a size-valid file must NOT trigger a GET"
+    _ensure_present_local(url, dest, len(payload))
 
-
-@respx.mock
-def test_ensure_present_redownloads_truncated_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Case (b): a present-but-truncated file is removed and re-downloaded to full size."""
-    url = "https://example.test/truncated-ondisk.pb"
-    dest = tmp_path / "truncated-ondisk.pb"
-    full_payload = b"the-complete-weight-payload" * 8
-    dest.write_bytes(b"short")  # 5 bytes, != full length
-    _patch_sleep(monkeypatch)
-
-    respx.head(url).mock(return_value=httpx.Response(200, headers={"Content-Length": str(len(full_payload))}))
-    get_route = respx.get(url).mock(return_value=httpx.Response(200, content=full_payload))
-
-    _ensure_present(url, dest)
-
-    assert dest.read_bytes() == full_payload, "truncated file must be replaced by the full payload"
-    assert dest.stat().st_size == len(full_payload)
-    assert not dest.with_suffix(dest.suffix + ".part").exists(), "no .part may remain"
-    assert get_route.call_count == 1, "a truncated file must be re-fetched exactly once"
+    assert dest.read_bytes() == payload, "a correct-size file must be left untouched"
 
 
 @respx.mock
-def test_ensure_present_downloads_missing_file(tmp_path: Path) -> None:
-    """Known size + file missing → download."""
+def test_ensure_present_local_downloads_missing_file(tmp_path: Path) -> None:
+    """Missing file -> exactly one GET that writes the payload."""
     url = "https://example.test/missing-but-sized.pb"
     dest = tmp_path / "missing-but-sized.pb"
     payload = b"fresh-download"
 
-    respx.head(url).mock(return_value=httpx.Response(200, headers={"Content-Length": str(len(payload))}))
     get_route = respx.get(url).mock(return_value=httpx.Response(200, content=payload))
 
-    _ensure_present(url, dest)
+    _ensure_present_local(url, dest, len(payload))
 
     assert dest.read_bytes() == payload
     assert get_route.call_count == 1
 
 
 @respx.mock
-def test_ensure_present_unobtainable_size_keeps_present_file(
+def test_ensure_present_local_redownloads_wrong_size_file(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unobtainable size + file present → keep it, WARN, issue NO GET."""
-    import logging
+    """Present-but-wrong-size file is re-downloaded to the manifest size."""
+    url = "https://example.test/wrong-size.pb"
+    dest = tmp_path / "wrong-size.pb"
+    full_payload = b"the-complete-weight-payload" * 8
+    dest.write_bytes(b"short")  # 5 bytes, != expected
+    _patch_sleep(monkeypatch)
 
-    url = "https://example.test/no-length-present.pb"
-    dest = tmp_path / "no-length-present.pb"
-    payload = b"cannot-validate-this"
-    dest.write_bytes(payload)
+    get_route = respx.get(url).mock(return_value=httpx.Response(200, content=full_payload))
 
-    respx.head(url).mock(return_value=httpx.Response(200))  # no Content-Length
-    get_route = respx.get(url).mock(return_value=httpx.Response(200, content=b"NOPE"))
+    _ensure_present_local(url, dest, len(full_payload))
 
-    with caplog.at_level(logging.WARNING, logger="phaze.scripts.download_models"):
-        _ensure_present(url, dest)
-
-    assert dest.read_bytes() == payload, "an unvalidatable present file must be kept"
-    assert get_route.call_count == 0, "no GET when keeping an unvalidatable present file"
-    assert any("keeping existing file" in rec.getMessage() for rec in caplog.records)
-
-
-@respx.mock
-def test_ensure_present_unobtainable_size_downloads_missing_file(tmp_path: Path) -> None:
-    """Unobtainable size + file absent → fall through to GET, which downloads."""
-    url = "https://example.test/no-length-missing.pb"
-    dest = tmp_path / "no-length-missing.pb"
-    payload = b"downloaded-anyway"
-
-    respx.head(url).mock(return_value=httpx.Response(200))  # no Content-Length
-    get_route = respx.get(url).mock(return_value=httpx.Response(200, content=payload))
-
-    _ensure_present(url, dest)
-
-    assert dest.read_bytes() == payload
-    assert get_route.call_count == 1
+    assert dest.read_bytes() == full_payload, "wrong-size file must be replaced by the full payload"
+    assert dest.stat().st_size == len(full_payload)
+    assert not dest.with_suffix(dest.suffix + ".part").exists(), "no .part may remain"
+    assert get_route.call_count == 1, "a wrong-size file must be re-fetched exactly once"
 
 
 # --------------------------------------------------------------------------- #
@@ -430,67 +310,66 @@ def test_ensure_present_unobtainable_size_downloads_missing_file(tmp_path: Path)
 # --------------------------------------------------------------------------- #
 
 
-@respx.mock
-def test_download_to_fetches_classifier_and_genre_urls(tmp_path: Path) -> None:
-    """`download_to` walks both model families: HEAD then GET each missing .pb + .json.
-
-    This is the contract that `phaze.tasks._shared.model_bootstrap` depends on
-    when it triggers a bulk download into an empty `/models` directory.
-    """
-    # Each 1-byte payload; HEAD advertises the matching Content-Length so the
-    # missing files fall through to a GET.
+def _expected_filenames() -> set[str]:
+    """All 68 expected on-disk filenames across both model families."""
+    names: set[str] = set()
     for model_path in CLASSIFIER_MODELS:
-        respx.head(f"{_CLASSIFIER_BASE}/{model_path}.pb").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        respx.head(f"{_CLASSIFIER_BASE}/{model_path}.json").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        respx.get(f"{_CLASSIFIER_BASE}/{model_path}.pb").mock(return_value=httpx.Response(200, content=b"P"))
-        respx.get(f"{_CLASSIFIER_BASE}/{model_path}.json").mock(return_value=httpx.Response(200, content=b"J"))
+        stem = model_path.rsplit("/", 1)[-1]
+        names.add(f"{stem}.pb")
+        names.add(f"{stem}.json")
     for model in GENRE_MODELS:
-        respx.head(f"{_GENRE_BASE}/{model}.pb").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        respx.head(f"{_GENRE_BASE}/{model}.json").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        respx.get(f"{_GENRE_BASE}/{model}.pb").mock(return_value=httpx.Response(200, content=b"P"))
-        respx.get(f"{_GENRE_BASE}/{model}.json").mock(return_value=httpx.Response(200, content=b"J"))
-
-    download_to(tmp_path)
-
-    # Expect 2 files per model across both families. CLASSIFIER_MODELS uses
-    # the trailing path segment as the filename (matches the prod helper's
-    # `rsplit("/", 1)[-1]` logic).
-    expected_classifier_basenames = {p.rsplit("/", 1)[-1] for p in CLASSIFIER_MODELS}
-    for basename in expected_classifier_basenames:
-        assert (tmp_path / f"{basename}.pb").exists(), f"missing {basename}.pb"
-        assert (tmp_path / f"{basename}.json").exists(), f"missing {basename}.json"
-    for model in GENRE_MODELS:
-        assert (tmp_path / f"{model}.pb").exists(), f"missing genre {model}.pb"
-        assert (tmp_path / f"{model}.json").exists(), f"missing genre {model}.json"
+        names.add(f"{model}.pb")
+        names.add(f"{model}.json")
+    return names
 
 
 @respx.mock
-def test_download_to_valid_set_issues_only_heads_no_get(tmp_path: Path) -> None:
-    """Case (d): a fully valid, size-matched set issues only HEADs and ZERO GETs."""
-    # Pre-seed every expected file with a 1-byte sentinel; HEAD advertises size 1.
-    expected_classifier_basenames = {p.rsplit("/", 1)[-1] for p in CLASSIFIER_MODELS}
-    for basename in expected_classifier_basenames:
-        (tmp_path / f"{basename}.pb").write_bytes(b"X")
-        (tmp_path / f"{basename}.json").write_bytes(b"X")
-    for model in GENRE_MODELS:
-        (tmp_path / f"{model}.pb").write_bytes(b"X")
-        (tmp_path / f"{model}.json").write_bytes(b"X")
+def test_download_to_valid_set_issues_zero_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fully valid, size-matched set issues ZERO HTTP requests (no HEAD, no GET)."""
+    # Patch MANIFEST so every expected file is "correct" at 1 byte.
+    patched = dict.fromkeys(_expected_filenames(), 1)
+    monkeypatch.setattr(download_models, "MANIFEST", patched)
 
-    get_routes = []
-    for model_path in CLASSIFIER_MODELS:
-        respx.head(f"{_CLASSIFIER_BASE}/{model_path}.pb").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        respx.head(f"{_CLASSIFIER_BASE}/{model_path}.json").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        get_routes.append(respx.get(f"{_CLASSIFIER_BASE}/{model_path}.pb").mock(return_value=httpx.Response(200, content=b"NOPE")))
-        get_routes.append(respx.get(f"{_CLASSIFIER_BASE}/{model_path}.json").mock(return_value=httpx.Response(200, content=b"NOPE")))
-    for model in GENRE_MODELS:
-        respx.head(f"{_GENRE_BASE}/{model}.pb").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        respx.head(f"{_GENRE_BASE}/{model}.json").mock(return_value=httpx.Response(200, headers={"Content-Length": "1"}))
-        get_routes.append(respx.get(f"{_GENRE_BASE}/{model}.pb").mock(return_value=httpx.Response(200, content=b"NOPE")))
-        get_routes.append(respx.get(f"{_GENRE_BASE}/{model}.json").mock(return_value=httpx.Response(200, content=b"NOPE")))
+    # Pre-seed every expected file with a 1-byte sentinel.
+    for name in patched:
+        (tmp_path / name).write_bytes(b"X")
+
+    def _boom(*_a: object, **_kw: object) -> object:
+        raise AssertionError("a size-valid set must issue ZERO network requests")
+
+    monkeypatch.setattr(download_models.httpx, "head", _boom)
+    monkeypatch.setattr(download_models.httpx, "stream", _boom)
 
     download_to(tmp_path)
 
-    assert all(route.call_count == 0 for route in get_routes), "a size-valid set must issue ZERO GETs"
     # Sentinels still in place: nothing was overwritten.
-    for basename in expected_classifier_basenames:
-        assert (tmp_path / f"{basename}.pb").read_bytes() == b"X"
+    for name in patched:
+        assert (tmp_path / name).read_bytes() == b"X"
+
+
+@respx.mock
+def test_download_to_repairs_only_the_missing_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the one missing file is GET-repaired; all others stay untouched."""
+    patched = dict.fromkeys(_expected_filenames(), 1)
+    monkeypatch.setattr(download_models, "MANIFEST", patched)
+
+    # Seed all-but-one expected file; pick the genre .pb as the missing one.
+    missing_name = f"{GENRE_MODELS[0]}.pb"
+    for name in patched:
+        if name != missing_name:
+            (tmp_path / name).write_bytes(b"X")
+
+    missing_url = f"{_GENRE_BASE}/{GENRE_MODELS[0]}.pb"
+    get_route = respx.get(missing_url).mock(return_value=httpx.Response(200, content=b"P"))
+
+    download_to(tmp_path)
+
+    assert get_route.call_count == 1, "exactly one GET for the single missing file"
+    assert (tmp_path / missing_name).exists(), "the missing file must now exist"
+    assert (tmp_path / missing_name).read_bytes() == b"P"

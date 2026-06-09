@@ -5,12 +5,26 @@ both bash (``scripts/download-models.sh``) and the agent bootstrap
 (``phaze.tasks._shared.model_bootstrap.ensure_models_present``) can drive the
 download.
 
-Integrity validation (260608-jbg): on every invocation each expected file's
-on-disk byte size is validated against the server's ``Content-Length`` (read via
-a ``HEAD`` request). A present-but-truncated file (on-disk size != expected) is
-removed and re-downloaded; a fully valid file is kept without a GET. There are no
-published checksums for the essentia weights, so the server ``Content-Length`` is
-the authoritative size signal -- same-size bit-flips are out of scope.
+Local-validation contract (260608-u8g): on every invocation each expected file's
+on-disk byte size is compared against a baked-in size ``MANIFEST`` -- a pure
+``os.stat`` check with ZERO network I/O. The network is touched ONLY to repair a
+missing or wrong-size file. A present-and-correct-size file is kept without any
+HTTP request; a missing or truncated file is (re-)downloaded via the atomic,
+retrying, integrity-checked ``_download_one`` GET path.
+
+The manifest sizes equal the server ``Content-Length`` captured at model-pin time
+(the validated production deployment). The repair GET still validates the streamed
+byte count against the server ``Content-Length`` before promoting the file into
+place, so a repaired file is integrity-checked against the remote as before. There
+are no published checksums for the essentia weights, so the byte size is the
+authoritative signal -- same-size bit-flips are out of scope.
+
+Supersedes 260608-jbg: the previous contract issued a synchronous ``HEAD`` per
+weight file on EVERY boot to re-read the remote ``Content-Length``. Inside the
+``async def`` agent startup hook that froze the event loop for minutes whenever
+essentia.upf.edu's TLS flaked, starving the ``scan_directory`` SAQ job. The
+always-remote-HEAD-validate rationale is removed: the healthy path no longer
+depends on a flaky remote and never blocks.
 
 Atomicity (T-29-05-03): each download writes to ``<dest>.part`` and is promoted
 to ``<dest>`` via ``os.replace`` (atomic on POSIX) only after the byte stream
@@ -18,13 +32,12 @@ completes and any ``Content-Length`` is satisfied; a crash mid-download leaves
 only the ``.part`` file which is NOT counted by ``models_dir.glob("*.pb")`` in
 the bootstrap caller.
 
-Resilience (260608-i21 / 260608-jbg): EVERY HTTP request (HEAD and GET) is issued
-with an explicit ``_TIMEOUT`` and driven through the shared ``_with_retries``
-helper, which retries transient transport errors and 5xx server responses with
-bounded exponential backoff + jitter (via ``time.sleep``). A single
-TLS/handshake/read drop no longer kills the worker, and no un-timeouted request
-can wedge it indefinitely. A 4xx response fails fast (no retry); only after
-exhausting ``_MAX_ATTEMPTS`` does a per-file named ``RuntimeError`` propagate.
+Resilience (260608-i21 / 260608-u8g): the repair GET is driven through the shared
+``_with_retries`` helper, which retries transient transport errors and 5xx server
+responses with bounded exponential backoff + jitter (via ``time.sleep``). A single
+TLS/handshake/read drop no longer kills the worker, and no un-timeouted request can
+wedge it indefinitely. A 4xx response fails fast (no retry); only after exhausting
+``_MAX_ATTEMPTS`` does a per-file named ``RuntimeError`` propagate.
 
 CLI entry:
     python -m phaze.scripts.download_models [output_dir]
@@ -126,12 +139,96 @@ CLASSIFIER_MODELS: tuple[str, ...] = (
 GENRE_MODELS: tuple[str, ...] = ("discogs-effnet-bs64-1",)
 
 
+# Authoritative ``.json`` byte sizes keyed by stem (no extension), captured from the
+# server ``Content-Length`` of the validated production deployment at model-pin time
+# (260608-u8g). Used to build MANIFEST; do not hand-edit without re-capturing.
+_JSON_SIZES: dict[str, int] = {
+    "danceability-musicnn-msd-2": 2677,
+    "danceability-musicnn-mtt-2": 2688,
+    "danceability-vggish-audioset-1": 2691,
+    "discogs-effnet-bs64-1": 14990,
+    "gender-musicnn-msd-2": 2664,
+    "gender-musicnn-mtt-2": 2664,
+    "gender-vggish-audioset-1": 2678,
+    "mood_acoustic-musicnn-msd-2": 3078,
+    "mood_acoustic-musicnn-mtt-2": 3079,
+    "mood_acoustic-vggish-audioset-1": 3093,
+    "mood_aggressive-musicnn-msd-2": 3085,
+    "mood_aggressive-musicnn-mtt-2": 3085,
+    "mood_aggressive-vggish-audioset-1": 3099,
+    "mood_electronic-musicnn-msd-2": 3093,
+    "mood_electronic-musicnn-mtt-2": 3093,
+    "mood_electronic-vggish-audioset-1": 3107,
+    "mood_happy-musicnn-msd-2": 3049,
+    "mood_happy-musicnn-mtt-2": 3049,
+    "mood_happy-vggish-audioset-1": 3063,
+    "mood_party-musicnn-msd-2": 3049,
+    "mood_party-musicnn-mtt-2": 3049,
+    "mood_party-vggish-audioset-1": 3063,
+    "mood_relaxed-musicnn-msd-2": 3062,
+    "mood_relaxed-musicnn-mtt-2": 3063,
+    "mood_relaxed-vggish-audioset-1": 3077,
+    "mood_sad-musicnn-msd-2": 3034,
+    "mood_sad-musicnn-mtt-2": 3034,
+    "mood_sad-vggish-audioset-1": 3048,
+    "tonal_atonal-musicnn-msd-2": 2680,
+    "tonal_atonal-musicnn-mtt-2": 2681,
+    "tonal_atonal-vggish-audioset-1": 2695,
+    "voice_instrumental-musicnn-msd-1": 2712,
+    "voice_instrumental-musicnn-mtt-2": 2712,
+    "voice_instrumental-vggish-audioset-1": 2785,
+}
+
+# The single ``.pb`` byte-size outliers; every other ``.pb`` resolves to the common
+# musicnn weight size via ``_expected_pb_size``.
+_PB_VOICE_INSTRUMENTAL_MSD = 3239625
+_PB_DISCOGS_EFFNET = 18366619
+_PB_VGGISH_AUDIOSET = 288629030
+_PB_MUSICNN_COMMON = 3239548
+
+
+def _expected_pb_size(filename: str) -> int:
+    """Return the authoritative ``Content-Length`` for a ``.pb`` weight ``filename``.
+
+    Rule set captured from the validated production deployment (260608-u8g):
+    the lone musicnn outlier and the discogs effnet weight are exact-matched, the
+    vggish-audioset family shares one large size, and every other musicnn weight
+    shares the common size.
+    """
+    if filename == "voice_instrumental-musicnn-msd-1.pb":
+        return _PB_VOICE_INSTRUMENTAL_MSD
+    if filename == "discogs-effnet-bs64-1.pb":
+        return _PB_DISCOGS_EFFNET
+    if filename.endswith("-vggish-audioset-1.pb"):
+        return _PB_VGGISH_AUDIOSET
+    return _PB_MUSICNN_COMMON
+
+
+def _build_manifest() -> dict[str, int]:
+    """Build the baked-in ``filename -> expected byte size`` manifest.
+
+    Derived programmatically from ``CLASSIFIER_MODELS`` then ``GENRE_MODELS`` so it
+    cannot drift from the model list (T-u8g-04). Each model contributes a ``.pb``
+    (sized via ``_expected_pb_size``) and a ``.json`` (sized via ``_JSON_SIZES``),
+    yielding exactly ``(len(CLASSIFIER_MODELS) + len(GENRE_MODELS)) * 2 == 68``
+    entries.
+    """
+    manifest: dict[str, int] = {}
+    for model_path in (*CLASSIFIER_MODELS, *GENRE_MODELS):
+        stem = model_path.rsplit("/", 1)[-1]
+        manifest[f"{stem}.pb"] = _expected_pb_size(f"{stem}.pb")
+        manifest[f"{stem}.json"] = _JSON_SIZES[stem]
+    return manifest
+
+
+MANIFEST: dict[str, int] = _build_manifest()
+
+
 def _with_retries[T](label: str, fn: Callable[[], T]) -> T:
     """Run ``fn`` with bounded exponential backoff + jitter on transient failures.
 
-    This is the SINGLE retry/backoff/timeout-recovery implementation shared by both
-    the HEAD path (``_head_content_length``) and the GET path (``_download_one``);
-    every HTTP request in this module flows through it. ``fn`` is invoked up to
+    This is the SINGLE retry/backoff/timeout-recovery implementation; the repair GET
+    path (``_download_one``) flows through it. ``fn`` is invoked up to
     ``_MAX_ATTEMPTS`` times; its return value is propagated on success.
 
     A ``_TRANSIENT_ERRORS`` transport error or a ``_RetryableDownloadError`` (5xx /
@@ -159,82 +256,16 @@ def _with_retries[T](label: str, fn: Callable[[], T]) -> T:
     raise RuntimeError(msg)  # pragma: no cover
 
 
-def _head_content_length(url: str) -> int | None:
-    """Return the server's ``Content-Length`` for ``url`` (or ``None`` if absent).
-
-    Issued as a ``HEAD`` with the shared ``_TIMEOUT`` and driven through
-    ``_with_retries`` so a stalled or transiently-failing HEAD cannot wedge the
-    worker. A 4xx fails fast (propagates ``httpx.HTTPStatusError``); a 5xx is
-    retried. When the response omits ``Content-Length`` the size is unobtainable
-    and ``None`` is returned.
-    """
-
-    def _attempt() -> int | None:
-        response = httpx.head(url, follow_redirects=True, timeout=_TIMEOUT)
-        status = response.status_code
-        if 400 <= status < 500:
-            # Fail fast: HTTPStatusError is not in _TRANSIENT_ERRORS, so no retry.
-            response.raise_for_status()
-        if status >= 500:
-            msg = f"server error {status} for HEAD {url}"
-            raise _RetryableDownloadError(msg)
-        content_length = response.headers.get("Content-Length")
-        return int(content_length) if content_length is not None else None
-
-    return _with_retries(f"HEAD {url}", _attempt)
-
-
-def _try_head_size(url: str, dest: Path) -> int | None:
-    """Best-effort expected size for ``dest`` from a HEAD; degrade to ``None`` on failure.
-
-    A HEAD that exhausts retries (``RuntimeError``) or 4xxs (``httpx.HTTPError``)
-    must never crash or wedge the bootstrap: it degrades to the "size unobtainable"
-    path (keep an existing file / GET a missing one) with a WARNING naming the file.
-    """
-    try:
-        return _head_content_length(url)
-    except (RuntimeError, httpx.HTTPError) as exc:
-        logger.warning("Could not determine expected size for %s via HEAD: %s", dest.name, exc)
-        return None
-
-
-def _ensure_present(url: str, dest: Path) -> None:
-    """Validate ``dest`` against the server size and download it when needed.
-
-    Implements the LOCKED validate-or-download decision (260608-jbg):
-
-    - expected size unobtainable + file present -> keep it (cannot validate), WARN.
-    - expected size unobtainable + file missing -> download.
-    - expected size known + file present, size matches -> keep it, NO GET.
-    - expected size known + file present, size mismatches -> truncated/corrupt:
-      remove the stale file and re-download.
-    - expected size known + file missing -> download.
-    """
-    expected = _try_head_size(url, dest)
-    if expected is None:
-        if dest.exists():
-            logger.warning("Cannot validate %s (no Content-Length from HEAD); keeping existing file", dest.name)
-            return
-        _download_one(url, dest)
-        return
-    if dest.exists():
-        actual = dest.stat().st_size
-        if actual == expected:
-            return
-        logger.warning("Size mismatch for %s: on-disk %d bytes != expected %d bytes; removing and re-downloading", dest.name, actual, expected)
-        dest.unlink()
-    _download_one(url, dest)
-
-
 def _download_one(url: str, dest: Path) -> None:
     """Download ``url`` to ``dest`` atomically with bounded retry.
 
-    Always fetches: the validate-or-download decision lives in ``_ensure_present``
-    (size-based), so callers route through it rather than calling this directly.
-    A crash mid-stream leaves only ``<dest>.part`` which the bootstrap's ``*.pb``
-    glob does NOT match -- the next start will retry.
+    Always fetches: the validate-or-download decision lives in
+    ``_ensure_present_local`` (local size compare), so callers route through it
+    rather than calling this directly. A crash mid-stream leaves only
+    ``<dest>.part`` which the bootstrap's ``*.pb`` glob does NOT match -- the next
+    start will retry.
 
-    Resilience (260608-i21 / 260608-jbg): the byte stream is driven through the
+    Resilience (260608-i21 / 260608-u8g): the byte stream is driven through the
     shared ``_with_retries`` helper, so transient transport errors (see
     ``_TRANSIENT_ERRORS``) and 5xx server responses are retried up to
     ``_MAX_ATTEMPTS`` times with bounded exponential backoff + jitter. A 4xx
@@ -279,23 +310,52 @@ def _download_one(url: str, dest: Path) -> None:
     _with_retries(f"download {dest.name}", _attempt)
 
 
-def download_to(target_dir: Path) -> None:
-    """Download + size-validate all classifier + genre weight files into ``target_dir``.
+def _ensure_present_local(url: str, dest: Path, expected_size: int) -> None:
+    """Validate ``dest`` against the baked-in ``expected_size`` and repair via GET if needed.
 
-    Each file is routed through ``_ensure_present``, which issues a HEAD to read the
-    server ``Content-Length`` and only GETs a file that is missing or whose on-disk
-    size does not match. A fully valid directory therefore incurs only HEAD requests
-    (no GET). A partial-completion scenario (network drop after 17/33 classifiers)
-    can be safely resumed by re-running ``download_to`` on the same directory.
+    Implements the local-validation decision (260608-u8g):
+
+    - file present AND ``st_size == expected_size`` -> keep it, issuing NO network
+      call (pure ``os.stat``).
+    - file present but wrong size -> truncated/corrupt: WARN naming on-disk vs
+      manifest size and re-fetch via ``_download_one`` (its atomic ``os.replace``
+      overwrites in place; a failed repair leaves the stale file, which the next
+      boot re-detects and re-repairs).
+    - file missing -> INFO and download via ``_download_one``.
+    """
+    if dest.exists():
+        actual = dest.stat().st_size
+        if actual == expected_size:
+            return
+        logger.warning(
+            "Size mismatch for %s: on-disk %d bytes != manifest %d bytes; re-downloading",
+            dest.name,
+            actual,
+            expected_size,
+        )
+    else:
+        logger.info("Missing weight file %s; downloading", dest.name)
+    _download_one(url, dest)
+
+
+def download_to(target_dir: Path) -> None:
+    """Local-validate + repair all classifier + genre weight files into ``target_dir``.
+
+    Each file is routed through ``_ensure_present_local``, which compares the on-disk
+    byte size against the baked-in ``MANIFEST`` and only GETs a file that is missing
+    or whose size does not match. A fully valid directory therefore incurs ZERO HTTP
+    requests (pure ``os.stat`` per file, no HEAD, no GET). A partial-completion
+    scenario (network drop after 17/33 classifiers) can be safely resumed by
+    re-running ``download_to`` on the same directory.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     for model_path in CLASSIFIER_MODELS:
         filename = model_path.rsplit("/", 1)[-1]
-        _ensure_present(f"{_CLASSIFIER_BASE}/{model_path}.pb", target_dir / f"{filename}.pb")
-        _ensure_present(f"{_CLASSIFIER_BASE}/{model_path}.json", target_dir / f"{filename}.json")
+        _ensure_present_local(f"{_CLASSIFIER_BASE}/{model_path}.pb", target_dir / f"{filename}.pb", MANIFEST[f"{filename}.pb"])
+        _ensure_present_local(f"{_CLASSIFIER_BASE}/{model_path}.json", target_dir / f"{filename}.json", MANIFEST[f"{filename}.json"])
     for model in GENRE_MODELS:
-        _ensure_present(f"{_GENRE_BASE}/{model}.pb", target_dir / f"{model}.pb")
-        _ensure_present(f"{_GENRE_BASE}/{model}.json", target_dir / f"{model}.json")
+        _ensure_present_local(f"{_GENRE_BASE}/{model}.pb", target_dir / f"{model}.pb", MANIFEST[f"{model}.pb"])
+        _ensure_present_local(f"{_GENRE_BASE}/{model}.json", target_dir / f"{model}.json", MANIFEST[f"{model}.json"])
 
 
 if __name__ == "__main__":  # pragma: no cover  # CLI invocation guard

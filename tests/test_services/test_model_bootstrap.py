@@ -133,22 +133,22 @@ def test_download_to_creates_pb_and_json_pairs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``download_to`` routes a .pb + .json pair through ``_ensure_present`` for every model.
+    """``download_to`` routes a .pb + .json pair through ``_ensure_present_local`` for every model.
 
-    260608-jbg: ``download_to`` no longer calls ``_download_one`` directly -- the
-    validate-or-download decision lives in ``_ensure_present`` -- so this patches
-    that boundary instead.
+    260608-u8g: ``download_to`` no longer calls ``_download_one`` directly -- the
+    validate-or-download decision lives in ``_ensure_present_local`` (local size
+    compare) -- so this patches that boundary instead.
     """
     from phaze.scripts import download_models
 
     fetched: list[tuple[str, Path]] = []
 
-    def fake_ensure_present(url: str, dest: Path) -> None:
+    def fake_ensure_present_local(url: str, dest: Path, expected_size: int) -> None:
         fetched.append((url, dest))
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"\x00")
 
-    monkeypatch.setattr(download_models, "_ensure_present", fake_ensure_present)
+    monkeypatch.setattr(download_models, "_ensure_present_local", fake_ensure_present_local)
 
     download_models.download_to(tmp_path)
 
