@@ -273,6 +273,31 @@ All agent → server communication funnels through routers under
 bearer token (`get_authenticated_agent`), never from the request body, so a forged body
 field returns `422`. Full endpoint reference: [API Reference](api.md).
 
+## 🪵 Observability / logging
+
+Every process configures logging through one entry point —
+`phaze.logging_config.configure_logging()` — called exactly once per OS process: the FastAPI
+lifespan (before migrations), each SAQ worker `startup` hook (control + agent), the watcher
+`main()`, and the CLI / `download_models` scripts. Because each SAQ worker and the watcher run
+as their own OS process, they do **not** inherit the api's configuration; configuring inside
+each startup is what keeps worker and watcher logs visible in `docker logs`.
+
+`configure_logging()` builds a single [structlog](https://www.structlog.org/) `ProcessorFormatter`
+bridge that renders BOTH structlog-native events and foreign stdlib records — uvicorn's
+`uvicorn.error` / `uvicorn.access` and SAQ's loggers are re-routed through the same root
+handler — so one pipeline produces consistent output: JSON (one object per line) when stdout is
+not a TTY, and a human-friendly console renderer otherwise. A shared processor chain includes
+`PositionalArgumentsFormatter` so legacy `logger.info("text %s", value)` calls still interpolate,
+and noisy libraries (`httpx`, `httpcore`, `asyncio`) are pinned to `WARNING` unless the level is
+`DEBUG`. `logging_config.py` imports only stdlib + structlog (never `phaze.database` / SQLAlchemy)
+so it stays inside the agent's Postgres-free import boundary.
+
+The watcher calls `configure_logging()` bare (env-driven) **before** `get_settings()`, so a
+pydantic `ValidationError` for a missing `PHAZE_AGENT_*` var is still logged through the pipeline
+rather than crashing on settings construction. Verbose output for triaging a running scan or
+model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
+[Configuration → Logging / observability](configuration.md#logging--observability-all-roles)).
+
 ## 🧱 Key Abstractions
 
 ### Models (`src/phaze/models/`)
