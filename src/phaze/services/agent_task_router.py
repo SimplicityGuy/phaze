@@ -19,10 +19,10 @@ pyproject.toml (Plan 01).
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 from saq import Queue
+import structlog
 
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from phaze.models.file import FileRecord
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class AgentTaskRouter:

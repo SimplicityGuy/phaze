@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 import httpx
 from rapidfuzz import fuzz
+import structlog
 
 
 if TYPE_CHECKING:
     from phaze.models.tracklist import TracklistTrack
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class DiscogsographyClient:

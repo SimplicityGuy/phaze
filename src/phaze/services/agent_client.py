@@ -26,10 +26,10 @@ body so this module loads independent of Plan 03's merge order.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import structlog
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     )
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class AgentApiError(Exception):

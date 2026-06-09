@@ -28,12 +28,12 @@ default ``false``.
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 import secrets
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
+import structlog
 
 from phaze.config import settings
 from phaze.models.agent import Agent
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 _DEV_AGENT_ID = "dev-agent"

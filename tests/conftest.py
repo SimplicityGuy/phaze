@@ -72,6 +72,39 @@ def _isolate_pydantic_settings_from_env_file(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _route_structlog_through_stdlib() -> "AsyncGenerator[None]":  # type: ignore[misc]
+    """Configure structlog for the stdlib bridge per test, then reset (PR3 observability).
+
+    Production entry points call ``configure_logging()`` exactly once per OS process.
+    Unit tests do not boot an entry point, so without this the module-level
+    ``structlog.get_logger(__name__)`` loggers fall back to structlog's DEFAULT
+    ``PrintLoggerFactory`` -- which writes straight to stdout and bypasses stdlib
+    ``logging`` entirely. That breaks every ``caplog``-based assertion (caplog hooks
+    stdlib logging and would capture nothing).
+
+    Configuring here routes structlog through ``LoggerFactory`` + ``ProcessorFormatter``
+    so records propagate to the stdlib root logger and ``caplog`` captures them again,
+    with ``PositionalArgumentsFormatter`` interpolating legacy ``%s`` calls. Level is
+    ``DEBUG`` so DEBUG-level assertions work; ``json_logs=False`` keeps console output.
+    The teardown calls ``structlog.reset_defaults()`` and clears root handlers so a
+    ``configure_logging()`` call inside code-under-test (entry-point startups) cannot
+    leak global logging state into the next test.
+    """
+    import logging
+
+    import structlog
+
+    from phaze.logging_config import configure_logging
+
+    configure_logging(level="DEBUG", json_logs=False)
+    yield
+    structlog.reset_defaults()
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Auto-mark tests that require external services as integration tests.
 

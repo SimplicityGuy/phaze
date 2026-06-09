@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import itertools
-import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -14,6 +13,7 @@ import uuid
 
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+import structlog
 
 from phaze.constants import BULK_INSERT_BATCH_SIZE, EXTENSION_MAP, FileCategory
 from phaze.models.agent import LEGACY_AGENT_ID
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def normalize_path(path: str) -> str:

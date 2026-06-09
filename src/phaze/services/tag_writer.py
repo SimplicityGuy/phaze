@@ -7,13 +7,13 @@ NFC Unicode normalization. Creates TagWriteLog audit entries.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 import unicodedata
 
 import mutagen
 from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TRCK
 from mutagen.mp4 import MP4
+import structlog
 
 from phaze.models.file import FileState
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from phaze.models.file import FileRecord
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Write maps: field name -> format-specific key/class
 _WRITE_ID3_MAP: dict[str, type] = {

@@ -10,7 +10,6 @@ Every operation is logged to ExecutionLog BEFORE execution (write-ahead per EXE-
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING
@@ -18,6 +17,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+import structlog
 
 from phaze.config import settings
 from phaze.models.execution import ExecutionLog, ExecutionStatus
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
     from phaze.models.file import FileRecord
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def log_operation(
