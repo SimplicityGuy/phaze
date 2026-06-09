@@ -152,6 +152,8 @@ curl http://localhost:8000/health   # Verify: {"status": "ok"}
 > **Logging:** all processes log through one structlog pipeline (JSON when not a TTY, console otherwise). Tune with `PHAZE_LOG_LEVEL` (`DEBUG`\|`INFO`\|`WARNING`\|`ERROR`, default `INFO`) and `PHAZE_LOG_JSON` (`true`\|`false`, default auto); set `PHAZE_LOG_LEVEL=DEBUG` to watch a running scan or model download in detail. See [Configuration → Logging / observability](docs/configuration.md#logging--observability-all-roles).
 
 > **Scan activity & stall reaping:** RUNNING scans show a live activity indicator (a green pulsing dot + "·Ns ago" in the Recent Scans table and the in-progress card) and flip to an amber "stalled?" warning when quiet. A control-side cron auto-fails scans that make no progress for `PHAZE_SCAN_STALL_SECONDS` (default `600`). See the [`PHAZE_SCAN_STALL_SECONDS` configuration row](docs/configuration.md#worker--task-queue-settings-all-roles).
+>
+> **Deleting a scan:** terminal scans (`completed` / `failed`) carry a delete control in the Recent Scans table that removes the scan batch and every row associated with its files in one transaction (scoped strictly to that batch — no other scan's data is touched). Running scans and the live watcher sentinel cannot be deleted.
 
 See the [Quick Start Guide](docs/quick-start.md) for prerequisites, local development setup, and environment configuration.
 

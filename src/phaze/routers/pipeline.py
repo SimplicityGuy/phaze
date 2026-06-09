@@ -19,8 +19,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
-from phaze.models.scan_batch import ScanBatch, ScanStatus
-from phaze.routers.pipeline_scans import elapsed_seconds, is_scan_stalled, seconds_since_progress
+from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
 
@@ -139,27 +138,12 @@ async def dashboard(
     agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
     agents = (await session.execute(agents_stmt)).scalars().all()
 
-    # Phase 27 D-05 / UI-SPEC Component 4: last 10 non-LIVE ScanBatches.
-    # The LIVE sentinel is the watcher's terminal state -- excluded from the
-    # operator-facing Recent Scans table per UI-SPEC line 401.
-    recent_scans_stmt = select(ScanBatch).where(ScanBatch.status != ScanStatus.LIVE.value).order_by(ScanBatch.created_at.desc()).limit(10)
-    recent_scans_rows = list((await session.execute(recent_scans_stmt)).scalars().all())
-
-    # Resolve agent_name + elapsed_seconds per row via a dict lookup
-    # (avoids N+1; one indexed agents query above already loaded every agent).
-    # elapsed_seconds is the gap-14 shared helper -- the actual postgres column
-    # type is TIMESTAMP WITH TIME ZONE so we MUST compare aware-to-aware
-    # (see phaze.routers.pipeline_scans.elapsed_seconds docstring).
-    agent_name_by_id = {a.id: a.name for a in agents}
-    for batch in recent_scans_rows:
-        # Attach as transient attrs for template consumption.
-        batch._agent_name = agent_name_by_id.get(batch.agent_id, batch.agent_id)  # type: ignore[attr-defined]
-        batch._elapsed_seconds = elapsed_seconds(batch) if batch.created_at else None  # type: ignore[attr-defined]
-        # PR4: activity indicator attrs for the Recent Scans table (green pulse +
-        # "·Ns ago" while progressing; amber "stalled?" once quiet past the warn
-        # threshold). Only RUNNING rows render the affordance in the template.
-        batch._seconds_since_progress = seconds_since_progress(batch) if batch.created_at else None  # type: ignore[attr-defined]
-        batch._is_stalled = is_scan_stalled(batch)  # type: ignore[attr-defined]
+    # Phase 27 D-05 / UI-SPEC Component 4: last 10 non-LIVE ScanBatches with their
+    # transient UI attrs (_agent_name / _elapsed_seconds / _seconds_since_progress /
+    # _is_stalled) attached. PR5 gap-14: the query + attachment lives in the shared
+    # build_recent_scans helper so the dashboard and the delete endpoint cannot
+    # drift apart (a duplicated copy once crashed this table on a tz-aware row).
+    recent_scans_rows = await build_recent_scans(session)
 
     context = {
         "request": request,

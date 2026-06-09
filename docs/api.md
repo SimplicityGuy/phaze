@@ -39,6 +39,9 @@ Admin-UI endpoints that drive the user-initiated scan flow on the pipeline dashb
 | GET    | `/pipeline/scans/agent-roots`  | Agent scan-root selector (HTMX partial)            |
 | POST   | `/pipeline/scans`              | Create a scan batch and dispatch it to an agent    |
 | GET    | `/pipeline/scans/{batch_id}`   | Scan-batch progress (HTMX poll partial)            |
+| DELETE | `/pipeline/scans/{batch_id}`   | Delete a terminal scan + all associated DB data (HTMX) |
+
+Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs an ordered transactional cascade that removes the `ScanBatch` and every row that hangs off its files (metadata, analysis, fingerprints, proposals + execution log, tracklists → versions → tracks → discogs links, tag-write log, file companions, files), scoped strictly to that batch. A `running` scan or the `live` watcher sentinel returns **409** and is never deleted. On success the endpoint returns the re-rendered Recent Scans table for an HTMX `outerHTML` swap into `#recent-scans`.
 
 ## Proposals (`/proposals`)
 
