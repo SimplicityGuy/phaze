@@ -42,6 +42,15 @@ class ScanBatch(TimestampMixin, Base):
     # to match the runtime type of TimestampMixin's columns (see the
     # elapsed_seconds docstring in routers/pipeline_scans.py).
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Per-progress heartbeat: stamped every time the scan makes real progress
+    # (agent PATCH applying a non-no-op change, both create paths, run_scan's
+    # terminal updates). Drives the admin UI's "live activity" indicator (green
+    # pulsing dot + "·Ns ago") and the control-side stall reaper, which marks a
+    # RUNNING batch FAILED once this heartbeat is older than scan_stall_seconds.
+    # tz-aware to match TimestampMixin's columns (see elapsed_seconds in
+    # routers/pipeline_scans.py). Nullable: legacy rows are backfilled to
+    # updated_at by migration 017.
+    last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_scan_batches_agent_id", "agent_id"),
