@@ -91,14 +91,33 @@ class AgentTaskRouter:
         agent_id: str,
         task_name: str,
         payload: BaseModel,
+        timeout: int | None = None,
+        retries: int | None = None,
     ) -> Any:
         """Enqueue ``task_name`` with ``payload.model_dump()`` kwargs onto agent's queue.
 
         Returns the SAQ Job object from ``queue.enqueue(...)``. Callers may
         ignore the return; it is exposed for tests and instrumentation.
+
+        ``timeout`` / ``retries`` are optional per-job overrides. When provided
+        they are forwarded to ``queue.enqueue(...)`` as saq.Job dataclass fields
+        (SAQ applies any kwarg matching a Job field as a Job property, not a
+        function argument). When ``None`` (the default), neither key is passed,
+        so the queue's ``apply_project_job_defaults`` before_enqueue hook applies
+        the role's policy defaults. An explicit ``timeout=0`` disables the SAQ
+        wall-clock timeout entirely (runs under ``wait_for(..., None)`` ->
+        unbounded; ``Job.stuck`` stays False) -- used by ``scan_directory``,
+        whose liveness is enforced by the progress-based stall reaper instead.
+        ScanDirectoryPayload fields (scan_path/batch_id/agent_id) never collide
+        with Job fields; the explicit overrides are merged last so they win.
         """
         queue = self._queue_for(agent_id)
         dumped = payload.model_dump(mode="json")
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
+        if retries is not None:
+            extra["retries"] = retries
         # PR3: INFO so a real per-agent enqueue is visible in operational logs. file_id /
         # batch_id are bound when the payload carries them (None otherwise). No secrets.
         logger.info(
@@ -108,8 +127,10 @@ class AgentTaskRouter:
             agent=agent_id,
             file_id=dumped.get("file_id"),
             batch_id=dumped.get("batch_id"),
+            timeout=timeout,
+            retries=retries,
         )
-        return await queue.enqueue(task_name, **dumped)
+        return await queue.enqueue(task_name, **dumped, **extra)
 
     async def enqueue_for_file(
         self,
@@ -117,12 +138,20 @@ class AgentTaskRouter:
         file_record: FileRecord,
         task_name: str,
         payload: BaseModel,
+        timeout: int | None = None,
+        retries: int | None = None,
     ) -> Any:
-        """Enqueue using ``file_record.agent_id`` (Phase 24 FK to agents.id)."""
+        """Enqueue using ``file_record.agent_id`` (Phase 24 FK to agents.id).
+
+        ``timeout`` / ``retries`` pass through to :meth:`enqueue_for_agent` for
+        consistency; ``None`` (default) leaves the policy defaults in place.
+        """
         return await self.enqueue_for_agent(
             agent_id=file_record.agent_id,
             task_name=task_name,
             payload=payload,
+            timeout=timeout,
+            retries=retries,
         )
 
     async def close(self) -> None:

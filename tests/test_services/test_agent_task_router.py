@@ -105,6 +105,53 @@ async def test_close_empties_cache(router) -> None:  # type: ignore[no-untyped-d
 
 
 @pytest.mark.integration
+async def test_enqueue_forwards_timeout_and_retries_when_provided(router) -> None:  # type: ignore[no-untyped-def]
+    """enqueue_for_agent forwards explicit timeout/retries to queue.enqueue.
+
+    scan_directory disables its SAQ wall-clock timeout (timeout=0 -> unbounded)
+    and retries (retries=0) so a long-running bulk archive walk is never killed
+    mid-progress. SAQ applies any kwarg matching a Job dataclass field as a Job
+    property, so the enqueued Job must carry timeout==0 / retries==0 verbatim.
+    """
+    payload = _make_payload("agent-timeout-fwd")
+    job = await router.enqueue_for_agent(
+        agent_id="agent-timeout-fwd",
+        task_name="extract_file_metadata",
+        payload=payload,
+        timeout=0,
+        retries=0,
+    )
+    # SAQ returns the Job; explicit timeout=0/retries=0 win over the
+    # apply_project_job_defaults hook (the hook only overrides SAQ's 10/1
+    # defaults, and 0 != 10, 0 != 1).
+    assert job.timeout == 0
+    assert job.retries == 0
+
+
+@pytest.mark.integration
+async def test_enqueue_omits_timeout_and_retries_when_not_provided(router) -> None:  # type: ignore[no-untyped-def]
+    """When timeout/retries are not passed, neither key reaches queue.enqueue.
+
+    Omitting the keys lets the per-agent queue's apply_project_job_defaults
+    before_enqueue hook apply the role's policy defaults (worker_job_timeout /
+    worker_max_retries) -- so the enqueued Job must NOT carry the SAQ raw
+    defaults (10s / 1 retry) nor the explicit 0 used by scan_directory.
+    """
+    from phaze.config import get_settings
+
+    cfg = get_settings()
+    payload = _make_payload("agent-default-fwd")
+    job = await router.enqueue_for_agent(
+        agent_id="agent-default-fwd",
+        task_name="extract_file_metadata",
+        payload=payload,
+    )
+    # The before_enqueue hook bumped the SAQ defaults to the project policy.
+    assert job.timeout == cfg.worker_job_timeout
+    assert job.retries == cfg.worker_max_retries
+
+
+@pytest.mark.integration
 async def test_enqueue_for_file_derives_agent_id(router) -> None:  # type: ignore[no-untyped-def]
     """enqueue_for_file uses FileRecord.agent_id to pick the queue.
 

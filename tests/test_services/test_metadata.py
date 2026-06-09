@@ -4,11 +4,18 @@ from unittest.mock import MagicMock, patch
 
 from phaze.services.metadata import (
     ExtractedTags,
+    _first_str,
     _parse_track,
     _parse_year,
+    _sanitize_pg_text,
     _serialize_tags,
     extract_tags,
 )
+
+
+def _has_surrogate(s: str) -> bool:
+    """Return True if any char in the string is a Unicode surrogate (U+D800-U+DFFF)."""
+    return any("\ud800" <= ch <= "\udfff" for ch in s)
 
 
 class TestParseYear:
@@ -381,3 +388,197 @@ class TestExtractTagsDurationBitrate:
 
         assert result.duration is None
         assert result.bitrate is None
+
+
+class TestStripsNulBytes:
+    """Regression tests: NUL bytes (U+0000) must never leave the agent.
+
+    PostgreSQL text/jsonb columns reject U+0000, so messy archive tags
+    containing NUL bytes must be stripped from both the normalized string
+    fields (via _first_str) and raw_tags (via _serialize_tags).
+    """
+
+    def test_first_str_strips_nul_from_scalar(self):
+        assert _first_str("a\x00b") == "ab"
+
+    def test_first_str_strips_nul_from_list(self):
+        assert _first_str(["x\x00y"]) == "xy"
+
+    def test_first_str_none_still_returns_none(self):
+        assert _first_str(None) is None
+
+    def test_first_str_empty_list_still_returns_none(self):
+        assert _first_str([]) is None
+
+    def test_serialize_tags_strips_nul_everywhere(self):
+        tags = MagicMock()
+        tags.items.return_value = [
+            ("TIT2", "Song\x00Title"),
+            ("artist", ["Art\x00ist"]),
+            ("KE\x00Y", "val"),
+        ]
+
+        result = _serialize_tags(tags)
+
+        for key, value in result.items():
+            assert "\x00" not in key
+            if isinstance(value, list):
+                for item in value:
+                    assert "\x00" not in item
+            else:
+                assert "\x00" not in value
+
+        assert result["TIT2"] == "SongTitle"
+        assert result["artist"] == ["Artist"]
+        assert result["KEY"] == "val"
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_extract_tags_strips_nul_from_id3(self, mock_file):
+        from mutagen.id3 import ID3
+
+        mock_audio = MagicMock()
+        mock_tags = MagicMock(spec=ID3)
+
+        mock_tpe1 = MagicMock()
+        mock_tpe1.text = ["Test\x00Artist"]
+
+        def id3_get(key):
+            if key == "TPE1":
+                return mock_tpe1
+            return None
+
+        mock_tags.get = id3_get
+        mock_tags.items.return_value = [("TPE1", mock_tpe1)]
+
+        mock_audio.tags = mock_tags
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 100.0
+        mock_audio.info.bitrate = 128000
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.mp3")
+
+        assert result.artist == "TestArtist"
+        assert "\x00" not in result.artist
+        for value in result.raw_tags.values():
+            if isinstance(value, list):
+                for item in value:
+                    assert "\x00" not in item
+            else:
+                assert "\x00" not in value
+
+
+class TestSanitizePgText:
+    """Direct tests for _sanitize_pg_text: strip NUL + lone surrogates, preserve the rest."""
+
+    def test_strips_nul(self):
+        assert _sanitize_pg_text("a\x00b") == "ab"
+
+    def test_strips_lone_high_surrogate(self):
+        result = _sanitize_pg_text("a\ud83db")
+        assert result == "ab"
+        assert not _has_surrogate(result)
+
+    def test_strips_lone_low_surrogate(self):
+        result = _sanitize_pg_text("a\udc00b")
+        assert result == "ab"
+        assert not _has_surrogate(result)
+
+    def test_strips_entire_surrogate_range(self):
+        for cp in (0xD800, 0xDABC, 0xDC00, 0xDFFF):
+            assert _sanitize_pg_text(chr(cp)) == ""
+
+    def test_preserves_c0_control_char(self):
+        # U+0007 BELL is a legal C0 control char in a UTF8 text/jsonb column -- must survive.
+        assert _sanitize_pg_text("a\x07b") == "a\x07b"
+
+    def test_preserves_noncharacter(self):
+        # U+FFFE is a Unicode noncharacter but is valid in a UTF8 PostgreSQL column.
+        assert _sanitize_pg_text("a￾b") == "a￾b"
+
+    def test_preserves_valid_astral_char(self):
+        # A real astral character (single code point, not a surrogate pair) must survive.
+        assert _sanitize_pg_text("emoji \U0001f600 ok") == "emoji \U0001f600 ok"
+
+
+class TestStripsLoneSurrogates:
+    """Regression tests: lone Unicode surrogates (U+D800-U+DFFF) must never leave the agent.
+
+    PostgreSQL jsonb rejects lone surrogates and asyncpg cannot encode them to UTF-8,
+    so they must be stripped from normalized fields and raw_tags alike.
+    """
+
+    def test_first_str_strips_lone_high_surrogate(self):
+        result = _first_str("hi\ud83dthere")
+        assert result is not None
+        assert not _has_surrogate(result)
+        assert result == "hithere"
+
+    def test_first_str_strips_lone_low_surrogate_from_list(self):
+        result = _first_str(["lo\udc00w"])
+        assert result is not None
+        assert not _has_surrogate(result)
+        assert result == "low"
+
+    def test_serialize_tags_strips_surrogates_everywhere(self):
+        tags = MagicMock()
+        tags.items.return_value = [
+            ("TIT2", "Song\ud83dTitle"),
+            ("artist", ["Art\udc00ist"]),
+            ("KE\ud800Y", "val"),
+        ]
+
+        result = _serialize_tags(tags)
+
+        for key, value in result.items():
+            assert not _has_surrogate(key)
+            assert "\x00" not in key
+            if isinstance(value, list):
+                for item in value:
+                    assert not _has_surrogate(item)
+                    assert "\x00" not in item
+            else:
+                assert not _has_surrogate(value)
+                assert "\x00" not in value
+
+        assert result["TIT2"] == "SongTitle"
+        assert result["artist"] == ["Artist"]
+        assert result["KEY"] == "val"
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_extract_tags_strips_surrogates_from_id3(self, mock_file):
+        from mutagen.id3 import ID3
+
+        mock_audio = MagicMock()
+        mock_tags = MagicMock(spec=ID3)
+
+        mock_tpe1 = MagicMock()
+        mock_tpe1.text = ["Test\ud83dArtist"]
+        mock_tit2 = MagicMock()
+        mock_tit2.text = ["Ti\udc00tle"]
+
+        def id3_get(key):
+            return {"TPE1": mock_tpe1, "TIT2": mock_tit2}.get(key)
+
+        mock_tags.get = id3_get
+        mock_tags.items.return_value = [("TPE1", mock_tpe1), ("TIT2", mock_tit2)]
+
+        mock_audio.tags = mock_tags
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 100.0
+        mock_audio.info.bitrate = 128000
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.mp3")
+
+        assert result.artist == "TestArtist"
+        assert result.title == "Title"
+        assert result.artist is not None and not _has_surrogate(result.artist)
+        assert result.title is not None and not _has_surrogate(result.title)
+        for value in result.raw_tags.values():
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                assert not _has_surrogate(item)
+                assert "\x00" not in item

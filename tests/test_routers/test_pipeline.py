@@ -364,8 +364,20 @@ async def test_dashboard_renders_green_pulse_for_progressing_running_scan(client
 
 
 @pytest.mark.asyncio
-async def test_dashboard_renders_amber_stalled_for_quiet_running_scan(client: AsyncClient, session: AsyncSession) -> None:
-    """A RUNNING scan quiet past the UI warn threshold (half of 600 -> 300s) renders 'stalled?'."""
+async def test_dashboard_renders_amber_stalled_for_quiet_running_scan(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A RUNNING scan quiet past the UI warn threshold renders 'stalled?'.
+
+    The default scan_stall_seconds is now 86400 (24h); this test pins it to 600
+    for determinism so the warn threshold is half of 600 -> 300s (400s quiet > 300s).
+    """
+    from phaze.config import get_settings
+    from phaze.routers import pipeline_scans
+
+    pinned = get_settings().model_copy(update={"scan_stall_seconds": 600})
+    monkeypatch.setattr(pipeline_scans, "get_settings", lambda: pinned)
+
     await _seed_running_scan(session, seconds_quiet=400, scan_path="/music/quiet")
     response = await client.get("/pipeline/")
     assert response.status_code == 200
@@ -374,9 +386,18 @@ async def test_dashboard_renders_amber_stalled_for_quiet_running_scan(client: As
 
 
 @pytest.mark.asyncio
-async def test_dashboard_attaches_activity_attrs(client: AsyncClient, session: AsyncSession) -> None:
-    """The dashboard handler attaches _seconds_since_progress and _is_stalled per row."""
+async def test_dashboard_attaches_activity_attrs(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dashboard handler attaches _seconds_since_progress and _is_stalled per row.
+
+    The default scan_stall_seconds is now 86400 (24h); this test pins it to 600
+    for determinism so the warn threshold is half of 600 -> 300s (400s quiet > 300s).
+    """
+    from phaze.config import get_settings
+    from phaze.routers import pipeline_scans
     from phaze.routers.pipeline import dashboard
+
+    pinned = get_settings().model_copy(update={"scan_stall_seconds": 600})
+    monkeypatch.setattr(pipeline_scans, "get_settings", lambda: pinned)
 
     await _seed_running_scan(session, seconds_quiet=400, scan_path="/music/attrs")
     # Invoke the handler body directly via a tiny request stub is heavy; instead

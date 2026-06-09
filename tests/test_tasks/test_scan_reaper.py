@@ -88,9 +88,12 @@ async def test_reaps_stalled_running_batch(
     async_engine: AsyncEngine,
     session: AsyncSession,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A RUNNING batch quiet past scan_stall_seconds -> FAILED + stalled message + completed_at + WARNING."""
-    # Default scan_stall_seconds is 600; a 700s-old heartbeat is unambiguously stalled.
+    # Pin the threshold to 600 so a 700s-old heartbeat is unambiguously stalled
+    # regardless of the production default (now 86400 / 24h).
+    _patch_threshold(monkeypatch, seconds=600)
     now = datetime.now(UTC)
     stalled_id = await _seed(session, status=ScanStatus.RUNNING, last_progress_at=now - timedelta(seconds=700))
 

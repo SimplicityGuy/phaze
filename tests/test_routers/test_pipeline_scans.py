@@ -378,6 +378,12 @@ async def test_post_scans_happy_path(
     assert payload.scan_path == "/data/music/2026/"
     assert payload.agent_id == "test-agent"
     assert isinstance(payload.batch_id, uuid.UUID)
+    # scan_directory is a long-running bulk walk: enqueue MUST disable the SAQ
+    # wall-clock timeout (timeout=0 -> unbounded) and retries (retries=0) so a
+    # healthy, progressing scan is never killed/looped. Liveness is enforced by
+    # the progress-based stall reaper (config.scan_stall_seconds).
+    assert call.kwargs["timeout"] == 0
+    assert call.kwargs["retries"] == 0
 
     # Exactly one new ScanBatch row.
     post_count = await _count_batches(session)
@@ -1198,12 +1204,18 @@ def test_seconds_since_progress_handles_tz_naive_as_utc() -> None:
     assert 40 <= seconds_since_progress(b) <= 60
 
 
-def test_is_scan_stalled_true_when_quiet_past_warn_threshold() -> None:
-    """A RUNNING batch quiet past half scan_stall_seconds (default 600 -> 300s) is stalled."""
+def test_is_scan_stalled_true_when_quiet_past_warn_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A RUNNING batch quiet past half scan_stall_seconds (pinned 600 -> 300s) is stalled.
+
+    The production default is now 86400 (24h); pin it to 600 here so the 400s-quiet
+    batch is unambiguously past the half-threshold warn line regardless of the default.
+    """
     from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
 
     from phaze.routers.pipeline_scans import is_scan_stalled
 
+    monkeypatch.setattr(pipeline_scans, "get_settings", lambda: SimpleNamespace(scan_stall_seconds=600))
     b = _running_batch(datetime.now(UTC) - timedelta(seconds=400))
     assert is_scan_stalled(b) is True
 
