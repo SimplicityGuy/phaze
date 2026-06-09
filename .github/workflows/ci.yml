@@ -3,7 +3,13 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    # Only main + release tags. Feature-branch CI runs via the pull_request
+    # event below, so pushing a branch that also has an open PR no longer
+    # triggers two competing runs that cancel each other on the concurrency
+    # group. Also stops docker-publish (push: github.event_name != 'pull_request')
+    # from publishing images off feature-branch pushes -- publishing now only
+    # happens on main and v*.*.* tags.
+    branches: ["main"]
     tags: ["v*.*.*"]
   pull_request:
     branches: ["**"]
