@@ -382,10 +382,21 @@ async def trigger_scan(
     # commit in its own try/except so a Postgres-down scenario still produces
     # the 503 envelope instead of bubbling to a 500.
     try:
+        # scan_directory is a long-running BULK archive walk (a full SHA-256 walk
+        # of a large network-mounted archive legitimately takes 1-2h). A fixed SAQ
+        # wall-clock timeout would kill a healthy, progressing scan and -- because
+        # SAQ retries restart the job FROM SCRATCH with no checkpoint -- loop
+        # forever, so a full scan could never complete. Disable the wall-clock
+        # timeout (timeout=0 -> wait_for(..., None) unbounded; Job.stuck stays
+        # False so the saq sweep never reaps it either) and disable retries (a
+        # restart-from-zero retry is wasteful; the operator re-triggers). Liveness
+        # is enforced by the progress-based stall reaper (config.scan_stall_seconds).
         await request.app.state.task_router.enqueue_for_agent(
             agent_id=form.agent_id,
             task_name="scan_directory",
             payload=ScanDirectoryPayload(scan_path=joined, batch_id=batch.id, agent_id=form.agent_id),
+            timeout=0,
+            retries=0,
         )
     except Exception:
         logger.exception("scan trigger: enqueue failed for batch=%s; marking FAILED", batch.id)
