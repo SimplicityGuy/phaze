@@ -35,6 +35,8 @@ async def fingerprint_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]
     api: PhazeAgentClient = ctx["api_client"]
     orchestrator: FingerprintOrchestrator = ctx["fingerprint_orchestrator"]
 
+    logger.info("fingerprint started", file_id=str(payload.file_id))
+
     # Submit to both audfprint + panako (local sidecars)
     results = await orchestrator.ingest_all(payload.original_path)
 
@@ -46,10 +48,13 @@ async def fingerprint_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]
             error_message=engine_result.error,
         )
         await api.put_fingerprint(payload.file_id, engine_name, body)
+        logger.debug("fingerprint engine result", file_id=str(payload.file_id), engine=engine_name, status=engine_result.status)
         if engine_result.status != "success":
             all_success = False
 
+    status = "fingerprinted" if all_success else "partial"
+    logger.info("fingerprint completed", file_id=str(payload.file_id), status=status, engines=len(results))
     return {
         "file_id": str(payload.file_id),
-        "status": "fingerprinted" if all_success else "partial",
+        "status": status,
     }

@@ -115,11 +115,13 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
     Per D-14: auto-link if confidence >= 90.
     Retries with exponential backoff are handled by SAQ queue configuration.
     """
+    logger.info("tracklist search started", file_id=file_id)
     async with ctx["async_session"]() as session:
         # Load file with metadata
         result = await session.execute(select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(FileRecord.id == uuid.UUID(file_id)))
         file_record = result.scalar_one_or_none()
         if file_record is None:
+            logger.info("tracklist search completed", file_id=file_id, status="not_found", results_found=0)
             return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "not_found"}
 
         # Parse filename for artist/event/date signals
@@ -140,6 +142,7 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
         elif file_artist:
             query = file_artist
         else:
+            logger.info("tracklist search completed", file_id=file_id, status="no_query", results_found=0)
             return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "no_query"}
 
         # Search and scrape
@@ -172,6 +175,12 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
                 )
 
             await session.commit()
+            logger.info(
+                "tracklist search completed",
+                file_id=file_id,
+                results_found=len(results),
+                auto_linked=any_auto_linked,
+            )
             return {"file_id": file_id, "results_found": len(results), "auto_linked": any_auto_linked}
         finally:
             await scraper.close()
@@ -183,10 +192,12 @@ async def scrape_and_store_tracklist(ctx: dict[str, Any], *, tracklist_id: str) 
     Used for manual re-scrape action and refresh jobs.
     Retries with exponential backoff are handled by SAQ queue configuration.
     """
+    logger.info("tracklist scrape started", tracklist_id=tracklist_id)
     async with ctx["async_session"]() as session:
         result = await session.execute(select(Tracklist).where(Tracklist.id == uuid.UUID(tracklist_id)))
         tracklist = result.scalar_one_or_none()
         if tracklist is None:
+            logger.info("tracklist scrape completed", tracklist_id=tracklist_id, status="not_found", tracks_found=0)
             return {"tracklist_id": tracklist_id, "tracks_found": 0, "version": 0, "status": "not_found"}
 
         scraper = TracklistScraper()
@@ -206,6 +217,12 @@ async def scrape_and_store_tracklist(ctx: dict[str, Any], *, tracklist_id: str) 
             version_number = latest.version_number if latest else 0
             tracks_found = len(scraped.tracks)
 
+            logger.info(
+                "tracklist scrape completed",
+                tracklist_id=tracklist_id,
+                tracks_found=tracks_found,
+                version=version_number,
+            )
             return {"tracklist_id": tracklist_id, "tracks_found": tracks_found, "version": version_number}
         finally:
             await scraper.close()

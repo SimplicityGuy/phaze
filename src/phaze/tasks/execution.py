@@ -361,6 +361,13 @@ async def execute_approved_batch(ctx: dict[str, Any], **kwargs: Any) -> dict[str
     payload = ExecuteApprovedBatchPayload.model_validate(kwargs)
     api: PhazeAgentClient = ctx["api_client"]
 
+    logger.info(
+        "execute batch started",
+        batch_id=str(payload.batch_id),
+        agent=payload.agent_id,
+        proposals=len(payload.proposals),
+    )
+
     cfg = get_settings()
     scan_roots: list[str] = list(cfg.scan_roots) if isinstance(cfg, AgentSettings) else []
     if not scan_roots:
@@ -403,6 +410,13 @@ async def execute_approved_batch(ctx: dict[str, Any], **kwargs: Any) -> dict[str
 
     final_status = "completed" if errors == 0 else "completed_with_errors"
 
+    logger.info(
+        "execute batch completed",
+        batch_id=str(payload.batch_id),
+        status=final_status,
+        processed_count=processed,
+        error_count=errors,
+    )
     return {
         "batch_id": str(payload.batch_id),
         "status": final_status,

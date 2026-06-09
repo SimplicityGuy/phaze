@@ -84,8 +84,18 @@ class AgentTaskRouter:
         ignore the return; it is exposed for tests and instrumentation.
         """
         queue = self._queue_for(agent_id)
-        logger.debug("enqueue agent=%s task=%s", agent_id, task_name)
-        return await queue.enqueue(task_name, **payload.model_dump(mode="json"))
+        dumped = payload.model_dump(mode="json")
+        # PR3: INFO so a real per-agent enqueue is visible in operational logs. file_id /
+        # batch_id are bound when the payload carries them (None otherwise). No secrets.
+        logger.info(
+            "task enqueued",
+            queue=f"phaze-agent-{agent_id}",
+            function=task_name,
+            agent=agent_id,
+            file_id=dumped.get("file_id"),
+            batch_id=dumped.get("batch_id"),
+        )
+        return await queue.enqueue(task_name, **dumped)
 
     async def enqueue_for_file(
         self,
