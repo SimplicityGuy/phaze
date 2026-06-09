@@ -371,3 +371,56 @@ async def test_bulk_upsert_same_path_different_agent(session) -> None:  # type: 
     assert len(rows) == 2
     agent_ids = {r.agent_id for r in rows}
     assert agent_ids == {LEGACY_AGENT_ID, "agent-b"}
+
+
+# --- run_scan terminal completed_at stamping (incident 260609) ---
+
+
+@_skip_no_db
+@pytest.mark.asyncio
+async def test_run_scan_success_stamps_completed_at(async_engine, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """run_scan success transition stamps completed_at (tz-aware) alongside COMPLETED."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from phaze.models.scan_batch import ScanBatch, ScanStatus
+    from phaze.services.ingestion import run_scan
+
+    factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    (tmp_path / "track.mp3").write_bytes(b"music data")
+    batch_id = uuid.uuid4()
+
+    await run_scan(str(tmp_path), batch_id, factory, queue=None)
+
+    async with factory() as session:
+        batch = await session.get(ScanBatch, batch_id)
+    assert batch is not None
+    assert batch.status == ScanStatus.COMPLETED
+    assert batch.completed_at is not None
+    assert batch.completed_at.tzinfo is not None
+
+
+@_skip_no_db
+@pytest.mark.asyncio
+async def test_run_scan_failure_stamps_completed_at_and_reraises(async_engine, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """run_scan failure stamps completed_at + FAILED + error_message, then re-raises."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from phaze.models.scan_batch import ScanBatch, ScanStatus
+    from phaze.services.ingestion import run_scan
+
+    factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    batch_id = uuid.uuid4()
+
+    with (
+        patch("phaze.services.ingestion.discover_and_hash_files", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        await run_scan(str(tmp_path), batch_id, factory, queue=None)
+
+    async with factory() as session:
+        batch = await session.get(ScanBatch, batch_id)
+    assert batch is not None
+    assert batch.status == ScanStatus.FAILED
+    assert batch.completed_at is not None
+    assert batch.completed_at.tzinfo is not None
+    assert batch.error_message == "boom"

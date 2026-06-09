@@ -269,6 +269,81 @@ def test_elapsed_seconds_handles_tz_naive_completed_at_as_utc() -> None:
     assert 58 <= elapsed <= 62, f"expected frozen elapsed near 60s, got {elapsed}"
 
 
+def test_elapsed_seconds_freezes_terminal_completed_with_null_completed_at() -> None:
+    """Incident 260609: a COMPLETED row with NULL completed_at freezes at updated_at.
+
+    Legacy / pre-backfill terminal rows never stamped completed_at. The defensive
+    read must freeze them at ``updated_at`` (the recorded transition time) rather
+    than tracking ``now`` forever. created_at = now-100s, updated_at = now-40s
+    -> elapsed ~= 60s, NOT ~100s.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import elapsed_seconds
+
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.COMPLETED.value,
+        total_files=0,
+        processed_files=0,
+    )
+    now = datetime.now(UTC)
+    batch.created_at = now - timedelta(seconds=100)
+    batch.updated_at = now - timedelta(seconds=40)
+    batch.completed_at = None
+
+    elapsed = elapsed_seconds(batch)
+    assert 58 <= elapsed <= 62, f"expected frozen elapsed near 60s, got {elapsed}"
+
+
+def test_elapsed_seconds_freezes_terminal_failed_with_null_completed_at() -> None:
+    """A FAILED row with NULL completed_at also freezes at updated_at (terminal set)."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import elapsed_seconds
+
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.FAILED.value,
+        total_files=0,
+        processed_files=0,
+    )
+    now = datetime.now(UTC)
+    batch.created_at = now - timedelta(seconds=100)
+    batch.updated_at = now - timedelta(seconds=40)
+    batch.completed_at = None
+
+    elapsed = elapsed_seconds(batch)
+    assert 58 <= elapsed <= 62, f"expected frozen elapsed near 60s, got {elapsed}"
+
+
+def test_elapsed_seconds_terminal_null_treats_tz_naive_updated_at_as_utc() -> None:
+    """A terminal+NULL row with a tz-naive updated_at is treated as UTC and frozen."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import elapsed_seconds
+
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.COMPLETED.value,
+        total_files=0,
+        processed_files=0,
+    )
+    now = datetime.now(UTC)
+    batch.created_at = (now - timedelta(seconds=100)).replace(tzinfo=None)
+    batch.updated_at = (now - timedelta(seconds=40)).replace(tzinfo=None)
+    batch.completed_at = None
+
+    elapsed = elapsed_seconds(batch)
+    assert 58 <= elapsed <= 62, f"expected frozen elapsed near 60s, got {elapsed}"
+
+
 # ---------------------------------------------------------------------------
 # Task 1 (router contract) tests
 # ---------------------------------------------------------------------------
