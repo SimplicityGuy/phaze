@@ -20,7 +20,6 @@ precedent; CONTEXT.md D-discretion).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import logging
 from pathlib import Path
 from typing import Annotated
 
@@ -29,6 +28,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI needs runtime import to resolve Annotated[AsyncSession, Depends(...)]
+import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
@@ -36,7 +36,7 @@ from phaze.services.agent_liveness import classify, sort_key
 from phaze.utils.humanize import relative_time
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))

@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import json
-import logging
 import math
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +30,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
+import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))

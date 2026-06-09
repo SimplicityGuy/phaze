@@ -24,7 +24,6 @@ populated; missing/revoked/empty agents render the yellow-surface empty state.
 """
 
 from datetime import UTC, datetime
-import logging
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 import unicodedata
@@ -34,6 +33,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
@@ -42,7 +42,7 @@ from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))

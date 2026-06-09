@@ -35,12 +35,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import signal
 import sys
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
+import structlog
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from watchdog.observers.api import BaseObserver
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _log_settings_validation_error(exc: ValidationError) -> None:

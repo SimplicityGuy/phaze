@@ -48,7 +48,6 @@ The single positional argument defaults to ``./models``. The Bash shim
 
 from __future__ import annotations
 
-import logging
 import os
 from pathlib import Path
 import random
@@ -60,6 +59,7 @@ from typing import TYPE_CHECKING
 import urllib.error
 
 import httpx
+import structlog
 
 from phaze.logging_config import configure_logging
 
@@ -68,7 +68,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _CLASSIFIER_BASE = "https://essentia.upf.edu/models/classifiers"
 _GENRE_BASE = "https://essentia.upf.edu/models/music-style-classification/discogs-effnet"

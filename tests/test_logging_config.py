@@ -152,6 +152,24 @@ def test_env_json_fallback(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Captu
 
 
 @pytest.mark.usefixtures("reset_logging")
+def test_reconfigure_changes_level_for_already_used_logger(capsys: pytest.CaptureFixture[str]) -> None:
+    """A second configure_logging() with a new level applies to an already-used logger.
+
+    Regression guard for cache_logger_on_first_use: with caching the proxy would
+    freeze at the first level and silently ignore the reconfigure.
+    """
+    log = structlog.get_logger("test.reconfig")
+
+    configure_logging(level="INFO", json_logs=True)
+    log.debug("dropped at info")
+    assert "dropped at info" not in capsys.readouterr().out
+
+    configure_logging(level="DEBUG", json_logs=True)
+    log.debug("kept at debug")
+    assert _last_json_line(capsys.readouterr().out)["event"] == "kept at debug"
+
+
+@pytest.mark.usefixtures("reset_logging")
 def test_unknown_level_falls_back_to_info(capsys: pytest.CaptureFixture[str]) -> None:
     configure_logging(level="NONSENSE", json_logs=True)
     log = structlog.get_logger("test.fallback")

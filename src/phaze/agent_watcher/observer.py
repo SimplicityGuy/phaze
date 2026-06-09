@@ -18,12 +18,12 @@ Observer's OS thread and the asyncio-owned :class:`Debouncer`. It:
 
 from __future__ import annotations
 
-import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 import unicodedata
 
+import structlog
 from watchdog.events import FileSystemEventHandler
 
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from watchdog.events import DirCreatedEvent, DirModifiedEvent, FileCreatedEvent, FileModifiedEvent
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 _EXTRACTABLE: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})

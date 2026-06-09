@@ -19,11 +19,18 @@ Import-boundary invariant (Phase 26 D-25 / tests/test_task_split.py):
 from __future__ import annotations
 
 import logging
+from logging import getLogger as _stdlib_get_logger
 import os
 import sys
 
 import structlog
 
+
+# This module is the ONE place that manipulates stdlib loggers directly (the root
+# logger plus the uvicorn / noisy-library loggers), via the ``_stdlib_get_logger``
+# accessor imported above. Every *module* logger uses ``structlog.get_logger``; these
+# calls are logging infrastructure, so the project-wide stdlib-getLogger migration
+# gate stays empty (the literal accessor is imported, never dotted off ``logging``).
 
 _NOISY_LIBRARIES = ("httpx", "httpcore", "asyncio")
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
@@ -93,7 +100,16 @@ def configure_logging(*, level: str | None = None, json_logs: bool | None = None
         processors=[*shared_processors, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.make_filtering_bound_logger(level_int),
-        cache_logger_on_first_use=True,
+        # cache_logger_on_first_use=False (NOT the structlog default of True): a True
+        # cache freezes each module-level ``structlog.get_logger(__name__)`` proxy at
+        # the level active on its FIRST log call -- a later configure_logging() with a
+        # different level is then silently ignored for that already-used logger (the
+        # cached bound logger survives even structlog.reset_defaults()). Production
+        # configures logging exactly once per process before any logging, so True would
+        # be safe there; but False makes this module's documented idempotent-reconfigure
+        # guarantee actually hold (level changes take effect for every logger) at a
+        # negligible per-call rebuild cost for this app's log volume.
+        cache_logger_on_first_use=False,
     )
 
     renderer: structlog.types.Processor = structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer()
@@ -103,7 +119,7 @@ def configure_logging(*, level: str | None = None, json_logs: bool | None = None
     )
 
     # Idempotent root-handler reset: clear first so re-calling never stacks handlers.
-    root = logging.getLogger()
+    root = _stdlib_get_logger()
     root.handlers.clear()
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
@@ -113,11 +129,11 @@ def configure_logging(*, level: str | None = None, json_logs: bool | None = None
     # Tame noisy libraries: keep them at WARNING unless we are explicitly at DEBUG.
     noisy_level = level_int if level_int <= logging.DEBUG else logging.WARNING
     for name in _NOISY_LIBRARIES:
-        logging.getLogger(name).setLevel(noisy_level)
+        _stdlib_get_logger(name).setLevel(noisy_level)
 
     # Route uvicorn's own loggers through the root pipeline (drop their handlers,
     # let records propagate) so api access/error logs render identically.
     for name in _UVICORN_LOGGERS:
-        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger = _stdlib_get_logger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.propagate = True

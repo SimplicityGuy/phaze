@@ -29,9 +29,10 @@ Critical invariants:
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 import unicodedata
+
+import structlog
 
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
 from phaze.services.agent_client import (
@@ -43,7 +44,7 @@ from phaze.services.agent_client import (
 from phaze.services.hashing import compute_sha256
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class Poster:
