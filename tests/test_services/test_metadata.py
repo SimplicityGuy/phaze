@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from phaze.services.metadata import (
     ExtractedTags,
+    _first_str,
     _parse_track,
     _parse_year,
     _serialize_tags,
@@ -381,3 +382,82 @@ class TestExtractTagsDurationBitrate:
 
         assert result.duration is None
         assert result.bitrate is None
+
+
+class TestStripsNulBytes:
+    """Regression tests: NUL bytes (U+0000) must never leave the agent.
+
+    PostgreSQL text/jsonb columns reject U+0000, so messy archive tags
+    containing NUL bytes must be stripped from both the normalized string
+    fields (via _first_str) and raw_tags (via _serialize_tags).
+    """
+
+    def test_first_str_strips_nul_from_scalar(self):
+        assert _first_str("a\x00b") == "ab"
+
+    def test_first_str_strips_nul_from_list(self):
+        assert _first_str(["x\x00y"]) == "xy"
+
+    def test_first_str_none_still_returns_none(self):
+        assert _first_str(None) is None
+
+    def test_first_str_empty_list_still_returns_none(self):
+        assert _first_str([]) is None
+
+    def test_serialize_tags_strips_nul_everywhere(self):
+        tags = MagicMock()
+        tags.items.return_value = [
+            ("TIT2", "Song\x00Title"),
+            ("artist", ["Art\x00ist"]),
+            ("KE\x00Y", "val"),
+        ]
+
+        result = _serialize_tags(tags)
+
+        for key, value in result.items():
+            assert "\x00" not in key
+            if isinstance(value, list):
+                for item in value:
+                    assert "\x00" not in item
+            else:
+                assert "\x00" not in value
+
+        assert result["TIT2"] == "SongTitle"
+        assert result["artist"] == ["Artist"]
+        assert result["KEY"] == "val"
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_extract_tags_strips_nul_from_id3(self, mock_file):
+        from mutagen.id3 import ID3
+
+        mock_audio = MagicMock()
+        mock_tags = MagicMock(spec=ID3)
+
+        mock_tpe1 = MagicMock()
+        mock_tpe1.text = ["Test\x00Artist"]
+
+        def id3_get(key):
+            if key == "TPE1":
+                return mock_tpe1
+            return None
+
+        mock_tags.get = id3_get
+        mock_tags.items.return_value = [("TPE1", mock_tpe1)]
+
+        mock_audio.tags = mock_tags
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 100.0
+        mock_audio.info.bitrate = 128000
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.mp3")
+
+        assert result.artist == "TestArtist"
+        assert "\x00" not in result.artist
+        for value in result.raw_tags.values():
+            if isinstance(value, list):
+                for item in value:
+                    assert "\x00" not in item
+            else:
+                assert "\x00" not in value
