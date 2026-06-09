@@ -32,6 +32,7 @@ import uuid
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -41,6 +42,7 @@ from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
+from phaze.services.scan_deletion import delete_scan_cascade
 
 
 logger = structlog.get_logger(__name__)
@@ -195,6 +197,75 @@ async def scan_progress(
             "seconds_since_progress": seconds_since_progress(batch),
             "is_stalled": is_scan_stalled(batch),
         },
+    )
+
+
+async def build_recent_scans(session: AsyncSession) -> list[ScanBatch]:
+    """Query the last 10 non-LIVE ScanBatches and attach the transient UI attrs.
+
+    Shared by ``pipeline.dashboard`` (initial render) and ``delete_scan`` (HTMX
+    re-render after a delete) so the query + attribute attachment lives in exactly
+    one place. Phase 27 gap-14: a duplicated elapsed-seconds copy carrying the
+    pre-gap-12 tz-naive antipattern crashed the Recent Scans table the first time
+    it loaded a real tz-aware row -- the shared helper prevents that regression.
+
+    Attaches ``_agent_name``, ``_elapsed_seconds``, ``_seconds_since_progress`` and
+    ``_is_stalled`` as transient attributes the template consumes (avoids N+1).
+    The LIVE sentinel batches are excluded (UI-SPEC line 401).
+    """
+    recent_scans_stmt = select(ScanBatch).where(ScanBatch.status != ScanStatus.LIVE.value).order_by(ScanBatch.created_at.desc()).limit(10)
+    rows = list((await session.execute(recent_scans_stmt)).scalars().all())
+
+    # One query for the id -> name map (avoids N+1). Include every agent so a scan
+    # owned by a since-revoked agent still resolves to a human-readable name.
+    name_result = await session.execute(select(Agent.id, Agent.name))
+    # Comprehension (not dict(...)) because mypy cannot prove a Sequence[Row] is an
+    # Iterable[tuple[str, str]]; ruff's C416 dict() rewrite is suppressed here.
+    agent_name_by_id = {agent_id: name for agent_id, name in name_result.all()}  # noqa: C416
+
+    for batch in rows:
+        batch._agent_name = agent_name_by_id.get(batch.agent_id, batch.agent_id)  # type: ignore[attr-defined]
+        batch._elapsed_seconds = elapsed_seconds(batch) if batch.created_at else None  # type: ignore[attr-defined]
+        batch._seconds_since_progress = seconds_since_progress(batch) if batch.created_at else None  # type: ignore[attr-defined]
+        batch._is_stalled = is_scan_stalled(batch)  # type: ignore[attr-defined]
+    return rows
+
+
+@router.delete("/{batch_id}", response_class=HTMLResponse)
+async def delete_scan(
+    request: Request,
+    batch_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    """Delete a terminal scan + all associated DB data, then re-render the table.
+
+    Guards (server-side authoritative -- defense-in-depth against a stale button
+    or a reaper-flipped status):
+    - unknown batch -> 404.
+    - ``status == 'live'`` -> 409 (the watcher sentinel can NEVER be deleted).
+    - non-terminal (``running``) -> 409 (only completed/failed scans are deletable).
+
+    On a deletable row: run the ordered cascade, commit atomically, then return the
+    re-rendered Recent Scans section for the HTMX ``outerHTML`` swap into
+    ``#recent-scans``.
+    """
+    batch = await session.get(ScanBatch, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
+    if batch.status == ScanStatus.LIVE.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="live watcher batch cannot be deleted")
+    if batch.status not in _TERMINAL_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="cannot delete a running scan; wait for it to complete or fail")
+
+    counts = await delete_scan_cascade(session, batch_id)
+    await session.commit()
+    logger.info("scan deleted", batch_id=str(batch_id), **counts)
+
+    rows = await build_recent_scans(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/recent_scans_table.html",
+        context={"request": request, "recent_scans": rows},
     )
 
 

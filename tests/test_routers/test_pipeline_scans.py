@@ -33,6 +33,7 @@ from sqlalchemy import select
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.file import FileRecord, FileState
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import pipeline, pipeline_scans
 
@@ -952,6 +953,153 @@ async def test_router_registered_in_main_app() -> None:
     assert "/pipeline/scans" in paths
     assert "/pipeline/scans/{batch_id}" in paths
     assert "/pipeline/scans/agent-roots" in paths
+
+
+# ---------------------------------------------------------------------------
+# PR5: DELETE /pipeline/scans/{batch_id} -- delete + cascade + 409 guards
+# ---------------------------------------------------------------------------
+
+
+def _make_batch_file(batch_id: uuid.UUID, suffix: str) -> FileRecord:
+    """Build a FileRecord belonging to a batch (unique path)."""
+    path = f"/data/music/{uuid.uuid4().hex}-{suffix}.mp3"
+    return FileRecord(
+        id=uuid.uuid4(),
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex[:32],
+        original_path=path,
+        original_filename=path.rsplit("/", 1)[-1],
+        current_path=path,
+        file_type="mp3",
+        file_size=2048,
+        state=FileState.DISCOVERED,
+        batch_id=batch_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_completed_scan_removes_row_and_cascades(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """DELETE a completed scan -> 200, re-rendered table without the row; cascade ran."""
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/done-delete/",
+        status=ScanStatus.COMPLETED.value,
+        total_files=1,
+        processed_files=1,
+    )
+    session.add(batch)
+    await session.flush()
+    file_row = _make_batch_file(batch.id, "child")
+    session.add(file_row)
+    await session.commit()
+    batch_id, file_id = batch.id, file_row.id
+
+    response = await ac.delete(f"/pipeline/scans/{batch_id}")
+    assert response.status_code == 200, response.text
+    # Response is the re-rendered Recent Scans section for the HTMX outerHTML swap.
+    assert 'id="recent-scans"' in response.text
+    # The deleted scan's path is absent from the re-rendered table.
+    assert "/data/music/done-delete/" not in response.text
+
+    # The batch row is gone from the DB.
+    assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() == []
+    # The cascade removed the batch's child file too.
+    assert (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_failed_scan_is_deletable(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """A FAILED (terminal) scan is deletable -> 200, row removed."""
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/failed-delete/",
+        status=ScanStatus.FAILED.value,
+        total_files=0,
+        processed_files=0,
+        error_message="boom",
+    )
+    session.add(batch)
+    await session.commit()
+    batch_id = batch.id
+
+    response = await ac.delete(f"/pipeline/scans/{batch_id}")
+    assert response.status_code == 200, response.text
+    assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_unknown_batch_returns_404(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """DELETE an unknown batch_id -> 404."""
+    ac, _ = smoke
+    response = await ac.delete(f"/pipeline/scans/{uuid.uuid4()}")
+    assert response.status_code == 404
+    assert "scan batch not found" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_live_batch_returns_409(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """The LIVE watcher sentinel can NEVER be deleted -> 409; no rows touched."""
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="<watcher>",
+        status=ScanStatus.LIVE.value,
+        total_files=0,
+        processed_files=0,
+    )
+    session.add(batch)
+    await session.commit()
+    batch_id = batch.id
+
+    response = await ac.delete(f"/pipeline/scans/{batch_id}")
+    assert response.status_code == 409
+    assert "live" in response.text.lower()
+    # Row survives.
+    assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() != []
+
+
+@pytest.mark.asyncio
+async def test_delete_running_batch_returns_409(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """A RUNNING scan cannot be deleted (only terminal scans are) -> 409; row survives.
+
+    Server-side recheck is authoritative: the reaper may flip a row's status, or a
+    stale button may target a now-running row, so the guard lives on the server.
+    """
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/running/",
+        status=ScanStatus.RUNNING.value,
+        total_files=10,
+        processed_files=3,
+    )
+    session.add(batch)
+    await session.commit()
+    batch_id = batch.id
+
+    response = await ac.delete(f"/pipeline/scans/{batch_id}")
+    assert response.status_code == 409
+    assert "running" in response.text.lower()
+    assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() != []
 
 
 # ---------------------------------------------------------------------------
