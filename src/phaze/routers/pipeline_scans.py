@@ -35,6 +35,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
@@ -53,6 +54,12 @@ router = APIRouter(prefix="/pipeline/scans", tags=["pipeline"])
 # is a StrEnum, so `batch.status` (a plain str) compares/hashes by value against
 # these members -- `batch.status in _TERMINAL_STATUSES` works directly.
 _TERMINAL_STATUSES = frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED})
+
+# PR4: the UI flips to an amber "stalled?" warning at HALF the reaper's hard
+# scan_stall_seconds threshold, so the operator sees a warning *before* the
+# reaper actually marks the scan FAILED. e.g. scan_stall_seconds=600 -> the UI
+# warns once a RUNNING scan has been quiet for >300s.
+_UI_STALL_WARN_FRACTION = 0.5
 
 
 def elapsed_seconds(batch: ScanBatch) -> int:
@@ -107,6 +114,36 @@ def elapsed_seconds(batch: ScanBatch) -> int:
     return int((end - created_at).total_seconds())
 
 
+def seconds_since_progress(batch: ScanBatch) -> int:
+    """Integer seconds since the scan last made progress (PR4 activity indicator).
+
+    Uses ``last_progress_at`` (the per-progress heartbeat), falling back to
+    ``created_at`` for legacy rows that predate the heartbeat column. Mirrors
+    ``elapsed_seconds``' tz-aware-safe handling: a tz-naive timestamp (e.g. from
+    a test fixture whose schema is TIMESTAMP WITHOUT TIME ZONE) is assumed UTC so
+    the subtraction stays aware-to-aware and never crashes.
+    """
+    ref = batch.last_progress_at or batch.created_at
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=UTC)
+    now = datetime.now(UTC)
+    return int((now - ref).total_seconds())
+
+
+def is_scan_stalled(batch: ScanBatch) -> bool:
+    """True when a RUNNING batch has been quiet past the UI warn threshold (PR4).
+
+    The warn threshold is half the reaper's ``scan_stall_seconds`` so the amber
+    "stalled?" affordance surfaces before the reaper hard-fails the scan. Only
+    RUNNING batches can be "stalled" in the UI sense; terminal/LIVE rows return
+    False.
+    """
+    if batch.status != ScanStatus.RUNNING.value:
+        return False
+    warn_threshold = int(get_settings().scan_stall_seconds * _UI_STALL_WARN_FRACTION)
+    return seconds_since_progress(batch) > warn_threshold
+
+
 @router.get("/agent-roots", response_class=HTMLResponse)
 async def agent_roots_swap(
     request: Request,
@@ -155,6 +192,8 @@ async def scan_progress(
             "batch": batch,
             "agent_name": agent.name if agent is not None else batch.agent_id,
             "elapsed_seconds": elapsed_seconds(batch),
+            "seconds_since_progress": seconds_since_progress(batch),
+            "is_stalled": is_scan_stalled(batch),
         },
     )
 
@@ -305,5 +344,9 @@ async def trigger_scan(
             "batch": batch,
             "agent_name": agent.name,
             "elapsed_seconds": 0,
+            # Freshly-created batch: it just stamped last_progress_at, so it is
+            # 0s since progress and never stalled.
+            "seconds_since_progress": 0,
+            "is_stalled": False,
         },
     )

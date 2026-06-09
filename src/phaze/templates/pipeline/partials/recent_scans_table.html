@@ -37,7 +37,22 @@
                     <td class="px-4 py-3 text-gray-900 dark:text-gray-100">{{ batch._agent_name }}</td>
                     <td class="px-4 py-3 font-mono text-xs text-gray-700 dark:text-gray-300 truncate max-w-md" title="{{ batch.scan_path }}">{{ batch.scan_path }}</td>
                     <td class="px-4 py-3">
-                        {% include "pipeline/partials/scan_status_pill.html" %}
+                        <div class="flex items-center gap-2">
+                            {% include "pipeline/partials/scan_status_pill.html" %}
+                            {# PR4 activity indicator: RUNNING rows only. Green pulsing dot +
+                               "·Ns ago" while progressing; amber dot + "stalled?" once the
+                               heartbeat is older than the UI warn threshold (half the reaper's
+                               scan_stall_seconds). Terminal/LIVE rows render no affordance. #}
+                            {% if batch.status == 'running' %}
+                                {% if batch._is_stalled %}
+                                <span class="inline-block h-2 w-2 rounded-full bg-amber-500 dark:bg-amber-400" aria-hidden="true"></span>
+                                <span class="text-xs text-amber-600 dark:text-amber-400">stalled?</span>
+                                {% else %}
+                                <span class="inline-block h-2 w-2 rounded-full bg-green-500 dark:bg-green-400 animate-pulse" aria-hidden="true"></span>
+                                {% if batch._seconds_since_progress is not none %}<span class="text-xs text-gray-500 dark:text-gray-400">·{{ batch._seconds_since_progress }}s ago</span>{% endif %}
+                                {% endif %}
+                            {% endif %}
+                        </div>
                     </td>
                     <td class="px-4 py-3 font-mono text-xs text-gray-700 dark:text-gray-300">
                         {{ batch.processed_files }} / {{ batch.total_files or '—' }}
