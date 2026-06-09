@@ -61,6 +61,8 @@ import urllib.error
 
 import httpx
 
+from phaze.logging_config import configure_logging
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -359,5 +361,8 @@ def download_to(target_dir: Path) -> None:
 
 
 if __name__ == "__main__":  # pragma: no cover  # CLI invocation guard
+    # PR3 observability: configure the central structlog pipeline so the
+    # validating/downloading INFO/DEBUG events render when run as a CLI.
+    configure_logging()
     target = Path(sys.argv[1] if len(sys.argv) > 1 else "./models")
     download_to(target)

@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import IntegrityError
 
 from phaze.database import async_session
+from phaze.logging_config import configure_logging
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
 
@@ -116,6 +117,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code (0 success, 1 failure)."""
+    # PR3 observability: configure the central structlog pipeline first so any
+    # library/DB log lines emitted during agent creation render consistently. The
+    # minted token stays print()-only and is NEVER passed to a logger (D-13).
+    configure_logging()
     parser = _build_parser()
     args = parser.parse_args(argv)
 

@@ -48,6 +48,7 @@ from phaze.agent_watcher.debouncer import Debouncer
 from phaze.agent_watcher.observer import WatcherEventHandler
 from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings, get_settings
+from phaze.logging_config import configure_logging
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client, whoami_with_retry
 
 
@@ -119,23 +120,22 @@ async def _sweep_loop(
 
 
 def _configure_logging() -> None:
-    """Attach a stdout StreamHandler to the root logger.
+    """Configure the central structlog pipeline for the watcher process.
 
-    The watcher runs via ``asyncio.run(main())`` and never goes through
-    uvicorn, so without an explicit handler EVERY ``logger.info/error/...``
-    call is swallowed and operators see an empty ``docker logs`` stream
-    even when the process is alive and posting files. Phase 27 UAT Gap 7
-    surfaced this: a healthy watcher was indistinguishable from a hung one.
+    PR3 observability: delegates to :func:`phaze.logging_config.configure_logging`.
+    The watcher runs via ``asyncio.run(main())`` and never goes through uvicorn, so
+    without configuration EVERY ``logger.info/error/...`` call is swallowed and
+    operators see an empty ``docker logs`` stream even when the process is alive and
+    posting files (Phase 27 UAT Gap 7: a healthy watcher was indistinguishable from a
+    hung one).
 
-    Idempotent: re-running adds no duplicate handler.
+    Called bare (env-driven: PHAZE_LOG_LEVEL / PHAZE_LOG_JSON) and FIRST in ``main()``,
+    BEFORE ``get_settings()`` -- so a pydantic ``ValidationError`` raised by
+    ``AgentSettings`` (the very misconfig the watcher is trying to report) is still
+    logged through the pipeline rather than crashing on settings construction
+    (Gap-5/Gap-7). ``configure_logging`` is itself idempotent.
     """
-    root = logging.getLogger()
-    if any(isinstance(h, logging.StreamHandler) and h.stream is sys.stdout for h in root.handlers):
-        return
-    handler = logging.StreamHandler(stream=sys.stdout)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    root.addHandler(handler)
-    root.setLevel(logging.INFO)
+    configure_logging()
 
 
 async def main() -> None:

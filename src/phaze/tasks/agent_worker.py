@@ -49,6 +49,7 @@ from typing import Any
 from saq import CronJob, Queue
 
 from phaze.config import AgentSettings, get_settings
+from phaze.logging_config import configure_logging
 from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
 from phaze.tasks._shared.agent_bootstrap import (
     _WHOAMI_BACKOFF_S,  # noqa: F401  # re-export for back-compat / test patching
@@ -75,6 +76,11 @@ async def startup(ctx: dict[str, Any]) -> None:
     if not isinstance(cfg, AgentSettings):
         msg = f"agent_worker requires PHAZE_ROLE=agent; get_settings() returned {type(cfg).__name__}"
         raise RuntimeError(msg)
+
+    # PR3 observability: each SAQ worker is its OWN OS process and does NOT inherit
+    # the api's logging config. Configure the central pipeline here, BEFORE the first
+    # logger.info, so worker logs render through the same JSON/console pipeline.
+    configure_logging(level=cfg.log_level, json_logs=cfg.log_json)
 
     # D-13 invariant: NEVER log the full bearer; preview is first-12-chars + "..." only.
     # The variable name keeps `token_preview` for grepability of the D-13 invariant

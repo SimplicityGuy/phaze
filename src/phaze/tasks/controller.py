@@ -28,6 +28,7 @@ from saq import CronJob, Queue
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.config import get_settings
+from phaze.logging_config import configure_logging
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
@@ -46,6 +47,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     Those belong to the agent role; the control role's worker never reads files.
     """
     cfg = get_settings()
+
+    # PR3 observability: the control worker is its OWN OS process; configure the
+    # central structlog pipeline here BEFORE the first log so its lines render
+    # through the same JSON/console pipeline as the api and agent worker.
+    configure_logging(level=cfg.log_level, json_logs=cfg.log_json)
+
     logger.info("phaze.controller startup role=control queue=controller redis=%s", cfg.redis_url)
 
     # Shared async engine pool for all fileless task functions (INFRA-01 from v1.0).
