@@ -839,7 +839,8 @@ async def test_dashboard_recent_scans_shows_failed_row_with_inline_error(
 
     response = await ac.get("/pipeline/")
     assert response.status_code == 200
-    assert 'colspan="6"' in response.text
+    # PR5 added an Actions column, so the inline-error row spans 7 columns.
+    assert 'colspan="7"' in response.text
     assert "bg-red-50" in response.text
     assert "path missing" in response.text
 
@@ -1009,6 +1010,51 @@ async def test_delete_completed_scan_removes_row_and_cascades(
     assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() == []
     # The cascade removed the batch's child file too.
     assert (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_table_delete_control_on_terminal_rows_only(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """The delete control renders only for terminal (completed/failed) rows, not running.
+
+    Seeds a completed batch and a running batch, then renders the dashboard. The
+    completed row exposes ``hx-delete`` (wired to its batch id); the running row
+    does not. The Actions column header is present.
+    """
+    ac, _ = smoke
+    completed = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/completed-row/",
+        status=ScanStatus.COMPLETED.value,
+        total_files=5,
+        processed_files=5,
+    )
+    running = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/running-row/",
+        status=ScanStatus.RUNNING.value,
+        total_files=10,
+        processed_files=3,
+    )
+    session.add_all([completed, running])
+    await session.commit()
+    completed_id, running_id = completed.id, running.id
+
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    # Actions column header present.
+    assert ">Actions</th>" in response.text
+    # The completed row exposes a delete control wired to its id + the HTMX swap target.
+    assert f'hx-delete="/pipeline/scans/{completed_id}"' in response.text
+    assert 'hx-target="#recent-scans"' in response.text
+    assert 'hx-swap="outerHTML"' in response.text
+    assert "Delete this scan and all associated data?" in response.text
+    # The running row does NOT expose a delete control.
+    assert f'hx-delete="/pipeline/scans/{running_id}"' not in response.text
 
 
 @pytest.mark.asyncio
