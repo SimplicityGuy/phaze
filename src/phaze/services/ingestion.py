@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import itertools
 import logging
 import os
@@ -129,6 +130,15 @@ async def run_scan(
 
     Creates a ScanBatch record, runs directory scanning via asyncio.to_thread,
     bulk upserts discovered files, and updates batch status.
+
+    Terminal completion is written in exactly two places in the codebase: here
+    (the legacy application-server path) and the agent PATCH in
+    ``routers/agent_scan_batches.py``. BOTH stamp ``completed_at`` on the
+    COMPLETED/FAILED transition so the admin UI's elapsed timer freezes instead
+    of climbing forever (incident 260609). The watcher / scan_live_set path
+    writes only the non-terminal ``ScanStatus.LIVE`` and so needs no
+    ``completed_at``. If a third terminal-status writer is ever added, it must
+    stamp ``completed_at`` the same way.
     """
     async with session_factory() as session:
         # Create scan batch record
@@ -171,6 +181,7 @@ async def run_scan(
                 .values(
                     status=ScanStatus.COMPLETED,
                     processed_files=upserted,
+                    completed_at=datetime.now(UTC),
                 )
             )
             await session.commit()
@@ -183,6 +194,7 @@ async def run_scan(
                 .values(
                     status=ScanStatus.FAILED,
                     error_message=str(exc),
+                    completed_at=datetime.now(UTC),
                 )
             )
             await session.commit()
