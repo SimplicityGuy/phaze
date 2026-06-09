@@ -1,0 +1,109 @@
+"""Ordered, set-based transactional cascade for deleting a scan batch (PR5).
+
+``delete_scan_cascade`` removes a ``ScanBatch`` and EVERY row that transitively
+hangs off its files, in a single transaction, scoped strictly to that batch.
+
+Why application-level instead of DB ``ON DELETE CASCADE``: most of the FK columns
+in this schema were declared with no ``ondelete`` rule (see CLAUDE.md tech-stack /
+the verified FK DAG in the PR plan), so the database will not cascade for us, and
+adding cascade rules now would require a migration. An explicit ordered cascade is
+also self-documenting and does not silently depend on engine behavior.
+
+Design choices:
+- Set-based ``DELETE ... WHERE col IN (SELECT ...)`` with nested subqueries -- a
+  scan can hold tens of thousands of files, so we never load rows into the ORM
+  identity map. ``synchronize_session=False`` is required for bulk deletes that
+  bypass the identity map.
+- Child -> parent ordering so every subquery references only tables not yet
+  deleted at that step (verified order in the PR plan's 13-step block).
+- The caller owns the transaction: this function does NOT commit. That keeps it
+  composable and lets the endpoint commit the whole cascade atomically.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, cast
+
+from sqlalchemy import CursorResult, delete, select
+import structlog
+
+from phaze.models.analysis import AnalysisResult
+from phaze.models.discogs_link import DiscogsLink
+from phaze.models.execution import ExecutionLog
+from phaze.models.file import FileRecord
+from phaze.models.file_companion import FileCompanion
+from phaze.models.fingerprint import FingerprintResult
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import RenameProposal
+from phaze.models.scan_batch import ScanBatch
+from phaze.models.tag_write_log import TagWriteLog
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+
+
+if TYPE_CHECKING:
+    import uuid
+
+    from sqlalchemy import Delete
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+
+logger = structlog.get_logger(__name__)
+
+
+async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
+    """Delete ``batch_id`` and every descendant row, scoped strictly to its files.
+
+    Executes 13 ordered set-based deletes (child -> parent). Every statement is
+    scoped to the files of THIS batch via nested ``SELECT`` subqueries, so no
+    other batch's data is ever touched. Does NOT commit -- the caller owns the
+    transaction.
+
+    Args:
+        session: Active async session whose transaction the caller will commit.
+        batch_id: The ScanBatch primary key to delete.
+
+    Returns:
+        A dict mapping each affected ``__tablename__`` to the number of rows
+        deleted from it (``result.rowcount`` per statement).
+    """
+    # Files belonging to this batch -- the scoping anchor for every child delete.
+    files_of_batch = select(FileRecord.id).where(FileRecord.batch_id == batch_id)
+
+    # Tracklist chain subqueries (4 levels deep). NULL-file_id tracklists are
+    # excluded automatically: ``file_id IN (files_of_batch)`` never matches NULL.
+    tracklists_of_batch = select(Tracklist.id).where(Tracklist.file_id.in_(files_of_batch))
+    versions_of_batch = select(TracklistVersion.id).where(TracklistVersion.tracklist_id.in_(tracklists_of_batch))
+    tracks_of_batch = select(TracklistTrack.id).where(TracklistTrack.version_id.in_(versions_of_batch))
+
+    proposals_of_batch = select(RenameProposal.id).where(RenameProposal.file_id.in_(files_of_batch))
+
+    # (tablename, statement) in verified child -> parent order. Each subquery
+    # references only tables not yet deleted at that step.
+    ordered: list[tuple[str, Delete]] = [
+        (DiscogsLink.__tablename__, delete(DiscogsLink).where(DiscogsLink.track_id.in_(tracks_of_batch))),
+        (TracklistTrack.__tablename__, delete(TracklistTrack).where(TracklistTrack.version_id.in_(versions_of_batch))),
+        (TracklistVersion.__tablename__, delete(TracklistVersion).where(TracklistVersion.tracklist_id.in_(tracklists_of_batch))),
+        (Tracklist.__tablename__, delete(Tracklist).where(Tracklist.file_id.in_(files_of_batch))),
+        (ExecutionLog.__tablename__, delete(ExecutionLog).where(ExecutionLog.proposal_id.in_(proposals_of_batch))),
+        (RenameProposal.__tablename__, delete(RenameProposal).where(RenameProposal.file_id.in_(files_of_batch))),
+        (FingerprintResult.__tablename__, delete(FingerprintResult).where(FingerprintResult.file_id.in_(files_of_batch))),
+        (AnalysisResult.__tablename__, delete(AnalysisResult).where(AnalysisResult.file_id.in_(files_of_batch))),
+        (FileMetadata.__tablename__, delete(FileMetadata).where(FileMetadata.file_id.in_(files_of_batch))),
+        (TagWriteLog.__tablename__, delete(TagWriteLog).where(TagWriteLog.file_id.in_(files_of_batch))),
+        (
+            FileCompanion.__tablename__,
+            delete(FileCompanion).where(FileCompanion.media_id.in_(files_of_batch) | FileCompanion.companion_id.in_(files_of_batch)),
+        ),
+        (FileRecord.__tablename__, delete(FileRecord).where(FileRecord.batch_id == batch_id)),
+        (ScanBatch.__tablename__, delete(ScanBatch).where(ScanBatch.id == batch_id)),
+    ]
+
+    counts: dict[str, int] = {}
+    for tablename, stmt in ordered:
+        # A DELETE returns a CursorResult at runtime (exposing rowcount); the
+        # execute() overload mypy selects only promises the base Result type.
+        result = cast("CursorResult[Any]", await session.execute(stmt.execution_options(synchronize_session=False)))
+        counts[tablename] = result.rowcount
+
+    logger.info("scan cascade deleted", batch_id=str(batch_id), **counts)
+    return counts
