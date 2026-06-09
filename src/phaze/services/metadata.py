@@ -58,6 +58,11 @@ _MP4_MAP: dict[str, str] = {
 }
 
 
+def _strip_nul(s: str) -> str:
+    """Strip NUL bytes (U+0000) that PostgreSQL text/jsonb columns cannot store."""
+    return s.replace("\x00", "")
+
+
 def _first_str(val: Any) -> str | None:
     """Extract the first string from a tag value.
 
@@ -66,8 +71,8 @@ def _first_str(val: Any) -> str | None:
     if val is None:
         return None
     if isinstance(val, list):
-        return str(val[0]) if val else None
-    return str(val)
+        return _strip_nul(str(val[0])) if val else None
+    return _strip_nul(str(val))
 
 
 def _parse_year(val: str | None) -> int | None:
@@ -145,7 +150,7 @@ def _serialize_tags(tags: Any) -> dict[str, Any]:
         return {}
 
     for key, val in items:
-        str_key = str(key)
+        str_key = _strip_nul(str(key))
         # Skip APIC (cover art) frames entirely
         if str_key.startswith("APIC"):
             continue
@@ -157,11 +162,11 @@ def _serialize_tags(tags: Any) -> dict[str, Any]:
                 for item in val:
                     if isinstance(item, bytes):
                         continue
-                    serialized.append(str(item))
+                    serialized.append(_strip_nul(str(item)))
                 if serialized:
                     result[str_key] = serialized
             else:
-                result[str_key] = str(val)
+                result[str_key] = _strip_nul(str(val))
         except Exception:
             logger.debug("Failed to serialize tag %s", str_key)
             continue
