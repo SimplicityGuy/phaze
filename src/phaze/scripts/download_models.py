@@ -312,36 +312,54 @@ def _download_one(url: str, dest: Path) -> None:
     _with_retries(f"download {dest.name}", _attempt)
 
 
-def _ensure_present_local(url: str, dest: Path, expected_size: int) -> None:
+def _ensure_present_local(url: str, dest: Path, expected_size: int) -> bool:
     """Validate ``dest`` against the baked-in ``expected_size`` and repair via GET if needed.
+
+    Returns ``True`` if a (re-)download occurred, ``False`` if the existing on-disk
+    file was kept as-is (size-valid). ``download_to`` aggregates these booleans into
+    the present/repaired tally surfaced by the model-bootstrap operational logs.
 
     Implements the local-validation decision (260608-u8g):
 
     - file present AND ``st_size == expected_size`` -> keep it, issuing NO network
-      call (pure ``os.stat``).
+      call (pure ``os.stat``); emits DEBUG ``model ok``.
     - file present but wrong size -> truncated/corrupt: WARN naming on-disk vs
       manifest size and re-fetch via ``_download_one`` (its atomic ``os.replace``
       overwrites in place; a failed repair leaves the stale file, which the next
       boot re-detects and re-repairs).
-    - file missing -> INFO and download via ``_download_one``.
+    - file missing -> download via ``_download_one``.
+
+    The missing/mismatch repair path emits INFO ``downloading model`` (with the
+    reason) and INFO ``model download complete`` (with the on-disk byte size) so an
+    operator can see exactly which weights transferred (PR3 observability).
     """
     if dest.exists():
         actual = dest.stat().st_size
         if actual == expected_size:
-            return
+            logger.debug("model ok", file=dest.name, size=actual)
+            return False
         logger.warning(
             "Size mismatch for %s: on-disk %d bytes != manifest %d bytes; re-downloading",
             dest.name,
             actual,
             expected_size,
         )
+        reason = "size_mismatch"
     else:
-        logger.info("Missing weight file %s; downloading", dest.name)
+        reason = "missing"
+    logger.info("downloading model", file=dest.name, reason=reason, expected_bytes=expected_size)
     _download_one(url, dest)
+    logger.info("model download complete", file=dest.name, bytes=dest.stat().st_size)
+    return True
 
 
-def download_to(target_dir: Path) -> None:
+def download_to(target_dir: Path) -> tuple[int, int]:
     """Local-validate + repair all classifier + genre weight files into ``target_dir``.
+
+    Returns ``(present_count, repaired_count)``: files kept as-is (size-valid, no
+    network) vs. (re-)downloaded (missing or wrong-size). The model-bootstrap caller
+    logs this tally so an operator can see how much of a fresh-vs-resumed validation
+    actually transferred.
 
     Each file is routed through ``_ensure_present_local``, which compares the on-disk
     byte size against the baked-in ``MANIFEST`` and only GETs a file that is missing
@@ -351,13 +369,24 @@ def download_to(target_dir: Path) -> None:
     re-running ``download_to`` on the same directory.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
+    present_count = 0
+    repaired_count = 0
+
+    def _tally(repaired: bool) -> None:
+        nonlocal present_count, repaired_count
+        if repaired:
+            repaired_count += 1
+        else:
+            present_count += 1
+
     for model_path in CLASSIFIER_MODELS:
         filename = model_path.rsplit("/", 1)[-1]
-        _ensure_present_local(f"{_CLASSIFIER_BASE}/{model_path}.pb", target_dir / f"{filename}.pb", MANIFEST[f"{filename}.pb"])
-        _ensure_present_local(f"{_CLASSIFIER_BASE}/{model_path}.json", target_dir / f"{filename}.json", MANIFEST[f"{filename}.json"])
+        _tally(_ensure_present_local(f"{_CLASSIFIER_BASE}/{model_path}.pb", target_dir / f"{filename}.pb", MANIFEST[f"{filename}.pb"]))
+        _tally(_ensure_present_local(f"{_CLASSIFIER_BASE}/{model_path}.json", target_dir / f"{filename}.json", MANIFEST[f"{filename}.json"]))
     for model in GENRE_MODELS:
-        _ensure_present_local(f"{_GENRE_BASE}/{model}.pb", target_dir / f"{model}.pb", MANIFEST[f"{model}.pb"])
-        _ensure_present_local(f"{_GENRE_BASE}/{model}.json", target_dir / f"{model}.json", MANIFEST[f"{model}.json"])
+        _tally(_ensure_present_local(f"{_GENRE_BASE}/{model}.pb", target_dir / f"{model}.pb", MANIFEST[f"{model}.pb"]))
+        _tally(_ensure_present_local(f"{_GENRE_BASE}/{model}.json", target_dir / f"{model}.json", MANIFEST[f"{model}.json"]))
+    return present_count, repaired_count
 
 
 if __name__ == "__main__":  # pragma: no cover  # CLI invocation guard

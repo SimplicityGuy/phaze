@@ -37,9 +37,10 @@ def test_ensure_models_present_empty_dir_downloads(
     """An empty models directory triggers ``download_to`` and logs the corrected estimate."""
     import phaze.tasks._shared.model_bootstrap as mb
 
-    def fake_download(target: Path) -> None:
+    def fake_download(target: Path) -> tuple[int, int]:
         # Simulate a real download by writing a sentinel .pb file.
         (target / "test_model.pb").touch()
+        return (0, 1)  # (present_count, repaired_count) tally surfaced by download_to
 
     mock = MagicMock(side_effect=fake_download)
     monkeypatch.setattr(mb, "download_to", mock)
@@ -67,7 +68,7 @@ def test_ensure_models_present_populated_still_calls_download_to(
     for idx in range(mb._EXPECTED_MODEL_COUNT):
         (tmp_path / f"model_{idx:03d}.pb").touch()
 
-    mock = MagicMock()
+    mock = MagicMock(return_value=(mb._EXPECTED_MODEL_COUNT, 0))
     monkeypatch.setattr(mb, "download_to", mock)
 
     with caplog.at_level(logging.INFO, logger="phaze.tasks._shared.model_bootstrap"):
@@ -93,7 +94,7 @@ def test_ensure_models_present_partial_still_calls_download_to(
     (tmp_path / "first_model.pb").touch()
     assert len(list(tmp_path.glob("*.pb"))) < mb._EXPECTED_MODEL_COUNT
 
-    mock = MagicMock()
+    mock = MagicMock(return_value=(1, mb._EXPECTED_MODEL_COUNT - 1))
     monkeypatch.setattr(mb, "download_to", mock)
 
     mb.ensure_models_present(tmp_path)

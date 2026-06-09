@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import itertools
 import os
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Any
 import unicodedata
 import uuid
@@ -71,6 +72,7 @@ def discover_and_hash_files(scan_path: str, batch_id: uuid.UUID) -> list[dict[st
             normalized_filename = normalize_path(filename)
             file_ext = Path(filename).suffix.lower().lstrip(".")
 
+            logger.debug("file discovered", path=normalized_path, size=file_size, ext=file_ext)
             records.append(
                 {
                     "id": uuid.uuid4(),
@@ -140,6 +142,8 @@ async def run_scan(
     ``completed_at``. If a third terminal-status writer is ever added, it must
     stamp ``completed_at`` the same way.
     """
+    started_at = time.monotonic()
+    logger.info("scan started", batch_id=str(batch_id), path=scan_path)
     async with session_factory() as session:
         # Create scan batch record
         batch = ScanBatch(
@@ -163,6 +167,7 @@ async def run_scan(
 
             # Bulk upsert discovered files
             upserted = await bulk_upsert_files(session, file_records)
+            logger.info("scan progress", batch_id=str(batch_id), processed=upserted, total=len(file_records))
 
             # Auto-enqueue tag extraction for newly discovered files (per D-09)
             if queue is not None and file_records:
@@ -185,9 +190,15 @@ async def run_scan(
                 )
             )
             await session.commit()
+            logger.info(
+                "scan completed",
+                batch_id=str(batch_id),
+                files=upserted,
+                duration_s=round(time.monotonic() - started_at, 3),
+            )
 
         except Exception as exc:
-            logger.exception("Scan failed for path %s", scan_path)
+            logger.exception("scan failed", batch_id=str(batch_id), path=scan_path, error=str(exc))
             await session.execute(
                 update(ScanBatch)
                 .where(ScanBatch.id == batch_id)

@@ -78,15 +78,22 @@ def ensure_models_present(models_dir: Path) -> None:
     place and no longer reaches this wrap.
     """
     logger.info(
-        "Validating essentia weights at %s (~3.1 GB across %d files). A fresh download is "
-        "multi-GB and can take many minutes (longer on a slow link) -- a legitimate transfer "
-        "is not a hang.",
+        "validating model weights -- essentia weights at %s (~3.1 GB across %d files); a fresh "
+        "download is multi-GB and can take many minutes (longer on a slow link) -- a legitimate "
+        "transfer is not a hang",
         models_dir,
         _EXPECTED_MODEL_COUNT,
+        count=_EXPECTED_MODEL_COUNT,
+        dir=str(models_dir),
     )
     try:
-        download_to(models_dir)
+        present_count, repaired_count = download_to(models_dir)
     except Exception as exc:
         msg = f"Model download failed: {exc}"
         raise RuntimeError(msg) from exc
-    logger.info("Models present and size-validated at %s", models_dir)
+    logger.info(
+        "models validated",
+        present_count=present_count,
+        repaired_count=repaired_count,
+        dir=str(models_dir),
+    )
