@@ -23,12 +23,14 @@ tests/test_task_split.py::test_agent_worker_does_not_import_phaze_database
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Any
 import unicodedata
 import uuid
+
+import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -45,7 +47,7 @@ if TYPE_CHECKING:
     from phaze.services.fingerprint import FingerprintOrchestrator
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 _DEFAULT_SCAN_CHUNK_SIZE = 500
@@ -147,8 +149,16 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     api: PhazeAgentClient = ctx["api_client"]
     chunk_size = _resolve_chunk_size()
 
+    # Operational logging (PR3): prove a running scan is doing work. agent context is
+    # the resolved agent_id when the worker stashed an identity; omitted in pure unit
+    # tests. time.monotonic() drives the duration so a clock change cannot skew it.
+    agent_id = getattr(ctx.get("agent_identity"), "agent_id", None)
+    started_at = time.monotonic()
+    logger.info("scan started", batch_id=str(payload.batch_id), path=payload.scan_path, agent=agent_id)
+
     scan_root = Path(payload.scan_path)
     if not scan_root.is_dir():
+        logger.error("scan failed", batch_id=str(payload.batch_id), path=payload.scan_path, error="scan_path_not_a_directory")
         await api.patch_scan_batch(
             payload.batch_id,
             ScanBatchPatch(
@@ -205,9 +215,11 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                 )
                 batch.append(record)
                 total += 1
+                logger.debug("file discovered", path=normalized_path, size=file_size, ext=record.file_type)
                 if len(batch) >= chunk_size:
                     await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
                     await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=total))
+                    logger.info("scan progress", batch_id=str(payload.batch_id), processed=total)
                     batch = []
 
         # Flush final partial chunk.
@@ -225,6 +237,13 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                 f"Scanned 0 files but hit {len(walk_errors)} directory read error(s) "
                 f"(first: {walk_errors[0]}). The agent container user likely cannot read "
                 f"{payload.scan_path} -- check file ownership/permissions vs the container UID."
+            )
+            logger.error(
+                "scan failed",
+                batch_id=str(payload.batch_id),
+                path=payload.scan_path,
+                error="walk_permission_errors",
+                walk_error_count=len(walk_errors),
             )
             await api.patch_scan_batch(
                 payload.batch_id,
@@ -247,6 +266,12 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             payload.batch_id,
             ScanBatchPatch(status="completed", total_files=total, processed_files=total),
         )
+        logger.info(
+            "scan completed",
+            batch_id=str(payload.batch_id),
+            files=total,
+            duration_s=round(time.monotonic() - started_at, 3),
+        )
         return {"status": "completed", "files_posted": total}
 
     except AgentApiServerError as exc:
@@ -255,6 +280,7 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # controller; if the controller is down, this PATCH may also raise -- but the
         # outer SAQ retry policy handles that. The terminal PATCH is best-effort.
         logger.exception("scan_directory: controller error after retries; aborting walk batch=%s", payload.batch_id)
+        logger.error("scan failed", batch_id=str(payload.batch_id), error="controller_5xx", files_posted=total)
         try:
             await api.patch_scan_batch(
                 payload.batch_id,

@@ -9,8 +9,9 @@ Enforced by tests/test_task_split.py (Plan 10).
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.schemas.agent_metadata import MetadataWriteRequest
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from phaze.services.agent_client import PhazeAgentClient
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Music and video file types eligible for tag extraction (per D-10)
 _EXTRACTABLE_CATEGORIES = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
@@ -32,16 +33,20 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
     """Extract audio tags from a file on disk and PUT them via HTTP."""
     payload = ExtractMetadataPayload.model_validate(kwargs)
 
+    logger.info("metadata extraction started", file_id=str(payload.file_id), file_type=payload.file_type)
+
     # Skip companion / unknown file types (parity with prior body)
     ext = "." + payload.file_type.lower()
     category = EXTENSION_MAP.get(ext, FileCategory.UNKNOWN)
     if category not in _EXTRACTABLE_CATEGORIES:
+        logger.debug("metadata extraction skipped", file_id=str(payload.file_id), reason="not_extractable", file_type=payload.file_type)
         return {"file_id": str(payload.file_id), "status": "skipped", "reason": "not_extractable"}
 
     api: PhazeAgentClient = ctx["api_client"]
 
     # Sync mutagen call -- I/O bound header read on the local file
     tags = extract_tags(payload.original_path)
+    logger.debug("metadata tags read", file_id=str(payload.file_id), artist=tags.artist, title=tags.title, duration=tags.duration)
 
     # Map to Phase 25 MetadataWriteRequest schema; PUT idempotent upsert (CR-01 field-level LWW)
     body = MetadataWriteRequest(
@@ -56,4 +61,5 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
         raw_tags=tags.raw_tags,
     )
     await api.put_metadata(payload.file_id, body)
+    logger.info("metadata extraction completed", file_id=str(payload.file_id), status="extracted")
     return {"file_id": str(payload.file_id), "status": "extracted"}

@@ -22,15 +22,16 @@ SAQ worker process which has no Postgres reachability. Enforced by
 from __future__ import annotations
 
 import importlib.metadata
-import logging
 import os
 from typing import Any
+
+import structlog
 
 from phaze.schemas.agent_heartbeat import HeartbeatRequest
 from phaze.services.agent_client import AgentApiError
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def heartbeat_tick(ctx: dict[str, Any]) -> None:
@@ -69,10 +70,8 @@ async def heartbeat_tick(ctx: dict[str, Any]) -> None:
     )
     try:
         await client.heartbeat(payload)
-        logger.debug(
-            "heartbeat sent agent=%s queue_depth=%d",
-            identity.agent_id,
-            queue_depth,
-        )
+        # DEBUG only by design (PR3): the 30s cron fires constantly, so an INFO here
+        # would flood operational logs -- heartbeat liveness lives at DEBUG.
+        logger.debug("heartbeat sent", agent=identity.agent_id, queue_depth=queue_depth)
     except AgentApiError as exc:
         logger.warning("heartbeat failed: %s", exc)

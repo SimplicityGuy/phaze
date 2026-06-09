@@ -23,11 +23,12 @@ Time source:
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 import time
 
+import structlog
 
-logger = logging.getLogger(__name__)
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(slots=True)

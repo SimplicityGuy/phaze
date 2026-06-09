@@ -39,20 +39,20 @@ from __future__ import annotations
 
 import datetime
 import ipaddress
-import logging
 from typing import TYPE_CHECKING
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+import structlog
 
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 _BANNER = """\

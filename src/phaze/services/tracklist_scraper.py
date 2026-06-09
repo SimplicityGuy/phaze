@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-import logging
 import random
 import re
 from typing import ClassVar
 
 from bs4 import BeautifulSoup, Tag
 import httpx
+import structlog
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

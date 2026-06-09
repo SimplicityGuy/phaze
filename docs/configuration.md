@@ -71,6 +71,24 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 | `WORKER_HEALTH_CHECK_INTERVAL`| No       | `60`    | SAQ health-check interval in seconds.                |
 | `WORKER_KEEP_RESULT`          | No       | `3600`  | Seconds SAQ retains a finished job's result.         |
 
+## Logging / observability (all roles)
+
+Phaze routes every process's logs — native app logs plus foreign stdlib / uvicorn / SAQ
+logs — through a single [structlog](https://www.structlog.org/) pipeline configured once per
+OS process. Both knobs live on `BaseSettings`, so they apply identically to the api, the SAQ
+workers (control + agent), the watcher, and the CLI/scripts.
+
+| Variable          | Required | Default                          | Description                                                                                          |
+|-------------------|----------|----------------------------------|------------------------------------------------------------------------------------------------------|
+| `PHAZE_LOG_LEVEL` | No       | `INFO`                           | Root log level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. Set `DEBUG` for verbose per-file / intermediate detail. |
+| `PHAZE_LOG_JSON`  | No       | auto (JSON when stdout is not a TTY) | `true` = one JSON object per line (production / Docker); `false` = human-friendly console; unset = auto. |
+
+INFO proves work is happening — model downloads, scans (`scan started` / `scan progress` /
+`scan completed`), fingerprints, metadata extraction, executions, Discogs/tracklist matching,
+and per-agent task enqueues all emit at INFO. `DEBUG` adds per-file (`file discovered`,
+`model ok`) and intermediate detail; the 30-second agent heartbeat stays at DEBUG so it never
+floods INFO. To watch a running scan in detail: `PHAZE_LOG_LEVEL=DEBUG`.
+
 ## Fingerprint service settings (all roles)
 
 The fingerprint sidecars are validated to live on the agent's local Compose network only — `audfprint_url`/`panako_url` must resolve to `localhost`, `127.0.0.1`, `audfprint`, or `panako`. Cross-file-server fingerprint matching is not supported in v4.0.

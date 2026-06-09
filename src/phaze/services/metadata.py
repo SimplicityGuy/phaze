@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import logging
 from typing import Any
 
 import mutagen
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
+import structlog
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

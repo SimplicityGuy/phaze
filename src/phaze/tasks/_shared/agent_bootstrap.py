@@ -23,9 +23,10 @@ Public exports:
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import structlog
 
 from phaze.services.agent_client import AgentApiAuthError, AgentApiError, PhazeAgentClient
 
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_identity import AgentIdentity
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 _WHOAMI_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)

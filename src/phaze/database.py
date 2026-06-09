@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+import structlog
 
 from alembic import command
 from phaze.config import settings
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 engine = create_async_engine(

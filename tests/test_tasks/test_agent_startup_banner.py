@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,7 +11,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_agent_worker_startup_logs_role_banner_with_token_preview(
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """OPS-01 + D-13: agent startup must emit a banner with role + agent_id + token preview.
@@ -60,11 +59,12 @@ async def test_agent_worker_startup_logs_role_banner_with_token_preview(
     # these tests are about the banner / queue-mismatch logic, not models.
     monkeypatch.setattr(aw, "ensure_models_present", lambda _models_dir: None)
 
+    # PR3: the banner now renders through the central structlog pipeline to stdout
+    # (startup() calls configure_logging, which clears caplog's root handler).
     ctx: dict[str, Any] = {}
-    with caplog.at_level(logging.INFO, logger="phaze.tasks.agent_worker"):
-        await aw.startup(ctx)
+    await aw.startup(ctx)
 
-    text = "\n".join(rec.getMessage() for rec in caplog.records)
+    text = capsys.readouterr().out
 
     # OPS-01 banner assertions: module identifier + role + agent_id
     assert "phaze.tasks.agent_worker" in text, f"banner missing module identifier: {text!r}"

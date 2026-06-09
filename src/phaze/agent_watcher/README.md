@@ -62,6 +62,19 @@ The watcher requires a registered agent in the `agents` table. On a brand-new do
 - `PHAZE_WATCHER_MAX_PENDING_SECONDS=3600` -- stuck-file cap; entries older than this are evicted without posting (D-02)
 - `PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS=2` -- sweep task cadence
 - `PHAZE_SCAN_CHUNK_SIZE=500` -- used by `scan_directory` task (not the watcher itself, but shared AgentSettings field)
+- `PHAZE_LOG_LEVEL=INFO` -- root log level (`DEBUG`|`INFO`|`WARNING`|`ERROR`); set `DEBUG` to see each settled-file post in detail
+- `PHAZE_LOG_JSON` -- `true`=JSON, `false`=console, unset=auto (JSON when stdout is not a TTY)
+
+## Logging
+
+The watcher now logs through the central structlog pipeline
+(`phaze.logging_config.configure_logging`), which replaces the old ad-hoc stdout
+`StreamHandler`. It is configured **first** in `main()` — bare/env-driven, before
+`get_settings()` — so even a misconfiguration `ValidationError` (e.g. a missing
+`PHAZE_AGENT_*` var) is reported through the pipeline and reaches `docker logs watcher`.
+Output respects `PHAZE_LOG_LEVEL` / `PHAZE_LOG_JSON` (above): JSON when stdout is not a TTY
+(the container default), console otherwise. See
+[docs/configuration.md → Logging / observability](../../../docs/configuration.md#logging--observability-all-roles).
 
 ## Import-boundary invariant
 

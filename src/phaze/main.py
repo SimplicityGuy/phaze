@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from phaze.config import settings
 from phaze.database import async_session, engine, run_migrations
+from phaze.logging_config import configure_logging
 from phaze.routers import (
     admin_agents,
     agent_analysis,
@@ -63,6 +64,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     by config knobs (``settings.auto_migrate`` and ``settings.dev_seed_agent``)
     so operators can opt out in production.
     """
+    # PR3 observability: configure the central structlog pipeline FIRST -- before
+    # run_migrations() or any DB access -- so every startup log line (including
+    # migration / connectivity failures) flows through the JSON/console pipeline.
+    configure_logging(level=settings.log_level, json_logs=settings.log_json)
+
     # Phase 27 UAT Gap 2: bring the schema to head BEFORE the engine is used
     # for normal traffic. Idempotent + gated by settings.auto_migrate.
     await run_migrations()

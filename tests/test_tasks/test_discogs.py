@@ -135,3 +135,26 @@ async def test_rematch_deletes_candidates_preserves_accepted(
     # Verify that delete was called (third execute call is the delete for candidates)
     # The delete should target status="candidate" only, not "accepted"
     assert session.execute.call_count >= 3  # tracklist + tracks + at least one delete
+
+
+async def test_match_tracklist_missing_returns_not_found() -> None:
+    """A tracklist_id with no matching row short-circuits to status=not_found.
+
+    Covers the early-return branch (and its `discogs match completed`
+    status=not_found operational log) without touching discogs at all.
+    """
+    from phaze.tasks.discogs import match_tracklist_to_discogs
+
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    missing_result = MagicMock()
+    missing_result.scalar_one_or_none.return_value = None
+    session.execute = AsyncMock(return_value=missing_result)
+
+    tracklist_id = str(uuid.uuid4())
+    result = await match_tracklist_to_discogs(ctx, tracklist_id=tracklist_id)
+
+    assert result == {"tracklist_id": tracklist_id, "status": "not_found"}
+    # Only the tracklist lookup ran -- no tracks query, no delete, no client.
+    session.execute.assert_awaited_once()

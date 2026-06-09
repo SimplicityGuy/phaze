@@ -12,7 +12,6 @@ request schema has no agent_id field, so accidental body forgery returns
 422 `extra_forbidden`.
 """
 
-import logging
 from typing import Annotated, Any
 import unicodedata
 import uuid
@@ -21,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import Executable, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
@@ -32,7 +32,7 @@ from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/internal/agent/files", tags=["agent-internal"])
 

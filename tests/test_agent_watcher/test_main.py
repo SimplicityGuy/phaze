@@ -269,7 +269,7 @@ async def test_main_graceful_shutdown_on_sigterm(monkeypatch: pytest.MonkeyPatch
     fake_client.close.assert_awaited_once()
 
 
-async def test_main_logs_warning_when_observer_does_not_stop(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+async def test_main_logs_warning_when_observer_does_not_stop(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """WR-07: a wedged watchdog thread does NOT hang the shutdown.
 
     If ``observer.is_alive()`` still returns True after the bounded join,
@@ -293,12 +293,14 @@ async def test_main_logs_warning_when_observer_does_not_stop(monkeypatch: pytest
     real_event_cls = asyncio.Event
     monkeypatch.setattr(wmain.asyncio, "Event", lambda: (lambda e: (e.set(), e)[1])(real_event_cls()))
 
-    with caplog.at_level(logging.WARNING, logger="phaze.agent_watcher.__main__"):
-        await wmain.main()
+    # PR3: the watcher now configures the central structlog pipeline (renders to
+    # stdout). Capture the rendered output rather than caplog, whose root handler
+    # is cleared by configure_logging's idempotent reset.
+    await wmain.main()
 
     fake_observer.join.assert_called_once_with(timeout=10.0)
     # Warning surfaced; client still closed (shutdown did not hang).
-    text = "\n".join(r.getMessage() for r in caplog.records)
+    text = capsys.readouterr().out
     assert "did not stop within" in text
     fake_client.close.assert_awaited_once()
 
@@ -402,7 +404,7 @@ async def test_event_to_post_e2e(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 # ---------------------------------------------------------------------------
 async def test_main_logs_actionable_error_on_missing_env(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Gap 5: ``PHAZE_AGENT_API_URL`` missing must log an ERROR + exit 1.
 
@@ -427,12 +429,14 @@ async def test_main_logs_actionable_error_on_missing_env(
 
     get_settings.cache_clear()
 
-    with caplog.at_level(logging.ERROR, logger="phaze.agent_watcher.__main__"), pytest.raises(SystemExit) as excinfo:
+    # PR3: configure_logging (called bare/env-driven BEFORE get_settings) renders the
+    # ValidationError summary to stdout; capture that instead of caplog.
+    with pytest.raises(SystemExit) as excinfo:
         await wmain.main()
 
     assert excinfo.value.code == 1, f"expected exit code 1, got {excinfo.value.code!r}"
 
-    text = "\n".join(rec.getMessage() for rec in caplog.records)
+    text = capsys.readouterr().out
     # Operator must be able to find the failed variable name in the log.
     assert "PHAZE_AGENT_API_URL" in text or "agent_api_url" in text, f"missing-var log does not mention PHAZE_AGENT_API_URL: {text!r}"
     # ... and the log must use words operators search for when triaging.
@@ -592,7 +596,7 @@ async def test_main_raises_when_settings_is_not_agent_settings(monkeypatch: pyte
         await wmain.main()
 
 
-async def test_main_swallows_signal_handler_not_implemented(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+async def test_main_swallows_signal_handler_not_implemented(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Platform fallback (__main__.py:196-201).
 
     On Windows / some asyncio policies, loop.add_signal_handler raises
@@ -603,6 +607,9 @@ async def test_main_swallows_signal_handler_not_implemented(monkeypatch: pytest.
     pre-set shutdown_event trick).
     """
     cfg = _build_agent_settings(monkeypatch)
+    # PR3: the watcher configures logging bare (env-driven) before get_settings();
+    # force DEBUG so the platform-fallback DEBUG line emits through the real pipeline.
+    monkeypatch.setenv("PHAZE_LOG_LEVEL", "DEBUG")
     identity = _build_identity(roots=["/data/music"])
 
     fake_client = AsyncMock(spec=PhazeAgentClient)
@@ -640,12 +647,14 @@ async def test_main_swallows_signal_handler_not_implemented(monkeypatch: pytest.
 
     monkeypatch.setattr(wmain.asyncio, "get_running_loop", _wrapped_get_running_loop)
 
-    with caplog.at_level(logging.DEBUG, logger="phaze.agent_watcher.__main__"):
-        await wmain.main()  # MUST NOT raise
+    # PR3: DEBUG output now flows through the central structlog pipeline to stdout.
+    # PHAZE_LOG_LEVEL=DEBUG (set above) makes the fallback DEBUG line emit; capture
+    # stdout instead of caplog (whose root handler is cleared by configure_logging).
+    await wmain.main()  # MUST NOT raise
 
     # The platform-fallback DEBUG log fired (operators see this in
     # `docker logs` when running on Windows or a policy-restricted loop).
-    text = "\n".join(r.getMessage() for r in caplog.records)
+    text = capsys.readouterr().out
     assert "signal handlers not supported" in text.lower(), f"missing platform-fallback DEBUG log: {text!r}"
     # Observer still started — the NotImplementedError did not abort the bootstrap.
     fake_observer.start.assert_called_once()

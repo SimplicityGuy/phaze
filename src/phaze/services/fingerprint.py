@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-import logging
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
+import structlog
 
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

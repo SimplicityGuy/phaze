@@ -1,6 +1,5 @@
 """CUE sheet management UI router -- generation, batch generation, and CUE management page."""
 
-import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -12,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+import structlog
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
@@ -21,7 +21,7 @@ from phaze.services.cue_generator import CueTrackData, generate_cue_content, par
 from phaze.services.proposal_queries import Pagination
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))

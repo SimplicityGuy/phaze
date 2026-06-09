@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 import uuid
 
 from sqlalchemy import delete, select
+import structlog
 
 from phaze.config import settings
 from phaze.models.discogs_link import DiscogsLink
@@ -15,7 +15,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.discogs_matcher import DiscogsographyClient, match_track_to_discogs
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) -> dict[str, Any]:
@@ -28,11 +28,13 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
 
     Uses asyncio.Semaphore to bound concurrent requests per discogs_match_concurrency setting.
     """
+    logger.info("discogs match started", tracklist_id=tracklist_id)
     async with ctx["async_session"]() as session:
         # Load tracklist
         result = await session.execute(select(Tracklist).where(Tracklist.id == uuid.UUID(tracklist_id)))
         tracklist = result.scalar_one_or_none()
         if tracklist is None:
+            logger.info("discogs match completed", tracklist_id=tracklist_id, status="not_found")
             return {"tracklist_id": tracklist_id, "status": "not_found"}
 
         # Load tracks for latest version
@@ -84,11 +86,11 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
         await client.close()
 
         logger.info(
-            "Matched tracklist %s: %d tracks matched, %d skipped, %d candidates created",
-            tracklist_id,
-            len(eligible),
-            skipped,
-            candidates_created,
+            "discogs match completed",
+            tracklist_id=tracklist_id,
+            tracks_matched=len(eligible),
+            tracks_skipped=skipped,
+            candidates_created=candidates_created,
         )
 
         return {

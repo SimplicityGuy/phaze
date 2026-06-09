@@ -149,6 +149,8 @@ curl http://localhost:8000/health   # Verify: {"status": "ok"}
 
 > **Fingerprint sidecars:** `audfprint` and `panako` run in the agent stack (`docker-compose.agent.yml`) with no published host ports. Reach them on the Docker network at `audfprint:8001` / `panako:8002`; start them with `just up-agent` (agent stack only) or `just up-all` (both stacks on one host).
 
+> **Logging:** all processes log through one structlog pipeline (JSON when not a TTY, console otherwise). Tune with `PHAZE_LOG_LEVEL` (`DEBUG`\|`INFO`\|`WARNING`\|`ERROR`, default `INFO`) and `PHAZE_LOG_JSON` (`true`\|`false`, default auto); set `PHAZE_LOG_LEVEL=DEBUG` to watch a running scan or model download in detail. See [Configuration → Logging / observability](docs/configuration.md#logging--observability-all-roles).
+
 See the [Quick Start Guide](docs/quick-start.md) for prerequisites, local development setup, and environment configuration.
 
 ## 📖 Documentation
