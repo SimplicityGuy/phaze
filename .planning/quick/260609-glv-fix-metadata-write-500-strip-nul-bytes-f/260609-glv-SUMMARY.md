@@ -106,3 +106,43 @@ uv run ruff check .   -> All checks passed!
 uv run mypy .         -> Success: no issues found in 141 source files
 uv run pytest tests/test_services/test_metadata.py -> 44 passed in 0.07s
 ```
+
+---
+
+## Follow-up (scan_directory unbounded-timeout fix, same branch)
+
+Live incident: scan_directory SAQ job timed out at worker_job_timeout (600s)
+after ~2000/30913 files, then SAQ retried FROM SCRATCH (no checkpoint), looping
+until 4 retries exhausted — a full ~29 GB archive scan could never complete.
+
+Decision: scan_directory is a long-running BULK job and must NOT have a fixed
+SAQ wall-clock timeout. Liveness is delegated entirely to the application-level
+progress stall reaper.
+
+Changes:
+- `src/phaze/config.py` — `scan_stall_seconds` default 600 → 86400 (24h); UI
+  amber warn fires at half (12h). Env override (PHAZE_SCAN_STALL_SECONDS /
+  SCAN_STALL_SECONDS) intact.
+- `src/phaze/services/agent_task_router.py` — `enqueue_for_agent` /
+  `enqueue_for_file` gain keyword-only `timeout: int | None` / `retries:
+  int | None`, forwarded to `queue.enqueue(...)` only when not None (build extra
+  dict; merged last so explicit overrides win; other tasks keep policy defaults).
+  INFO "task enqueued" log now includes timeout/retries.
+- `src/phaze/routers/pipeline_scans.py` — scan_directory enqueue passes
+  `timeout=0` (→ wait_for unbounded; Job.stuck stays False) and `retries=0`.
+- Tests: added forward/omit assertions in test_agent_task_router.py (integration,
+  real Redis); asserted timeout=0/retries=0 in test_pipeline_scans.py; added
+  scan_stall_seconds==86400 default test in test_config_worker.py; pinned the
+  threshold (600) in the two tests that depended on the old default
+  (test_scan_reaper.py, test_pipeline_scans is_scan_stalled).
+
+Gates:
+```
+uv run ruff check .   -> All checks passed!
+uv run mypy .         -> Success: no issues found in 141 source files
+uv run pytest tests/test_services/test_agent_task_router.py \
+  tests/test_routers/test_pipeline_scans.py tests/test_config_worker.py \
+  tests/test_tasks/test_scan_reaper.py -> 65 passed (Redis via ephemeral container)
+```
+
+Commits: 41cfa91, 983c2ea
