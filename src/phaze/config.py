@@ -163,6 +163,18 @@ class BaseSettings(PydanticBaseSettings):
     # File discovery
     scan_path: str = "/data/music"
 
+    # PR4 scan reliability: a RUNNING scan with no progress (no last_progress_at
+    # heartbeat) for this many seconds is auto-marked FAILED by the control
+    # worker's every-minute reaper cron (reap_stalled_scans). Lives on
+    # BaseSettings so both roles parse it, but only the control worker registers
+    # and runs the reaper. The UI flips to an amber "stalled?" warning at half
+    # this threshold so the operator sees a warning before the hard reap.
+    scan_stall_seconds: int = Field(
+        default=600,
+        validation_alias=AliasChoices("PHAZE_SCAN_STALL_SECONDS", "SCAN_STALL_SECONDS", "scan_stall_seconds"),
+        description="Seconds with no progress before a RUNNING scan is reaped as stalled.",
+    )
+
     # Audio analysis models
     models_path: str = "/models"
 
