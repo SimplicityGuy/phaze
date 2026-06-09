@@ -84,3 +84,25 @@ None.
 - FOUND: tests/test_services/test_metadata.py (modified, `TestStripsNulBytes` present)
 - FOUND commit: 4b37c13
 - FOUND commit: 80a9dbd
+
+## Follow-up (2026-06-09): broadened sanitizer to lone surrogates — commit 69ab2a8
+
+Per PostgreSQL §8.14, broadened the NUL-only sanitizer to cover everything PostgreSQL actually rejects in a UTF8 text/jsonb column:
+
+- Renamed **`_strip_nul` -> `_sanitize_pg_text(s: str) -> str`** and updated all five call sites (two in `_first_str`, three in `_serialize_tags`: key, scalar value, list item).
+- Implementation now uses a module-level compiled regex `_PG_INVALID_CHARS = re.compile(r"[\x00\ud800-\udfff]")` and strips **NUL (U+0000)** plus **lone Unicode surrogates (U+D800-U+DFFF)**. Lone surrogates are rejected by jsonb and are unencodable to UTF-8 by asyncpg; in a Python `str`, astral chars are single code points, so any code point in that range is necessarily a lone (invalid) surrogate — stripping the whole range is safe-by-construction.
+- **Deliberately preserves** other C0/C1 controls, DEL, and Unicode noncharacters (U+FFFE/U+FFFF/U+FDD0-U+FDEF): these are valid in a UTF8 database and over-stripping would corrupt legitimate tag text. Documented with a comment referencing PostgreSQL §8.14.
+- Added `import re` (isort-compliant) and a docstring/comment explaining what is stripped and why.
+
+Test coverage added in `tests/test_services/test_metadata.py`:
+- `TestSanitizePgText` — direct unit tests: strips NUL, lone high/low surrogate, the entire U+D800-U+DFFF range; **preserves** U+0007 (bell), U+FFFE (noncharacter), and a real astral emoji U+1F600.
+- `TestStripsLoneSurrogates` — regression: lone surrogates fed through `_first_str` (scalar + list), `_serialize_tags` (key, scalar value, list item), and `extract_tags` ID3 end-to-end; asserts no char in U+D800-U+DFFF and no `\x00` survives in any normalized field or `raw_tags`.
+
+Behavior preserved: `_first_str` still returns `None` for `None`/empty list; year/track int parsing untouched.
+
+Gate output (all green):
+```
+uv run ruff check .   -> All checks passed!
+uv run mypy .         -> Success: no issues found in 141 source files
+uv run pytest tests/test_services/test_metadata.py -> 44 passed in 0.07s
+```
