@@ -250,6 +250,20 @@ class BaseSettings(PydanticBaseSettings):
         description="Optional fixed token for the dev-seeded agent (else random).",
     )
 
+    # PR3 observability: central structlog knobs. Live on BaseSettings so both
+    # ControlSettings and AgentSettings inherit them. Entry points pass these
+    # through to phaze.logging_config.configure_logging(level=..., json_logs=...).
+    log_level: str = Field(
+        default="INFO",
+        validation_alias=AliasChoices("PHAZE_LOG_LEVEL", "log_level"),
+        description="Root log level: DEBUG | INFO | WARNING | ERROR (default INFO).",
+    )
+    log_json: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_LOG_JSON", "log_json"),
+        description="True=JSON, False=console, None=auto (JSON when stdout is not a TTY).",
+    )
+
 
 class ControlSettings(BaseSettings):
     """Application-server role: LLM proposal generation, Discogs matching, fileless tasks."""
