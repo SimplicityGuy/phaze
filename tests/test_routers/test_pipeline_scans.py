@@ -199,6 +199,76 @@ def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:
     assert 40 <= elapsed <= 60, f"expected elapsed near 42s, got {elapsed}"
 
 
+def test_elapsed_seconds_freezes_when_completed_at_set() -> None:
+    """Incident 260608: elapsed_seconds freezes at completed_at once set.
+
+    A terminal batch's elapsed timer must stop at the moment it completed,
+    independent of wall-clock time. created_at = now-100s, completed_at = now-40s
+    -> elapsed is ~60s regardless of how long ago the batch finished.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import elapsed_seconds
+
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.COMPLETED.value,
+        total_files=0,
+        processed_files=0,
+    )
+    now = datetime.now(UTC)
+    batch.created_at = now - timedelta(seconds=100)
+    batch.completed_at = now - timedelta(seconds=40)
+
+    elapsed = elapsed_seconds(batch)
+    assert 58 <= elapsed <= 62, f"expected frozen elapsed near 60s, got {elapsed}"
+
+
+def test_elapsed_seconds_tracks_now_when_completed_at_none() -> None:
+    """A RUNNING batch (completed_at None) still tracks now - created_at."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import elapsed_seconds
+
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.RUNNING.value,
+        total_files=0,
+        processed_files=0,
+    )
+    batch.created_at = datetime.now(UTC) - timedelta(seconds=42)
+    batch.completed_at = None
+
+    elapsed = elapsed_seconds(batch)
+    assert 40 <= elapsed <= 60, f"expected elapsed near 42s, got {elapsed}"
+
+
+def test_elapsed_seconds_handles_tz_naive_completed_at_as_utc() -> None:
+    """A tz-naive completed_at (test fixture / bypassed coercion) is treated as UTC."""
+    from datetime import UTC, datetime, timedelta
+
+    from phaze.routers.pipeline_scans import elapsed_seconds
+
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="dev-agent",
+        scan_path="/data/music",
+        status=ScanStatus.COMPLETED.value,
+        total_files=0,
+        processed_files=0,
+    )
+    now = datetime.now(UTC)
+    batch.created_at = (now - timedelta(seconds=100)).replace(tzinfo=None)
+    batch.completed_at = (now - timedelta(seconds=40)).replace(tzinfo=None)
+
+    elapsed = elapsed_seconds(batch)
+    assert 58 <= elapsed <= 62, f"expected frozen elapsed near 60s, got {elapsed}"
+
+
 # ---------------------------------------------------------------------------
 # Task 1 (router contract) tests
 # ---------------------------------------------------------------------------

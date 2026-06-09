@@ -1,9 +1,10 @@
 """ScanBatch model - tracks file discovery scan operations."""
 
+from datetime import datetime
 import enum
 import uuid
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,6 +37,11 @@ class ScanBatch(TimestampMixin, Base):
     total_files: Mapped[int] = mapped_column(Integer, default=0)
     processed_files: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stamped once when the batch reaches a terminal (completed/failed) state so
+    # the admin UI's elapsed timer freezes instead of running forever. tz-aware
+    # to match the runtime type of TimestampMixin's columns (see the
+    # elapsed_seconds docstring in routers/pipeline_scans.py).
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_scan_batches_agent_id", "agent_id"),

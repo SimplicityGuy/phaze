@@ -65,6 +65,10 @@ def elapsed_seconds(batch: ScanBatch) -> int:
     test fixture that bypassed the DB type coercion), assume UTC so the
     subtraction still produces a meaningful elapsed value.
 
+    Incident 260608: once `completed_at` is set (terminal batch), the elapsed
+    value freezes at `completed_at - created_at` instead of tracking the wall
+    clock forever. The same tz-naive->UTC safety is applied to `completed_at`.
+
     Phase 27 UAT gap-14: shared helper -- previously a private
     `_elapsed_seconds` here was duplicated inline in
     `phaze.routers.pipeline.dashboard`. The duplicate carried the
@@ -76,7 +80,11 @@ def elapsed_seconds(batch: ScanBatch) -> int:
     created_at = batch.created_at
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=UTC)
-    return int((datetime.now(UTC) - created_at).total_seconds())
+
+    end = batch.completed_at if batch.completed_at is not None else datetime.now(UTC)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    return int((end - created_at).total_seconds())
 
 
 @router.get("/agent-roots", response_class=HTMLResponse)
