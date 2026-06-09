@@ -41,12 +41,12 @@ Docker invocation (Phase 29 docker-compose.agent.yml):
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from saq import CronJob, Queue
+import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import configure_logging
@@ -67,7 +67,7 @@ from phaze.tasks.pool import create_process_pool
 from phaze.tasks.scan import scan_directory, scan_live_set
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def startup(ctx: dict[str, Any]) -> None:

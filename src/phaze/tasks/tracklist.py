@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-import logging
 import random
 from typing import Any
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+import structlog
 
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -18,7 +18,7 @@ from phaze.services.tracklist_matcher import compute_match_confidence, parse_liv
 from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistScraper
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def _store_scraped_tracklist(

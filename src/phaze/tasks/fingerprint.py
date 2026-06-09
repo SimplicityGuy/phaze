@@ -12,8 +12,9 @@ Enforced by tests/test_task_split.py (Plan 10).
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from phaze.schemas.agent_fingerprint import FingerprintWriteRequest
 from phaze.schemas.agent_tasks import FingerprintFilePayload
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
     from phaze.services.fingerprint import FingerprintOrchestrator
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def fingerprint_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:

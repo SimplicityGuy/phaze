@@ -43,10 +43,11 @@ Enforced by tests/test_task_split.py (Plan 10).
 from __future__ import annotations
 
 import hashlib
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 import uuid
+
+import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.enums.execution import ExecutionStatus
@@ -60,7 +61,7 @@ if TYPE_CHECKING:
     from phaze.services.agent_client import PhazeAgentClient
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # Literal type alias for the three terminal sub-steps tracked by _execute_one.

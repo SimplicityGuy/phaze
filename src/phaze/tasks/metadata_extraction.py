@@ -9,8 +9,9 @@ Enforced by tests/test_task_split.py (Plan 10).
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.schemas.agent_metadata import MetadataWriteRequest
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from phaze.services.agent_client import PhazeAgentClient
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Music and video file types eligible for tag extraction (per D-10)
 _EXTRACTABLE_CATEGORIES = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})

@@ -29,8 +29,9 @@ removed because it depended on a flaky remote and blocked startup.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
+
+import structlog
 
 from phaze.scripts.download_models import CLASSIFIER_MODELS, GENRE_MODELS, download_to
 
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 _EXPECTED_MODEL_COUNT = len(CLASSIFIER_MODELS) + len(GENRE_MODELS)

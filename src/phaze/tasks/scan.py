@@ -23,12 +23,13 @@ tests/test_task_split.py::test_agent_worker_does_not_import_phaze_database
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 import unicodedata
 import uuid
+
+import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from phaze.services.fingerprint import FingerprintOrchestrator
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 _DEFAULT_SCAN_CHUNK_SIZE = 500

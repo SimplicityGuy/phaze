@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 import uuid
 
 from sqlalchemy import delete, select
+import structlog
 
 from phaze.config import settings
 from phaze.models.discogs_link import DiscogsLink
@@ -15,7 +15,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.discogs_matcher import DiscogsographyClient, match_track_to_discogs
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) -> dict[str, Any]:

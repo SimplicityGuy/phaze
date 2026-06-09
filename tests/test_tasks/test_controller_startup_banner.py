@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -11,7 +10,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_controller_startup_logs_role_banner(
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """OPS-01: controller startup must emit a banner line with role + queue name."""
@@ -31,18 +30,23 @@ async def test_controller_startup_logs_role_banner(
     fake_cfg.discogsography_url = "http://test"
     fake_cfg.llm_model = "stub-model"
     fake_cfg.llm_max_rpm = 60
+    # PR3: startup() now calls configure_logging(level=cfg.log_level, json_logs=cfg.log_json);
+    # pin concrete values so the central pipeline renders deterministic JSON to stdout.
+    fake_cfg.log_level = "INFO"
+    fake_cfg.log_json = True
     monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
 
     # Import AFTER patching. The module-level Queue.from_url already ran at first import
     # (using real env from conftest.py); subsequent startup() calls use our patched get_settings.
     from phaze.tasks import controller
 
+    # PR3: the banner now renders through the central structlog pipeline to stdout;
+    # capture stdout instead of caplog (whose root handler configure_logging clears).
     ctx: dict[str, Any] = {}
-    with caplog.at_level(logging.INFO, logger="phaze.tasks.controller"):
-        await controller.startup(ctx)
+    await controller.startup(ctx)
 
     # Assert the banner: must include role and queue identifiers
-    text = "\n".join(rec.getMessage() for rec in caplog.records)
+    text = capsys.readouterr().out
     assert "role=control" in text, f"banner missing role=control: {text!r}"
     assert "queue=controller" in text, f"banner missing queue=controller: {text!r}"
     # Verify the W4 fix landed: ctx["queue"] is stashed

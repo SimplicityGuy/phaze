@@ -37,8 +37,9 @@ without further dispatch.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
+
+import structlog
 
 from phaze import config as _config
 
@@ -47,7 +48,7 @@ if TYPE_CHECKING:
     from saq import Job
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # SAQ 0.26.3 Job dataclass defaults -- pinned here so the "still at default"

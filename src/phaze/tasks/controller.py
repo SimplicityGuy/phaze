@@ -21,11 +21,11 @@ Docker invocation (set by Plan 13's docker-compose.yml update):
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from saq import CronJob, Queue
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+import structlog
 
 from phaze.config import get_settings
 from phaze.logging_config import configure_logging
@@ -37,7 +37,7 @@ from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def startup(ctx: dict[str, Any]) -> None:
