@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: v4.0 complete (Phases 24–29 all shipped)
 Plan: -
 Status: Milestone complete; awaiting next-milestone scoping
-Last activity: 2026-06-08 - Completed quick task 260608-jbg: validate model integrity on bootstrap (HEAD size check + re-download)
+Last activity: 2026-06-09 - Completed quick task 260609-f96: fix scan_directory 10s TimeoutError (register job-defaults hook on per-agent queues)
 
 Progress: [██████████] 100%
 
@@ -95,6 +95,7 @@ None.
 | 260606-nha | Add `phaze agents add` management CLI (token mint + sha256 hash + id-charset validation + queue-name output) and document PHAZE_AGENT_QUEUE = phaze-agent-<agent_id> convention | 2026-06-06 | 602488a | [260606-nha-add-a-phaze-agents-add-management-cli-ge](./quick/260606-nha-add-a-phaze-agents-add-management-cli-ge/) |
 | 260608-i21 | Harden agent model bootstrap against transient download failures: per-file retry with bounded backoff+jitter, explicit httpx timeouts, atomic os.replace, Content-Length truncation check, fail-fast 4xx / retry 5xx (Verified) | 2026-06-08 | b0ddc4f | [260608-i21-harden-agent-model-bootstrap-against-tra](./quick/260608-i21-harden-agent-model-bootstrap-against-tra/) |
 | 260608-jbg | Validate model integrity on bootstrap via per-file HEAD Content-Length size check (size-only); shared bounded-retry+timeout across HEAD+GET so no request can wedge the worker; remove count-only gate (always validate); re-download truncated/corrupt files; correct stale ~150MB estimate to ~3.1GB/34 files (Verified). Extends PR #91. | 2026-06-08 | b86babd | [260608-jbg-validate-model-integrity-on-bootstrap-vi](./quick/260608-jbg-validate-model-integrity-on-bootstrap-vi/) |
+| 260609-f96 | Fix scan_directory 10s asyncio.TimeoutError: AgentTaskRouter._queue_for built per-agent SAQ queues without the apply_project_job_defaults before_enqueue hook, so agent-dispatched jobs inherited SAQ's 10s default instead of worker_job_timeout=600. Register the hook on each per-agent queue (3rd call site) + regression test. Found live on nox/lux v4.0.4. | 2026-06-09 | c6c7e20 | [260609-f96-fix-scan-directory-10s-timeouterror-regi](./quick/260609-f96-fix-scan-directory-10s-timeouterror-regi/) |
 
 ## Session Continuity
 
