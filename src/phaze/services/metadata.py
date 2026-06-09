@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 import mutagen
@@ -58,9 +59,25 @@ _MP4_MAP: dict[str, str] = {
 }
 
 
-def _strip_nul(s: str) -> str:
-    """Strip NUL bytes (U+0000) that PostgreSQL text/jsonb columns cannot store."""
-    return s.replace("\x00", "")
+# Characters PostgreSQL cannot accept in a UTF8 text/jsonb column (PostgreSQL §8.14):
+#   - U+0000 (NUL): rejected by both text and jsonb columns.
+#   - U+D800-U+DFFF (Unicode surrogates): rejected by jsonb, and unencodable to UTF-8
+#     when asyncpg transmits a text value. In a Python ``str`` astral characters are
+#     single code points (never stored as surrogate pairs), so any code point in this
+#     range is necessarily a LONE surrogate -- stripping the whole range is safe.
+# Everything else (other C0/C1 controls, DEL, Unicode noncharacters like U+FFFE/U+FFFF/
+# U+FDD0-U+FDEF) is VALID in a UTF8 database and is deliberately left intact -- stripping
+# it would corrupt legitimate tag text.
+_PG_INVALID_CHARS = re.compile(r"[\x00\ud800-\udfff]")
+
+
+def _sanitize_pg_text(s: str) -> str:
+    """Strip characters PostgreSQL cannot store in a UTF8 text/jsonb column.
+
+    Removes only NUL (U+0000) and lone Unicode surrogates (U+D800-U+DFFF); all other
+    control characters and noncharacters are preserved. See PostgreSQL §8.14.
+    """
+    return _PG_INVALID_CHARS.sub("", s)
 
 
 def _first_str(val: Any) -> str | None:
@@ -71,8 +88,8 @@ def _first_str(val: Any) -> str | None:
     if val is None:
         return None
     if isinstance(val, list):
-        return _strip_nul(str(val[0])) if val else None
-    return _strip_nul(str(val))
+        return _sanitize_pg_text(str(val[0])) if val else None
+    return _sanitize_pg_text(str(val))
 
 
 def _parse_year(val: str | None) -> int | None:
@@ -150,7 +167,7 @@ def _serialize_tags(tags: Any) -> dict[str, Any]:
         return {}
 
     for key, val in items:
-        str_key = _strip_nul(str(key))
+        str_key = _sanitize_pg_text(str(key))
         # Skip APIC (cover art) frames entirely
         if str_key.startswith("APIC"):
             continue
@@ -162,11 +179,11 @@ def _serialize_tags(tags: Any) -> dict[str, Any]:
                 for item in val:
                     if isinstance(item, bytes):
                         continue
-                    serialized.append(_strip_nul(str(item)))
+                    serialized.append(_sanitize_pg_text(str(item)))
                 if serialized:
                     result[str_key] = serialized
             else:
-                result[str_key] = _strip_nul(str(val))
+                result[str_key] = _sanitize_pg_text(str(val))
         except Exception:
             logger.debug("Failed to serialize tag %s", str_key)
             continue
