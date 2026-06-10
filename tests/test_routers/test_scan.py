@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
-from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -19,48 +18,6 @@ if TYPE_CHECKING:
 
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
-
-
-# ---------------------------------------------------------------------------
-# Test doubles for the per-agent enqueue routing (Phase 30 Plan 04)
-# ---------------------------------------------------------------------------
-
-
-class _CaptureQueue:
-    """A SAQ-queue stand-in that records every enqueue as (queue_name, task, kwargs)."""
-
-    def __init__(self, name: str, captures: list[tuple[str, str, dict[str, Any]]]) -> None:
-        self.name = name
-        self._captures = captures
-
-    async def enqueue(self, task_name: str, **kwargs: Any) -> None:
-        self._captures.append((self.name, task_name, kwargs))
-
-
-class _CaptureRouter:
-    """AgentTaskRouter stand-in: ``queue_for(id)`` returns a named capture queue.
-
-    All capture queues share one ``captures`` list so a test can assert the exact
-    ``(queue_name, task_name, kwargs)`` tuples enqueued across the run.
-    """
-
-    def __init__(self) -> None:
-        self.captures: list[tuple[str, str, dict[str, Any]]] = []
-        self._queues: dict[str, _CaptureQueue] = {}
-
-    def queue_for(self, agent_id: str) -> _CaptureQueue:
-        name = f"phaze-agent-{agent_id}"
-        if name not in self._queues:
-            self._queues[name] = _CaptureQueue(name, self.captures)
-        return self._queues[name]
-
-
-async def _seed_active_agent(session: AsyncSession, agent_id: str = "nox") -> Agent:
-    """Insert a non-revoked agent with a recent ``last_seen_at`` (selectable as active)."""
-    agent = Agent(id=agent_id, name=agent_id, scan_roots=[], last_seen_at=datetime.now(UTC))
-    session.add(agent)
-    await session.commit()
-    return agent
 
 
 async def _drain_background_scans() -> None:
@@ -86,8 +43,8 @@ async def test_trigger_scan_returns_batch_id(
     """POST /api/v1/scan should return 200 with batch_id and message."""
     monkeypatch.setattr("phaze.routers.scan.settings.scan_path", str(tmp_path))
     monkeypatch.setattr("phaze.routers.scan.run_scan", AsyncMock())
-    await _seed_active_agent(session)
-    client._transport.app.state.task_router = _CaptureRouter()  # type: ignore[union-attr]
+    await seed_active_agent(session)
+    client._transport.app.state.task_router = FakeTaskRouter()  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/scan", json={})
 
@@ -107,8 +64,8 @@ async def test_trigger_scan_with_path_override(
 ) -> None:
     """POST /api/v1/scan with path override should use the provided path."""
     monkeypatch.setattr("phaze.routers.scan.run_scan", AsyncMock())
-    await _seed_active_agent(session)
-    client._transport.app.state.task_router = _CaptureRouter()  # type: ignore[union-attr]
+    await seed_active_agent(session)
+    client._transport.app.state.task_router = FakeTaskRouter()  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/scan", json={"path": str(tmp_path)})
 
@@ -131,8 +88,8 @@ async def test_trigger_scan_enqueues_extract_on_active_agent_queue(
     # A real audio file so discovery classifies it MUSIC and the enqueue loop fires.
     (tmp_path / "song.mp3").write_bytes(b"\x00fake-mp3-bytes")
 
-    await _seed_active_agent(session, "nox")
-    router = _CaptureRouter()
+    await seed_active_agent(session, "nox")
+    router = FakeTaskRouter()
     client._transport.app.state.task_router = router  # type: ignore[union-attr]
 
     # run_scan opens its own session via phaze.routers.scan.async_session (the prod
@@ -159,7 +116,7 @@ async def test_trigger_scan_no_active_agent_returns_503(
 ) -> None:
     """With no active agent, POST /api/v1/scan is a visible 503 and captures no enqueue."""
     # Only the conftest LEGACY agent exists (last_seen_at IS NULL -> not selectable).
-    router = _CaptureRouter()
+    router = FakeTaskRouter()
     client._transport.app.state.task_router = router  # type: ignore[union-attr]
 
     response = await client.post("/api/v1/scan", json={"path": str(tmp_path)})

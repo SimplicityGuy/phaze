@@ -9,11 +9,12 @@ import uuid
 
 import pytest
 
-from phaze.models.agent import LEGACY_AGENT_ID, Agent
+from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from tests._queue_fakes import seed_active_agent, wire_fakes
 
 
 if TYPE_CHECKING:
@@ -25,51 +26,13 @@ if TYPE_CHECKING:
 # Phase 30 Plan 02: fake named-queue capture harness
 #
 # The lifespan is NOT run for the test client, so handlers read whatever we
-# attach to ``app.state``. We attach a fake ``controller_queue`` (named
-# "controller") and a fake ``task_router`` whose ``queue_for(agent_id)`` returns
-# a queue named ``phaze-agent-<id>``. Every ``enqueue`` appends
-# ``(queue_name, task_name, kwargs)`` to a shared capture list so tests can assert
-# the exact destination queue per endpoint -- proving the v4.0.6 default-queue
-# misrouting is gone.
+# attach to ``app.state``. ``wire_fakes`` (tests/_queue_fakes.py) attaches a fake
+# ``controller_queue`` (named "controller") and a fake ``task_router`` whose
+# ``queue_for(agent_id)`` returns a queue named ``phaze-agent-<id>``; every
+# ``enqueue`` appends ``(queue_name, task_name, kwargs)`` to a shared capture list
+# so tests can assert the exact destination queue per endpoint -- proving the
+# v4.0.6 default-queue misrouting is gone.
 # ---------------------------------------------------------------------------
-
-
-class _FakeQueue:
-    """A fake SAQ queue that records every enqueue against a shared capture list."""
-
-    def __init__(self, name: str, capture: list[tuple[str, str, dict]]) -> None:
-        self.name = name
-        self._capture = capture
-
-    async def enqueue(self, task_name: str, **kwargs: object) -> None:
-        self._capture.append((self.name, task_name, dict(kwargs)))
-
-
-class _FakeTaskRouter:
-    """A fake AgentTaskRouter: ``queue_for`` yields a ``phaze-agent-<id>`` queue."""
-
-    def __init__(self, capture: list[tuple[str, str, dict]]) -> None:
-        self._capture = capture
-
-    def queue_for(self, agent_id: str) -> _FakeQueue:
-        return _FakeQueue(f"phaze-agent-{agent_id}", self._capture)
-
-
-def _wire_fakes(client: AsyncClient) -> list[tuple[str, str, dict]]:
-    """Attach fake controller_queue + task_router; return the shared capture list."""
-    capture: list[tuple[str, str, dict]] = []
-    state = client._transport.app.state  # type: ignore[union-attr]
-    state.controller_queue = _FakeQueue("controller", capture)
-    state.task_router = _FakeTaskRouter(capture)
-    return capture
-
-
-async def _seed_active_agent(session: AsyncSession, *, agent_id: str = "nox") -> Agent:
-    """Seed one active (non-revoked, recently-seen) agent so select_active_agent resolves it."""
-    agent = Agent(id=agent_id, name=agent_id, scan_roots=[], last_seen_at=datetime.now(UTC))
-    session.add(agent)
-    await session.commit()
-    return agent
 
 
 async def _drain_background() -> None:
@@ -138,8 +101,8 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
     """POST /api/v1/analyze enqueues process_file onto phaze-agent-nox (not default)."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
     await session.commit()
-    await _seed_active_agent(session)
-    capture = _wire_fakes(client)
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
     assert response.status_code == 200
@@ -157,7 +120,7 @@ async def test_analyze_no_active_agent(client: AsyncClient, session: AsyncSessio
     """POST /api/v1/analyze with files but no active agent surfaces a visible empty-state."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
     await session.commit()
-    capture = _wire_fakes(client)  # no active agent seeded
+    capture = wire_fakes(client)  # no active agent seeded
 
     response = await client.post("/api/v1/analyze")
     assert response.status_code == 200
@@ -191,7 +154,7 @@ async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSes
     await session.flush()
     session.add_all(related)
     await session.commit()
-    capture = _wire_fakes(client)
+    capture = wire_fakes(client)
 
     response = await client.post("/api/v1/proposals/generate")
     assert response.status_code == 200
@@ -233,8 +196,8 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
     """POST /pipeline/analyze enqueues process_file onto phaze-agent-nox + renders the fragment."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
     await session.commit()
-    await _seed_active_agent(session)
-    capture = _wire_fakes(client)
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
@@ -251,7 +214,7 @@ async def test_trigger_analysis_ui_no_active_agent(client: AsyncClient, session:
     """POST /pipeline/analyze with files but no active agent renders the no-active-agent copy."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
     await session.commit()
-    capture = _wire_fakes(client)  # no active agent seeded
+    capture = wire_fakes(client)  # no active agent seeded
 
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
@@ -282,7 +245,7 @@ async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: Asy
     await session.flush()
     session.add_all(related)
     await session.commit()
-    capture = _wire_fakes(client)
+    capture = wire_fakes(client)
 
     response = await client.post("/pipeline/proposals")
     assert response.status_code == 200
@@ -307,8 +270,8 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     """POST /api/v1/analyze enqueues jobs in background without blocking response."""
     session.add(_make_file(state=FileState.DISCOVERED))
     await session.commit()
-    await _seed_active_agent(session)
-    capture = _wire_fakes(client)
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
     assert response.status_code == 200
@@ -332,7 +295,7 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     await session.flush()
     session.add_all(related)
     await session.commit()
-    capture = _wire_fakes(client)
+    capture = wire_fakes(client)
 
     response = await client.post("/api/v1/proposals/generate")
     assert response.status_code == 200
@@ -349,8 +312,8 @@ async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSess
     """POST /api/v1/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
     await session.commit()
-    await _seed_active_agent(session)
-    capture = _wire_fakes(client)
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/api/v1/extract-metadata")
     assert response.status_code == 200
@@ -367,7 +330,7 @@ async def test_extract_metadata_no_active_agent(client: AsyncClient, session: As
     """POST /api/v1/extract-metadata with files but no active agent surfaces empty-state."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
     await session.commit()
-    capture = _wire_fakes(client)  # no active agent seeded
+    capture = wire_fakes(client)  # no active agent seeded
 
     response = await client.post("/api/v1/extract-metadata")
     assert response.status_code == 200
@@ -393,8 +356,8 @@ async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: As
     """POST /pipeline/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
     await session.commit()
-    await _seed_active_agent(session)
-    capture = _wire_fakes(client)
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/pipeline/extract-metadata")
     assert response.status_code == 200
@@ -411,7 +374,7 @@ async def test_trigger_extraction_ui_no_active_agent(client: AsyncClient, sessio
     """POST /pipeline/extract-metadata with files but no active agent renders the empty-state."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
     await session.commit()
-    capture = _wire_fakes(client)  # no active agent seeded
+    capture = wire_fakes(client)  # no active agent seeded
 
     response = await client.post("/pipeline/extract-metadata")
     assert response.status_code == 200
@@ -434,8 +397,8 @@ async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: A
     """POST /pipeline/fingerprint enqueues fingerprint_file onto phaze-agent-nox."""
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
     await session.commit()
-    await _seed_active_agent(session)
-    capture = _wire_fakes(client)
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/pipeline/fingerprint")
     assert response.status_code == 200
@@ -452,7 +415,7 @@ async def test_trigger_fingerprint_ui_no_active_agent(client: AsyncClient, sessi
     """POST /pipeline/fingerprint with files but no active agent renders the empty-state."""
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
     await session.commit()
-    capture = _wire_fakes(client)  # no active agent seeded
+    capture = wire_fakes(client)  # no active agent seeded
 
     response = await client.post("/pipeline/fingerprint")
     assert response.status_code == 200

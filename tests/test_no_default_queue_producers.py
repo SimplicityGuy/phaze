@@ -25,19 +25,17 @@ This module locks the fix in so the bug class cannot silently recur:
 from __future__ import annotations
 
 import ast
-from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from phaze.models.agent import Agent
 from phaze.services.enqueue_router import (
     AGENT_TASKS,
     CONTROLLER_TASKS,
     resolve_queue_for_task,
 )
+from tests._queue_fakes import seed_active_agent, stub_app_state
 
 
 if TYPE_CHECKING:
@@ -171,38 +169,10 @@ def test_static_guard_allows_named_queue_construction() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stub_app_state() -> SimpleNamespace:
-    """app_state stub: a sentinel controller queue + a task_router whose
-    ``queue_for(id)`` returns a per-id named sentinel (mirrors the real shapes)."""
-    controller_queue = SimpleNamespace(name="controller")
-
-    class _StubRouter:
-        def queue_for(self, agent_id: str) -> SimpleNamespace:
-            return SimpleNamespace(name=f"phaze-agent-{agent_id}")
-
-    return SimpleNamespace(controller_queue=controller_queue, task_router=_StubRouter())
-
-
-async def _seed_active_agent(session: AsyncSession, agent_id: str = "fileserver-01") -> Agent:
-    """Insert one non-revoked, recently-seen agent so per-agent routing resolves."""
-    agent = Agent(
-        id=agent_id,
-        name=agent_id,
-        token_hash=None,
-        scan_roots=[],
-        last_seen_at=datetime.now(UTC),
-        revoked_at=None,
-    )
-    session.add(agent)
-    await session.commit()
-    await session.refresh(agent)
-    return agent
-
-
 @pytest.mark.asyncio
 async def test_every_controller_task_routes_to_controller_queue() -> None:
     """Every CONTROLLER_TASKS name resolves to the controller queue with agent_id None."""
-    app_state = _stub_app_state()
+    app_state = stub_app_state()
 
     for task_name in sorted(CONTROLLER_TASKS):
         routed = await resolve_queue_for_task(task_name, app_state, None)
@@ -213,8 +183,8 @@ async def test_every_controller_task_routes_to_controller_queue() -> None:
 @pytest.mark.asyncio
 async def test_every_agent_task_routes_to_per_agent_queue(session: AsyncSession) -> None:
     """Every AGENT_TASKS name resolves to the active agent's phaze-agent-<id> queue."""
-    agent = await _seed_active_agent(session)
-    app_state = _stub_app_state()
+    agent = await seed_active_agent(session)
+    app_state = stub_app_state()
 
     for task_name in sorted(AGENT_TASKS):
         routed = await resolve_queue_for_task(task_name, app_state, session)
@@ -225,7 +195,7 @@ async def test_every_agent_task_routes_to_per_agent_queue(session: AsyncSession)
 @pytest.mark.asyncio
 async def test_unknown_task_raises_value_error() -> None:
     """An unknown task name fails loud — it must never return the default queue."""
-    app_state = _stub_app_state()
+    app_state = stub_app_state()
 
     with pytest.raises(ValueError, match="unroutable task"):
         await resolve_queue_for_task("definitely_not_a_task", app_state, None)

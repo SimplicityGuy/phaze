@@ -3,58 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
 
-from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
+from tests._queue_fakes import seed_active_agent, wire_fakes
 
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
-
-
-class _FakeQueue:
-    """A fake SAQ queue that records every enqueue against a shared capture list."""
-
-    def __init__(self, name: str, capture: list[tuple[str, str, dict]]) -> None:
-        self.name = name
-        self._capture = capture
-
-    async def enqueue(self, task_name: str, **kwargs: object) -> None:
-        self._capture.append((self.name, task_name, dict(kwargs)))
-
-
-class _FakeTaskRouter:
-    """A fake AgentTaskRouter: ``queue_for`` yields a ``phaze-agent-<id>`` queue."""
-
-    def __init__(self, capture: list[tuple[str, str, dict]]) -> None:
-        self._capture = capture
-
-    def queue_for(self, agent_id: str) -> _FakeQueue:
-        return _FakeQueue(f"phaze-agent-{agent_id}", self._capture)
-
-
-def _wire_fakes(client: AsyncClient) -> list[tuple[str, str, dict]]:
-    """Attach fake controller_queue + task_router; return the shared capture list."""
-    capture: list[tuple[str, str, dict]] = []
-    state = client._transport.app.state  # type: ignore[union-attr]
-    state.controller_queue = _FakeQueue("controller", capture)
-    state.task_router = _FakeTaskRouter(capture)
-    return capture
-
-
-async def _seed_active_agent(session: AsyncSession, *, agent_id: str = "nox") -> Agent:
-    """Seed one active (non-revoked, recently-seen) agent so select_active_agent resolves it."""
-    agent = Agent(id=agent_id, name=agent_id, scan_roots=[], last_seen_at=datetime.now(UTC))
-    session.add(agent)
-    await session.commit()
-    return agent
 
 
 async def _drain_background() -> None:
@@ -87,8 +48,8 @@ async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, sessio
     """POST /api/v1/fingerprint enqueues fingerprint_file onto phaze-agent-nox (not default)."""
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(3)])
     await session.commit()
-    await _seed_active_agent(session)
-    capture = _wire_fakes(client)
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/api/v1/fingerprint")
     assert response.status_code == 200
@@ -106,7 +67,7 @@ async def test_trigger_fingerprint_no_active_agent(client: AsyncClient, session:
     """POST /api/v1/fingerprint with files but no active agent surfaces a visible empty-state."""
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(3)])
     await session.commit()
-    capture = _wire_fakes(client)  # no active agent seeded
+    capture = wire_fakes(client)  # no active agent seeded
 
     response = await client.post("/api/v1/fingerprint")
     assert response.status_code == 200
