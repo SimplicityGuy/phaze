@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy import select
 
 from phaze.database import get_session
-from phaze.models.analysis import AnalysisResult
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.agent_analysis import router as agent_analysis_router
 
@@ -218,6 +218,134 @@ async def test_analysis_first_put_with_empty_body_creates_row(
     assert row.mood is None
     assert row.style is None
     assert row.features is None  # no overflow fields set -> features stays NULL
+
+
+def _window(tier: str, idx: int, start: float, end: float, **extra: object) -> dict[str, object]:
+    """Build a window dict for a PUT body."""
+    return {"tier": tier, "window_index": idx, "start_sec": start, "end_sec": end, **extra}
+
+
+async def _window_rows(session: AsyncSession, file_id: uuid.UUID) -> list[AnalysisWindow]:
+    session.expire_all()
+    result = await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id).order_by(AnalysisWindow.window_index))
+    return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_idempotent_insert_then_replace(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """PUT [w0,w1] -> 2 rows; re-PUT [w0',w1',w2'] -> exactly 3 rows (idempotent replace, no duplicates)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r1 = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={
+                "bpm": 120.0,
+                "windows": [
+                    _window("fine", 0, 0.0, 30.0, bpm=120.0, musical_key="C major"),
+                    _window("fine", 1, 30.0, 60.0, bpm=122.0, musical_key="A minor"),
+                ],
+            },
+        )
+        assert r1.status_code == 200, r1.text
+        rows1 = await _window_rows(session, file_id)
+        assert len(rows1) == 2
+
+        r2 = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={
+                "windows": [
+                    _window("fine", 0, 0.0, 30.0, bpm=121.0),
+                    _window("fine", 1, 30.0, 60.0, bpm=123.0),
+                    _window("coarse", 0, 0.0, 180.0, mood="calm"),
+                ],
+            },
+        )
+
+    assert r2.status_code == 200, r2.text
+    rows2 = await _window_rows(session, file_id)
+    assert len(rows2) == 3, "re-PUT must REPLACE windows, not append duplicates"
+    assert rows2[0].bpm == 121.0
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_idempotent_partial_put_preserves_windows(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """PUT with windows omitted (None) leaves existing windows untouched (partial-PUT)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r_seed = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"windows": [_window("fine", 0, 0.0, 30.0, bpm=120.0)]},
+        )
+        assert r_seed.status_code == 200, r_seed.text
+        # Aggregate-only PUT: no `windows` key at all.
+        r_partial = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 130.0})
+
+    assert r_partial.status_code == 200, r_partial.text
+    rows = await _window_rows(session, file_id)
+    assert len(rows) == 1, "aggregate-only PUT must NOT wipe existing windows"
+    assert rows[0].bpm == 120.0
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_idempotent_empty_list_deletes(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """PUT with windows=[] deletes all windows for the file (explicit empty replace)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r_seed = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"windows": [_window("fine", 0, 0.0, 30.0, bpm=120.0), _window("fine", 1, 30.0, 60.0, bpm=122.0)]},
+        )
+        assert r_seed.status_code == 200, r_seed.text
+        r_empty = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"windows": []})
+
+    assert r_empty.status_code == 200, r_empty.text
+    rows = await _window_rows(session, file_id)
+    assert len(rows) == 0, "windows=[] must delete all window rows for the file"
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_idempotent_delete_scoped_to_path_file_id(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """The DELETE is scoped strictly to the PATH file_id (no cross-file deletion, AUTH-01)."""
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        await ac.put(
+            f"/api/internal/agent/analysis/{file_a}",
+            json={"windows": [_window("fine", 0, 0.0, 30.0, bpm=120.0)]},
+        )
+        await ac.put(
+            f"/api/internal/agent/analysis/{file_b}",
+            json={"windows": [_window("fine", 0, 0.0, 30.0, bpm=99.0)]},
+        )
+        # Re-PUT file_a; file_b's windows must be untouched.
+        await ac.put(
+            f"/api/internal/agent/analysis/{file_a}",
+            json={"windows": [_window("fine", 0, 0.0, 30.0, bpm=121.0)]},
+        )
+
+    rows_b = await _window_rows(session, file_b)
+    assert len(rows_b) == 1, "cross-file deletion: file_b windows must survive a PUT to file_a"
+    assert rows_b[0].bpm == 99.0
 
 
 @pytest.mark.asyncio
