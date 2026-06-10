@@ -14,6 +14,9 @@
 #}
 <section aria-labelledby="recent-scans-heading"
          id="recent-scans"
+         hx-get="/pipeline/scans/recent"
+         hx-trigger="every 5s"
+         hx-swap="outerHTML"
          class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
     <h2 id="recent-scans-heading" class="text-lg font-semibold mb-4">Recent Scans</h2>
     {% if not recent_scans %}

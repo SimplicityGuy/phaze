@@ -171,6 +171,31 @@ async def agent_roots_swap(
     )
 
 
+@router.get("/recent", response_class=HTMLResponse)
+async def recent_scans_partial(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    """HTMX poll endpoint: re-render the Recent Scans mini-table.
+
+    Returns the same ``recent_scans_table.html`` partial the dashboard renders at
+    page load (and that ``delete_scan`` re-renders after a delete), via the shared
+    ``build_recent_scans`` helper. The partial's root ``<section id="recent-scans">``
+    carries ``hx-get="/pipeline/scans/recent" hx-trigger="every 5s"
+    hx-swap="outerHTML"``, so each swapped-in copy re-arms the poll -- the same
+    self-referential pattern as ``scan_progress_card.html``.
+
+    Registered BEFORE ``GET /pipeline/scans/{batch_id}`` so the literal ``/recent``
+    path is matched here instead of being captured as a ``batch_id`` UUID path param.
+    """
+    rows = await build_recent_scans(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/recent_scans_table.html",
+        context={"request": request, "recent_scans": rows},
+    )
+
+
 @router.get("/{batch_id}", response_class=HTMLResponse)
 async def scan_progress(
     request: Request,

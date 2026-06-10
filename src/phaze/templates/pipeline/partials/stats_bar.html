@@ -24,3 +24,19 @@
         <p class="text-sm text-gray-600 dark:text-gray-400 dark:text-gray-500">Executed</p>
     </div>
 </div>
+{# OOB: refresh the Pipeline Actions "files ready" counts on the same 5s stats tick
+   WITHOUT re-rendering the interactive buttons (#pipeline-stages holds hx-post
+   buttons + Alpine x-data loading state and the enqueue-response divs; a blunt
+   poll there would clobber an in-flight click / revert the "Enqueued N files"
+   message). The ids + classes mirror the in-place paragraphs in stage_cards.html
+   so each out-of-band swap is visually identical.
+
+   Emit ONLY on the poll response (oob_counts truthy), never on the initial
+   full-page include: hx-swap-oob is only honored during an HTMX swap, so at page
+   load these would render as stray visible text AND collide with the same ids
+   already present in stage_cards.html (duplicate-id DOM). The dashboard include
+   omits oob_counts so this block is skipped at load; /pipeline/stats sets it True. #}
+{% if oob_counts %}
+<p id="analyze-files-ready" hx-swap-oob="true" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
+<p id="proposals-files-ready" hx-swap-oob="true" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
+{% endif %}

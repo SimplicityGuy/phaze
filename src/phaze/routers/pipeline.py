@@ -166,7 +166,11 @@ async def pipeline_stats_partial(
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
-        context={"request": request, "stats": stats, "settings_batch_size": settings.llm_batch_size},
+        # oob_counts=True emits the hx-swap-oob "files ready" paragraphs ONLY on
+        # this poll response. The dashboard full-page include omits the flag, so
+        # the OOB block is skipped at initial load (where htmx would not honor
+        # hx-swap-oob and the ids would collide with stage_cards.html).
+        context={"request": request, "stats": stats, "settings_batch_size": settings.llm_batch_size, "oob_counts": True},
     )
 
 

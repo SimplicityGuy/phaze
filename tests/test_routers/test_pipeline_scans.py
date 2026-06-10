@@ -956,10 +956,154 @@ async def test_router_registered_in_main_app() -> None:
 
     app = create_app()
     paths = {route.path for route in app.routes if hasattr(route, "path")}  # type: ignore[attr-defined]
-    # All three handlers must be reachable on the production app.
+    # All handlers must be reachable on the production app.
     assert "/pipeline/scans" in paths
     assert "/pipeline/scans/{batch_id}" in paths
     assert "/pipeline/scans/agent-roots" in paths
+    assert "/pipeline/scans/recent" in paths
+
+
+# ---------------------------------------------------------------------------
+# GET /pipeline/scans/recent -- self-arming Recent Scans poll partial
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_recent_scans_partial_renders_table(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """GET /pipeline/scans/recent returns 200 + the Recent Scans table with the row's cells.
+
+    Seeds a RUNNING batch (mid-scan "N / Z" is exactly the value the page-load
+    render froze) and asserts the partial renders its agent name, path and the
+    ``processed_files / total_files`` cell.
+    """
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/live-scan/",
+        status=ScanStatus.RUNNING.value,
+        total_files=9000,
+        processed_files=5500,
+    )
+    session.add(batch)
+    await session.commit()
+
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200, response.text
+    # Root section present (HTMX outerHTML swap target).
+    assert 'id="recent-scans"' in response.text
+    # Known cells from the seeded row.
+    assert "Test Agent" in response.text
+    assert "/data/music/live-scan/" in response.text
+    assert "5500" in response.text
+    assert "9000" in response.text
+
+
+@pytest.mark.asyncio
+async def test_get_recent_scans_partial_is_self_arming(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """The /recent partial re-arms its own 5s poll on the root section (self-referential).
+
+    Each swapped-in copy must carry hx-get/hx-trigger/hx-swap on its root so the
+    poll keeps firing -- mirrors the scan_progress_card.html pattern.
+    """
+    ac, _ = smoke
+
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200
+    assert 'hx-get="/pipeline/scans/recent"' in response.text
+    assert 'hx-trigger="every 5s"' in response.text
+    assert 'hx-swap="outerHTML"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_get_recent_scans_partial_excludes_live_batches(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """The /recent partial excludes LIVE sentinel batches (same query as the dashboard)."""
+    ac, _ = smoke
+    live = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="<watcher>",
+        status=ScanStatus.LIVE.value,
+        total_files=0,
+        processed_files=0,
+    )
+    session.add(live)
+    await session.commit()
+
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200
+    assert "<watcher>" not in response.text
+    assert "No scans yet" in response.text
+
+
+@pytest.mark.asyncio
+async def test_recent_path_not_shadowed_by_batch_id_route(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """GET /pipeline/scans/recent resolves to the partial, NOT the /{batch_id} 404 path.
+
+    If the literal ``/recent`` route were registered AFTER ``/{batch_id}`` it would
+    be captured as a UUID path param and 422 (invalid UUID). Pin the ordering.
+    """
+    ac, _ = smoke
+    response = await ac.get("/pipeline/scans/recent")
+    assert response.status_code == 200
+    assert 'id="recent-scans"' in response.text
+
+
+# ---------------------------------------------------------------------------
+# OOB stage-card "files ready" counts piggybacked on the /pipeline/stats poll
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_partial_carries_oob_files_ready_counts(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """GET /pipeline/stats appends OOB paragraphs that refresh the stage-card counts.
+
+    The OOB elements target the same ids the stage cards render (analyze-files-ready
+    / proposals-files-ready) so the existing 5s stats poll refreshes the "files
+    ready" counts WITHOUT re-rendering the interactive #pipeline-stages buttons.
+    """
+    ac, _ = smoke
+    response = await ac.get("/pipeline/stats")
+    assert response.status_code == 200
+    assert 'id="analyze-files-ready" hx-swap-oob="true"' in response.text
+    assert 'id="proposals-files-ready" hx-swap-oob="true"' in response.text
+    assert "files ready" in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_full_page_omits_oob_counts(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Initial full-page render must NOT emit the hx-swap-oob paragraphs.
+
+    stats_bar.html is {% include %}'d at full-page load. htmx only honors
+    hx-swap-oob during a swap response, so emitting the OOB paragraphs at load
+    would render them as stray visible text AND duplicate the ids that
+    stage_cards.html already carries. The dashboard handler omits ``oob_counts``
+    so the {% if oob_counts %} block is skipped: NO hx-swap-oob on the page, and
+    each "files ready" id appears exactly once (the in-place stage-card copy).
+    """
+    ac, _ = smoke
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    # No OOB markup leaks into the full-page render.
+    assert "hx-swap-oob" not in response.text
+    # Each stage-card count id appears exactly once (no duplicate-id DOM).
+    assert response.text.count('id="analyze-files-ready"') == 1
+    assert response.text.count('id="proposals-files-ready"') == 1
 
 
 # ---------------------------------------------------------------------------

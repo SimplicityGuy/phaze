@@ -6,7 +6,7 @@
         <div>
             <h3 class="font-medium">Analyze Discovered Files</h3>
             <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueue BPM detection and mood/style classification for all discovered files.</p>
-            <p class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
+            <p id="analyze-files-ready" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
         </div>
         <div id="analyze-response">
             <button
@@ -28,7 +28,7 @@
         <div>
             <h3 class="font-medium">Generate Proposals</h3>
             <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Send analyzed files to LLM for filename proposals (batches of {{ settings_batch_size|default(10) }}).</p>
-            <p class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
+            <p id="proposals-files-ready" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
         </div>
         <div id="proposals-response">
             <button
