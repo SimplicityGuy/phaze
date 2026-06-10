@@ -105,6 +105,17 @@ stateDiagram-v2
     PROPOSAL_GENERATED --> DUPLICATE_RESOLVED
 ```
 
+### 📬 Task Queue Routing
+
+Every control-plane enqueue (API endpoint or admin-UI action) routes to a **named** SAQ queue that a worker actually consumes — the control plane never produces onto an unnamed `default` queue (which has no consumer). A single chokepoint, `resolve_queue_for_task` in `services/enqueue_router.py`, maps each task name to its destination:
+
+- **Controller-bound tasks** — `generate_proposals`, `search_tracklist`, `scrape_and_store_tracklist`, `match_tracklist_to_discogs`, `refresh_tracklists` — route to the `controller` queue, consumed by the application-server `phaze-worker`.
+- **Per-agent tasks** — `process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `scan_directory`, `execute_approved_batch` — route via the `AgentTaskRouter` to a `phaze-agent-<id>` queue, consumed by the file-server `phaze-agent-worker`. The target agent is chosen by **active-agent selection** (the most-recently-seen, non-revoked agent). When **no active agent** is available, the operation surfaces a clear error / empty-state instead of silently enqueuing nothing.
+
+Unknown task names fail loud (`ValueError`) — they are never silently sent to any queue. A static guard test (`tests/test_no_default_queue_producers.py`) scans the router and service trees on every CI run and fails if anyone reintroduces a default-queue producer (a `*.state.queue` reference or an unnamed `Queue.from_url(...)`), so this bug class cannot regress unnoticed.
+
+> **Operational note:** Jobs stranded on the legacy `default` queue from before this routing fix (e.g. the `saq:job:default:*` keys from the v4.0.6 incident) are cleared as a one-time **deploy step** after redeploy — re-triggering analysis re-enqueues them correctly onto their named queues. This is an operations task, not application code.
+
 ## 🌟 Key Features
 
 - **🎵 Broad Format Support**: mp3, m4a, ogg, flac, wav, aiff, wma, aac, opus, plus video (mp4, mkv, avi, webm, mov) and companion files (cue, nfo, m3u)

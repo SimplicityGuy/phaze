@@ -1,0 +1,206 @@
+"""Static + runtime guard against control-plane default-queue producers (Phase 30 Plan 05).
+
+The v4.0.6 incident: every control-plane (API/UI) enqueue grabbed the unnamed
+``app.state.queue`` SAQ Queue, which had *no consumer* — 11,428 ``process_file``
+jobs rotted in ``saq:job:default:*``. Plans 01-04 removed every misrouted site and
+routed each enqueue through :func:`phaze.services.enqueue_router.resolve_queue_for_task`
+(named ``controller`` queue or a per-agent ``phaze-agent-<id>`` queue).
+
+This module locks the fix in so the bug class cannot silently recur:
+
+- A **static scan** walks every ``.py`` under ``src/phaze/routers`` and
+  ``src/phaze/services`` and fails (with the offending ``file:line``) if any code
+  reintroduces an ``*.state.queue`` attribute access (the removed default attr) or
+  constructs an *unnamed* ``Queue.from_url(...)``. The scan parses each file with
+  :mod:`ast` rather than matching raw text, so prose mentions inside docstrings /
+  comments (e.g. the ``Queue.from_url(...)`` reference in ``agent_task_router``'s
+  module docstring) never produce a false positive.
+- A **runtime scan** asserts the routing chokepoint itself stays honest: every
+  ``CONTROLLER_TASKS`` name routes to the controller queue (agent_id ``None``),
+  every ``AGENT_TASKS`` name routes to a ``phaze-agent-<id>`` queue when an active
+  agent exists, and any unknown task name raises ``ValueError`` (fail loud, never
+  silently default).
+"""
+
+from __future__ import annotations
+
+import ast
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+
+import pytest
+
+from phaze.models.agent import Agent
+from phaze.services.enqueue_router import (
+    AGENT_TASKS,
+    CONTROLLER_TASKS,
+    resolve_queue_for_task,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+
+# The two control-plane source trees that must never produce onto the default queue.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SCANNED_DIRS = (
+    _REPO_ROOT / "src" / "phaze" / "routers",
+    _REPO_ROOT / "src" / "phaze" / "services",
+)
+
+
+# ---------------------------------------------------------------------------
+# Static guard
+# ---------------------------------------------------------------------------
+
+
+class _ProducerVisitor(ast.NodeVisitor):
+    """Collect default-queue producers in a single module's AST.
+
+    Records two offence classes, each as ``(lineno, detail)``:
+
+    - ``default_refs``: any ``<expr>.state.queue`` attribute access — the exact
+      removed default attribute (``controller_queue`` / ``task_router`` / ``redis``
+      have different ``attr`` names and are intentionally ignored).
+    - ``unnamed_queues``: a ``Queue.from_url(...)`` call with no ``name=`` keyword.
+    """
+
+    def __init__(self) -> None:
+        self.default_refs: list[tuple[int, str]] = []
+        self.unnamed_queues: list[tuple[int, str]] = []
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # Match `*.state.queue` (the removed default attr), never `*.state.controller_queue`.
+        if node.attr == "queue" and isinstance(node.value, ast.Attribute) and node.value.attr == "state":
+            self.default_refs.append((node.lineno, "*.state.queue attribute access"))
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "from_url"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "Queue"
+            and not any(kw.arg == "name" for kw in node.keywords)
+        ):
+            self.unnamed_queues.append((node.lineno, "Queue.from_url(...) without name="))
+        self.generic_visit(node)
+
+
+def _scan_source_files() -> list[str]:
+    """Parse every ``.py`` under the scanned dirs; return human-readable offences."""
+    offences: list[str] = []
+    for directory in _SCANNED_DIRS:
+        for path in sorted(directory.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            visitor = _ProducerVisitor()
+            visitor.visit(tree)
+            rel = path.relative_to(_REPO_ROOT)
+            for lineno, detail in (*visitor.default_refs, *visitor.unnamed_queues):
+                offences.append(f"{rel}:{lineno}: {detail}")
+    return offences
+
+
+def test_no_default_queue_producers_in_routers_or_services() -> None:
+    """No router/service reintroduces ``*.state.queue`` or an unnamed ``Queue.from_url``.
+
+    The named ``controller`` queue lives in the lifespan (``src/phaze/main.py``, out
+    of scan scope) and per-agent queues are built *named* inside
+    ``AgentTaskRouter._queue_for`` — both pass. Any regression that grabs the default
+    queue or builds an unnamed one fails here with its exact ``file:line``.
+    """
+    offences = _scan_source_files()
+    assert offences == [], "default-queue producers reintroduced:\n" + "\n".join(offences)
+
+
+def test_static_guard_would_catch_a_reintroduced_producer() -> None:
+    """Meta-test: the AST visitor flags both offence classes on a crafted sample.
+
+    Proves the guard above is not vacuously green — if a future edit reintroduced
+    either pattern, the visitor records it (so :func:`_scan_source_files` would fail).
+    """
+    sample = "def boom(request):\n    q = request.app.state.queue\n    return Queue.from_url(url)\n"
+    visitor = _ProducerVisitor()
+    visitor.visit(ast.parse(sample))
+
+    assert [lineno for lineno, _ in visitor.default_refs] == [2]
+    assert [lineno for lineno, _ in visitor.unnamed_queues] == [3]
+
+
+def test_static_guard_allows_named_queue_construction() -> None:
+    """A *named* ``Queue.from_url(..., name=...)`` is allowed (per-agent queues)."""
+    sample = 'q = Queue.from_url(url, name="phaze-agent-nox")\n'
+    visitor = _ProducerVisitor()
+    visitor.visit(ast.parse(sample))
+
+    assert visitor.unnamed_queues == []
+    assert visitor.default_refs == []
+
+
+# ---------------------------------------------------------------------------
+# Runtime guard
+# ---------------------------------------------------------------------------
+
+
+def _stub_app_state() -> SimpleNamespace:
+    """app_state stub: a sentinel controller queue + a task_router whose
+    ``queue_for(id)`` returns a per-id named sentinel (mirrors the real shapes)."""
+    controller_queue = SimpleNamespace(name="controller")
+
+    class _StubRouter:
+        def queue_for(self, agent_id: str) -> SimpleNamespace:
+            return SimpleNamespace(name=f"phaze-agent-{agent_id}")
+
+    return SimpleNamespace(controller_queue=controller_queue, task_router=_StubRouter())
+
+
+async def _seed_active_agent(session: AsyncSession, agent_id: str = "fileserver-01") -> Agent:
+    """Insert one non-revoked, recently-seen agent so per-agent routing resolves."""
+    agent = Agent(
+        id=agent_id,
+        name=agent_id,
+        token_hash=None,
+        scan_roots=[],
+        last_seen_at=datetime.now(UTC),
+        revoked_at=None,
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_every_controller_task_routes_to_controller_queue() -> None:
+    """Every CONTROLLER_TASKS name resolves to the controller queue with agent_id None."""
+    app_state = _stub_app_state()
+
+    for task_name in sorted(CONTROLLER_TASKS):
+        routed = await resolve_queue_for_task(task_name, app_state, None)
+        assert routed.queue is app_state.controller_queue, task_name
+        assert routed.agent_id is None, task_name
+
+
+@pytest.mark.asyncio
+async def test_every_agent_task_routes_to_per_agent_queue(session: AsyncSession) -> None:
+    """Every AGENT_TASKS name resolves to the active agent's phaze-agent-<id> queue."""
+    agent = await _seed_active_agent(session)
+    app_state = _stub_app_state()
+
+    for task_name in sorted(AGENT_TASKS):
+        routed = await resolve_queue_for_task(task_name, app_state, session)
+        assert routed.agent_id == agent.id, task_name
+        assert routed.queue.name == f"phaze-agent-{agent.id}", task_name
+
+
+@pytest.mark.asyncio
+async def test_unknown_task_raises_value_error() -> None:
+    """An unknown task name fails loud — it must never return the default queue."""
+    app_state = _stub_app_state()
+
+    with pytest.raises(ValueError, match="unroutable task"):
+        await resolve_queue_for_task("definitely_not_a_task", app_state, None)
