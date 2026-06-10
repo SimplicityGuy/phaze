@@ -64,7 +64,10 @@ class _ProducerVisitor(ast.NodeVisitor):
 
     - ``default_refs``: any ``<expr>.state.queue`` attribute access — the exact
       removed default attribute (``controller_queue`` / ``task_router`` / ``redis``
-      have different ``attr`` names and are intentionally ignored).
+      have different ``attr`` names and are intentionally ignored). The visitor
+      also catches the **two-step** form where ``app.state`` is first bound to a
+      local named ``state`` and the offending attribute is then read as
+      ``state.queue`` (``node.value`` is a ``Name`` rather than an ``Attribute``).
     - ``unnamed_queues``: a ``Queue.from_url(...)`` call with no ``name=`` keyword.
     """
 
@@ -74,8 +77,14 @@ class _ProducerVisitor(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         # Match `*.state.queue` (the removed default attr), never `*.state.controller_queue`.
-        if node.attr == "queue" and isinstance(node.value, ast.Attribute) and node.value.attr == "state":
-            self.default_refs.append((node.lineno, "*.state.queue attribute access"))
+        if node.attr == "queue":
+            val = node.value
+            if isinstance(val, ast.Attribute) and val.attr == "state":
+                # Direct form: `*.state.queue`.
+                self.default_refs.append((node.lineno, "*.state.queue attribute access"))
+            elif isinstance(val, ast.Name) and val.id == "state":
+                # Indirect/two-step form: `state = *.app.state` then `state.queue`.
+                self.default_refs.append((node.lineno, "state.queue attribute access (possible indirect)"))
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -129,6 +138,22 @@ def test_static_guard_would_catch_a_reintroduced_producer() -> None:
 
     assert [lineno for lineno, _ in visitor.default_refs] == [2]
     assert [lineno for lineno, _ in visitor.unnamed_queues] == [3]
+
+
+def test_static_guard_catches_two_step_state_queue_access() -> None:
+    """Meta-test: the visitor also flags the two-step ``state = app.state; state.queue`` form.
+
+    The single-expression form (``request.app.state.queue``) is an ``Attribute``
+    whose value is itself an ``Attribute`` (``...state``). Binding ``app.state`` to
+    a local first produces a ``Name`` node at the ``.queue`` access site, which the
+    direct check misses. This proves that gap is now closed.
+    """
+    sample = "def boom(request):\n    state = request.app.state\n    return state.queue\n"
+    visitor = _ProducerVisitor()
+    visitor.visit(ast.parse(sample))
+
+    # The offending `state.queue` read is on line 3 of the sample.
+    assert [lineno for lineno, _ in visitor.default_refs] == [3]
 
 
 def test_static_guard_allows_named_queue_construction() -> None:
