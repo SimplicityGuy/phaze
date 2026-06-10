@@ -2,6 +2,20 @@ FROM python:3.14-slim AS base
 
 WORKDIR /app
 
+# Audio pipeline native system deps. Must run as root, so it stays before
+# `USER phaze` below. essentia-tensorflow's native `_essentia` extension links
+# libatomic.so.1 (libatomic1); the decode/fingerprint toolchain needs ffmpeg +
+# ffprobe (ffmpeg), libsndfile.so.1 (libsndfile1), and fpcalc + libchromaprint.so.1
+# (libchromaprint-tools). Without these, `import essentia` fails at runtime and
+# every analysis job dead-letters.
+# DL3008: versions are intentionally unpinned — Debian-slim apt package versions
+# shift on every base-image refresh and pinning them would break builds on each
+# security update. The base image tag controls the package snapshot instead.
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.19 /uv /uvx /bin/
 
