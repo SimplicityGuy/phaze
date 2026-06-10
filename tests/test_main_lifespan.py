@@ -82,7 +82,12 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
     # open real network connections.
     fake_queue = AsyncMock()
     fake_queue.disconnect = AsyncMock()
-    monkeypatch.setattr(main_module, "Queue", MagicMock(from_url=lambda _url: fake_queue))
+    # register_before_enqueue is synchronous on a real saq.Queue -- use a sync mock
+    # so the lifespan call doesn't leave an un-awaited coroutine.
+    fake_queue.register_before_enqueue = MagicMock()
+    fake_queue_cls = MagicMock()
+    fake_queue_cls.from_url = MagicMock(return_value=fake_queue)
+    monkeypatch.setattr(main_module, "Queue", fake_queue_cls)
 
     fake_router = AsyncMock()
     fake_router.close = AsyncMock()
@@ -96,7 +101,17 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
     # Driving the lifespan via TestClient(__enter__) is the FastAPI-recommended
     # way to exercise startup events in-process.
     with TestClient(app):
-        pass
+        # Phase 30: the named ``controller`` queue replaces the unnamed default
+        # queue. Assert the new app.state shape WHILE the lifespan is active.
+        assert hasattr(app.state, "controller_queue"), "controller_queue must be wired at startup"
+        assert app.state.controller_queue is fake_queue
+        assert not hasattr(app.state, "queue"), "the unnamed default queue (app.state.queue) must be gone (Phase 30)"
+
+    # Phase 30: the controller queue is constructed named and gets the policy hook.
+    fake_queue_cls.from_url.assert_called_once()
+    _from_url_args, from_url_kwargs = fake_queue_cls.from_url.call_args
+    assert from_url_kwargs.get("name") == "controller", f"controller queue must be named 'controller'; got {from_url_kwargs!r}"
+    fake_queue.register_before_enqueue.assert_called_once()
 
     # Migration must precede the engine SELECT 1 (which precedes ensure_dev_agent).
     assert "run_migrations" in call_order, f"run_migrations not invoked: {call_order!r}"

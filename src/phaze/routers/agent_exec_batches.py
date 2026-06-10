@@ -97,7 +97,7 @@ def _get_promote_status_script(redis_client: redis_async.Redis) -> "AsyncScript"
 async def _get_redis(request: Request) -> redis_async.Redis:
     """Pull the Redis client from ``app.state`` (decode_responses=True per main.py).
 
-    NOT ``app.state.queue.redis`` -- the SAQ-internal client has
+    NOT ``app.state.controller_queue.redis`` -- the SAQ-internal client has
     ``decode_responses=False``. The shared client wired in ``main.lifespan``
     (Phase 26 D-27) is the right handle so ``.hget``/``.hgetall`` return ``str``.
     """
