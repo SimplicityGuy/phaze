@@ -1,6 +1,7 @@
 """Integration tests for tracklists router."""
 
-from datetime import date
+from datetime import UTC, date, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -8,9 +9,70 @@ from httpx import AsyncClient
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from phaze.models.agent import Agent
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+
+
+class _FakeQueue:
+    """A named SAQ-queue stand-in that captures enqueues and serves job lookups.
+
+    ``captured`` records ``(task_name, kwargs)`` tuples so tests can assert which
+    task landed on which queue. ``job`` is an ``AsyncMock`` (default returns None)
+    so scan-status tests can configure the queue-scoped ``queue.job(job_key)``
+    lookup the poll performs.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.captured: list[tuple[str, dict[str, Any]]] = []
+        self.job = AsyncMock(return_value=None)
+        self._counter = 0
+
+    async def enqueue(self, task_name: str, **kwargs: Any) -> MagicMock:
+        self.captured.append((task_name, kwargs))
+        self._counter += 1
+        job = MagicMock()
+        job.key = f"{self.name}:job:{self._counter}"
+        return job
+
+
+class _FakeTaskRouter:
+    """Mimics ``AgentTaskRouter.queue_for``, caching a ``_FakeQueue`` per agent_id."""
+
+    def __init__(self) -> None:
+        self.queues: dict[str, _FakeQueue] = {}
+        self.queue_for_calls: list[str] = []
+
+    def queue_for(self, agent_id: str) -> _FakeQueue:
+        self.queue_for_calls.append(agent_id)
+        if agent_id not in self.queues:
+            self.queues[agent_id] = _FakeQueue(f"phaze-agent-{agent_id}")
+        return self.queues[agent_id]
+
+
+def _install_fake_queues(client: AsyncClient) -> tuple[_FakeQueue, _FakeTaskRouter]:
+    """Install a fake controller queue + fake task_router onto the test app state.
+
+    Replaces the legacy ``app.state.queue`` AsyncMock the old tests used; Phase 30
+    Plan 01 removed the consumer-less default queue and the router now resolves
+    every enqueue via ``app.state.controller_queue`` / ``app.state.task_router``.
+    """
+    controller_queue = _FakeQueue("controller")
+    task_router = _FakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = controller_queue
+    app.state.task_router = task_router
+    return controller_queue, task_router
+
+
+async def _seed_active_agent(session: AsyncSession, agent_id: str = "nox") -> Agent:
+    """Seed a non-revoked, recently-seen agent so ``select_active_agent`` picks it."""
+    agent = Agent(id=agent_id, name=agent_id, scan_roots=[], last_seen_at=datetime.now(UTC))
+    session.add(agent)
+    await session.flush()
+    return agent
 
 
 def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -> FileRecord:
@@ -261,19 +323,38 @@ async def test_scan_tab_empty_state(session: AsyncSession, client: AsyncClient) 
 
 @pytest.mark.asyncio
 async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /tracklists/scan enqueues SAQ jobs and returns progress HTML."""
-    # Mock SAQ queue
-    mock_job = MagicMock()
-    mock_job.key = "test-job-123"
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock(return_value=mock_job)
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    """POST /tracklists/scan routes scan_live_set onto the active agent's queue."""
+    await _seed_active_agent(session, "nox")
+    _controller, task_router = _install_fake_queues(client)
 
     file_id = str(uuid.uuid4())
     response = await client.post("/tracklists/scan", data={"file_ids": [file_id]})
     assert response.status_code == 200
     assert "Scanning..." in response.text
-    mock_queue.enqueue.assert_called_once_with("scan_live_set", file_id=file_id)
+
+    # scan_live_set captured on the per-agent queue, never the controller.
+    agent_queue = task_router.queues["nox"]
+    assert agent_queue.name == "phaze-agent-nox"
+    assert agent_queue.captured == [("scan_live_set", {"file_id": file_id})]
+
+    # The progress partial's poll URL carries agent_id so the status poll targets
+    # the same per-agent queue.
+    assert "agent_id=nox" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan_no_active_agent(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/scan with zero active agents enqueues nothing, shows empty-state."""
+    # Only the conftest legacy agent exists (last_seen_at is None -> excluded).
+    _controller, task_router = _install_fake_queues(client)
+
+    file_id = str(uuid.uuid4())
+    response = await client.post("/tracklists/scan", data={"file_ids": [file_id]})
+    assert response.status_code == 200
+    assert "No active agent" in response.text
+    # Nothing enqueued anywhere.
+    assert task_router.queues == {}
+    assert task_router.queue_for_calls == []
 
 
 @pytest.mark.asyncio
@@ -507,76 +588,66 @@ async def test_stats_include_proposed(session: AsyncSession, client: AsyncClient
 
 @pytest.mark.asyncio
 async def test_scan_status_all_complete(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /tracklists/scan/status reports completion when all jobs done."""
-    from unittest.mock import patch
-
+    """GET /tracklists/scan/status polls the per-agent queue and reports completion."""
     from saq import Status
 
     mock_job = MagicMock()
     mock_job.status = Status.COMPLETE
     mock_job.result = {"status": "scanned", "filename": "test.mp3"}
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    _controller, task_router = _install_fake_queues(client)
+    task_router.queue_for("nox").job = AsyncMock(return_value=mock_job)
 
-    with patch("saq.Job") as mock_job_cls:
-        mock_job_cls.fetch = AsyncMock(return_value=mock_job)
-        response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=nox")
     assert response.status_code == 200
+    # The poll resolved the per-agent queue via task_router.queue_for("nox").
+    assert "nox" in task_router.queue_for_calls
+    assert "Scan complete" in response.text
 
 
 @pytest.mark.asyncio
 async def test_scan_status_with_error(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /tracklists/scan/status reports errors from failed jobs."""
-    from unittest.mock import patch
-
+    """GET /tracklists/scan/status reports errors from failed jobs on the per-agent queue."""
     from saq import Status
 
     mock_job = MagicMock()
     mock_job.status = Status.FAILED
     mock_job.result = {"status": "error", "filename": "bad.mp3"}
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    _controller, task_router = _install_fake_queues(client)
+    task_router.queue_for("nox").job = AsyncMock(return_value=mock_job)
 
-    with patch("saq.Job") as mock_job_cls:
-        mock_job_cls.fetch = AsyncMock(return_value=mock_job)
-        response = await client.get("/tracklists/scan/status?job_ids=job-1")
+    response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=nox")
     assert response.status_code == 200
+    assert "bad.mp3" in response.text
 
 
 @pytest.mark.asyncio
 async def test_scan_status_job_not_found(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /tracklists/scan/status handles missing job gracefully."""
-    from unittest.mock import patch
+    """GET /tracklists/scan/status handles a missing job gracefully (counts complete)."""
+    _controller, task_router = _install_fake_queues(client)
+    task_router.queue_for("nox").job = AsyncMock(return_value=None)
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
-
-    with patch("saq.Job") as mock_job_cls:
-        mock_job_cls.fetch = AsyncMock(return_value=None)
-        response = await client.get("/tracklists/scan/status?job_ids=missing-job")
+    response = await client.get("/tracklists/scan/status?job_ids=missing-job&agent_id=nox")
     assert response.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_scan_status_job_pending(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/scan/status handles pending jobs (no result yet)."""
-    from unittest.mock import patch
-
     from saq import Status
 
     mock_job = MagicMock()
     mock_job.status = Status.QUEUED
     mock_job.result = None
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    _controller, task_router = _install_fake_queues(client)
+    task_router.queue_for("nox").job = AsyncMock(return_value=mock_job)
 
-    with patch("saq.Job") as mock_job_cls:
-        mock_job_cls.fetch = AsyncMock(return_value=mock_job)
-        response = await client.get("/tracklists/scan/status?job_ids=pending-job")
+    response = await client.get("/tracklists/scan/status?job_ids=pending-job&agent_id=nox")
     assert response.status_code == 200
+    # Job still queued -> not done -> poll partial keeps emitting agent_id.
+    assert "agent_id=nox" in response.text
 
 
 # --- Link / rescrape / search endpoints ---
@@ -611,12 +682,13 @@ async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) ->
     session.add(tl)
     await session.flush()
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    controller_queue, task_router = _install_fake_queues(client)
 
     response = await client.post(f"/tracklists/{tl.id}/rescrape")
     assert response.status_code == 200
-    mock_queue.enqueue.assert_called_once_with("scrape_and_store_tracklist", tracklist_id=str(tl.id))
+    # Controller task lands on the controller queue, never a per-agent queue.
+    assert controller_queue.captured == [("scrape_and_store_tracklist", {"tracklist_id": str(tl.id)})]
+    assert task_router.queues == {}
 
 
 @pytest.mark.asyncio
@@ -661,8 +733,7 @@ async def test_rescrape_tracklist_has_candidates_in_context(session: AsyncSessio
     session.add(dl)
     await session.flush()
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    _install_fake_queues(client)
 
     response = await client.post(f"/tracklists/{tl.id}/rescrape")
     assert response.status_code == 200
@@ -672,14 +743,14 @@ async def test_rescrape_tracklist_has_candidates_in_context(session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_manual_search(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /tracklists/search enqueues a search job."""
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    """POST /tracklists/search enqueues a search job onto the controller queue."""
+    controller_queue, task_router = _install_fake_queues(client)
 
     file_id = uuid.uuid4()
     response = await client.post(f"/tracklists/search?file_id={file_id}")
     assert response.status_code == 200
-    mock_queue.enqueue.assert_called_once_with("search_tracklist", file_id=str(file_id))
+    assert controller_queue.captured == [("search_tracklist", {"file_id": str(file_id)})]
+    assert task_router.queues == {}
 
 
 @pytest.mark.asyncio
@@ -776,20 +847,19 @@ async def test_match_discogs_enqueues_task(session: AsyncSession, client: AsyncC
     session.add(tl)
     await session.flush()
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    controller_queue, task_router = _install_fake_queues(client)
 
     response = await client.post(f"/tracklists/{tl.id}/match-discogs")
     assert response.status_code == 200
-    mock_queue.enqueue.assert_called_once_with("match_tracklist_to_discogs", tracklist_id=str(tl.id))
+    assert controller_queue.captured == [("match_tracklist_to_discogs", {"tracklist_id": str(tl.id)})]
+    assert task_router.queues == {}
 
 
 @pytest.mark.asyncio
 async def test_match_discogs_not_found(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/match-discogs returns 404 for non-existent tracklist."""
     fake_id = uuid.uuid4()
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    _install_fake_queues(client)
 
     response = await client.post(f"/tracklists/{fake_id}/match-discogs")
     assert response.status_code == 404
@@ -1058,8 +1128,7 @@ async def test_match_discogs_returns_has_candidates(session: AsyncSession, clien
     session.add(link)
     await session.flush()
 
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    _install_fake_queues(client)
 
     response = await client.post(f"/tracklists/{tl.id}/match-discogs")
     assert response.status_code == 200
