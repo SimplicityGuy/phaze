@@ -20,8 +20,12 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.services import enqueue_router
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
+
+
+_NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker and retry"
 
 
 if TYPE_CHECKING:
@@ -63,11 +67,15 @@ async def trigger_analysis(
     if not files:
         return {"enqueued": 0, "message": "No files in DISCOVERED state"}
 
-    queue = request.app.state.queue
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
+
     file_ids = [str(f.id) for f in files]
 
     # Background enqueue to avoid HTTP timeout (per Research pitfall 2)
-    task = asyncio.create_task(_enqueue_analysis_jobs(queue, file_ids))
+    task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, file_ids))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -106,8 +114,8 @@ async def trigger_proposals(
     batch_size = settings.llm_batch_size
     batches = [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
 
-    queue = request.app.state.queue
-    task = asyncio.create_task(_enqueue_proposal_jobs(queue, batches))
+    routed = await enqueue_router.resolve_queue_for_task("generate_proposals", request.app.state, session)
+    task = asyncio.create_task(_enqueue_proposal_jobs(routed.queue, batches))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -182,18 +190,23 @@ async def trigger_analysis_ui(
     """HTMX endpoint: trigger analysis and return response fragment."""
     files = await get_files_by_state(session, FileState.DISCOVERED)
     count = len(files)
+    no_active_agent = False
 
     if count > 0:
-        queue = request.app.state.queue
-        file_ids = [str(f.id) for f in files]
-        task = asyncio.create_task(_enqueue_analysis_jobs(queue, file_ids))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+        except enqueue_router.NoActiveAgentError:
+            no_active_agent = True
+        else:
+            file_ids = [str(f.id) for f in files]
+            task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, file_ids))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "analysis", "count": count},
+        context={"request": request, "action": "analysis", "count": count, "no_active_agent": no_active_agent},
     )
 
 
@@ -223,19 +236,19 @@ async def trigger_proposals_ui(
     batches_count = 0
 
     if count > 0:
-        queue = request.app.state.queue
         file_ids = [str(f.id) for f in files]
         batch_size = settings.llm_batch_size
         batches = [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
         batches_count = len(batches)
-        task = asyncio.create_task(_enqueue_proposal_jobs(queue, batches))
+        routed = await enqueue_router.resolve_queue_for_task("generate_proposals", request.app.state, session)
+        task = asyncio.create_task(_enqueue_proposal_jobs(routed.queue, batches))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "proposal generation", "count": count, "batches": batches_count},
+        context={"request": request, "action": "proposal generation", "count": count, "batches": batches_count, "no_active_agent": False},
     )
 
 
@@ -263,10 +276,14 @@ async def trigger_metadata_extraction(
     if not files:
         return {"enqueued": 0, "message": "No music/video files found"}
 
-    queue = request.app.state.queue
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
+
     file_ids = [str(f.id) for f in files]
 
-    task = asyncio.create_task(_enqueue_extraction_jobs(queue, file_ids))
+    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, file_ids))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -284,18 +301,23 @@ async def trigger_extraction_ui(
     result = await session.execute(stmt)
     files = list(result.scalars().all())
     count = len(files)
+    no_active_agent = False
 
     if count > 0:
-        queue = request.app.state.queue
-        file_ids = [str(f.id) for f in files]
-        task = asyncio.create_task(_enqueue_extraction_jobs(queue, file_ids))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+        except enqueue_router.NoActiveAgentError:
+            no_active_agent = True
+        else:
+            file_ids = [str(f.id) for f in files]
+            task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, file_ids))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "metadata extraction", "count": count},
+        context={"request": request, "action": "metadata extraction", "count": count, "no_active_agent": no_active_agent},
     )
 
 
@@ -342,8 +364,12 @@ async def trigger_fingerprint(
     if not all_file_ids:
         return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
 
-    queue = request.app.state.queue
-    task = asyncio.create_task(_enqueue_fingerprint_jobs(queue, all_file_ids))
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("fingerprint_file", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
+
+    task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, all_file_ids))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -366,16 +392,21 @@ async def trigger_fingerprint_ui(
     """HTMX endpoint: trigger fingerprinting and return response fragment."""
     files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
     count = len(files)
+    no_active_agent = False
 
     if count > 0:
-        queue = request.app.state.queue
-        file_ids = [str(f.id) for f in files]
-        task = asyncio.create_task(_enqueue_fingerprint_jobs(queue, file_ids))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("fingerprint_file", request.app.state, session)
+        except enqueue_router.NoActiveAgentError:
+            no_active_agent = True
+        else:
+            file_ids = [str(f.id) for f in files]
+            task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, file_ids))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "fingerprinting", "count": count},
+        context={"request": request, "action": "fingerprinting", "count": count, "no_active_agent": no_active_agent},
     )

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
-from phaze.models.agent import LEGACY_AGENT_ID
+from phaze.models.agent import LEGACY_AGENT_ID, Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
@@ -18,6 +19,67 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 if TYPE_CHECKING:
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+# ---------------------------------------------------------------------------
+# Phase 30 Plan 02: fake named-queue capture harness
+#
+# The lifespan is NOT run for the test client, so handlers read whatever we
+# attach to ``app.state``. We attach a fake ``controller_queue`` (named
+# "controller") and a fake ``task_router`` whose ``queue_for(agent_id)`` returns
+# a queue named ``phaze-agent-<id>``. Every ``enqueue`` appends
+# ``(queue_name, task_name, kwargs)`` to a shared capture list so tests can assert
+# the exact destination queue per endpoint -- proving the v4.0.6 default-queue
+# misrouting is gone.
+# ---------------------------------------------------------------------------
+
+
+class _FakeQueue:
+    """A fake SAQ queue that records every enqueue against a shared capture list."""
+
+    def __init__(self, name: str, capture: list[tuple[str, str, dict]]) -> None:
+        self.name = name
+        self._capture = capture
+
+    async def enqueue(self, task_name: str, **kwargs: object) -> None:
+        self._capture.append((self.name, task_name, dict(kwargs)))
+
+
+class _FakeTaskRouter:
+    """A fake AgentTaskRouter: ``queue_for`` yields a ``phaze-agent-<id>`` queue."""
+
+    def __init__(self, capture: list[tuple[str, str, dict]]) -> None:
+        self._capture = capture
+
+    def queue_for(self, agent_id: str) -> _FakeQueue:
+        return _FakeQueue(f"phaze-agent-{agent_id}", self._capture)
+
+
+def _wire_fakes(client: AsyncClient) -> list[tuple[str, str, dict]]:
+    """Attach fake controller_queue + task_router; return the shared capture list."""
+    capture: list[tuple[str, str, dict]] = []
+    state = client._transport.app.state  # type: ignore[union-attr]
+    state.controller_queue = _FakeQueue("controller", capture)
+    state.task_router = _FakeTaskRouter(capture)
+    return capture
+
+
+async def _seed_active_agent(session: AsyncSession, *, agent_id: str = "nox") -> Agent:
+    """Seed one active (non-revoked, recently-seen) agent so select_active_agent resolves it."""
+    agent = Agent(id=agent_id, name=agent_id, scan_roots=[], last_seen_at=datetime.now(UTC))
+    session.add(agent)
+    await session.commit()
+    return agent
+
+
+async def _drain_background() -> None:
+    """Yield until the router's background enqueue tasks have drained."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    for _ in range(500):
+        if not pipeline_mod._background_tasks:
+            return
+        await asyncio.sleep(0)
 
 
 def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
@@ -73,18 +135,38 @@ async def test_dashboard_includes_settings_batch_size(client: AsyncClient) -> No
 
 @pytest.mark.asyncio
 async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /api/v1/analyze with DISCOVERED files returns enqueue count > 0."""
+    """POST /api/v1/analyze enqueues process_file onto phaze-agent-nox (not default)."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    await _seed_active_agent(session)
+    capture = _wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
     assert response.status_code == 200
     data = response.json()
     assert data["enqueued"] == 3
+
+    await _drain_background()
+    assert len(capture) == 3
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "process_file")}
+    assert all(q != "default" for q, _, _ in capture)
+
+
+@pytest.mark.asyncio
+async def test_analyze_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /api/v1/analyze with files but no active agent surfaces a visible empty-state."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    await session.commit()
+    capture = _wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 0
+    assert "no active agent" in data["message"].lower()
+
+    await _drain_background()
+    assert capture == []
 
 
 @pytest.mark.asyncio
@@ -98,7 +180,7 @@ async def test_analyze_no_files(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /api/v1/proposals/generate with convergence-ready files returns batch counts."""
+    """POST /api/v1/proposals/generate enqueues generate_proposals onto the controller queue."""
     files = []
     related = []
     for _ in range(15):
@@ -109,16 +191,17 @@ async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSes
     await session.flush()
     session.add_all(related)
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    capture = _wire_fakes(client)
 
     response = await client.post("/api/v1/proposals/generate")
     assert response.status_code == 200
     data = response.json()
     assert data["total_files"] == 15
     assert data["enqueued_batches"] == 2  # 15 files / 10 batch_size = 2 batches
+
+    await _drain_background()
+    assert len(capture) == 2
+    assert {(q, t) for q, t, _ in capture} == {("controller", "generate_proposals")}
 
 
 @pytest.mark.asyncio
@@ -147,26 +230,40 @@ async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession
 
 @pytest.mark.asyncio
 async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/analyze with DISCOVERED files returns HTML response fragment."""
+    """POST /pipeline/analyze enqueues process_file onto phaze-agent-nox + renders the fragment."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    await _seed_active_agent(session)
+    capture = _wire_fakes(client)
 
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "analysis" in response.text
 
+    await _drain_background()
+    assert len(capture) == 2
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "process_file")}
+
+
+@pytest.mark.asyncio
+async def test_trigger_analysis_ui_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/analyze with files but no active agent renders the no-active-agent copy."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    await session.commit()
+    capture = _wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/pipeline/analyze")
+    assert response.status_code == 200
+    assert "No active agent available" in response.text
+
+    await _drain_background()
+    assert capture == []
+
 
 @pytest.mark.asyncio
 async def test_trigger_analysis_ui_no_files(client: AsyncClient) -> None:
     """POST /pipeline/analyze with no DISCOVERED files returns HTML with zero count."""
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
-
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -174,7 +271,7 @@ async def test_trigger_analysis_ui_no_files(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/proposals with convergence-ready files returns HTML response fragment."""
+    """POST /pipeline/proposals enqueues generate_proposals onto the controller queue."""
     files = []
     related = []
     for _ in range(5):
@@ -185,23 +282,21 @@ async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: Asy
     await session.flush()
     session.add_all(related)
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    capture = _wire_fakes(client)
 
     response = await client.post("/pipeline/proposals")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "proposal generation" in response.text
 
+    await _drain_background()
+    assert len(capture) == 1
+    assert {(q, t) for q, t, _ in capture} == {("controller", "generate_proposals")}
+
 
 @pytest.mark.asyncio
 async def test_trigger_proposals_ui_no_files(client: AsyncClient) -> None:
     """POST /pipeline/proposals with no ANALYZED files returns HTML with zero count."""
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
-
     response = await client.post("/pipeline/proposals")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -212,15 +307,16 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     """POST /api/v1/analyze enqueues jobs in background without blocking response."""
     session.add(_make_file(state=FileState.DISCOVERED))
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    await _seed_active_agent(session)
+    capture = _wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
     assert response.status_code == 200
     # Verify the enqueue was called (background task may complete by now)
     assert response.json()["enqueued"] == 1
+
+    await _drain_background()
+    assert capture == [("phaze-agent-nox", "process_file", {"file_id": capture[0][2]["file_id"]})]
 
 
 @pytest.mark.asyncio
@@ -236,10 +332,7 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     await session.flush()
     session.add_all(related)
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    capture = _wire_fakes(client)
 
     response = await client.post("/api/v1/proposals/generate")
     assert response.status_code == 200
@@ -247,21 +340,43 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     assert data["total_files"] == 5
     assert data["enqueued_batches"] == 1  # 5 files / 10 batch_size = 1 batch
 
+    await _drain_background()
+    assert [(q, t) for q, t, _ in capture] == [("controller", "generate_proposals")]
+
 
 @pytest.mark.asyncio
 async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /api/v1/extract-metadata with music files returns enqueue count."""
+    """POST /api/v1/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    await _seed_active_agent(session)
+    capture = _wire_fakes(client)
 
     response = await client.post("/api/v1/extract-metadata")
     assert response.status_code == 200
     data = response.json()
     assert data["enqueued"] == 3
+
+    await _drain_background()
+    assert len(capture) == 3
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "extract_file_metadata")}
+
+
+@pytest.mark.asyncio
+async def test_extract_metadata_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /api/v1/extract-metadata with files but no active agent surfaces empty-state."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    await session.commit()
+    capture = _wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/api/v1/extract-metadata")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 0
+    assert "no active agent" in data["message"].lower()
+
+    await _drain_background()
+    assert capture == []
 
 
 @pytest.mark.asyncio
@@ -275,26 +390,40 @@ async def test_extract_metadata_no_files(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/extract-metadata with music files returns HTML response."""
+    """POST /pipeline/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    await _seed_active_agent(session)
+    capture = _wire_fakes(client)
 
     response = await client.post("/pipeline/extract-metadata")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "metadata extraction" in response.text
 
+    await _drain_background()
+    assert len(capture) == 2
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "extract_file_metadata")}
+
+
+@pytest.mark.asyncio
+async def test_trigger_extraction_ui_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/extract-metadata with files but no active agent renders the empty-state."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    await session.commit()
+    capture = _wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/pipeline/extract-metadata")
+    assert response.status_code == 200
+    assert "No active agent available" in response.text
+
+    await _drain_background()
+    assert capture == []
+
 
 @pytest.mark.asyncio
 async def test_trigger_extraction_ui_no_files(client: AsyncClient) -> None:
     """POST /pipeline/extract-metadata with no music files returns HTML with zero count."""
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
-
     response = await client.post("/pipeline/extract-metadata")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -302,26 +431,40 @@ async def test_trigger_extraction_ui_no_files(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/fingerprint with METADATA_EXTRACTED files returns HTML response."""
+    """POST /pipeline/fingerprint enqueues fingerprint_file onto phaze-agent-nox."""
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    await _seed_active_agent(session)
+    capture = _wire_fakes(client)
 
     response = await client.post("/pipeline/fingerprint")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "fingerprinting" in response.text
 
+    await _drain_background()
+    assert len(capture) == 2
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "fingerprint_file")}
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_ui_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/fingerprint with files but no active agent renders the empty-state."""
+    session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
+    await session.commit()
+    capture = _wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/pipeline/fingerprint")
+    assert response.status_code == 200
+    assert "No active agent available" in response.text
+
+    await _drain_background()
+    assert capture == []
+
 
 @pytest.mark.asyncio
 async def test_trigger_fingerprint_ui_no_files(client: AsyncClient) -> None:
     """POST /pipeline/fingerprint with no eligible files returns HTML with zero count."""
-    mock_queue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
-
     response = await client.post("/pipeline/fingerprint")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -334,7 +477,7 @@ async def test_trigger_fingerprint_ui_no_files(client: AsyncClient) -> None:
 
 async def _seed_running_scan(session: AsyncSession, *, seconds_quiet: int, scan_path: str) -> uuid.UUID:
     """Seed a RUNNING ScanBatch whose heartbeat is `seconds_quiet` seconds old."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import timedelta
 
     batch_id = uuid.uuid4()
     batch = ScanBatch(
