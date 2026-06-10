@@ -100,6 +100,12 @@ None - no external service configuration required.
 - Wire contract + persistence path ready for Plan 04 (`process_file` builds the `windows=[...]` payload from `analyze_file`'s per-window output).
 - Window rows are queryable for Plans 05/06 (review-UI timeline). No blockers.
 
+## Self-Check: PASSED
+
+- FOUND: src/phaze/schemas/agent_analysis.py, src/phaze/routers/agent_analysis.py (modified, 100% covered)
+- FOUND commits: 79f051c, 32c721b, cc52e18, aade084, 0572d5d
+- STATE.md / ROADMAP.md untouched (orchestrator owns those)
+
 ---
 *Phase: 31-windowed-time-series-audio-analysis*
 *Completed: 2026-06-10*
