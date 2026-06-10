@@ -343,19 +343,19 @@ await session.commit()
 
 **Note:** A1/A2 are precisely the unknowns the locked **spike-first** decision exists to resolve. Everything else (API shape, crash fix, memory bounding, key/BPM on 30 s, Resample exactness, cp314 import) is **VERIFIED** in this session.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Per-file `timeout` final value (0/unbounded vs. generous bound).**
+1. **Per-file `timeout` final value (0/unbounded vs. generous bound).** — RESOLVED.
    - What we know: prior bulk-scan incident (260609-glv) set `timeout=0` for `scan_directory`; the stall reaper (`scan_stall_seconds=86400`) is the liveness guard.
-   - What's unclear: whether `process_file` should mirror `timeout=0` or take a generous finite bound (e.g., 2–4 h).
-   - Recommendation: `timeout=0` (unbounded) + `retries=1`, consistent with the prior decision; window-isolation already prevents one bad window from failing the file. Finalize in planning.
+   - **Decision:** `process_file` enqueues with `timeout=0` (unbounded) + `retries=2`, consistent with the prior bulk-scan decision; window-isolation already prevents one bad window from failing the file. Implemented in **Plan 31-05 Task 2** at the three `routers/pipeline.py` enqueue sites. Note: `retries=1` would be silently clobbered to `worker_max_retries(4)` by `apply_project_job_defaults` (it only fills jobs still at the SAQ default `retries==1`), so `retries=2` is used to stay in the locked 1–2 band without being overridden.
 
-2. **Promote `danceability` to a real `analysis` column?**
+2. **Promote `danceability` to a real `analysis` column?** — RESOLVED (no).
    - What we know: currently funneled into `features` JSONB; the migration is already additive.
-   - Recommendation: optional — add the column in the same migration if sort-by-danceability on the aggregate is desired; otherwise keep the funnel. Out-of-scope-safe either way.
+   - **Decision:** Keep the existing `features`-JSONB funnel for the aggregate `danceability` (do NOT add a column to `analysis`); the per-window `danceability` lives on the NEW `analysis_window.danceability` column. This keeps the existing `analysis` table structurally unchanged (CONTEXT.md) and the migration purely additive. See **Plan 31-04 Pitfall 6** handling.
 
-3. **Coarse-window minimum length.** CONTEXT defines `analysis_fine_min_sec` but no coarse floor.
-   - Recommendation: analyze any coarse window with audio present (TF models tolerate short input); optionally reuse a small floor. Low risk.
+3. **Coarse-window minimum length.** — RESOLVED.
+   - What we know: CONTEXT defines `analysis_fine_min_sec` (default 15s) for the FINE tier but no coarse floor.
+   - **Decision:** Coarse trailing windows are **NOT dropped** — any coarse window with audio present is analyzed (the 34 TF models tolerate short input; per-window failure isolation already covers a degenerate window). There is **no coarse minimum-length floor**. This is asymmetric with the fine tier (which drops sub-`analysis_fine_min_sec` trailing windows except window 0). Implemented in **Plan 31-04 Task 2**.
 
 ## Environment Availability
 
