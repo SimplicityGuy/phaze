@@ -244,6 +244,7 @@ async def trigger_scan(
             "completed": 0,
             "done": False,
             "tracklists_created": 0,
+            "no_active_agent": False,
         },
     )
 
@@ -297,6 +298,7 @@ async def scan_status(
             "done": done,
             "tracklists_created": tracklists_created,
             "errors": errors,
+            "no_active_agent": False,
         },
     )
 

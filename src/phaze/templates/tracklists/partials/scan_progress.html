@@ -1,6 +1,6 @@
 {% if done %}
 <div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4" aria-live="polite">
-    {% if no_active_agent is defined and no_active_agent %}
+    {% if no_active_agent %}
     <p class="text-sm text-red-600 dark:text-red-400">No active agent is available to run the scan. Start a file-server agent and try again. No jobs were enqueued.</p>
     {% elif tracklists_created > 0 %}
     <p class="text-sm text-gray-900 dark:text-gray-100">
