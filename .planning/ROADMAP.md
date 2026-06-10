@@ -107,18 +107,18 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 27. Watcher Service & User-Initiated Scan | v4.0 | 7/7 | Complete | 2026-05-14 |
 | 28. Distributed Execution Dispatch | v4.0 | 6/6 | Complete | 2026-05-15 |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 8/8 | Complete | 2026-05-17 |
-| 30. Fix control-plane SAQ queue misrouting | v4.0 | 4/5 | In Progress|  |
+| 30. Fix control-plane SAQ queue misrouting | v4.0 | 5/5 | Complete   | 2026-06-10 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
 **Goal:** Every control-plane (UI/API) enqueue lands on a queue an actual worker consumes. Route the misrouted sites (pipeline.py, tracklists.py, scan.py/ingestion.py) through a shared helper: controller-bound tasks → `controller` queue, per-agent tasks → `AgentTaskRouter` with active-agent selection. The `default` queue ends with no producers. Regression tests assert correct queue targeting. See CONTEXT.md.
 **Requirements**: QR-01 (every control-plane enqueue targets a consumed queue; default queue has no producers), QR-02 (per-agent routing uses active-agent selection; 0-agent surfaces a clear error), QR-03 (regression + guard tests assert queue targeting and prevent recurrence)
 **Depends on:** Phase 29
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 - [x] 30-01-PLAN.md — Routing foundation: named controller queue in lifespan, remove default queue, enqueue-routing helper + active-agent selection
 - [x] 30-02-PLAN.md — Fix pipeline.py (process_file / generate_proposals / extract_file_metadata / fingerprint_file — 8 handlers) + tests
 - [x] 30-03-PLAN.md — Fix tracklists.py (scrape/search/match → controller; scan_live_set → per-agent) + scan-status poll re-targeting + tests
 - [x] 30-04-PLAN.md — Fix legacy /api/v1/scan → ingestion extract_file_metadata per-agent routing + tests
-- [ ] 30-05-PLAN.md — Cross-cutting guard test (no default-queue producers) + routing docs + full-suite verification
+- [x] 30-05-PLAN.md — Cross-cutting guard test (no default-queue producers) + routing docs + full-suite verification
