@@ -122,3 +122,15 @@ Plans:
 - [x] 30-03-PLAN.md — Fix tracklists.py (scrape/search/match → controller; scan_live_set → per-agent) + scan-status poll re-targeting + tests
 - [x] 30-04-PLAN.md — Fix legacy /api/v1/scan → ingestion extract_file_metadata per-agent routing + tests
 - [x] 30-05-PLAN.md — Cross-cutting guard test (no default-queue producers) + routing docs + full-suite verification
+
+### Phase 31: Windowed Time-Series Audio Analysis
+
+**Goal:** Rewrite `analyze_file` to stream-decode each file once and analyze it per-window — fixing the `RhythmExtractor2013` `OnsetDetectionGlobal` buffer-overflow crash and the latent whole-file OOM on multi-hour sets — producing a two-tier time-series: fine tier (BPM + key) every 30s, coarse tier (mood/style/danceability) every 3min, fixed-duration and configurable. Persist windows in a new queryable `analysis_window` child table with partial indexes; keep representative aggregates (median BPM, modal key, dominant mood/style) on the existing `analysis` row so proposals/search/sort are unaffected. Extend `AnalysisWritePayload` with a `windows` list and make `put_analysis` replace a file's windows idempotently. Add a compact review-UI row with a BPM sparkline that HTMX-expands to a multi-lane timeline (SVG/CSS, no charting lib). First plan task is a spike validating the streaming single-pass decode on a real 2-hour file.
+**Design spec:** docs/superpowers/specs/2026-06-10-windowed-analysis-design.md
+**Requirements**: ANL-01 (BPM/key/mood/style detection) extended to time-series; new cross-archive queryability of time-varying characteristics.
+**Depends on:** Phase 30
+**Rollout:** Ships as v4.0.10 → GHCR publish → homelab redeploy → re-run "Run analysis" (no rescan; Redis already purged of doomed/stale jobs).
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 31 to break down)

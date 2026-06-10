@@ -228,3 +228,4 @@ graphify-out/cache/
 
 # Vim
 *.swp
+.superpowers/

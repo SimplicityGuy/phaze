@@ -67,6 +67,7 @@ Progress: [██████████] 100%
 ### Roadmap Evolution
 
 - Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.
+- Phase 31 added (2026-06-10): Windowed Time-Series Audio Analysis — surfaced by live incident after v4.0.9 redeploy: `RhythmExtractor2013` `OnsetDetectionGlobal` buffer overflow crashes whole-file BPM on multi-hour sets (79% of the 11,428-file archive is >50 MB), 0 files analyzed. Fix = stream-decode + per-window analysis (two tiers: BPM/key 30s, mood/style/danceability 3min), queryable `analysis_window` child table + aggregates on `analysis`. Design spec: docs/superpowers/specs/2026-06-10-windowed-analysis-design.md. Brainstormed decisions: scope=everything-as-time-series via two tiers; storage=queryable child table (option B); UI=compact+HTMX-expand timeline (option B). Ships v4.0.10.
 
 ### Decisions
 
