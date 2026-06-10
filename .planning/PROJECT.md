@@ -12,6 +12,8 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 **v4.0 Distributed Agents shipped 2026-05-17.** Phaze now runs across two hosts: a control-plane application server and one or more file-server agents. Planning next milestone.
 
+**Phase 30 (post-v4.0 fix, complete 2026-06-10):** Resolved systemic control-plane SAQ queue misrouting — every manually-triggered UI/API enqueue previously targeted a consumer-less unnamed `default` queue (stranded 11,428 jobs in the v4.0.6 incident). All enqueue sites (pipeline, tracklists, scan/ingestion) now route through a shared `enqueue_router.resolve_queue_for_task` helper: controller-bound tasks → named `controller` queue, per-agent tasks → `phaze-agent-<id>` via active-agent selection (0-agent surfaces a 503/empty-state). A static AST guard test prevents recurrence.
+
 - ~14,300 lines of Python source + ~28,000 lines of tests across 29 phases, 94+ plans total (v1.0–v4.0)
 - Tech stack: FastAPI, SQLAlchemy (async), SAQ + Redis (per-agent queues), litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, watchdog, cryptography (self-signed CA), tenacity, respx, HTMX + Tailwind + Alpine.js
 - Two Docker Compose stacks: `docker-compose.yml` (app-server: api with TLS via internal CA, controller worker, postgres, redis with `requirepass` + LAN bind, no file mounts) and `docker-compose.agent.yml` (file-server: agent worker, watcher, audfprint + panako sidecars)
@@ -209,4 +211,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-17 after v4.0 milestone*
+*Last updated: 2026-06-10 after Phase 30 (control-plane SAQ queue misrouting fix)*

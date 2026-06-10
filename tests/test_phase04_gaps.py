@@ -23,7 +23,12 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_lifespan_creates_queue_on_startup() -> None:
-    """FastAPI lifespan creates a SAQ queue on app.state during startup."""
+    """FastAPI lifespan creates the named ``controller`` SAQ queue on app.state during startup.
+
+    Phase 30: the lifespan wires ``app.state.controller_queue`` (name="controller",
+    consumed by the application-server phaze-worker) and no longer constructs the
+    unnamed default queue (``app.state.queue``), which had no consumer.
+    """
     from fastapi import FastAPI
 
     mock_queue = MagicMock()
@@ -53,10 +58,13 @@ async def test_lifespan_creates_queue_on_startup() -> None:
         app = FastAPI()
         # Invoke the lifespan directly so startup hooks actually run
         async with lifespan(app):
-            # Queue.from_url must have been called exactly once during startup
+            # Queue.from_url must have been called exactly once during startup,
+            # named "controller" (Phase 30).
             mock_queue_cls.from_url.assert_called_once()
-            # Queue must be stored on app.state
-            assert app.state.queue is mock_queue
+            assert mock_queue_cls.from_url.call_args.kwargs.get("name") == "controller"
+            # The named controller queue is stored on app.state; the unnamed default is gone.
+            assert app.state.controller_queue is mock_queue
+            assert not hasattr(app.state, "queue")
 
 
 @pytest.mark.asyncio

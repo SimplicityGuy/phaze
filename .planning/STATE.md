@@ -2,10 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: milestone_complete
-stopped_at: Milestone v4.0 shipped 2026-05-17
-last_updated: 2026-05-17T00:00:00Z
-last_activity: 2026-05-17 -- v4.0 milestone archived
+status: "Phase 30 shipped — PR #109"
+last_updated: "2026-06-10T04:55:33.771Z"
+last_activity: 2026-06-10
 progress:
   total_phases: 6
   completed_phases: 6
@@ -21,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Planning next milestone (run `/gsd:new-milestone`)
+**Current focus:** Phase 30 complete — control-plane SAQ queue misrouting fixed (every enqueue now targets a consumed queue)
 
 ## Current Position
 
-Phase: v4.0 complete (Phases 24–29 all shipped)
-Plan: -
-Status: Milestone complete; awaiting next-milestone scoping
-Last activity: 2026-06-09 - Completed quick task 260609-glv: strip NUL bytes from extracted tags (fix metadata write 500)
+Phase: 30 (fix-systemic-control-plane-saq-queue-misrouting-every-manual) — COMPLETE (verified passed)
+Plan: 5 of 5
+Status: Phase 30 shipped — PR #109
+Last activity: 2026-06-10
 
 Progress: [██████████] 100%
 

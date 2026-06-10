@@ -18,6 +18,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
+from phaze.services.enqueue_router import NoActiveAgentError, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tracklist_matcher import compute_match_confidence
 from phaze.services.tracklist_scraper import TracklistScraper
@@ -204,13 +205,31 @@ async def scan_tab(
 async def trigger_scan(
     request: Request,
     file_ids: list[str] = Form(...),
+    session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Trigger batch fingerprint scanning for selected files."""
-    queue = request.app.state.queue
-    job_ids: list[str] = []
+    """Trigger batch fingerprint scanning for selected files on an active agent."""
+    try:
+        routed = await resolve_queue_for_task("scan_live_set", request.app.state, session)
+    except NoActiveAgentError:
+        # No file-server agent is online; surface a visible empty-state and enqueue nothing.
+        return templates.TemplateResponse(
+            request=request,
+            name="tracklists/partials/scan_progress.html",
+            context={
+                "request": request,
+                "job_ids": "",
+                "agent_id": "",
+                "total": len(file_ids),
+                "completed": 0,
+                "done": True,
+                "tracklists_created": 0,
+                "no_active_agent": True,
+            },
+        )
 
+    job_ids: list[str] = []
     for fid in file_ids:
-        job = await queue.enqueue("scan_live_set", file_id=fid)
+        job = await routed.queue.enqueue("scan_live_set", file_id=fid)
         if job is not None:
             job_ids.append(job.key)
 
@@ -220,10 +239,12 @@ async def trigger_scan(
         context={
             "request": request,
             "job_ids": ",".join(job_ids),
+            "agent_id": routed.agent_id,
             "total": len(file_ids),
             "completed": 0,
             "done": False,
             "tracklists_created": 0,
+            "no_active_agent": False,
         },
     )
 
@@ -231,10 +252,17 @@ async def trigger_scan(
 @router.get("/scan/status", response_class=HTMLResponse)
 async def scan_status(
     request: Request,
-    job_ids: str = Query(...),
+    job_ids: str = Query(..., min_length=1),
+    agent_id: str = Query(...),
 ) -> HTMLResponse:
-    """Poll scan progress by checking SAQ job results."""
-    queue = request.app.state.queue
+    """Poll scan progress by checking SAQ job results on the per-agent queue.
+
+    ``scan_live_set`` jobs are enqueued onto the selected agent's
+    ``phaze-agent-<id>`` queue, and ``queue.job(job_key)`` lookups are
+    queue-scoped, so the poll must target the SAME per-agent queue. The
+    ``agent_id`` is echoed from ``trigger_scan`` through the progress partial.
+    """
+    queue = request.app.state.task_router.queue_for(agent_id)
     ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
 
     completed = 0
@@ -264,11 +292,13 @@ async def scan_status(
         context={
             "request": request,
             "job_ids": job_ids,
+            "agent_id": agent_id,
             "total": total,
             "completed": completed,
             "done": done,
             "tracklists_created": tracklists_created,
             "errors": errors,
+            "no_active_agent": False,
         },
     )
 
@@ -350,8 +380,8 @@ async def rescrape_tracklist(
     result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
     tracklist = result.scalar_one_or_none()
     if tracklist:
-        queue = request.app.state.queue
-        await queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
+        routed = await resolve_queue_for_task("scrape_and_store_tracklist", request.app.state, session)
+        await routed.queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
 
     has_candidates = await _has_candidates(session, tracklist) if tracklist else False
 
@@ -421,10 +451,11 @@ async def search_better_match(
 async def manual_search(
     request: Request,
     file_id: uuid.UUID = Query(...),
+    session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Manual search for an unmatched file."""
-    queue = request.app.state.queue
-    await queue.enqueue("search_tracklist", file_id=str(file_id))
+    routed = await resolve_queue_for_task("search_tracklist", request.app.state, session)
+    await routed.queue.enqueue("search_tracklist", file_id=str(file_id))
 
     return templates.TemplateResponse(
         request=request,
@@ -623,8 +654,8 @@ async def match_discogs(
     if not tracklist:
         return HTMLResponse(content="Tracklist not found", status_code=404)
 
-    queue = request.app.state.queue
-    await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tracklist_id))
+    routed = await resolve_queue_for_task("match_tracklist_to_discogs", request.app.state, session)
+    await routed.queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tracklist_id))
 
     return templates.TemplateResponse(
         request=request,

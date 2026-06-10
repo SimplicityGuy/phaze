@@ -42,6 +42,7 @@ from phaze.routers import (
 )
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
 
 @asynccontextmanager
@@ -49,14 +50,20 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Manage application lifespan: verify DB; create SAQ queue + task_router + redis on startup; dispose on shutdown.
 
     Resources wired (in order):
-        1. ``app.state.queue``        -- existing default-queue SAQ Queue (Phase 25; used by routers/scan.py).
+        1. ``app.state.controller_queue`` -- the named ``controller`` SAQ Queue consumed by the
+                                         application-server ``phaze-worker``. Phase 30 replaced the
+                                         Phase 25 unnamed default queue here: that queue had NO
+                                         consumer, so every control-plane enqueue routed to it was
+                                         stranded (the v4.0.6 incident). Registers the project
+                                         ``apply_project_job_defaults`` before_enqueue hook so jobs
+                                         inherit the policy timeout/retry budget (mirrors controller.py).
         2. ``app.state.task_router``  -- Phase 26 D-20 AgentTaskRouter for per-agent SAQ enqueues
                                          (used by agent_files.py auto-enqueue path).
         3. ``app.state.redis``        -- Phase 26 D-27 shared async Redis client for the tracklists
                                          idempotency cache (decode_responses=True so .get/.set yield str).
 
-    Shutdown is reverse-order (task_router, redis, queue) so the SAQ-backed router closes
-    before the underlying default queue's Redis pool is gone.
+    Shutdown is reverse-order (task_router, redis, controller_queue) so the SAQ-backed router
+    closes before the underlying controller queue's Redis pool is gone.
 
     Phase 27 UAT Gap 2/3: ``run_migrations`` and ``ensure_dev_agent`` run BEFORE
     the queue / task_router / redis are wired so a fresh docker compose stack
@@ -85,8 +92,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     async with async_session() as bootstrap_session:
         await ensure_dev_agent(bootstrap_session)
 
-    # SAQ default-queue (Phase 25) -- used by routers/scan.py
-    _app.state.queue = Queue.from_url(settings.redis_url)
+    # Named controller queue (Phase 30) -- consumed by the application-server phaze-worker
+    # (phaze.tasks.controller.settings). Replaces the Phase 25 unnamed default queue, which had
+    # no consumer and stranded every control-plane enqueue routed to it (the v4.0.6 incident).
+    _app.state.controller_queue = Queue.from_url(settings.redis_url, name="controller")
+    # Register the policy before_enqueue hook so API-side enqueues inherit the longer
+    # timeout / retry budget, exactly like controller.py's module-level queue.
+    _app.state.controller_queue.register_before_enqueue(apply_project_job_defaults)
     # AgentTaskRouter -- per-agent SAQ enqueuer (Phase 26 Plan 04, D-20)
     _app.state.task_router = AgentTaskRouter(redis_url=settings.redis_url)
     # Shared Redis client for tracklists idempotency cache (Phase 26 Plan 07, D-27).
@@ -96,7 +108,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Shutdown in reverse construction order.
     await _app.state.task_router.close()
     await _app.state.redis.aclose()
-    await _app.state.queue.disconnect()
+    await _app.state.controller_queue.disconnect()
     await engine.dispose()
 
 

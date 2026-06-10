@@ -1,4 +1,8 @@
-{% if count > 0 %}
+{% if no_active_agent %}
+<span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
+    No active agent available — start an agent worker and retry. 0 files enqueued for {{ action }}.
+</span>
+{% elif count > 0 %}
 <span class="text-sm text-green-600 dark:text-green-400 font-medium">
     Enqueued {{ count }} files for {{ action }}{% if batches %} in {{ batches }} batches{% endif %}.
 </span>

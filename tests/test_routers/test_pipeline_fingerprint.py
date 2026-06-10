@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
+from tests._queue_fakes import seed_active_agent, wire_fakes
 
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def _drain_background() -> None:
+    """Yield until the router's background enqueue tasks have drained."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    for _ in range(500):
+        if not pipeline_mod._background_tasks:
+            return
+        await asyncio.sleep(0)
 
 
 def _make_file(*, state: str = FileState.METADATA_EXTRACTED) -> FileRecord:
@@ -34,18 +45,38 @@ def _make_file(*, state: str = FileState.METADATA_EXTRACTED) -> FileRecord:
 
 @pytest.mark.asyncio
 async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /api/v1/fingerprint with METADATA_EXTRACTED files returns enqueue count."""
+    """POST /api/v1/fingerprint enqueues fingerprint_file onto phaze-agent-nox (not default)."""
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(3)])
     await session.commit()
-
-    mock_queue = AsyncMock()
-    mock_queue.enqueue = AsyncMock()
-    client._transport.app.state.queue = mock_queue  # type: ignore[union-attr]
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
 
     response = await client.post("/api/v1/fingerprint")
     assert response.status_code == 200
     data = response.json()
     assert data["enqueued"] == 3
+
+    await _drain_background()
+    assert len(capture) == 3
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "fingerprint_file")}
+    assert all(q != "default" for q, _, _ in capture)
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /api/v1/fingerprint with files but no active agent surfaces a visible empty-state."""
+    session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(3)])
+    await session.commit()
+    capture = wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/api/v1/fingerprint")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 0
+    assert "no active agent" in data["message"].lower()
+
+    await _drain_background()
+    assert capture == []
 
 
 @pytest.mark.asyncio
