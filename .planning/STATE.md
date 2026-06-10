@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: 30 (fix-systemic-control-plane-saq-queue-misrouting-every-manual) — COMPLETE (verified passed)
 Plan: 5 of 5
 Status: v4.0.7 released (Phase 30 shipped) — GHCR published
-Last activity: 2026-06-10
+Last activity: 2026-06-10 - Completed quick task 260610-fp9: add audio system deps to Dockerfile (unblocks essentia; needs v4.0.9)
 
 Progress: [██████████] 100%
 
@@ -100,6 +100,7 @@ None.
 | 260608-jbg | Validate model integrity on bootstrap via per-file HEAD Content-Length size check (size-only); shared bounded-retry+timeout across HEAD+GET so no request can wedge the worker; remove count-only gate (always validate); re-download truncated/corrupt files; correct stale ~150MB estimate to ~3.1GB/34 files (Verified). Extends PR #91. | 2026-06-08 | b86babd | [260608-jbg-validate-model-integrity-on-bootstrap-vi](./quick/260608-jbg-validate-model-integrity-on-bootstrap-vi/) |
 | 260609-f96 | Fix scan_directory 10s asyncio.TimeoutError: AgentTaskRouter._queue_for built per-agent SAQ queues without the apply_project_job_defaults before_enqueue hook, so agent-dispatched jobs inherited SAQ's 10s default instead of worker_job_timeout=600. Register the hook on each per-agent queue (3rd call site) + regression test. Found live on nox/lux v4.0.4. | 2026-06-09 | c6c7e20 | [260609-f96-fix-scan-directory-10s-timeouterror-regi](./quick/260609-f96-fix-scan-directory-10s-timeouterror-regi/) |
 | 260609-glv | Scan-pipeline reliability bundle (3 fixes, surfaced sequentially on v4.0.5): (1) sanitize PG-invalid chars in mutagen tags — _sanitize_pg_text strips NUL U+0000 + lone surrogates U+D800-U+DFFF in _first_str + _serialize_tags (fixes asyncpg UntranslatableCharacterError 500 on metadata writes; preserves valid controls/noncharacters); (2) scan_directory enqueued with timeout=0 (unbounded; Job.stuck stays False) + retries=0 via AgentTaskRouter timeout/retries pass-through — a fixed 600s SAQ timeout killed healthy bulk scans that then retried from scratch and never finished; (3) config.scan_stall_seconds default 600→86400 (24h) so the progress stall reaper is the sole liveness guard. + regression tests. | 2026-06-09 | 4b37c13 | [260609-glv-fix-metadata-write-500-strip-nul-bytes-f](./quick/260609-glv-fix-metadata-write-500-strip-nul-bytes-f/) |
+| 260610-fp9 | Add audio system-deps apt layer to shared Dockerfile (libatomic1 ffmpeg libsndfile1 libchromaprint-tools) — v4.0.8 `python:3.14-slim` image had NO apt layer, so every `process_file` job dead-lettered at `import essentia` (`ImportError: libatomic.so.1`), stranding all 11,428 files in `discovered`. Verified via ldd on live v4.0.8 image: prebuilt essentia-tensorflow wheel bundles its heavy deps; only libatomic1 was unbundled+missing — proven sufficient for full `import essentia`. ffmpeg/fpcalc kept for the broader pipeline (ffprobe video metadata, pyacoustid fingerprinting). Needs v4.0.9 release + nox/lux redeploy. | 2026-06-10 | f5fb6e7 | [260610-fp9-add-audio-system-deps-to-dockerfile-so-e](./quick/260610-fp9-add-audio-system-deps-to-dockerfile-so-e/) |
 
 ## Session Continuity
 
