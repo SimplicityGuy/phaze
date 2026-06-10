@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
+import logging
 import os
 from pathlib import Path
+from statistics import mean, median
 from typing import Any
 
 import numpy as np
@@ -16,6 +18,9 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import essentia
 import essentia.standard as es
+
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +217,103 @@ def derive_style(genre_features: dict[str, Any]) -> str:
 
     top = max(predictions, key=lambda p: p["confidence"])
     return str(top["label"]).replace("---", "/")
+
+
+# ---------------------------------------------------------------------------
+# Windowed time-series: per-window value containers + aggregate reductions
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FineWindow:
+    """A single fine-tier (BPM/key) analysis window."""
+
+    window_index: int
+    start_sec: float
+    end_sec: float
+    bpm: float | None
+    musical_key: str | None
+    confidence: float = 0.0
+
+    def as_payload_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
+        return {
+            "tier": "fine",
+            "window_index": self.window_index,
+            "start_sec": self.start_sec,
+            "end_sec": self.end_sec,
+            "bpm": self.bpm,
+            "musical_key": self.musical_key,
+        }
+
+
+@dataclass(frozen=True)
+class CoarseWindow:
+    """A single coarse-tier (mood/style/danceability) analysis window."""
+
+    window_index: int
+    start_sec: float
+    end_sec: float
+    mood: str | None
+    style: str | None
+    danceability: float | None
+    features: dict[str, Any] = field(default_factory=dict)
+
+    def as_payload_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
+        return {
+            "tier": "coarse",
+            "window_index": self.window_index,
+            "start_sec": self.start_sec,
+            "end_sec": self.end_sec,
+            "mood": self.mood,
+            "style": self.style,
+            "danceability": self.danceability,
+            "features": self.features,
+        }
+
+
+def aggregate_bpm(fine: list[FineWindow]) -> float | None:
+    """Representative BPM = median of fine-window BPMs (rounded to 0.1).
+
+    Excludes windows with ``confidence == 0.0`` (unreliable BPM on short/silent
+    audio per RESEARCH Pitfall 2) and windows with no BPM. Returns None if empty.
+    """
+    vals = [w.bpm for w in fine if w.bpm is not None and w.confidence != 0.0]
+    return round(median(vals), 1) if vals else None
+
+
+def _max_by_duration(weights: dict[str, float]) -> str | None:
+    """Return the key with the greatest accumulated duration (stable on ties)."""
+    if not weights:
+        return None
+    # max() is stable: on a tie it returns the first-inserted key.
+    return max(weights, key=lambda k: weights[k])
+
+
+def aggregate_key(fine: list[FineWindow]) -> str | None:
+    """Representative key = duration-weighted modal key across fine windows."""
+    weights: dict[str, float] = {}
+    for w in fine:
+        if w.musical_key:
+            weights[w.musical_key] = weights.get(w.musical_key, 0.0) + (w.end_sec - w.start_sec)
+    return _max_by_duration(weights)
+
+
+def aggregate_dominant(coarse: list[CoarseWindow], attr: str) -> str | None:
+    """Time-weighted dominant label (mood/style) across coarse windows."""
+    weights: dict[str, float] = {}
+    for w in coarse:
+        label = getattr(w, attr)
+        if label:
+            weights[label] = weights.get(label, 0.0) + (w.end_sec - w.start_sec)
+    return _max_by_duration(weights)
+
+
+def aggregate_danceability(coarse: list[CoarseWindow]) -> float | None:
+    """Representative danceability = mean across coarse windows; None if empty."""
+    vals = [w.danceability for w in coarse if w.danceability is not None]
+    return mean(vals) if vals else None
 
 
 # ---------------------------------------------------------------------------

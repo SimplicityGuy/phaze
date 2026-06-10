@@ -11,8 +11,14 @@ import pytest
 from phaze.services.analysis import (
     GENRE_MODEL,
     MODEL_SETS,
+    CoarseWindow,
+    FineWindow,
     ModelConfig,
     ModelSetConfig,
+    aggregate_bpm,
+    aggregate_danceability,
+    aggregate_dominant,
+    aggregate_key,
     analyze_file,
     derive_mood,
     derive_style,
@@ -287,3 +293,90 @@ def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock)
     assert "genre" in ar.features
     for model_set in MODEL_SETS:
         assert model_set.name in ar.features
+
+
+# ---------------------------------------------------------------------------
+# Phase 31: aggregate-reduction unit tests (pure-Python, NO essentia mock)
+# ---------------------------------------------------------------------------
+
+
+def _fine(idx: int, bpm: float | None, key: str | None, *, start: float = 0.0, end: float = 30.0, confidence: float = 3.8) -> FineWindow:
+    return FineWindow(window_index=idx, start_sec=start, end_sec=end, bpm=bpm, musical_key=key, confidence=confidence)
+
+
+def _coarse(
+    idx: int,
+    mood: str | None,
+    style: str | None,
+    dance: float | None,
+    *,
+    start: float = 0.0,
+    end: float = 180.0,
+) -> CoarseWindow:
+    return CoarseWindow(window_index=idx, start_sec=start, end_sec=end, mood=mood, style=style, danceability=dance, features={})
+
+
+def test_aggregate_bpm_median() -> None:
+    """aggregate_bpm returns the median of fine-window BPMs rounded to 0.1."""
+    fine = [_fine(0, 120.0, "C major"), _fine(1, 124.0, "C major"), _fine(2, 121.0, "C major")]
+    assert aggregate_bpm(fine) == 121.0
+
+
+def test_aggregate_bpm_empty_returns_none() -> None:
+    """aggregate_bpm on no usable windows returns None."""
+    assert aggregate_bpm([]) is None
+
+
+def test_aggregate_bpm_excludes_zero_confidence() -> None:
+    """A confidence==0.0 window (unreliable BPM, Pitfall 2) is excluded from the median."""
+    fine = [_fine(0, 120.0, "C major"), _fine(1, 999.0, "C major", confidence=0.0)]
+    assert aggregate_bpm(fine) == 120.0
+
+
+def test_aggregate_bpm_excludes_none_bpm() -> None:
+    """Windows with bpm=None are excluded from the median."""
+    fine = [_fine(0, 120.0, "C major"), _fine(1, None, "C major")]
+    assert aggregate_bpm(fine) == 120.0
+
+
+def test_aggregate_key_duration_weighted() -> None:
+    """aggregate_key returns the key with the most total window duration."""
+    # 'A minor' covers 60s across two windows; 'C major' covers 30s.
+    fine = [
+        _fine(0, 120.0, "C major", start=0.0, end=30.0),
+        _fine(1, 120.0, "A minor", start=30.0, end=60.0),
+        _fine(2, 120.0, "A minor", start=60.0, end=90.0),
+    ]
+    assert aggregate_key(fine) == "A minor"
+
+
+def test_aggregate_key_empty_returns_none() -> None:
+    """aggregate_key on empty input returns None."""
+    assert aggregate_key([]) is None
+
+
+def test_aggregate_dominant_time_weighted() -> None:
+    """aggregate_dominant returns the time-weighted dominant label for the attr."""
+    coarse = [
+        _coarse(0, "happy", "house", 1.0, start=0.0, end=180.0),
+        _coarse(1, "sad", "techno", 1.0, start=180.0, end=360.0),
+        _coarse(2, "sad", "techno", 1.0, start=360.0, end=540.0),
+    ]
+    assert aggregate_dominant(coarse, "mood") == "sad"
+    assert aggregate_dominant(coarse, "style") == "techno"
+
+
+def test_aggregate_dominant_empty_returns_none() -> None:
+    """aggregate_dominant on empty input returns None."""
+    assert aggregate_dominant([], "mood") is None
+
+
+def test_aggregate_danceability_mean() -> None:
+    """aggregate_danceability returns the mean of coarse-window danceability values."""
+    coarse = [_coarse(0, "happy", "house", 0.2), _coarse(1, "happy", "house", 0.4)]
+    assert aggregate_danceability(coarse) == pytest.approx(0.3)
+
+
+def test_aggregate_danceability_empty_returns_none() -> None:
+    """aggregate_danceability on empty input returns None."""
+    assert aggregate_danceability([]) is None
