@@ -7,6 +7,7 @@ import uuid
 
 import pytest
 
+from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord, FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
@@ -14,6 +15,23 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 if TYPE_CHECKING:
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def add_analysis_windows(
+    session: AsyncSession,
+    file_id: uuid.UUID,
+    *,
+    mood: str = "happy",
+) -> None:
+    """Seed a couple of fine + coarse analysis windows for a file."""
+    session.add_all(
+        [
+            AnalysisWindow(file_id=file_id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=120.0, musical_key="Am"),
+            AnalysisWindow(file_id=file_id, tier="fine", window_index=1, start_sec=30.0, end_sec=60.0, bpm=128.0, musical_key="C"),
+            AnalysisWindow(file_id=file_id, tier="coarse", window_index=0, start_sec=0.0, end_sec=60.0, mood=mood, style="techno", danceability=0.8),
+        ]
+    )
+    await session.commit()
 
 
 async def create_test_proposal(
@@ -326,3 +344,91 @@ async def test_destination_null_path_badge(client: AsyncClient, session: AsyncSe
     response = await client.get("/proposals/")
     assert response.status_code == 200
     assert "No path" in response.text
+
+
+@pytest.mark.asyncio
+async def test_row_renders_sparkline_and_timeline_control(client: AsyncClient, session: AsyncSession) -> None:
+    """The review row shows a BPM sparkline SVG and an HTMX timeline expand control."""
+    proposal = await create_test_proposal(session)
+    await add_analysis_windows(session, proposal.file_id)
+    response = await client.get("/proposals/")
+    assert response.status_code == 200
+    assert "<svg" in response.text
+    assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text
+    assert f'id="timeline-{proposal.id}"' in response.text
+    # Fine-window BPMs flow into a rendered polyline sparkline.
+    assert "<polyline" in response.text
+
+
+@pytest.mark.asyncio
+async def test_row_sparkline_without_windows(client: AsyncClient, session: AsyncSession) -> None:
+    """A file with no analysis windows still renders a (flat) sparkline + timeline control."""
+    proposal = await create_test_proposal(session)
+    response = await client.get("/proposals/")
+    assert response.status_code == 200
+    assert "<svg" in response.text
+    assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeline_with_windows(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /proposals/{id}/timeline returns a 200 SVG fragment with BPM polyline + ribbons."""
+    proposal = await create_test_proposal(session)
+    await add_analysis_windows(session, proposal.file_id)
+    response = await client.get(f"/proposals/{proposal.id}/timeline")
+    assert response.status_code == 200
+    assert "<polyline" in response.text
+    # Escaped ribbon labels rendered via Jinja2 autoescaping.
+    assert "techno" in response.text
+    assert "happy" in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeline_empty_state(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /proposals/{id}/timeline for a file with no windows renders the empty state."""
+    proposal = await create_test_proposal(session)
+    response = await client.get(f"/proposals/{proposal.id}/timeline")
+    assert response.status_code == 200
+    assert "No analysis windows" in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeline_not_found(client: AsyncClient) -> None:
+    """GET /proposals/{random_uuid}/timeline returns 404."""
+    response = await client.get(f"/proposals/{uuid.uuid4()}/timeline")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_timeline_scoped_by_file_id(client: AsyncClient, session: AsyncSession) -> None:
+    """Timeline only renders windows belonging to the proposal's own file_id."""
+    p1 = await create_test_proposal(session, original_filename="one.mp3")
+    p2 = await create_test_proposal(session, original_filename="two.mp3")
+    await add_analysis_windows(session, p1.file_id, mood="euphoric")
+    await add_analysis_windows(session, p2.file_id, mood="melancholy")
+    response = await client.get(f"/proposals/{p1.id}/timeline")
+    assert response.status_code == 200
+    assert "euphoric" in response.text
+    assert "melancholy" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeline_escapes_label_xss(client: AsyncClient, session: AsyncSession) -> None:
+    """A malicious essentia-derived label is HTML-escaped, never rendered as raw markup."""
+    proposal = await create_test_proposal(session)
+    session.add(
+        AnalysisWindow(
+            file_id=proposal.file_id,
+            tier="coarse",
+            window_index=0,
+            start_sec=0.0,
+            end_sec=60.0,
+            mood="<script>alert(1)</script>",
+            style="techno",
+        )
+    )
+    await session.commit()
+    response = await client.get(f"/proposals/{proposal.id}/timeline")
+    assert response.status_code == 200
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
+    assert "<script>alert(1)</script>" not in response.text
