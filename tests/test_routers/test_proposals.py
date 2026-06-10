@@ -347,6 +347,30 @@ async def test_destination_null_path_badge(client: AsyncClient, session: AsyncSe
 
 
 @pytest.mark.asyncio
+async def test_row_renders_sparkline_and_timeline_control(client: AsyncClient, session: AsyncSession) -> None:
+    """The review row shows a BPM sparkline SVG and an HTMX timeline expand control."""
+    proposal = await create_test_proposal(session)
+    await add_analysis_windows(session, proposal.file_id)
+    response = await client.get("/proposals/")
+    assert response.status_code == 200
+    assert "<svg" in response.text
+    assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text
+    assert f'id="timeline-{proposal.id}"' in response.text
+    # Fine-window BPMs flow into a rendered polyline sparkline.
+    assert "<polyline" in response.text
+
+
+@pytest.mark.asyncio
+async def test_row_sparkline_without_windows(client: AsyncClient, session: AsyncSession) -> None:
+    """A file with no analysis windows still renders a (flat) sparkline + timeline control."""
+    proposal = await create_test_proposal(session)
+    response = await client.get("/proposals/")
+    assert response.status_code == 200
+    assert "<svg" in response.text
+    assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text
+
+
+@pytest.mark.asyncio
 async def test_timeline_with_windows(client: AsyncClient, session: AsyncSession) -> None:
     """GET /proposals/{id}/timeline returns a 200 SVG fragment with BPM polyline + ribbons."""
     proposal = await create_test_proposal(session)

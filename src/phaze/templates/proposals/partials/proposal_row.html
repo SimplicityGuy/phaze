@@ -54,7 +54,24 @@
         {% endif %}
     </td>
     <td class="px-3 py-3">
-        <div class="flex gap-2">
+        <div class="flex items-center gap-2">
+            {% set spark = (sparklines|default({})).get(proposal.file_id|string) %}
+            <svg viewBox="0 0 80 24" preserveAspectRatio="none"
+                 class="w-20 h-5 shrink-0 text-blue-500" role="img" aria-label="BPM sparkline">
+                {% if spark %}
+                <polyline points="{{ spark }}" fill="none" stroke="currentColor" stroke-width="1.5" />
+                {% else %}
+                <line x1="0" y1="12" x2="80" y2="12" stroke="currentColor" stroke-width="1"
+                      stroke-dasharray="2 2" opacity="0.4" />
+                {% endif %}
+            </svg>
+            <button hx-get="/proposals/{{ proposal.id }}/timeline"
+                    hx-target="#timeline-{{ proposal.id }}"
+                    hx-swap="innerHTML"
+                    class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 text-xs px-2 py-1"
+                    aria-label="Expand BPM timeline for {{ proposal.proposed_filename }}">
+                Timeline
+            </button>
             {% if proposal.status == "pending" %}
             <button hx-patch="/proposals/{{ proposal.id }}/approve"
                     hx-target="#proposal-{{ proposal.id }}"
@@ -82,3 +99,4 @@
     </td>
 </tr>
 <tr id="detail-{{ proposal.id }}" class="hidden"></tr>
+<tr id="timeline-{{ proposal.id }}" class="hidden"></tr>
