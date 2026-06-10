@@ -108,6 +108,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 28. Distributed Execution Dispatch | v4.0 | 6/6 | Complete | 2026-05-15 |
 | 29. Deployment Hardening & Agents Admin | v4.0 | 8/8 | Complete | 2026-05-17 |
 | 30. Fix control-plane SAQ queue misrouting | v4.0 | 5/5 | Complete   | 2026-06-10 |
+| 31. Windowed Time-Series Audio Analysis | v4.0 | 0/6 | Planned | — |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -130,7 +131,12 @@ Plans:
 **Requirements**: ANL-01 (BPM/key/mood/style detection) extended to time-series; new cross-archive queryability of time-varying characteristics.
 **Depends on:** Phase 30
 **Rollout:** Ships as v4.0.10 → GHCR publish → homelab redeploy → re-run "Run analysis" (no rescan; Redis already purged of doomed/stale jobs).
-**Plans:** 0 plans
+**Plans:** 6 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 31 to break down)
+- [ ] 31-01-PLAN.md — Spike & decode-strategy lock (EasyLoader-primary vs decode+Resample-hybrid) on a real ≥2h file [Wave 1]
+- [ ] 31-02-PLAN.md — `AnalysisWindow` model + additive migration 018 (table + composite/partial/label indexes, CASCADE FK) [Wave 1]
+- [ ] 31-03-PLAN.md — Wire schema `AnalysisWindowPayload` + idempotent `put_analysis` child-row replace [Wave 2]
+- [ ] 31-04-PLAN.md — Rewrite `analyze_file` to per-window decode + aggregate reductions + window-config AgentSettings [Wave 2]
+- [ ] 31-05-PLAN.md — `process_file` windows payload build (import-boundary preserved) + job timeout/retries tuning [Wave 3]
+- [ ] 31-06-PLAN.md — Review-UI BPM sparkline + HTMX-expandable multi-lane SVG/CSS timeline fragment [Wave 2]
