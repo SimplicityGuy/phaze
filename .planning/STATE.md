@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: phase-complete
-last_updated: "2026-06-10T02:02:28.389Z"
-last_activity: 2026-06-10 -- Phase 30 complete (verified passed, 5/5 plans)
+status: "Phase 30 shipped — PR #109"
+last_updated: "2026-06-10T04:55:33.771Z"
+last_activity: 2026-06-10
 progress:
   total_phases: 6
   completed_phases: 6
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 30 (fix-systemic-control-plane-saq-queue-misrouting-every-manual) — COMPLETE (verified passed)
 Plan: 5 of 5
-Status: Phase 30 complete — verification passed, 3/3 must-haves
-Last activity: 2026-06-10 -- Phase 30 complete (verified passed, 5/5 plans)
+Status: Phase 30 shipped — PR #109
+Last activity: 2026-06-10
 
 Progress: [██████████] 100%
 
