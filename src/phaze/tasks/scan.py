@@ -168,6 +168,41 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         )
         return {"status": "failed", "files_posted": 0, "reason": "scan_path_not_a_directory"}
 
+    # Pre-count pass (UX denominator): walk the tree once WITHOUT stat or hashing,
+    # counting only files whose extension is ingestible (MUSIC/VIDEO). This populates
+    # ScanBatch.total_files up front so the Recent Scans "N / Z" progress widget shows a
+    # real denominator during a RUNNING scan instead of "—" (which previously only
+    # filled in at the terminal success PATCH). Counting names is cheap even on a large
+    # network mount. The hashed `total` from the walk below remains the source of truth
+    # and self-corrects any drift via the terminal total_files PATCH.
+    #
+    # Pre-count walk errors are collected in a SEPARATE local list that is deliberately
+    # NOT merged into the hashing walk's `walk_errors`. The zero-access failure check
+    # (`total == 0 and walk_errors`) and its error-count message must stay driven solely
+    # by the authoritative hashing walk, so a permission failure is counted exactly once
+    # there. We still pass an onerror callback so a pre-count read failure is logged
+    # rather than silently swallowed.
+    precount_walk_errors: list[OSError] = []
+
+    def _on_precount_error(exc: OSError) -> None:
+        precount_walk_errors.append(exc)
+        logger.warning("scan_directory: cannot read directory during pre-count walk: %s", exc)
+
+    precount = 0
+    for _dirpath, _dirnames, precount_filenames in os.walk(scan_root, followlinks=False, onerror=_on_precount_error):
+        for precount_filename in precount_filenames:
+            if _classify(precount_filename) in _EXTRACTABLE:
+                precount += 1
+    logger.info("scan precount", batch_id=str(payload.batch_id), total=precount)
+    try:
+        await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(total_files=precount))
+    except AgentApiServerError:
+        # The pre-count PATCH is best-effort UX (populating the denominator early). If the
+        # controller is unavailable here, do NOT abort the scan on a UX-only write -- let the
+        # authoritative hashing walk below drive the per-chunk/terminal PATCHes and the
+        # controller-5xx failure handling (which surfaces a proper 'failed' terminal PATCH).
+        logger.warning("scan_directory: pre-count total_files PATCH failed; continuing", batch_id=str(payload.batch_id))
+
     # os.walk silently swallows a PermissionError raised while reading a
     # directory unless an onerror callback is supplied. Without it, a fully
     # unreadable tree (e.g. media owned by uid 1000, mode 700, scanned by a

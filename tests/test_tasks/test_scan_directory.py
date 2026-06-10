@@ -231,9 +231,15 @@ async def test_scan_directory_patches_progress_after_each_chunk(tmp_path: Path) 
     ctx = _make_ctx()
     await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
 
-    # Each of 3 chunks triggers one PATCH(processed_files=N); then terminal PATCH(status='completed').
+    # One up-front PATCH(total_files=precount); then each of 3 chunks triggers one
+    # PATCH(processed_files=N); then terminal PATCH(status='completed').
     patch_calls = ctx["api_client"].patch_scan_batch.await_args_list
-    assert len(patch_calls) == 4  # 3 per-chunk + 1 terminal
+    assert len(patch_calls) == 5  # 1 precount + 3 per-chunk + 1 terminal
+
+    # The first PATCH is the pre-count denominator (total_files set, processed_files unset).
+    first_body = patch_calls[0].args[1]
+    assert first_body.total_files == 1500
+    assert first_body.processed_files is None
 
     processed_seq = []
     for call in patch_calls:
@@ -245,6 +251,42 @@ async def test_scan_directory_patches_progress_after_each_chunk(tmp_path: Path) 
     assert processed_seq[:3] == [500, 1000, 1500]
     # Monotonic non-decreasing across ALL patches.
     assert processed_seq == sorted(processed_seq)
+
+
+async def test_scan_directory_patches_total_files_precount_before_first_upsert(tmp_path: Path) -> None:
+    """Pre-count denominator: a PATCH(total_files=N) is sent BEFORE the first upsert_files.
+
+    The Recent Scans "processed / total" widget needs a real denominator during a
+    RUNNING scan. The pre-count walk (no stat, no hashing) populates total_files up
+    front; this test pins both the value (count of ingestible files) and the ordering
+    (it lands before any file persistence handshake).
+    """
+    from phaze.tasks.scan import scan_directory
+
+    for i in range(3):
+        _touch(tmp_path / f"f{i:04d}.mp3")
+    _touch(tmp_path / "ignored.txt")  # COMPANION -- excluded from the precount
+
+    manager = MagicMock()
+    api = AsyncMock()
+    api.upsert_files = AsyncMock(return_value=MagicMock(upserted=0, inserted=0, enqueued=0))
+    api.patch_scan_batch = AsyncMock(return_value=MagicMock())
+    manager.attach_mock(api.upsert_files, "upsert_files")
+    manager.attach_mock(api.patch_scan_batch, "patch_scan_batch")
+
+    ctx = _make_ctx(api_client=api)
+    await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    # The first PATCH carries the pre-count: 3 ingestible files, txt excluded.
+    first_patch = api.patch_scan_batch.await_args_list[0].args[1]
+    assert first_patch.total_files == 3
+    assert first_patch.processed_files is None
+
+    # Ordering: the first recorded call is a patch_scan_batch, and it precedes the
+    # first upsert_files call.
+    call_names = [c[0] for c in manager.mock_calls]
+    assert call_names[0] == "patch_scan_batch"
+    assert call_names.index("patch_scan_batch") < call_names.index("upsert_files")
 
 
 async def test_scan_directory_patches_final_status_completed(tmp_path: Path) -> None:
@@ -445,8 +487,13 @@ async def test_scan_directory_aborts_with_failed_patch_on_server_error(tmp_path:
     # advanced). We staged 2 files; the failure surfaces both.
     assert result["files_posted"] == 2
 
-    # Terminal failed-PATCH ran exactly once with the controller-error message.
-    assert api.patch_scan_batch.await_count == 1
+    # Two PATCHes total: the up-front pre-count denominator (total_files), then the
+    # terminal failed-PATCH carrying the controller-error message. The last call is the
+    # failed one.
+    assert api.patch_scan_batch.await_count == 2
+    precount_patch = api.patch_scan_batch.await_args_list[0].args[1]
+    assert precount_patch.total_files == 2
+    assert precount_patch.status is None
     failed_patch = api.patch_scan_batch.await_args.args[1]
     assert failed_patch.status == "failed"
     assert failed_patch.error_message is not None
