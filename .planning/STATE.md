@@ -65,6 +65,10 @@ Progress: [██████████] 100%
 
 ## Accumulated Context
 
+### Roadmap Evolution
+
+- Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.
+
 ### Decisions
 
 (Full milestone decision log archived in `.planning/milestones/v4.0-ROADMAP.md` Milestone Summary. Current-cycle decisions accumulate here.)
