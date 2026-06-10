@@ -27,10 +27,21 @@ findings:
   warning: 4
   info: 3
   total: 7
-status: issues_found
+status: resolved
+fixes_applied:
+  date: 2026-06-10
+  scope: critical+warning
+  resolved: [WR-01, WR-02, WR-03, WR-04]
+  deferred_info: [IN-01, IN-02, IN-03]
+  commits: [2c9ac7c, 84c9256, b127a4e, c72f3e3]
+  verification: 128 tests pass, ruff + mypy clean
 ---
 
 # Phase 30: Code Review Report
+
+> **Resolution (2026-06-10):** All 4 Warning findings fixed via `/gsd:code-review 30 --fix`
+> (commits 2c9ac7c WR-01, 84c9256 WR-02, b127a4e WR-04, c72f3e3 WR-03). Info findings
+> IN-01/02/03 deferred (not in `--fix` default scope). 128 phase-touched tests green.
 
 **Reviewed:** 2026-06-09
 **Depth:** standard
