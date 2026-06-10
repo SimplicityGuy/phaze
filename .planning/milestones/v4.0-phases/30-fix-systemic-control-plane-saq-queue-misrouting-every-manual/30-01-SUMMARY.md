@@ -123,6 +123,10 @@ None - no external service configuration required.
 - `grep "Queue.from_url" src/phaze/main.py` -> only the `name="controller"` construction.
 - `uv run mypy .` -> Success (142 source files). `uv run ruff check .` -> All checks passed.
 
+## Self-Check: PASSED
+
+All created files exist on disk; all task + metadata commits (`43dadcb`, `13c4d31`, `97b0940`, `4bbd998`) are present in git history. Working tree clean.
+
 ---
 *Phase: 30-fix-systemic-control-plane-saq-queue-misrouting-every-manual*
 *Completed: 2026-06-09*
