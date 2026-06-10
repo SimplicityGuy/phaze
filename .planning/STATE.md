@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: v4.0.7 released (Phase 30 shipped) — GHCR published
-last_updated: "2026-06-10T05:33:13.627Z"
-last_activity: 2026-06-10
+status: executing
+last_updated: "2026-06-10T21:07:15.827Z"
+last_activity: 2026-06-10 -- Phase 31 execution started
 progress:
   total_phases: 6
   completed_phases: 6
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 30 complete — control-plane SAQ queue misrouting fixed (every enqueue now targets a consumed queue)
+**Current focus:** Phase 31 — windowed-time-series-audio-analysis
 
 ## Current Position
 
-Phase: 30 (fix-systemic-control-plane-saq-queue-misrouting-every-manual) — COMPLETE (verified passed)
-Plan: 5 of 5
-Status: v4.0.7 released (Phase 30 shipped) — GHCR published
-Last activity: 2026-06-10 - Completed quick task 260610-fp9: add audio system deps to Dockerfile (unblocks essentia; needs v4.0.9)
+Phase: 31 (windowed-time-series-audio-analysis) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 31
+Last activity: 2026-06-10 -- Phase 31 execution started
 
 Progress: [██████████] 100%
 
