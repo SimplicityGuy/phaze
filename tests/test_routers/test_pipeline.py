@@ -9,11 +9,13 @@ import uuid
 
 import pytest
 
+from phaze.config import settings
 from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.schemas.agent_tasks import ProcessFilePayload
 from tests._queue_fakes import seed_active_agent, wire_fakes
 
 
@@ -116,6 +118,49 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
 
 
 @pytest.mark.asyncio
+async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (run-analysis-payload-invalid): /api/v1/analyze must enqueue a COMPLETE ProcessFilePayload.
+
+    Before the fix, ``_enqueue_analysis_jobs`` passed only ``file_id``; the agent
+    worker's ``ProcessFilePayload.model_validate(kwargs)`` (``extra="forbid"``) then
+    raised four "Field required" errors and dead-lettered every job, stranding all
+    files in DISCOVERED. This asserts all five required fields are present, carry the
+    FileRecord / selected-agent / settings.models_path values, and that the exact
+    kwargs the worker receives validate cleanly against ``ProcessFilePayload``.
+    """
+    file_rec = _make_file(state=FileState.DISCOVERED)
+    session.add(file_rec)
+    await session.commit()
+    # expire_on_commit=False (conftest) -- these stay readable after commit.
+    expected_id = str(file_rec.id)
+    expected_path = file_rec.original_path
+    expected_type = file_rec.file_type
+    agent = await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    assert response.json()["enqueued"] == 1
+
+    await _drain_background()
+    assert len(capture) == 1
+    queue_name, task_name, kwargs = capture[0]
+    assert (queue_name, task_name) == ("phaze-agent-nox", "process_file")
+
+    # All five required fields present -- not just file_id (the pre-fix bug).
+    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path"}
+    assert kwargs["file_id"] == expected_id
+    assert kwargs["original_path"] == expected_path
+    assert kwargs["file_type"] == expected_type
+    assert kwargs["agent_id"] == agent.id
+    assert kwargs["models_path"] == settings.models_path
+
+    # The exact kwargs the agent worker receives validate against ProcessFilePayload.
+    validated = ProcessFilePayload.model_validate(kwargs)
+    assert str(validated.file_id) == expected_id
+
+
+@pytest.mark.asyncio
 async def test_analyze_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/analyze with files but no active agent surfaces a visible empty-state."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
@@ -207,6 +252,9 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
     await _drain_background()
     assert len(capture) == 2
     assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "process_file")}
+    # UI path enqueues a complete payload too (every job carries all five fields).
+    for _q, _t, kwargs in capture:
+        ProcessFilePayload.model_validate(kwargs)
 
 
 @pytest.mark.asyncio
@@ -267,7 +315,7 @@ async def test_trigger_proposals_ui_no_files(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /api/v1/analyze enqueues jobs in background without blocking response."""
+    """POST /api/v1/analyze enqueues a complete ProcessFilePayload in the background."""
     session.add(_make_file(state=FileState.DISCOVERED))
     await session.commit()
     await seed_active_agent(session)
@@ -279,7 +327,13 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     assert response.json()["enqueued"] == 1
 
     await _drain_background()
-    assert capture == [("phaze-agent-nox", "process_file", {"file_id": capture[0][2]["file_id"]})]
+    assert len(capture) == 1
+    queue_name, task_name, kwargs = capture[0]
+    assert queue_name == "phaze-agent-nox"
+    assert task_name == "process_file"
+    # Complete payload -- all five ProcessFilePayload fields, not just file_id.
+    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path"}
+    ProcessFilePayload.model_validate(kwargs)
 
 
 @pytest.mark.asyncio

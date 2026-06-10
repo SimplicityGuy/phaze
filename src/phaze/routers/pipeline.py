@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -20,6 +20,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services import enqueue_router
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
@@ -40,10 +41,30 @@ router = APIRouter(tags=["pipeline"])
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
-async def _enqueue_analysis_jobs(queue: Any, file_ids: list[str]) -> None:
-    """Background coroutine to enqueue process_file jobs for a list of file IDs."""
-    for fid in file_ids:
-        await queue.enqueue("process_file", file_id=fid)
+async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> None:
+    """Background coroutine to enqueue process_file jobs for a list of files.
+
+    Builds a COMPLETE ``ProcessFilePayload`` per file (file_id, original_path,
+    file_type, agent_id, models_path) and serializes it to enqueue kwargs via
+    ``model_dump(mode="json")`` so the UUID round-trips as a string and the agent
+    worker's ``ProcessFilePayload.model_validate(kwargs)`` (``extra="forbid"``)
+    accepts it. Mirrors the working ``agent_files.py`` ExtractMetadataPayload
+    pattern -- the pre-Phase-30 bug enqueued only ``file_id``, which dead-lettered
+    every job on the agent worker once routing started delivering them.
+
+    ``files`` attributes (``id`` / ``original_path`` / ``file_type``) are already
+    loaded by ``get_files_by_state`` and the request never commits, so reading them
+    here (after the request session may have closed) does not trigger a lazy load.
+    """
+    for f in files:
+        payload = ProcessFilePayload(
+            file_id=f.id,
+            original_path=f.original_path,
+            file_type=f.file_type,
+            agent_id=agent_id,
+            models_path=models_path,
+        )
+        await queue.enqueue("process_file", **payload.model_dump(mode="json"))
 
 
 async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:
@@ -72,14 +93,17 @@ async def trigger_analysis(
     except enqueue_router.NoActiveAgentError:
         return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
 
-    file_ids = [str(f.id) for f in files]
+    # process_file is an AGENT_TASK, so resolve_queue_for_task always returns a
+    # non-None agent_id (RoutedQueue.agent_id is only None for controller tasks);
+    # cast narrows str | None -> str for the ProcessFilePayload.agent_id field.
+    agent_id = cast("str", routed.agent_id)
 
     # Background enqueue to avoid HTTP timeout (per Research pitfall 2)
-    task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, file_ids))
+    task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, files, agent_id, settings.models_path))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
-    return {"enqueued": len(file_ids), "message": f"Enqueued {len(file_ids)} files for analysis"}
+    return {"enqueued": len(files), "message": f"Enqueued {len(files)} files for analysis"}
 
 
 @router.post("/api/v1/proposals/generate")
@@ -198,8 +222,10 @@ async def trigger_analysis_ui(
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            file_ids = [str(f.id) for f in files]
-            task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, file_ids))
+            # process_file is an AGENT_TASK -- resolve always returns a non-None
+            # agent_id; cast narrows str | None -> str for ProcessFilePayload.
+            agent_id = cast("str", routed.agent_id)
+            task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, files, agent_id, settings.models_path))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
