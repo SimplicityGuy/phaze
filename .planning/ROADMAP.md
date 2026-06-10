@@ -109,6 +109,8 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 29. Deployment Hardening & Agents Admin | v4.0 | 8/8 | Complete | 2026-05-17 |
 | 30. Fix control-plane SAQ queue misrouting | v4.0 | 5/5 | Complete   | 2026-06-10 |
 | 31. Windowed Time-Series Audio Analysis | v4.0 | 4/6 | In Progress|  |
+| 32. Pipeline Reboot Resilience & Re-enqueue | v4.0 | —/— | Planned |  |
+| 33. SAQ Monitoring UI (mounted in phaze-api) | v4.0 | —/— | Planned |  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -140,3 +142,25 @@ Plans:
 - [ ] 31-04-PLAN.md — Rewrite `analyze_file` to per-window decode + aggregate reductions + window-config AgentSettings [Wave 2]
 - [ ] 31-05-PLAN.md — `process_file` windows payload build (import-boundary preserved) + job timeout/retries tuning [Wave 3]
 - [x] 31-06-PLAN.md — Review-UI BPM sparkline + HTMX-expandable multi-lane SVG/CSS timeline fragment [Wave 2]
+
+### Phase 32: Pipeline Reboot Resilience & Re-enqueue
+
+**Goal:** Make the analysis pipeline self-healing across full host reboots and container restarts for a large corpus (11,428 files, long per-file jobs). Postgres `FileState` is the durable source of truth; Redis stays a disposable/ephemeral broker (no AOF). On agent-worker startup and/or via a periodic cron, re-enqueue `FileState.DISCOVERED` files that have no active job, so a reboot resumes the remaining work automatically instead of requiring a manual "Run analysis" re-trigger. Resilience is idempotent and per-file (NOT intra-file) — re-running an interrupted file is safe because `put_analysis` replaces a file's window rows (Phase 31, plan 31-03). Note: the bounded-generous `worker_job_timeout` (~4h, not 0) + `retries=1` that lets SAQ reclaim a dead/restarted worker's in-flight job ships in Phase 31 plan 31-05 — this phase is the reboot/queue-loss recovery layer on top of that.
+**Decisions:** Reboot recovery = startup/cron re-enqueue from Postgres (chosen over Redis AOF persistence), 2026-06-10.
+**Depends on:** Phase 31
+**Rollout:** Follows v4.0.10; ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
+**Plans:** Not yet planned (run `/gsd:plan-phase 32`).
+
+### Phase 33: SAQ Monitoring UI (mounted in phaze-api)
+
+**Goal:** Expose SAQ's built-in monitoring web UI by mounting it into the existing `phaze-api` FastAPI ASGI app at the `/saq` subpath — NOT the standalone `saq --web` server, NOT a new bound port, NO app-layer auth. `phaze-api` is deployed behind a reverse proxy that already terminates TLS and enforces internal-realm auth, so the dashboard is intentionally unauthenticated at the app layer.
+**Approach / tasks:**
+1. Anchor: app factory `create_app()` in `src/phaze/main.py:115` (`app = FastAPI(...)`, entrypoint `phaze.entrypoint` → uvicorn :8000). The lifespan (`main.py:49`) already creates the SAQ queue + task_router + redis on startup and holds them in `app.state` — **reuse those same `saq.Queue` instance(s)** (same Redis connection from `REDIS_URL`/`REDIS_URL_FILE`); do NOT open a second connection pool.
+2. Identify every queue worth monitoring: the named **controller** queue (`phaze.tasks.controller.settings`) plus the per-agent / distributed-agent queues (`AgentTaskRouter`). Mount the dashboard over all of them.
+3. Mount via `from saq.web.starlette import saq_web` → `app.mount("/saq", saq_web("/saq", queues=[control_queue, ...]))`. **Confirm the import path for the installed SAQ version** (`saq[redis]>=0.26.4`) — `saq.web.starlette` vs `saq.web` — before committing.
+4. SAQ is already a direct dependency (workers use it); no new dependency. (If the web extra is needed at runtime, add `saq[web]` — verify against the installed version.)
+5. Verify the mount does NOT break TLS startup, the `/health` healthcheck, or any existing router; and that `/saq` loads the dashboard listing the queue(s).
+6. PR description must note the UI is intentionally unauthenticated at the app layer because it is only reachable behind the reverse proxy's internal-realm auth.
+**Constraints:** No standalone web server, no new bound port, no auth middleware — the only change is mounting `saq_web` into the existing FastAPI app.
+**Depends on:** Phase 31 (controller queue + lifespan queue wiring already in place from Phase 30/31)
+**Plans:** Not yet planned (run `/gsd:plan-phase 33`).
