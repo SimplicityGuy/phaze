@@ -86,3 +86,10 @@ None for Rules 1–4. Two in-scope design choices documented above (sparkline em
 ## Known Stubs
 
 None. The timeline reads live `analysis_window` rows; sparkline/timeline render real data when windows exist and degrade to explicit empty states otherwise.
+
+## Self-Check: PASSED
+
+- `analysis_timeline.html` — FOUND
+- `31-06-SUMMARY.md` — FOUND
+- commits `6f132ac`, `5db2495`, `8a72d69` — FOUND
+- STATE.md / ROADMAP.md — untouched (worktree mode, orchestrator owns those writes)
