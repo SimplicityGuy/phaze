@@ -36,7 +36,13 @@
    load these would render as stray visible text AND collide with the same ids
    already present in stage_cards.html (duplicate-id DOM). The dashboard include
    omits oob_counts so this block is skipped at load; /pipeline/stats sets it True. #}
+{# Each OOB paragraph carries the SAME x-init store write as its in-place twin in
+   stage_cards.html. When htmx swaps these in on the 5s poll, Alpine initializes the
+   freshly-inserted node and pushes the new count into $store.pipeline — the single
+   source of truth that drives both this text and the button :disabled bindings. The
+   button subtree (#analyze-response / #proposals-response) is never the swap target,
+   so the live count un-disables the buttons without clobbering their loading state. #}
 {% if oob_counts %}
-<p id="analyze-files-ready" hx-swap-oob="true" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
-<p id="proposals-files-ready" hx-swap-oob="true" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
+<p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
+<p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
 {% endif %}
