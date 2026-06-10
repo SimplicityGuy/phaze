@@ -55,11 +55,26 @@ class AgentTaskRouter:
             task_name="extract_file_metadata",
             payload=...,
         )
+
+    Phase 30: :meth:`queue_for` exposes the cached per-agent Queue publicly so the
+    shared ``phaze.services.enqueue_router.resolve_queue_for_task`` can route to the
+    same hook-applied Queue instance without touching the private ``_queue_for``.
     """
 
     def __init__(self, redis_url: str) -> None:
         self._redis_url = redis_url
         self._queues: dict[str, Queue] = {}
+
+    def queue_for(self, agent_id: str) -> Queue:
+        """Public accessor for the cached per-agent Queue (Phase 30).
+
+        Returns the same ``phaze-agent-<agent_id>`` Queue as :meth:`_queue_for`
+        (with the ``apply_project_job_defaults`` before_enqueue hook already
+        applied), so the shared ``enqueue_router.resolve_queue_for_task`` and the
+        tracklists scan-status poll can fetch it without reaching into the private
+        method. Construction/caching semantics are unchanged.
+        """
+        return self._queue_for(agent_id)
 
     def _queue_for(self, agent_id: str) -> Queue:
         """Return the cached Queue for ``agent_id``, constructing on first access.
