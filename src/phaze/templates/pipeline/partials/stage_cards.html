@@ -6,7 +6,7 @@
         <div>
             <h3 class="font-medium">Analyze Discovered Files</h3>
             <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueue BPM detection and mood/style classification for all discovered files.</p>
-            <p id="analyze-files-ready" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
+            <p id="analyze-files-ready" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
         </div>
         <div id="analyze-response">
             <button
@@ -15,7 +15,7 @@
                 hx-swap="innerHTML"
                 hx-indicator="#analyze-spinner"
                 @click="loading = true"
-                :disabled="loading || {{ stats.discovered }} === 0"
+                :disabled="loading || $store.pipeline.discovered === 0"
                 class="px-4 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
                 Run Analysis
             </button>
@@ -28,7 +28,7 @@
         <div>
             <h3 class="font-medium">Generate Proposals</h3>
             <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Send analyzed files to LLM for filename proposals (batches of {{ settings_batch_size|default(10) }}).</p>
-            <p id="proposals-files-ready" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
+            <p id="proposals-files-ready" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
         </div>
         <div id="proposals-response">
             <button
@@ -37,7 +37,7 @@
                 hx-swap="innerHTML"
                 hx-indicator="#proposals-spinner"
                 @click="loading = true"
-                :disabled="loading || {{ stats.analyzed }} === 0"
+                :disabled="loading || $store.pipeline.analyzed === 0"
                 class="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
                 Generate Proposals
             </button>

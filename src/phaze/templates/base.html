@@ -80,6 +80,15 @@
                     _applyTheme(mode);
                 }
             });
+            // Pipeline dashboard single-source-of-truth for the live "files ready"
+            // counts. Both the count text and the Run Analysis / Generate Proposals
+            // button :disabled bindings read this store; the 5s /pipeline/stats poll
+            // pushes fresh values via x-init on its OOB count paragraphs so the
+            // buttons un-disable the instant a scan surfaces files WITHOUT the poll
+            // ever re-rendering (and clobbering) the interactive button subtree.
+            // Seeded from the server-rendered count at page load (see stage_cards.html)
+            // so the initial disabled state is correct before any poll has run.
+            Alpine.store('pipeline', { discovered: 0, analyzed: 0 });
         });
     </script>
 

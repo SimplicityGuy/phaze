@@ -1107,6 +1107,121 @@ async def test_dashboard_full_page_omits_oob_counts(
 
 
 # ---------------------------------------------------------------------------
+# Stage-card button :disabled tracks the live count via $store.pipeline
+# ---------------------------------------------------------------------------
+
+
+def _make_discovered_file() -> FileRecord:
+    """Build a standalone FileRecord in the DISCOVERED state (counts toward stats.discovered)."""
+    path = f"/data/music/{uuid.uuid4().hex}.mp3"
+    return FileRecord(
+        id=uuid.uuid4(),
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex[:32],
+        original_path=path,
+        original_filename=path.rsplit("/", 1)[-1],
+        current_path=path,
+        file_type="mp3",
+        file_size=2048,
+        state=FileState.DISCOVERED,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_renders_one_button_per_action(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """The dashboard renders exactly one Run Analysis and one Generate Proposals button.
+
+    Regression guard for the disabled-state fix: the OOB count poll must not
+    duplicate (or drop) the interactive button subtree.
+    """
+    ac, _ = smoke
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    # Exactly one hx-post button per action (robust to the heading also reading
+    # "Generate Proposals"): count the unique enqueue endpoints.
+    assert response.text.count('hx-post="/pipeline/analyze"') == 1
+    assert response.text.count('hx-post="/pipeline/proposals"') == 1
+    assert "Run Analysis" in response.text
+    assert "Generate Proposals" in response.text
+
+
+@pytest.mark.asyncio
+async def test_button_disabled_binds_to_store_not_frozen_literal(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """Each button's :disabled reads $store.pipeline.* — the live count — not a baked-in int.
+
+    The bug was a server-rendered Alpine binding ``:disabled="loading || {{ count }} === 0"``
+    that froze the count at page-render time, so the button stayed disabled after a poll
+    bumped the count. The fix routes the disabled state through the reactive Alpine store.
+    """
+    # Seed DISCOVERED files so the page-render count is a concrete non-zero value; the
+    # binding must still reference the store rather than that literal.
+    session.add_all([_make_discovered_file() for _ in range(3)])
+    await session.commit()
+
+    ac, _ = smoke
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    # Disabled state is driven by the reactive store, the single source of truth.
+    assert ':disabled="loading || $store.pipeline.discovered === 0"' in response.text
+    assert ':disabled="loading || $store.pipeline.analyzed === 0"' in response.text
+    # And it must NOT be a frozen server literal like ``|| 3 === 0``.
+    assert ':disabled="loading || 3 === 0"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_seeds_pipeline_store_from_server_count(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """Page load seeds $store.pipeline from the server count so initial disabled state is correct.
+
+    The in-place stage-card count paragraphs carry an x-init that writes the
+    server-rendered count into the store, making the buttons correctly enabled/disabled
+    before any 5s poll has run.
+    """
+    session.add_all([_make_discovered_file() for _ in range(2)])
+    await session.commit()
+
+    ac, _ = smoke
+    response = await ac.get("/pipeline/")
+    assert response.status_code == 200
+    # discovered == 2 at render: the store is seeded with that exact value.
+    assert 'x-init="$store.pipeline.discovered = 2"' in response.text
+    # analyzed == 0: store seeded with the server value (no analyzed files seeded).
+    assert 'x-init="$store.pipeline.analyzed = 0"' in response.text
+    # The global store is registered so the bindings resolve before the first poll.
+    assert "Alpine.store('pipeline', { discovered: 0, analyzed: 0 })" in response.text
+
+
+@pytest.mark.asyncio
+async def test_stats_poll_oob_counts_push_into_pipeline_store(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """The /pipeline/stats OOB count paragraphs update the SAME store the buttons read.
+
+    On the 5s poll, Alpine inits the freshly-swapped OOB paragraphs and writes the new
+    counts into $store.pipeline, so the buttons un-disable live without the poll touching
+    the button subtree (#analyze-response / #proposals-response).
+    """
+    session.add_all([_make_discovered_file() for _ in range(4)])
+    await session.commit()
+
+    ac, _ = smoke
+    response = await ac.get("/pipeline/stats")
+    assert response.status_code == 200
+    assert 'hx-swap-oob="true" x-init="$store.pipeline.discovered = 4"' in response.text
+    assert 'hx-swap-oob="true" x-init="$store.pipeline.analyzed = 0"' in response.text
+    # The poll response must not carry the interactive button subtree (no clobber).
+    assert "Run Analysis" not in response.text
+    assert "Generate Proposals" not in response.text
+
+
+# ---------------------------------------------------------------------------
 # PR5: DELETE /pipeline/scans/{batch_id} -- delete + cascade + 409 guards
 # ---------------------------------------------------------------------------
 
