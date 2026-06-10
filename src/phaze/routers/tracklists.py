@@ -18,6 +18,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
+from phaze.services.enqueue_router import resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tracklist_matcher import compute_match_confidence
 from phaze.services.tracklist_scraper import TracklistScraper
@@ -350,8 +351,8 @@ async def rescrape_tracklist(
     result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
     tracklist = result.scalar_one_or_none()
     if tracklist:
-        queue = request.app.state.queue
-        await queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
+        routed = await resolve_queue_for_task("scrape_and_store_tracklist", request.app.state, session)
+        await routed.queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
 
     has_candidates = await _has_candidates(session, tracklist) if tracklist else False
 
@@ -421,10 +422,11 @@ async def search_better_match(
 async def manual_search(
     request: Request,
     file_id: uuid.UUID = Query(...),
+    session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Manual search for an unmatched file."""
-    queue = request.app.state.queue
-    await queue.enqueue("search_tracklist", file_id=str(file_id))
+    routed = await resolve_queue_for_task("search_tracklist", request.app.state, session)
+    await routed.queue.enqueue("search_tracklist", file_id=str(file_id))
 
     return templates.TemplateResponse(
         request=request,
@@ -623,8 +625,8 @@ async def match_discogs(
     if not tracklist:
         return HTMLResponse(content="Tracklist not found", status_code=404)
 
-    queue = request.app.state.queue
-    await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tracklist_id))
+    routed = await resolve_queue_for_task("match_tracklist_to_discogs", request.app.state, session)
+    await routed.queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tracklist_id))
 
     return templates.TemplateResponse(
         request=request,
