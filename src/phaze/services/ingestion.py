@@ -133,6 +133,14 @@ async def run_scan(
     Creates a ScanBatch record, runs directory scanning via asyncio.to_thread,
     bulk upserts discovered files, and updates batch status.
 
+    ``queue`` contract: when provided it MUST be a *consumed* per-agent
+    ``phaze-agent-<id>`` queue resolved by the caller via the enqueue router
+    (``resolve_queue_for_task("extract_file_metadata", ...)``) — never the removed
+    consumer-less unnamed default queue that stranded the v4.0.6 incident's jobs.
+    The auto-enqueue loop below fires ``extract_file_metadata`` per discovered
+    MUSIC/VIDEO record onto it. ``queue is None`` is honored (callers/tests that
+    only want discovery + persistence skip the enqueue step entirely).
+
     Terminal completion is written in exactly two places in the codebase: here
     (the legacy application-server path) and the agent PATCH in
     ``routers/agent_scan_batches.py``. BOTH stamp ``completed_at`` on the

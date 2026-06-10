@@ -14,6 +14,7 @@ from phaze.config import settings
 from phaze.database import async_session, get_session
 from phaze.models.scan_batch import ScanBatch
 from phaze.schemas.scan import ScanRequest, ScanResponse, ScanStatusResponse
+from phaze.services.enqueue_router import NoActiveAgentError, resolve_queue_for_task
 from phaze.services.ingestion import run_scan
 
 
@@ -28,12 +29,22 @@ _background_tasks: set[asyncio.Task[None]] = set()
 
 
 @router.post("/scan")
-async def trigger_scan(request: ScanRequest, http_request: Request) -> ScanResponse:
+async def trigger_scan(
+    request: ScanRequest,
+    http_request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> ScanResponse:
     """Trigger a file discovery scan.
 
     Accepts an optional path override; defaults to the configured SCAN_PATH.
     Validates the path is a real directory and contains no path traversal.
     The scan runs in the background; this endpoint returns immediately.
+
+    The per-file ``extract_file_metadata`` jobs that discovery auto-enqueues are
+    routed to an active agent's consumed ``phaze-agent-<id>`` queue via the shared
+    enqueue router (never the removed consumer-less default queue — the v4.0.6
+    incident). With no active agent there is nothing to consume the extraction
+    jobs, so we fail loud with a 503 rather than silently stranding them.
     """
     scan_path = request.path or settings.scan_path
 
@@ -45,9 +56,19 @@ async def trigger_scan(request: ScanRequest, http_request: Request) -> ScanRespo
     if not Path(scan_path).is_dir():
         raise HTTPException(status_code=400, detail=f"Scan path is not a valid directory: {scan_path}")
 
+    # Resolve the per-agent queue that will consume the auto-enqueued metadata
+    # extraction jobs. A 503 (not a 200) is correct when no agent is available:
+    # discovery would otherwise persist files whose extraction step has no consumer.
+    try:
+        routed = await resolve_queue_for_task("extract_file_metadata", http_request.app.state, session)
+    except NoActiveAgentError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="No active agent available to process discovered files — start an agent worker and retry",
+        ) from exc
+
     batch_id = uuid.uuid4()
-    queue = http_request.app.state.queue
-    task = asyncio.create_task(run_scan(scan_path, batch_id, async_session, queue=queue))
+    task = asyncio.create_task(run_scan(scan_path, batch_id, async_session, queue=routed.queue))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
