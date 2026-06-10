@@ -252,7 +252,7 @@ async def trigger_scan(
 @router.get("/scan/status", response_class=HTMLResponse)
 async def scan_status(
     request: Request,
-    job_ids: str = Query(...),
+    job_ids: str = Query(..., min_length=1),
     agent_id: str = Query(...),
 ) -> HTMLResponse:
     """Poll scan progress by checking SAQ job results on the per-agent queue.
