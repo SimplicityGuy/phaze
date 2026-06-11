@@ -3,11 +3,11 @@
 
     <!--
       Initial-load store seed for the live queue-busy gates. These hidden, in-place
-      paragraphs (NO hx-swap-oob — this is the full-page render path) write the
-      server-rendered SAQ queue depths into $store.pipeline at page load so the four
-      button :disabled bindings are correct before the first 5s poll tick. The Plan 02
-      stats_bar.html OOB nodes reuse the SAME ids (agent-busy-seed / controller-busy-seed)
-      to re-seed these store keys on every poll response.
+      paragraphs (no out-of-band swap attribute — this is the full-page render path)
+      write the server-rendered SAQ queue depths into $store.pipeline at page load so
+      the four button :disabled bindings are correct before the first 5s poll tick. The
+      Plan 02 stats_bar.html out-of-band nodes reuse the SAME ids (agent-busy-seed /
+      controller-busy-seed) to re-seed these store keys on every poll response.
     -->
     <p id="agent-busy-seed" x-init="$store.pipeline.agentBusy = {{ agent_busy }}" class="hidden"></p>
     <p id="controller-busy-seed" x-init="$store.pipeline.controllerBusy = {{ controller_busy }}" class="hidden"></p>
