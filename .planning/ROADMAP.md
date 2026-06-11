@@ -173,7 +173,7 @@ Plans:
 **Depends on:** Phase 30 (enqueue_router + controller/agent queue wiring on `app.state`)
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
 **Plans:** 5 plans in 4 waves
-- [ ] 34-00-PLAN.md — Wave 0: add seedable async `count` to `FakeQueue`/`FakeTaskRouter` test doubles
+- [x] 34-00-PLAN.md — Wave 0: add seedable async `count` to `FakeQueue`/`FakeTaskRouter` test doubles
 - [ ] 34-01-PLAN.md — Wave 1: `get_queue_activity(app_state, session)` service with split failure isolation
 - [ ] 34-02-PLAN.md — Wave 2: wire counts + guarded percent into dashboard()/stats contexts + OOB store-write nodes
 - [ ] 34-03-PLAN.md — Wave 3: persistent `processing_card.html` (progress bar + queued/active, OOB-swapped)

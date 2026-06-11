@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 31 shipped — PR #115"
-last_updated: "2026-06-11T02:50:58.370Z"
-last_activity: 2026-06-10
+status: executing
+last_updated: "2026-06-11T05:05:00.000Z"
+last_activity: 2026-06-11 -- Phase 34 plan 34-00 complete (queue-fake count harness)
 progress:
   total_phases: 6
   completed_phases: 6
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 31 — windowed-time-series-audio-analysis
+**Current focus:** Phase 34 — pipeline-queue-depth-status-double-enqueue-guard
 
 ## Current Position
 
-Phase: 31 (windowed-time-series-audio-analysis) — EXECUTING
-Plan: 1 of 6
-Status: Phase 31 shipped — PR #115
-Last activity: 2026-06-10
+Phase: 34 (pipeline-queue-depth-status-double-enqueue-guard) — EXECUTING
+Plan: 2 of 5
+Status: Executing Phase 34 (34-00 complete)
+Last activity: 2026-06-11 -- Phase 34 plan 34-00 complete (queue-fake count harness)
 
 Progress: [██████████] 100%
 
