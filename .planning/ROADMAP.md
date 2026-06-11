@@ -191,3 +191,30 @@ Plans:
 - [x] 34-02-PLAN.md — Wave 2: wire counts + guarded percent into dashboard()/stats contexts + OOB store-write nodes
 - [x] 34-03-PLAN.md — Wave 3: persistent `processing_card.html` (progress bar + queued/active, OOB-swapped)
 - [x] 34-04-PLAN.md — Wave 3: four trigger buttons + coarse agentBusy/controllerBusy disable + store defaults
+
+### Phase 35: Pipeline Determinism, Idempotency & Per-Job-Type Observability
+
+**Goal:** Make every pipeline job schedule-safe (no duplicate queued items), idempotent (no duplicate rows), give the operator manual control over metadata extraction, and surface per-job-type progress on the dashboard. Generalizes the Phase 32 deterministic-key fix (which covered only `process_file`) to the whole pipeline. Surfaced by the 2026-06-11 queue-doubling incident: random-uuid `process_file` jobs from the pre-Phase-32 "Run Analysis" path could not dedup against the new deterministic-key re-enqueue, doubling the live queue to ~22,830 jobs over 11,428 files.
+
+**Scope (5 work items):**
+1. **Deterministic SAQ keys for ALL job types**, enforced CENTRALLY in the enqueue layer (`enqueue_router` / `agent_task_router` / a SAQ `before_enqueue` hook) so every task is keyed by construction as `<task>:<natural_id>` and no call site can drift. Today only `process_file` (`analysis_enqueue.py:64`) is keyed; `extract_file_metadata` (3 sites), `fingerprint_file`, `generate_proposals`, `scan_live_set`, `search_tracklist`, `scrape_and_store_tracklist`, `match_tracklist_to_discogs` all use random uuid keys.
+2. **Audit + ensure ALL task DB writes upsert** (`ON CONFLICT DO UPDATE`) so re-runs never duplicate rows. Already idempotent (D-26): `agent_analysis`, `agent_metadata`, `agent_fingerprint`, `agent_files`, `agent_tracklists`. Verify/fill gaps: `generate_proposals` (proposals), `execute_approved_batch` (execution_log), `tag_write_log`.
+3. **Remove auto metadata-extraction from discovery/scan** (`agent_files.py:130-161` D-20/21/22 + `ingestion.py:183-191` D-09 auto-enqueue `extract_file_metadata` per discovered music/video file). Make `extract_file_metadata` MANUAL-only — operator triggers it from the dashboard.
+4. **Add a "Metadata" stage card** to the pipeline dashboard (`stage_cards.html`), counting files with extracted metadata, placed between Discovered and Fingerprinted.
+5. **Per-job-type progress bars** on the dashboard (replace the single aggregate `processing_card.html`), backed by MAINTAINED per-function counters (SAQ hooks / Redis counter set), not live scans. **UI direction: render as a DAG view** — chosen design is sketch 001 Variant B ("Graph canvas": node-edge DAG on an SVG canvas, each node = a stage with live count + per-stage progress bar + trigger button gated by upstream deps + agent-busy). Items 3-4 (Metadata stage) and the per-job-type counters (item 5) feed the DAG nodes. Build note: draw edges from node anchor points (not hand-placed coordinates as in the throwaway sketch). Sketch: `.planning/sketches/001-pipeline-dag-view/`.
+6. **Stage ordering & parallelization model** — formalize the stage DAG and which stages run concurrently, driven by the data-dependency research in `35-STAGE-DEPENDENCIES.md`. Findings: Discovery → {`extract_file_metadata` ∥ `fingerprint_file` ∥ `process_file` ∥ tracklist-branch} all parallel (each reads only the file on disk); `generate_proposals` joins on analysis **+** metadata only (NOT fingerprint/tracklist); tracklist sub-chain (`search`/`scan_live_set` → `scrape` → `discogs`) is sequential; `execute_approved_batch` is terminal (gated by proposals + approval). Use this to drive the orchestration fan-out and the per-job-type progress UI tiers.
+
+**Locked decisions (operator, 2026-06-11):** (A) centralized enqueue-layer key enforcement (not per-call-site); (B) maintained per-function counters for progress data (not live scan, not SAQ-stats-only). Reverses the Phase 34 D-09/D-20/21/22 auto-extract behavior for metadata.
+**Research artifact:** `35-STAGE-DEPENDENCIES.md` (stage DAG + evidence, written 2026-06-11).
+**Requirements**: Schedulability without duplicate queue items; idempotent re-runs; operator-controlled metadata extraction; per-job-type pipeline observability.
+**Depends on:** Phase 30 (enqueue_router seam), Phase 32 (deterministic-key pattern + `analysis_enqueue.py`), Phase 34 (dashboard processing card + stats poll).
+**Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
+**Status:** Planned (2026-06-11) — 5 plans across 3 waves.
+**Plans:** 5 plans
+
+Plans:
+- [ ] 35-01-PLAN.md — Centralized deterministic SAQ keys (before_enqueue hook + _KEY_BUILDERS) + maintained per-function counters (enqueued/after_process) + remove auto metadata-extraction (D-06) + drift-guard test [Wave 1]
+- [ ] 35-02-PLAN.md — Proposals idempotency: migration 019 (dedupe → partial unique index uq_proposals_file_id_pending) + store_proposals on_conflict_do_update (D-04) + execution_log/tag_write_log audit [Wave 1]
+- [ ] 35-03-PLAN.md — get_stage_progress reconcile query: per-stage output-table COUNT(DISTINCT), the D-03 DB-truth source for the parallel DAG nodes (RESEARCH Q5) [Wave 1]
+- [ ] 35-04-PLAN.md — Dashboard data plumbing: extend $store.pipeline + dashboard()/pipeline_stats_partial() contexts + stats_bar.html OOB per-node seeds [Wave 2]
+- [ ] 35-05-PLAN.md — DAG canvas UI (sketch 001 Variant B): 9-node SVG graph with honest topology + gated triggers + <ol> fallback; removes stage_cards.html + processing_card.html (D-01) [Wave 3]
