@@ -56,4 +56,11 @@
    Counts are ints from count()/DB, safe to interpolate into the numeric assignment. #}
 <p id="agent-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.agentBusy = {{ agent_busy }}" class="hidden"></p>
 <p id="controller-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.controllerBusy = {{ controller_busy }}" class="hidden"></p>
+{# Phase 34 Plan 03: OOB-swap the persistent Processing card on the same 5s poll tick.
+   processing_card.html reads oob_counts (truthy here) and emits hx-swap-oob="true" on its
+   outer #processing-card element so htmx replaces the initial dashboard-rendered card in
+   place — keeping the in-flight run visible across refreshes. Kept inside this oob_counts
+   gate so the initial full-page dashboard include (which omits oob_counts) renders the card
+   ONCE without a swap attribute (no duplicate-id DOM). #}
+{% include "pipeline/partials/processing_card.html" %}
 {% endif %}
