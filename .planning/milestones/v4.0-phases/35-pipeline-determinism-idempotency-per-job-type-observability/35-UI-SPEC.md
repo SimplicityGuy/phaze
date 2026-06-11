@@ -45,7 +45,11 @@ Declared values (all multiples of 4):
 | xl | 24px | Page section vertical rhythm (`space-y-6` shell) |
 | 2xl | 32px | Major layout break above/below the canvas |
 
-Exceptions: **The sketch's `my-1.5` (6px) progress-bar margin is corrected to `my-2` (8px)** to keep every value on the 4px grid. Node corner radius = `rounded-xl` (12px). The 3px stage top-stripe is a hairline accent, not a spacing token.
+**Justified exceptions to the standard {4, 8, 16, 24, 32, 48, 64} set:**
+
+- **12px (`md` / Tailwind `spacing-3`) is retained as a justified exception:** compact node chips at ~192px max-width make 16px interior padding too spacious and 8px too cramped; 12px is a multiple of 4 and a first-class Tailwind spacing step, so grid alignment is preserved. (Tokens are not renumbered; `p-3`/`gap-3` stay as-is.)
+- **The sketch's `my-1.5` (6px) progress-bar margin is corrected to `my-2` (8px)** to keep that value on the standard set.
+- The 3px stage top-stripe is a hairline accent, not a spacing token. Node corner radius = `rounded-xl` (12px).
 
 ---
 
@@ -106,6 +110,8 @@ Animated edge dash-flow is **deferred** (CONTEXT). Active edges may use a static
 
 ## DAG Node ("Stage Chip") Anatomy
 
+**Primary focal point:** the active stage node (Analyze in the canonical example), distinguished by its stage-color ring + glow + pulse dot, which draws the eye to the in-progress stage first; the large 18px/600 count is the secondary anchor within that node. Everything else (idle/complete chips, edges) sits at lower visual weight so the operator's gaze lands on "what is running now" before scanning the rest of the graph.
+
 A node is a `div.node` (rounded-xl, 12px padding, 1px secondary border, 3px stage top-stripe). Min width **130px**, max width **192px**; tier-1 nodes are **176px** (`w-44`). Two interior layouts are permitted:
 
 **Full layout** (Discovery, Analyze, Proposals, Execute — vertical stack):
@@ -149,17 +155,17 @@ Node/edge topology is authoritative from `35-STAGE-DEPENDENCIES.md`. **Edges are
 
 | # | Node | Stage color | Layout | Has trigger? | Trigger action |
 |---|------|-------------|--------|--------------|----------------|
-| 1 | Discovery | cyan | full | yes | `Rescan` → existing scan trigger (POST scan) |
+| 1 | Discovery | cyan | full | yes | `Rescan Files` → existing scan trigger (POST scan) |
 | 2 | Extract Metadata | sky | compact | yes | `Extract Metadata` → `POST /pipeline/extract-metadata` |
 | 3 | Analyze | amber | full | yes | `Run Analysis` → `POST /pipeline/analyze` |
-| 4 | Fingerprint | teal | compact | yes | `Fingerprint` → `POST /pipeline/fingerprint` |
-| 5 | Scan / Search (tracklist head) | rose | compact | yes* | `Run` → existing tracklist scan/search endpoint |
+| 4 | Fingerprint | teal | compact | yes | `Fingerprint Files` → `POST /pipeline/fingerprint` |
+| 5 | Scan / Search (tracklist head) | rose | compact | yes* | `Scan Tracklists` → existing tracklist scan/search endpoint |
 | 6 | Scrape Tracklist | rose | compact | **no** (display-only) | — (per-tracklist trigger lives on `/tracklists`) |
 | 7 | Match Discogs | rose | compact | **no** (display-only) | — (per-tracklist trigger lives on `/tracklists`) |
 | 8 | Proposals | purple | full | yes | `Generate Proposals` → `POST /pipeline/proposals` |
 | 9 | Approve → Execute | green | full | yes (navigational) | `Review queue` → `<a href="/proposals/">` |
 
-\* Scan/Search shows a trigger ONLY if a bulk pipeline-level endpoint already exists. If only per-file endpoints exist, render it display-only like nodes 6–7 (deferred-ideas: "only surface triggers for stages that already have endpoints; net-new endpoints are out of scope"). Planner confirms which.
+\* `Scan Tracklists` renders **conditionally**: it shows the interactive trigger ONLY if a bulk pipeline-level endpoint already exists. If only per-file endpoints exist, the node renders **display-only** (no button) exactly like nodes 6–7, and the `Scan Tracklists` label does not appear (deferred-ideas: "only surface triggers for stages that already have endpoints; net-new endpoints are out of scope"). Planner confirms which path applies; the label `Scan Tracklists` is only emitted in the interactive case.
 
 ### Edges (from → to), drawn from anchors
 
@@ -205,13 +211,13 @@ Canonical examples (the live-state set baked into the sketch — these are accep
 
 | Node | State | Rendered |
 |------|-------|----------|
-| Discovery | complete | `11,428` · DONE · Rescan enabled |
+| Discovery | complete | `11,428` · DONE · Rescan Files enabled |
 | Extract Metadata | complete | `11,428` · DONE · ⟳ re-extract enabled |
 | Analyze | active | `27 / 11,428` · **8 ACTIVE** · ring+glow · bar 0.2% · Running… |
 | Fingerprint | disabled (agent busy) | `0 / 11,428` · WAITING · button `Agent busy` |
 | Proposals | disabled (waiting on Analyze) | `0 / N` · WAITING · button `Waiting on Analyze` |
 | Approve → Execute | disabled (gated) | `0` · GATED · button `Needs proposals` |
-| Scan / Search | idle | `{done} / —` (no fabricated total) · READY · Run |
+| Scan / Search | idle | `{done} / —` (no fabricated total) · READY · Scan Tracklists |
 | Scrape · Match | disabled (no tracklist) | `0 / N` · WAITING · sub-label `seq · needs tracklist` (no button) |
 
 ---
@@ -224,7 +230,7 @@ Triggers disable on (a) an unmet upstream dependency, or (b) agent/controller bu
 
 | Node | `:disabled` predicate (Alpine) | Reason resolution (first match wins) |
 |------|-------------------------------|--------------------------------------|
-| Discovery (Rescan) | `loading` | — (root, always actionable) |
+| Discovery (Rescan Files) | `loading` | — (root, always actionable) |
 | Extract Metadata | `loading \|\| store.discovered === 0 \|\| store.agentBusy > 0` | `No files discovered` → `Agent busy` |
 | Analyze | `loading \|\| store.discovered === 0 \|\| store.agentBusy > 0` | `No files discovered` → `Agent busy` |
 | Fingerprint | `loading \|\| store.discovered === 0 \|\| store.agentBusy > 0` | `No files discovered` → `Agent busy` |
@@ -290,7 +296,7 @@ Mirror the Phase-34 split exactly (the load-bearing lesson from `stats_bar.html`
 
 | Condition | Behavior |
 |-----------|----------|
-| Fresh DB (`discovered === 0`) | Full topology still renders (it is structural). All nodes show `0`, empty bars, all triggers disabled with `No files discovered` — **except Discovery's Rescan, which stays enabled.** Surface an empty-state hint: heading **"No files discovered"**, body **"Trigger a scan to populate the pipeline."** |
+| Fresh DB (`discovered === 0`) | Full topology still renders (it is structural). All nodes show `0`, empty bars, all triggers disabled with `No files discovered` — **except Discovery's `Rescan Files`, which stays enabled.** Surface an empty-state hint: heading **"No files discovered"**, body **"Trigger a scan to populate the pipeline."** |
 | Pre-first-poll (page load) | Counts/bars/`:disabled` are correct immediately because the store is seeded from the server full-page context — no flash, no jitter. |
 | Tracklist branch with no tracklists | Scan/Search shows `0 / —`; Scrape & Match show `0 / {total}` with `seq · needs tracklist`. |
 | Enqueue failure | Reuse the existing per-button HTMX response slot; show inline **"Couldn't enqueue. Retry."** in the button's response div (matches existing `*-response` targets). |
@@ -335,7 +341,7 @@ Every state is encoded by **text + icon + color**, never color alone: the state 
 | Element | Copy |
 |---------|------|
 | Primary CTA | `Run Analysis` (Analyze node) |
-| Secondary CTAs | `Extract Metadata` · `Fingerprint` · `Generate Proposals` · `Rescan` (Discovery) · `Run` (Scan/Search) · `Review queue` (Execute → `/proposals/`) |
+| Secondary CTAs | `Extract Metadata` · `Fingerprint Files` · `Generate Proposals` · `Rescan Files` (Discovery) · `Scan Tracklists` (Scan/Search — rendered conditionally; see Node inventory note) · `Review queue` (Execute → `/proposals/`) |
 | Empty state heading | `No files discovered` |
 | Empty state body | `Trigger a scan to populate the pipeline.` |
 | Error state | `Couldn't enqueue. Retry.` (inline, in the button's existing `*-response` slot) |
