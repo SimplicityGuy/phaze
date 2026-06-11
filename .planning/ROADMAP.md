@@ -164,3 +164,12 @@ Plans:
 **Constraints:** No standalone web server, no new bound port, no auth middleware — the only change is mounting `saq_web` into the existing FastAPI app.
 **Depends on:** Phase 31 (controller queue + lifespan queue wiring already in place from Phase 30/31)
 **Plans:** Not yet planned (run `/gsd:plan-phase 33`).
+
+### Phase 34: Pipeline Queue-Depth Status & Double-Enqueue Guard
+
+**Goal:** Surface live SAQ queue depth on the pipeline dashboard so an in-flight analysis run is visible after a page refresh and the trigger buttons cannot double-enqueue. The DB cannot distinguish "nothing queued" from "everything queued" — files stay `DISCOVERED` until a worker finishes them, so after refresh the dashboard looks identical whether or not "Run Analysis" was clicked (the reported bug: 11,428 `process_file` jobs were live on `phaze-agent-nox` with 0 analyzed, yet the button stayed clickable). Fix by reading authoritative queue depth via `Queue.count("queued"/"active")` (cheap Redis `ZCARD`/`LLEN`) on the already-wired `app.state.controller_queue` and the per-agent `app.state.task_router` queues. New service `get_queue_activity(app_state, session)` returns `agent_queued`/`agent_active`/`controller_queued`/`controller_active` summed across all non-revoked agents (scheduled cron jobs excluded by `count`). Surface the counts through the existing 5s `/pipeline/stats` poll. Add a persistent OOB-swapped "Processing" card (`partials/processing_card.html`) above the stats bar showing a progress bar of `analyzed / (analyzed + agent_busy)` — `done` derived from the DB `analyzed` count (survives worker restarts) — plus "N queued · M active"; the card renders empty when idle. **Coarse** button disable via the Alpine `$store.pipeline`: Analyze / Fingerprint / Extract-Metadata disabled when `agent_busy > 0`; Generate Proposals disabled when `controller_busy > 0` (single-worker queue is processed serially, so coarse is honest — accepted trade-off that Fingerprint/Metadata are also blocked during an analysis run).
+**Design spec:** Approved inline (brainstorming session 2026-06-10); coarse disable + DB-derived progress denominator chosen by operator.
+**Requirements**: Operability/observability of the pipeline-actions dashboard; prevents accidental duplicate-enqueue of the full corpus (~11,428 files).
+**Depends on:** Phase 30 (enqueue_router + controller/agent queue wiring on `app.state`)
+**Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
+**Plans:** Not yet planned (run `/gsd:plan-phase 34`).
