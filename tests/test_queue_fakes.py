@@ -24,3 +24,19 @@ async def test_info_returns_full_queueinfo_shape_echoing_name() -> None:
     assert info["name"] == "controller"
     assert info["workers"] == {}
     assert info["jobs"] == []
+
+
+async def test_info_surfaces_constructor_counts() -> None:
+    """Overridable queued/active/scheduled counts flow through to info()."""
+    info = await FakeQueue("phaze-agent-nox", queued=2, active=1, scheduled=4).info()
+    assert info["name"] == "phaze-agent-nox"
+    assert info["queued"] == 2
+    assert info["active"] == 1
+    assert info["scheduled"] == 4
+
+
+async def test_info_with_jobs_true_returns_same_shape() -> None:
+    """The single-queue route's info(jobs=True) call returns the same key set, no raise."""
+    info = await FakeQueue("controller").info(jobs=True)
+    assert set(info.keys()) == _QUEUE_INFO_KEYS
+    assert info["jobs"] == []
