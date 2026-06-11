@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: executing
-last_updated: "2026-06-11T06:00:00.000Z"
-last_activity: 2026-06-11 -- Phase 34 plan 34-04 complete (four pipeline buttons + coarse double-enqueue guard) — ALL Phase 34 plans done
+status: "Phase 34 shipped — PR #117"
+last_updated: "2026-06-11T05:50:23.098Z"
+last_activity: "2026-06-10 -- Phase 34 shipped (PR #117)"
 progress:
   total_phases: 6
   completed_phases: 6
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 34 (pipeline-queue-depth-status-double-enqueue-guard) — ALL PLANS COMPLETE
 Plan: 5 of 5 (done)
-Status: Phase 34 fully executed (34-04 complete — four pipeline-action buttons + coarse agentBusy/controllerBusy double-enqueue guard + store defaults)
-Last activity: 2026-06-11 -- Phase 34 plan 34-04 complete (base.html store defaults + Fingerprint/Extract-Metadata buttons + stage_cards render tests)
+Status: Phase 34 shipped — PR #117
+Last activity: 2026-06-10 -- Phase 34 shipped (PR #117)
 
 Progress: [██████████] 100%
 
