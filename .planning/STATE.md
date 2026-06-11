@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
-last_updated: "2026-06-11T05:30:00.000Z"
-last_activity: 2026-06-11 -- Phase 34 plan 34-03 complete (persistent Processing card, OOB-swapped on the 5s poll)
+last_updated: "2026-06-11T06:00:00.000Z"
+last_activity: 2026-06-11 -- Phase 34 plan 34-04 complete (four pipeline buttons + coarse double-enqueue guard) — ALL Phase 34 plans done
 progress:
   total_phases: 6
   completed_phases: 6
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 ## Current Position
 
-Phase: 34 (pipeline-queue-depth-status-double-enqueue-guard) — EXECUTING
-Plan: 5 of 5
-Status: Executing Phase 34 (34-03 complete — persistent Processing card, OOB-swapped on the 5s poll)
-Last activity: 2026-06-11 -- Phase 34 plan 34-03 complete (processing_card.html + dashboard/stats_bar includes + 6 partial-render tests)
+Phase: 34 (pipeline-queue-depth-status-double-enqueue-guard) — ALL PLANS COMPLETE
+Plan: 5 of 5 (done)
+Status: Phase 34 fully executed (34-04 complete — four pipeline-action buttons + coarse agentBusy/controllerBusy double-enqueue guard + store defaults)
+Last activity: 2026-06-11 -- Phase 34 plan 34-04 complete (base.html store defaults + Fingerprint/Extract-Metadata buttons + stage_cards render tests)
 
 Progress: [██████████] 100%
 
@@ -106,9 +106,10 @@ None.
 | Phase 34 P01 | 12 min | 2 tasks | 2 files |
 | Phase 34 P02 | ~10 min | 3 tasks | 4 files |
 | Phase 34 P03 | ~8 min | 2 tasks | 4 files |
+| Phase 34 P04 | ~18 min | 3 tasks | 4 files |
 
 ## Session Continuity
 
-Last session: 2026-06-11T05:30:00.000Z
-Stopped at: Completed 34-03-PLAN.md
+Last session: 2026-06-11T06:00:00.000Z
+Stopped at: Completed 34-04-PLAN.md (final plan of Phase 34)
 Resume file: None
