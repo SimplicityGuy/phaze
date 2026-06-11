@@ -192,6 +192,60 @@ async def test_process_file_calls_put_analysis(mock_pool: AsyncMock) -> None:
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_forwards_windows(mock_pool: AsyncMock) -> None:
+    """Phase 31 ANL-01: process_file forwards analyze_file's per-window time-series.
+
+    ``analyze_file`` returns ``{**aggregates, "windows": [fine_dict, coarse_dict]}``
+    as plain dicts (Plan 04). process_file must build ``AnalysisWritePayload.windows``
+    from those dicts (NOT ORM objects, preserving the D-25 import boundary) and PUT them.
+    """
+    windows = [
+        {"tier": "fine", "window_index": 0, "start_sec": 0.0, "end_sec": 30.0, "bpm": 128.0, "musical_key": "C minor"},
+        {"tier": "fine", "window_index": 1, "start_sec": 30.0, "end_sec": 60.0, "bpm": 130.0, "musical_key": "G major"},
+        {"tier": "coarse", "window_index": 0, "start_sec": 0.0, "end_sec": 120.0, "mood": "happy", "style": "Electronic/House", "danceability": 0.7},
+    ]
+    analysis = {**MOCK_ANALYSIS, "windows": windows}
+    mock_pool.return_value = analysis
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs())
+
+    body = api.put_analysis.await_args.args[1]
+    assert body.windows is not None
+    assert len(body.windows) == 3
+    # Built from plain dicts and shaped as AnalysisWindowPayload.
+    assert [w.tier for w in body.windows] == ["fine", "fine", "coarse"]
+    assert body.windows[0].window_index == 0
+    assert body.windows[0].bpm == 128.0
+    assert body.windows[0].musical_key == "C minor"
+    assert body.windows[2].tier == "coarse"
+    assert body.windows[2].mood == "happy"
+    assert body.windows[2].style == "Electronic/House"
+    assert body.windows[2].danceability == pytest.approx(0.7)
+    # Aggregate fields still forwarded alongside windows.
+    assert body.bpm == 128.0
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_defaults_windows_empty_when_absent(mock_pool: AsyncMock) -> None:
+    """No ``windows`` key in the analyze_file dict -> windows defaults to [] (aggregates still sent)."""
+    mock_pool.return_value = MOCK_ANALYSIS  # no "windows" key
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs())
+
+    body = api.put_analysis.await_args.args[1]
+    assert body.windows == []
+    # Existing aggregate fields unaffected.
+    assert body.bpm == 128.0
+    assert body.musical_key == "C minor"
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
 async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
     """Non-music file_types short-circuit before pool + HTTP call."""
     api = AsyncMock()
