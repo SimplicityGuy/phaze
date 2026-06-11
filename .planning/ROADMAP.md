@@ -110,7 +110,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 30. Fix control-plane SAQ queue misrouting | v4.0 | 5/5 | Complete   | 2026-06-10 |
 | 31. Windowed Time-Series Audio Analysis | v4.0 | 6/6 | Complete   | 2026-06-11 |
 | 32. Pipeline Reboot Resilience & Re-enqueue | v4.0 | —/— | Planned |  |
-| 33. SAQ Monitoring UI (mounted in phaze-api) | v4.0 | 3/3 | Complete   | 2026-06-11 |
+| 33. SAQ Monitoring UI (mounted in phaze-api) | v4.0 | 4/4 | Complete   | 2026-06-11 |
 | 34. Pipeline Queue-Depth Status & Double-Enqueue Guard | v4.0 | 5/5 | Complete | 2026-06-10 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -164,11 +164,12 @@ Plans:
 6. PR description must note the UI is intentionally unauthenticated at the app layer because it is only reachable behind the reverse proxy's internal-realm auth.
 **Constraints:** No standalone web server, no new bound port, no auth middleware — the only change is mounting `saq_web` into the existing FastAPI app.
 **Depends on:** Phase 31 (controller queue + lifespan queue wiring already in place from Phase 30/31)
-**Plans:** 3/3 plans complete
+**Plans:** 4/4 plans complete
 Plans:
 - [x] 33-00-PLAN.md — Wave 0 harness: add FakeQueue.info() so saq_web renders without Redis
 - [x] 33-01-PLAN.md — Wave 1: build_saq_app(/saq) mount helper + enable_saq_ui flag + unit tests
 - [x] 33-02-PLAN.md — Wave 2: mount /saq in the lifespan (controller + per-agent queues) + integration tests
+- [x] 33-03-PLAN.md — Wave 3: "Queue Monitor" link from the pipeline dashboard to /saq (operator request) + render test
 
 ### Phase 34: Pipeline Queue-Depth Status & Double-Enqueue Guard
 
