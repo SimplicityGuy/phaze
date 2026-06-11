@@ -23,7 +23,7 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services import enqueue_router
 from phaze.services.fingerprint import get_fingerprint_progress
-from phaze.services.pipeline import get_files_by_state, get_pipeline_stats
+from phaze.services.pipeline import get_files_by_state, get_pipeline_stats, get_queue_activity, queue_progress_percent
 
 
 _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker and retry"
@@ -193,6 +193,14 @@ async def dashboard(
     # drift apart (a duplicated copy once crashed this table on a tz-aware row).
     recent_scans_rows = await build_recent_scans(session)
 
+    # Phase 34: live queue depth so an in-flight run is visible on first load (not only
+    # after the first 5s poll tick). get_queue_activity isolates its own failures and
+    # degrades to zeros, so no try/except is added here. queue_progress_percent precomputes
+    # the DB-derived "Processing" bar percent (guarded against divide-by-zero) server-side
+    # for unit-testability; the card (Plan 03) and the button gating (Plan 04) consume these.
+    activity = await get_queue_activity(request.app.state, session)
+    queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
+
     context = {
         "request": request,
         "stats": stats,
@@ -200,6 +208,8 @@ async def dashboard(
         "settings_batch_size": settings.llm_batch_size,
         "agents": agents,
         "recent_scans": recent_scans_rows,
+        **activity,
+        "queue_progress_percent": queue_progress,
     }
     return templates.TemplateResponse(request=request, name="pipeline/dashboard.html", context=context)
 
@@ -211,6 +221,13 @@ async def pipeline_stats_partial(
 ) -> HTMLResponse:
     """Return the stats bar partial for HTMX polling refresh."""
     stats = await get_pipeline_stats(session)
+    # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
+    # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
+    # poll can never 500. queue_progress_percent precomputes the guarded "Processing" bar
+    # percent server-side; the OOB store-write nodes in stats_bar.html push agent_busy /
+    # controller_busy into $store.pipeline on each tick to drive the Plan 04 button gating.
+    activity = await get_queue_activity(request.app.state, session)
+    queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -218,7 +235,14 @@ async def pipeline_stats_partial(
         # this poll response. The dashboard full-page include omits the flag, so
         # the OOB block is skipped at initial load (where htmx would not honor
         # hx-swap-oob and the ids would collide with stage_cards.html).
-        context={"request": request, "stats": stats, "settings_batch_size": settings.llm_batch_size, "oob_counts": True},
+        context={
+            "request": request,
+            "stats": stats,
+            "settings_batch_size": settings.llm_batch_size,
+            "oob_counts": True,
+            **activity,
+            "queue_progress_percent": queue_progress,
+        },
     )
 
 

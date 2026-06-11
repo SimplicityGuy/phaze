@@ -104,6 +104,24 @@ async def get_queue_activity(app_state: Any, session: AsyncSession) -> dict[str,
     }
 
 
+def queue_progress_percent(analyzed: int, agent_busy: int) -> int:
+    """Compute the DB-derived "Processing" progress percent (0-100), divide-by-zero guarded.
+
+    The single source of truth for the operator-chosen progress formula: ``done`` is the
+    existing DB ``analyzed`` count and the denominator is ``analyzed + agent_busy`` (the
+    in-flight agent depth). Chosen over SAQ's aggregated ``complete`` because it survives
+    worker restarts -- the bar won't jump backward. Accepted trade-off: pre-existing
+    analyzed files count toward ``done``.
+
+    Extracted as a module-level pure helper (raw int inputs, no I/O) so the formula is
+    unit-testable in isolation -- proving the numerator is ``analyzed`` and the denominator
+    is ``analyzed + agent_busy`` (a reversed ratio would silently pass an echo-only test).
+    When ``analyzed + agent_busy == 0`` (idle) it returns 0 so the card renders empty and
+    no divide-by-zero occurs.
+    """
+    return round(analyzed / denom * 100) if (denom := analyzed + agent_busy) else 0
+
+
 async def get_files_by_state(session: AsyncSession, state: FileState) -> list[FileRecord]:
     """Get all files in a given pipeline state.
 
