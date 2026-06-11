@@ -164,7 +164,11 @@ Plans:
 6. PR description must note the UI is intentionally unauthenticated at the app layer because it is only reachable behind the reverse proxy's internal-realm auth.
 **Constraints:** No standalone web server, no new bound port, no auth middleware — the only change is mounting `saq_web` into the existing FastAPI app.
 **Depends on:** Phase 31 (controller queue + lifespan queue wiring already in place from Phase 30/31)
-**Plans:** Not yet planned (run `/gsd:plan-phase 33`).
+**Plans:** 3 plans
+Plans:
+- [ ] 33-00-PLAN.md — Wave 0 harness: add FakeQueue.info() so saq_web renders without Redis
+- [ ] 33-01-PLAN.md — Wave 1: build_saq_app(/saq) mount helper + enable_saq_ui flag + unit tests
+- [ ] 33-02-PLAN.md — Wave 2: mount /saq in the lifespan (controller + per-agent queues) + integration tests
 
 ### Phase 34: Pipeline Queue-Depth Status & Double-Enqueue Guard
 
