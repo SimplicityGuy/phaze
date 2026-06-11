@@ -481,6 +481,43 @@ def test_analyze_file_failure_isolation(mock_es: MagicMock, mock_get_labels: Mag
 @patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_coarse_failure_isolation(mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """All coarse windows failing (decode error) is isolated: fine windows + aggregates still return."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    fine_loader = MagicMock()
+    fine_loader.return_value = np.zeros(16000, dtype=np.float32)
+
+    def _easyloader(*, filename: str, sampleRate: int, startTime: float, endTime: float) -> MagicMock:
+        if sampleRate == 16000:  # coarse pass
+            raise RuntimeError("coarse decode failed")
+        return fine_loader
+
+    mock_es.EasyLoader.side_effect = _easyloader
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    # Every coarse window was skipped; the fine tier + its aggregates survive.
+    assert _coarse_dicts(result) == []
+    assert len(_fine_dicts(result)) == 20
+    assert result["bpm"] == 128.0
+    # Empty coarse tier -> None mood/style/danceability and empty features blob.
+    assert result["mood"] is None
+    assert result["style"] is None
+    assert result["danceability"] is None
+    assert result["features"] == {}
+
+
+def test_derive_danceability_returns_none_when_absent() -> None:
+    """derive_danceability returns None when the danceability model set is absent."""
+    from phaze.services.analysis import derive_danceability
+
+    assert derive_danceability({}) is None
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
 def test_analyze_file_return_shape_has_windows(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
     """The return dict carries all aggregate keys PLUS a flat fine+coarse windows list."""
     mock_get_labels.side_effect = _mock_labels_file
