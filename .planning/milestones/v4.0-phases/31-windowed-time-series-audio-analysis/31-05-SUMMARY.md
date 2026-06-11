@@ -100,3 +100,10 @@ Both tasks followed RED -> GREEN:
 - `be269c0` feat(31-05): forward per-window time-series via AnalysisWritePayload.windows
 - `1baf553` test(31-05): assert process_file enqueues with bounded timeout + retries=2
 - `9e04da7` feat(31-05): bound process_file enqueue churn (timeout=14400, retries=2)
+- `18fa44c` docs(31-05): complete wire-windows + bounded-enqueue plan
+
+## Self-Check: PASSED
+
+- All modified files exist: `tasks/functions.py`, `routers/pipeline.py`, `tests/_queue_fakes.py`, `tests/test_tasks/test_functions.py`, `tests/test_routers/test_pipeline.py`, `31-05-SUMMARY.md`.
+- All commits present: `be4ad96`, `be269c0`, `1baf553`, `9e04da7`, `18fa44c`.
+- `git diff 14ebef2..HEAD` touches only the 7 intended files; `STATE.md` and `ROADMAP.md` untouched (orchestrator owns those).
