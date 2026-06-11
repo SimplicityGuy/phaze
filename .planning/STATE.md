@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
-last_updated: "2026-06-11T05:05:00.000Z"
-last_activity: 2026-06-11 -- Phase 34 plan 34-00 complete (queue-fake count harness)
+last_updated: "2026-06-11T05:02:09.558Z"
+last_activity: 2026-06-11 -- Phase 34 plan 34-01 complete (get_queue_activity queue-depth service)
 progress:
   total_phases: 6
   completed_phases: 6
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 ## Current Position
 
 Phase: 34 (pipeline-queue-depth-status-double-enqueue-guard) — EXECUTING
-Plan: 2 of 5
-Status: Executing Phase 34 (34-00 complete)
-Last activity: 2026-06-11 -- Phase 34 plan 34-00 complete (queue-fake count harness)
+Plan: 3 of 5
+Status: Executing Phase 34 (34-01 complete — get_queue_activity service)
+Last activity: 2026-06-11 -- Phase 34 plan 34-01 complete (get_queue_activity queue-depth service)
 
 Progress: [██████████] 100%
 
@@ -103,6 +103,7 @@ None.
 | 260609-f96 | Fix scan_directory 10s asyncio.TimeoutError: AgentTaskRouter._queue_for built per-agent SAQ queues without the apply_project_job_defaults before_enqueue hook, so agent-dispatched jobs inherited SAQ's 10s default instead of worker_job_timeout=600. Register the hook on each per-agent queue (3rd call site) + regression test. Found live on nox/lux v4.0.4. | 2026-06-09 | c6c7e20 | [260609-f96-fix-scan-directory-10s-timeouterror-regi](./quick/260609-f96-fix-scan-directory-10s-timeouterror-regi/) |
 | 260609-glv | Scan-pipeline reliability bundle (3 fixes, surfaced sequentially on v4.0.5): (1) sanitize PG-invalid chars in mutagen tags — _sanitize_pg_text strips NUL U+0000 + lone surrogates U+D800-U+DFFF in _first_str + _serialize_tags (fixes asyncpg UntranslatableCharacterError 500 on metadata writes; preserves valid controls/noncharacters); (2) scan_directory enqueued with timeout=0 (unbounded; Job.stuck stays False) + retries=0 via AgentTaskRouter timeout/retries pass-through — a fixed 600s SAQ timeout killed healthy bulk scans that then retried from scratch and never finished; (3) config.scan_stall_seconds default 600→86400 (24h) so the progress stall reaper is the sole liveness guard. + regression tests. | 2026-06-09 | 4b37c13 | [260609-glv-fix-metadata-write-500-strip-nul-bytes-f](./quick/260609-glv-fix-metadata-write-500-strip-nul-bytes-f/) |
 | 260610-fp9 | Add audio system-deps apt layer to shared Dockerfile (libatomic1 ffmpeg libsndfile1 libchromaprint-tools) — v4.0.8 `python:3.14-slim` image had NO apt layer, so every `process_file` job dead-lettered at `import essentia` (`ImportError: libatomic.so.1`), stranding all 11,428 files in `discovered`. Verified via ldd on live v4.0.8 image: prebuilt essentia-tensorflow wheel bundles its heavy deps; only libatomic1 was unbundled+missing — proven sufficient for full `import essentia`. ffmpeg/fpcalc kept for the broader pipeline (ffprobe video metadata, pyacoustid fingerprinting). Needs v4.0.9 release + nox/lux redeploy. | 2026-06-10 | f5fb6e7 | [260610-fp9-add-audio-system-deps-to-dockerfile-so-e](./quick/260610-fp9-add-audio-system-deps-to-dockerfile-so-e/) |
+| Phase 34 P01 | 12 min | 2 tasks | 2 files |
 
 ## Session Continuity
 
