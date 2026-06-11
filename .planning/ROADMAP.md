@@ -109,7 +109,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 29. Deployment Hardening & Agents Admin | v4.0 | 8/8 | Complete | 2026-05-17 |
 | 30. Fix control-plane SAQ queue misrouting | v4.0 | 5/5 | Complete   | 2026-06-10 |
 | 31. Windowed Time-Series Audio Analysis | v4.0 | 6/6 | Complete   | 2026-06-11 |
-| 32. Pipeline Reboot Resilience & Re-enqueue | v4.0 | —/— | Planned |  |
+| 32. Pipeline Reboot Resilience & Re-enqueue | v4.0 | 0/4 | Planned |  |
 | 33. SAQ Monitoring UI (mounted in phaze-api) | v4.0 | 4/4 | Complete   | 2026-06-11 |
 | 34. Pipeline Queue-Depth Status & Double-Enqueue Guard | v4.0 | 5/5 | Complete | 2026-06-10 |
 
@@ -147,10 +147,16 @@ Plans:
 ### Phase 32: Pipeline Reboot Resilience & Re-enqueue
 
 **Goal:** Make the analysis pipeline self-healing across full host reboots and container restarts for a large corpus (11,428 files, long per-file jobs). Postgres `FileState` is the durable source of truth; Redis stays a disposable/ephemeral broker (no AOF). On agent-worker startup and/or via a periodic cron, re-enqueue `FileState.DISCOVERED` files that have no active job, so a reboot resumes the remaining work automatically instead of requiring a manual "Run analysis" re-trigger. Resilience is idempotent and per-file (NOT intra-file) — re-running an interrupted file is safe because `put_analysis` replaces a file's window rows (Phase 31, plan 31-03). Note: the bounded-generous `worker_job_timeout` (~4h, not 0) + `retries=1` that lets SAQ reclaim a dead/restarted worker's in-flight job ships in Phase 31 plan 31-05 — this phase is the reboot/queue-loss recovery layer on top of that.
-**Decisions:** Reboot recovery = startup/cron re-enqueue from Postgres (chosen over Redis AOF persistence), 2026-06-10.
+**Decisions:** Reboot recovery = startup/cron re-enqueue from Postgres (chosen over Redis AOF persistence), 2026-06-10. Re-enqueue runs in the CONTROLLER worker (direct Postgres + routing), not the agent worker; deterministic SAQ key `process_file:<file_id>` in a shared FastAPI-free helper used by BOTH the dashboard and the reboot path; analysis stage only.
 **Depends on:** Phase 31
 **Rollout:** Follows v4.0.10; ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
-**Plans:** Not yet planned (run `/gsd:plan-phase 32`).
+**Plans:** 4 plans
+
+Plans:
+- [ ] 32-00-PLAN.md — Wave 0 harness: dedup-aware `DedupFakeQueue`/`DedupFakeTaskRouter` so the SAQ no-op-on-duplicate-key behavior is unit-testable without Redis [Wave 0]
+- [ ] 32-01-PLAN.md — Shared FastAPI-free `enqueue_process_file` + `process_file_job_key` helper; refactor dashboard `_enqueue_analysis_jobs` to emit the deterministic key [Wave 1]
+- [ ] 32-02-PLAN.md — Controller `reenqueue_discovered(ctx)` task: query DISCOVERED, route to active agent, shared-helper enqueue with dedup no-op, zero-agent graceful skip [Wave 2]
+- [ ] 32-03-PLAN.md — Controller wiring: stash/close `ctx['task_router']`, call re-enqueue once on startup, register `CronJob(*/5)` [Wave 3]
 
 ### Phase 33: SAQ Monitoring UI (mounted in phaze-api)
 
