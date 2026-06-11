@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
-last_updated: "2026-06-11T05:08:38.228Z"
-last_activity: 2026-06-11 -- Phase 34 plan 34-02 complete (queue activity surfaced through poll + initial render)
+last_updated: "2026-06-11T05:30:00.000Z"
+last_activity: 2026-06-11 -- Phase 34 plan 34-03 complete (persistent Processing card, OOB-swapped on the 5s poll)
 progress:
   total_phases: 6
   completed_phases: 6
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 ## Current Position
 
 Phase: 34 (pipeline-queue-depth-status-double-enqueue-guard) — EXECUTING
-Plan: 4 of 5
-Status: Executing Phase 34 (34-02 complete — queue activity surfaced through poll + initial render)
-Last activity: 2026-06-11 -- Phase 34 plan 34-02 complete (queue-activity wired into both pipeline contexts + OOB store-write nodes)
+Plan: 5 of 5
+Status: Executing Phase 34 (34-03 complete — persistent Processing card, OOB-swapped on the 5s poll)
+Last activity: 2026-06-11 -- Phase 34 plan 34-03 complete (processing_card.html + dashboard/stats_bar includes + 6 partial-render tests)
 
 Progress: [██████████] 100%
 
@@ -105,9 +105,10 @@ None.
 | 260610-fp9 | Add audio system-deps apt layer to shared Dockerfile (libatomic1 ffmpeg libsndfile1 libchromaprint-tools) — v4.0.8 `python:3.14-slim` image had NO apt layer, so every `process_file` job dead-lettered at `import essentia` (`ImportError: libatomic.so.1`), stranding all 11,428 files in `discovered`. Verified via ldd on live v4.0.8 image: prebuilt essentia-tensorflow wheel bundles its heavy deps; only libatomic1 was unbundled+missing — proven sufficient for full `import essentia`. ffmpeg/fpcalc kept for the broader pipeline (ffprobe video metadata, pyacoustid fingerprinting). Needs v4.0.9 release + nox/lux redeploy. | 2026-06-10 | f5fb6e7 | [260610-fp9-add-audio-system-deps-to-dockerfile-so-e](./quick/260610-fp9-add-audio-system-deps-to-dockerfile-so-e/) |
 | Phase 34 P01 | 12 min | 2 tasks | 2 files |
 | Phase 34 P02 | ~10 min | 3 tasks | 4 files |
+| Phase 34 P03 | ~8 min | 2 tasks | 4 files |
 
 ## Session Continuity
 
-Last session: 2026-06-11T05:08:38.224Z
-Stopped at: Awaiting `/gsd:new-milestone` for next milestone scope
+Last session: 2026-06-11T05:30:00.000Z
+Stopped at: Completed 34-03-PLAN.md
 Resume file: None

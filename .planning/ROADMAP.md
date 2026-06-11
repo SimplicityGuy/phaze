@@ -172,9 +172,9 @@ Plans:
 **Requirements**: Operability/observability of the pipeline-actions dashboard; prevents accidental duplicate-enqueue of the full corpus (~11,428 files).
 **Depends on:** Phase 30 (enqueue_router + controller/agent queue wiring on `app.state`)
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 - [x] 34-00-PLAN.md — Wave 0: add seedable async `count` to `FakeQueue`/`FakeTaskRouter` test doubles
 - [x] 34-01-PLAN.md — Wave 1: `get_queue_activity(app_state, session)` service with split failure isolation
 - [x] 34-02-PLAN.md — Wave 2: wire counts + guarded percent into dashboard()/stats contexts + OOB store-write nodes
-- [ ] 34-03-PLAN.md — Wave 3: persistent `processing_card.html` (progress bar + queued/active, OOB-swapped)
+- [x] 34-03-PLAN.md — Wave 3: persistent `processing_card.html` (progress bar + queued/active, OOB-swapped)
 - [ ] 34-04-PLAN.md — Wave 3: four trigger buttons + coarse agentBusy/controllerBusy disable + store defaults
