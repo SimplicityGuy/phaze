@@ -32,6 +32,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
+from saq import Job
+
 from phaze.models.agent import Agent
 
 
@@ -43,12 +45,23 @@ if TYPE_CHECKING:
 Capture = list[tuple[str, str, dict[str, Any]]]
 
 
+# Keys that ``saq.Queue.enqueue`` routes to the Job itself (timeout, retries, ttl,
+# ...) rather than into ``job.kwargs`` (the task payload). Mirrors the real split in
+# saq/queue/base.py: ``if k in Job.__dataclass_fields__``. Capturing these separately
+# lets tests assert per-job control settings (Phase 31: process_file timeout/retries)
+# without polluting the captured task payload that the worker would receive.
+_JOB_CONTROL_FIELDS = frozenset(Job.__dataclass_fields__)
+
+
 class FakeQueue:
     """A named SAQ-queue stand-in that captures every enqueue.
 
-    ``captured`` records ``(task_name, kwargs)`` pairs for this queue. When a shared
+    ``captured`` records ``(task_name, kwargs)`` pairs for this queue, where ``kwargs``
+    is the task *payload* only (job-control keys like ``timeout``/``retries`` are split
+    out, mirroring ``saq.Queue.enqueue``). ``captured_policy`` records the per-enqueue
+    job-control kwargs (``{"timeout": ..., "retries": ...}``) in parallel. When a shared
     ``capture`` list is supplied, each enqueue is *also* appended there as a
-    ``(name, task_name, kwargs)`` triple so cross-queue assertions are possible.
+    ``(name, task_name, payload)`` triple so cross-queue assertions are possible.
     ``enqueue`` returns a ``MagicMock`` job whose ``.key`` is unique per call, and
     ``job`` is an ``AsyncMock`` (default returns ``None``) so the scan-status poll's
     queue-scoped ``queue.job(job_key)`` lookup can be configured.
@@ -58,14 +71,20 @@ class FakeQueue:
         self.name = name
         self._capture = capture
         self.captured: list[tuple[str, dict[str, Any]]] = []
+        self.captured_policy: list[dict[str, Any]] = []
         self.job = AsyncMock(return_value=None)
         self._counter = 0
 
     async def enqueue(self, task_name: str, **kwargs: Any) -> MagicMock:
-        kw = dict(kwargs)
+        # Mirror saq.Queue.enqueue: keys that are saq.Job dataclass fields are
+        # job-control settings, not task kwargs. Split them so ``captured`` holds only
+        # the payload the worker receives and ``captured_policy`` holds timeout/retries/etc.
+        payload = {k: v for k, v in kwargs.items() if k not in _JOB_CONTROL_FIELDS}
+        policy = {k: v for k, v in kwargs.items() if k in _JOB_CONTROL_FIELDS}
         if self._capture is not None:
-            self._capture.append((self.name, task_name, kw))
-        self.captured.append((task_name, kw))
+            self._capture.append((self.name, task_name, payload))
+        self.captured.append((task_name, payload))
+        self.captured_policy.append(policy)
         self._counter += 1
         job = MagicMock()
         job.key = f"{self.name}:job:{self._counter}"

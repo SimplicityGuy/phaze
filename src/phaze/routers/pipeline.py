@@ -55,6 +55,11 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     ``files`` attributes (``id`` / ``original_path`` / ``file_type``) are already
     loaded by ``get_files_by_state`` and the request never commits, so reading them
     here (after the request session may have closed) does not trigger a lazy load.
+
+    Phase 31 job policy: every process_file enqueue carries an explicit ``timeout``
+    and ``retries`` so a single long/bad file no longer churns four full re-analyses.
+    All process_file trigger endpoints (``/api/v1/analyze`` + the HTMX ``/pipeline/analyze``)
+    funnel through this one helper, so the policy is applied at every enqueue site.
     """
     for f in files:
         payload = ProcessFilePayload(
@@ -64,7 +69,18 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
             agent_id=agent_id,
             models_path=models_path,
         )
-        await queue.enqueue("process_file", **payload.model_dump(mode="json"))
+        await queue.enqueue(
+            "process_file",
+            # 4h bounded: exceeds longest legit set (~3h) yet lets SAQ reclaim a dead/restarted
+            # worker's job (spike 31-01 + restart-resilience). Hardcoded like pipeline_scans.py.
+            timeout=14400,
+            # retries=2 (NOT 1): apply_project_job_defaults (tasks/_shared/queue_defaults.py)
+            # only fills jobs still at the SAQ default retries==1, clobbering it to
+            # worker_max_retries(4). retries=2 is honored and stays in the locked 1-2 band,
+            # killing the 4x re-analysis churn from the original long-file incident.
+            retries=2,
+            **payload.model_dump(mode="json"),
+        )
 
 
 async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:

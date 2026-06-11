@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from phaze.schemas.agent_analysis import AnalysisWritePayload
+from phaze.schemas.agent_analysis import AnalysisWindowPayload, AnalysisWritePayload
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.tasks.pool import run_in_process_pool
 
@@ -133,6 +133,11 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
     style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None
 
+    # Phase 31 ANL-01: forward the per-window time-series. ``analyze_file`` returns
+    # ``windows`` as plain dicts (Plan 04), so we build AnalysisWindowPayload from each
+    # dict directly -- NO ORM/database import (D-25 import boundary; tests/test_task_split.py).
+    windows = [AnalysisWindowPayload(**w) for w in analysis.get("windows", [])] if isinstance(analysis, dict) else []
+
     # PUT result via HTTP (D-26 idempotent upsert; CR-01 partial-PUT semantics preserved by exclude_unset)
     await api.put_analysis(
         payload.file_id,
@@ -143,6 +148,7 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             style=style_dict,
             danceability=analysis.get("danceability"),
             energy=analysis.get("energy"),
+            windows=windows,
         ),
     )
     return {"file_id": str(payload.file_id), "status": "analyzed"}
