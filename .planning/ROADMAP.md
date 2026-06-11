@@ -111,6 +111,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 31. Windowed Time-Series Audio Analysis | v4.0 | 6/6 | Complete   | 2026-06-11 |
 | 32. Pipeline Reboot Resilience & Re-enqueue | v4.0 | —/— | Planned |  |
 | 33. SAQ Monitoring UI (mounted in phaze-api) | v4.0 | —/— | Planned |  |
+| 34. Pipeline Queue-Depth Status & Double-Enqueue Guard | v4.0 | 5/5 | Complete | 2026-06-10 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -172,6 +173,7 @@ Plans:
 **Requirements**: Operability/observability of the pipeline-actions dashboard; prevents accidental duplicate-enqueue of the full corpus (~11,428 files).
 **Depends on:** Phase 30 (enqueue_router + controller/agent queue wiring on `app.state`)
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
+**Status:** Complete (verified 2026-06-10 — VERIFICATION.md status: passed, 5/5 must-haves; full suite green, phase-module coverage 90.52%).
 **Plans:** 5/5 plans executed
 - [x] 34-00-PLAN.md — Wave 0: add seedable async `count` to `FakeQueue`/`FakeTaskRouter` test doubles
 - [x] 34-01-PLAN.md — Wave 1: `get_queue_activity(app_state, session)` service with split failure isolation
