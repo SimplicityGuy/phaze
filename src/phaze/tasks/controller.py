@@ -29,11 +29,13 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.logging_config import configure_logging
+from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
+from phaze.tasks.reenqueue import reenqueue_discovered
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
@@ -87,6 +89,25 @@ async def startup(ctx: dict[str, Any]) -> None:
     # Stash the module-level queue so those readers find it.
     ctx["queue"] = queue
 
+    # Phase 32: per-agent task router for reboot re-enqueue routing. Built ONCE
+    # here and reused for the boot-time call + every cron tick (RESEARCH Pitfall 4 --
+    # never construct a fresh AgentTaskRouter per call, it would leak Redis pools).
+    # Mirrors the discogs_client create/close lifecycle: created in startup, closed
+    # in shutdown.
+    ctx["task_router"] = AgentTaskRouter(cfg.redis_url)
+
+    # Phase 32 reboot recovery: re-enqueue every DISCOVERED file ONCE on boot so a
+    # reboot/Redis-flush resumes analysis with no manual "Run Analysis" (CONTEXT
+    # "Trigger"). Redis is empty after a reboot, so every DISCOVERED file re-enqueues;
+    # mid-run boots dedup to no-ops via the shared deterministic key. Boot resilience
+    # is non-negotiable: a re-enqueue failure must NEVER abort controller boot
+    # (RESEARCH Pitfall 3) -- wrap in a broad try/except and continue.
+    try:
+        counts = await reenqueue_discovered(ctx)
+        logger.info("phaze.controller startup re-enqueue", reenqueued=counts["reenqueued"], skipped=counts["skipped"])
+    except Exception:
+        logger.exception("reenqueue on startup failed")
+
 
 async def shutdown(ctx: dict[str, Any]) -> None:
     """Clean up shared resources (SAQ shutdown hook)."""
@@ -99,6 +120,12 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     discogs_client = ctx.get("discogs_client")
     if discogs_client is not None:
         await discogs_client.close()
+
+    # Phase 32: close the per-agent task router (disconnects every cached Redis
+    # queue; idempotent). Mirrors the discogs_client cleanup above.
+    task_router = ctx.get("task_router")
+    if task_router is not None:
+        await task_router.close()
 
 
 # Module-level Queue construction. SAQ's `saq <module>.settings` CLI imports
@@ -120,6 +147,7 @@ settings = {
         search_tracklist,
         scrape_and_store_tracklist,
         reap_stalled_scans,
+        reenqueue_discovered,
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
@@ -127,6 +155,11 @@ settings = {
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form, matching refresh_tracklists above.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]
+        # Phase 32: mid-run stall recovery (control-only -- needs ctx["async_session"]
+        # + ctx["task_router"]). Every 5 min, not every minute like the reaper:
+        # re-enqueue scans more rows (all DISCOVERED files) than the 1-min reaper,
+        # so 5 min balances recovery latency against DB load (CONTEXT Claude's Discretion).
+        CronJob(reenqueue_discovered, cron="*/5 * * * *"),  # type: ignore[type-var]
     ],
     "startup": startup,
     "shutdown": shutdown,

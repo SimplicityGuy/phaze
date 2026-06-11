@@ -322,14 +322,16 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | `PhazeAgentClient` | `agent_client.py` | Agent → server HTTP wrapper (tenacity, no-4xx-retry) |
 | `classify` / `sort_key` | `agent_liveness.py` | Agent liveness classification for admin UI |
 | `FingerprintOrchestrator` | `fingerprint.py` | Multi-engine fingerprint coordination |
+| `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: deterministic SAQ key `process_file:<file_id>` + complete payload, used by both the dashboard analyze path and the reboot re-enqueue task so in-flight files dedup |
 
 ### Tasks (`src/phaze/tasks/`)
 
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
-| Control settings | `controller.py` | SAQ entry for fileless jobs |
+| Control settings | `controller.py` | SAQ entry for fileless jobs; on boot + every 5 min runs `reenqueue_discovered` for reboot recovery |
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs + cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
+| `reenqueue_discovered` | `reenqueue.py` | Reboot/stall recovery: re-enqueue `process_file` for every `FileState.DISCOVERED` file (Postgres = source of truth); in-flight files dedup to a no-op via the shared deterministic key |
 | `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent |
 | `heartbeat_tick` | `heartbeat.py` | 30s cron heartbeat POST |
 

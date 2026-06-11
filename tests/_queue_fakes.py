@@ -173,6 +173,72 @@ class FakeTaskRouter:
         self.queue_for(agent_id).set_counts(queued=queued, active=active)
 
 
+class DedupFakeQueue(FakeQueue):
+    """A :class:`FakeQueue` that models SAQ's deterministic-key dedup no-op.
+
+    Real ``saq.queue.redis.Queue._enqueue`` checks whether the job's id (which embeds
+    the deterministic ``key``) is already a member of the per-queue ``incomplete`` sorted
+    set; if so its Lua script returns nil and ``Queue.enqueue`` returns ``None`` — a clean
+    no-op (no raise, no overwrite, the payload never lands). The key leaves ``incomplete``
+    only when the job finishes, after which the same key may enqueue again (32-RESEARCH
+    §Q1). The base :class:`FakeQueue` cannot express this: it always appends and returns a
+    fresh ``MagicMock`` job (§Q5 Wave-0 gap).
+
+    This subclass is purely additive — :class:`FakeQueue` itself is untouched, so the six
+    existing consumers stay byte-identical in behavior. A ``key`` kwarg is a ``saq.Job``
+    dataclass field (``key in _JOB_CONTROL_FIELDS``), so the parent already routes it into
+    ``captured_policy`` rather than the payload; here we additionally use it as the dedup
+    discriminator. A keyless enqueue never dedups (it always returns a job), preserving
+    today's default-uuid producers.
+    """
+
+    def __init__(self, name: str, capture: Capture | None = None, *, queued: int = 0, active: int = 0, scheduled: int = 0) -> None:
+        super().__init__(name, capture, queued=queued, active=active, scheduled=scheduled)
+        # Deterministic keys currently "incomplete" (queued or active). A repeat enqueue
+        # of a member is a no-op; ``finish`` removes a key to model job completion.
+        self._live_keys: set[str] = set()
+
+    async def enqueue(self, task_name: str, **kwargs: Any) -> MagicMock | None:  # type: ignore[override]
+        # A ``key`` kwarg lands in the job-control fields (``key in _JOB_CONTROL_FIELDS``),
+        # mirroring how the parent splits kwargs. Use it as the dedup discriminator.
+        key = kwargs.get("key")
+        if key is not None and key in self._live_keys:
+            # Deduped: SAQ returns None and the payload never lands — do NOT append to
+            # ``captured``/``captured_policy``/the shared ``_capture`` list.
+            return None
+        job = await super().enqueue(task_name, **kwargs)
+        if key is not None:
+            self._live_keys.add(key)
+        return job
+
+    def finish(self, key: str) -> None:
+        """Discard ``key`` from the live set so a test can model job completion.
+
+        After ``finish(key)`` the same deterministic key re-enqueues and returns a job,
+        mirroring SAQ removing a finished job's id from the ``incomplete`` set.
+        """
+        self._live_keys.discard(key)
+
+
+class DedupFakeTaskRouter(FakeTaskRouter):
+    """A :class:`FakeTaskRouter` whose ``queue_for`` caches :class:`DedupFakeQueue` instances.
+
+    Identical wiring to the parent (``queue_for_calls`` recording, shared ``captures``
+    list, per-agent caching) — the only override is constructing a :class:`DedupFakeQueue`
+    so per-agent queues model SAQ's deterministic-key dedup.
+    """
+
+    def __init__(self, capture: Capture | None = None) -> None:
+        super().__init__(capture)
+        self.queues: dict[str, DedupFakeQueue] = {}  # type: ignore[assignment]
+
+    def queue_for(self, agent_id: str) -> DedupFakeQueue:  # type: ignore[override]
+        self.queue_for_calls.append(agent_id)
+        if agent_id not in self.queues:
+            self.queues[agent_id] = DedupFakeQueue(f"phaze-agent-{agent_id}", self.captures)
+        return self.queues[agent_id]
+
+
 def install_fake_queues(client: AsyncClient) -> tuple[FakeQueue, FakeTaskRouter]:
     """Attach a fake controller queue + task_router to the test app state.
 
