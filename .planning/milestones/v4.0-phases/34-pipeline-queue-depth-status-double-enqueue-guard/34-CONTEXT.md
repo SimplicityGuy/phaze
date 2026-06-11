@@ -7,9 +7,9 @@
 <domain>
 ## Phase Boundary
 
-**In scope:** The pipeline dashboard's "Pipeline Actions" area (`src/phaze/templates/pipeline/`) and the `/pipeline/stats` poll. Add a live queue-depth signal so an in-flight run is visible after a page refresh and the trigger buttons cannot double-enqueue.
+**In scope:** The pipeline dashboard's "Pipeline Actions" area (`src/phaze/templates/pipeline/`) and the `/pipeline/stats` poll. Add a live queue-depth signal so an in-flight run is visible after a page refresh and the trigger buttons cannot double-enqueue. **Also add two new trigger buttons** — *Fingerprint* and *Extract Metadata* — wired to the already-existing `/pipeline/fingerprint` and `/pipeline/extract-metadata` HTMX endpoints (operator decision 2026-06-10), so all four pipeline actions are surfaced and gated.
 
-**Out of scope:** Per-task-type queue accounting (coarse is accepted), the SAQ monitoring UI (that is Phase 33), reboot re-enqueue resilience (Phase 32), any change to how jobs are enqueued or processed, any new poll loop or websocket/SSE.
+**Out of scope:** Per-task-type queue accounting (coarse is accepted), the SAQ monitoring UI (that is Phase 33), reboot re-enqueue resilience (Phase 32), any change to how jobs are enqueued or processed (the four endpoints already exist), any new poll loop or websocket/SSE.
 
 ## The bug being fixed (verified live, 2026-06-10)
 
@@ -33,7 +33,7 @@ Returns a dict:
 - `agent_busy = agent_queued + agent_active`
 - `controller_busy = controller_queued + controller_active`
 
-Must not raise if a queue is unreachable/empty — degrade to 0 (a Redis hiccup must never 500 the dashboard poll).
+Must not raise if a queue is unreachable/empty — degrade to 0 (a Redis hiccup must never 500 the dashboard poll). **Per RESEARCH.md: the degrade path MUST also catch `AttributeError`**, not just Redis errors — the test `client` fixture skips the lifespan, so `app.state.controller_queue`/`task_router` are ABSENT in un-wired tests; three existing dashboard/stats tests will 500 otherwise. Use the exact non-revoked-agent predicate from `dashboard()` (`select(Agent).where(Agent.revoked_at.is_(None))`), NOT `enqueue_router.select_active_agent` (that returns a single recently-seen agent and raises `NoActiveAgentError` when none — wrong for a passive count). Signature: `get_queue_activity(app_state: Any, session: AsyncSession)`.
 
 ### Surface via the EXISTING 5s poll (no new loop)
 Extend the `/pipeline/stats` endpoint context (`src/phaze/routers/pipeline.py::pipeline_stats_partial`) with the queue-activity counts. The dashboard already polls `#pipeline-stats` every 5s — reuse it. Initial full-page `dashboard()` render must also seed the counts so the page is correct on first load (not only after the first poll tick).
@@ -45,21 +45,29 @@ Extend the `/pipeline/stats` endpoint context (`src/phaze/routers/pipeline.py::p
 - A second compact line covers the controller queue for proposals when `controller_busy > 0`.
 - Card renders EMPTY (no visual) when both `agent_busy == 0` and `controller_busy == 0`.
 
-### Coarse button disable via Alpine `$store.pipeline`
-- Push `agent_busy` and `controller_busy` into `$store.pipeline` via the SAME `x-init` store-write trick already used for `discovered`/`analyzed` (OOB paragraphs in `stats_bar.html` set the store; the button subtree is never the swap target, so loading state is preserved).
-- `stage_cards.html` buttons:
-  - Analyze / Fingerprint / Extract-Metadata: `:disabled="loading || <ready>===0 || $store.pipeline.agentBusy > 0"`
-  - Generate Proposals: `:disabled="loading || analyzed===0 || $store.pipeline.controllerBusy > 0"`
-- **Coarse is intentional (operator choice):** the single agent worker processes one shared queue serially, so any agent-queue work disabling all three agent buttons is honest. Per-task counters were rejected (would require maintaining our own enqueue/complete counters — fragile).
+### Four buttons (two new) + coarse disable via Alpine `$store.pipeline`
+`stage_cards.html` currently renders only **two** buttons (Run Analysis, Generate Proposals — verified in RESEARCH.md A1). Phase 34 ADDS two new buttons that mirror the existing pattern exactly (hx-post to the existing endpoint, `x-data="{ loading: false }"`, `@click="loading = true"`, `hx-target`/`hx-swap` to an own response div, `trigger_response.html` fragment, spinner):
+  - **Fingerprint** → `hx-post="/pipeline/fingerprint"` (endpoint exists; eligible = `METADATA_EXTRACTED` files). Ready-count source = `stats.metadata_extracted`.
+  - **Extract Metadata** → `hx-post="/pipeline/extract-metadata"` (endpoint exists; backfill over all music/video files regardless of state). Ready-count: no single stage count — *Claude's Discretion*: show a static label (e.g. "Backfill all music/video files") and gate purely on `loading || agentBusy>0` rather than a per-state ready count.
+
+Push `agent_busy` and `controller_busy` into `$store.pipeline` via the SAME `x-init` store-write trick already used for `discovered`/`analyzed` (OOB paragraphs in `stats_bar.html` set the store; the button subtree is never the swap target, so loading state is preserved). Disable bindings:
+  - Run Analysis: `:disabled="loading || $store.pipeline.discovered===0 || $store.pipeline.agentBusy > 0"`
+  - Fingerprint: `:disabled="loading || $store.pipeline.metadataExtracted===0 || $store.pipeline.agentBusy > 0"`
+  - Extract Metadata: `:disabled="loading || $store.pipeline.agentBusy > 0"`
+  - Generate Proposals: `:disabled="loading || $store.pipeline.analyzed===0 || $store.pipeline.controllerBusy > 0"`
+- **Coarse is intentional (operator choice):** the single agent worker processes one shared queue serially, so any agent-queue work disabling all THREE agent-task buttons (Analyze/Fingerprint/Extract-Metadata) is honest — they would just contend for the same worker anyway. Per-task counters were rejected (would require maintaining our own enqueue/complete counters — fragile).
 
 ### Store initialization
 `$store.pipeline` must define `agentBusy`/`controllerBusy` with sane defaults (0) so `:disabled` bindings never reference `undefined` before the first poll. Seed from the initial full-page render.
 
 ## Claude's Discretion
 - Exact Tailwind classes / progress-bar markup (match the existing partials' dark-mode-aware styling).
-- Whether `get_queue_activity` takes `app.state` + `session` or narrower params — pick the cleanest testable signature.
-- Helper to enumerate non-revoked agents (new vs reuse from `enqueue_router`).
 - Number formatting (thousands separators) for large counts.
+- Extract-Metadata button's label/ready-count treatment (see button decision above).
+
+## Test-harness prerequisite (from RESEARCH.md — do FIRST)
+- `tests/_queue_fakes.py` `FakeQueue`/`FakeTaskRouter` have NO `count` method — add an `async def count(self, kind)` to `FakeQueue` (and ensure `FakeTaskRouter.queue_for` returns countable fakes) as a Wave-0 prerequisite before service/router tests can exercise `get_queue_activity`.
+- Test analogs to mirror: partial render → `tests/.../test_progress_partial.py` (`Jinja2Templates` + `_fake_request`); router → `test_pipeline.py::test_pipeline_stats_partial`; app.state faking → `install_fake_queues`/`wire_fakes`.
 </decisions>
 
 <canonical_refs>
