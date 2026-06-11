@@ -1166,8 +1166,10 @@ async def test_button_disabled_binds_to_store_not_frozen_literal(
     response = await ac.get("/pipeline/")
     assert response.status_code == 200
     # Disabled state is driven by the reactive store, the single source of truth.
-    assert ':disabled="loading || $store.pipeline.discovered === 0"' in response.text
-    assert ':disabled="loading || $store.pipeline.analyzed === 0"' in response.text
+    # Phase 34 also appends the live queue-busy gate (agentBusy/controllerBusy) so a
+    # queued run cannot be double-enqueued; the count condition still reads the store.
+    assert ':disabled="loading || $store.pipeline.discovered === 0 || $store.pipeline.agentBusy > 0"' in response.text
+    assert ':disabled="loading || $store.pipeline.analyzed === 0 || $store.pipeline.controllerBusy > 0"' in response.text
     # And it must NOT be a frozen server literal like ``|| 3 === 0``.
     assert ':disabled="loading || 3 === 0"' not in response.text
 
@@ -1194,7 +1196,8 @@ async def test_dashboard_seeds_pipeline_store_from_server_count(
     # analyzed == 0: store seeded with the server value (no analyzed files seeded).
     assert 'x-init="$store.pipeline.analyzed = 0"' in response.text
     # The global store is registered so the bindings resolve before the first poll.
-    assert "Alpine.store('pipeline', { discovered: 0, analyzed: 0 })" in response.text
+    # Phase 34 extends the store with the queue-busy gate keys (all defaulting to 0).
+    assert "Alpine.store('pipeline', { discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0 })" in response.text
 
 
 @pytest.mark.asyncio

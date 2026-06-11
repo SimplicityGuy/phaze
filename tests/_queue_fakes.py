@@ -74,6 +74,33 @@ class FakeQueue:
         self.captured_policy: list[dict[str, Any]] = []
         self.job = AsyncMock(return_value=None)
         self._counter = 0
+        # Per-kind queue depths read back by ``count`` (mirrors saq.Queue.count's
+        # ``kind in {"queued", "active", "incomplete"}`` contract). Seed via
+        # ``set_counts``; defaults to an idle queue so an un-seeded fake reads 0.
+        self._counts: dict[str, int] = {"queued": 0, "active": 0, "incomplete": 0}
+        # When True, ``count`` raises instead of returning — exercises the
+        # ``get_queue_activity`` degrade-to-0 path (Plan 01) for a Redis outage.
+        self._count_raises = False
+
+    async def count(self, kind: str) -> int:
+        """Return the seeded depth for ``kind`` (async, mirroring ``saq.Queue.count``).
+
+        Raises ``RuntimeError`` when :meth:`fail_count` has been called, so a test can
+        drive the queue-activity service's failure-isolation branch.
+        """
+        if self._count_raises:
+            raise RuntimeError("fake redis down")
+        return self._counts.get(kind, 0)
+
+    def set_counts(self, *, queued: int = 0, active: int = 0, incomplete: int = 0) -> None:
+        """Seed the per-kind depths this queue's :meth:`count` reads back."""
+        self._counts["queued"] = queued
+        self._counts["active"] = active
+        self._counts["incomplete"] = incomplete
+
+    def fail_count(self) -> None:
+        """Make subsequent :meth:`count` calls raise, simulating a Redis outage."""
+        self._count_raises = True
 
     async def enqueue(self, task_name: str, **kwargs: Any) -> MagicMock:
         # Mirror saq.Queue.enqueue: keys that are saq.Job dataclass fields are
@@ -109,6 +136,15 @@ class FakeTaskRouter:
         if agent_id not in self.queues:
             self.queues[agent_id] = FakeQueue(f"phaze-agent-{agent_id}", self.captures)
         return self.queues[agent_id]
+
+    def set_counts(self, agent_id: str, *, queued: int = 0, active: int = 0) -> None:
+        """Pre-seed a per-agent queue's depth before the service enumerates it.
+
+        Forces lazy creation/caching of the ``phaze-agent-<id>`` fake via
+        :meth:`queue_for`, then seeds its ``count`` depths — so a test can assert the
+        summed agent depth a later ``queue_for`` read returns.
+        """
+        self.queue_for(agent_id).set_counts(queued=queued, active=active)
 
 
 def install_fake_queues(client: AsyncClient) -> tuple[FakeQueue, FakeTaskRouter]:

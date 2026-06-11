@@ -1,6 +1,17 @@
 <div class="space-y-4">
     <h2 class="text-lg font-semibold">Pipeline Actions</h2>
 
+    <!--
+      Initial-load store seed for the live queue-busy gates. These hidden, in-place
+      paragraphs (no out-of-band swap attribute — this is the full-page render path)
+      write the server-rendered SAQ queue depths into $store.pipeline at page load so
+      the four button :disabled bindings are correct before the first 5s poll tick. The
+      Plan 02 stats_bar.html out-of-band nodes reuse the SAME ids (agent-busy-seed /
+      controller-busy-seed) to re-seed these store keys on every poll response.
+    -->
+    <p id="agent-busy-seed" x-init="$store.pipeline.agentBusy = {{ agent_busy }}" class="hidden"></p>
+    <p id="controller-busy-seed" x-init="$store.pipeline.controllerBusy = {{ controller_busy }}" class="hidden"></p>
+
     <!-- Scan -> Analyze -->
     <div class="border rounded-lg p-4 flex items-center justify-between" x-data="{ loading: false }">
         <div>
@@ -15,11 +26,55 @@
                 hx-swap="innerHTML"
                 hx-indicator="#analyze-spinner"
                 @click="loading = true"
-                :disabled="loading || $store.pipeline.discovered === 0"
+                :disabled="loading || $store.pipeline.discovered === 0 || $store.pipeline.agentBusy > 0"
                 class="px-4 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
                 Run Analysis
             </button>
             <span id="analyze-spinner" class="htmx-indicator ml-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueuing...</span>
+        </div>
+    </div>
+
+    <!-- Backfill -> Extract Metadata -->
+    <div class="border rounded-lg p-4 flex items-center justify-between" x-data="{ loading: false }">
+        <div>
+            <h3 class="font-medium">Extract Metadata</h3>
+            <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Backfill embedded tag metadata across all music/video files, regardless of state.</p>
+            <p class="text-sm text-gray-400 dark:text-gray-500 mt-1">Backfill all music/video files</p>
+        </div>
+        <div id="extract-metadata-response">
+            <button
+                hx-post="/pipeline/extract-metadata"
+                hx-target="#extract-metadata-response"
+                hx-swap="innerHTML"
+                hx-indicator="#extract-metadata-spinner"
+                @click="loading = true"
+                :disabled="loading || $store.pipeline.agentBusy > 0"
+                class="px-4 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
+                Extract Metadata
+            </button>
+            <span id="extract-metadata-spinner" class="htmx-indicator ml-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueuing...</span>
+        </div>
+    </div>
+
+    <!-- Extract -> Fingerprint -->
+    <div class="border rounded-lg p-4 flex items-center justify-between" x-data="{ loading: false }">
+        <div>
+            <h3 class="font-medium">Fingerprint Files</h3>
+            <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueue acoustic fingerprinting for files that have completed metadata extraction.</p>
+            <p id="fingerprint-files-ready" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.metadata_extracted }} files ready</p>
+        </div>
+        <div id="fingerprint-response">
+            <button
+                hx-post="/pipeline/fingerprint"
+                hx-target="#fingerprint-response"
+                hx-swap="innerHTML"
+                hx-indicator="#fingerprint-spinner"
+                @click="loading = true"
+                :disabled="loading || $store.pipeline.metadataExtracted === 0 || $store.pipeline.agentBusy > 0"
+                class="px-4 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
+                Fingerprint
+            </button>
+            <span id="fingerprint-spinner" class="htmx-indicator ml-2 text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Enqueuing...</span>
         </div>
     </div>
 
@@ -37,7 +92,7 @@
                 hx-swap="innerHTML"
                 hx-indicator="#proposals-spinner"
                 @click="loading = true"
-                :disabled="loading || $store.pipeline.analyzed === 0"
+                :disabled="loading || $store.pipeline.analyzed === 0 || $store.pipeline.controllerBusy > 0"
                 class="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium">
                 Generate Proposals
             </button>

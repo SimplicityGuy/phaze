@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 31 shipped — PR #115"
-last_updated: "2026-06-11T02:50:58.370Z"
-last_activity: 2026-06-10
+status: "Phase 34 shipped — PR #117"
+last_updated: "2026-06-11T05:50:23.098Z"
+last_activity: "2026-06-10 -- Phase 34 shipped (PR #117)"
 progress:
   total_phases: 6
   completed_phases: 6
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 31 — windowed-time-series-audio-analysis
+**Current focus:** Phase 34 — pipeline-queue-depth-status-double-enqueue-guard
 
 ## Current Position
 
-Phase: 31 (windowed-time-series-audio-analysis) — EXECUTING
-Plan: 1 of 6
-Status: Phase 31 shipped — PR #115
-Last activity: 2026-06-10
+Phase: 34 (pipeline-queue-depth-status-double-enqueue-guard) — ALL PLANS COMPLETE
+Plan: 5 of 5 (done)
+Status: Phase 34 shipped — PR #117
+Last activity: 2026-06-10 -- Phase 34 shipped (PR #117)
 
 Progress: [██████████] 100%
 
@@ -68,6 +68,7 @@ Progress: [██████████] 100%
 
 - Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.
 - Phase 31 added (2026-06-10): Windowed Time-Series Audio Analysis — surfaced by live incident after v4.0.9 redeploy: `RhythmExtractor2013` `OnsetDetectionGlobal` buffer overflow crashes whole-file BPM on multi-hour sets (79% of the 11,428-file archive is >50 MB), 0 files analyzed. Fix = stream-decode + per-window analysis (two tiers: BPM/key 30s, mood/style/danceability 3min), queryable `analysis_window` child table + aggregates on `analysis`. Design spec: docs/superpowers/specs/2026-06-10-windowed-analysis-design.md. Brainstormed decisions: scope=everything-as-time-series via two tiers; storage=queryable child table (option B); UI=compact+HTMX-expand timeline (option B). Ships v4.0.10.
+- Phase 34 added (2026-06-10): Pipeline Queue-Depth Status & Double-Enqueue Guard — surfaced by live UX bug: operator clicked "Run Analysis", refreshed, and all status vanished (DB shows files as `DISCOVERED` whether or not enqueued; verified 11,429 incomplete `process_file` jobs live on `phaze-agent-nox`, 0 analyzed, button still clickable → double-enqueue risk). Fix = read live SAQ queue depth (`Queue.count`) via `app.state.controller_queue` + per-agent `task_router`, new `get_queue_activity` service, surface through existing 5s `/pipeline/stats` poll, persistent OOB "Processing" card (progress = DB `analyzed`/(analyzed+agent_busy)), coarse Alpine `$store.pipeline` button disable (agent_busy gates Analyze/Fingerprint/Metadata; controller_busy gates Proposals). Brainstormed decisions (operator, 2026-06-10): disable scope = coarse (all agent buttons); indicator = progress bar + counts; progress `done` = DB analyzed count (not SAQ `complete`, survives worker restart). NOTE: numbered 34 because phase.add counted directories (max=31) and collided with the text-only Phase 32/33 entries; renumbered 32→34 + directory renamed. Ships a subsequent v4.0.x.
 
 ### Decisions
 
@@ -102,9 +103,13 @@ None.
 | 260609-f96 | Fix scan_directory 10s asyncio.TimeoutError: AgentTaskRouter._queue_for built per-agent SAQ queues without the apply_project_job_defaults before_enqueue hook, so agent-dispatched jobs inherited SAQ's 10s default instead of worker_job_timeout=600. Register the hook on each per-agent queue (3rd call site) + regression test. Found live on nox/lux v4.0.4. | 2026-06-09 | c6c7e20 | [260609-f96-fix-scan-directory-10s-timeouterror-regi](./quick/260609-f96-fix-scan-directory-10s-timeouterror-regi/) |
 | 260609-glv | Scan-pipeline reliability bundle (3 fixes, surfaced sequentially on v4.0.5): (1) sanitize PG-invalid chars in mutagen tags — _sanitize_pg_text strips NUL U+0000 + lone surrogates U+D800-U+DFFF in _first_str + _serialize_tags (fixes asyncpg UntranslatableCharacterError 500 on metadata writes; preserves valid controls/noncharacters); (2) scan_directory enqueued with timeout=0 (unbounded; Job.stuck stays False) + retries=0 via AgentTaskRouter timeout/retries pass-through — a fixed 600s SAQ timeout killed healthy bulk scans that then retried from scratch and never finished; (3) config.scan_stall_seconds default 600→86400 (24h) so the progress stall reaper is the sole liveness guard. + regression tests. | 2026-06-09 | 4b37c13 | [260609-glv-fix-metadata-write-500-strip-nul-bytes-f](./quick/260609-glv-fix-metadata-write-500-strip-nul-bytes-f/) |
 | 260610-fp9 | Add audio system-deps apt layer to shared Dockerfile (libatomic1 ffmpeg libsndfile1 libchromaprint-tools) — v4.0.8 `python:3.14-slim` image had NO apt layer, so every `process_file` job dead-lettered at `import essentia` (`ImportError: libatomic.so.1`), stranding all 11,428 files in `discovered`. Verified via ldd on live v4.0.8 image: prebuilt essentia-tensorflow wheel bundles its heavy deps; only libatomic1 was unbundled+missing — proven sufficient for full `import essentia`. ffmpeg/fpcalc kept for the broader pipeline (ffprobe video metadata, pyacoustid fingerprinting). Needs v4.0.9 release + nox/lux redeploy. | 2026-06-10 | f5fb6e7 | [260610-fp9-add-audio-system-deps-to-dockerfile-so-e](./quick/260610-fp9-add-audio-system-deps-to-dockerfile-so-e/) |
+| Phase 34 P01 | 12 min | 2 tasks | 2 files |
+| Phase 34 P02 | ~10 min | 3 tasks | 4 files |
+| Phase 34 P03 | ~8 min | 2 tasks | 4 files |
+| Phase 34 P04 | ~18 min | 3 tasks | 4 files |
 
 ## Session Continuity
 
-Last session: 2026-05-17 -- milestone v4.0 archived
-Stopped at: Awaiting `/gsd:new-milestone` for next milestone scope
-Resume file: -
+Last session: 2026-06-11T06:00:00.000Z
+Stopped at: Completed 34-04-PLAN.md (final plan of Phase 34)
+Resume file: None

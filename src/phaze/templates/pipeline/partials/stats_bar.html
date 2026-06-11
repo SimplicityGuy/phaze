@@ -44,5 +44,24 @@
    so the live count un-disables the buttons without clobbering their loading state. #}
 {% if oob_counts %}
 <p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
+<p id="fingerprint-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.metadata_extracted }} files ready</p>
 <p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
+{# Live queue-depth seeds: on each 5s poll, re-push the agent/controller busy counts into
+   $store.pipeline so the Plan 04 button :disabled bindings (agentBusy gates Analyze/
+   Fingerprint/Extract-Metadata; controllerBusy gates Proposals) react to in-flight work.
+   Hidden (no visible text) — their sole job is the x-init store write. The ids
+   agent-busy-seed / controller-busy-seed are the same-id contract with the in-place store
+   anchors that stage_cards.html seeds on the initial full-page render (Plan 04); kept inside
+   the oob_counts gate so they are emitted ONLY on the poll swap (htmx honors hx-swap-oob
+   only during a swap — at initial load they would render stray + collide on those ids).
+   Counts are ints from count()/DB, safe to interpolate into the numeric assignment. #}
+<p id="agent-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.agentBusy = {{ agent_busy }}" class="hidden"></p>
+<p id="controller-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.controllerBusy = {{ controller_busy }}" class="hidden"></p>
+{# Phase 34 Plan 03: OOB-swap the persistent Processing card on the same 5s poll tick.
+   processing_card.html reads oob_counts (truthy here) and emits hx-swap-oob="true" on its
+   outer #processing-card element so htmx replaces the initial dashboard-rendered card in
+   place — keeping the in-flight run visible across refreshes. Kept inside this oob_counts
+   gate so the initial full-page dashboard include (which omits oob_counts) renders the card
+   ONCE without a swap attribute (no duplicate-id DOM). #}
+{% include "pipeline/partials/processing_card.html" %}
 {% endif %}

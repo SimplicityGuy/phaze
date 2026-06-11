@@ -13,6 +13,9 @@
     <!-- Phase 27: Recent Scans mini-table -->
     {% include "pipeline/partials/recent_scans_table.html" %}
 
+    <!-- Phase 34: Persistent Processing card (initial render; OOB-swapped on the 5s poll via stats_bar.html) -->
+    {% include "pipeline/partials/processing_card.html" %}
+
     <!-- Stats bar (polled via HTMX every 5s) -->
     <div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">
         {% include "pipeline/partials/stats_bar.html" %}

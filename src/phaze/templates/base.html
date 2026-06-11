@@ -81,14 +81,20 @@
                 }
             });
             // Pipeline dashboard single-source-of-truth for the live "files ready"
-            // counts. Both the count text and the Run Analysis / Generate Proposals
-            // button :disabled bindings read this store; the 5s /pipeline/stats poll
-            // pushes fresh values via x-init on its OOB count paragraphs so the
-            // buttons un-disable the instant a scan surfaces files WITHOUT the poll
-            // ever re-rendering (and clobbering) the interactive button subtree.
-            // Seeded from the server-rendered count at page load (see stage_cards.html)
-            // so the initial disabled state is correct before any poll has run.
-            Alpine.store('pipeline', { discovered: 0, analyzed: 0 });
+            // counts AND the live queue-busy gates. Both the count text and the four
+            // pipeline-action button :disabled bindings (Run Analysis / Fingerprint /
+            // Extract Metadata / Generate Proposals) read this store; the 5s
+            // /pipeline/stats poll pushes fresh values via x-init on its OOB count +
+            // busy-seed paragraphs so the buttons un-disable the instant a scan
+            // surfaces files OR a queued run drains WITHOUT the poll ever re-rendering
+            // (and clobbering) the interactive button subtree.
+            // discovered/analyzed/metadataExtracted are "files ready" stage counts;
+            // agentBusy/controllerBusy are the live SAQ queue depths that gate the
+            // buttons against double-enqueue. All five are seeded from the
+            // server-rendered counts at page load (see stage_cards.html) and refreshed
+            // by the poll OOB nodes, so every :disabled binding has a defined default
+            // before the first poll tick (never reads undefined).
+            Alpine.store('pipeline', { discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0 });
         });
     </script>
 

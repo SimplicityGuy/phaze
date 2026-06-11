@@ -633,3 +633,75 @@ async def test_dashboard_attaches_activity_attrs(client: AsyncClient, session: A
     assert response.status_code == 200
     assert "stalled?" in response.text  # _is_stalled True path
     assert dashboard is not None  # handler import smoke-check
+
+
+# ---------------------------------------------------------------------------
+# Phase 34 Plan 02: queue-activity surfaced through both contexts + degrade-to-200
+# (VALIDATION 34-02-01). The client fixture skips the lifespan, so app.state queue
+# handles are ABSENT until a test wires fakes — proving get_queue_activity's
+# missing-attr degrade keeps BOTH the 5s poll and the full-page render alive.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stats_degrades_without_queues(client: AsyncClient, session: AsyncSession) -> None:
+    """No fakes wired (app.state queues absent) → /pipeline/stats AND /pipeline/ stay 200.
+
+    Proves the get_queue_activity AttributeError degrade path keeps both the poll and the
+    full-page render from 500ing when the queue handles are missing (a Redis outage degrades
+    identically). This is the no-500-regression guard for the new wiring.
+    """
+    stats_response = await client.get("/pipeline/stats")
+    assert stats_response.status_code == 200
+
+    dashboard_response = await client.get("/pipeline/")
+    assert dashboard_response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stats_surfaces_agent_busy(client: AsyncClient, session: AsyncSession) -> None:
+    """/pipeline/stats re-seeds $store.pipeline.agentBusy/controllerBusy from live queue depth.
+
+    Wires fake queues, seeds the agent queue depth (4 queued + 1 active = 5) and the
+    controller queue (2 queued + 0 active = 2), then asserts the OOB store-write substrings
+    carry the SUMMED busy counts the buttons gate on.
+    """
+    await seed_active_agent(session, "nox")
+    controller_queue, task_router = install_fake_queues(client)
+    task_router.set_counts("nox", queued=4, active=1)
+    controller_queue.set_counts(queued=2, active=0)
+
+    response = await client.get("/pipeline/stats")
+    assert response.status_code == 200
+    assert "$store.pipeline.agentBusy = 5" in response.text
+    assert "$store.pipeline.controllerBusy = 2" in response.text
+    # The Fingerprint button's ready-count gate (metadataExtracted) must ALSO re-seed on
+    # each poll like discovered/analyzed, so it un-disables live instead of only on full reload.
+    assert 'id="fingerprint-files-ready" hx-swap-oob="true"' in response.text
+    assert "$store.pipeline.metadataExtracted = 0" in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_seeds_busy_on_first_load(client: AsyncClient, session: AsyncSession) -> None:
+    """/pipeline/ initial render does not 500 with queues wired (seeds counts on first load)."""
+    await seed_active_agent(session, "nox")
+    controller_queue, task_router = install_fake_queues(client)
+    task_router.set_counts("nox", queued=4, active=1)
+    controller_queue.set_counts(queued=2, active=0)
+
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+
+
+def test_queue_progress_percent_formula() -> None:
+    """queue_progress_percent is analyzed / (analyzed + agent_busy) * 100, divide-by-zero guarded.
+
+    (30, 10) → 75 proves the numerator is analyzed and the denominator is analyzed+agent_busy
+    (a reversed ratio would yield 25). (0, 0) → 0 proves the divide-by-zero guard. (11428, 0)
+    → 100 proves a fully-analyzed archive reports complete.
+    """
+    from phaze.services.pipeline import queue_progress_percent
+
+    assert queue_progress_percent(30, 10) == 75
+    assert queue_progress_percent(0, 0) == 0
+    assert queue_progress_percent(11428, 0) == 100
