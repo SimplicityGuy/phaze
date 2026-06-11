@@ -59,6 +59,7 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 | `SCAN_PATH`                       | No       | `/data/music`                                            | Music directory mounted for scanning.                                       |
 | `MODELS_PATH`                     | No       | `/models` (config default; `.env.example` uses `./models`) | Essentia audio-analysis model directory. Run `just download-models` to populate. |
 | `OUTPUT_PATH`                     | No       | `/data/output`                                           | Destination directory for executed file moves.                             |
+| `PHAZE_ENABLE_SAQ_UI` (or `enable_saq_ui`) | No | `true`                                          | Mount SAQ's built-in queue-monitoring dashboard at `/saq` in the `phaze-api` app (reusing the lifespan SAQ queues; no second Redis pool, no extra port). Set `false` to skip the mount entirely. See [api.md](api.md) → SAQ Monitoring UI. |
 
 ## Worker / task queue settings (all roles)
 

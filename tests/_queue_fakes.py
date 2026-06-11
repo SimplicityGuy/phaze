@@ -67,9 +67,15 @@ class FakeQueue:
     queue-scoped ``queue.job(job_key)`` lookup can be configured.
     """
 
-    def __init__(self, name: str, capture: Capture | None = None) -> None:
+    def __init__(self, name: str, capture: Capture | None = None, *, queued: int = 0, active: int = 0, scheduled: int = 0) -> None:
         self.name = name
         self._capture = capture
+        # Static QueueInfo counts surfaced by ``info`` (Phase 33 saq_web rendering).
+        # Default to an idle queue (0/0/0); override to render non-zero job counts
+        # in the dashboard under test without touching Redis.
+        self._info_queued = queued
+        self._info_active = active
+        self._info_scheduled = scheduled
         self.captured: list[tuple[str, dict[str, Any]]] = []
         self.captured_policy: list[dict[str, Any]] = []
         self.job = AsyncMock(return_value=None)
@@ -116,6 +122,26 @@ class FakeQueue:
         job = MagicMock()
         job.key = f"{self.name}:job:{self._counter}"
         return job
+
+    async def info(self, jobs: bool = False, offset: int = 0, limit: int = 10) -> dict[str, Any]:  # noqa: ARG002
+        """Return a Redis-free ``QueueInfo``-shaped mapping for ``saq_web`` rendering.
+
+        Mirrors ``saq.queue.redis.Queue.info`` (saq/queue/redis.py:170-176): the six keys
+        ``workers``/``name``/``queued``/``active``/``scheduled``/``jobs`` with ``name``
+        echoing ``self.name``. ``workers`` and ``jobs`` are always empty (no live workers,
+        no Redis); the three counts come from the constructor (default 0) so a test can
+        render non-zero depths. ``saq_web`` passes ``jobs=True`` for the single-queue route
+        and ``offset``/``limit`` for pagination — accepted for signature parity, unused
+        here (``ARG002`` suppressed) because there are no real jobs to page over.
+        """
+        return {
+            "workers": {},
+            "name": self.name,
+            "queued": self._info_queued,
+            "active": self._info_active,
+            "scheduled": self._info_scheduled,
+            "jobs": [],
+        }
 
 
 class FakeTaskRouter:

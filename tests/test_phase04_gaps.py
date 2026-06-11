@@ -42,6 +42,10 @@ async def test_lifespan_creates_queue_on_startup() -> None:
         patch("phaze.main.run_migrations", new=AsyncMock()),
         patch("phaze.main.ensure_dev_agent", new=AsyncMock(return_value=None)),
         patch("phaze.main.async_session") as mock_async_session,
+        # Phase 33: the lifespan now mounts /saq (gated by enable_saq_ui, default True),
+        # which reads non-revoked agents via ``async_session``. This test is scoped to the
+        # controller-queue lifecycle, so disable the flag to skip the unrelated agent read.
+        patch("phaze.main.settings.enable_saq_ui", False),
     ):
         mock_queue_cls.from_url.return_value = mock_queue
         mock_conn = AsyncMock()
@@ -82,6 +86,8 @@ async def test_lifespan_disconnects_queue_on_shutdown() -> None:
         patch("phaze.main.run_migrations", new=AsyncMock()),
         patch("phaze.main.ensure_dev_agent", new=AsyncMock(return_value=None)),
         patch("phaze.main.async_session") as mock_async_session,
+        # Phase 33: skip the /saq agent read (see test_lifespan_creates_queue_on_startup).
+        patch("phaze.main.settings.enable_saq_ui", False),
     ):
         mock_queue_cls.from_url.return_value = mock_queue
         mock_conn = AsyncMock()

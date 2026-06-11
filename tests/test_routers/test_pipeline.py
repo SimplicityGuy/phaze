@@ -90,6 +90,19 @@ async def test_dashboard_page(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dashboard_links_to_saq_ui(client: AsyncClient) -> None:
+    """GET /pipeline/ renders an anchor to the SAQ dashboard mounted at /saq (plan 33-02).
+
+    Operator request 2026-06-11: the SAQ queue monitor must be reachable from the pipeline
+    page, not only by typing the /saq URL directly. The link points at the mounted full-page
+    SAQ app, so it opens in a new tab with rel="noopener".
+    """
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    assert 'href="/saq"' in response.text
+
+
+@pytest.mark.asyncio
 async def test_dashboard_includes_settings_batch_size(client: AsyncClient) -> None:
     """GET /pipeline/ dashboard context includes settings_batch_size (default 10)."""
     response = await client.get("/pipeline/")

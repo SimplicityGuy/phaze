@@ -8,11 +8,12 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis_async
 from saq import Queue
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from phaze.config import settings
 from phaze.database import async_session, engine, run_migrations
 from phaze.logging_config import configure_logging
+from phaze.models.agent import Agent
 from phaze.routers import (
     admin_agents,
     agent_analysis,
@@ -43,6 +44,7 @@ from phaze.routers import (
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from phaze.web.saq_mount import build_saq_app
 
 
 @asynccontextmanager
@@ -104,6 +106,40 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Shared Redis client for tracklists idempotency cache (Phase 26 Plan 07, D-27).
     # decode_responses=True so .get/.set return str (matches agent_tracklists.py expectations).
     _app.state.redis = redis_async.Redis.from_url(settings.redis_url, decode_responses=True)
+
+    # Phase 33: mount the SAQ monitoring dashboard at /saq, gated by settings.enable_saq_ui.
+    #
+    # Why HERE (in the lifespan) and not in create_app(): the dashboard reads through the
+    # exact Queue instances wired above -- the named ``controller`` queue plus one
+    # ``phaze-agent-<id>`` queue per non-revoked agent -- and those instances (and the agent
+    # roster they depend on) only exist AFTER startup. Building the mount here reuses the
+    # SAME lifespan-created Queue instances, so the dashboard reads through their existing
+    # Redis pools with NO second connection pool. Starlette wraps its router by reference, so
+    # a mount added inside the lifespan (before the first ``yield``) is served by every
+    # subsequent HTTP request (RESEARCH-VERIFIED, Q1).
+    #
+    # ``revoked_at IS NULL`` is the exact non-revoked-agent query shape used at
+    # pipeline.py:186; it auto-excludes the permanently-revoked ``legacy-application-server``
+    # (whose ``revoked_at == created_at``). ``task_router.queue_for`` returns the CACHED
+    # per-agent Queue (with the ``apply_project_job_defaults`` hook already applied), i.e. the
+    # same instance the enqueue path uses -- never a freshly constructed pool.
+    #
+    # ``build_saq_app`` MUST be called exactly ONCE per process: ``saq_web`` clobbers its
+    # module-level queue registry on every call (RESEARCH Pitfall 1), so the single mount here
+    # is the only call site. Agents registered AFTER startup appear only after the next api
+    # restart -- operator-acceptable; hot-reload is intentionally NOT built (LOCKED).
+    #
+    # The ``/saq`` sub-app holds no resources of its own (it reads via the passed queues, whose
+    # Redis pools the shutdown block already disconnects), so the reverse-order shutdown below
+    # is left untouched. No auth middleware, no new port, no ``saq[web]`` -- the reverse proxy's
+    # internal-realm auth on the private LAN is the sole access control (LOCKED, threat T-33-03).
+    if settings.enable_saq_ui:
+        async with async_session() as session:
+            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+            agents = (await session.execute(agents_stmt)).scalars().all()
+        agent_queues = [_app.state.task_router.queue_for(agent.id) for agent in agents]
+        _app.mount("/saq", build_saq_app([_app.state.controller_queue, *agent_queues]))
+
     yield
     # Shutdown in reverse construction order.
     await _app.state.task_router.close()

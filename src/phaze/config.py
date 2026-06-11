@@ -245,6 +245,16 @@ class BaseSettings(PydanticBaseSettings):
         description="Run `alembic upgrade head` in the api lifespan startup.",
     )
 
+    # Phase 33: mount the SAQ monitoring dashboard at /saq in the api lifespan.
+    # Default-on so the dashboard appears with no operator action; the api
+    # process is the only role that acts on it (the worker parses but ignores).
+    # Set PHAZE_ENABLE_SAQ_UI=false to disable the mount with zero code change.
+    enable_saq_ui: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PHAZE_ENABLE_SAQ_UI", "enable_saq_ui"),
+        description="Mount the SAQ monitoring dashboard at /saq in the API (Phase 33).",
+    )
+
     # Phase 29 D-02: SAN list baked into the auto-generated leaf cert at api
     # entrypoint. Default covers single-host dev (`localhost`, `127.0.0.1`)
     # and the docker-compose service-name DNS (`api`) so agents on the same

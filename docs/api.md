@@ -146,6 +146,18 @@ Operator-facing liveness page for registered worker agents. Read-only; these end
 | GET    | `/admin/agents`        | Agent liveness page (HTML)                     |
 | GET    | `/admin/agents/_table` | Agent liveness table (HTMX poll partial, ~5s)  |
 
+## SAQ Monitoring UI (`/saq`)
+
+SAQ's built-in queue-monitoring dashboard, mounted into the `phaze-api` app at the `/saq` subpath (not the standalone `saq --web` server, no extra bound port). It is wired up during app startup and reuses the lifespan-created SAQ queue instances — the named **controller** queue plus one queue per non-revoked agent — so it opens no second Redis connection pool. The Pipeline Dashboard links to it via a **Queue Monitor ↗** link in the page header.
+
+The mount is gated by `PHAZE_ENABLE_SAQ_UI` (default on; see [configuration.md](configuration.md)). When disabled, no `/saq` route is registered.
+
+**Authentication:** intentionally none at the app layer. Like `/admin/agents`, `/saq` is only reachable behind the reverse proxy that terminates TLS and enforces internal-realm auth.
+
+| Method | Path    | Description                                       |
+|--------|---------|---------------------------------------------------|
+| GET    | `/saq/` | SAQ monitoring dashboard (queues, workers, jobs)  |
+
 ## Distributed Agent API (`/api/internal/agent`)
 
 These endpoints form the HTTP contract used by remote worker agents. They back the distributed-execution work added in Phases 26-29 (HTTP-backed agent worker, watcher service, and distributed execution dispatch): a remote agent walks the filesystem, fingerprints and analyzes audio, and reports results back to the central server over this API rather than touching the database directly.
