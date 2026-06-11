@@ -219,6 +219,24 @@ def derive_style(genre_features: dict[str, Any]) -> str:
     return str(top["label"]).replace("---", "/")
 
 
+def derive_danceability(features: dict[str, Any]) -> float | None:
+    """Derive a scalar danceability from the danceability model set.
+
+    Averages the positive-class (first class = 'danceable') prediction across
+    the 3 variants. Returns None if the danceability set is absent/empty.
+    """
+    set_data = features.get("danceability")
+    if not set_data:
+        return None
+
+    scores: list[float] = []
+    for _variant_name, predictions in set_data.items():
+        if predictions:
+            scores.append(float(predictions[0]["prediction"]))
+
+    return sum(scores) / len(scores) if scores else None
+
+
 # ---------------------------------------------------------------------------
 # Windowed time-series: per-window value containers + aggregate reductions
 # ---------------------------------------------------------------------------
@@ -320,33 +338,57 @@ def aggregate_danceability(coarse: list[CoarseWindow]) -> float | None:
 # Main analysis function (synchronous, for ProcessPoolExecutor)
 # ---------------------------------------------------------------------------
 
+# Sample rates for the two analysis passes (locked by Plan 31-01 spike).
+_FINE_SAMPLE_RATE = 44100
+_COARSE_SAMPLE_RATE = 16000
 
-def analyze_file(file_path: str, models_dir: str) -> dict[str, Any]:
-    """Analyze a single audio file via essentia.
+# AgentSettings defaults (config.py). analyze_file accepts overrides so the
+# agent worker can pass settings.analysis_* values; defaults mirror the config.
+_DEFAULT_FINE_WINDOW_SEC = 30
+_DEFAULT_COARSE_WINDOW_SEC = 180
+_DEFAULT_FINE_MIN_SEC = 15
 
-    This is the main synchronous function called from run_in_process_pool.
-    It runs BPM/key detection at 44.1kHz and all TF model predictions at 16kHz.
 
-    Returns a dict with: bpm, musical_key, mood, style, features (JSONB-ready).
+def _probe_duration_sec(file_path: str) -> float:
+    """Return total audio duration in seconds WITHOUT materializing PCM.
+
+    Uses ``es.MetadataReader`` (reads container/header metadata; it does NOT
+    decode the full signal, unlike ``MonoLoader``). Output index 8 is the
+    duration in seconds. A failure here is fatal (the file is unreadable) and
+    propagates to the caller rather than being treated as a per-window skip.
     """
-    _suppress_essentia_logging()
+    metadata = es.MetadataReader(filename=file_path, filterMetadata=True)()
+    return float(metadata[8])
 
-    # 1. Load audio at 44.1kHz for BPM and key detection
-    audio_44k = es.MonoLoader(filename=file_path, sampleRate=44100)()
 
-    # 2. Detect BPM
-    rhythm = es.RhythmExtractor2013(method="multifeature")
-    bpm, _beats, _beats_confidence, _, _beats_intervals = rhythm(audio_44k)
+def _iter_windows(total_sec: float, win_sec: int, min_sec: int, *, drop_short_trailing: bool) -> list[tuple[int, float, float]]:
+    """Yield ``(index, start_sec, end_sec)`` for fixed-duration windows over a file.
 
-    # 3. Detect key
-    key_ext = es.KeyExtractor(profileType="edma")
-    key, scale, _strength = key_ext(audio_44k)
-    musical_key = f"{key} {scale}"
+    When ``drop_short_trailing`` is True (FINE tier), a trailing window shorter
+    than ``min_sec`` is dropped — EXCEPT window 0, so very short tracks still
+    produce one window. When False (COARSE tier) every window with audio is
+    emitted (no minimum-length floor; RESEARCH Open Q3 RESOLVED).
+    """
+    windows: list[tuple[int, float, float]] = []
+    start = 0.0
+    idx = 0
+    while start < total_sec:
+        end = min(start + win_sec, total_sec)
+        if drop_short_trailing and (end - start) < min_sec and idx > 0:
+            break
+        windows.append((idx, start, end))
+        start = end
+        idx += 1
+    return windows
 
-    # 4. Load audio at 16kHz for TF model predictions
-    audio_16k = es.MonoLoader(filename=file_path, sampleRate=16000)()
 
-    # 5. Run all 11 model sets (33 models)
+def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
+    """Run all 11 characteristic model sets + the genre model on one buffer.
+
+    Identical prediction shape to the previous whole-file path, but fed a single
+    coarse-window buffer instead of the whole file. Reuses the module-level
+    ``_classifier_cache`` (inference-only; no per-window graph reload).
+    """
     features: dict[str, Any] = {}
     for model_set in MODEL_SETS:
         set_data: dict[str, list[dict[str, Any]]] = {}
@@ -356,7 +398,6 @@ def analyze_file(file_path: str, models_dir: str) -> dict[str, Any]:
             set_data[model.variant] = [{"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)]
         features[model_set.name] = set_data
 
-    # 6. Run genre model
     genre_predictions = _predict_single(audio_16k, GENRE_MODEL, models_dir)
     genre_labels = _get_labels(GENRE_MODEL.filename, models_dir)
     genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
@@ -364,15 +405,118 @@ def analyze_file(file_path: str, models_dir: str) -> dict[str, Any]:
     features["genre"] = {
         "predictions": [{"label": label, "confidence": float(conf)} for label, conf in genre_pairs[:10]],
     }
+    return features
 
-    # 7. Derive mood and style
-    mood = derive_mood(features)
-    style = derive_style(features["genre"])
+
+def _analyze_fine_windows(file_path: str, total_sec: float, win_sec: int, min_sec: int) -> list[FineWindow]:
+    """FINE pass: BPM + key per ``win_sec`` window via segmented EasyLoader decode."""
+    fine_windows: list[FineWindow] = []
+    for idx, start, end in _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True):
+        try:
+            buf = es.EasyLoader(filename=file_path, sampleRate=_FINE_SAMPLE_RATE, startTime=start, endTime=end)()
+            bpm, _beats, confidence, _, _beats_intervals = es.RhythmExtractor2013(method="multifeature")(buf)
+            key, scale, _strength = es.KeyExtractor(profileType="edma")(buf)
+            fine_windows.append(
+                FineWindow(
+                    window_index=idx,
+                    start_sec=start,
+                    end_sec=end,
+                    bpm=round(float(bpm), 1),
+                    musical_key=f"{key} {scale}",
+                    confidence=float(confidence),
+                )
+            )
+        except Exception:  # per-window failure isolation: skip, never fail the file
+            log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+            continue
+    return fine_windows
+
+
+def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, models_dir: str) -> list[CoarseWindow]:
+    """COARSE pass: mood/style/danceability per ``win_sec`` window (no length floor)."""
+    coarse_windows: list[CoarseWindow] = []
+    for idx, start, end in _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False):
+        try:
+            buf = es.EasyLoader(filename=file_path, sampleRate=_COARSE_SAMPLE_RATE, startTime=start, endTime=end)()
+            features = _run_model_sets(buf, models_dir)
+            coarse_windows.append(
+                CoarseWindow(
+                    window_index=idx,
+                    start_sec=start,
+                    end_sec=end,
+                    mood=derive_mood(features),
+                    style=derive_style(features["genre"]),
+                    danceability=derive_danceability(features),
+                    features=features,
+                )
+            )
+        except Exception:  # per-window failure isolation: skip, never fail the file
+            log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+            continue
+    return coarse_windows
+
+
+def _representative_features(coarse: list[CoarseWindow]) -> dict[str, Any]:
+    """Pick a representative full-features dict for the aggregate ``analysis`` row.
+
+    Returns the longest-duration coarse window's features (ties → first). Keeps
+    the existing ``features`` JSONB structure (all model sets + genre) populated
+    for downstream consumers; empty dict when there are no coarse windows.
+    """
+    if not coarse:
+        return {}
+    longest = max(coarse, key=lambda w: w.end_sec - w.start_sec)
+    return longest.features
+
+
+def analyze_file(
+    file_path: str,
+    models_dir: str,
+    *,
+    fine_window_sec: int = _DEFAULT_FINE_WINDOW_SEC,
+    coarse_window_sec: int = _DEFAULT_COARSE_WINDOW_SEC,
+    fine_min_sec: int = _DEFAULT_FINE_MIN_SEC,
+) -> dict[str, Any]:
+    """Analyze a single audio file via essentia as a two-tier time-series.
+
+    The main synchronous function called from ``run_in_process_pool``. Instead of
+    decoding the whole file into one buffer (the latent OOM) and feeding long
+    audio to ``RhythmExtractor2013`` (the ``OnsetDetectionGlobal`` overflow), it
+    decodes one short window at a time via segmented ``EasyLoader`` (Plan 31-01
+    locked strategy) so no essentia algorithm ever sees more than one window.
+
+    Two passes:
+      * FINE (44.1 kHz): ``RhythmExtractor2013`` + ``KeyExtractor`` per
+        ``fine_window_sec`` window; trailing windows shorter than
+        ``fine_min_sec`` are dropped (except window 0).
+      * COARSE (16 kHz): the 34 TF model sets per ``coarse_window_sec`` window;
+        every window with audio is analyzed (no minimum-length floor).
+
+    Per-window failures are logged and skipped — one bad window never fails the
+    file. Window sizes default to the ``AgentSettings`` defaults (30/180/15) and
+    may be overridden by the agent worker.
+
+    Returns a dict with the representative aggregates
+    (``bpm``/``musical_key``/``mood``/``style``/``danceability``/``features``)
+    PLUS ``windows``: a flat list of fine + coarse window dicts, each ready for
+    ``AnalysisWindowPayload(**w)``.
+    """
+    _suppress_essentia_logging()
+
+    total_sec = _probe_duration_sec(file_path)
+
+    fine_windows = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec)
+    coarse_windows = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir)
+
+    windows: list[dict[str, Any]] = [w.as_payload_dict() for w in fine_windows]
+    windows.extend(w.as_payload_dict() for w in coarse_windows)
 
     return {
-        "bpm": round(float(bpm), 1),
-        "musical_key": musical_key,
-        "mood": mood,
-        "style": style,
-        "features": features,
+        "bpm": aggregate_bpm(fine_windows),
+        "musical_key": aggregate_key(fine_windows),
+        "mood": aggregate_dominant(coarse_windows, "mood"),
+        "style": aggregate_dominant(coarse_windows, "style"),
+        "danceability": aggregate_danceability(coarse_windows),
+        "features": _representative_features(coarse_windows),
+        "windows": windows,
     }
