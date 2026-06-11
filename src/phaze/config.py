@@ -383,6 +383,24 @@ class AgentSettings(BaseSettings):
         description="Number of FileUpsertRecord rows per chunk in scan_directory (D-11).",
     )
 
+    # Phase 31: windowed time-series audio analysis. The agent worker reads these
+    # to size the per-window decode loop in services/analysis.py::analyze_file.
+    analysis_fine_window_sec: int = Field(
+        default=30,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_FINE_WINDOW_SEC", "analysis_fine_window_sec"),
+        description="Fine-tier (BPM/key) window length in seconds for windowed analysis (Phase 31).",
+    )
+    analysis_coarse_window_sec: int = Field(
+        default=180,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_COARSE_WINDOW_SEC", "analysis_coarse_window_sec"),
+        description="Coarse-tier (mood/style/danceability) window length in seconds for windowed analysis (Phase 31).",
+    )
+    analysis_fine_min_sec: int = Field(
+        default=15,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_FINE_MIN_SEC", "analysis_fine_min_sec"),
+        description="Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31).",
+    )
+
     # Phase 29 D-03: path to the operator-distributed CA cert that the agent's
     # httpx.AsyncClient uses to verify the application-server TLS endpoint.
     # Default `/certs/phaze-ca.crt` matches the bind-mount path inside agent
