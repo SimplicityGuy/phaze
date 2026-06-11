@@ -675,6 +675,10 @@ async def test_pipeline_stats_surfaces_agent_busy(client: AsyncClient, session: 
     assert response.status_code == 200
     assert "$store.pipeline.agentBusy = 5" in response.text
     assert "$store.pipeline.controllerBusy = 2" in response.text
+    # The Fingerprint button's ready-count gate (metadataExtracted) must ALSO re-seed on
+    # each poll like discovered/analyzed, so it un-disables live instead of only on full reload.
+    assert 'id="fingerprint-files-ready" hx-swap-oob="true"' in response.text
+    assert "$store.pipeline.metadataExtracted = 0" in response.text
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,7 @@
    so the live count un-disables the buttons without clobbering their loading state. #}
 {% if oob_counts %}
 <p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
+<p id="fingerprint-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.metadata_extracted }} files ready</p>
 <p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
 {# Live queue-depth seeds: on each 5s poll, re-push the agent/controller busy counts into
    $store.pipeline so the Plan 04 button :disabled bindings (agentBusy gates Analyze/
