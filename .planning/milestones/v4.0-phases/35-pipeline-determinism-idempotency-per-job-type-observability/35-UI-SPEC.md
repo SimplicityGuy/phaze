@@ -1,10 +1,11 @@
 ---
 phase: 35
 slug: pipeline-determinism-idempotency-per-job-type-observability
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-06-11
+reviewed_at: 2026-06-11
 ---
 
 # Phase 35 — UI Design Contract
