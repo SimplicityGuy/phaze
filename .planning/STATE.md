@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: v4.0.7 released (Phase 30 shipped) — GHCR published
-last_updated: "2026-06-10T05:33:13.627Z"
+status: "Phase 31 shipped — PR #115"
+last_updated: "2026-06-11T02:50:58.370Z"
 last_activity: 2026-06-10
 progress:
   total_phases: 6
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 30 complete — control-plane SAQ queue misrouting fixed (every enqueue now targets a consumed queue)
+**Current focus:** Phase 31 — windowed-time-series-audio-analysis
 
 ## Current Position
 
-Phase: 30 (fix-systemic-control-plane-saq-queue-misrouting-every-manual) — COMPLETE (verified passed)
-Plan: 5 of 5
-Status: v4.0.7 released (Phase 30 shipped) — GHCR published
-Last activity: 2026-06-10 - Completed quick task 260610-fp9: add audio system deps to Dockerfile (unblocks essentia; needs v4.0.9)
+Phase: 31 (windowed-time-series-audio-analysis) — EXECUTING
+Plan: 1 of 6
+Status: Phase 31 shipped — PR #115
+Last activity: 2026-06-10
 
 Progress: [██████████] 100%
 
@@ -67,6 +67,7 @@ Progress: [██████████] 100%
 ### Roadmap Evolution
 
 - Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.
+- Phase 31 added (2026-06-10): Windowed Time-Series Audio Analysis — surfaced by live incident after v4.0.9 redeploy: `RhythmExtractor2013` `OnsetDetectionGlobal` buffer overflow crashes whole-file BPM on multi-hour sets (79% of the 11,428-file archive is >50 MB), 0 files analyzed. Fix = stream-decode + per-window analysis (two tiers: BPM/key 30s, mood/style/danceability 3min), queryable `analysis_window` child table + aggregates on `analysis`. Design spec: docs/superpowers/specs/2026-06-10-windowed-analysis-design.md. Brainstormed decisions: scope=everything-as-time-series via two tiers; storage=queryable child table (option B); UI=compact+HTMX-expand timeline (option B). Ships v4.0.10.
 
 ### Decisions
 

@@ -16,7 +16,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.schemas.agent_tasks import ProcessFilePayload
-from tests._queue_fakes import seed_active_agent, wire_fakes
+from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
 
 
 if TYPE_CHECKING:
@@ -158,6 +158,71 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     # The exact kwargs the agent worker receives validate against ProcessFilePayload.
     validated = ProcessFilePayload.model_validate(kwargs)
     assert str(validated.file_id) == expected_id
+
+
+@pytest.mark.asyncio
+async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
+    """Phase 31: POST /api/v1/analyze enqueues process_file with timeout=14400 + retries=2.
+
+    Restart-resilience amendment: a bounded-generous 4h timeout (exceeds the longest
+    legitimate set, spike 31-01) lets SAQ reclaim a dead/restarted worker's in-flight
+    job, while retries=2 stays in the locked 1-2 band so apply_project_job_defaults
+    does NOT clobber it to worker_max_retries (the retries==1 -> 4 churn).
+    """
+    session.add(_make_file(state=FileState.DISCOVERED))
+    await session.commit()
+    await seed_active_agent(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    assert response.json()["enqueued"] == 1
+
+    await _drain_background()
+    queue = task_router.queues["nox"]
+    assert len(queue.captured_policy) == 1
+    assert queue.captured_policy[0] == {"timeout": 14400, "retries": 2}
+    # retries is explicitly NOT 1 (which apply_project_job_defaults would override to 4).
+    assert queue.captured_policy[0]["retries"] != 1
+    # Payload still complete (job-control keys are split out, not part of the payload).
+    task_name, payload = queue.captured[0]
+    assert task_name == "process_file"
+    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path"}
+
+
+@pytest.mark.asyncio
+async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
+    """Phase 31: the HTMX /pipeline/analyze path also enqueues with timeout=14400 + retries=2."""
+    session.add(_make_file(state=FileState.DISCOVERED))
+    await session.commit()
+    await seed_active_agent(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post("/pipeline/analyze")
+    assert response.status_code == 200
+
+    await _drain_background()
+    queue = task_router.queues["nox"]
+    assert len(queue.captured_policy) == 1
+    assert queue.captured_policy[0] == {"timeout": 14400, "retries": 2}
+
+
+@pytest.mark.asyncio
+async def test_process_file_enqueue_policy_survives_project_defaults_hook() -> None:
+    """The before_enqueue hook leaves the explicit timeout=14400 / retries=2 intact.
+
+    apply_project_job_defaults only overrides a Job still at the SAQ defaults
+    (timeout==10, retries==1). An explicit retries=2 (and timeout=14400) is honored,
+    proving the process_file enqueue escapes the retries==1 -> worker_max_retries clobber.
+    """
+    from saq import Job
+
+    from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+
+    job = Job(function="process_file", timeout=14400, retries=2)
+    await apply_project_job_defaults(job)
+    assert job.timeout == 14400
+    assert job.retries == 2
 
 
 @pytest.mark.asyncio

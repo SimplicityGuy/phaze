@@ -30,12 +30,13 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import AnalysisWritePayload, AnalysisWriteResponse
 
@@ -91,6 +92,13 @@ async def put_analysis(
     # CR-01 fix: only fields the client explicitly set participate in the UPDATE.
     dumped = body.model_dump(exclude_unset=True)
 
+    # `windows` is the per-window child time-series, NOT an aggregate column. Pop it
+    # out of the aggregate dump BEFORE the overflow funnel so it never lands in the
+    # `features` JSONB. Child rows are replaced separately, after the aggregate upsert,
+    # guarded on `body.windows is not None` (partial-PUT). The bool of an empty list is
+    # falsy, so read the field off `body` directly to distinguish [] from None.
+    dumped.pop("windows", None)
+
     # Storage conversion at the boundary: AnalysisResult.mood/.style are String(50).
     # Wire format from essentia is dict[str, float]; we serialize to a "k=v,k=v"
     # summary bounded at 50 chars. The conversion stays inside ``dumped`` so the
@@ -129,5 +137,21 @@ async def put_analysis(
         # Avoids Postgres "SET clause empty" syntax error (matches agent_metadata.py:65-68).
         stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
     await session.execute(stmt)
+
+    # Child-row replace (Phase 31, ANL-01): idempotently REPLACE this file's windows
+    # in the SAME transaction as the aggregate upsert. Guarded on `is not None` so an
+    # aggregate-only PUT (windows omitted) leaves existing windows untouched (partial-PUT).
+    # A present-but-empty list explicitly clears all windows. The DELETE predicate and each
+    # inserted row's file_id use the PATH `file_id` ONLY -- the body never carries a
+    # file/window-owner id (cross-file-deletion mitigation, AUTH-01).
+    if body.windows is not None:
+        await session.execute(delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id))
+        if body.windows:
+            # pg_insert bypasses the Python-only `default=uuid.uuid4` PK, so stamp `id`
+            # explicitly per row (mirrors the aggregate path above).
+            await session.execute(
+                pg_insert(AnalysisWindow).values([{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in body.windows])
+            )
+
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)

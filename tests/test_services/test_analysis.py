@@ -11,8 +11,14 @@ import pytest
 from phaze.services.analysis import (
     GENRE_MODEL,
     MODEL_SETS,
+    CoarseWindow,
+    FineWindow,
     ModelConfig,
     ModelSetConfig,
+    aggregate_bpm,
+    aggregate_danceability,
+    aggregate_dominant,
+    aggregate_key,
     analyze_file,
     derive_mood,
     derive_style,
@@ -119,18 +125,27 @@ def test_derive_style_replaces_triple_dash() -> None:
 # --- analyze_file tests (mocked essentia) ---
 
 
-def _build_mock_essentia() -> MagicMock:
+_MOCK_DURATION_SEC = 600.0  # 10 min -> 20 fine (30s) + 4 coarse (180s) windows
+
+
+def _build_mock_essentia(duration_sec: float = _MOCK_DURATION_SEC) -> MagicMock:
     """Build a mock essentia.standard module with all required classes."""
     mock_es = MagicMock()
 
-    # MonoLoader returns a callable that returns a numpy array
+    # MetadataReader()() returns a 12-tuple; index 8 is duration in seconds.
+    mock_metadata = MagicMock()
+    mock_metadata.return_value = ("", "", "", "", "", "", "", MagicMock(), duration_sec, 128, 16000, 1)
+    mock_es.MetadataReader.return_value = mock_metadata
+
+    # MonoLoader / EasyLoader return a callable that returns a numpy array.
     mock_loader_instance = MagicMock()
     mock_loader_instance.return_value = np.zeros(16000, dtype=np.float32)
     mock_es.MonoLoader.return_value = mock_loader_instance
+    mock_es.EasyLoader.return_value = mock_loader_instance
 
     # RhythmExtractor2013 returns (bpm, beats, confidence, _, intervals)
     mock_rhythm = MagicMock()
-    mock_rhythm.return_value = (128.0, np.array([0.5]), np.array([0.9]), np.array([]), np.array([0.5]))
+    mock_rhythm.return_value = (128.0, np.array([0.5]), 3.8, np.array([]), np.array([0.5]))
     mock_es.RhythmExtractor2013.return_value = mock_rhythm
 
     # KeyExtractor returns (key, scale, strength)
@@ -191,10 +206,13 @@ def test_analyze_file_features_has_all_model_sets(_mock_es: MagicMock, mock_get_
 
 @patch("phaze.services.analysis.es")
 def test_analyze_file_raises_on_corrupt_file(mock_es: MagicMock) -> None:
-    """analyze_file raises an exception (not swallowed) when essentia fails to load audio."""
-    mock_loader_instance = MagicMock()
-    mock_loader_instance.side_effect = RuntimeError("Corrupt audio file")
-    mock_es.MonoLoader.return_value = mock_loader_instance
+    """analyze_file propagates (does not swallow) a fatal duration-probe failure.
+
+    A whole-file-unreadable error surfaces at the ``_probe_duration_sec`` stage
+    (es.MetadataReader) and is fatal — unlike per-window decode failures, which
+    are isolated and skipped.
+    """
+    mock_es.MetadataReader.side_effect = RuntimeError("Corrupt audio file")
 
     with pytest.raises(RuntimeError, match="Corrupt audio file"):
         analyze_file("/fake/corrupt.mp3", "/fake/models")
@@ -287,3 +305,235 @@ def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock)
     assert "genre" in ar.features
     for model_set in MODEL_SETS:
         assert model_set.name in ar.features
+
+
+# ---------------------------------------------------------------------------
+# Phase 31: aggregate-reduction unit tests (pure-Python, NO essentia mock)
+# ---------------------------------------------------------------------------
+
+
+def _fine(idx: int, bpm: float | None, key: str | None, *, start: float = 0.0, end: float = 30.0, confidence: float = 3.8) -> FineWindow:
+    return FineWindow(window_index=idx, start_sec=start, end_sec=end, bpm=bpm, musical_key=key, confidence=confidence)
+
+
+def _coarse(
+    idx: int,
+    mood: str | None,
+    style: str | None,
+    dance: float | None,
+    *,
+    start: float = 0.0,
+    end: float = 180.0,
+) -> CoarseWindow:
+    return CoarseWindow(window_index=idx, start_sec=start, end_sec=end, mood=mood, style=style, danceability=dance, features={})
+
+
+def test_aggregate_bpm_median() -> None:
+    """aggregate_bpm returns the median of fine-window BPMs rounded to 0.1."""
+    fine = [_fine(0, 120.0, "C major"), _fine(1, 124.0, "C major"), _fine(2, 121.0, "C major")]
+    assert aggregate_bpm(fine) == 121.0
+
+
+def test_aggregate_bpm_empty_returns_none() -> None:
+    """aggregate_bpm on no usable windows returns None."""
+    assert aggregate_bpm([]) is None
+
+
+def test_aggregate_bpm_excludes_zero_confidence() -> None:
+    """A confidence==0.0 window (unreliable BPM, Pitfall 2) is excluded from the median."""
+    fine = [_fine(0, 120.0, "C major"), _fine(1, 999.0, "C major", confidence=0.0)]
+    assert aggregate_bpm(fine) == 120.0
+
+
+def test_aggregate_bpm_excludes_none_bpm() -> None:
+    """Windows with bpm=None are excluded from the median."""
+    fine = [_fine(0, 120.0, "C major"), _fine(1, None, "C major")]
+    assert aggregate_bpm(fine) == 120.0
+
+
+def test_aggregate_key_duration_weighted() -> None:
+    """aggregate_key returns the key with the most total window duration."""
+    # 'A minor' covers 60s across two windows; 'C major' covers 30s.
+    fine = [
+        _fine(0, 120.0, "C major", start=0.0, end=30.0),
+        _fine(1, 120.0, "A minor", start=30.0, end=60.0),
+        _fine(2, 120.0, "A minor", start=60.0, end=90.0),
+    ]
+    assert aggregate_key(fine) == "A minor"
+
+
+def test_aggregate_key_empty_returns_none() -> None:
+    """aggregate_key on empty input returns None."""
+    assert aggregate_key([]) is None
+
+
+def test_aggregate_dominant_time_weighted() -> None:
+    """aggregate_dominant returns the time-weighted dominant label for the attr."""
+    coarse = [
+        _coarse(0, "happy", "house", 1.0, start=0.0, end=180.0),
+        _coarse(1, "sad", "techno", 1.0, start=180.0, end=360.0),
+        _coarse(2, "sad", "techno", 1.0, start=360.0, end=540.0),
+    ]
+    assert aggregate_dominant(coarse, "mood") == "sad"
+    assert aggregate_dominant(coarse, "style") == "techno"
+
+
+def test_aggregate_dominant_empty_returns_none() -> None:
+    """aggregate_dominant on empty input returns None."""
+    assert aggregate_dominant([], "mood") is None
+
+
+def test_aggregate_danceability_mean() -> None:
+    """aggregate_danceability returns the mean of coarse-window danceability values."""
+    coarse = [_coarse(0, "happy", "house", 0.2), _coarse(1, "happy", "house", 0.4)]
+    assert aggregate_danceability(coarse) == pytest.approx(0.3)
+
+
+def test_aggregate_danceability_empty_returns_none() -> None:
+    """aggregate_danceability on empty input returns None."""
+    assert aggregate_danceability([]) is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 31: per-window analyze_file behavior (mocked essentia)
+# ---------------------------------------------------------------------------
+
+
+def _fine_dicts(result: dict[str, Any]) -> list[dict[str, Any]]:
+    return [w for w in result["windows"] if w["tier"] == "fine"]
+
+
+def _coarse_dicts(result: dict[str, Any]) -> list[dict[str, Any]]:
+    return [w for w in result["windows"] if w["tier"] == "coarse"]
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=65.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_window_boundaries(mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """Fine windows tile at [0,30),[30,60); the 5s trailing window is dropped. Coarse is one [0,65)."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    fine = _fine_dicts(result)
+    coarse = _coarse_dicts(result)
+    assert [(w["start_sec"], w["end_sec"]) for w in fine] == [(0.0, 30.0), (30.0, 60.0)]
+    assert [(w["start_sec"], w["end_sec"]) for w in coarse] == [(0.0, 65.0)]
+    # No whole-file MonoLoader decode; segmented EasyLoader is used instead.
+    mock_es.MonoLoader.assert_not_called()
+    assert mock_es.EasyLoader.called
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=190.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_trailing_policy_is_asymmetric(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """A sub-15s trailing FINE window is dropped, but the COARSE tier keeps its short trailing window."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    fine = _fine_dicts(result)
+    coarse = _coarse_dicts(result)
+    # Fine: [180,190) is 10s < 15 -> dropped; last fine window ends at 180.
+    assert max(w["end_sec"] for w in fine) == 180.0
+    # Coarse: no floor -> [0,180) + [180,190) both kept; last coarse window ends at 190.
+    assert len(coarse) == 2
+    assert max(w["end_sec"] for w in coarse) == 190.0
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=10.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_keeps_short_window_zero(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """A very short track (10s < fine_min_sec) still yields one fine window (window 0 exception)."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    fine = _fine_dicts(result)
+    assert len(fine) == 1
+    assert (fine[0]["start_sec"], fine[0]["end_sec"]) == (0.0, 10.0)
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=90.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_failure_isolation(mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """A window whose RhythmExtractor2013 raises is skipped; remaining windows + aggregates still return."""
+    mock_get_labels.side_effect = _mock_labels_file
+    # 90s -> 3 fine windows; make the 2nd raise (e.g. OnsetDetectionGlobal overflow).
+    mock_es.RhythmExtractor2013.return_value.side_effect = [
+        (128.0, np.array([0.5]), 3.8, np.array([]), np.array([0.5])),
+        RuntimeError("OnsetDetectionGlobal overflow"),
+        (128.0, np.array([0.5]), 3.8, np.array([]), np.array([0.5])),
+    ]
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    fine = _fine_dicts(result)
+    assert len(fine) == 2, "the failed middle window must be skipped, not crash the file"
+    # Aggregates are still produced from the surviving windows.
+    assert result["bpm"] == 128.0
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_coarse_failure_isolation(mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """All coarse windows failing (decode error) is isolated: fine windows + aggregates still return."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    fine_loader = MagicMock()
+    fine_loader.return_value = np.zeros(16000, dtype=np.float32)
+
+    def _easyloader(*, filename: str, sampleRate: int, startTime: float, endTime: float) -> MagicMock:
+        if sampleRate == 16000:  # coarse pass
+            raise RuntimeError("coarse decode failed")
+        return fine_loader
+
+    mock_es.EasyLoader.side_effect = _easyloader
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    # Every coarse window was skipped; the fine tier + its aggregates survive.
+    assert _coarse_dicts(result) == []
+    assert len(_fine_dicts(result)) == 20
+    assert result["bpm"] == 128.0
+    # Empty coarse tier -> None mood/style/danceability and empty features blob.
+    assert result["mood"] is None
+    assert result["style"] is None
+    assert result["danceability"] is None
+    assert result["features"] == {}
+
+
+def test_derive_danceability_returns_none_when_absent() -> None:
+    """derive_danceability returns None when the danceability model set is absent."""
+    from phaze.services.analysis import derive_danceability
+
+    assert derive_danceability({}) is None
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_return_shape_has_windows(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """The return dict carries all aggregate keys PLUS a flat fine+coarse windows list."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    for key in ("bpm", "musical_key", "mood", "style", "danceability", "features", "windows"):
+        assert key in result, f"missing aggregate/return key: {key}"
+
+    # 600s -> 20 fine (30s) + 4 coarse (180/180/180/60) windows.
+    assert len(_fine_dicts(result)) == 20
+    assert len(_coarse_dicts(result)) == 4
+    # Every window dict is ready for AnalysisWindowPayload(**w).
+    for w in result["windows"]:
+        assert {"tier", "window_index", "start_sec", "end_sec"} <= set(w)
+        if w["tier"] == "fine":
+            assert {"bpm", "musical_key"} <= set(w)
+        else:
+            assert {"mood", "style", "danceability", "features"} <= set(w)

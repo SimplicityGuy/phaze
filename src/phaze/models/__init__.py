@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models - import all models for Alembic autogenerate discovery."""
 
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
@@ -17,6 +17,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 __all__ = [
     "Agent",
     "AnalysisResult",
+    "AnalysisWindow",
     "DiscogsLink",
     "ExecutionLog",
     "ExecutionStatus",
