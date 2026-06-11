@@ -17,10 +17,18 @@ without external services. The assertions focus on the **call order** and
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 import pytest
+
+from tests._queue_fakes import FakeQueue
+
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 
 @pytest.mark.asyncio
@@ -64,7 +72,15 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
     # rather than touching Postgres.
     class _FakeSessionCM:
         async def __aenter__(self) -> object:
-            return MagicMock()
+            session = MagicMock()
+            # Phase 33: the lifespan's SAQ-mount block runs ``await session.execute(stmt)``
+            # then ``.scalars().all()`` to enumerate non-revoked agents (enable_saq_ui defaults
+            # True). A plain ``MagicMock().execute(stmt)`` is NOT awaitable, so wire an AsyncMock
+            # whose ``.scalars().all()`` yields zero agents -> only the controller queue mounts.
+            # This keeps SAQ-mount ON in this migration-order test's path; all migration-order
+            # assertions below stay intact (this is a compatibility edit, not a weakening).
+            session.execute = AsyncMock(return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))))
+            return session
 
         async def __aexit__(self, *_a: object) -> None:
             pass
@@ -122,3 +138,155 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
     assert call_order.index("engine.begin") < call_order.index("ensure_dev_agent"), (
         f"ensure_dev_agent must run AFTER engine connectivity check; order={call_order!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 33: SAQ monitoring dashboard mounted at /saq inside the lifespan.
+# ---------------------------------------------------------------------------
+
+
+def _patch_saq_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+    main_module: ModuleType,
+    *,
+    agents: list[object],
+) -> tuple[MagicMock, MagicMock]:
+    """Apply the shared lifespan monkeypatches for the SAQ-mount tests.
+
+    Boots ``phaze.main`` in-process with no DB / Redis / SAQ network access. The controller
+    queue double exposes a real ``str`` ``name == "controller"`` (so ``saq_web`` keys its
+    registry on it), a sync ``register_before_enqueue``, an async ``disconnect``, and an async
+    ``info`` returning a ``QueueInfo``-shaped dict so the dashboard renders. ``task_router``'s
+    ``queue_for`` is a MagicMock returning one ``FakeQueue("phaze-agent-nox")`` (Wave 0 double
+    with async ``info``), and the patched ``async_session``'s ``execute`` is an AsyncMock whose
+    ``.scalars().all()`` yields ``agents`` (the non-revoked-agent enumeration the lifespan runs).
+
+    Returns ``(controller_queue, task_router)`` so a test can assert reuse / call args.
+    """
+
+    async def _noop_migrations() -> None:
+        return None
+
+    async def _noop_ensure_dev_agent(_session: object) -> None:
+        return None
+
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock()
+
+    class _FakeBeginCM:
+        async def __aenter__(self) -> object:
+            return fake_conn
+
+        async def __aexit__(self, *_a: object) -> None:
+            pass
+
+    fake_engine = MagicMock()
+    fake_engine.begin = _FakeBeginCM
+    fake_engine.dispose = AsyncMock()
+
+    # async_session is used twice in the lifespan: by ensure_dev_agent (patched to a no-op) and
+    # by the SAQ-mount block, which does ``await session.execute(stmt)`` then ``.scalars().all()``.
+    class _FakeSessionCM:
+        async def __aenter__(self) -> object:
+            session = MagicMock()
+            session.execute = AsyncMock(return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=agents)))))
+            return session
+
+        async def __aexit__(self, *_a: object) -> None:
+            pass
+
+    monkeypatch.setattr(main_module, "run_migrations", _noop_migrations)
+    monkeypatch.setattr(main_module, "ensure_dev_agent", _noop_ensure_dev_agent)
+    monkeypatch.setattr(main_module, "engine", fake_engine)
+    monkeypatch.setattr(main_module, "async_session", _FakeSessionCM)
+
+    # Controller queue double: real str name + async info so saq_web keys/renders it.
+    controller_queue = MagicMock()
+    controller_queue.name = "controller"
+    controller_queue.register_before_enqueue = MagicMock()
+    controller_queue.disconnect = AsyncMock()
+    controller_queue.info = AsyncMock(return_value={"workers": {}, "name": "controller", "queued": 0, "active": 0, "scheduled": 0, "jobs": []})
+    fake_queue_cls = MagicMock()
+    fake_queue_cls.from_url = MagicMock(return_value=controller_queue)
+    monkeypatch.setattr(main_module, "Queue", fake_queue_cls)
+
+    # task_router.queue_for -> the cached per-agent Queue (here a Wave 0 FakeQueue with .info).
+    fake_router = MagicMock()
+    fake_router.close = AsyncMock()
+    fake_router.queue_for = MagicMock(return_value=FakeQueue("phaze-agent-nox"))
+    monkeypatch.setattr(main_module, "AgentTaskRouter", lambda redis_url: fake_router)  # noqa: ARG005
+
+    fake_redis = AsyncMock()
+    fake_redis.aclose = AsyncMock()
+    monkeypatch.setattr(main_module, "redis_async", MagicMock(Redis=MagicMock(from_url=lambda _url, decode_responses: fake_redis)))  # noqa: ARG005
+
+    return controller_queue, fake_router
+
+
+def _override_health_session(app: object) -> None:
+    """Override ``get_session`` so ``GET /health`` (its ``SELECT 1``) needs no real Postgres.
+
+    The raw ``create_app()`` used here lacks the conftest ``client`` fixture's DB override, so
+    without this the health endpoint opens a real asyncpg connection and the request raises.
+    """
+    from phaze.database import get_session
+
+    fake_session = MagicMock()
+    fake_session.execute = AsyncMock()
+    app.dependency_overrides[get_session] = lambda: fake_session  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_saq_mount_served_in_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With enable_saq_ui True, the lifespan-mounted /saq is served and /health is unaffected."""
+    import phaze.main as main_module
+
+    _patch_saq_lifespan(monkeypatch, main_module, agents=[SimpleNamespace(id="nox", name="nox")])
+    monkeypatch.setattr(main_module.settings, "enable_saq_ui", True)
+
+    app = main_module.create_app()
+    _override_health_session(app)
+    with TestClient(app) as c:
+        # Mount-in-lifespan is served (Starlette wraps its router by reference) AND the
+        # existing routers are untouched.
+        assert c.get("/saq/").status_code == 200
+        assert c.get("/health").status_code == 200
+    # A /saq Mount is present on the app router after startup.
+    assert any(getattr(r, "path", None) == "/saq" for r in app.router.routes), "expected a /saq Mount after startup"
+
+
+@pytest.mark.asyncio
+async def test_saq_queues_assembled_and_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mount registry is the controller + one per-agent queue, built from the SAME instances."""
+    import saq.web.starlette as saq_starlette
+
+    import phaze.main as main_module
+
+    controller_queue, task_router = _patch_saq_lifespan(monkeypatch, main_module, agents=[SimpleNamespace(id="nox", name="nox")])
+    monkeypatch.setattr(main_module.settings, "enable_saq_ui", True)
+
+    app = main_module.create_app()
+    with TestClient(app):
+        # saq_web stores the assembled queues in its module-global registry, keyed by name.
+        assert set(saq_starlette.QUEUES.keys()) == {"controller", "phaze-agent-nox"}
+        # No second pool: the registry holds the SAME controller instance wired on app.state.
+        assert saq_starlette.QUEUES["controller"] is app.state.controller_queue
+        assert saq_starlette.QUEUES["controller"] is controller_queue
+    # The per-agent queue came from task_router.queue_for("nox") (the cached enqueue-path instance).
+    assert task_router.queue_for.call_args_list == [(("nox",), {})]
+
+
+@pytest.mark.asyncio
+async def test_saq_disabled_flag_skips_mount(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With enable_saq_ui False, no /saq route is registered and /health still serves."""
+    import phaze.main as main_module
+
+    _patch_saq_lifespan(monkeypatch, main_module, agents=[SimpleNamespace(id="nox", name="nox")])
+    monkeypatch.setattr(main_module.settings, "enable_saq_ui", False)
+
+    app = main_module.create_app()
+    _override_health_session(app)
+    with TestClient(app) as c:
+        assert not any(getattr(r, "path", None) == "/saq" for r in app.router.routes), "no /saq Mount when the flag is off"
+        assert c.get("/saq/").status_code == 404
+        assert c.get("/health").status_code == 200
