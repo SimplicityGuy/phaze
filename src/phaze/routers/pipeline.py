@@ -20,8 +20,8 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services import enqueue_router
+from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import get_files_by_state, get_pipeline_stats, get_queue_activity, queue_progress_percent
 
@@ -44,43 +44,24 @@ _background_tasks: set[asyncio.Task[None]] = set()
 async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> None:
     """Background coroutine to enqueue process_file jobs for a list of files.
 
-    Builds a COMPLETE ``ProcessFilePayload`` per file (file_id, original_path,
-    file_type, agent_id, models_path) and serializes it to enqueue kwargs via
-    ``model_dump(mode="json")`` so the UUID round-trips as a string and the agent
-    worker's ``ProcessFilePayload.model_validate(kwargs)`` (``extra="forbid"``)
-    accepts it. Mirrors the working ``agent_files.py`` ExtractMetadataPayload
-    pattern -- the pre-Phase-30 bug enqueued only ``file_id``, which dead-lettered
-    every job on the agent worker once routing started delivering them.
+    Delegates each enqueue to the FastAPI-free shared producer
+    ``services.analysis_enqueue.enqueue_process_file``. That helper owns the
+    deterministic job key (``process_file:<file_id>``), the complete 5-field
+    ``ProcessFilePayload``, and the job policy (``timeout=14400`` / ``retries=2``)
+    -- so this dashboard path and the Wave-2 agent-reboot re-enqueue path cannot
+    drift: both emit the IDENTICAL key, letting SAQ's per-queue deterministic-key
+    dedup collapse a repeat enqueue of an in-flight file to a no-op (32-RESEARCH §Q4).
 
     ``files`` attributes (``id`` / ``original_path`` / ``file_type``) are already
     loaded by ``get_files_by_state`` and the request never commits, so reading them
     here (after the request session may have closed) does not trigger a lazy load.
 
-    Phase 31 job policy: every process_file enqueue carries an explicit ``timeout``
-    and ``retries`` so a single long/bad file no longer churns four full re-analyses.
-    All process_file trigger endpoints (``/api/v1/analyze`` + the HTMX ``/pipeline/analyze``)
-    funnel through this one helper, so the policy is applied at every enqueue site.
+    All process_file trigger endpoints (``/api/v1/analyze`` + the HTMX
+    ``/pipeline/analyze``) funnel through this one helper, so the key + policy are
+    applied identically at every enqueue site.
     """
     for f in files:
-        payload = ProcessFilePayload(
-            file_id=f.id,
-            original_path=f.original_path,
-            file_type=f.file_type,
-            agent_id=agent_id,
-            models_path=models_path,
-        )
-        await queue.enqueue(
-            "process_file",
-            # 4h bounded: exceeds longest legit set (~3h) yet lets SAQ reclaim a dead/restarted
-            # worker's job (spike 31-01 + restart-resilience). Hardcoded like pipeline_scans.py.
-            timeout=14400,
-            # retries=2 (NOT 1): apply_project_job_defaults (tasks/_shared/queue_defaults.py)
-            # only fills jobs still at the SAQ default retries==1, clobbering it to
-            # worker_max_retries(4). retries=2 is honored and stays in the locked 1-2 band,
-            # killing the 4x re-analysis churn from the original long-file incident.
-            retries=2,
-            **payload.model_dump(mode="json"),
-        )
+        await enqueue_process_file(queue, f, agent_id, models_path)
 
 
 async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:

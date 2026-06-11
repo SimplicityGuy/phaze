@@ -182,8 +182,10 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     job, while retries=2 stays in the locked 1-2 band so apply_project_job_defaults
     does NOT clobber it to worker_max_retries (the retries==1 -> 4 churn).
     """
-    session.add(_make_file(state=FileState.DISCOVERED))
+    file_rec = _make_file(state=FileState.DISCOVERED)
+    session.add(file_rec)
     await session.commit()
+    expected_key = f"process_file:{file_rec.id}"
     await seed_active_agent(session)
     _, task_router = install_fake_queues(client)
 
@@ -194,7 +196,8 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     await _drain_background()
     queue = task_router.queues["nox"]
     assert len(queue.captured_policy) == 1
-    assert queue.captured_policy[0] == {"timeout": 14400, "retries": 2}
+    # Phase 32: the shared helper now also sets the deterministic dedup key.
+    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 14400, "retries": 2}
     # retries is explicitly NOT 1 (which apply_project_job_defaults would override to 4).
     assert queue.captured_policy[0]["retries"] != 1
     # Payload still complete (job-control keys are split out, not part of the payload).
@@ -204,10 +207,42 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
 
 
 @pytest.mark.asyncio
+async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, session: AsyncSession) -> None:
+    """Phase 32: the dashboard "Run Analysis" path now emits ``process_file:<file_id>`` per file.
+
+    Proves both producers (this dashboard path + the Wave-2 reboot re-enqueue) emit the
+    IDENTICAL deterministic key so SAQ's per-queue dedup can collapse a re-trigger of an
+    in-flight file to a no-op (32-CONTEXT "Dedup"; 32-RESEARCH §Q4). Each enqueue's
+    ``captured_policy["key"]`` must equal ``process_file:`` + that enqueue's payload file_id.
+    """
+    files = [_make_file(state=FileState.DISCOVERED) for _ in range(3)]
+    session.add_all(files)
+    await session.commit()
+    expected_keys = {f"process_file:{f.id}" for f in files}
+    await seed_active_agent(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    assert response.json()["enqueued"] == 3
+
+    await _drain_background()
+    queue = task_router.queues["nox"]
+    assert len(queue.captured_policy) == 3
+    # Every enqueue carries a key, and it matches that same enqueue's payload file_id.
+    for (task_name, payload), policy in zip(queue.captured, queue.captured_policy, strict=True):
+        assert task_name == "process_file"
+        assert policy["key"] == f"process_file:{payload['file_id']}"
+    assert {p["key"] for p in queue.captured_policy} == expected_keys
+
+
+@pytest.mark.asyncio
 async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
     """Phase 31: the HTMX /pipeline/analyze path also enqueues with timeout=14400 + retries=2."""
-    session.add(_make_file(state=FileState.DISCOVERED))
+    file_rec = _make_file(state=FileState.DISCOVERED)
+    session.add(file_rec)
     await session.commit()
+    expected_key = f"process_file:{file_rec.id}"
     await seed_active_agent(session)
     _, task_router = install_fake_queues(client)
 
@@ -217,7 +252,8 @@ async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClie
     await _drain_background()
     queue = task_router.queues["nox"]
     assert len(queue.captured_policy) == 1
-    assert queue.captured_policy[0] == {"timeout": 14400, "retries": 2}
+    # Phase 32: the shared helper now also sets the deterministic dedup key.
+    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 14400, "retries": 2}
 
 
 @pytest.mark.asyncio
