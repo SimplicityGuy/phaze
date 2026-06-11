@@ -121,6 +121,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 **Plans:** 5/5 plans complete
 
 Plans:
+
 - [x] 30-01-PLAN.md — Routing foundation: named controller queue in lifespan, remove default queue, enqueue-routing helper + active-agent selection
 - [x] 30-02-PLAN.md — Fix pipeline.py (process_file / generate_proposals / extract_file_metadata / fingerprint_file — 8 handlers) + tests
 - [x] 30-03-PLAN.md — Fix tracklists.py (scrape/search/match → controller; scan_live_set → per-agent) + scan-status poll re-targeting + tests
@@ -137,6 +138,7 @@ Plans:
 **Plans:** 6/6 plans complete
 
 Plans:
+
 - [x] 31-01-PLAN.md — Spike & decode-strategy lock (EasyLoader-primary vs decode+Resample-hybrid) on a real ≥2h file [Wave 1]
 - [x] 31-02-PLAN.md — `AnalysisWindow` model + additive migration 018 (table + composite/partial/label indexes, CASCADE FK) [Wave 1]
 - [x] 31-03-PLAN.md — Wire schema `AnalysisWindowPayload` + idempotent `put_analysis` child-row replace [Wave 2]
@@ -153,6 +155,7 @@ Plans:
 **Plans:** 4/4 plans complete
 
 Plans:
+
 - [x] 32-00-PLAN.md — Wave 0 harness: dedup-aware `DedupFakeQueue`/`DedupFakeTaskRouter` so the SAQ no-op-on-duplicate-key behavior is unit-testable without Redis [Wave 0]
 - [x] 32-01-PLAN.md — Shared FastAPI-free `enqueue_process_file` + `process_file_job_key` helper; refactor dashboard `_enqueue_analysis_jobs` to emit the deterministic key [Wave 1]
 - [x] 32-02-PLAN.md — Controller `reenqueue_discovered(ctx)` task: query DISCOVERED, route to active agent, shared-helper enqueue with dedup no-op, zero-agent graceful skip [Wave 2]
@@ -162,16 +165,19 @@ Plans:
 
 **Goal:** Expose SAQ's built-in monitoring web UI by mounting it into the existing `phaze-api` FastAPI ASGI app at the `/saq` subpath — NOT the standalone `saq --web` server, NOT a new bound port, NO app-layer auth. `phaze-api` is deployed behind a reverse proxy that already terminates TLS and enforces internal-realm auth, so the dashboard is intentionally unauthenticated at the app layer.
 **Approach / tasks:**
+
 1. Anchor: app factory `create_app()` in `src/phaze/main.py:115` (`app = FastAPI(...)`, entrypoint `phaze.entrypoint` → uvicorn :8000). The lifespan (`main.py:49`) already creates the SAQ queue + task_router + redis on startup and holds them in `app.state` — **reuse those same `saq.Queue` instance(s)** (same Redis connection from `REDIS_URL`/`REDIS_URL_FILE`); do NOT open a second connection pool.
 2. Identify every queue worth monitoring: the named **controller** queue (`phaze.tasks.controller.settings`) plus the per-agent / distributed-agent queues (`AgentTaskRouter`). Mount the dashboard over all of them.
 3. Mount via `from saq.web.starlette import saq_web` → `app.mount("/saq", saq_web("/saq", queues=[control_queue, ...]))`. **Confirm the import path for the installed SAQ version** (`saq[redis]>=0.26.4`) — `saq.web.starlette` vs `saq.web` — before committing.
 4. SAQ is already a direct dependency (workers use it); no new dependency. (If the web extra is needed at runtime, add `saq[web]` — verify against the installed version.)
 5. Verify the mount does NOT break TLS startup, the `/health` healthcheck, or any existing router; and that `/saq` loads the dashboard listing the queue(s).
 6. PR description must note the UI is intentionally unauthenticated at the app layer because it is only reachable behind the reverse proxy's internal-realm auth.
+
 **Constraints:** No standalone web server, no new bound port, no auth middleware — the only change is mounting `saq_web` into the existing FastAPI app.
 **Depends on:** Phase 31 (controller queue + lifespan queue wiring already in place from Phase 30/31)
 **Plans:** 4/4 plans complete
 Plans:
+
 - [x] 33-00-PLAN.md — Wave 0 harness: add FakeQueue.info() so saq_web renders without Redis
 - [x] 33-01-PLAN.md — Wave 1: build_saq_app(/saq) mount helper + enable_saq_ui flag + unit tests
 - [x] 33-02-PLAN.md — Wave 2: mount /saq in the lifespan (controller + per-agent queues) + integration tests
@@ -186,6 +192,7 @@ Plans:
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
 **Status:** Complete (verified 2026-06-10 — VERIFICATION.md status: passed, 5/5 must-haves; full suite green, phase-module coverage 90.52%).
 **Plans:** 5/5 plans executed
+
 - [x] 34-00-PLAN.md — Wave 0: add seedable async `count` to `FakeQueue`/`FakeTaskRouter` test doubles
 - [x] 34-01-PLAN.md — Wave 1: `get_queue_activity(app_state, session)` service with split failure isolation
 - [x] 34-02-PLAN.md — Wave 2: wire counts + guarded percent into dashboard()/stats contexts + OOB store-write nodes
@@ -197,6 +204,7 @@ Plans:
 **Goal:** Make every pipeline job schedule-safe (no duplicate queued items), idempotent (no duplicate rows), give the operator manual control over metadata extraction, and surface per-job-type progress on the dashboard. Generalizes the Phase 32 deterministic-key fix (which covered only `process_file`) to the whole pipeline. Surfaced by the 2026-06-11 queue-doubling incident: random-uuid `process_file` jobs from the pre-Phase-32 "Run Analysis" path could not dedup against the new deterministic-key re-enqueue, doubling the live queue to ~22,830 jobs over 11,428 files.
 
 **Scope (5 work items):**
+
 1. **Deterministic SAQ keys for ALL job types**, enforced CENTRALLY in the enqueue layer (`enqueue_router` / `agent_task_router` / a SAQ `before_enqueue` hook) so every task is keyed by construction as `<task>:<natural_id>` and no call site can drift. Today only `process_file` (`analysis_enqueue.py:64`) is keyed; `extract_file_metadata` (3 sites), `fingerprint_file`, `generate_proposals`, `scan_live_set`, `search_tracklist`, `scrape_and_store_tracklist`, `match_tracklist_to_discogs` all use random uuid keys.
 2. **Audit + ensure ALL task DB writes upsert** (`ON CONFLICT DO UPDATE`) so re-runs never duplicate rows. Already idempotent (D-26): `agent_analysis`, `agent_metadata`, `agent_fingerprint`, `agent_files`, `agent_tracklists`. Verify/fill gaps: `generate_proposals` (proposals), `execute_approved_batch` (execution_log), `tag_write_log`.
 3. **Remove auto metadata-extraction from discovery/scan** (`agent_files.py:130-161` D-20/21/22 + `ingestion.py:183-191` D-09 auto-enqueue `extract_file_metadata` per discovered music/video file). Make `extract_file_metadata` MANUAL-only — operator triggers it from the dashboard.
@@ -211,10 +219,17 @@ Plans:
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
 **Status:** Planned (2026-06-11) — 5 plans across 3 waves.
 **Plans:** 5 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 35-01-PLAN.md — Centralized deterministic SAQ keys (before_enqueue hook + _KEY_BUILDERS) + maintained per-function counters (enqueued/after_process) + remove auto metadata-extraction (D-06) + drift-guard test [Wave 1]
 - [ ] 35-02-PLAN.md — Proposals idempotency: migration 019 (dedupe → partial unique index uq_proposals_file_id_pending) + store_proposals on_conflict_do_update (D-04) + execution_log/tag_write_log audit [Wave 1]
 - [ ] 35-03-PLAN.md — get_stage_progress reconcile query: per-stage output-table COUNT(DISTINCT), the D-03 DB-truth source for the parallel DAG nodes (RESEARCH Q5) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 35-04-PLAN.md — Dashboard data plumbing: extend $store.pipeline + dashboard()/pipeline_stats_partial() contexts + stats_bar.html OOB per-node seeds [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 35-05-PLAN.md — DAG canvas UI (sketch 001 Variant B): 9-node SVG graph with honest topology + gated triggers + <ol> fallback; removes stage_cards.html + processing_card.html (D-01) [Wave 3]
