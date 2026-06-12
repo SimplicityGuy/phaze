@@ -253,10 +253,13 @@ Plans:
 **Requirements**: Queue backend on Postgres; native priority + scheduled-park available; no regression in reboot re-enqueue, SAQ UI, or determinism.
 **Depends on:** Phase 35
 **Rollout:** Ships as a v4.0.x → GHCR publish → homelab redeploy (paired with the Step D homelab change).
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 36 to break down)
+- [ ] 36-01-PLAN.md — Foundation: saq[postgres] dep swap, PHAZE_QUEUE_URL setting, build_pipeline_queue factory
+- [ ] 36-02-PLAN.md — Core swap: all 4 construction sites → PostgresQueue via factory + cache-Redis decoupling (proposals, counters, pipeline)
+- [ ] 36-03-PLAN.md — Regression: real-PG priority/scheduled + dedup integration tests, /saq monitor + agent import-boundary
+- [ ] 36-04-PLAN.md — Step D homelab change-prompt + README/deployment/configuration/.env docs
 
 ### Phase 37: Per-Stage Pause and Priority Control Plane (table, API, worker hooks)
 
