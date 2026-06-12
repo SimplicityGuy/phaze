@@ -15,7 +15,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
-from phaze.schemas.agent_tasks import ProcessFilePayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload
 from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
 
 
@@ -170,6 +170,47 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
 
     # The exact kwargs the agent worker receives validate against ProcessFilePayload.
     validated = ProcessFilePayload.model_validate(kwargs)
+    assert str(validated.file_id) == expected_id
+
+
+@pytest.mark.asyncio
+async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (35-REVIEW CR-01): /api/v1/extract-metadata must enqueue a COMPLETE ExtractMetadataPayload.
+
+    D-06 removed the agent file-upsert auto-enqueue -- the only producer that built the full
+    payload -- making this manual trigger the SOLE metadata producer. The surviving path passed
+    only ``file_id``; the agent worker's ``ExtractMetadataPayload.model_validate(kwargs)``
+    (``extra="forbid"``) then raised "Field required" and dead-lettered every job (the same
+    class as the v4.0.8 payload incident). This pins all four required fields and that the
+    exact kwargs validate cleanly.
+    """
+    file_rec = _make_file(state=FileState.DISCOVERED)
+    session.add(file_rec)
+    await session.commit()
+    expected_id = str(file_rec.id)
+    expected_path = file_rec.original_path
+    expected_type = file_rec.file_type
+    agent = await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/extract-metadata")
+    assert response.status_code == 200
+    assert response.json()["enqueued"] == 1
+
+    await _drain_background()
+    assert len(capture) == 1
+    queue_name, task_name, kwargs = capture[0]
+    assert (queue_name, task_name) == ("phaze-agent-nox", "extract_file_metadata")
+
+    # All four required fields present -- not just file_id (the CR-01 bug).
+    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id"}
+    assert kwargs["file_id"] == expected_id
+    assert kwargs["original_path"] == expected_path
+    assert kwargs["file_type"] == expected_type
+    assert kwargs["agent_id"] == agent.id
+
+    # The exact kwargs the agent worker receives validate against ExtractMetadataPayload.
+    validated = ExtractMetadataPayload.model_validate(kwargs)
     assert str(validated.file_id) == expected_id
 
 

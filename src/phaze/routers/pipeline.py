@@ -21,6 +21,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
@@ -419,10 +420,28 @@ async def trigger_proposals_ui(
     )
 
 
-async def _enqueue_extraction_jobs(queue: Any, file_ids: list[str]) -> None:
-    """Background coroutine to enqueue extract_file_metadata jobs."""
-    for fid in file_ids:
-        await queue.enqueue("extract_file_metadata", file_id=fid)
+async def _enqueue_extraction_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
+    """Background coroutine to enqueue extract_file_metadata jobs with the COMPLETE payload.
+
+    The agent worker validates ``ExtractMetadataPayload`` with ``extra="forbid"`` and four
+    required fields (file_id, original_path, file_type, agent_id). A ``file_id``-only enqueue
+    therefore fails validation and dead-letters EVERY job -- the same defect that bit the
+    pre-Phase-30 ``process_file`` path (see ``analysis_enqueue.enqueue_process_file``) and the
+    v4.0.8 payload incident. D-06 removed the only other producer (the agent file-upsert
+    auto-enqueue), making this manual trigger the SOLE metadata producer, so the full payload
+    MUST be built here. ``model_dump(mode="json")`` serializes the UUID as a string so the
+    worker's ``model_validate`` accepts it. The deterministic key
+    (``extract_file_metadata:<file_id>``) is applied centrally by the ``before_enqueue`` hook
+    (35-01), so no explicit ``key=`` is set here.
+    """
+    for f in files:
+        payload = ExtractMetadataPayload(
+            file_id=f.id,
+            original_path=f.original_path,
+            file_type=f.file_type,
+            agent_id=agent_id,
+        )
+        await queue.enqueue("extract_file_metadata", **payload.model_dump(mode="json"))
 
 
 @router.post("/api/v1/extract-metadata")
@@ -448,13 +467,14 @@ async def trigger_metadata_extraction(
     except enqueue_router.NoActiveAgentError:
         return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
 
-    file_ids = [str(f.id) for f in files]
+    # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
 
-    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, file_ids))
+    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
-    return {"enqueued": len(file_ids), "message": f"Enqueued {len(file_ids)} files for metadata extraction"}
+    return {"enqueued": len(files), "message": f"Enqueued {len(files)} files for metadata extraction"}
 
 
 @router.post("/pipeline/extract-metadata", response_class=HTMLResponse)
@@ -476,8 +496,8 @@ async def trigger_extraction_ui(
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            file_ids = [str(f.id) for f in files]
-            task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, file_ids))
+            agent_id = cast("str", routed.agent_id)
+            task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -491,10 +511,22 @@ async def trigger_extraction_ui(
 # --- Fingerprint endpoints (Phase 16, D-14, D-15) ---
 
 
-async def _enqueue_fingerprint_jobs(queue: Any, file_ids: list[str]) -> None:
-    """Background coroutine to enqueue fingerprint_file jobs."""
-    for fid in file_ids:
-        await queue.enqueue("fingerprint_file", file_id=fid)
+async def _enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
+    """Background coroutine to enqueue fingerprint_file jobs with the COMPLETE payload.
+
+    ``FingerprintFilePayload`` (``extra="forbid"``) requires file_id, original_path and
+    agent_id; a ``file_id``-only enqueue dead-letters every job (same class as the metadata
+    defect above). Build the full payload and serialize via ``model_dump(mode="json")``. The
+    deterministic key (``fingerprint_file:<file_id>``) is applied centrally by the
+    ``before_enqueue`` hook (35-01).
+    """
+    for f in files:
+        payload = FingerprintFilePayload(
+            file_id=f.id,
+            original_path=f.original_path,
+            agent_id=agent_id,
+        )
+        await queue.enqueue("fingerprint_file", **payload.model_dump(mode="json"))
 
 
 @router.post("/api/v1/fingerprint")
@@ -519,16 +551,16 @@ async def trigger_fingerprint(
     failed_result = await session.execute(failed_stmt)
     failed_files = list(failed_result.scalars().all())
 
-    # Deduplicate by ID
+    # Deduplicate by ID, keeping the FileRecord so the full payload can be built.
     seen_ids: set[str] = set()
-    all_file_ids: list[str] = []
+    all_files: list[FileRecord] = []
     for f in [*files, *failed_files]:
         fid = str(f.id)
         if fid not in seen_ids:
             seen_ids.add(fid)
-            all_file_ids.append(fid)
+            all_files.append(f)
 
-    if not all_file_ids:
+    if not all_files:
         return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
 
     try:
@@ -536,11 +568,13 @@ async def trigger_fingerprint(
     except enqueue_router.NoActiveAgentError:
         return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
 
-    task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, all_file_ids))
+    # fingerprint_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
+    task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, all_files, agent_id))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
-    return {"enqueued": len(all_file_ids), "message": f"Enqueued {len(all_file_ids)} files for fingerprinting"}
+    return {"enqueued": len(all_files), "message": f"Enqueued {len(all_files)} files for fingerprinting"}
 
 
 @router.get("/api/v1/fingerprint/progress")
@@ -567,8 +601,8 @@ async def trigger_fingerprint_ui(
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            file_ids = [str(f.id) for f in files]
-            task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, file_ids))
+            agent_id = cast("str", routed.agent_id)
+            task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, files, agent_id))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
