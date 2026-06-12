@@ -1,10 +1,11 @@
 ---
 phase: 38
 slug: pipeline-dag-pause-priority-ui-and-rescan-button-removal
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-06-12
+reviewed_at: 2026-06-12
 ---
 
 # Phase 38 — UI Design Contract
@@ -50,7 +51,7 @@ The project uses Tailwind's native 4px-based utility scale. Declared subset for 
 | lg | 24px | `NODE_LAYOUT` `y:24` | First col-1 node top offset (inherited anchor) |
 
 Exceptions:
-- Stepper horizontal padding is `px-1.5` (**6px**) — a deliberate sub-token for the compact ▲/▼ buttons so three controls fit the 180px chip width. 6px is a multiple of 2, not 4; this is the single allowed exception, inherited from the canvas's compact-control convention.
+- **None.** Stepper horizontal padding is `px-1` (4px) — a grid-aligned token. To preserve the ▲/▼ tap target without sub-4px padding, the stepper buttons carry `min-h-[28px]` (height constraint, not horizontal padding). Three controls still fit the 180px chip width. (Prior draft used `px-1.5`/6px; replaced per UI-checker Dimension 5 — all spacing values are now multiples of 4.)
 - The "lower number runs first" hint top margin is `mt-1` (4px); its font is the 11px micro size (below).
 
 ---

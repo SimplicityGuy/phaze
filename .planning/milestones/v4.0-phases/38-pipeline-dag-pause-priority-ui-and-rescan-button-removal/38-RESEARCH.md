@@ -258,7 +258,7 @@ This is a UI + read-only-router phase. No rename/migration, but the "what state 
               hx-vals='{"delta": -10}' hx-swap="none" hx-disabled-elt="this"
               :disabled="$store.pipeline.{{ stage }}Priority <= 0"
               aria-label="Higher priority for {{ stage }} (runs sooner)"
-              class="px-1.5 py-1 text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40">▲ Higher</button>
+              class="px-1 py-1 min-h-[28px] text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40">▲ Higher</button>
       <span class="text-sm font-semibold tabular-nums w-7 text-center"
             x-text="$store.pipeline.{{ stage }}Priority"
             :aria-label="'priority ' + $store.pipeline.{{ stage }}Priority"></span>
@@ -266,7 +266,7 @@ This is a UI + read-only-router phase. No rename/migration, but the "what state 
               hx-vals='{"delta": 10}' hx-swap="none" hx-disabled-elt="this"
               :disabled="$store.pipeline.{{ stage }}Priority >= 100"
               aria-label="Lower priority for {{ stage }} (runs later)"
-              class="px-1.5 py-1 text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40">▼ Lower</button>
+              class="px-1 py-1 min-h-[28px] text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40">▼ Lower</button>
     </div>
   </div>
   <p class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">lower number runs first</p>
