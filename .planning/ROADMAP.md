@@ -254,10 +254,17 @@ Plans:
 **Depends on:** Phase 35
 **Rollout:** Ships as a v4.0.x → GHCR publish → homelab redeploy (paired with the Step D homelab change).
 **Plans:** 4 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 36-01-PLAN.md — Foundation: saq[postgres] dep swap, PHAZE_QUEUE_URL setting, build_pipeline_queue factory
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 36-02-PLAN.md — Core swap: all 4 construction sites → PostgresQueue via factory + cache-Redis decoupling (proposals, counters, pipeline)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 36-03-PLAN.md — Regression: real-PG priority/scheduled + dedup integration tests, /saq monitor + agent import-boundary
 - [ ] 36-04-PLAN.md — Step D homelab change-prompt + README/deployment/configuration/.env docs
 
@@ -278,6 +285,7 @@ Plans:
 **Plans:** 0 plans
 
 Plans:
+
 - [ ] TBD (run /gsd-plan-phase 37 to break down)
 
 ### Phase 38: Pipeline DAG Pause/Priority UI and Rescan Button Removal
@@ -297,4 +305,5 @@ Plans:
 **Plans:** 0 plans
 
 Plans:
+
 - [ ] TBD (run /gsd-plan-phase 38 to break down)

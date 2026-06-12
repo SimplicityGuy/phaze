@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 35 shipped — PR #121"
-last_updated: "2026-06-12T16:01:42.044Z"
-last_activity: "2026-06-12 -- Phase 35 shipped (PR #121)"
+status: executing
+last_updated: "2026-06-12T19:59:10.796Z"
+last_activity: 2026-06-12 -- Phase 36 planning complete
 progress:
   total_phases: 6
   completed_phases: 6
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 35 (pipeline-determinism-idempotency-per-job-type-observability) — COMPLETE
 Plan: 5 of 5
-Status: Phase 35 shipped — PR #121
-Last activity: 2026-06-12 -- Phase 35 shipped (PR #121)
+Status: Ready to execute
+Last activity: 2026-06-12 -- Phase 36 planning complete
 
 Progress: [██████████] 100%
 
