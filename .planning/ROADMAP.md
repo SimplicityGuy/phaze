@@ -218,7 +218,7 @@ Plans:
 **Depends on:** Phase 30 (enqueue_router seam), Phase 32 (deterministic-key pattern + `analysis_enqueue.py`), Phase 34 (dashboard processing card + stats poll).
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
 **Status:** Planned (2026-06-11) — 5 plans across 3 waves.
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 Plans:
 **Wave 1**
 
@@ -228,7 +228,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 35-04-PLAN.md — Dashboard data plumbing: extend $store.pipeline + dashboard()/pipeline_stats_partial() contexts + stats_bar.html OOB per-node seeds [Wave 2]
+- [x] 35-04-PLAN.md — Dashboard data plumbing: extend $store.pipeline + dashboard()/pipeline_stats_partial() contexts + stats_bar.html OOB per-node seeds [Wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
