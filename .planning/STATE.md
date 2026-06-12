@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 36 shipped — PR #123"
+status: "Phase 37 planned — ready to execute (Phase 36 shipped #123)"
 last_updated: "2026-06-13T02:25:53.457Z"
-last_activity: 2026-06-13
+last_activity: 2026-06-13 -- Phase 37 planning complete
 progress:
   percent: 100
 ---
@@ -16,14 +16,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 36 — pipeline-queue-backend-migration-redis-to-postgres-saq
+**Current focus:** Phase 37 — per-stage-pause-and-priority-control-plane (planned, ready to execute)
 
 ## Current Position
 
-Phase: 36 — COMPLETE
-Plan: 1 of 4
-Status: Phase 36 shipped — PR #123
-Last activity: 2026-06-13
+Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — PLANNED
+Plan: 0 of 4
+Status: Ready to execute (Phase 36 shipped — PR #123)
+Last activity: 2026-06-13 -- Phase 37 planning complete
 
 Progress: [██████████] 100%
 
