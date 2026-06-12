@@ -6,7 +6,7 @@ import enum
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import Float, ForeignKey, Index, String, Text
+from sqlalchemy import Float, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -50,4 +50,11 @@ class RenameProposal(TimestampMixin, Base):
 
     file: Mapped[FileRecord] = relationship(lazy="raise")
 
-    __table_args__ = (Index("ix_proposals_status", "status"),)
+    # ``uq_proposals_file_id_pending`` mirrors alembic revision 019: a partial
+    # UNIQUE index enforcing one PENDING proposal per file (D-04). It is the
+    # ON CONFLICT target for ``services.proposal.store_proposals``' upsert.
+    # Kept here so autogenerate / the ORM stay in sync with the migration.
+    __table_args__ = (
+        Index("ix_proposals_status", "status"),
+        Index("uq_proposals_file_id_pending", "file_id", unique=True, postgresql_where=text("status = 'pending'")),
+    )
