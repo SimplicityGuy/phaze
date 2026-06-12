@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import exists, select
+import structlog
 
 from phaze.config import settings
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -23,10 +24,117 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
-from phaze.services.pipeline import get_files_by_state, get_pipeline_stats, get_queue_activity, queue_progress_percent
+from phaze.services.pipeline import (
+    get_files_by_state,
+    get_pipeline_stats,
+    get_queue_activity,
+    get_stage_progress,
+    queue_progress_percent,
+)
+from phaze.services.pipeline_counters import read_counters
 
+
+logger = structlog.get_logger(__name__)
 
 _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker and retry"
+
+# Maps each DAG node whose ``done`` is DB-sourced to the maintained ``completed``
+# counter function(s) backing it (35-01). Used as a DOCUMENTED degrade-fallback (D-02):
+# when a node's ``get_stage_progress`` ``done`` reads 0 (its ``_safe_count`` degraded OR
+# the stage is genuinely empty) AND the mapped ``completed`` counter is > 0, the counter
+# value renders as the fallback ``done``. DB-truth ALWAYS wins when ``done > 0`` (D-03:
+# the DB reconcile is the authority; the counter is a backstop cache, never an override).
+# ``discovery`` and ``execute`` have no maintained counter (``scan_directory`` /
+# ``execute_approved_batch`` are deterministic-key-exempt), so they never fall back.
+# In practice the counter only exceeds 0 after real completions — at which point the DB
+# reflects them too unless the DB source degraded — so applying the counter on ``done==0``
+# is harmless when the stage is genuinely empty (counter is also 0 there).
+_NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
+    "metadata": ("extract_file_metadata",),
+    "fingerprint": ("fingerprint_file",),
+    "analyze": ("process_file",),
+    "scan_search": ("scan_live_set", "search_tracklist"),
+    "scrape": ("scrape_and_store_tracklist",),
+    "match": ("match_tracklist_to_discogs",),
+    "proposals": ("generate_proposals",),
+}
+
+
+async def _read_pipeline_counters(app_state: Any) -> dict[str, dict[str, int]]:
+    """Read the maintained per-function Redis counters, degrading to ``{}`` on any failure.
+
+    Mirrors :func:`get_queue_activity`'s failure isolation: a missing ``app.state``
+    handle (the test client skips the lifespan) or any Redis hiccup must degrade the
+    counter source to an empty dict so the 5s dashboard poll renders from DB-truth and
+    NEVER 500s (threat T-35-09). The shared ``app.state.redis`` client (decode_responses)
+    is preferred; the SAQ-internal ``controller_queue.redis`` is the fallback handle.
+    """
+    try:
+        redis = getattr(app_state, "redis", None)
+        if redis is None:
+            redis = app_state.controller_queue.redis
+        return await read_counters(redis)
+    except Exception:
+        logger.warning("pipeline_counters_degraded", exc_info=True)
+        return {}
+
+
+def _reconciled_done(node: str, stage_done: int, counters: dict[str, dict[str, int]]) -> int:
+    """Return the DB-truth ``done`` (D-03), or the ``completed`` counter as a backstop.
+
+    DB-truth wins whenever ``stage_done > 0``. Only when the DB source reads 0 do we fall
+    back to the sum of the node's mapped ``completed`` counters (D-02 backstop) — and only
+    if that sum is itself > 0.
+    """
+    if stage_done > 0:
+        return stage_done
+    fallback = sum(counters.get(fn, {}).get("completed", 0) for fn in _NODE_COMPLETED_FNS.get(node, ()))
+    return fallback if fallback > 0 else stage_done
+
+
+async def _build_dag_context(app_state: Any, session: AsyncSession, activity: dict[str, int]) -> dict[str, dict[str, int]]:
+    """Build the per-DAG-node store-key context consumed by stats_bar.html + the 35-05 canvas.
+
+    Reconciles three sources (D-03): ``get_stage_progress`` (DB-truth ``done``/``total`` per
+    node, the authority), the maintained Redis ``completed`` counters (a degrade backstop via
+    :func:`_reconciled_done`), and the already-computed ``get_queue_activity`` (the per-node
+    ACTIVE state). Every value is a plain ``int`` (``total=None`` em-dash sentinels collapse to
+    0 — the Scan/Search node has NO ``tracklistTotal`` store key, so its em-dash stays a
+    render-side concern) so it is safe to interpolate into the ``x-init`` numeric store writes.
+
+    Returns ``{"dag": {<storeKey>: int, ...}}`` carrying every per-node sub-key seeded into
+    ``$store.pipeline`` (base.html, 35-04 Task 1).
+    """
+    stage = await get_stage_progress(session)
+    counters = await _read_pipeline_counters(app_state)
+
+    def done(node: str) -> int:
+        return _reconciled_done(node, int(stage[node]["done"] or 0), counters)
+
+    def total(node: str) -> int:
+        return int(stage[node]["total"] or 0)
+
+    dag: dict[str, int] = {
+        "metadataDone": done("metadata"),
+        "metadataTotal": total("metadata"),
+        "fingerprintDone": done("fingerprint"),
+        "fingerprintTotal": total("fingerprint"),
+        "analyzeDone": done("analyze"),
+        "analyzeTotal": total("analyze"),
+        "analyzeActive": activity["agent_active"],
+        "tracklistDone": done("scan_search"),
+        "scrapeDone": done("scrape"),
+        "scrapeTotal": total("scrape"),
+        "matchDone": done("match"),
+        "matchTotal": total("match"),
+        "proposalsDone": done("proposals"),
+        "proposalsTotal": total("proposals"),
+        # Approve→Execute gates on the approved-proposal count; execute.total IS that count.
+        "approved": total("execute"),
+        "executedDone": done("execute"),
+        "executedTotal": total("execute"),
+    }
+    return {"dag": dag}
 
 
 if TYPE_CHECKING:
@@ -182,6 +290,12 @@ async def dashboard(
     activity = await get_queue_activity(request.app.state, session)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
 
+    # Phase 35 (35-04): per-DAG-node done/total/active reconciled from get_stage_progress
+    # (DB-truth) + the maintained completed counters (backstop) + the queue activity. The
+    # 35-05 canvas seeds these into $store.pipeline on the full-page render; here they ride
+    # the dashboard context. _build_dag_context isolates its own counter-source failures.
+    dag_ctx = await _build_dag_context(request.app.state, session, activity)
+
     context = {
         "request": request,
         "stats": stats,
@@ -190,6 +304,7 @@ async def dashboard(
         "agents": agents,
         "recent_scans": recent_scans_rows,
         **activity,
+        **dag_ctx,
         "queue_progress_percent": queue_progress,
     }
     return templates.TemplateResponse(request=request, name="pipeline/dashboard.html", context=context)
@@ -209,6 +324,10 @@ async def pipeline_stats_partial(
     # controller_busy into $store.pipeline on each tick to drive the Plan 04 button gating.
     activity = await get_queue_activity(request.app.state, session)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
+    # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
+    # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
+    # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
+    dag_ctx = await _build_dag_context(request.app.state, session, activity)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -222,6 +341,7 @@ async def pipeline_stats_partial(
             "settings_batch_size": settings.llm_batch_size,
             "oob_counts": True,
             **activity,
+            **dag_ctx,
             "queue_progress_percent": queue_progress,
         },
     )
