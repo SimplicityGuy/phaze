@@ -94,7 +94,27 @@
             // server-rendered counts at page load (see stage_cards.html) and refreshed
             // by the poll OOB nodes, so every :disabled binding has a defined default
             // before the first poll tick (never reads undefined).
-            Alpine.store('pipeline', { discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0 });
+            // Phase 35 (35-04) DAG-canvas extension: per-node sub-keys feeding the
+            // node-edge pipeline graph (35-05). EVERY key is seeded to 0 here so no
+            // node binding ever reads `undefined` before the first /pipeline/stats
+            // poll tick. done/total/active come from the server context (35-04 router)
+            // and are refreshed by the OOB x-init seeds in stats_bar.html on each 5s
+            // poll. The Phase-34 keys (discovered/analyzed/metadataExtracted/agentBusy/
+            // controllerBusy) are PRESERVED — the existing button :disabled gating reads
+            // them. Topology note (UI-SPEC L243): Fingerprint gates on `discovered`, not
+            // `metadataExtracted`; the store keeps both, the gating swap lands in 35-05.
+            Alpine.store('pipeline', {
+                discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
+                metadataDone: 0, metadataTotal: 0,
+                fingerprintDone: 0, fingerprintTotal: 0,
+                analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
+                tracklistDone: 0,
+                scrapeDone: 0, scrapeTotal: 0,
+                matchDone: 0, matchTotal: 0,
+                proposalsDone: 0, proposalsTotal: 0,
+                approved: 0,
+                executedDone: 0, executedTotal: 0
+            });
         });
     </script>
 
