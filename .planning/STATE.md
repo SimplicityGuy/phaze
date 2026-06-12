@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 37 shipped — PR #124"
+status: "Phase 38 planned — ready to execute (Phase 37 merged #124)"
 last_updated: "2026-06-13T19:39:13.027Z"
-last_activity: 2026-06-13
+last_activity: 2026-06-13 -- Phase 38 planning recovered onto main
 progress:
   percent: 100
 ---
@@ -16,14 +16,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 38 — pipeline-dag-pause-priority-ui-and-rescan-button-removal (needs /gsd-plan-phase 38 to break down)
+**Current focus:** Phase 38 — pipeline-dag-pause-priority-ui-and-rescan-button-removal (planned, ready to execute)
 
 ## Current Position
 
-Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — COMPLETE
-Plan: 4 of 4
-Status: Phase 37 shipped — PR #124
-Last activity: 2026-06-13
+Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — PLANNED
+Plan: 0 of 3
+Status: Ready to execute (Phase 37 merged — PR #124)
+Last activity: 2026-06-13 -- Phase 38 planning recovered onto main
 
 Progress: [██████████] 100%
 
@@ -121,6 +121,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-06-13T17:32:27.129Z
-Stopped at: Completed 37-01-PLAN.md
+Last session: 2026-06-13T19:39:13.027Z
+Stopped at: Phase 37 merged (#124); Phase 38 planning recovered onto main, ready to execute
 Resume file: None
