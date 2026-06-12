@@ -1,8 +1,8 @@
 ---
 phase: 37
 slug: per-stage-pause-and-priority-control-plane-table-api-worker
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-06-12
 ---
