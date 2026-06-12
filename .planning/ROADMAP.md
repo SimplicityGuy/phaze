@@ -218,7 +218,7 @@ Plans:
 **Depends on:** Phase 30 (enqueue_router seam), Phase 32 (deterministic-key pattern + `analysis_enqueue.py`), Phase 34 (dashboard processing card + stats poll).
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
 **Status:** Planned (2026-06-11) — 5 plans across 3 waves.
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 Plans:
 **Wave 1**
 
@@ -232,4 +232,4 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 35-05-PLAN.md — DAG canvas UI (sketch 001 Variant B): 9-node SVG graph with honest topology + gated triggers + <ol> fallback; removes stage_cards.html + processing_card.html (D-01) [Wave 3]
+- [x] 35-05-PLAN.md — DAG canvas UI (sketch 001 Variant B): 9-node SVG graph with honest topology + gated triggers + <ol> fallback; removes stage_cards.html + processing_card.html (D-01) [Wave 3]
