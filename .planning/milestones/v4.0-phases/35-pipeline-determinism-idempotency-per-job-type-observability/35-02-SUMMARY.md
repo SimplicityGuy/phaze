@@ -120,6 +120,10 @@ None - no external service configuration required. (Operator must apply `alembic
 - D-04 idempotency is complete; re-running Generate Proposals no longer accumulates duplicate pending rows. The remaining Phase 35 items (centralized deterministic keys, auto-enqueue removal, per-job-type observability, DAG canvas) are independent of this plan.
 - Verification: full suite `1662 passed`; `ruff check .` clean; `mypy .` clean (148 files); alembic upgrade/downgrade round-trips on the migrations test DB.
 
+## Self-Check: PASSED
+
+All created/modified files exist on disk; all task + metadata commits (`4d674b4`, `79d1d1c`, `119438f`) are present in git history.
+
 ---
 *Phase: 35-pipeline-determinism-idempotency-per-job-type-observability*
 *Completed: 2026-06-11*
