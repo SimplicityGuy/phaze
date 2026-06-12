@@ -53,6 +53,28 @@ Capture = list[tuple[str, str, dict[str, Any]]]
 _JOB_CONTROL_FIELDS = frozenset(Job.__dataclass_fields__)
 
 
+class FakeRedis:
+    """A minimal in-memory async Redis double for the maintained pipeline counters.
+
+    Implements only the surface ``phaze.services.pipeline_counters`` touches: ``incr``
+    (durable INCR, returns the new value) and ``mget`` (returns ``bytes`` per present key
+    or ``None`` for a miss, mirroring a non-``decode_responses`` client so the service's
+    ``_to_int`` bytes-decode path is exercised). Attach to a :class:`DedupFakeQueue` via
+    its ``redis`` attribute so the ``before_enqueue`` key hook's best-effort counter INCR
+    (which reads ``job.queue.redis``) lands somewhere assertable.
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, int] = {}
+
+    async def incr(self, key: str) -> int:
+        self.store[key] = self.store.get(key, 0) + 1
+        return self.store[key]
+
+    async def mget(self, keys: list[str]) -> list[bytes | None]:
+        return [str(self.store[k]).encode() if k in self.store else None for k in keys]
+
+
 class FakeQueue:
     """A named SAQ-queue stand-in that captures every enqueue.
 
