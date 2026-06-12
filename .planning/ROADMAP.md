@@ -218,13 +218,13 @@ Plans:
 **Depends on:** Phase 30 (enqueue_router seam), Phase 32 (deterministic-key pattern + `analysis_enqueue.py`), Phase 34 (dashboard processing card + stats poll).
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
 **Status:** Planned (2026-06-11) — 5 plans across 3 waves.
-**Plans:** 5 plans
+**Plans:** 3/5 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 35-01-PLAN.md — Centralized deterministic SAQ keys (before_enqueue hook + _KEY_BUILDERS) + maintained per-function counters (enqueued/after_process) + remove auto metadata-extraction (D-06) + drift-guard test [Wave 1]
-- [ ] 35-02-PLAN.md — Proposals idempotency: migration 019 (dedupe → partial unique index uq_proposals_file_id_pending) + store_proposals on_conflict_do_update (D-04) + execution_log/tag_write_log audit [Wave 1]
-- [ ] 35-03-PLAN.md — get_stage_progress reconcile query: per-stage output-table COUNT(DISTINCT), the D-03 DB-truth source for the parallel DAG nodes (RESEARCH Q5) [Wave 1]
+- [x] 35-01-PLAN.md — Centralized deterministic SAQ keys (before_enqueue hook + _KEY_BUILDERS) + maintained per-function counters (enqueued/after_process) + remove auto metadata-extraction (D-06) + drift-guard test [Wave 1]
+- [x] 35-02-PLAN.md — Proposals idempotency: migration 019 (dedupe → partial unique index uq_proposals_file_id_pending) + store_proposals on_conflict_do_update (D-04) + execution_log/tag_write_log audit [Wave 1]
+- [x] 35-03-PLAN.md — get_stage_progress reconcile query: per-stage output-table COUNT(DISTINCT), the D-03 DB-truth source for the parallel DAG nodes (RESEARCH Q5) [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
