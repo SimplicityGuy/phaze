@@ -18,17 +18,35 @@
 
 | Method | Path                           | Description                              |
 |--------|--------------------------------|------------------------------------------|
-| POST   | `/api/v1/extract-metadata`     | Enqueue metadata extraction jobs         |
+| POST   | `/api/v1/extract-metadata`     | Enqueue metadata extraction jobs (operator-triggered only) |
 | POST   | `/api/v1/fingerprint`          | Enqueue fingerprint jobs                 |
 | GET    | `/api/v1/fingerprint/progress` | Fingerprint processing progress          |
 | POST   | `/api/v1/analyze`              | Enqueue audio analysis jobs              |
 | POST   | `/api/v1/proposals/generate`   | Enqueue LLM proposal generation          |
 | GET    | `/pipeline/`                   | Pipeline dashboard (HTML)                |
-| GET    | `/pipeline/stats`              | Pipeline stats bar (HTMX partial)        |
+| GET    | `/pipeline/stats`              | Pipeline stats bar + per-job-type DAG node counts (HTMX partial) |
 | POST   | `/pipeline/extract-metadata`   | HTMX trigger for metadata extraction     |
 | POST   | `/pipeline/fingerprint`        | HTMX trigger for fingerprinting          |
 | POST   | `/pipeline/analyze`            | HTMX trigger for audio analysis          |
 | POST   | `/pipeline/proposals`          | HTMX trigger for proposal generation     |
+
+Each stage has a JSON trigger (`/api/v1/*`) and an HTMX twin (`/pipeline/*`) that wraps the same enqueue logic and returns a `trigger_response.html` fragment. Both forms enqueue work in a fire-and-forget background task and return immediately with the expected job count, so a large backlog never blocks the HTTP response.
+
+**Complete payloads (Phase 30 / 35).** The three agent-task triggers build and enqueue the *full* validated payload, never a bare `file_id`:
+
+- `analyze` → `process_file` enqueues a 5-field `ProcessFilePayload` (`file_id`, `original_path`, `file_type`, `agent_id`, models path) via the shared `services.analysis_enqueue.enqueue_process_file` producer.
+- `extract-metadata` → `extract_file_metadata` enqueues `ExtractMetadataPayload` (`file_id`, `original_path`, `file_type`, `agent_id`).
+- `fingerprint` → `fingerprint_file` enqueues `FingerprintFilePayload` (`file_id`, `original_path`, `agent_id`).
+
+The agent worker validates each payload with `extra="forbid"`, so a `file_id`-only enqueue would dead-letter every job. The per-file deterministic SAQ key (e.g. `process_file:<file_id>`) is applied centrally by the `before_enqueue` hook (35-01), letting a repeat enqueue of an in-flight file collapse to a no-op.
+
+**Routing & agent availability.** All three agent-task triggers resolve a target queue through `services.enqueue_router.resolve_queue_for_task`. When no non-revoked agent is active, the JSON triggers return `{"enqueued": 0, "message": "No active agent available — start an agent worker and retry"}` and the HTMX triggers render a `no_active_agent` fragment instead of enqueuing.
+
+**Metadata extraction is operator-triggered only (Phase 35, D-06).** The `POST /api/internal/agent/files` discovery upsert no longer auto-enqueues metadata extraction — discovery only persists file rows. `extract-metadata` (JSON or HTMX) is now the sole producer of `extract_file_metadata` jobs, and it queues every music/video file regardless of state (backfill/re-extraction).
+
+**`proposals` convergence gate.** `proposals/generate` (and the HTMX `/pipeline/proposals`) only enqueues files that have *both* a `FileMetadata` and an `AnalysisResult` row, chunked into batches of `settings.llm_batch_size` (default 10). `generate_proposals` is a batch task (one job per batch), routed through the same `enqueue_router`.
+
+**DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `fingerprintDone`/`fingerprintTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `scrapeDone`/`scrapeTotal`, `matchDone`/`matchTotal`, `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The 35-05 DAG canvas mirrors these store keys.
 
 ## Pipeline Scans (`/pipeline/scans`)
 
@@ -174,7 +192,7 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 |--------|-------------------------------------------------------|----------------------------------------------------------------------------|
 | GET    | `/api/internal/agent/whoami`                          | Agent identity probe (returns the calling agent's identity)                 |
 | POST   | `/api/internal/agent/heartbeat`                       | Liveness signal; updates `last_seen_at` and `last_status` (204 No Content)  |
-| POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (auto-enqueues work)   |
+| POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (persists rows only; no auto-enqueue, `enqueued` is always 0 per Phase 35 D-06) |
 | PUT    | `/api/internal/agent/metadata/{file_id}`              | Idempotent tag-metadata write for a file                                    |
 | PUT    | `/api/internal/agent/fingerprints/{file_id}/{engine}` | Idempotent fingerprint write keyed on `(file_id, engine)`                   |
 | PUT    | `/api/internal/agent/analysis/{file_id}`              | Idempotent audio-analysis upsert for a file                                 |

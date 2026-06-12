@@ -52,7 +52,7 @@ Perfect for DJs, music collectors, and live recording enthusiasts who want their
 ```mermaid
 graph TD
     subgraph Frontend ["🌐 Frontend"]
-        UI["🖥️ Web UI<br/>HTMX + Tailwind<br/>Proposals · Duplicates · Tracklists · Exec"]
+        UI["🖥️ Web UI<br/>HTMX + Tailwind<br/>Proposals · Duplicates · Tracklists · Pipeline · Exec"]
     end
 
     subgraph Backend ["⚙️ Backend"]
@@ -91,28 +91,41 @@ See [Architecture Overview](docs/architecture.md) for detailed diagrams covering
 
 ### 🔄 File Processing Pipeline
 
+After discovery, metadata extraction, fingerprinting, and analysis run as independent
+per-file stages (each reads only the file on disk). Metadata extraction is
+**operator-triggered** from the pipeline dashboard — it is no longer auto-enqueued at
+discovery. Proposal generation joins on analysis **and** metadata only.
+
 ```mermaid
 stateDiagram-v2
     [*] --> DISCOVERED
-    DISCOVERED --> METADATA_EXTRACTED : mutagen
-    METADATA_EXTRACTED --> FINGERPRINTED : audfprint + panako
-    FINGERPRINTED --> ANALYZED : essentia
+    DISCOVERED --> METADATA_EXTRACTED : mutagen (operator‑triggered)
+    DISCOVERED --> FINGERPRINTED : audfprint + panako
+    DISCOVERED --> ANALYZED : essentia
+    METADATA_EXTRACTED --> PROPOSAL_GENERATED : LLM via litellm
     ANALYZED --> PROPOSAL_GENERATED : LLM via litellm
+    FINGERPRINTED --> DUPLICATE_RESOLVED
     PROPOSAL_GENERATED --> APPROVED : human review
     PROPOSAL_GENERATED --> REJECTED : human review
     APPROVED --> EXECUTED : copy‑verify‑delete
     APPROVED --> FAILED
-    PROPOSAL_GENERATED --> DUPLICATE_RESOLVED
 ```
+
+The pipeline dashboard renders this topology as a single live **SVG DAG canvas**: each
+stage is a node with a per-job-type progress bar, a live count, and a trigger button gated
+by its upstream dependencies (and by agent/controller availability). DB-truth stage counts
+drive every rendered `done` value; the canvas is seeded once and kept live by a 5s poll.
 
 ### 📬 Task Queue Routing
 
-Every control-plane enqueue (API endpoint or admin-UI action) routes to a **named** SAQ queue that a worker actually consumes — the control plane never produces onto an unnamed `default` queue (which has no consumer). A single chokepoint, `resolve_queue_for_task` in `services/enqueue_router.py`, maps each task name to its destination:
+Every control-plane enqueue (API endpoint or admin-UI action) routes to a **named** SAQ queue that a worker actually consumes — the control plane never produces onto an unnamed `default` queue (which has no consumer). A single chokepoint, `resolve_queue_for_task` in `src/phaze/services/enqueue_router.py`, maps each task name to its destination:
 
 - **Controller-bound tasks** — `generate_proposals`, `search_tracklist`, `scrape_and_store_tracklist`, `match_tracklist_to_discogs`, `refresh_tracklists` — route to the `controller` queue, consumed by the application-server `phaze-worker`.
 - **Per-agent tasks** — `process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `scan_directory`, `execute_approved_batch` — route via the `AgentTaskRouter` to a `phaze-agent-<id>` queue, consumed by the file-server `phaze-agent-worker`. The target agent is chosen by **active-agent selection** (the most-recently-seen, non-revoked agent). When **no active agent** is available, the operation surfaces a clear error / empty-state instead of silently enqueuing nothing.
 
 Unknown task names fail loud (`ValueError`) — they are never silently sent to any queue. A static guard test (`tests/test_no_default_queue_producers.py`) scans the router and service trees on every CI run and fails if anyone reintroduces a default-queue producer (a `*.state.queue` reference or an unnamed `Queue.from_url(...)`), so this bug class cannot regress unnoticed.
+
+**Schedule-safe by construction:** every routable task is keyed deterministically as `<task>:<natural_id>` at a single central SAQ `before_enqueue` hook (`apply_deterministic_key`), so a re-enqueue dedups against an in-flight job instead of doubling the queue — no call site can drift back to a random-uuid key. Task DB writes upsert (`ON CONFLICT DO UPDATE`); proposals in particular are idempotent via a partial unique index (`uq_proposals_file_id_pending`) so re-runs never duplicate rows.
 
 > **Operational note:** Jobs stranded on the legacy `default` queue from before this routing fix (e.g. the `saq:job:default:*` keys from the v4.0.6 incident) are cleared as a one-time **deploy step** after redeploy — re-triggering analysis re-enqueues them correctly onto their named queues. This is an operations task, not application code.
 
@@ -125,7 +138,8 @@ Unknown task names fail loud (`ValueError`) — they are never silently sent to 
 - **👀 Approval Workflow**: Every rename requires human review through the web UI
 - **🔒 Safe Operations**: Copy-verify-delete protocol ensures no data loss
 - **📊 Full Audit Trail**: Every file operation is tracked in PostgreSQL
-- **⚡ Async Processing**: SAQ task queue with Redis for parallel file analysis
+- **🗺️ Pipeline Observability**: A single SVG DAG canvas dashboard with per-job-type progress bars and dependency-gated stage triggers
+- **⚡ Async Processing**: SAQ task queue with Redis for parallel file analysis — deterministic per-task keys and idempotent re-runs
 - **📝 Type Safety**: Full type hints with strict mypy validation and Bandit security scanning
 
 ## 🚀 Quick Start
