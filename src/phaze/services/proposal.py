@@ -11,7 +11,8 @@ import uuid
 
 from litellm import acompletion
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.file_companion import FileCompanion
@@ -244,6 +245,18 @@ async def check_rate_limit(redis_pool: Any, max_rpm: int) -> None:
 # ---------------------------------------------------------------------------
 # Proposal storage
 # ---------------------------------------------------------------------------
+#
+# Pipeline DB-write idempotency audit (Phase 35, D-04 / RESEARCH Q4):
+#   * proposals      -> store_proposals (below) is now the partial-index upsert.
+#   * execution_log  -> already idempotent: routers/agent_execution.py:77 issues
+#                       `pg_insert(ExecutionLog).on_conflict_do_nothing(["id"])`
+#                       (agent-supplied PK, D-13). No change needed.
+#   * tag_write_log  -> INTENTIONALLY append-only (models/tag_write_log.py): it is
+#                       an audit trail recording every write attempt with
+#                       before/after snapshots. Adding an upsert would erase that
+#                       history, so it MUST stay insert-only. No change needed.
+# After this change the proposals table is the last non-idempotent task write to
+# be fixed; pipeline DB-write idempotency is complete.
 
 
 async def store_proposals(
@@ -252,9 +265,25 @@ async def store_proposals(
     batch_response: BatchProposalResponse,
     files_context: list[dict[str, Any]],
 ) -> int:
-    """Store LLM proposals as immutable RenameProposal records.
+    """Upsert LLM proposals as the one active (PENDING) RenameProposal per file (D-04).
+
+    Idempotent: re-running ``generate_proposals`` for a file OVERWRITES its
+    existing PENDING proposal in place rather than appending a second pending
+    row. The conflict target is the partial unique index
+    ``uq_proposals_file_id_pending`` (``ON (file_id) WHERE status = 'pending'``,
+    alembic 019). Because that index only covers PENDING rows, an
+    APPROVED / EXECUTED / REJECTED / FAILED proposal for the same file is never a
+    conflict target and is structurally protected from being overwritten -- human
+    approvals survive any number of re-runs.
 
     Also transitions each file's state to ``PROPOSAL_GENERATED``.
+
+    PK-STAMP GOTCHA: ``RenameProposal.id`` declares only a Python-side
+    ``default=uuid.uuid4``, which fires through ORM ``session.add()`` but NOT
+    through ``pg_insert(...).values()``. We therefore stamp ``id`` explicitly on
+    every row so a fresh INSERT does not raise ``NotNullViolationError``. The
+    ``ON CONFLICT DO UPDATE`` set_ deliberately omits ``id`` and ``file_id`` so an
+    overwrite keeps the existing row's identity.
 
     Args:
         session: Active async database session.
@@ -263,7 +292,7 @@ async def store_proposals(
         files_context: The input contexts sent to the LLM (for context_used JSONB).
 
     Returns:
-        Number of proposals stored.
+        Number of proposals upserted.
     """
     count = 0
     for proposal in batch_response.proposals:
@@ -286,16 +315,34 @@ async def store_proposals(
             while "//" in path_raw:
                 path_raw = path_raw.replace("//", "/")
 
-        record = RenameProposal(
-            file_id=uuid.UUID(fid),
-            proposed_filename=proposal.proposed_filename,
-            proposed_path=path_raw,
-            confidence=confidence,
-            status=ProposalStatus.PENDING,
-            context_used=context_used,
-            reason=proposal.reasoning,
+        row = {
+            # Explicit PK stamp -- pg_insert bypasses the Python-side default.
+            "id": uuid.uuid4(),
+            "file_id": uuid.UUID(fid),
+            "proposed_filename": proposal.proposed_filename,
+            "proposed_path": path_raw,
+            "confidence": confidence,
+            "status": ProposalStatus.PENDING,
+            "context_used": context_used,
+            "reason": proposal.reasoning,
+        }
+        stmt = pg_insert(RenameProposal).values(**row)
+        stmt = stmt.on_conflict_do_update(
+            # Match the partial unique index uq_proposals_file_id_pending: the
+            # index_where makes the conflict fire ONLY against an existing PENDING
+            # row, so approvals (outside the index) are never overwritten.
+            index_elements=["file_id"],
+            index_where=(RenameProposal.status == "pending"),
+            set_={
+                "proposed_filename": stmt.excluded.proposed_filename,
+                "proposed_path": stmt.excluded.proposed_path,
+                "confidence": stmt.excluded.confidence,
+                "context_used": stmt.excluded.context_used,
+                "reason": stmt.excluded.reason,
+                "updated_at": func.now(),
+            },
         )
-        session.add(record)
+        await session.execute(stmt)
 
         # Update file state
         result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(fid)))
