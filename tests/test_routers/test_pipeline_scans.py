@@ -1196,8 +1196,12 @@ async def test_dashboard_seeds_pipeline_store_from_server_count(
     # analyzed == 0: store seeded with the server value (no analyzed files seeded).
     assert 'x-init="$store.pipeline.analyzed = 0"' in response.text
     # The global store is registered so the bindings resolve before the first poll.
-    # Phase 34 extends the store with the queue-busy gate keys (all defaulting to 0).
-    assert "Alpine.store('pipeline', { discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0 })" in response.text
+    # Phase 34 added the queue-busy gate keys; Phase 35 (35-04) extends it further with
+    # the per-DAG-node sub-keys (all defaulting to 0). Assert the store is registered, the
+    # Phase-34 keys are preserved, and a sample new per-node key is seeded to 0.
+    assert "Alpine.store('pipeline', {" in response.text
+    assert "discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0," in response.text
+    assert "analyzeActive: 0" in response.text
 
 
 @pytest.mark.asyncio
