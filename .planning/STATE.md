@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: phase_complete
-last_updated: "2026-06-12T15:30:00.000Z"
-last_activity: 2026-06-12 -- Phase 35 complete (verified, UAT passed, chip-overlap fix)
+status: "Phase 35 shipped — PR #121"
+last_updated: "2026-06-12T16:01:42.044Z"
+last_activity: "2026-06-12 -- Phase 35 shipped (PR #121)"
 progress:
   total_phases: 6
   completed_phases: 6
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 35 (pipeline-determinism-idempotency-per-job-type-observability) — COMPLETE
 Plan: 5 of 5
-Status: Phase 35 complete — verified (6/6 must-haves), code review clean (2 blockers + 3 warnings fixed), UAT passed (chip-overlap fix). Full suite 1721 green.
-Last activity: 2026-06-12 -- Phase 35 complete
+Status: Phase 35 shipped — PR #121
+Last activity: 2026-06-12 -- Phase 35 shipped (PR #121)
 
 Progress: [██████████] 100%
 
