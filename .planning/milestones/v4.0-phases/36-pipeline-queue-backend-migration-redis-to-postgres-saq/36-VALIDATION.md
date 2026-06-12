@@ -1,8 +1,8 @@
 ---
 phase: 36
 slug: pipeline-queue-backend-migration-redis-to-postgres-saq
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-06-12
 ---
@@ -40,7 +40,7 @@ created: 2026-06-12
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
 | 36-01-01 | 01 | 1 | REQ-36-1 | — | Queue factory returns PostgresQueue with both before-enqueue hooks attached | unit | `uv run pytest tests/test_queue_factory.py -x` | ❌ W0 | ⬜ pending |
 | 36-01-02 | 01 | 1 | REQ-36-5 | T-36-01 / cache-Redis isolated from broker | counters increment via dedicated cache-redis, not `queue.redis` | unit | `uv run pytest tests/test_deterministic_key.py -x` | ⚠️ exists, update fakes | ⬜ pending |
-| 36-01-03 | 01 | 1 | REQ-36-5 | T-36-01 | `generate_proposals` rate-limits on cache-redis, not `queue.redis` (no AttributeError) | unit | `uv run pytest tests/test_proposal_task.py -x` | ⚠️ verify/extend | ⬜ pending |
+| 36-01-03 | 01 | 1 | REQ-36-5 | T-36-01 | `generate_proposals` rate-limits on cache-redis, not `queue.redis` (no AttributeError) | unit | `uv run pytest tests/test_tasks/test_proposal.py -x` | ⚠️ verify/extend | ⬜ pending |
 | 36-02-01 | 02 | 2 | REQ-36-2 | — | priority + scheduled columns honored on enqueue/dequeue ordering | integration (real PG) | `uv run pytest tests/integration/test_pg_queue_priority.py -x` | ❌ W0 | ⬜ pending |
 | 36-02-02 | 02 | 2 | REQ-36-3 | — | duplicate deterministic key returns None (reenqueue skip) via ON CONFLICT | integration (real PG) | `uv run pytest tests/integration/test_pg_dedup.py -x` | ❌ W0 | ⬜ pending |
 | 36-02-03 | 02 | 2 | REQ-36-4 | — | `saq_web` / `info()` renders against PostgresQueue | unit/integration | `uv run pytest tests/test_saq_mount.py -x` | ⚠️ exists, extend for PG | ⬜ pending |

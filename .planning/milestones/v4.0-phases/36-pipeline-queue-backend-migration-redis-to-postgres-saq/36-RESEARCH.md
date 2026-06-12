@@ -299,15 +299,20 @@ def build_pipeline_queue(name: str, url: str, *, min_size: int = 1, max_size: in
 | A4 | `redis` must become an explicit dependency (dropped from `saq[postgres]`) | Standard Stack | If left transitive-only, direct `redis.asyncio` imports break at runtime |
 | A5 | Conservative per-queue pool sizes (min 1 / max 4) fit Postgres `max_connections` | Pitfall 4 | Wrong sizing → connection exhaustion or under-throughput; tune against homelab Postgres config |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> Resolved during planning (2026-06-12). The user chose "continue without context" (no discuss-phase); the approved 2026-06-12 inline design + ROADMAP scope settled these. Back-annotated per plan-checker Dimension 11.
 
 1. **Agent → Postgres network reachability.** Phase 26 D-25 deliberately kept agents Postgres-free at the network level. Moving the broker to Postgres requires agents to open a psycopg3 connection to the control-host Postgres. Confirm the homelab firewall/topology allows it and whether a production credential guard (analogous to `_enforce_redis_password_in_production`) is wanted for `queue_url`.
    - Known: import-boundary test still passes (psycopg3 not forbidden).
    - Unclear: operator's intent on the network boundary.
-   - Recommendation: surface as the top discuss-phase question.
+   - **RESOLVED:** Accepted — the approved design already provisions `PHAZE_QUEUE_URL` on agent services (Step D homelab deliverable). Reachability/firewall + the credential-guard decision are surfaced in Plan 04 T1 (homelab change-prompt) and threat T-36-03; production credential guard for `queue_url` deferred to the homelab discussion per Plan 01 T2.
 2. **Cutover sequencing of live jobs.** ~11k jobs can be live on Redis at deploy time. Reenqueue makes a cold Postgres queue self-healing, but confirm whether to drain Redis first or rely on boot re-enqueue.
+   - **RESOLVED:** Plan 04 T1 — control first → agents, no job-data migration; rely on Phase-32 boot re-enqueue to self-heal the cold Postgres queue. (Homelab is currently paused with Redis purged and files intact, so there is no live backlog to drain.)
 3. **Counter-Redis injection mechanism.** Two viable shapes (a) `ctx["redis"]` + change `proposal.py`, plus pass-through to counter functions; (b) attach `queue.cache_redis` at construction so hooks read `getattr(job.queue, "cache_redis", None)`. Pick one in planning for consistency across all four construction sites and the test fakes.
+   - **RESOLVED:** LOCKED in Plan 01 interfaces — hybrid: factory attaches `queue.cache_redis` for the backend-agnostic before/after hooks; `ctx["redis"]` for fileless tasks (`proposal.py`). Test fakes updated in Plan 02 T2.
 4. **Pool sizing budget.** Needs the homelab Postgres `max_connections` value to set safe per-queue `min/max`.
+   - **RESOLVED:** Conservative defaults applied at all call sites (1/4 per-agent, 2/8 controller); homelab change-prompt (Plan 04 T1) asks the operator to confirm actual `max_connections`.
 
 ## Environment Availability
 
@@ -342,7 +347,7 @@ def build_pipeline_queue(name: str, url: str, *, min_size: int = 1, max_size: in
 | REQ-36-3 | duplicate deterministic key returns None (reenqueue skip) on Postgres | integration | `uv run pytest tests/integration/test_pg_dedup.py -x` | ❌ Wave 0 |
 | REQ-36-4 | `saq_web`/`info()` renders against PostgresQueue | unit/integration | `uv run pytest tests/test_saq_mount.py -x` | ⚠️ exists, extend for PG |
 | REQ-36-5 | counters still increment via dedicated cache-redis (not queue.redis) | unit | `uv run pytest tests/test_deterministic_key.py -x` | ⚠️ exists, update fakes |
-| REQ-36-5 | generate_proposals reads cache-redis, not queue.redis | unit | `uv run pytest tests/test_proposal_task.py -x` | ⚠️ verify/extend |
+| REQ-36-5 | generate_proposals reads cache-redis, not queue.redis | unit | `uv run pytest tests/test_tasks/test_proposal.py -x` | ⚠️ verify/extend |
 | REQ-36 | agent_worker import boundary still clean + PHAZE_QUEUE_URL handling | subprocess | `uv run pytest tests/test_task_split.py -x` | ⚠️ update env |
 
 ### Sampling Rate
