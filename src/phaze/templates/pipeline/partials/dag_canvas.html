@@ -1,0 +1,355 @@
+{# Phase 35 (35-05): the single coherent pipeline DAG (D-01, sketch 001 Variant B).
+
+   REPLACES the Phase-34 stage_cards.html + processing_card.html. One SVG edge layer
+   plus 9 absolutely-positioned stage-chip nodes, rendered ONCE on the full-page
+   dashboard load. Counts / bars / state pills / trigger gating bind to the existing
+   $store.pipeline and refresh via the existing 5s /pipeline/stats OOB poll — NO new
+   poll, NO SSE, and the SVG + buttons are never OOB-swapped (only the store-bound
+   text/width/:disabled update).
+
+   Edge honesty (35-STAGE-DEPENDENCIES.md, visually verifiable): only Metadata and
+   Analyze converge into Proposals. Fingerprint and the tracklist subgraph have NO edge
+   into Proposals. Edge `d` strings are DERIVED from the single NODE_LAYOUT map below
+   (anchor points), never hand-typed coordinates.
+
+   All node state is computed ONCE in the parent `nodes` getter (single source of truth)
+   so the visual chips AND the < sm <ol> text-equivalent read identical values. Triggers
+   POST only to EXISTING Phase-34 endpoints (no net-new trigger surface — T-35-10).
+
+   All interpolated values are server-computed ints (Jinja autoescape on) written into
+   numeric x-init store assignments — no user-controlled string reaches the template
+   (T-35-11). #}
+
+{# ── Single source-of-truth layout map (anchors) — col0 Discovery · col1 {Metadata,
+   Analyze, Fingerprint, Scan/Search} · col2 {Proposals, Scrape} · col3 {Execute, Match}. #}
+{% set NODE_LAYOUT = {
+  "discovery":   {"x": 24,  "y": 250, "w": 180, "h": 150},
+  "metadata":    {"x": 320, "y": 24,  "w": 180, "h": 76},
+  "analyze":     {"x": 320, "y": 120, "w": 180, "h": 150},
+  "fingerprint": {"x": 320, "y": 300, "w": 180, "h": 76},
+  "scan_search": {"x": 320, "y": 400, "w": 180, "h": 76},
+  "proposals":   {"x": 624, "y": 120, "w": 180, "h": 150},
+  "scrape":      {"x": 624, "y": 400, "w": 180, "h": 76},
+  "execute":     {"x": 928, "y": 120, "w": 180, "h": 150},
+  "match":       {"x": 928, "y": 400, "w": 180, "h": 76}
+} %}
+
+{# Authoritative edge list (35-STAGE-DEPENDENCIES.md). Metadata→Proposals and
+   Analyze→Proposals are the ONLY converging edges; fingerprint/tracklist do NOT
+   enter proposals. #}
+{% set EDGES = [
+  ["discovery", "metadata"],
+  ["discovery", "analyze"],
+  ["discovery", "fingerprint"],
+  ["discovery", "scan_search"],
+  ["metadata", "proposals"],
+  ["analyze", "proposals"],
+  ["proposals", "execute"],
+  ["scan_search", "scrape"],
+  ["scrape", "match"]
+] %}
+
+{# ── Reusable chip chrome (all read the parent `nodes` getter). ── #}
+
+{% macro state_pill(node) %}
+<span class="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded"
+      :class="{
+        'bg-green-500/15 text-green-700 dark:text-green-300': nodes.{{ node }}.state === 'complete',
+        'bg-amber-500/15 text-amber-700 dark:text-amber-300': nodes.{{ node }}.state === 'active',
+        'bg-sky-500/15 text-sky-700 dark:text-sky-300': nodes.{{ node }}.state === 'idle',
+        'bg-gray-500/15 text-gray-500': nodes.{{ node }}.state === 'disabled'
+      }" x-text="nodes.{{ node }}.pill"></span>
+{% endmacro %}
+
+{# Status icon — color is NEVER the only state signal: check / spinner-pulse / lock / clock. #}
+{% macro state_icon(node) %}
+<span aria-hidden="true" class="inline-flex items-center">
+  <svg x-show="nodes.{{ node }}.state === 'complete'" class="w-3.5 h-3.5 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+  <svg x-show="nodes.{{ node }}.state === 'active'" class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 animate-pulse" fill="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" /></svg>
+  <svg x-show="nodes.{{ node }}.state === 'disabled'" class="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16 10V7a4 4 0 10-8 0v3M6 10h12v10H6z" /></svg>
+  <svg x-show="nodes.{{ node }}.state === 'idle'" class="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 2" /></svg>
+</span>
+{% endmacro %}
+
+{% macro node_count(node, em_dash=false) %}
+<p class="mt-1 text-sm">
+  <span class="text-lg font-semibold leading-tight tabular-nums" x-text="nodes.{{ node }}.done"></span>
+  {% if em_dash %}<span class="text-sm text-gray-500 dark:text-gray-400">/ —</span>
+  {% else %}<span class="text-sm text-gray-500 dark:text-gray-400" x-text="'/ ' + nodes.{{ node }}.total"></span>{% endif %}
+</p>
+{% endmacro %}
+
+{% macro node_bar(node, fill) %}
+<div class="w-full bg-gray-200 dark:bg-phaze-panel rounded-full h-[5px] overflow-hidden my-2">
+  <div class="h-[5px] rounded-full {{ fill }}" :style="`width: ${nodes.{{ node }}.pct}%`"></div>
+</div>
+{% endmacro %}
+
+{# Enqueue trigger — POSTs to an EXISTING Phase-34 endpoint only. The disabled button's
+   visible label IS the LOCKED reason string (nodes.<node>.label); the :aria-label always
+   names the action and appends the reason when disabled. On an HTMX transport error the
+   Alpine `error` flag reveals the LOCKED "Couldn't enqueue. Retry." inline message. #}
+{% macro enqueue_button(node, endpoint, slot_id, action_phrase, btn_class) %}
+<div id="{{ slot_id }}" class="mt-1" x-data="{ loading: false, error: false }"
+     @htmx:after-request="loading = false; error = !$event.detail.successful">
+  <button type="button"
+          hx-post="{{ endpoint }}" hx-target="#{{ slot_id }}" hx-swap="innerHTML"
+          hx-indicator="#{{ slot_id }}-spinner"
+          @click="loading = true; error = false"
+          :disabled="loading || nodes.{{ node }}.blocked"
+          :aria-label="nodes.{{ node }}.blocked ? '{{ action_phrase }} (' + nodes.{{ node }}.reason + ')' : '{{ action_phrase }}'"
+          class="w-full px-3 py-1.5 text-sm font-semibold rounded-md text-white disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg {{ btn_class }}"
+          x-text="nodes.{{ node }}.label"></button>
+  <span id="{{ slot_id }}-spinner" class="htmx-indicator ml-2 text-sm text-gray-500 dark:text-gray-400">Enqueuing…</span>
+  <span x-show="error" class="block mt-1 text-sm text-rose-600 dark:text-rose-400">Couldn't enqueue. Retry.</span>
+</div>
+{% endmacro %}
+
+{# ── Parent scope: ONE `nodes` getter computes every node's state from the store so the
+   SVG chips and the <ol> text-equivalent stay in lockstep. mk() folds done/total/active +
+   the gate into { state, pill, pct, reason, label }. LOCKED copy lives here verbatim. ── #}
+<div id="pipeline-dag" class="space-y-4"
+     x-data="{
+       get nodes() {
+         const s = $store.pipeline;
+         const mk = (done, total, o = {}) => {
+           const active = o.active || 0;
+           const blocked = !!o.blocked;
+           const complete = total > 0 && done >= total;
+           const state = active > 0 ? 'active' : (complete ? 'complete' : (blocked ? 'disabled' : 'idle'));
+           const pill = active > 0 ? (active + ' ACTIVE') : (complete ? 'DONE' : (blocked ? (o.gatedPill || 'WAITING') : 'READY'));
+           const pct = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
+           const reason = o.reason || '';
+           const label = blocked ? reason : (active > 0 ? (o.running || o.cta || '') : (o.cta || ''));
+           return { done, total, active, blocked, complete, state, pill, pct, reason, label };
+         };
+         return {
+           discovery: mk(s.discovered, s.discovered, { cta: 'Rescan Files' }),
+           metadata: mk(s.metadataDone, s.metadataTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Extract Metadata', running: 'Extracting…' }),
+           analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
+           // Fingerprint — hard upstream is Discovery (reads the file on disk), so gate on
+           fingerprint: mk(s.fingerprintDone, s.fingerprintTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Fingerprint Files', running: 'Fingerprinting…' }),
+           // store.discovered NOT metadataExtracted (UI-SPEC L243 topology correction).
+           scan_search: mk(s.tracklistDone, 0, { blocked: s.discovered === 0, reason: s.discovered === 0 ? 'No files discovered' : '' }),
+           proposals: mk(s.proposalsDone, s.proposalsTotal, { blocked: s.analyzed === 0 || s.controllerBusy > 0, reason: s.analyzed === 0 ? 'Waiting on Analyze' : (s.controllerBusy > 0 ? 'Controller busy' : ''), cta: 'Generate Proposals', running: 'Generating…' }),
+           scrape: mk(s.scrapeDone, s.scrapeTotal, { blocked: s.tracklistDone === 0, reason: 'Needs tracklist' }),
+           execute: mk(s.executedDone, s.executedTotal, { blocked: s.approved === 0, gatedPill: 'GATED', reason: 'Needs proposals', cta: 'Review queue' }),
+           match: mk(s.matchDone, s.matchTotal, { blocked: s.tracklistDone === 0, reason: 'Needs tracklist' })
+         };
+       }
+     }">
+  <div class="flex items-center justify-between gap-4">
+    <h2 class="text-lg font-semibold">Pipeline Graph</h2>
+    <p class="text-xs text-gray-500 dark:text-gray-400 hidden sm:block lg:hidden">Scroll horizontally to see the full graph →</p>
+  </div>
+
+  {# Empty-state hint (LOCKED copy) — Discovery's Rescan stays enabled regardless. #}
+  <div x-show="$store.pipeline.discovered === 0" class="rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4">
+    <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">No files discovered</p>
+    <p class="text-sm text-gray-500 dark:text-gray-400">Trigger a scan to populate the pipeline.</p>
+  </div>
+
+  {# ── Full-page store seeds (in-place, non-OOB). Mirror the dag-seed-<key> ids that
+     stats_bar.html re-pushes on the 5s poll so every node binding is correct BEFORE the
+     first poll tick (no flash). The same ids are the OOB swap targets on /pipeline/stats. #}
+  {% for key, value in dag.items() %}
+  <p id="dag-seed-{{ key }}" x-init="$store.pipeline.{{ key }} = {{ value }}" class="hidden"></p>
+  {% endfor %}
+  {# Phase-34 gating keys (NOT in the dag map): discovered / analyzed / metadataExtracted /
+     agentBusy / controllerBusy. Same ids stats_bar.html OOB-swaps on each poll. #}
+  <p id="analyze-files-ready" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="hidden"></p>
+  <p id="fingerprint-files-ready" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="hidden"></p>
+  <p id="proposals-files-ready" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="hidden"></p>
+  <p id="agent-busy-seed" x-init="$store.pipeline.agentBusy = {{ agent_busy }}" class="hidden"></p>
+  <p id="controller-busy-seed" x-init="$store.pipeline.controllerBusy = {{ controller_busy }}" class="hidden"></p>
+
+  {# ── Canvas. role=group + aria-label; the SVG edge layer is decorative (aria-hidden)
+     because the dependencies are conveyed in the <ol> text equivalent below. Hidden below
+     sm (the stacked <ol> takes over); horizontally scrollable sm–lg. #}
+  <div role="group" aria-label="Pipeline stage graph"
+       class="hidden sm:block overflow-x-auto rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-bg p-4">
+    <div class="relative" style="width: 1132px; height: 500px;">
+      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1132" height="500" viewBox="0 0 1132 500" fill="none">
+        {% for edge in EDGES %}
+          {% set src = NODE_LAYOUT[edge[0]] %}
+          {% set tgt = NODE_LAYOUT[edge[1]] %}
+          {% set sx = src.x + src.w %}{% set sy = src.y + (src.h // 2) %}
+          {% set tx = tgt.x %}{% set ty = tgt.y + (tgt.h // 2) %}
+          <path d="M {{ sx }},{{ sy }} C {{ sx + 60 }},{{ sy }} {{ tx - 60 }},{{ ty }} {{ tx }},{{ ty }}"
+                class="stroke-slate-300 dark:stroke-[#2a3b51]" stroke-width="2" />
+        {% endfor %}
+      </svg>
+
+      {# ════════════ Node chips. DOM order = topological order (Tab traverses the pipeline). ════════════ #}
+
+      {# 1 · Discovery (cyan, full) — root; Rescan links to the existing Trigger Scan card. #}
+      {% set n = NODE_LAYOUT.discovery %}
+      <div id="node-discovery" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-cyan-600 dark:bg-cyan-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-400">Discovery</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('discovery') }}{{ state_pill('discovery') }}</span>
+        </div>
+        {{ node_count('discovery') }}
+        {{ node_bar('discovery', 'bg-cyan-600 dark:bg-cyan-400') }}
+        <a href="#trigger-scan-heading" aria-label="Rescan files (jump to the Trigger Scan card)"
+           class="block w-full mt-1 text-center px-3 py-1.5 text-sm font-semibold rounded-md bg-cyan-600 dark:bg-cyan-700 text-white hover:bg-cyan-700 dark:hover:bg-cyan-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Rescan Files</a>
+      </div>
+
+      {# 2 · Extract Metadata (sky, compact) → POST /pipeline/extract-metadata #}
+      {% set n = NODE_LAYOUT.metadata %}
+      <div id="node-metadata" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.metadata.state === 'disabled' ? 'opacity-60' : ''">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-sky-600 dark:bg-sky-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-400">Metadata</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('metadata') }}{{ state_pill('metadata') }}</span>
+        </div>
+        {{ node_count('metadata') }}
+        {{ node_bar('metadata', 'bg-sky-600 dark:bg-sky-400') }}
+        {{ enqueue_button('metadata', '/pipeline/extract-metadata', 'extract-metadata-response', 'Extract metadata', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+      </div>
+
+      {# 3 · Analyze (amber, full) — canonical focal node → POST /pipeline/analyze #}
+      {% set n = NODE_LAYOUT.analyze %}
+      <div id="node-analyze" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.analyze.state === 'active' ? 'ring-1 ring-amber-500 shadow dark:shadow-amber-500/20' : (nodes.analyze.state === 'disabled' ? 'opacity-60' : '')">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-amber-600 dark:bg-amber-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">Analyze</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('analyze') }}{{ state_pill('analyze') }}</span>
+        </div>
+        {{ node_count('analyze') }}
+        {{ node_bar('analyze', 'bg-amber-600 dark:bg-amber-400') }}
+        {{ enqueue_button('analyze', '/pipeline/analyze', 'analyze-response', 'Run analysis', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+      </div>
+
+      {# 4 · Fingerprint (teal, compact) → POST /pipeline/fingerprint — gates on discovered #}
+      {% set n = NODE_LAYOUT.fingerprint %}
+      <div id="node-fingerprint" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.fingerprint.state === 'disabled' ? 'opacity-60' : ''">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-teal-600 dark:bg-teal-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-teal-600 dark:text-teal-400">Fingerprint</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('fingerprint') }}{{ state_pill('fingerprint') }}</span>
+        </div>
+        {{ node_count('fingerprint') }}
+        {{ node_bar('fingerprint', 'bg-teal-600 dark:bg-teal-400') }}
+        {{ enqueue_button('fingerprint', '/pipeline/fingerprint', 'fingerprint-response', 'Fingerprint files', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+      </div>
+
+      {# 5 · Scan / Search (rose, compact, tracklist head) — em-dash denominator, NO determinate
+         bar, display-only (no bulk pipeline-level endpoint exists → no Scan Tracklists button). #}
+      {% set n = NODE_LAYOUT.scan_search %}
+      <div id="node-scan_search" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.scan_search.state === 'disabled' ? 'opacity-60' : ''">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-rose-600 dark:bg-rose-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-400">Scan / Search</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('scan_search') }}{{ state_pill('scan_search') }}</span>
+        </div>
+        {{ node_count('scan_search', em_dash=true) }}
+        {# Indeterminate track only (no done/total % width computed). #}
+        <div class="w-full bg-gray-200 dark:bg-phaze-panel rounded-full h-[5px] overflow-hidden my-2" aria-hidden="true"></div>
+        <p class="text-xs text-gray-500 dark:text-gray-400">tracklist head</p>
+      </div>
+
+      {# 6 · Proposals (purple, full) — the Metadata+Analyze JOIN → POST /pipeline/proposals #}
+      {% set n = NODE_LAYOUT.proposals %}
+      <div id="node-proposals" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.proposals.state === 'disabled' ? 'opacity-60' : ''">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-purple-600 dark:bg-purple-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-purple-600 dark:text-purple-400">Proposals</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('proposals') }}{{ state_pill('proposals') }}</span>
+        </div>
+        {{ node_count('proposals') }}
+        {{ node_bar('proposals', 'bg-purple-600 dark:bg-purple-400') }}
+        {{ enqueue_button('proposals', '/pipeline/proposals', 'proposals-response', 'Generate proposals', 'bg-purple-600 hover:bg-purple-700') }}
+      </div>
+
+      {# 7 · Scrape Tracklist (rose, compact, display-only) — sequential sub-chain #}
+      {% set n = NODE_LAYOUT.scrape %}
+      <div id="node-scrape" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.scrape.state === 'disabled' ? 'opacity-60' : ''">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-rose-600 dark:bg-rose-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-400">Scrape</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('scrape') }}{{ state_pill('scrape') }}</span>
+        </div>
+        {{ node_count('scrape') }}
+        {{ node_bar('scrape', 'bg-rose-600 dark:bg-rose-400') }}
+        <p class="text-xs text-gray-500 dark:text-gray-400">seq · needs tracklist</p>
+      </div>
+
+      {# 8 · Approve → Execute (green, full) — navigational link to the review queue #}
+      {% set n = NODE_LAYOUT.execute %}
+      <div id="node-execute" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-green-600 dark:bg-green-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-green-600 dark:text-green-400">Execute</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('execute') }}{{ state_pill('execute') }}</span>
+        </div>
+        {{ node_count('execute') }}
+        {{ node_bar('execute', 'bg-green-600 dark:bg-green-400') }}
+        <a href="/proposals/"
+           :aria-disabled="nodes.execute.blocked ? 'true' : 'false'"
+           :aria-label="nodes.execute.blocked ? 'Review queue (needs proposals)' : 'Review queue'"
+           :class="nodes.execute.blocked ? 'opacity-60 pointer-events-none' : ''"
+           :tabindex="nodes.execute.blocked ? '-1' : '0'"
+           class="block w-full mt-1 text-center px-3 py-1.5 text-sm font-semibold rounded-md bg-green-600 dark:bg-green-700 text-white hover:bg-green-700 dark:hover:bg-green-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg"
+           x-text="nodes.execute.blocked ? 'Needs proposals' : 'Review queue'"></a>
+      </div>
+
+      {# 9 · Match Discogs (rose, compact, display-only) #}
+      {% set n = NODE_LAYOUT.match %}
+      <div id="node-match" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.match.state === 'disabled' ? 'opacity-60' : ''">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-rose-600 dark:bg-rose-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-400">Match</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('match') }}{{ state_pill('match') }}</span>
+        </div>
+        {{ node_count('match') }}
+        {{ node_bar('match', 'bg-rose-600 dark:bg-rose-400') }}
+        <p class="text-xs text-gray-500 dark:text-gray-400">seq · needs tracklist</p>
+      </div>
+    </div>
+  </div>
+
+  {# ── Stacked <ol> = the < sm phone fallback AND the screen-reader text equivalent (one
+     structure, two jobs). Topological order; sr-only at ≥ sm (the SVG canvas takes over),
+     visible at < sm (the canvas is hidden). Each <li> states name, done/total (or done/—),
+     state, and the disabled reason — so the graph is fully perceivable as text. #}
+  <ol class="sm:sr-only space-y-1 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4 text-sm">
+    {% set OL_NODES = [
+      ["discovery", "Discovery", false],
+      ["metadata", "Extract Metadata", false],
+      ["analyze", "Analyze", false],
+      ["fingerprint", "Fingerprint", false],
+      ["scan_search", "Scan / Search", true],
+      ["scrape", "Scrape Tracklist", false],
+      ["match", "Match Discogs", false],
+      ["proposals", "Proposals", false],
+      ["execute", "Approve → Execute", false]
+    ] %}
+    {% for row in OL_NODES %}
+    <li class="text-gray-700 dark:text-gray-300">
+      <span class="font-semibold">{{ row[1] }}</span>:
+      <span class="tabular-nums" x-text="nodes.{{ row[0] }}.done"></span>
+      {% if row[2] %}<span> / —</span>{% else %}<span> / </span><span class="tabular-nums" x-text="nodes.{{ row[0] }}.total"></span>{% endif %}
+      — <span x-text="nodes.{{ row[0] }}.pill"></span>
+      <template x-if="nodes.{{ row[0] }}.blocked"><span> — <span x-text="nodes.{{ row[0] }}.reason"></span></span></template>
+    </li>
+    {% endfor %}
+  </ol>
+</div>
