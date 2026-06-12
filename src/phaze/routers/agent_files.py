@@ -1,11 +1,11 @@
-"""POST /api/internal/agent/files -- chunked file upsert + auto-enqueue (phase-25 D-20..D-22).
+"""POST /api/internal/agent/files -- chunked, idempotent file upsert (phase-25 D-20..D-22).
 
 Idempotent on the composite natural key `(agent_id, original_path)` via
-`INSERT ... ON CONFLICT DO UPDATE`. For each row that was actually INSERTed
-(RETURNING (xmax = 0) AS inserted) AND has a music/video file_type per
-`EXTENSION_MAP`, enqueues `extract_file_metadata` onto the per-agent SAQ
-queue `phaze-agent-<agent.id>` via the lifespan-wired `AgentTaskRouter`
-(Phase 26 D-20, D-21 -- replaces the inline per-handler Queue pattern).
+`INSERT ... ON CONFLICT DO UPDATE`.
+
+Phase 35 (D-06): this handler NO LONGER auto-enqueues the metadata-extraction task.
+Metadata extraction is operator-triggered ONLY (MANUAL-META) -- discovery just persists
+rows. The `enqueued` field of the response is retained for schema stability and is always 0.
 
 Per AUTH-01: `agent_id` comes from `Depends(get_authenticated_agent)` -- the
 request schema has no agent_id field, so accidental body forgery returns
@@ -16,32 +16,24 @@ from typing import Annotated, Any
 import unicodedata
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import Executable, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-import structlog
 
-from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
-from phaze.schemas.agent_tasks import ExtractMetadataPayload
 
-
-logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/internal/agent/files", tags=["agent-internal"])
-
-_EXTRACTABLE: frozenset[FileCategory] = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
 
 
 @router.post("", status_code=status.HTTP_200_OK, response_model=FileUpsertResponse)
 async def upsert_files(
-    request: Request,
     body: FileUpsertChunk,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -53,6 +45,8 @@ async def upsert_files(
     - Server-side dedups same-chunk records on `original_path` (RESEARCH Pitfall 4)
       to avoid Postgres "cannot affect row a second time" errors on duplicate
       natural keys within one statement.
+    - Phase 35 (D-06): does NOT auto-enqueue the metadata-extraction task. The
+      `enqueued` count is always 0 (metadata extraction is operator-triggered only).
     - Returns `(upserted, inserted, enqueued)` counts.
     """
     # Phase 27 D-09 + D-18 + D-21: resolve batch_id BEFORE the records loop.
@@ -104,9 +98,8 @@ async def upsert_files(
     records = list(deduped.values())
 
     # 3. UPSERT with insert-detection (RESEARCH Pattern 2; D-12 + D-21).
-    # Mirrors services/ingestion.py:103-117 with `.returning(...)` extended.
-    # `original_path` is added to RETURNING so the auto-enqueue payload (D-22 / D-21)
-    # can be built without re-querying the row.
+    # Mirrors services/ingestion.py:103-117. `inserted` (xmax = 0) is retained so the
+    # response can report how many rows were newly INSERTed vs updated.
     base_stmt = pg_insert(FileRecord).values(records)
     upsert_stmt: Executable = base_stmt.on_conflict_do_update(
         index_elements=["agent_id", "original_path"],  # composite UQ from models/file.py:61
@@ -127,43 +120,12 @@ async def upsert_files(
     rows = result.all()
     await session.commit()
 
-    # 4. Auto-enqueue extract_file_metadata for INSERTed music/video files (D-20, D-21, D-22).
-    # Uses the lifespan-wired AgentTaskRouter (app.state.task_router) -- queue instances
-    # are cached per-agent (RESEARCH Pitfall 6, connection lifecycle owned by FastAPI).
-    # Discretion: AFTER commit; on enqueue failure, log + continue (do NOT raise).
-    task_router = request.app.state.task_router
-    enqueued = 0
-    for row in rows:
-        if not row.inserted:
-            continue
-        ext = "." + row.file_type.lower()
-        if EXTENSION_MAP.get(ext, FileCategory.UNKNOWN) not in _EXTRACTABLE:
-            continue
-        try:
-            await task_router.enqueue_for_agent(
-                agent_id=agent.id,
-                task_name="extract_file_metadata",
-                payload=ExtractMetadataPayload(
-                    file_id=row.id,
-                    original_path=row.original_path,
-                    file_type=row.file_type,
-                    agent_id=agent.id,
-                ),
-            )
-            enqueued += 1
-        except Exception:
-            # Enqueue is best-effort post-commit -- DB is the source of truth; the
-            # operator can re-enqueue manually via Phase 27's UI on retryable failure.
-            logger.exception(
-                "Failed to enqueue extract_file_metadata for file_id=%s agent_id=%s",
-                row.id,
-                agent.id,
-            )
-    # NO finally block -- task_router lifecycle is owned by FastAPI lifespan, not by this handler.
-
+    # Phase 35 (D-06): NO auto-enqueue of the metadata-extraction task. Discovery persists
+    # rows; metadata extraction is operator-triggered only (MANUAL-META). `enqueued` is
+    # always 0, kept on the response for schema stability.
     return FileUpsertResponse(
         agent_id=agent.id,
         upserted=len(rows),
         inserted=sum(1 for r in rows if r.inserted),
-        enqueued=enqueued,
+        enqueued=0,
     )

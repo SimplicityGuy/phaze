@@ -125,70 +125,7 @@ async def test_rejects_extra_kwargs(mock_extract: MagicMock) -> None:
     api.put_metadata.assert_not_awaited()
 
 
-# Preserve the run_scan ingestion auto-enqueue regression test from the prior body
-# (still relevant; tests a separate code path that is NOT being refactored in Plan 11).
-async def test_run_scan_auto_enqueues_extraction() -> None:
-    """run_scan with queue enqueues extract_file_metadata for music/video files (D-09)."""
-    from phaze.services.ingestion import run_scan
-
-    mock_session = AsyncMock()
-    mock_session_factory = MagicMock()
-    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    mock_queue = AsyncMock()
-
-    file_id_1 = uuid.uuid4()
-    file_id_2 = uuid.uuid4()
-    file_id_3 = uuid.uuid4()
-
-    mock_records = [
-        {
-            "id": file_id_1,
-            "file_type": "mp3",
-            "sha256_hash": "a" * 64,
-            "original_path": "/a.mp3",
-            "original_filename": "a.mp3",
-            "current_path": "/a.mp3",
-            "file_size": 100,
-            "state": "discovered",
-            "batch_id": None,
-        },
-        {
-            "id": file_id_2,
-            "file_type": "mp4",
-            "sha256_hash": "b" * 64,
-            "original_path": "/b.mp4",
-            "original_filename": "b.mp4",
-            "current_path": "/b.mp4",
-            "file_size": 200,
-            "state": "discovered",
-            "batch_id": None,
-        },
-        {
-            "id": file_id_3,
-            "file_type": "txt",
-            "sha256_hash": "c" * 64,
-            "original_path": "/c.txt",
-            "original_filename": "c.txt",
-            "current_path": "/c.txt",
-            "file_size": 50,
-            "state": "discovered",
-            "batch_id": None,
-        },
-    ]
-
-    batch_id = uuid.uuid4()
-
-    with (
-        patch("phaze.services.ingestion.discover_and_hash_files", return_value=mock_records),
-        patch("phaze.services.ingestion.bulk_upsert_files", new_callable=AsyncMock, return_value=3),
-    ):
-        await run_scan("/fake/path", batch_id, mock_session_factory, queue=mock_queue)
-
-    # Should enqueue for mp3 and mp4 (music + video), but NOT for txt (companion)
-    enqueue_calls = mock_queue.enqueue.call_args_list
-    enqueued_ids = [call.kwargs["file_id"] for call in enqueue_calls]
-    assert str(file_id_1) in enqueued_ids
-    assert str(file_id_2) in enqueued_ids
-    assert str(file_id_3) not in enqueued_ids
+# NOTE (Phase 35 D-06): the former ``test_run_scan_auto_enqueues_extraction`` test (which
+# asserted run_scan auto-enqueues the metadata-extraction task per the retired D-09) has been
+# removed. Metadata extraction is now operator-triggered ONLY; the inverse regression guard
+# (run_scan does NOT auto-enqueue) lives in tests/test_no_auto_metadata_enqueue.py.
