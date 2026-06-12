@@ -10,7 +10,6 @@ license = "MIT"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "alembic>=1.18.4",
-    "saq[redis]>=0.26.4",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
     "cryptography>=48.0.0",
@@ -31,6 +30,12 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.32",
     "rapidfuzz>=3.14.5",
+    # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
+    # but `redis.asyncio` is imported directly across the codebase (cache_redis handle,
+    # pipeline counters). Declared explicitly so the import is not a transitive accident.
+    "redis>=4.2,<8.0",
+    # Phase 36: postgres extra pulls psycopg[pool]>=3.2.0 for the PostgresQueue broker.
+    "saq[postgres]>=0.26.4",
     "sqlalchemy>=2.0.50",
     "sse-starlette>=3.4.4",
     "structlog>=25.4.0",
