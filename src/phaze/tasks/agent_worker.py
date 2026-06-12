@@ -56,6 +56,7 @@ from phaze.tasks._shared.agent_bootstrap import (
     construct_agent_client,
     whoami_with_retry as _whoami_with_retry,
 )
+from phaze.tasks._shared.deterministic_key import apply_deterministic_key, increment_completed
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.execution import execute_approved_batch
@@ -183,10 +184,17 @@ queue = Queue.from_url(get_settings().redis_url, name=_queue_name)
 # Job inherits the longer timeout / retry budget without breaking Worker
 # construction. See phaze.tasks._shared.queue_defaults for the hook body.
 queue.register_before_enqueue(apply_project_job_defaults)
+# Phase 35 (D-05): central deterministic-key hook on the agent worker's queue. The agent
+# runs in a separate container but shares the central Redis, so its enqueued/completed
+# INCRs land in the same counters the dashboard reads.
+queue.register_before_enqueue(apply_deterministic_key)
 
 
 settings = {
     "queue": queue,
+    # Phase 35 (D-02): bump the maintained `completed` counter on each COMPLETE outcome
+    # (Worker constructor kwarg, not a register_* call).
+    "after_process": increment_completed,
     "functions": [
         process_file,
         extract_file_metadata,

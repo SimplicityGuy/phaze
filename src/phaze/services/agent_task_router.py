@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from saq import Queue
 import structlog
 
+from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
 
@@ -97,6 +98,11 @@ class AgentTaskRouter:
             # and were cancelled with asyncio.TimeoutError after exactly 10s. Register once
             # here, only on first construction per agent_id (never re-registered on cache hits).
             queue.register_before_enqueue(apply_project_job_defaults)
+            # Phase 35 (D-05): central deterministic-key hook -- per-agent tasks
+            # (process_file, extract_file_metadata, ...) are keyed `<function>:<natural_id>`
+            # here so a re-dispatch of in-flight work dedups. Registered once per agent_id,
+            # alongside the defaults hook (never re-registered on cache hits).
+            queue.register_before_enqueue(apply_deterministic_key)
             self._queues[agent_id] = queue
         return self._queues[agent_id]
 

@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 import pytest
 
+from phaze.tasks._shared.deterministic_key import apply_deterministic_key
+from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from tests._queue_fakes import FakeQueue
 
 
@@ -127,7 +129,11 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
     fake_queue_cls.from_url.assert_called_once()
     _from_url_args, from_url_kwargs = fake_queue_cls.from_url.call_args
     assert from_url_kwargs.get("name") == "controller", f"controller queue must be named 'controller'; got {from_url_kwargs!r}"
-    fake_queue.register_before_enqueue.assert_called_once()
+    # Phase 35: the controller queue registers TWO before_enqueue hooks -- the Phase 27
+    # policy-defaults hook AND the Phase 35 central deterministic-key hook.
+    registered_hooks = {call.args[0] for call in fake_queue.register_before_enqueue.call_args_list}
+    assert apply_project_job_defaults in registered_hooks
+    assert apply_deterministic_key in registered_hooks
 
     # Migration must precede the engine SELECT 1 (which precedes ensure_dev_agent).
     assert "run_migrations" in call_order, f"run_migrations not invoked: {call_order!r}"
