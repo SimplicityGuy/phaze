@@ -18,6 +18,7 @@ Three layers:
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING
@@ -140,6 +141,32 @@ def test_topology_renders_anchor_derived_bezier_paths() -> None:
     # One path per edge; nine edges in the authoritative list.
     paths = re.findall(r'<path d="M [\d., ]+C [\d., ]+"', html)
     assert len(paths) == 9, f"expected 9 anchor-derived edges, found {len(paths)}"
+
+
+def test_topology_column_one_chips_do_not_overlap() -> None:
+    """Regression (UAT 35): the 4 stacked column-1 chips must be spaced by at least a real
+    button-chip height, so a content-bearing chip cannot paint over the chip below it.
+
+    The original layout gave metadata/fingerprint a "compact" h:76 even though they render a
+    trigger button (~154px tall), so each overlapped the next chip by ~55px. Node chips are
+    content-height (the div sets only left/top/width), so this guards the y-spacing in the
+    NODE_LAYOUT map against the smallest height a button chip actually renders at.
+    """
+    html = _render_canvas()
+    # Minimum rendered height of a column-1 chip that carries a trigger button (measured ~154px).
+    min_chip_height = 150
+    tops = {}
+    for node in ("metadata", "analyze", "fingerprint", "scan_search"):
+        m = re.search(rf'id="node-{node}".*?top:\s*(\d+)px', html, re.DOTALL)
+        assert m, f"could not find top position for node {node}"
+        tops[node] = int(m.group(1))
+    ordered = ["metadata", "analyze", "fingerprint", "scan_search"]
+    for upper, lower in itertools.pairwise(ordered):
+        gap = tops[lower] - tops[upper]
+        assert gap >= min_chip_height, (
+            f"column-1 chips overlap: {upper} (top {tops[upper]}) -> {lower} (top {tops[lower]}) "
+            f"spaced only {gap}px, need >= {min_chip_height}px for a button chip"
+        )
 
 
 def test_topology_canvas_has_aria_group_and_decorative_svg() -> None:
