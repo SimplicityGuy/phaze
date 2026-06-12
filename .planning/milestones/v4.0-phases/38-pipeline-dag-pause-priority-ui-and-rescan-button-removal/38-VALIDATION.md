@@ -1,8 +1,8 @@
 ---
 phase: 38
 slug: pipeline-dag-pause-priority-ui-and-rescan-button-removal
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-06-12
 ---
@@ -44,9 +44,9 @@ created: 2026-06-12
 | 38-toggle | 02 | 2 | REQ-38-1 | T-38-OOB | Pause/Resume two `x-show`-gated buttons post to `/pipeline/stages/{stage}/pause\|resume` with `hx-swap="none"` | pure render | `uv run pytest tests/test_dag_canvas_render.py -x` | ⚠️ add | ⬜ pending |
 | 38-stepper | 02 | 2 | REQ-38-2 | T-38-DELTA | ▲/▼ steppers post `/pipeline/stages/{stage}/priority` `{delta:-10}`/`{delta:10}`, value bound to `<stage>Priority`; ▲ disabled at 0, ▼ disabled at 100 | pure render | `uv run pytest tests/test_dag_canvas_render.py -x` | ⚠️ add | ⬜ pending |
 | 38-notgated | 02 | 2 | REQ-38-1, REQ-38-2 | — | controls are NOT gated by `agentBusy` (no `nodes.<node>.blocked` on control markup) | pure render | `uv run pytest tests/test_dag_canvas_render.py -x` | ⚠️ add | ⬜ pending |
-| 38-context | 03 | 2 | REQ-38-4 | T-38-XSS | `_build_dag_context` returns the 6 `<stage>Paused`/`<stage>Priority` int keys; `base.html` store seeds all 6 to 0 | DB-backed + store-text | `uv run pytest tests/test_pipeline_dag_context.py -x` | ⚠️ extend `_NEW_STORE_KEYS` | ⬜ pending |
-| 38-stats-oob | 03 | 2 | REQ-38-4 | T-38-OOB | `GET /pipeline/stats` emits an OOB `dag-seed-<key>` paragraph for each of the 6 new keys | integration | `uv run pytest tests/test_pipeline_dag_context.py -x` | ⚠️ extend | ⬜ pending |
-| 38-degrade | 03 | 2 | REQ-38-4 | T-38-DEGRADE | poll degrades to 200 (defaults) when the control table is unreadable | integration | `uv run pytest tests/test_pipeline_dag_context.py -x` | ⚠️ add (mirror `test_stats_poll_degrades_to_200_without_counter_source`) | ⬜ pending |
+| 38-context | 03 | 1 | REQ-38-4 | T-38-XSS | `_build_dag_context` returns the 6 `<stage>Paused`/`<stage>Priority` int keys; `base.html` store seeds all 6 to 0 | DB-backed + store-text | `uv run pytest tests/test_pipeline_dag_context.py -x` | ⚠️ extend `_NEW_STORE_KEYS` | ⬜ pending |
+| 38-stats-oob | 03 | 1 | REQ-38-4 | T-38-OOB | `GET /pipeline/stats` emits an OOB `dag-seed-<key>` paragraph for each of the 6 new keys | integration | `uv run pytest tests/test_pipeline_dag_context.py -x` | ⚠️ extend | ⬜ pending |
+| 38-degrade | 03 | 1 | REQ-38-4 | T-38-DEGRADE | poll degrades to 200 (defaults) when the control table is unreadable | integration | `uv run pytest tests/test_pipeline_dag_context.py -x` | ⚠️ add (mirror `test_stats_poll_degrades_to_200_without_counter_source`) | ⬜ pending |
 | 38-overlap | 02 | 2 | guard | — | overlap regression passes with recomputed `NODE_LAYOUT` + taller chips | pure render | `uv run pytest tests/test_dag_canvas_render.py::test_topology_column_one_chips_do_not_overlap -x` | ⚠️ update `min_chip_height` | ⬜ pending |
 | 38-hxpost4 | 02 | 2 | guard | — | the "exactly 4 hx-post" test updated to include the new stage-control posts | pure render | `uv run pytest tests/test_dag_canvas_render.py -x` | ⚠️ update existing | ⬜ pending |
 

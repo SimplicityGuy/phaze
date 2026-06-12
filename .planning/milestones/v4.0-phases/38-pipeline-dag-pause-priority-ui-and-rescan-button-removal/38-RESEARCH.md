@@ -369,7 +369,14 @@ Adding the control row makes the three agent chips materially taller. The UI-SPE
 | A6 | Emitting `paused` as int `0`/`1` keeps the template's "all dag values are ints" invariant intact | Pattern 3, Pitfall 3 | None if followed; breaking it injects invalid JS into x-init. |
 | A7 | The existing `dag.items()` loops auto-propagate the 6 new keys (no new seed-paragraph code) | Pattern 3 | Verified by reading `stats_bar.html:66-68` and `dag_canvas.html:161-163`; both iterate `dag`. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> All four resolved 2026-06-12 by the operator and locked into the **approved** `38-UI-SPEC.md` (`status: approved`, `reviewed_at: 2026-06-12`). Back-annotated per plan-checker Dimension 11.
+>
+> - **Q1:** RESOLVED — option (a): keep Phase 37 JSON, drive controls store-side via `hx-swap="none"` + Alpine `@htmx:after-request`. Phase 37 untouched.
+> - **Q2:** RESOLVED — authoritative-only store write (flicker-free).
+> - **Q3:** RESOLVED — yes; `<ol>` text equivalent gains " — paused" / " — priority N" per agent stage.
+> - **Q4:** RESOLVED — **TWO `x-show`-gated static-`hx-post` buttons** per UI-SPEC §Component Inventory. This OVERRIDES the single-button recommendation below: the operator chose the two-static-button form precisely because it sidesteps Q1's bound-attribute (`:hx-post`) concern and keeps each endpoint static/testable.
 
 1. **How does a control POST update the UI — store-side JSON parse vs HTML OOB partial?** *(the central design decision)*
    - What we know: Phase 37 ships JSON `{stage, priority, paused}` with tests asserting that shape; Phase 37 is not yet executed.
