@@ -115,6 +115,12 @@ None — the factory is fully wired; `cache_redis` and both hooks are live. Pool
 - The one seam (factory + config) is in place. Plan 02 adopts `build_pipeline_queue` at all four construction sites and wires pool open/close in role startup.
 - Blockers: none.
 
+## Self-Check: PASSED
+
+- All created files exist on disk (queue_factory.py, test_queue_factory.py, 36-01-SUMMARY.md)
+- All 5 commits present in git log (e2adfec, f837322, f269aa1, b4c1b2a, 6012e56)
+- Working tree clean
+
 ---
 *Phase: 36-pipeline-queue-backend-migration-redis-to-postgres-saq*
 *Completed: 2026-06-12*
