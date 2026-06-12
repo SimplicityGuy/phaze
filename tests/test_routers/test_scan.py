@@ -75,17 +75,25 @@ async def test_trigger_scan_with_path_override(
 
 
 @pytest.mark.asyncio
-async def test_trigger_scan_enqueues_extract_on_active_agent_queue(
+async def test_trigger_scan_does_not_auto_enqueue_extract(
     client: AsyncClient,
     session: AsyncSession,
     async_engine,  # type: ignore[no-untyped-def]
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Legacy scan auto-enqueues extract_file_metadata onto phaze-agent-<id>, never default."""
+    """MANUAL-META (D-06): a legacy scan discovers + persists rows but NEVER auto-enqueues
+    ``extract_file_metadata``. Metadata extraction is operator-triggered only.
+
+    This is the endpoint-level guard (full HTTP path: trigger_scan -> run_scan) that
+    complements the unit-level guard in ``tests/test_no_auto_metadata_enqueue.py``. Before
+    Phase 35 this path fired ``extract_file_metadata`` per discovered MUSIC/VIDEO record;
+    the removal must hold at the API boundary too.
+    """
     from sqlalchemy.ext.asyncio import AsyncSession as SAAsyncSession, async_sessionmaker
 
-    # A real audio file so discovery classifies it MUSIC and the enqueue loop fires.
+    # A real audio file so discovery classifies it MUSIC -- the pre-D-06 trigger for the
+    # (now removed) per-record enqueue loop. If auto-enqueue ever returns, this catches it.
     (tmp_path / "song.mp3").write_bytes(b"\x00fake-mp3-bytes")
 
     await seed_active_agent(session, "nox")
@@ -93,8 +101,8 @@ async def test_trigger_scan_enqueues_extract_on_active_agent_queue(
     client._transport.app.state.task_router = router  # type: ignore[union-attr]
 
     # run_scan opens its own session via phaze.routers.scan.async_session (the prod
-    # factory). Point it at the test engine so discovery + the enqueue loop run
-    # against the same database the fixtures seeded.
+    # factory). Point it at the test engine so discovery runs against the same database
+    # the fixtures seeded.
     test_factory = async_sessionmaker(async_engine, class_=SAAsyncSession, expire_on_commit=False)
     monkeypatch.setattr("phaze.routers.scan.async_session", test_factory)
 
@@ -103,8 +111,11 @@ async def test_trigger_scan_enqueues_extract_on_active_agent_queue(
 
     await _drain_background_scans()
 
-    assert router.captures, "expected at least one enqueue from the discovered audio file"
-    assert any(name == "phaze-agent-nox" and task == "extract_file_metadata" for name, task, _ in router.captures)
+    # The hard guard: discovery persisted the row but enqueued no metadata extraction.
+    assert not any(task == "extract_file_metadata" for _, task, _ in router.captures), (
+        f"D-06 violation: scan auto-enqueued extract_file_metadata: {router.captures}"
+    )
+    # And nothing leaked onto the removed consumer-less default queue.
     assert all(name != "default" for name, _, _ in router.captures)
 
 
