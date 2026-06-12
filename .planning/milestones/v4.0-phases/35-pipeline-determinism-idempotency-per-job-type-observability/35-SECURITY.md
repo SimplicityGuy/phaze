@@ -62,11 +62,13 @@ The ACTIVE move/execution stage neutralizes it:
   `Path(candidate).resolve()` (collapsing `..` and symlinks) then asserts
   `relative_to(root)` for each scan_root — raising `ValueError` on any escape.
 
-The only `proposed_path` consumer WITHOUT a `..` containment guard is the legacy
-`services/execution.py:141-143 execute_single_file`, which has NO caller (grep confirms no
-router/task references it; the live path is `execute_approved_batch`). Recommendation
-(non-blocking, track outside Phase 35): add the same containment guard to
-`execute_single_file` if it is ever re-wired, or delete it as dead code.
+The only `proposed_path` consumer WITHOUT a `..` containment guard was the legacy
+`services/execution.py::execute_single_file`, which had NO caller (the live path is
+`execute_approved_batch`). **Resolved 2026-06-12 (commit 8f101db):** the entire dead
+`services/execution.py` module and its test were removed, eliminating the unguarded
+consumer outright; `docs/architecture.md` was corrected to point at the live
+`tasks/execution.py::execute_approved_batch` path. No unguarded `proposed_path` consumer
+remains.
 
 Conclusion: storing `..` is safe because the sole live execution path resolves under a
 root with a `..`/symlink guard. WR-02 is correctly deferred to the (already-guarded) move
