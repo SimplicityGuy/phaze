@@ -1,9 +1,10 @@
 ---
 phase: 35-pipeline-determinism-idempotency-per-job-type-observability
 verified: 2026-06-12T05:00:00Z
-status: human_needed
+status: passed
 score: 6/6 must-haves verified
 overrides_applied: 0
+human_verification_outcome: "Resolved 2026-06-12 via Playwright-MCP browser verification (local uvicorn + ephemeral Postgres/Redis, 16 seeded files; see 35-HUMAN-UAT.md). Items 2 (gating) and 3 (responsive <ol>) PASS. Item 4: enqueue path emits the complete ExtractMetadataPayload/FingerprintFilePayload (proven valid against schema by regression tests) and the 5s /pipeline/stats poll returns 200 with all 17 dag-seed OOB counts — live agent-worker consumption not exercised in dev. Item 1 surfaced a real chip-overlap defect (compact h:76 chips with buttons painting over the chip below); FIXED in commit 88881ab (NODE_LAYOUT recomputed to real heights + 28px gutters, canvas 500→720px) and re-verified (0 overlaps, edges anchored, no clipped buttons). Edge topology confirmed honest in a live render: only metadata+analyze→proposals."
 human_verification:
   - test: "Render the pipeline dashboard in a browser and confirm the 9-node SVG DAG is visible, with colored stage-stripe tops, bezier edges connecting the nodes in the correct layout, and no layout overflow."
     expected: "Discovery in col0; Metadata/Analyze/Fingerprint/Scan-Search stacked in col1; Proposals/Scrape in col2; Execute/Match in col3. Edges render as smooth curves from right-anchor to left-anchor."
