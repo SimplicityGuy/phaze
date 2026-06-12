@@ -27,8 +27,21 @@ findings:
   warning: 4
   info: 2
   total: 8
-status: issues_found
+status: resolved
+resolution:
+  resolved_at: 2026-06-12
+  commits:
+    - "bddd3a1 — CR-01/CR-02: build complete metadata + fingerprint enqueue payloads"
+    - "01e1245 — WR-01/WR-03/WR-04: harden proposal upsert + counter fallback"
+  fixed: [CR-01, CR-02, WR-01, WR-03, WR-04]
+  deferred:
+    - "WR-02 — proposed_path traversal: pre-existing storage-side gap; exploit depends on the out-of-scope execution/move stage's own path guard. Tracked as follow-up."
+  notes: "IN-01/IN-02 (info) left as-is — latent-consistency / micro-optimization, no behavior impact."
 ---
+
+> **Resolution (2026-06-12):** Both BLOCKERs and three of four WARNINGs fixed with regression
+> tests (commits `bddd3a1`, `01e1245`). WR-02 deferred (see frontmatter). The four phase pillars
+> — determinism (D-05), idempotency (D-04), counters (D-02/D-03), DAG canvas — verified correct.
 
 # Phase 35: Code Review Report
 
