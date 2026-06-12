@@ -7,10 +7,8 @@ repos:
         exclude: |
           (?x)^(
             \.planning/graphs/graph\.json|
-            \.planning/graphs/graph\.html|
             \.planning/graphs/\.last-build-snapshot\.json|
-            graphify-out/graph\.json|
-            graphify-out/graph\.html
+            graphify-out/graph\.json
           )$
       - id: check-executables-have-shebangs
       - id: check-json
