@@ -121,6 +121,20 @@ async def test_enqueued_counter_skipped_when_no_redis() -> None:
     assert job.key == f"process_file:{fid}"
 
 
+async def test_enqueued_counter_failure_does_not_block_enqueue() -> None:
+    # A Redis hiccup during the counter INCR must be swallowed -- the key is still set and
+    # the hook returns normally (the enqueue must never be blocked by a counter cache).
+    class _BoomRedis:
+        async def incr(self, _key: str) -> int:
+            raise RuntimeError("redis down")
+
+    fid = uuid.uuid4()
+    job = Job(function="process_file", kwargs={"file_id": fid})
+    job.queue = SimpleNamespace(redis=_BoomRedis())  # type: ignore[assignment]
+    await apply_deterministic_key(job)  # must not raise
+    assert job.key == f"process_file:{fid}"
+
+
 # ---------------------------------------------------------------------------
 # increment_completed (after_process)
 # ---------------------------------------------------------------------------
@@ -147,6 +161,18 @@ async def test_increment_completed_noop_on_non_complete_status() -> None:
 async def test_increment_completed_noop_without_job() -> None:
     # An empty ctx (no "job") must not raise.
     await increment_completed({})
+
+
+async def test_increment_completed_failure_is_swallowed() -> None:
+    # A Redis hiccup during the completed INCR must be swallowed (best-effort).
+    class _BoomRedis:
+        async def incr(self, _key: str) -> int:
+            raise RuntimeError("redis down")
+
+    job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
+    job.queue = SimpleNamespace(redis=_BoomRedis())  # type: ignore[assignment]
+    job.status = Status.COMPLETE
+    await increment_completed({"job": job})  # must not raise
 
 
 # ---------------------------------------------------------------------------
