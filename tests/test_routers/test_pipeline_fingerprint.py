@@ -10,6 +10,7 @@ import pytest
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
+from phaze.schemas.agent_tasks import FingerprintFilePayload
 from tests._queue_fakes import seed_active_agent, wire_fakes
 
 
@@ -60,6 +61,43 @@ async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, sessio
     assert len(capture) == 3
     assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "fingerprint_file")}
     assert all(q != "default" for q, _, _ in capture)
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_enqueues_complete_payload(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (35-REVIEW CR-02): /api/v1/fingerprint must enqueue a COMPLETE FingerprintFilePayload.
+
+    The trigger passed only ``file_id``; the agent worker's
+    ``FingerprintFilePayload.model_validate(kwargs)`` (``extra="forbid"``) requires
+    file_id + original_path + agent_id and would otherwise dead-letter every job. This
+    pins all three required fields and that the exact kwargs validate cleanly.
+    """
+    file_rec = _make_file(state=FileState.METADATA_EXTRACTED)
+    session.add(file_rec)
+    await session.commit()
+    expected_id = str(file_rec.id)
+    expected_path = file_rec.original_path
+    agent = await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/fingerprint")
+    assert response.status_code == 200
+    assert response.json()["enqueued"] == 1
+
+    await _drain_background()
+    assert len(capture) == 1
+    queue_name, task_name, kwargs = capture[0]
+    assert (queue_name, task_name) == ("phaze-agent-nox", "fingerprint_file")
+
+    # All three required fields present -- not just file_id (the CR-02 bug).
+    assert set(kwargs) == {"file_id", "original_path", "agent_id"}
+    assert kwargs["file_id"] == expected_id
+    assert kwargs["original_path"] == expected_path
+    assert kwargs["agent_id"] == agent.id
+
+    # The exact kwargs the agent worker receives validate against FingerprintFilePayload.
+    validated = FingerprintFilePayload.model_validate(kwargs)
+    assert str(validated.file_id) == expected_id
 
 
 @pytest.mark.asyncio

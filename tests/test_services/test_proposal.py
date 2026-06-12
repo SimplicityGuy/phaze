@@ -533,10 +533,10 @@ class TestStoreProposalsPath:
             ]
         )
 
-        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             await store_proposals(session, [file_id], batch, [{"f": 1}])
-            call_kwargs = MockProposal.call_args[1]
-            assert call_kwargs["proposed_path"] == "performances/artists/Disclosure"
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            assert row["proposed_path"] == "performances/artists/Disclosure"
 
     @pytest.mark.asyncio
     async def test_normalizes_leading_trailing_slashes(self):
@@ -564,10 +564,10 @@ class TestStoreProposalsPath:
             ]
         )
 
-        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             await store_proposals(session, [file_id], batch, [{"f": 1}])
-            call_kwargs = MockProposal.call_args[1]
-            assert call_kwargs["proposed_path"] == "performances/artists/Disclosure"
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            assert row["proposed_path"] == "performances/artists/Disclosure"
 
     @pytest.mark.asyncio
     async def test_collapses_double_slashes(self):
@@ -595,10 +595,10 @@ class TestStoreProposalsPath:
             ]
         )
 
-        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             await store_proposals(session, [file_id], batch, [{"f": 1}])
-            call_kwargs = MockProposal.call_args[1]
-            assert call_kwargs["proposed_path"] == "performances/artists/Disclosure"
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            assert row["proposed_path"] == "performances/artists/Disclosure"
 
     @pytest.mark.asyncio
     async def test_leaves_none_path_as_none(self):
@@ -625,10 +625,10 @@ class TestStoreProposalsPath:
             ]
         )
 
-        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             await store_proposals(session, [file_id], batch, [{"f": 1}])
-            call_kwargs = MockProposal.call_args[1]
-            assert call_kwargs["proposed_path"] is None
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            assert row["proposed_path"] is None
 
 
 class TestStoreProposals:
@@ -665,11 +665,13 @@ class TestStoreProposals:
         )
         files_context = [{"original_filename": "test.mp3"}]
 
-        with patch("phaze.services.proposal.RenameProposal"):
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             count = await store_proposals(session, [file_id], batch, files_context)
 
         assert count == 1
-        session.add.assert_called_once()
+        # The upsert is issued (one pg_insert per proposal) and the file state advances.
+        mock_pg_insert.assert_called_once()
+        session.execute.assert_awaited()
         assert file_record.state == "proposal_generated"
 
     @pytest.mark.asyncio
@@ -697,11 +699,11 @@ class TestStoreProposals:
             ]
         )
 
-        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             await store_proposals(session, [file_id], batch, [{"f": 1}])
             # Check confidence was clamped to 1.0
-            call_kwargs = MockProposal.call_args[1]
-            assert call_kwargs["confidence"] == 1.0
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            assert row["confidence"] == 1.0
 
     @pytest.mark.asyncio
     async def test_stores_context_used_with_metadata(self):
@@ -737,10 +739,10 @@ class TestStoreProposals:
         )
         input_ctx = [{"original_filename": "test.mp3"}]
 
-        with patch("phaze.services.proposal.RenameProposal") as MockProposal:
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
             await store_proposals(session, [file_id], batch, input_ctx)
-            call_kwargs = MockProposal.call_args[1]
-            ctx_used = call_kwargs["context_used"]
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+            ctx_used = row["context_used"]
             assert ctx_used["artist"] == "DJ Test"
             assert ctx_used["event_name"] == "Coachella 2024"
             assert ctx_used["venue"] == "Empire Polo Club"

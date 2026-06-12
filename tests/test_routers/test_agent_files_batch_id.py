@@ -8,9 +8,9 @@ The Phase 25 upsert endpoint now accepts an optional `batch_id`:
               (`WHERE agent_id=? AND status='live'`; the partial unique index
               `uq_scan_batches_agent_id_live` guarantees ≤1 row). Bind all files to it.
 
-The existing auto-enqueue path (xmax-based INSERT detection) is unaffected --
-the Phase 26 SCAN-02 invariant requires `extract_file_metadata` to fire for
-freshly-INSERTed music/video files regardless of which batch they bind to.
+Phase 35 (D-06): the former per-INSERT auto-enqueue has been removed. Discovery binds
+files to a batch and persists them, but never auto-enqueues the metadata-extraction task
+(metadata extraction is operator-triggered only) -- regardless of which batch they bind to.
 
 This file's smoke-app fixture mirrors `tests/test_routers/test_agent_files.py:52-96`
 verbatim so the production handler is exercised under a minimal app.
@@ -211,12 +211,12 @@ async def test_batch_id_unknown_404(
 
 
 @pytest.mark.asyncio
-async def test_auto_enqueue_with_explicit_batch_id(
+async def test_no_auto_enqueue_with_explicit_batch_id(
     smoke_app_and_router: tuple[AsyncClient, AsyncMock],
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """SCAN-02: auto-enqueue STILL fires for new INSERTs when batch_id is explicit."""
+    """Phase 35 (D-06): a new INSERT bound to an explicit batch_id does NOT auto-enqueue."""
     client, mock_router = smoke_app_and_router
     agent, _ = seed_test_agent
     batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
@@ -226,11 +226,7 @@ async def test_auto_enqueue_with_explicit_batch_id(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["inserted"] == 1
-    assert body["enqueued"] == 1
+    assert body["enqueued"] == 0
 
-    # The auto-enqueue path called task_router.enqueue_for_agent exactly once,
-    # with task_name="extract_file_metadata".
-    assert mock_router.enqueue_for_agent.await_count == 1
-    call = mock_router.enqueue_for_agent.await_args_list[0]
-    assert call.kwargs["task_name"] == "extract_file_metadata"
-    assert call.kwargs["agent_id"] == agent.id
+    # No enqueue regardless of batch binding -- metadata extraction is operator-triggered.
+    mock_router.enqueue_for_agent.assert_not_awaited()

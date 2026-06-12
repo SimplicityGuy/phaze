@@ -32,6 +32,7 @@ from phaze.logging_config import configure_logging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
+from phaze.tasks._shared.deterministic_key import apply_deterministic_key, increment_completed
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
@@ -137,10 +138,16 @@ queue = Queue.from_url(get_settings().redis_url, name="controller")
 # Job inherits the longer timeout / retry budget without breaking Worker
 # construction. See phaze.tasks._shared.queue_defaults for the hook body.
 queue.register_before_enqueue(apply_project_job_defaults)
+# Phase 35 (D-05): central deterministic-key hook on the module-level controller queue.
+queue.register_before_enqueue(apply_deterministic_key)
 
 
 settings = {
     "queue": queue,
+    # Phase 35 (D-02): bump the maintained `completed` counter on each COMPLETE outcome.
+    # `after_process` is a Worker constructor kwarg (NOT a register_* call) -- it goes in
+    # the settings dict the SAQ CLI hands to Worker.__init__.
+    "after_process": increment_completed,
     "functions": [
         generate_proposals,
         match_tracklist_to_discogs,

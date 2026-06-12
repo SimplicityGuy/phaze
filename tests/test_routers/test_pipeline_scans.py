@@ -1151,11 +1151,14 @@ async def test_button_disabled_binds_to_store_not_frozen_literal(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """Each button's :disabled reads $store.pipeline.* — the live count — not a baked-in int.
+    """Each trigger's :disabled reads $store.pipeline.* — the live count — not a baked-in int.
 
     The bug was a server-rendered Alpine binding ``:disabled="loading || {{ count }} === 0"``
     that froze the count at page-render time, so the button stayed disabled after a poll
-    bumped the count. The fix routes the disabled state through the reactive Alpine store.
+    bumped the count. The Phase-35 DAG canvas (D-01) routes the disabled state through the
+    reactive Alpine store via a centralized ``nodes`` getter: each enqueue button binds
+    ``:disabled="loading || nodes.<node>.blocked"`` and the blocked predicate reads
+    ``$store.pipeline`` (``s = $store.pipeline``), so the gate stays live across polls.
     """
     # Seed DISCOVERED files so the page-render count is a concrete non-zero value; the
     # binding must still reference the store rather than that literal.
@@ -1165,13 +1168,14 @@ async def test_button_disabled_binds_to_store_not_frozen_literal(
     ac, _ = smoke
     response = await ac.get("/pipeline/")
     assert response.status_code == 200
-    # Disabled state is driven by the reactive store, the single source of truth.
-    # Phase 34 also appends the live queue-busy gate (agentBusy/controllerBusy) so a
-    # queued run cannot be double-enqueued; the count condition still reads the store.
-    assert ':disabled="loading || $store.pipeline.discovered === 0 || $store.pipeline.agentBusy > 0"' in response.text
-    assert ':disabled="loading || $store.pipeline.analyzed === 0 || $store.pipeline.controllerBusy > 0"' in response.text
+    # Triggers bind to the reactive store-derived node state, the single source of truth.
+    assert ':disabled="loading || nodes.analyze.blocked"' in response.text
+    assert ':disabled="loading || nodes.proposals.blocked"' in response.text
+    # The blocked predicates read $store.pipeline (queue-busy + dependency gates).
+    assert "s.discovered === 0 || s.agentBusy > 0" in response.text  # analyze / metadata / fingerprint
+    assert "s.analyzed === 0 || s.controllerBusy > 0" in response.text  # proposals
     # And it must NOT be a frozen server literal like ``|| 3 === 0``.
-    assert ':disabled="loading || 3 === 0"' not in response.text
+    assert "|| 3 === 0" not in response.text
 
 
 @pytest.mark.asyncio
@@ -1196,8 +1200,12 @@ async def test_dashboard_seeds_pipeline_store_from_server_count(
     # analyzed == 0: store seeded with the server value (no analyzed files seeded).
     assert 'x-init="$store.pipeline.analyzed = 0"' in response.text
     # The global store is registered so the bindings resolve before the first poll.
-    # Phase 34 extends the store with the queue-busy gate keys (all defaulting to 0).
-    assert "Alpine.store('pipeline', { discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0 })" in response.text
+    # Phase 34 added the queue-busy gate keys; Phase 35 (35-04) extends it further with
+    # the per-DAG-node sub-keys (all defaulting to 0). Assert the store is registered, the
+    # Phase-34 keys are preserved, and a sample new per-node key is seeded to 0.
+    assert "Alpine.store('pipeline', {" in response.text
+    assert "discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0," in response.text
+    assert "analyzeActive: 0" in response.text
 
 
 @pytest.mark.asyncio

@@ -226,6 +226,12 @@ models/
 # graphify cache
 graphify-out/cache/
 
+# graphify HTML viz — unbuildable past graphify's node cap (the graph is too large
+# for the HTML viz), so it can only ever be a stale artifact. The queryable graph.json
+# + GRAPH_REPORT.md are the source of truth; don't track the viz.
+graphify-out/graph.html
+.planning/graphs/graph.html
+
 # Vim
 *.swp
 .superpowers/

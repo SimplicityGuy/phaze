@@ -1,0 +1,248 @@
+"""Tests for get_stage_progress -- the authoritative per-stage output-table reconcile (D-03).
+
+The discriminating test is :func:`test_analyzed_but_no_metadata_counts_independently`:
+a file with an ``analysis`` row but NO ``metadata`` row must yield ``analyze.done == 1``
+and ``metadata.done == 0``. The linear ``FileRecord.state`` enum (a single value per file)
+structurally cannot express that -- proving get_stage_progress counts the OUTPUT TABLES,
+not the state machine.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+import uuid
+
+import pytest
+from sqlalchemy import select
+
+from phaze.models.analysis import AnalysisResult
+from phaze.models.discogs_link import DiscogsLink
+from phaze.models.execution import ExecutionLog
+from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.pipeline import _safe_count, get_stage_progress
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _make_file(i: int, *, file_type: str = "mp3", state: FileState = FileState.DISCOVERED) -> FileRecord:
+    """Build a FileRecord with a unique path/hash (agent_id defaults to the seeded legacy agent)."""
+    return FileRecord(
+        id=uuid.uuid4(),
+        sha256_hash=f"{i:064d}"[:64],
+        original_path=f"/music/f{i}.{file_type}",
+        original_filename=f"f{i}.{file_type}",
+        current_path=f"/music/f{i}.{file_type}",
+        file_type=file_type,
+        file_size=1000,
+        state=state,
+    )
+
+
+@pytest.mark.asyncio
+async def test_empty_db_returns_zeros_and_scan_search_has_no_denominator(session: AsyncSession):
+    """An empty DB yields done=0 everywhere and scan_search.total stays None (em-dash sentinel)."""
+    progress = await get_stage_progress(session)
+
+    for node in ("discovery", "metadata", "fingerprint", "analyze", "scan_search", "scrape", "match", "proposals", "execute"):
+        assert progress[node]["done"] == 0, node
+
+    # The tracklist head node never fabricates a denominator.
+    assert progress["scan_search"]["total"] is None
+
+
+@pytest.mark.asyncio
+async def test_analyzed_but_no_metadata_counts_independently(session: AsyncSession):
+    """THE KEY TEST: a file with an analysis row but no metadata row -> analyze.done==1, metadata.done==0.
+
+    A single ``FileRecord.state`` enum could never report this: the parallel stages must
+    read their OWN output tables, not the linear state machine.
+    """
+    f = _make_file(1, state=FileState.ANALYZED)
+    session.add(f)
+    await session.flush()
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=128.0))
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["analyze"]["done"] == 1
+    assert progress["metadata"]["done"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_counts_only_completed(session: AsyncSession):
+    """fingerprint.done counts DISTINCT file_id in fingerprint_results with status='completed' only."""
+    done_file = _make_file(1)
+    pending_file = _make_file(2)
+    session.add_all([done_file, pending_file])
+    await session.flush()
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=done_file.id, engine="chromaprint", status="completed"))
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=pending_file.id, engine="chromaprint", status="pending"))
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["fingerprint"]["done"] == 1
+
+
+@pytest.mark.asyncio
+async def test_metadata_denominator_is_music_video_count(session: AsyncSession):
+    """metadata/fingerprint/analyze share the music+video file count as their denominator."""
+    music = _make_file(1, file_type="mp3")
+    video = _make_file(2, file_type="mp4")
+    companion = _make_file(3, file_type="cue")  # not music/video -> excluded from the denominator
+    session.add_all([music, video, companion])
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["metadata"]["total"] == 2
+    assert progress["fingerprint"]["total"] == 2
+    assert progress["analyze"]["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_search_done_counts_tracklists_without_total(session: AsyncSession):
+    """scan_search.done = DISTINCT file_id in tracklists; total stays None (no fabricated denominator)."""
+    f1 = _make_file(1)
+    f2 = _make_file(2)
+    session.add_all([f1, f2])
+    await session.flush()
+    session.add(Tracklist(id=uuid.uuid4(), external_id="tl-1", source_url="http://x/1", file_id=f1.id))
+    session.add(Tracklist(id=uuid.uuid4(), external_id="tl-2", source_url="http://x/2", file_id=f2.id))
+    # A tracklist with no file_id must not inflate the distinct-file done-count.
+    session.add(Tracklist(id=uuid.uuid4(), external_id="tl-3", source_url="http://x/3", file_id=None))
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["scan_search"]["done"] == 2
+    assert progress["scan_search"]["total"] is None
+
+
+@pytest.mark.asyncio
+async def test_proposals_total_is_convergence_set(session: AsyncSession):
+    """proposals.total = files with BOTH metadata AND analysis (the convergence gate)."""
+    both = _make_file(1)
+    meta_only = _make_file(2)
+    analysis_only = _make_file(3)
+    session.add_all([both, meta_only, analysis_only])
+    await session.flush()
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=both.id))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=both.id, bpm=120.0))
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=meta_only.id))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=analysis_only.id, bpm=110.0))
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=both.id, proposed_filename="x.mp3", status=ProposalStatus.PENDING))
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["proposals"]["total"] == 1  # only the file with BOTH metadata and analysis
+    assert progress["proposals"]["done"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scrape_and_match_count_distinct_tracklist_id(session: AsyncSession):
+    """scrape counts DISTINCT tracklist_id in tracklist_versions; match walks discogs_links -> tracklist."""
+    f = _make_file(1)
+    session.add(f)
+    await session.flush()
+    tl = Tracklist(id=uuid.uuid4(), external_id="tl-1", source_url="http://x/1", file_id=f.id)
+    session.add(tl)
+    await session.flush()
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    track = TracklistTrack(id=uuid.uuid4(), version_id=version.id, position=1)
+    session.add(track)
+    await session.flush()
+    session.add(DiscogsLink(id=uuid.uuid4(), track_id=track.id, discogs_release_id="r1", confidence=0.9))
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["scrape"]["done"] == 1
+    assert progress["scrape"]["total"] == 1
+    assert progress["match"]["done"] == 1
+    assert progress["match"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_counts_completed_execution_log(session: AsyncSession):
+    """execute.done = DISTINCT file_id with a completed execution_log row; total = approved-proposal count."""
+    f = _make_file(1, state=FileState.APPROVED)
+    session.add(f)
+    await session.flush()
+    proposal = RenameProposal(id=uuid.uuid4(), file_id=f.id, proposed_filename="x.mp3", status=ProposalStatus.APPROVED)
+    session.add(proposal)
+    await session.flush()
+    session.add(
+        ExecutionLog(
+            id=uuid.uuid4(),
+            proposal_id=proposal.id,
+            operation="move",
+            source_path="/a",
+            destination_path="/b",
+            sha256_verified=True,
+            status="completed",
+        )
+    )
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["execute"]["done"] == 1
+    assert progress["execute"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_single_source_db_error_degrades_to_zero(session: AsyncSession):
+    """A forced DB error on ONE stage source degrades that stage to done=0; others stay intact, no raise."""
+    f = _make_file(1)
+    session.add(f)
+    await session.flush()
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=f.id))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=120.0))
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=f.id, engine="chromaprint", status="completed"))
+    await session.commit()
+
+    orig_execute = session.execute
+
+    async def failing_execute(statement, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # Force only the fingerprint output-table query to fail.
+        if "fingerprint_results" in str(statement):
+            raise RuntimeError("forced fingerprint source error")
+        return await orig_execute(statement, *args, **kwargs)
+
+    session.execute = failing_execute  # type: ignore[method-assign]
+    try:
+        progress = await get_stage_progress(session)
+    finally:
+        session.execute = orig_execute  # type: ignore[method-assign]
+
+    # The poisoned source degrades to 0 without raising...
+    assert progress["fingerprint"]["done"] == 0
+    # ...while sibling stages computed before and after it stay correct.
+    assert progress["metadata"]["done"] == 1
+    assert progress["analyze"]["done"] == 1
+
+
+async def test_safe_count_swallows_rollback_failure() -> None:
+    """_safe_count isolation must hold even when the post-error rollback ALSO fails: it logs and
+    still returns 0 rather than letting either exception escape into the 5s poll."""
+
+    class _BoomSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("forced execute error")
+
+        async def rollback(self) -> None:
+            raise RuntimeError("forced rollback error")
+
+    result = await _safe_count(_BoomSession(), select(FileRecord), node="metadata")  # type: ignore[arg-type]
+    assert result == 0

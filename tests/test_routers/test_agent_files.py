@@ -16,19 +16,20 @@ Why local fixture overrides exist (Rule 3 deviation):
 Plan 26-12 update:
     Handler refactor swapped the inline ``Queue.from_url(...)`` for the
     lifespan-wired ``app.state.task_router`` (an ``AgentTaskRouter``). The
-    smoke-app fixture now installs an ``AsyncMock()`` at
-    ``app.state.task_router`` so the handler can call
-    ``await request.app.state.task_router.enqueue_for_agent(...)`` without
-    needing a real Redis connection. Assertions migrate from
-    ``mock_queue.enqueue.await_args_list`` to
-    ``mock_router.enqueue_for_agent.await_args_list``.
+    smoke-app fixture installs an ``AsyncMock()`` at ``app.state.task_router``.
+
+Phase 35 (D-06) update:
+    The handler NO LONGER auto-enqueues the metadata-extraction task -- metadata
+    extraction is operator-triggered only. The smoke-app's ``app.state.task_router``
+    mock is retained (the fixture is shared) but the handler never calls it, so the
+    enqueue-related tests now assert ``enqueue_for_agent`` is NEVER awaited and the
+    response ``enqueued`` count is always 0.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
-import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -73,7 +74,7 @@ async def smoke_app_and_router(
     """Smoke-app fixture exposing both the test client AND the mock task_router.
 
     Tests that need to assert against enqueue calls (e.g.,
-    ``test_auto_enqueue_only_for_inserts``) consume this fixture; tests that
+    ``test_no_auto_enqueue_on_insert``) consume this fixture; tests that
     only care about the HTTP response can use ``authenticated_client`` below,
     which is a thin wrapper that drops the router handle.
 
@@ -136,7 +137,8 @@ async def test_upsert_happy_path(authenticated_client: AsyncClient, seed_test_ag
     assert body["agent_id"] == agent.id
     assert body["upserted"] == 1
     assert body["inserted"] == 1
-    assert body["enqueued"] == 1
+    # Phase 35 (D-06): discovery no longer auto-enqueues -- `enqueued` is always 0.
+    assert body["enqueued"] == 0
     result = await session.execute(select(sa_func.count()).select_from(FileRecord))
     assert result.scalar_one() == 1
 
@@ -152,24 +154,16 @@ async def test_replay_no_duplicates(authenticated_client: AsyncClient, seed_test
 
 
 @pytest.mark.asyncio
-async def test_auto_enqueue_only_for_inserts(smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]) -> None:
-    """D-21/D-22: handler delegates to ``app.state.task_router.enqueue_for_agent`` per INSERTed music/video row."""
+async def test_no_auto_enqueue_on_insert(smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]) -> None:
+    """Phase 35 (D-06): INSERTed music/video rows are NO LONGER auto-enqueued for extraction."""
     client, mock_router = smoke_app_and_router
-    agent, _ = seed_test_agent
     chunk = {"files": [_make_record(path="/test/music/a.mp3"), _make_record(path="/test/music/b.mp3")]}
     response = await client.post("/api/internal/agent/files", json=chunk)
     assert response.status_code == 200
-    assert mock_router.enqueue_for_agent.await_count == 2
-    for call in mock_router.enqueue_for_agent.await_args_list:
-        kwargs = call.kwargs
-        assert kwargs["agent_id"] == agent.id
-        assert kwargs["task_name"] == "extract_file_metadata"
-        payload = kwargs["payload"]
-        # payload is an ExtractMetadataPayload; introspect via attribute access
-        assert isinstance(payload.file_id, uuid.UUID)
-        assert payload.file_type == "mp3"
-        assert payload.agent_id == agent.id
-        assert payload.original_path.startswith("/test/music/")
+    body = response.json()
+    assert body["inserted"] == 2
+    assert body["enqueued"] == 0
+    mock_router.enqueue_for_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -178,8 +172,8 @@ async def test_no_enqueue_for_updates(smoke_app_and_router: tuple[AsyncClient, A
     chunk = {"files": [_make_record()]}
     r1 = await client.post("/api/internal/agent/files", json=chunk)
     assert r1.status_code == 200
-    assert mock_router.enqueue_for_agent.await_count == 1
-    mock_router.enqueue_for_agent.reset_mock()
+    # Phase 35 (D-06): no enqueue on INSERT either.
+    assert mock_router.enqueue_for_agent.await_count == 0
     r2 = await client.post("/api/internal/agent/files", json=chunk)
     assert r2.status_code == 200
     assert mock_router.enqueue_for_agent.await_count == 0
@@ -238,7 +232,7 @@ async def test_same_chunk_duplicate_paths_dedup(authenticated_client: AsyncClien
 
 @pytest.mark.asyncio
 async def test_no_enqueue_for_non_music_file_type(smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]) -> None:
-    """Non-music/video file types (e.g., .txt, .jpg) must skip the enqueue path even on INSERT."""
+    """Non-music/video file types (e.g., .txt, .jpg) INSERT cleanly and never enqueue (D-06)."""
     client, mock_router = smoke_app_and_router
     chunk = {
         "files": [
@@ -252,22 +246,3 @@ async def test_no_enqueue_for_non_music_file_type(smoke_app_and_router: tuple[As
     assert body["inserted"] == 2
     assert body["enqueued"] == 0
     mock_router.enqueue_for_agent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_enqueue_exception_does_not_abort_response(
-    smoke_app_and_router: tuple[AsyncClient, AsyncMock], seed_test_agent: tuple[Agent, str]
-) -> None:
-    """Enqueue failure must be swallowed + counted as `enqueued=0` -- DB commit already succeeded."""
-    client, mock_router = smoke_app_and_router
-    mock_router.enqueue_for_agent.side_effect = RuntimeError("redis is sick")
-
-    chunk = {"files": [_make_record(path="/test/music/a.mp3")]}
-    response = await client.post("/api/internal/agent/files", json=chunk)
-
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["inserted"] == 1
-    assert body["enqueued"] == 0
-    # Handler attempted the enqueue (got to the side_effect) before catching + continuing.
-    mock_router.enqueue_for_agent.assert_awaited_once()

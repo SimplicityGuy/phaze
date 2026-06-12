@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import exists, select
+import structlog
 
 from phaze.config import settings
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -20,13 +21,131 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
-from phaze.services.pipeline import get_files_by_state, get_pipeline_stats, get_queue_activity, queue_progress_percent
+from phaze.services.pipeline import (
+    get_files_by_state,
+    get_pipeline_stats,
+    get_queue_activity,
+    get_stage_progress,
+    queue_progress_percent,
+)
+from phaze.services.pipeline_counters import read_counters
 
+
+logger = structlog.get_logger(__name__)
 
 _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker and retry"
+
+# Maps each DAG node whose ``done`` is DB-sourced to the maintained ``completed``
+# counter function(s) backing it (35-01). Used as a DOCUMENTED degrade-fallback (D-02):
+# when a node's ``get_stage_progress`` ``done`` reads 0 (its ``_safe_count`` degraded OR
+# the stage is genuinely empty) AND the mapped ``completed`` counter is > 0, the counter
+# value renders as the fallback ``done``. DB-truth ALWAYS wins when ``done > 0`` (D-03:
+# the DB reconcile is the authority; the counter is a backstop cache, never an override).
+# ``discovery`` and ``execute`` have no maintained counter (``scan_directory`` /
+# ``execute_approved_batch`` are deterministic-key-exempt), so they never fall back.
+# In practice the counter only exceeds 0 after real completions — at which point the DB
+# reflects them too unless the DB source degraded — so applying the counter on ``done==0``
+# is harmless when the stage is genuinely empty (counter is also 0 there).
+# WR-03 unit constraint: a node may map ONLY to per-file SAQ functions, because the node's
+# ``done`` is a distinct-file/tracklist count and the fallback renders the counter AS that
+# ``done``. ``generate_proposals`` is a BATCH task (one job == N files), so its ``completed``
+# counter counts batches, not files — mapping it here would render a batch count as a file
+# ``done`` (e.g. 1 batch of 10 files -> proposalsDone=1). It is therefore intentionally OMITTED;
+# proposalsDone falls back to DB-truth (0 when degraded) rather than a wrong-unit number. The
+# remaining per-file mappings are additionally capped at the node ``total`` in ``_reconciled_done``
+# so re-runs cannot inflate ``done`` past the denominator.
+_NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
+    "metadata": ("extract_file_metadata",),
+    "fingerprint": ("fingerprint_file",),
+    "analyze": ("process_file",),
+    "scan_search": ("scan_live_set", "search_tracklist"),
+    "scrape": ("scrape_and_store_tracklist",),
+    "match": ("match_tracklist_to_discogs",),
+}
+
+
+async def _read_pipeline_counters(app_state: Any) -> dict[str, dict[str, int]]:
+    """Read the maintained per-function Redis counters, degrading to ``{}`` on any failure.
+
+    Mirrors :func:`get_queue_activity`'s failure isolation: a missing ``app.state``
+    handle (the test client skips the lifespan) or any Redis hiccup must degrade the
+    counter source to an empty dict so the 5s dashboard poll renders from DB-truth and
+    NEVER 500s (threat T-35-09). The shared ``app.state.redis`` client (decode_responses)
+    is preferred; the SAQ-internal ``controller_queue.redis`` is the fallback handle.
+    """
+    try:
+        redis = getattr(app_state, "redis", None)
+        if redis is None:
+            redis = app_state.controller_queue.redis
+        return await read_counters(redis)
+    except Exception:
+        logger.warning("pipeline_counters_degraded", exc_info=True)
+        return {}
+
+
+def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dict[str, dict[str, int]]) -> int:
+    """Return the DB-truth ``done`` (D-03), or the ``completed`` counter as a backstop.
+
+    DB-truth wins whenever ``stage_done > 0``. Only when the DB source reads 0 do we fall
+    back to the sum of the node's mapped ``completed`` counters (D-02 backstop) — and only
+    if that sum is itself > 0. The fallback is capped at ``stage_total`` (when known, > 0) so
+    re-run-inflated counters cannot render a ``done`` larger than the denominator (WR-03).
+    """
+    if stage_done > 0:
+        return stage_done
+    fallback = sum(counters.get(fn, {}).get("completed", 0) for fn in _NODE_COMPLETED_FNS.get(node, ()))
+    if fallback <= 0:
+        return stage_done
+    return min(fallback, stage_total) if stage_total > 0 else fallback
+
+
+async def _build_dag_context(app_state: Any, session: AsyncSession, activity: dict[str, int]) -> dict[str, dict[str, int]]:
+    """Build the per-DAG-node store-key context consumed by stats_bar.html + the 35-05 canvas.
+
+    Reconciles three sources (D-03): ``get_stage_progress`` (DB-truth ``done``/``total`` per
+    node, the authority), the maintained Redis ``completed`` counters (a degrade backstop via
+    :func:`_reconciled_done`), and the already-computed ``get_queue_activity`` (the per-node
+    ACTIVE state). Every value is a plain ``int`` (``total=None`` em-dash sentinels collapse to
+    0 — the Scan/Search node has NO ``tracklistTotal`` store key, so its em-dash stays a
+    render-side concern) so it is safe to interpolate into the ``x-init`` numeric store writes.
+
+    Returns ``{"dag": {<storeKey>: int, ...}}`` carrying every per-node sub-key seeded into
+    ``$store.pipeline`` (base.html, 35-04 Task 1).
+    """
+    stage = await get_stage_progress(session)
+    counters = await _read_pipeline_counters(app_state)
+
+    def done(node: str) -> int:
+        return _reconciled_done(node, int(stage[node]["done"] or 0), int(stage[node]["total"] or 0), counters)
+
+    def total(node: str) -> int:
+        return int(stage[node]["total"] or 0)
+
+    dag: dict[str, int] = {
+        "metadataDone": done("metadata"),
+        "metadataTotal": total("metadata"),
+        "fingerprintDone": done("fingerprint"),
+        "fingerprintTotal": total("fingerprint"),
+        "analyzeDone": done("analyze"),
+        "analyzeTotal": total("analyze"),
+        "analyzeActive": activity["agent_active"],
+        "tracklistDone": done("scan_search"),
+        "scrapeDone": done("scrape"),
+        "scrapeTotal": total("scrape"),
+        "matchDone": done("match"),
+        "matchTotal": total("match"),
+        "proposalsDone": done("proposals"),
+        "proposalsTotal": total("proposals"),
+        # Approve→Execute gates on the approved-proposal count; execute.total IS that count.
+        "approved": total("execute"),
+        "executedDone": done("execute"),
+        "executedTotal": total("execute"),
+    }
+    return {"dag": dag}
 
 
 if TYPE_CHECKING:
@@ -182,6 +301,12 @@ async def dashboard(
     activity = await get_queue_activity(request.app.state, session)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
 
+    # Phase 35 (35-04): per-DAG-node done/total/active reconciled from get_stage_progress
+    # (DB-truth) + the maintained completed counters (backstop) + the queue activity. The
+    # 35-05 canvas seeds these into $store.pipeline on the full-page render; here they ride
+    # the dashboard context. _build_dag_context isolates its own counter-source failures.
+    dag_ctx = await _build_dag_context(request.app.state, session, activity)
+
     context = {
         "request": request,
         "stats": stats,
@@ -190,6 +315,7 @@ async def dashboard(
         "agents": agents,
         "recent_scans": recent_scans_rows,
         **activity,
+        **dag_ctx,
         "queue_progress_percent": queue_progress,
     }
     return templates.TemplateResponse(request=request, name="pipeline/dashboard.html", context=context)
@@ -209,19 +335,24 @@ async def pipeline_stats_partial(
     # controller_busy into $store.pipeline on each tick to drive the Plan 04 button gating.
     activity = await get_queue_activity(request.app.state, session)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
+    # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
+    # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
+    # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
+    dag_ctx = await _build_dag_context(request.app.state, session, activity)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
         # oob_counts=True emits the hx-swap-oob "files ready" paragraphs ONLY on
         # this poll response. The dashboard full-page include omits the flag, so
         # the OOB block is skipped at initial load (where htmx would not honor
-        # hx-swap-oob and the ids would collide with stage_cards.html).
+        # hx-swap-oob and the ids would collide with the DAG canvas seeds).
         context={
             "request": request,
             "stats": stats,
             "settings_batch_size": settings.llm_batch_size,
             "oob_counts": True,
             **activity,
+            **dag_ctx,
             "queue_progress_percent": queue_progress,
         },
     )
@@ -299,10 +430,28 @@ async def trigger_proposals_ui(
     )
 
 
-async def _enqueue_extraction_jobs(queue: Any, file_ids: list[str]) -> None:
-    """Background coroutine to enqueue extract_file_metadata jobs."""
-    for fid in file_ids:
-        await queue.enqueue("extract_file_metadata", file_id=fid)
+async def _enqueue_extraction_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
+    """Background coroutine to enqueue extract_file_metadata jobs with the COMPLETE payload.
+
+    The agent worker validates ``ExtractMetadataPayload`` with ``extra="forbid"`` and four
+    required fields (file_id, original_path, file_type, agent_id). A ``file_id``-only enqueue
+    therefore fails validation and dead-letters EVERY job -- the same defect that bit the
+    pre-Phase-30 ``process_file`` path (see ``analysis_enqueue.enqueue_process_file``) and the
+    v4.0.8 payload incident. D-06 removed the only other producer (the agent file-upsert
+    auto-enqueue), making this manual trigger the SOLE metadata producer, so the full payload
+    MUST be built here. ``model_dump(mode="json")`` serializes the UUID as a string so the
+    worker's ``model_validate`` accepts it. The deterministic key
+    (``extract_file_metadata:<file_id>``) is applied centrally by the ``before_enqueue`` hook
+    (35-01), so no explicit ``key=`` is set here.
+    """
+    for f in files:
+        payload = ExtractMetadataPayload(
+            file_id=f.id,
+            original_path=f.original_path,
+            file_type=f.file_type,
+            agent_id=agent_id,
+        )
+        await queue.enqueue("extract_file_metadata", **payload.model_dump(mode="json"))
 
 
 @router.post("/api/v1/extract-metadata")
@@ -328,13 +477,14 @@ async def trigger_metadata_extraction(
     except enqueue_router.NoActiveAgentError:
         return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
 
-    file_ids = [str(f.id) for f in files]
+    # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
 
-    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, file_ids))
+    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
-    return {"enqueued": len(file_ids), "message": f"Enqueued {len(file_ids)} files for metadata extraction"}
+    return {"enqueued": len(files), "message": f"Enqueued {len(files)} files for metadata extraction"}
 
 
 @router.post("/pipeline/extract-metadata", response_class=HTMLResponse)
@@ -356,8 +506,8 @@ async def trigger_extraction_ui(
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            file_ids = [str(f.id) for f in files]
-            task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, file_ids))
+            agent_id = cast("str", routed.agent_id)
+            task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
@@ -371,10 +521,22 @@ async def trigger_extraction_ui(
 # --- Fingerprint endpoints (Phase 16, D-14, D-15) ---
 
 
-async def _enqueue_fingerprint_jobs(queue: Any, file_ids: list[str]) -> None:
-    """Background coroutine to enqueue fingerprint_file jobs."""
-    for fid in file_ids:
-        await queue.enqueue("fingerprint_file", file_id=fid)
+async def _enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
+    """Background coroutine to enqueue fingerprint_file jobs with the COMPLETE payload.
+
+    ``FingerprintFilePayload`` (``extra="forbid"``) requires file_id, original_path and
+    agent_id; a ``file_id``-only enqueue dead-letters every job (same class as the metadata
+    defect above). Build the full payload and serialize via ``model_dump(mode="json")``. The
+    deterministic key (``fingerprint_file:<file_id>``) is applied centrally by the
+    ``before_enqueue`` hook (35-01).
+    """
+    for f in files:
+        payload = FingerprintFilePayload(
+            file_id=f.id,
+            original_path=f.original_path,
+            agent_id=agent_id,
+        )
+        await queue.enqueue("fingerprint_file", **payload.model_dump(mode="json"))
 
 
 @router.post("/api/v1/fingerprint")
@@ -399,16 +561,16 @@ async def trigger_fingerprint(
     failed_result = await session.execute(failed_stmt)
     failed_files = list(failed_result.scalars().all())
 
-    # Deduplicate by ID
+    # Deduplicate by ID, keeping the FileRecord so the full payload can be built.
     seen_ids: set[str] = set()
-    all_file_ids: list[str] = []
+    all_files: list[FileRecord] = []
     for f in [*files, *failed_files]:
         fid = str(f.id)
         if fid not in seen_ids:
             seen_ids.add(fid)
-            all_file_ids.append(fid)
+            all_files.append(f)
 
-    if not all_file_ids:
+    if not all_files:
         return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
 
     try:
@@ -416,11 +578,13 @@ async def trigger_fingerprint(
     except enqueue_router.NoActiveAgentError:
         return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
 
-    task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, all_file_ids))
+    # fingerprint_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
+    task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, all_files, agent_id))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
-    return {"enqueued": len(all_file_ids), "message": f"Enqueued {len(all_file_ids)} files for fingerprinting"}
+    return {"enqueued": len(all_files), "message": f"Enqueued {len(all_files)} files for fingerprinting"}
 
 
 @router.get("/api/v1/fingerprint/progress")
@@ -447,8 +611,8 @@ async def trigger_fingerprint_ui(
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            file_ids = [str(f.id) for f in files]
-            task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, file_ids))
+            agent_id = cast("str", routed.agent_id)
+            task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, files, agent_id))
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 

@@ -24,44 +24,46 @@
         <p class="text-sm text-gray-600 dark:text-gray-400 dark:text-gray-500">Executed</p>
     </div>
 </div>
-{# OOB: refresh the Pipeline Actions "files ready" counts on the same 5s stats tick
-   WITHOUT re-rendering the interactive buttons (#pipeline-stages holds hx-post
-   buttons + Alpine x-data loading state and the enqueue-response divs; a blunt
-   poll there would clobber an in-flight click / revert the "Enqueued N files"
-   message). The ids + classes mirror the in-place paragraphs in stage_cards.html
-   so each out-of-band swap is visually identical.
+{# OOB: refresh the DAG canvas's gating-count seeds on the same 5s stats tick WITHOUT
+   re-rendering the interactive trigger buttons (#pipeline-stages holds the dag_canvas
+   hx-post buttons + Alpine loading state and the enqueue-response divs; a blunt poll
+   there would clobber an in-flight click / revert the "Enqueued N files" message). The
+   ids mirror the in-place seed paragraphs the DAG canvas renders so each out-of-band
+   swap lands on the same hidden store-write anchor.
 
-   Emit ONLY on the poll response (oob_counts truthy), never on the initial
-   full-page include: hx-swap-oob is only honored during an HTMX swap, so at page
-   load these would render as stray visible text AND collide with the same ids
-   already present in stage_cards.html (duplicate-id DOM). The dashboard include
-   omits oob_counts so this block is skipped at load; /pipeline/stats sets it True. #}
-{# Each OOB paragraph carries the SAME x-init store write as its in-place twin in
-   stage_cards.html. When htmx swaps these in on the 5s poll, Alpine initializes the
-   freshly-inserted node and pushes the new count into $store.pipeline — the single
-   source of truth that drives both this text and the button :disabled bindings. The
-   button subtree (#analyze-response / #proposals-response) is never the swap target,
-   so the live count un-disables the buttons without clobbering their loading state. #}
+   Emit ONLY on the poll response (oob_counts truthy), never on the initial full-page
+   include: hx-swap-oob is only honored during an HTMX swap, so at page load these would
+   render stray AND collide with the same ids the canvas already carries (duplicate-id
+   DOM). The dashboard include omits oob_counts so this block is skipped at load;
+   /pipeline/stats sets it True. #}
+{# Each OOB paragraph carries the SAME x-init store write as its in-place twin in the DAG
+   canvas. When htmx swaps these in on the 5s poll, Alpine initializes the freshly-inserted
+   node and pushes the new count into $store.pipeline — the single source of truth that
+   drives the canvas counts/bars/pills and the trigger :disabled bindings. The button
+   subtree (#analyze-response / #proposals-response) is never the swap target, so the live
+   count un-disables the buttons without clobbering their loading state. These three carry a
+   "files ready" text node (kept hidden) for backward-compatible polling assertions. #}
 {% if oob_counts %}
-<p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.discovered }} files ready</p>
-<p id="fingerprint-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.metadata_extracted }} files ready</p>
-<p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="text-sm text-gray-400 dark:text-gray-500 mt-1">{{ stats.analyzed }} files ready</p>
+<p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="hidden">{{ stats.discovered }} files ready</p>
+<p id="fingerprint-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="hidden">{{ stats.metadata_extracted }} files ready</p>
+<p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="hidden">{{ stats.analyzed }} files ready</p>
 {# Live queue-depth seeds: on each 5s poll, re-push the agent/controller busy counts into
-   $store.pipeline so the Plan 04 button :disabled bindings (agentBusy gates Analyze/
-   Fingerprint/Extract-Metadata; controllerBusy gates Proposals) react to in-flight work.
-   Hidden (no visible text) — their sole job is the x-init store write. The ids
-   agent-busy-seed / controller-busy-seed are the same-id contract with the in-place store
-   anchors that stage_cards.html seeds on the initial full-page render (Plan 04); kept inside
-   the oob_counts gate so they are emitted ONLY on the poll swap (htmx honors hx-swap-oob
-   only during a swap — at initial load they would render stray + collide on those ids).
-   Counts are ints from count()/DB, safe to interpolate into the numeric assignment. #}
+   $store.pipeline so the trigger :disabled bindings (agentBusy gates Metadata/Analyze/
+   Fingerprint; controllerBusy gates Proposals) react to in-flight work. Hidden (no visible
+   text) — their sole job is the x-init store write. The ids agent-busy-seed /
+   controller-busy-seed are the same-id contract with the in-place store anchors the DAG
+   canvas seeds on the initial full-page render; kept inside the oob_counts gate so they
+   fire ONLY on the poll swap. Counts are ints from count()/DB, safe to interpolate. #}
 <p id="agent-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.agentBusy = {{ agent_busy }}" class="hidden"></p>
 <p id="controller-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.controllerBusy = {{ controller_busy }}" class="hidden"></p>
-{# Phase 34 Plan 03: OOB-swap the persistent Processing card on the same 5s poll tick.
-   processing_card.html reads oob_counts (truthy here) and emits hx-swap-oob="true" on its
-   outer #processing-card element so htmx replaces the initial dashboard-rendered card in
-   place — keeping the in-flight run visible across refreshes. Kept inside this oob_counts
-   gate so the initial full-page dashboard include (which omits oob_counts) renders the card
-   ONCE without a swap attribute (no duplicate-id DOM). #}
-{% include "pipeline/partials/processing_card.html" %}
+{# Phase 35 (35-04): per-DAG-node count seeds. One hidden OOB paragraph per per-node
+   $store.pipeline sub-key (35-UI-SPEC "Store extension"), re-pushing the DB-truth
+   done/total/active reconcile (35-04 router context, key `dag`) into the store on every
+   5s poll. The id contract is `dag-seed-<storeKey>` — the 35-05 DAG canvas mirrors these
+   exact ids/x-init writes for its in-place initial seeds so the DAG bindings are correct
+   before the first poll tick (no flash). Kept inside the oob_counts gate so they fire ONLY
+   on the poll swap. Every dag value is a server-computed int, safe to interpolate. #}
+{% for key, value in dag.items() %}
+<p id="dag-seed-{{ key }}" hx-swap-oob="true" x-init="$store.pipeline.{{ key }} = {{ value }}" class="hidden"></p>
+{% endfor %}
 {% endif %}

@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: executing
-last_updated: "2026-06-11T16:59:21.758Z"
-last_activity: 2026-06-11 -- Phase 32 execution started
+status: "Phase 35 shipped — PR #121"
+last_updated: "2026-06-12T16:01:42.044Z"
+last_activity: "2026-06-12 -- Phase 35 shipped (PR #121)"
 progress:
   total_phases: 6
   completed_phases: 6
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 32 — pipeline-reboot-resilience-re-enqueue
+**Current focus:** Phase 35 complete — awaiting v4.0.x release + homelab redeploy
 
 ## Current Position
 
-Phase: 32 (pipeline-reboot-resilience-re-enqueue) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 32
-Last activity: 2026-06-11 -- Phase 32 execution started
+Phase: 35 (pipeline-determinism-idempotency-per-job-type-observability) — COMPLETE
+Plan: 5 of 5
+Status: Phase 35 shipped — PR #121
+Last activity: 2026-06-12 -- Phase 35 shipped (PR #121)
 
 Progress: [██████████] 100%
 
@@ -69,6 +69,7 @@ Progress: [██████████] 100%
 - Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.
 - Phase 31 added (2026-06-10): Windowed Time-Series Audio Analysis — surfaced by live incident after v4.0.9 redeploy: `RhythmExtractor2013` `OnsetDetectionGlobal` buffer overflow crashes whole-file BPM on multi-hour sets (79% of the 11,428-file archive is >50 MB), 0 files analyzed. Fix = stream-decode + per-window analysis (two tiers: BPM/key 30s, mood/style/danceability 3min), queryable `analysis_window` child table + aggregates on `analysis`. Design spec: docs/superpowers/specs/2026-06-10-windowed-analysis-design.md. Brainstormed decisions: scope=everything-as-time-series via two tiers; storage=queryable child table (option B); UI=compact+HTMX-expand timeline (option B). Ships v4.0.10.
 - Phase 34 added (2026-06-10): Pipeline Queue-Depth Status & Double-Enqueue Guard — surfaced by live UX bug: operator clicked "Run Analysis", refreshed, and all status vanished (DB shows files as `DISCOVERED` whether or not enqueued; verified 11,429 incomplete `process_file` jobs live on `phaze-agent-nox`, 0 analyzed, button still clickable → double-enqueue risk). Fix = read live SAQ queue depth (`Queue.count`) via `app.state.controller_queue` + per-agent `task_router`, new `get_queue_activity` service, surface through existing 5s `/pipeline/stats` poll, persistent OOB "Processing" card (progress = DB `analyzed`/(analyzed+agent_busy)), coarse Alpine `$store.pipeline` button disable (agent_busy gates Analyze/Fingerprint/Metadata; controller_busy gates Proposals). Brainstormed decisions (operator, 2026-06-10): disable scope = coarse (all agent buttons); indicator = progress bar + counts; progress `done` = DB analyzed count (not SAQ `complete`, survives worker restart). NOTE: numbered 34 because phase.add counted directories (max=31) and collided with the text-only Phase 32/33 entries; renumbered 32→34 + directory renamed. Ships a subsequent v4.0.x.
+- Phase 35 added (2026-06-11): Pipeline Determinism, Idempotency & Per-Job-Type Observability — surfaced by the 2026-06-11 queue-doubling incident (random-uuid `process_file` jobs from the pre-Phase-32 "Run Analysis" path couldn't dedup against the new deterministic-key re-enqueue → live queue doubled to ~22,830 jobs over 11,428 files; cleaned via purge + cron rebuild). Generalizes the Phase 32 deterministic-key fix to the WHOLE pipeline. Five items: (1) centralized enqueue-layer deterministic keys `<task>:<natural_id>` for all job types (only `process_file` keyed today); (2) audit/ensure all task DB writes upsert (most already D-26; gaps = proposals, execution_log, tag_write_log); (3) remove auto metadata-extraction from discovery/scan (`agent_files.py:130-161`, `ingestion.py:183-191`) → manual-only; (4) add a "Metadata" stage card between Discovered and Fingerprinted; (5) per-job-type progress bars backed by maintained per-function counters. Locked decisions (operator): (A) centralized key enforcement; (B) maintained per-function counters. Ships a subsequent v4.0.x.
 
 ### Decisions
 
@@ -110,6 +111,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-06-11T06:00:00.000Z
-Stopped at: Completed 34-04-PLAN.md (final plan of Phase 34)
-Resume file: None
+Last session: 2026-06-11T23:04:59.107Z
+Stopped at: Phase 35 UI-SPEC approved
+Resume file: .planning/milestones/v4.0-phases/35-pipeline-determinism-idempotency-per-job-type-observability/35-UI-SPEC.md

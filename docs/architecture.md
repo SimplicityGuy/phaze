@@ -28,6 +28,10 @@ end-to-end flow is:
 7. **Execute** — approved proposals run through a **copy → verify (SHA-256) → delete**
    protocol with a write-ahead audit log.
 
+Each per-file stage after ingest is **operator-triggered** from the pipeline dashboard
+(Phase 35 removed the implicit auto-chaining), and every stage is idempotent by
+construction (see [Pipeline Determinism & Observability](#-pipeline-determinism--observability-phase-35)).
+
 The system is layered and asynchronous: a FastAPI application server owns the database and
 the UI, while CPU- and disk-bound work runs in SAQ workers backed by Redis. As of v4.0,
 that worker tier can be **distributed** across remote file-server hosts that reach the
@@ -78,7 +82,7 @@ graph TD
 | **Agent Worker** | -- | File-bound SAQ jobs (scan, fingerprint, analyze, execute) | No (HTTP only) | `saq phaze.tasks.agent_worker.settings` |
 | **Watcher** | -- | Filesystem observer that POSTs settled files | No (HTTP only) | `python -m phaze.agent_watcher` |
 | **Postgres** | 5432 | Primary database | -- | `docker-compose.yml` |
-| **Redis** | 6379 | SAQ broker, LLM rate-limit cache, exec-progress hash | -- | `docker-compose.yml` |
+| **Redis** | 6379 | SAQ broker, LLM rate-limit cache, exec-progress hash, pipeline counters | -- | `docker-compose.yml` |
 | **audfprint** | 8001 | Landmark fingerprint sidecar | No | `services/audfprint/` |
 | **Panako** | 8002 | Tempo-robust fingerprint sidecar | No | `services/panako/` |
 
@@ -122,30 +126,35 @@ compatibility with the existing execution-log emit paths. The full enum list, pl
 Tracing one music file from disk to a finished move:
 
 1. **Scan trigger.** `POST /api/v1/scan` (`routers/scan.py`) validates the path (rejecting
-   `..` traversal), spawns `run_scan` (`services/ingestion.py`) as a background task, and
+   `..` traversal), resolves the active agent's queue (returning `503` if no agent is
+   available), spawns `run_scan` (`services/ingestion.py`) as a background task, and
    returns a `batch_id` immediately.
 2. **Discover + hash.** `discover_and_hash_files` walks the tree (`os.walk`,
    `followlinks=False`), skips unknown extensions via `EXTENSION_MAP`, NFC-normalizes paths,
    computes SHA-256, and `bulk_upsert_files` writes `FileRecord` rows with
    `INSERT ... ON CONFLICT DO UPDATE` (idempotent and resumable) at state `DISCOVERED`.
-3. **Auto-enqueue.** For each newly discovered music/video file, `run_scan` enqueues
-   `extract_file_metadata` onto the SAQ queue.
-4. **Metadata → fingerprint → analyze.** SAQ tasks in `src/phaze/tasks/` run in sequence:
-   `extract_file_metadata` (mutagen), `fingerprint_file` (audfprint + Panako via the
-   `FingerprintOrchestrator`), and `process_file` (essentia in a `ProcessPoolExecutor`).
-   On a distributed agent, `process_file` reads the local file and **PUTs** results back via
+   Discovery persists rows **only** — Phase 35 (D-06) removed the per-discovery
+   auto-enqueue of metadata extraction.
+3. **Operator-triggered stages.** Metadata, fingerprint, and analyze are each enqueued
+   independently by the operator from the dashboard DAG (no auto-chaining). The SAQ tasks
+   in `src/phaze/tasks/` are: `extract_file_metadata` (mutagen, `metadata_extraction.py`),
+   `fingerprint_file` (audfprint + Panako via the `FingerprintOrchestrator`), and
+   `process_file` (essentia in a `ProcessPoolExecutor`, `functions.py`). On a distributed
+   agent, `process_file` reads the local file and **PUTs** results back via
    `PUT /api/internal/agent/analysis/{file_id}` rather than touching the database directly.
-5. **Proposal generation.** `generate_proposals` (control role) calls `ProposalService`
+4. **Proposal generation.** `generate_proposals` (control role) calls `ProposalService`
    (`services/proposal.py`), which assembles per-file context (tags, analysis, companion
    files), enforces a Redis-backed LLM rate limit (`check_rate_limit`,
    `INCR`/`EXPIRE` over a 60s window), calls the LLM with a Pydantic
    `BatchProposalResponse` schema, clamps confidence to `[0,1]`, and `store_proposals`
-   writes immutable `RenameProposal` rows while transitioning each file to
-   `PROPOSAL_GENERATED`.
-6. **Human review.** Proposals appear at `GET /proposals/` (`routers/proposals.py`) for
+   **upserts** the one active `RenameProposal` per file (idempotent partial-index upsert;
+   see [Pipeline Determinism & Observability](#-pipeline-determinism--observability-phase-35))
+   while transitioning each file to `PROPOSAL_GENERATED`.
+5. **Human review.** Proposals appear at `GET /proposals/` (`routers/proposals.py`) for
    approve/reject — see the [Approval Pipeline](#-approval-pipeline) below.
-7. **Execution.** Approved proposals run copy-verify-delete (`services/execution.py`),
-   writing a write-ahead `ExecutionLog` entry before each operation.
+6. **Execution.** Approved proposals run copy-verify-delete on the owning agent
+   (`tasks/execution.py::execute_approved_batch`), writing a write-ahead `ExecutionLog`
+   entry before each operation.
 
 ## ✅ Approval Pipeline
 
@@ -158,19 +167,94 @@ copies, renames, or deletes a file while a proposal is `PENDING` or `REJECTED`.
   stats, and a toast.
 - **Status transitions.** A proposal moves `PENDING → APPROVED` or `PENDING → REJECTED`
   (`ProposalStatus` in `models/proposal.py`). Only `APPROVED` proposals are picked up by
-  execution; `get_approved_proposals` (`services/execution.py`) selects them ordered by
-  `created_at`.
-- **Safe execution.** `execute_single_file` performs three logged steps:
-  1. **COPY** — `shutil.copy2` to the destination (parent dirs created on demand); aborts
+  execution; `get_approved_proposals_grouped_by_agent` (`services/execution_dispatch.py`)
+  selects and groups them per owning agent for dispatch.
+- **Safe execution.** The per-agent batch executor `execute_approved_batch`
+  (`tasks/execution.py`) resolves each path through `_resolve_and_check_containment`
+  (containment guard against `..`/symlink escape) and performs three logged steps:
+  1. **COPY** — write the bytes to the destination (parent dirs created on demand); aborts
      if the destination already exists.
-  2. **VERIFY** — recompute SHA-256 of the copy and compare to the stored hash. On
-     mismatch the bad copy is deleted, the original is preserved, and the file is marked
+  2. **VERIFY** — recompute SHA-256 of the source and compare to the supplied hash. On
+     mismatch the operation aborts before the original is touched, and the file is marked
      `FAILED`.
-  3. **DELETE** — remove the original only after verification passes; the `FileRecord`
-     then advances to `EXECUTED` with `current_path` updated.
+  3. **DELETE** — remove the original only after the copy + verification pass; the
+     `FileRecord` then advances (proposal `executed` / file `moved`) with `current_path`
+     updated.
 - **Audit trail.** Every step writes an `ExecutionLog` row **before** running (write-ahead),
   so a crash leaves a durable `IN_PROGRESS` record. The append-only log is browsable in the
   execution dashboard.
+
+## 🧮 Pipeline Determinism & Observability (Phase 35)
+
+Every pipeline stage is **operator-triggered** from the dashboard DAG and made
+**idempotent by construction**, so a repeat click or a reboot re-enqueue collapses to a
+no-op instead of doubling work (the lesson of the 2026-06-11 queue-doubling incident).
+
+### Deterministic enqueue keys
+
+A single `before_enqueue` chokepoint, `apply_deterministic_key`
+(`tasks/_shared/deterministic_key.py`), assigns `job.key = "<function>:<natural_id>"` for
+every registered pipeline task — overriding any caller-supplied key so no call site can
+drift back to a random UUID (anti-drift, threat T-35-01). The registry (`_KEY_BUILDERS`,
+8 functions) maps each task's payload to its natural id: `process_file`,
+`extract_file_metadata`, `fingerprint_file`, `scan_live_set`, and `search_tracklist` key
+on `<file_id>`; `scrape_and_store_tracklist` and `match_tracklist_to_discogs` key on
+`<tracklist_id>`; and the batch task `generate_proposals` keys on an order-independent
+SHA-256 of its sorted `file_ids` set. The hook is registered on **every** enqueue seam —
+both worker queues (`tasks/controller.py`, `tasks/agent_worker.py`) and the per-agent
+`AgentTaskRouter` queues (`services/agent_task_router.py`) — alongside
+`apply_project_job_defaults`. SAQ's per-queue `incomplete`-set dedup then collapses a
+repeat enqueue of the same logical work to a no-op. The `process_file` builder computes the
+identical string as `services/analysis_enqueue.process_file_job_key`, so the already-keyed
+analyze path stays no-op-equivalent.
+
+### Maintained counters
+
+`services/pipeline_counters.py` keeps two durable Redis counters per function in a bounded,
+8-name namespace: `phaze:pipeline:enqueued:<fn>` (bumped best-effort inside the same
+`before_enqueue` hook, one INCR per enqueue attempt) and `phaze:pipeline:completed:<fn>`
+(bumped by the `increment_completed` `after_process` hook — registered as a Worker
+constructor kwarg in both settings dicts — only on a `Status.COMPLETE` outcome). These are
+a **non-authoritative cache**: the DB reconcile always owns the rendered `done` value
+(D-03). Counter writes are strictly best-effort — a Redis hiccup is logged, never raised,
+so it can never block an enqueue or job teardown.
+
+### Proposal idempotency
+
+`store_proposals` (`services/proposal.py`) upserts the one active proposal per file with
+`INSERT ... ON CONFLICT DO UPDATE` against the partial unique index
+`uq_proposals_file_id_pending` (`ON (file_id) WHERE status = 'pending'`, alembic 019,
+declared in `models/proposal.py`). Because the index covers only PENDING rows, a re-run of
+`generate_proposals` overwrites an existing pending proposal in place instead of appending a
+second one, while an APPROVED / EXECUTED / REJECTED proposal is never a conflict target —
+human approvals survive any number of re-runs. A companion guard refuses to drag a file in
+a terminal state (`APPROVED` / `REJECTED` / `EXECUTED` / `DUPLICATE_RESOLVED`) back to
+`PROPOSAL_GENERATED`.
+
+### Per-stage DB-truth progress
+
+`get_stage_progress` (`services/pipeline.py`) is the authoritative per-DAG-node source. It
+counts `COUNT(DISTINCT file_id / tracklist_id)` against each stage's OUTPUT table
+(`metadata`, `fingerprint_results` with `status='completed'`, `analysis`, `tracklists`,
+`tracklist_versions`, `discogs_links`, `proposals`, and completed `execution_log`), so a
+file that is BOTH fingerprinted and analyzed contributes to both node counts — impossible
+to express through the single-valued `FileRecord.state` enum that `get_pipeline_stats`
+groups on. Each stage is wrapped in `_safe_count` (degrade-to-0 + session rollback) so one
+failing stage never 500s the 5-second poll. The Scan/Search node is counter-only
+(`total=None`, rendered `done / —`): no table defines "should get a tracklist", so no
+denominator is fabricated.
+
+### Dashboard DAG canvas
+
+`_build_dag_context` (`routers/pipeline.py`) reconciles three sources per node (D-03):
+`get_stage_progress` DB-truth `done`/`total` (the authority), the maintained `completed`
+counters (a degrade backstop via `_reconciled_done`, capped at the node total), and
+`get_queue_activity` (the per-node ACTIVE state). It feeds the 5-second `/pipeline/stats`
+OOB poll. The UI is a single 9-node SVG DAG canvas
+(`templates/pipeline/partials/dag_canvas.html`) — rendered once on full-page load and kept
+live only by the poll's store-bound OOB seeds — which **replaced** the Phase-34 stage cards
++ processing card. Only Metadata and Analyze converge into Proposals; fingerprint and the
+tracklist subgraph have no edge into Proposals.
 
 ## 🤖 Distributed Execution Architecture (Phases 26-29)
 
@@ -305,7 +389,7 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
 | `FileRecord` + `FileState` | `file.py` | Central record + 12-state pipeline machine |
-| `RenameProposal` + `ProposalStatus` | `proposal.py` | Immutable AI proposal + approval status |
+| `RenameProposal` + `ProposalStatus` | `proposal.py` | AI rename proposal (one active PENDING row, upserted in place) + approval status; partial unique index `uq_proposals_file_id_pending` |
 | `ExecutionLog` | `execution.py` | Append-only copy-verify-delete audit trail |
 | `Agent` | `agent.py` | File-server identity (token, scan roots, liveness) |
 | `ScanBatch` + `ScanStatus` | `scan_batch.py` | Scan progress; sentinel `LIVE` batch per agent |
@@ -314,25 +398,29 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
-| `run_scan` / `discover_and_hash_files` | `ingestion.py` | Directory walk, hash, bulk upsert |
-| `ProposalService` | `proposal.py` | LLM calling, context build, confidence clamp |
-| `execute_single_file` | `execution.py` | Copy → verify → delete with write-ahead log |
+| `run_scan` / `discover_and_hash_files` | `ingestion.py` | Directory walk, hash, bulk upsert (rows only; no auto-enqueue) |
+| `ProposalService` / `store_proposals` | `proposal.py` | LLM calling, context build, confidence clamp, idempotent partial-index proposal upsert |
+| `get_pipeline_stats` / `get_stage_progress` | `pipeline.py` | Linear state counts + per-DAG-node DB-truth `COUNT(DISTINCT)` reconcile (the rendering authority) |
+| `incr_*` / `read_counters` | `pipeline_counters.py` | Durable Redis per-function enqueued/completed counters (non-authoritative cache) |
+| `execute_approved_batch` | `tasks/execution.py` | Per-agent copy → verify → delete with write-ahead log + containment guard |
 | `AgentTaskRouter` | `agent_task_router.py` | Per-agent SAQ enqueuer (`phaze-agent-<id>`) |
 | `execution_dispatch` helpers | `execution_dispatch.py` | Group / revoked-filter / chunk approved proposals |
 | `PhazeAgentClient` | `agent_client.py` | Agent → server HTTP wrapper (tenacity, no-4xx-retry) |
 | `classify` / `sort_key` | `agent_liveness.py` | Agent liveness classification for admin UI |
 | `FingerprintOrchestrator` | `fingerprint.py` | Multi-engine fingerprint coordination |
-| `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: deterministic SAQ key `process_file:<file_id>` + complete payload, used by both the dashboard analyze path and the reboot re-enqueue task so in-flight files dedup |
+| `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: builds the complete `ProcessFilePayload` + job policy (`timeout=14400` / `retries=2`); the central `before_enqueue` hook stamps the deterministic key `process_file:<file_id>`. Used by both the dashboard analyze path and the reboot re-enqueue task so in-flight files dedup |
 
 ### Tasks (`src/phaze/tasks/`)
 
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
+| `apply_deterministic_key` / `increment_completed` | `_shared/deterministic_key.py` | Central `before_enqueue` deterministic-key hook (8-task registry) + `after_process` completed-counter hook |
 | Control settings | `controller.py` | SAQ entry for fileless jobs; on boot + every 5 min runs `reenqueue_discovered` for reboot recovery |
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs + cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
+| `extract_file_metadata` | `metadata_extraction.py` | mutagen tag extraction → PUT via HTTP (operator-triggered) |
 | `reenqueue_discovered` | `reenqueue.py` | Reboot/stall recovery: re-enqueue `process_file` for every `FileState.DISCOVERED` file (Postgres = source of truth); in-flight files dedup to a no-op via the shared deterministic key |
-| `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent |
+| `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
 | `heartbeat_tick` | `heartbeat.py` | 30s cron heartbeat POST |
 
 ## 🗂️ Directory Rationale
@@ -351,7 +439,8 @@ top-level directories under `src/phaze/` are:
 - `services/` — business logic, kept free of FastAPI/request concerns so tasks and routers
   can both call it.
 - `tasks/` — SAQ jobs split by role into `controller.py` (fileless) and `agent_worker.py`
-  (file-bound), with `_shared/` holding the DB-free startup helpers.
+  (file-bound), with `_shared/` holding the DB-free startup helpers and the central
+  deterministic-key `before_enqueue` / counter hooks.
 - `agent_watcher/` — the standalone watchdog-based file watcher (agent role, not a SAQ
   worker).
 - `templates/` + `static/` — server-rendered HTMX/Tailwind UI assets.

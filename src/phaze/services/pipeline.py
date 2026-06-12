@@ -4,18 +4,34 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, exists, func, select
 import structlog
 
+from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.agent import Agent
+from phaze.models.analysis import AnalysisResult
+from phaze.models.discogs_link import DiscogsLink
+from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql import Select
 
 
 logger = structlog.get_logger(__name__)
+
+
+# Music + video file types -- the shared denominator for the per-file parallel
+# stages (Metadata/Fingerprint/Analyze). Mirrors the filter the trigger endpoints
+# use at routers/pipeline.py:318-319 so the dashboard denominator matches the set
+# of files those stages are actually enqueued for.
+MUSIC_VIDEO_TYPES = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
 
 
 # The pipeline stages in order, for display
@@ -120,6 +136,138 @@ def queue_progress_percent(analyzed: int, agent_busy: int) -> int:
     no divide-by-zero occurs.
     """
     return round(analyzed / denom * 100) if (denom := analyzed + agent_busy) else 0
+
+
+async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) -> int:
+    """Run a single-scalar COUNT statement, degrading to 0 on any failure.
+
+    Per-source failure isolation mirroring :func:`get_queue_activity`: a bad source
+    (a DB hiccup, an aborted transaction from a prior failed source) must degrade
+    THIS node to 0, never raise into the 5s dashboard poll. On error the session is
+    rolled back so a Postgres "current transaction is aborted" state from one failed
+    source does not poison the COUNT queries for every subsequent stage.
+    """
+    try:
+        return int((await session.execute(stmt)).scalar() or 0)
+    except Exception:
+        logger.warning("stage_progress_degraded", node=node, exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("stage_progress_rollback_failed", node=node, exc_info=True)
+        return 0
+
+
+async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:
+    """Authoritative per-DAG-node reconcile source (D-03) -- counts each stage's OUTPUT table.
+
+    Unlike :func:`get_pipeline_stats`, which groups by the LINEAR ``FileRecord.state``
+    (a single enum per file) and therefore STRUCTURALLY cannot report parallel-stage
+    done-counts, this query counts ``COUNT(DISTINCT file_id / tracklist_id)`` against
+    each stage's write target. A file that is both fingerprinted AND analyzed contributes
+    to BOTH ``fingerprint.done`` and ``analyze.done`` here -- impossible to express through
+    the single-valued state enum (RESEARCH Q5).
+
+    Returns a dict keyed by DAG node, each value ``{"done": int, "total": int | None}``:
+
+    - ``discovery``   -- done = COUNT(files); total = itself (bar is always 100%)
+    - ``metadata``    -- done = DISTINCT file_id in ``metadata``; total = music/video file count
+    - ``fingerprint`` -- done = DISTINCT file_id in ``fingerprint_results`` (status='completed'); total = music/video count
+    - ``analyze``     -- done = DISTINCT file_id in ``analysis``; total = music/video count
+    - ``scan_search`` -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
+      renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
+    - ``scrape``      -- done = DISTINCT tracklist_id in ``tracklist_versions``; total = COUNT(tracklists)
+    - ``match``       -- done = DISTINCT tracklist_id reachable from ``discogs_links``; total = COUNT(tracklists)
+    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (files with BOTH
+      ``metadata`` AND ``analysis``, mirroring routers/pipeline.py:116-128)
+    - ``execute``     -- done = DISTINCT file_id with a completed ``execution_log`` row; total = approved-proposal count
+
+    Each source is wrapped in :func:`_safe_count` so a single failing stage degrades to
+    ``done=0`` (or ``total=0``) and the function never raises into the 5s poll. The linear
+    :func:`get_pipeline_stats` is intentionally left untouched -- it remains the truth for the
+    strictly-linear Proposals/Approved/Executed tail where ``state`` IS the truth.
+    """
+    music_video_total = await _safe_count(
+        session,
+        select(func.count(FileRecord.id)).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)),
+        node="music_video_total",
+    )
+    tracklist_total = await _safe_count(session, select(func.count(Tracklist.id)), node="tracklist_total")
+
+    discovery_done = await _safe_count(session, select(func.count(FileRecord.id)), node="discovery")
+
+    # Proposals denominator: the convergence-gate set -- files with BOTH metadata AND analysis
+    # (mirrors routers/pipeline.py:116-128, the generate_proposals ready-set).
+    convergence_total = await _safe_count(
+        session,
+        select(func.count(FileRecord.id))
+        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
+        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id))),
+        node="proposals_total",
+    )
+
+    # match.done: distinct tracklist_id reachable from a discogs_link, walked
+    # discogs_links -> tracklist_tracks -> tracklist_versions (discogs_links carries
+    # only track_id; tracklist_id lives on the version row).
+    match_done_stmt = (
+        select(func.count(distinct(TracklistVersion.tracklist_id)))
+        .select_from(DiscogsLink)
+        .join(TracklistTrack, DiscogsLink.track_id == TracklistTrack.id)
+        .join(TracklistVersion, TracklistTrack.version_id == TracklistVersion.id)
+    )
+
+    # execute.done: distinct file_id with a COMPLETED execution_log row, walked
+    # execution_log -> proposals (execution_log carries only proposal_id).
+    execute_done_stmt = (
+        select(func.count(distinct(RenameProposal.file_id)))
+        .select_from(ExecutionLog)
+        .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
+        .where(ExecutionLog.status == ExecutionStatus.COMPLETED)
+    )
+
+    return {
+        "discovery": {"done": discovery_done, "total": discovery_done},
+        "metadata": {
+            "done": await _safe_count(session, select(func.count(distinct(FileMetadata.file_id))), node="metadata"),
+            "total": music_video_total,
+        },
+        "fingerprint": {
+            "done": await _safe_count(
+                session,
+                select(func.count(distinct(FingerprintResult.file_id))).where(FingerprintResult.status == "completed"),
+                node="fingerprint",
+            ),
+            "total": music_video_total,
+        },
+        "analyze": {
+            "done": await _safe_count(session, select(func.count(distinct(AnalysisResult.file_id))), node="analyze"),
+            "total": music_video_total,
+        },
+        "scan_search": {
+            "done": await _safe_count(session, select(func.count(distinct(Tracklist.file_id))), node="scan_search"),
+            "total": None,  # counter-only: no table defines "should get a tracklist" (RESEARCH Q5 / UI-SPEC)
+        },
+        "scrape": {
+            "done": await _safe_count(session, select(func.count(distinct(TracklistVersion.tracklist_id))), node="scrape"),
+            "total": tracklist_total,
+        },
+        "match": {
+            "done": await _safe_count(session, match_done_stmt, node="match"),
+            "total": tracklist_total,
+        },
+        "proposals": {
+            "done": await _safe_count(session, select(func.count(distinct(RenameProposal.file_id))), node="proposals"),
+            "total": convergence_total,
+        },
+        "execute": {
+            "done": await _safe_count(session, execute_done_stmt, node="execute"),
+            "total": await _safe_count(
+                session,
+                select(func.count(distinct(RenameProposal.file_id))).where(RenameProposal.status == ProposalStatus.APPROVED),
+                node="execute_total",
+            ),
+        },
+    }
 
 
 async def get_files_by_state(session: AsyncSession, state: FileState) -> list[FileRecord]:

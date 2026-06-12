@@ -63,16 +63,19 @@ phaze/
 │   │   ├── hashing.py          #   Shared hashing utilities
 │   │   ├── metadata.py         #   Tag extraction via mutagen
 │   │   ├── analysis.py         #   BPM/key/mood via essentia
+│   │   ├── analysis_enqueue.py #   FastAPI-free producer for process_file jobs (deterministic key + payload)
 │   │   ├── fingerprint.py      #   Multi-engine fingerprint orchestrator
 │   │   ├── proposal.py         #   LLM calling + context building
 │   │   ├── proposal_queries.py #   Proposal queries + pagination
-│   │   ├── execution.py        #   Copy-verify-delete with audit logging
 │   │   ├── execution_queries.py#   Execution log queries + pagination
 │   │   ├── execution_dispatch.py # Dispatch grouping, revoked-agent filter, chunking
+│   │   ├── enqueue_router.py   #   Task-name → consumed-queue routing (avoids consumer-less default queue)
 │   │   ├── companion.py        #   Companion file association
 │   │   ├── dedup.py            #   Duplicate detection + resolution
 │   │   ├── collision.py        #   Destination path collision detection
-│   │   ├── pipeline.py         #   Pipeline stats + file state queries
+│   │   ├── pipeline.py         #   Pipeline stats, per-stage progress (get_stage_progress), file state queries
+│   │   ├── pipeline_counters.py#   Maintained Redis per-job-type enqueued/completed counters (cache, not truth)
+│   │   ├── scan_deletion.py    #   Ordered transactional cascade delete of a scan batch + dependent rows
 │   │   ├── tracklist_scraper.py#   1001Tracklists web scraper
 │   │   ├── tracklist_matcher.py#   Fuzzy match tracklists to files
 │   │   ├── cue_generator.py    #   CUE sheet generation
@@ -85,8 +88,7 @@ phaze/
 │   │   ├── agent_liveness.py   #   Agent liveness classification (status pills)
 │   │   └── agent_task_router.py#   Controller-side per-agent SAQ enqueuer
 │   ├── tasks/                  # SAQ async background jobs
-│   │   ├── worker.py           #   SAQ settings + startup/shutdown
-│   │   ├── controller.py       #   SAQ controller settings (dispatch entry point)
+│   │   ├── controller.py       #   SAQ controller settings (application-server entry point)
 │   │   ├── agent_worker.py     #   SAQ agent_worker settings (agent process entry point)
 │   │   ├── functions.py        #   process_file (full pipeline per file)
 │   │   ├── metadata_extraction.py # extract_file_metadata
@@ -94,13 +96,15 @@ phaze/
 │   │   ├── proposal.py         #   generate_proposals (batch LLM)
 │   │   ├── execution.py        #   execute_approved_batch
 │   │   ├── scan.py             #   scan_live_set (fingerprint matching)
+│   │   ├── reenqueue.py        #   Control-side reboot recovery: re-enqueue DISCOVERED files for analysis
+│   │   ├── scan_reaper.py      #   Control-side cron: reap stalled RUNNING scans (no-progress)
 │   │   ├── tracklist.py        #   scrape/search/refresh tracklists
 │   │   ├── discogs.py          #   match tracklist tracks to Discogs releases
 │   │   ├── heartbeat.py        #   30s cron: POST agent heartbeat
 │   │   ├── pool.py             #   ProcessPoolExecutor for CPU work
-│   │   ├── session.py          #   Session utilities
 │   │   └── _shared/            #   Cross-process startup helpers (DB-free where required)
 │   │       ├── agent_bootstrap.py  # Shared agent-startup helpers
+│   │       ├── deterministic_key.py # Central before_enqueue deterministic-key + after_process completion hooks
 │   │       ├── model_bootstrap.py  # Auto-download essentia weights when /models empty
 │   │       └── queue_defaults.py   # Shared SAQ before_enqueue Job defaults
 │   ├── agent_watcher/          # Filesystem watcher service (file-server role, not a SAQ worker)
@@ -114,7 +118,7 @@ phaze/
 │   └── templates/              # Jinja2 HTML templates (HTMX + Tailwind)
 │       ├── base.html           #   Base layout (SRI-pinned CDN assets)
 │       ├── _partials/          #   Shared cross-page partials
-│       ├── pipeline/           #   Pipeline dashboard
+│       ├── pipeline/           #   Pipeline dashboard (9-node SVG DAG canvas)
 │       ├── proposals/          #   Proposal approval UI
 │       ├── execution/          #   Execution dashboard + audit log
 │       ├── duplicates/         #   Duplicate resolution UI
@@ -142,7 +146,7 @@ phaze/
 │   ├── test_utils/             #   Helper tests
 │   └── test_template_helpers/  #   Template/Jinja helper tests
 ├── alembic/                    # Database migrations (async template)
-│   └── versions/               #   Migration scripts (001-014)
+│   └── versions/               #   Migration scripts (001-019)
 ├── .github/workflows/          # CI/CD pipelines
 │   ├── ci.yml                  #   Main orchestrator
 │   ├── code-quality.yml        #   Pre-commit hooks

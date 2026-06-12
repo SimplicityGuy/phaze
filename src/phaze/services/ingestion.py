@@ -126,20 +126,18 @@ async def run_scan(
     scan_path: str,
     batch_id: uuid.UUID,
     session_factory: async_sessionmaker[AsyncSession],
-    queue: Any | None = None,
+    queue: Any | None = None,  # noqa: ARG001 -- retained for caller/signature stability; Phase 35 D-06 removed the auto-enqueue that consumed it
 ) -> None:
     """Top-level scan orchestrator: create batch, discover files, persist.
 
     Creates a ScanBatch record, runs directory scanning via asyncio.to_thread,
     bulk upserts discovered files, and updates batch status.
 
-    ``queue`` contract: when provided it MUST be a *consumed* per-agent
-    ``phaze-agent-<id>`` queue resolved by the caller via the enqueue router
-    (``resolve_queue_for_task("extract_file_metadata", ...)``) — never the removed
-    consumer-less unnamed default queue that stranded the v4.0.6 incident's jobs.
-    The auto-enqueue loop below fires ``extract_file_metadata`` per discovered
-    MUSIC/VIDEO record onto it. ``queue is None`` is honored (callers/tests that
-    only want discovery + persistence skip the enqueue step entirely).
+    ``queue`` contract: Phase 35 (D-06) removed the per-discovery auto-enqueue of the
+    metadata-extraction task — metadata extraction is operator-triggered ONLY
+    (MANUAL-META). The ``queue`` parameter is retained for caller/signature stability
+    (``routers/scan.py`` still passes a resolved per-agent queue) but is no longer used:
+    discovery now persists rows only. Re-running extraction is an explicit operator action.
 
     Terminal completion is written in exactly two places in the codebase: here
     (the legacy application-server path) and the agent PATCH in
@@ -180,15 +178,9 @@ async def run_scan(
             upserted = await bulk_upsert_files(session, file_records)
             logger.info("scan progress", batch_id=str(batch_id), processed=upserted, total=len(file_records))
 
-            # Auto-enqueue tag extraction for newly discovered files (per D-09)
-            if queue is not None and file_records:
-                extractable_categories = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
-                for record in file_records:
-                    ext = "." + record.get("file_type", "").lower()
-                    category = EXTENSION_MAP.get(ext, FileCategory.UNKNOWN)
-                    if category in extractable_categories:
-                        await queue.enqueue("extract_file_metadata", file_id=str(record["id"]))
-                logger.info("Auto-enqueued tag extraction for %d files in batch %s", len(file_records), batch_id)
+            # Phase 35 (D-06): NO auto-enqueue of the metadata-extraction task here.
+            # Discovery persists rows only; metadata extraction is operator-triggered
+            # (MANUAL-META). See the ``queue`` contract in this function's docstring.
 
             # Mark scan as completed
             await session.execute(
