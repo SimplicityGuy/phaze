@@ -283,11 +283,24 @@ Plans:
 
 **Requirements**: Drain-style pause + live backlog reprioritization per agent stage; retry backoffs preserved; no double-pickup.
 **Depends on:** Phase 36 (Postgres queue backend)
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
+**Wave 1**
 
-- [ ] TBD (run /gsd-plan-phase 37 to break down)
+- [ ] 37-01-PLAN.md — Schema foundation: PipelineStageControl model + migration 020 (seed 3 rows + CHECK 0-100) + STAGE_TO_FUNCTION/SENTINEL constants [Wave 1]
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 37-02-PLAN.md — apply_stage_control before_enqueue hook (TTL-cached job.queue.pool read) + raw saq_jobs UPDATE service helpers + build_pipeline_queue wiring + import-boundary test [Wave 2]
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 37-03-PLAN.md — Real-PG integration tests: drain-pause (REQ-37-1 + Pitfall-1 count), live reorder (REQ-37-2), sentinel-guarded resume (REQ-37-3), no-double-pickup concurrency (REQ-37-4) [Wave 3]
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 37-04-PLAN.md — FastAPI control endpoints (priority delta/pause/resume) + StagePriorityDelta schema + main.py registration + endpoint tests + README [Wave 4]
 
 ### Phase 38: Pipeline DAG Pause/Priority UI and Rescan Button Removal
 
