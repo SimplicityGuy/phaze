@@ -157,3 +157,46 @@ async def test_fresh_insert_stamps_pk(session: AsyncSession) -> None:
     # The file's state is advanced to PROPOSAL_GENERATED.
     file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert file_record.state == FileState.PROPOSAL_GENERATED
+
+
+@pytest.mark.asyncio
+async def test_out_of_range_file_index_is_skipped(session: AsyncSession) -> None:
+    """WR-01: an out-of-range or negative LLM file_index is skipped — no crash, no wrong-file write.
+
+    ``file_index`` is an unbounded int from the LLM. ``5`` (>= batch size) would crash the batch
+    with IndexError; ``-1`` would silently wrap and write the proposal against the wrong file.
+    Both must be skipped, leaving zero rows for the only real file.
+    """
+    file_id = await _seed_file(session)
+    batch = BatchProposalResponse(
+        proposals=[
+            FileProposalResponse(file_index=5, proposed_filename="oob.mp3", proposed_path=None, confidence=0.9, reasoning="oob"),
+            FileProposalResponse(file_index=-1, proposed_filename="neg.mp3", proposed_path=None, confidence=0.9, reasoning="neg"),
+        ]
+    )
+
+    count = await store_proposals(session, [str(file_id)], batch, [{"ctx": 0}])
+    await session.commit()
+
+    assert count == 0
+    assert await _count(session, file_id, ProposalStatus.PENDING) == 0
+
+
+@pytest.mark.asyncio
+async def test_rerun_does_not_regress_terminal_file_state(session: AsyncSession) -> None:
+    """WR-04: a file already in a terminal state (APPROVED) is not yanked back to PROPOSAL_GENERATED.
+
+    A stale/duplicated batch can carry a file that has since been approved. The partial index
+    protects the approved proposal row; this asserts the FILE STATE is likewise forward-only so
+    the two cannot desync.
+    """
+    file_id = await _seed_file(session)
+    file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    file_record.state = FileState.APPROVED
+    await session.commit()
+
+    await store_proposals(session, [str(file_id)], _batch("regen.mp3", reasoning="regen"), [{"ctx": "regen"}])
+    await session.commit()
+
+    file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_record.state == FileState.APPROVED

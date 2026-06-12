@@ -186,6 +186,20 @@ async def test_completed_counter_degrade_fallback(session: AsyncSession) -> None
 
 
 @pytest.mark.asyncio
+async def test_proposals_batch_counter_is_not_a_fallback_done(session: AsyncSession) -> None:
+    """WR-03: generate_proposals is a BATCH task, so its completed counter must NOT render as
+    proposalsDone (a per-file count). With DB done == 0 and a generate_proposals completed
+    counter of 5, proposalsDone stays 0 (DB-truth) rather than the wrong-unit batch count.
+    """
+    fake = _FallbackRedis({"phaze:pipeline:completed:generate_proposals": 5})
+    app_state = SimpleNamespace(redis=fake)
+    from phaze.routers.pipeline import _build_dag_context
+
+    ctx = await _build_dag_context(app_state, session, _idle_activity())
+    assert ctx["dag"]["proposalsDone"] == 0
+
+
+@pytest.mark.asyncio
 async def test_db_truth_wins_over_completed_counter(session: AsyncSession) -> None:
     """When the DB has done > 0, DB-truth wins even if the completed counter differs (D-03)."""
     file_rec, metadata = _make_file_with_metadata()

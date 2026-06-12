@@ -50,6 +50,14 @@ _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker 
 # In practice the counter only exceeds 0 after real completions — at which point the DB
 # reflects them too unless the DB source degraded — so applying the counter on ``done==0``
 # is harmless when the stage is genuinely empty (counter is also 0 there).
+# WR-03 unit constraint: a node may map ONLY to per-file SAQ functions, because the node's
+# ``done`` is a distinct-file/tracklist count and the fallback renders the counter AS that
+# ``done``. ``generate_proposals`` is a BATCH task (one job == N files), so its ``completed``
+# counter counts batches, not files — mapping it here would render a batch count as a file
+# ``done`` (e.g. 1 batch of 10 files -> proposalsDone=1). It is therefore intentionally OMITTED;
+# proposalsDone falls back to DB-truth (0 when degraded) rather than a wrong-unit number. The
+# remaining per-file mappings are additionally capped at the node ``total`` in ``_reconciled_done``
+# so re-runs cannot inflate ``done`` past the denominator.
 _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
     "metadata": ("extract_file_metadata",),
     "fingerprint": ("fingerprint_file",),
@@ -57,7 +65,6 @@ _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
     "scan_search": ("scan_live_set", "search_tracklist"),
     "scrape": ("scrape_and_store_tracklist",),
     "match": ("match_tracklist_to_discogs",),
-    "proposals": ("generate_proposals",),
 }
 
 
@@ -80,17 +87,20 @@ async def _read_pipeline_counters(app_state: Any) -> dict[str, dict[str, int]]:
         return {}
 
 
-def _reconciled_done(node: str, stage_done: int, counters: dict[str, dict[str, int]]) -> int:
+def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dict[str, dict[str, int]]) -> int:
     """Return the DB-truth ``done`` (D-03), or the ``completed`` counter as a backstop.
 
     DB-truth wins whenever ``stage_done > 0``. Only when the DB source reads 0 do we fall
     back to the sum of the node's mapped ``completed`` counters (D-02 backstop) — and only
-    if that sum is itself > 0.
+    if that sum is itself > 0. The fallback is capped at ``stage_total`` (when known, > 0) so
+    re-run-inflated counters cannot render a ``done`` larger than the denominator (WR-03).
     """
     if stage_done > 0:
         return stage_done
     fallback = sum(counters.get(fn, {}).get("completed", 0) for fn in _NODE_COMPLETED_FNS.get(node, ()))
-    return fallback if fallback > 0 else stage_done
+    if fallback <= 0:
+        return stage_done
+    return min(fallback, stage_total) if stage_total > 0 else fallback
 
 
 async def _build_dag_context(app_state: Any, session: AsyncSession, activity: dict[str, int]) -> dict[str, dict[str, int]]:
@@ -110,7 +120,7 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     counters = await _read_pipeline_counters(app_state)
 
     def done(node: str) -> int:
-        return _reconciled_done(node, int(stage[node]["done"] or 0), counters)
+        return _reconciled_done(node, int(stage[node]["done"] or 0), int(stage[node]["total"] or 0), counters)
 
     def total(node: str) -> int:
         return int(stage[node]["total"] or 0)

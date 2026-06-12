@@ -13,6 +13,7 @@ from litellm import acompletion
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+import structlog
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.file_companion import FileCompanion
@@ -26,8 +27,16 @@ if TYPE_CHECKING:
     from phaze.models.metadata import FileMetadata
 
 
+logger = structlog.get_logger(__name__)
+
 # Module constant: max chars for companion file content sent to LLM
 MAX_COMPANION_CHARS = 3000
+
+# File states whose lifecycle is past PROPOSAL_GENERATED -- a re-run of generate_proposals
+# (the deterministic key dedups in-flight work, not historical batches) must NEVER yank these
+# backward. The partial unique index already protects the approved proposal ROW; this protects
+# the FILE STATE so the two cannot drift out of sync (35-REVIEW WR-04).
+_TERMINAL_FILE_STATES: frozenset[FileState] = frozenset({FileState.APPROVED, FileState.REJECTED, FileState.EXECUTED, FileState.DUPLICATE_RESOLVED})
 
 # Path to the prompts directory (sibling of services/)
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -296,7 +305,15 @@ async def store_proposals(
     """
     count = 0
     for proposal in batch_response.proposals:
-        fid = file_ids[proposal.file_index]
+        # WR-01: file_index is an unbounded int the LLM emits. An index >= len(file_ids) would
+        # crash the whole batch with IndexError; a NEGATIVE index would silently wrap (Python
+        # negative indexing) and write the proposal against the WRONG file -- silent data
+        # corruption. Reject out-of-range indices and skip the proposal.
+        idx = proposal.file_index
+        if not (0 <= idx < len(file_ids)):
+            logger.warning("proposal file_index out of range — skipping", file_index=idx, batch_size=len(file_ids))
+            continue
+        fid = file_ids[idx]
         confidence = ProposalService._clamp_confidence(proposal.confidence)
         context_used = {
             "artist": proposal.artist,
@@ -307,7 +324,7 @@ async def store_proposals(
             "stage": proposal.stage,
             "day_number": proposal.day_number,
             "b2b_partners": proposal.b2b_partners,
-            "input_context": files_context[proposal.file_index],
+            "input_context": files_context[idx],
         }
         path_raw = proposal.proposed_path
         if path_raw:
@@ -344,10 +361,13 @@ async def store_proposals(
         )
         await session.execute(stmt)
 
-        # Update file state
+        # Update file state -- forward-only (WR-04). A stale/duplicated batch can still carry a
+        # file that has since reached a terminal state (APPROVED/EXECUTED/...); the partial index
+        # already protects its approved proposal row, so the file state must not regress to
+        # PROPOSAL_GENERATED and desync from the proposal.
         result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(fid)))
         file_record = result.scalar_one_or_none()
-        if file_record is not None:
+        if file_record is not None and file_record.state not in _TERMINAL_FILE_STATES:
             file_record.state = FileState.PROPOSAL_GENERATED
 
         count += 1
