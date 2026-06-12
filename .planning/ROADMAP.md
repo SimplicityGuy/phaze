@@ -234,3 +234,64 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 
 - [x] 35-05-PLAN.md — DAG canvas UI (sketch 001 Variant B): 9-node SVG graph with honest topology + gated triggers + <ol> fallback; removes stage_cards.html + processing_card.html (D-01) [Wave 3]
+
+### Phase 36: Pipeline Queue Backend Migration (Redis to Postgres SAQ)
+
+**Goal:** Migrate the SAQ task queue from the Redis backend to the Postgres backend so native per-job `priority` and `scheduled`-based job control become available (both are Postgres-only in SAQ; confirmed `saq/queue/postgres.py` dequeues `WHERE now>=scheduled AND priority BETWEEN .. ORDER BY priority, scheduled`). This is the enabling substrate for Phases 37–38.
+
+**Scope:**
+
+1. Swap dependency `saq[redis]` → `saq[postgres]` (pulls `psycopg`/`psycopg_pool` v3). SAQ runs its own psycopg3 async pool, **separate** from the SQLAlchemy/asyncpg engine; SAQ auto-manages its `saq_jobs` table.
+2. New setting `PHAZE_QUEUE_URL` (Postgres DSN, defaults from the existing Postgres config). `controller.py` + `agent_worker.py` build `PostgresQueue.from_url(...)` instead of `Queue.from_url(redis_url, ...)`.
+3. Redis container stays for cache/rate-limiting only — no longer the queue broker.
+4. Carry over both before-enqueue hooks unchanged (`queue_defaults`, `deterministic_key`) — they are queue-level and backend-agnostic.
+
+**Regression checks (highest-risk part):** Phase 32 reboot re-enqueue resilience, Phase 33 SAQ `/saq` monitoring UI (backend-agnostic `saq_web`, verify against Postgres), Phase 35 determinism/idempotency (deterministic-key dedup on Postgres). Smoke test enqueue→dequeue on Postgres.
+
+**Deliverable (Step D — homelab):** Produce a ready-to-paste change prompt for the **homelab repo** agent: add `PHAZE_QUEUE_URL` env on control + agent services, image dep swap (`saq[redis]`→`saq[postgres]`), `saq_jobs` table first-boot/DB-perms note, Redis-no-longer-broker, redeploy ordering via `datum@nox` / `datum@lux`. (Final consolidation after Phase 38 if UI/control changes add env.)
+
+**Requirements**: Queue backend on Postgres; native priority + scheduled-park available; no regression in reboot re-enqueue, SAQ UI, or determinism.
+**Depends on:** Phase 35
+**Rollout:** Ships as a v4.0.x → GHCR publish → homelab redeploy (paired with the Step D homelab change).
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 36 to break down)
+
+### Phase 37: Per-Stage Pause and Priority Control Plane (table, API, worker hooks)
+
+**Goal:** Add backend controls to pause and reprioritize the three agent pipeline stages — `metadata` (`extract_file_metadata`), `analyze` (`process_file`), `fingerprint` (`fingerprint_file`) — operating on the Postgres-backed `saq_jobs` table via plain UPDATEs.
+
+**Scope:**
+
+1. **`pipeline_stage_control` table** (Alembic migration): `stage` PK (metadata/analyze/fingerprint), `paused` bool, `priority` int (default 50, range 0–100, **lower = higher priority = sooner**, maps directly to SAQ `priority` — no inversion), `updated_at`.
+2. **Enqueue hook** stamps every new job with its stage's current `priority`; if the stage is paused, also sets `scheduled = SENTINEL` (far-future) so the job parks on enqueue.
+3. **Priority endpoint** `POST /pipeline/stages/{stage}/priority` (delta): update the control row, then `UPDATE saq_jobs SET priority=:n WHERE status='queued' AND <function=stage>` — reorders the already-queued backlog live.
+4. **Pause endpoint** `POST /pipeline/stages/{stage}/pause`: set `paused=true`, `UPDATE saq_jobs SET scheduled=SENTINEL WHERE status='queued' AND <function=stage>`. Active jobs finish (drain semantics).
+5. **Resume**: `paused=false`, `UPDATE saq_jobs SET scheduled=0 WHERE status='queued' AND <function=stage> AND scheduled=SENTINEL` — sentinel-guarded so genuine retry backoffs are never clobbered.
+
+**Requirements**: Drain-style pause + live backlog reprioritization per agent stage; retry backoffs preserved; no double-pickup.
+**Depends on:** Phase 36 (Postgres queue backend)
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 37 to break down)
+
+### Phase 38: Pipeline DAG Pause/Priority UI and Rescan Button Removal
+
+**Goal:** Surface the Phase 37 controls on the pipeline DAG and remove the confusing duplicate scan affordance.
+
+**Scope:**
+
+1. **Remove the "Rescan Files" anchor** on the Discovery node (`dag_canvas.html` ~L202) — it just scrolled to the same `POST /pipeline/scans` form as "Start Scan"; confusing duplicate.
+2. **Per-stage controls** on each of the 3 agent nodes: a **Pause/Resume** toggle and a **priority stepper** showing the raw number, with buttons labeled by intent — **"▲ Higher priority"** decrements the number, **"▼ Lower priority"** increments — plus a "lower runs first" hint. HTMX-posted to the Phase 37 endpoints.
+3. **Extend `/pipeline/stats`** poll to return each stage's `{paused, priority}` so controls reflect live state across the 5s refresh.
+4. Existing `agentBusy`-based trigger-button disabling stays as-is (out of scope; separate concern).
+
+**Requirements**: Operator can pause/resume and raise/lower priority per agent stage from the DAG; Rescan button gone; live state reflected.
+**Depends on:** Phase 37
+**Rollout:** Final homelab Step D consolidation here if any new env/UI config emerges.
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 38 to break down)
