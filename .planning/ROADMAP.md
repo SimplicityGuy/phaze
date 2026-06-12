@@ -112,6 +112,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 32. Pipeline Reboot Resilience & Re-enqueue | v4.0 | 4/4 | Complete   | 2026-06-11 |
 | 33. SAQ Monitoring UI (mounted in phaze-api) | v4.0 | 4/4 | Complete   | 2026-06-11 |
 | 34. Pipeline Queue-Depth Status & Double-Enqueue Guard | v4.0 | 5/5 | Complete | 2026-06-10 |
+| 35. Pipeline Determinism, Idempotency & Per-Job-Type Observability | v4.0 | 5/5 | Complete | 2026-06-12 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -217,7 +218,7 @@ Plans:
 **Requirements**: Schedulability without duplicate queue items; idempotent re-runs; operator-controlled metadata extraction; per-job-type pipeline observability.
 **Depends on:** Phase 30 (enqueue_router seam), Phase 32 (deterministic-key pattern + `analysis_enqueue.py`), Phase 34 (dashboard processing card + stats poll).
 **Rollout:** Ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
-**Status:** Planned (2026-06-11) — 5 plans across 3 waves.
+**Status:** Complete (verified 2026-06-12 — VERIFICATION.md status: passed, 6/6 must-haves; code review 2 blockers + 3 warnings fixed; UAT verified in-browser incl. a chip-overlap fix; full suite 1721 green).
 **Plans:** 5/5 plans complete
 Plans:
 **Wave 1**

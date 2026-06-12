@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: executing
-last_updated: "2026-06-12T01:33:07.523Z"
-last_activity: 2026-06-12 -- Phase 35 execution started
+status: phase_complete
+last_updated: "2026-06-12T15:30:00.000Z"
+last_activity: 2026-06-12 -- Phase 35 complete (verified, UAT passed, chip-overlap fix)
 progress:
   total_phases: 6
   completed_phases: 6
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 35 — pipeline-determinism-idempotency-per-job-type-observability
+**Current focus:** Phase 35 complete — awaiting v4.0.x release + homelab redeploy
 
 ## Current Position
 
-Phase: 35 (pipeline-determinism-idempotency-per-job-type-observability) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 35
-Last activity: 2026-06-12 -- Phase 35 execution started
+Phase: 35 (pipeline-determinism-idempotency-per-job-type-observability) — COMPLETE
+Plan: 5 of 5
+Status: Phase 35 complete — verified (6/6 must-haves), code review clean (2 blockers + 3 warnings fixed), UAT passed (chip-overlap fix). Full suite 1721 green.
+Last activity: 2026-06-12 -- Phase 35 complete
 
 Progress: [██████████] 100%
 
