@@ -43,6 +43,7 @@ from phaze.routers import (
 )
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.web.saq_mount import build_saq_app
 
@@ -101,6 +102,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Register the policy before_enqueue hook so API-side enqueues inherit the longer
     # timeout / retry budget, exactly like controller.py's module-level queue.
     _app.state.controller_queue.register_before_enqueue(apply_project_job_defaults)
+    # Phase 35 (D-05): central deterministic-key hook so every routable enqueue from the
+    # API side is keyed `<function>:<natural_id>` and dedups against a re-enqueue. Order vs
+    # apply_project_job_defaults is irrelevant (disjoint Job fields).
+    _app.state.controller_queue.register_before_enqueue(apply_deterministic_key)
     # AgentTaskRouter -- per-agent SAQ enqueuer (Phase 26 Plan 04, D-20)
     _app.state.task_router = AgentTaskRouter(redis_url=settings.redis_url)
     # Shared Redis client for tracklists idempotency cache (Phase 26 Plan 07, D-27).
