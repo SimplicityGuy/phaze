@@ -16,17 +16,16 @@
     <!-- Phase 27: Recent Scans mini-table -->
     {% include "pipeline/partials/recent_scans_table.html" %}
 
-    <!-- Phase 34: Persistent Processing card (initial render; OOB-swapped on the 5s poll via stats_bar.html) -->
-    {% include "pipeline/partials/processing_card.html" %}
-
-    <!-- Stats bar (polled via HTMX every 5s) -->
+    <!-- Stats bar (polled via HTMX every 5s). Still carries the per-node OOB seeds
+         (35-04) that drive the DAG canvas bindings on each tick. -->
     <div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">
         {% include "pipeline/partials/stats_bar.html" %}
     </div>
 
-    <!-- Stage cards with trigger buttons -->
+    <!-- Phase 35 (D-01): the single coherent pipeline DAG canvas REPLACES the Phase-34
+         stage cards + processing card. Rendered once; kept live by the 5s poll's OOB seeds. -->
     <div id="pipeline-stages">
-        {% include "pipeline/partials/stage_cards.html" %}
+        {% include "pipeline/partials/dag_canvas.html" %}
     </div>
 </div>
 {% endblock %}

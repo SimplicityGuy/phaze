@@ -20,9 +20,15 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 from fastapi.templating import Jinja2Templates
+import pytest
 from starlette.requests import Request
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "src" / "phaze" / "templates"
@@ -286,3 +292,62 @@ def test_gating_execute_is_navigational_link() -> None:
     # Execute never POSTs — it only routes to the human review queue.
     execute = html[html.index('id="node-execute"') : html.index('id="node-match"')]
     assert "hx-post" not in execute
+
+
+# ---------------------------------------------------------------------------
+# integration — DB-backed render via the shared `client` fixture (auto-marked)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_integration_dashboard_renders_dag_canvas(client: AsyncClient) -> None:
+    """GET /pipeline renders the DAG canvas with all 9 node labels and no legacy markers."""
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    body = response.text
+    assert 'aria-label="Pipeline stage graph"' in body
+    for label in ("Discovery", "Metadata", "Analyze", "Fingerprint", "Scan / Search", "Proposals", "Scrape", "Execute", "Match"):
+        assert label in body, f"missing node label '{label}'"
+    # D-01: the Phase-34 stage-cards heading + processing card are gone.
+    assert "Pipeline Actions" not in body
+    assert 'id="processing-card"' not in body
+
+
+@pytest.mark.asyncio
+async def test_integration_dashboard_edge_honesty(client: AsyncClient) -> None:
+    """The rendered SVG converges only Metadata+Analyze into Proposals (edge honesty)."""
+    response = await client.get("/pipeline/")
+    body = response.text
+    # Nine anchor-derived bézier edges; none originate at fingerprint/scrape/match into proposals.
+    paths = re.findall(r'<path d="M [\d., ]+C [\d., ]+"', body)
+    assert len(paths) == 9
+    src = (PARTIALS_DIR / "dag_canvas.html").read_text(encoding="utf-8")
+    edge_block = src[src.index("set EDGES") : src.index("] %}", src.index("set EDGES"))]
+    assert '["metadata", "proposals"]' in edge_block
+    assert '["analyze", "proposals"]' in edge_block
+    assert '["fingerprint", "proposals"]' not in edge_block
+
+
+@pytest.mark.asyncio
+async def test_integration_dashboard_scan_search_em_dash(client: AsyncClient) -> None:
+    """The rendered Scan/Search node shows the literal em-dash denominator."""
+    response = await client.get("/pipeline/")
+    body = response.text
+    scan = body[body.index('id="node-scan_search"') : body.index('id="node-proposals"')]
+    assert "/ —" in scan
+
+
+@pytest.mark.asyncio
+async def test_integration_stats_poll_still_emits_per_node_oob_seeds(client: AsyncClient) -> None:
+    """GET /pipeline/stats still emits the per-node OOB seeds (35-04 contract preserved)."""
+    response = await client.get("/pipeline/stats")
+    assert response.status_code == 200
+    body = response.text
+    for key in _DAG_KEYS:
+        assert f'id="dag-seed-{key}" hx-swap-oob="true"' in body, f"missing OOB seed for {key}"
+
+
+def test_integration_legacy_partials_removed() -> None:
+    """The Phase-34 stage_cards.html and processing_card.html files no longer exist."""
+    assert not (PARTIALS_DIR / "stage_cards.html").exists()
+    assert not (PARTIALS_DIR / "processing_card.html").exists()
