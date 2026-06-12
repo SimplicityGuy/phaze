@@ -144,8 +144,9 @@ Tracing one music file from disk to a finished move:
    `PROPOSAL_GENERATED`.
 6. **Human review.** Proposals appear at `GET /proposals/` (`routers/proposals.py`) for
    approve/reject — see the [Approval Pipeline](#-approval-pipeline) below.
-7. **Execution.** Approved proposals run copy-verify-delete (`services/execution.py`),
-   writing a write-ahead `ExecutionLog` entry before each operation.
+7. **Execution.** Approved proposals run copy-verify-delete on the owning agent
+   (`tasks/execution.py::execute_approved_batch`), writing a write-ahead `ExecutionLog`
+   entry before each operation.
 
 ## ✅ Approval Pipeline
 
@@ -158,9 +159,11 @@ copies, renames, or deletes a file while a proposal is `PENDING` or `REJECTED`.
   stats, and a toast.
 - **Status transitions.** A proposal moves `PENDING → APPROVED` or `PENDING → REJECTED`
   (`ProposalStatus` in `models/proposal.py`). Only `APPROVED` proposals are picked up by
-  execution; `get_approved_proposals` (`services/execution.py`) selects them ordered by
-  `created_at`.
-- **Safe execution.** `execute_single_file` performs three logged steps:
+  execution; `get_approved_proposals_grouped_by_agent` (`services/execution_dispatch.py`)
+  selects and groups them per owning agent for dispatch.
+- **Safe execution.** The per-agent batch executor `execute_approved_batch`
+  (`tasks/execution.py`) resolves each path through `_resolve_and_check_containment`
+  (containment guard against `..`/symlink escape) and performs three logged steps:
   1. **COPY** — `shutil.copy2` to the destination (parent dirs created on demand); aborts
      if the destination already exists.
   2. **VERIFY** — recompute SHA-256 of the copy and compare to the stored hash. On
@@ -316,7 +319,7 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | ----------- | ---- | ---- |
 | `run_scan` / `discover_and_hash_files` | `ingestion.py` | Directory walk, hash, bulk upsert |
 | `ProposalService` | `proposal.py` | LLM calling, context build, confidence clamp |
-| `execute_single_file` | `execution.py` | Copy → verify → delete with write-ahead log |
+| `execute_approved_batch` | `tasks/execution.py` | Per-agent copy → verify → delete with write-ahead log + containment guard |
 | `AgentTaskRouter` | `agent_task_router.py` | Per-agent SAQ enqueuer (`phaze-agent-<id>`) |
 | `execution_dispatch` helpers | `execution_dispatch.py` | Group / revoked-filter / chunk approved proposals |
 | `PhazeAgentClient` | `agent_client.py` | Agent → server HTTP wrapper (tenacity, no-4xx-retry) |
