@@ -91,7 +91,7 @@
             // discovered/analyzed/metadataExtracted are "files ready" stage counts;
             // agentBusy/controllerBusy are the live SAQ queue depths that gate the
             // buttons against double-enqueue. All five are seeded from the
-            // server-rendered counts at page load (see stage_cards.html) and refreshed
+            // server-rendered counts at page load (see the DAG canvas seeds) and refreshed
             // by the poll OOB nodes, so every :disabled binding has a defined default
             // before the first poll tick (never reads undefined).
             // Phase 35 (35-04) DAG-canvas extension: per-node sub-keys feeding the

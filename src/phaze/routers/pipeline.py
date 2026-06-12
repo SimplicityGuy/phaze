@@ -334,7 +334,7 @@ async def pipeline_stats_partial(
         # oob_counts=True emits the hx-swap-oob "files ready" paragraphs ONLY on
         # this poll response. The dashboard full-page include omits the flag, so
         # the OOB block is skipped at initial load (where htmx would not honor
-        # hx-swap-oob and the ids would collide with stage_cards.html).
+        # hx-swap-oob and the ids would collide with the DAG canvas seeds).
         context={
             "request": request,
             "stats": stats,
