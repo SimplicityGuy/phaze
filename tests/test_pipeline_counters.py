@@ -9,11 +9,21 @@ from __future__ import annotations
 
 from phaze.services.pipeline_counters import (
     PIPELINE_FUNCTIONS,
+    _to_int,
     incr_completed,
     incr_enqueued,
     read_counters,
 )
 from tests._queue_fakes import FakeRedis
+
+
+def test_to_int_coerces_none_bytes_str_and_int() -> None:
+    """``_to_int`` handles every Redis return shape: a miss (None), bytes (non-decode_responses
+    client), and a plain str/int (decode_responses=True client)."""
+    assert _to_int(None) == 0
+    assert _to_int(b"7") == 7
+    assert _to_int("42") == 42  # decode_responses=True path
+    assert _to_int(13) == 13  # already-int path
 
 
 async def test_incr_enqueued_bumps_namespaced_key() -> None:

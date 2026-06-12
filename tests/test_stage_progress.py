@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
@@ -22,7 +23,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.pipeline import get_stage_progress
+from phaze.services.pipeline import _safe_count, get_stage_progress
 
 
 if TYPE_CHECKING:
@@ -230,3 +231,18 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession):
     # ...while sibling stages computed before and after it stay correct.
     assert progress["metadata"]["done"] == 1
     assert progress["analyze"]["done"] == 1
+
+
+async def test_safe_count_swallows_rollback_failure() -> None:
+    """_safe_count isolation must hold even when the post-error rollback ALSO fails: it logs and
+    still returns 0 rather than letting either exception escape into the 5s poll."""
+
+    class _BoomSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("forced execute error")
+
+        async def rollback(self) -> None:
+            raise RuntimeError("forced rollback error")
+
+    result = await _safe_count(_BoomSession(), select(FileRecord), node="metadata")  # type: ignore[arg-type]
+    assert result == 0

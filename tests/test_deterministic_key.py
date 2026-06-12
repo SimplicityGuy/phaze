@@ -163,6 +163,18 @@ async def test_increment_completed_noop_without_job() -> None:
     await increment_completed({})
 
 
+async def test_increment_completed_noop_for_unregistered_function() -> None:
+    # A COMPLETE job whose function is NOT in _KEY_BUILDERS bumps no counter (the maintained
+    # counters only track the keyed pipeline functions).
+    redis = FakeRedis()
+    job = Job(function="some_unregistered_task", kwargs={})
+    job.queue = SimpleNamespace(redis=redis)  # type: ignore[assignment]
+    job.status = Status.COMPLETE
+    assert "some_unregistered_task" not in _KEY_BUILDERS
+    await increment_completed({"job": job})
+    assert redis.store == {}
+
+
 async def test_increment_completed_failure_is_swallowed() -> None:
     # A Redis hiccup during the completed INCR must be swallowed (best-effort).
     class _BoomRedis:
