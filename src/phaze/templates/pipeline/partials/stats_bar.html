@@ -57,6 +57,18 @@
    Counts are ints from count()/DB, safe to interpolate into the numeric assignment. #}
 <p id="agent-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.agentBusy = {{ agent_busy }}" class="hidden"></p>
 <p id="controller-busy-seed" hx-swap-oob="true" x-init="$store.pipeline.controllerBusy = {{ controller_busy }}" class="hidden"></p>
+{# Phase 35 (35-04): per-DAG-node count seeds. One hidden OOB paragraph per per-node
+   $store.pipeline sub-key (35-UI-SPEC "Store extension"), re-pushing the DB-truth
+   done/total/active reconcile (35-04 router context, key `dag`) into the store on every
+   5s poll. The id contract is `dag-seed-<storeKey>` — the 35-05 full-page canvas MUST
+   mirror these exact ids/x-init writes for its in-place initial seeds so the DAG bindings
+   are correct before the first poll tick (no flash). Kept inside the oob_counts gate so
+   they fire ONLY on the poll swap (htmx honors hx-swap-oob only during a swap; at initial
+   full-page load they would render stray + collide on those ids). Every dag value is a
+   server-computed int, safe to interpolate into the numeric store assignment. #}
+{% for key, value in dag.items() %}
+<p id="dag-seed-{{ key }}" hx-swap-oob="true" x-init="$store.pipeline.{{ key }} = {{ value }}" class="hidden"></p>
+{% endfor %}
 {# Phase 34 Plan 03: OOB-swap the persistent Processing card on the same 5s poll tick.
    processing_card.html reads oob_counts (truthy here) and emits hx-swap-oob="true" on its
    outer #processing-card element so htmx replaces the initial dashboard-rendered card in
