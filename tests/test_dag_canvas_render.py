@@ -232,6 +232,18 @@ def test_render_phase34_gating_keys_seeded_in_place() -> None:
     assert "$store.pipeline.controllerBusy = 1" in html
 
 
+def test_discovery_node_has_no_rescan_anchor() -> None:
+    """REQ-38-3: the dead "Rescan Files" scroll anchor is removed from the Discovery node.
+
+    Scanning is initiated solely from the Trigger Scan card (POST /pipeline/scans); the
+    Discovery chip ends at its node_bar with no action element, so neither the "Rescan Files"
+    label nor the in-page scroll target href="#trigger-scan-heading" may appear in the canvas.
+    """
+    html = _render_canvas()
+    assert "Rescan Files" not in html
+    assert 'href="#trigger-scan-heading"' not in html
+
+
 # ---------------------------------------------------------------------------
 # gating — triggers, LOCKED predicates/copy, the <ol> fallback
 # ---------------------------------------------------------------------------
