@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 36 shipped — PR #123"
-last_updated: "2026-06-13T02:25:53.457Z"
+status: "Phase 37 shipped — PR #124"
+last_updated: "2026-06-13T19:39:13.027Z"
 last_activity: 2026-06-13
 progress:
   percent: 100
@@ -16,13 +16,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 36 — pipeline-queue-backend-migration-redis-to-postgres-saq
+**Current focus:** Phase 38 — pipeline-dag-pause-priority-ui-and-rescan-button-removal (needs /gsd-plan-phase 38 to break down)
 
 ## Current Position
 
-Phase: 36 — COMPLETE
-Plan: 1 of 4
-Status: Phase 36 shipped — PR #123
+Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — COMPLETE
+Plan: 4 of 4
+Status: Phase 37 shipped — PR #124
 Last activity: 2026-06-13
 
 Progress: [██████████] 100%
@@ -72,6 +72,15 @@ Progress: [██████████] 100%
 
 (Full milestone decision log archived in `.planning/milestones/v4.0-ROADMAP.md` Milestone Summary. Current-cycle decisions accumulate here.)
 
+- [Phase ?]: Phase 37-01: pipeline_stage_control is a standalone app table separate from SAQ-owned saq_jobs; priority SmallInteger with DB CHECK 0-100 keeps stages inside SAQ's 0-32767 dequeue window
+- [Phase ?]: Phase 37-01: STAGE_TO_FUNCTION/_FUNCTION_TO_STAGE/SENTINEL=9999999999 live in a DB-free constants module so the agent worker can import them without crossing the ORM import boundary
+- [Phase ?]: 37-02: apply_stage_control reads pipeline_stage_control via job.queue.pool (psycopg3), never SQLAlchemy, keeping the agent import boundary intact (T-37-04)
+- [Phase ?]: 37-02: 5s TTL cache (single monotonic window) collapses bulk-enqueue control reads; resume keeps AND scheduled=:SENTINEL guard so retry backoffs are never clobbered
+- [Phase 37]: 37-03: assert dequeue ORDER + saq_jobs.priority COLUMN, never the deserialized Job.priority (a raw column UPDATE does not rewrite the serialized job blob)
+- [Phase 37]: 37-03: shared tests/integration/conftest.py stage_env fixture (real build_pipeline_queue queue + SQLAlchemy session on the same DB + seeded pipeline_stage_control) proves the helpers on the live saq_jobs dequeue/count/row-lock contract
+- [Phase ?]: 37-04: control endpoints return {stage, priority, paused} from the PipelineStageControl row (durable intent), never a serialized job's priority (Plan-03 column-vs-blob finding)
+- [Phase ?]: 37-04: control-row ORM mutation + service-helper saq_jobs UPDATE land in one session.commit(); unknown stage -> 422 via allowlist guard; priority delta clamped [0,100]; no app-layer auth (reverse-proxy internal-realm)
+
 ### Pending Todos
 
 None.
@@ -105,9 +114,13 @@ None.
 | Phase 34 P02 | ~10 min | 3 tasks | 4 files |
 | Phase 34 P03 | ~8 min | 2 tasks | 4 files |
 | Phase 34 P04 | ~18 min | 3 tasks | 4 files |
+| Phase 37 P01 | 3min | 3 tasks | 6 files |
+| Phase 37 P02 | 12min | 3 tasks | 6 files |
+| Phase 37 P03 | ~20min | 2 tasks | 6 files |
+| Phase 37 P04 | ~6min | 3 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-06-11T23:04:59.107Z
-Stopped at: Phase 35 UI-SPEC approved
-Resume file: .planning/milestones/v4.0-phases/35-pipeline-determinism-idempotency-per-job-type-observability/35-UI-SPEC.md
+Last session: 2026-06-13T17:32:27.129Z
+Stopped at: Completed 37-01-PLAN.md
+Resume file: None

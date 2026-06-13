@@ -8,9 +8,10 @@ site: swapping ``RedisQueue`` for ``PostgresQueue`` happens here, not at N scatt
 What the factory guarantees on every returned queue:
 
 * it is a :class:`saq.queue.postgres.PostgresQueue` (raw libpq DSN broker);
-* both backend-agnostic ``before_enqueue`` hooks are registered — :func:`apply_project_job_defaults`
-  (Phase 27 job-policy defaults) and :func:`apply_deterministic_key` (Phase 35 anti-drift key
-  + enqueued counter). These hooks live on the base :class:`saq.Queue`, so they carry over to
+* all three backend-agnostic ``before_enqueue`` hooks are registered — :func:`apply_project_job_defaults`
+  (Phase 27 job-policy defaults), :func:`apply_deterministic_key` (Phase 35 anti-drift key
+  + enqueued counter), and :func:`apply_stage_control` (Phase 37 per-stage priority stamp +
+  pause park). These hooks live on the base :class:`saq.Queue`, so they carry over to
   the Postgres backend unchanged;
 * a dedicated ``cache_redis`` handle is attached. The counter hooks read the Redis client off
   ``getattr(job.queue, "cache_redis", None)`` (the ``before_enqueue`` callback only receives
@@ -31,6 +32,7 @@ import structlog
 
 from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from phaze.tasks._shared.stage_control import apply_stage_control
 
 
 logger = structlog.get_logger(__name__)
@@ -56,13 +58,20 @@ def build_pipeline_queue(
         max_size: psycopg3 pool maximum connections (default 4).
 
     Returns:
-        A :class:`PostgresQueue` with ``apply_project_job_defaults`` and
-        ``apply_deterministic_key`` registered as ``before_enqueue`` callbacks and a
-        ``cache_redis`` attribute set. No connection is opened at construction.
+        A :class:`PostgresQueue` with ``apply_project_job_defaults``,
+        ``apply_deterministic_key``, and ``apply_stage_control`` registered as
+        ``before_enqueue`` callbacks and a ``cache_redis`` attribute set. No connection is
+        opened at construction.
     """
     q = PostgresQueue.from_url(url, name=name, min_size=min_size, max_size=max_size)
     q.register_before_enqueue(apply_project_job_defaults)
     q.register_before_enqueue(apply_deterministic_key)
+    # Phase 37: stamp per-stage priority + park paused stage jobs. Registered THIRD, AFTER
+    # apply_deterministic_key, so job.function/job.key are final when the hook resolves the
+    # stage and reads the control table via this queue's psycopg3 pool (TTL-cached). All four
+    # construction sites inherit it through this single seam; the agent worker registers it
+    # too but never enqueues stage jobs, and the hook stays DB-layer-free (T-37-04).
+    q.register_before_enqueue(apply_stage_control)
     # Dedicated cache handle: the counter hooks read this off the queue object, never
     # ``queue.redis`` (the broker is Postgres now). ``from_url`` is lazy — no socket opens.
     # ``cache_redis`` is a dynamic attribute the counter hooks read via getattr; SAQ's
