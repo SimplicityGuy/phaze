@@ -232,6 +232,28 @@ async def test_build_dag_context_never_raises_on_counter_outage(session: AsyncSe
     assert ctx["dag"]["metadataDone"] == 0
 
 
+@pytest.mark.asyncio
+async def test_build_dag_context_degrades_to_default_stage_controls(session: AsyncSession) -> None:
+    """The per-stage pause/priority keys flow through as the Phase-37 defaults when the
+    control table is unreadable/empty (T-38-DEGRADE).
+
+    ``get_stage_controls`` mirrors the ``_safe_count`` / ``get_queue_activity`` discipline:
+    on ANY failure (a missing ``pipeline_stage_control`` table in the unit test DB, a DB
+    hiccup) it returns ``paused=False, priority=50`` for every stage and never raises into
+    the 5s poll. ``_build_dag_context`` coerces those defaults to ``int`` (``0`` / ``50``)
+    so the all-ints ``x-init`` invariant holds (Pitfall 3 / T-35-11).
+    """
+    app_state = SimpleNamespace()
+    from phaze.routers.pipeline import _build_dag_context
+
+    ctx = await _build_dag_context(app_state, session, _idle_activity())
+    dag = ctx["dag"]
+    assert dag["metadataPaused"] == 0
+    assert dag["metadataPriority"] == 50
+    assert isinstance(dag["metadataPaused"], int)
+    assert isinstance(dag["metadataPriority"], int)
+
+
 # ---------------------------------------------------------------------------
 # Task 2: HTTP render — OOB seeds on the poll + dashboard full-page never-500
 # ---------------------------------------------------------------------------
