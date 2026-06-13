@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 37 complete — Phase 38 next"
-last_updated: "2026-06-13T17:32:33.453Z"
-last_activity: 2026-06-13 -- Phase 37 complete (code-verified; homelab UAT deferred)
+status: "Phase 37 shipped — PR #124"
+last_updated: "2026-06-13T19:39:13.027Z"
+last_activity: 2026-06-13
 progress:
   percent: 100
 ---
@@ -22,8 +22,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — COMPLETE
 Plan: 4 of 4
-Status: Phase 37 complete (code-verified 21/21; 2 homelab UAT items deferred → 37-HUMAN-UAT.md). Next: Phase 38 (UI) — planning research + UI-SPEC already exist on this branch, needs plan breakdown.
-Last activity: 2026-06-13 -- Phase 37 complete
+Status: Phase 37 shipped — PR #124
+Last activity: 2026-06-13
 
 Progress: [██████████] 100%
 
