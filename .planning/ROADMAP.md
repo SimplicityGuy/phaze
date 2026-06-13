@@ -283,12 +283,12 @@ Plans:
 
 **Requirements**: Drain-style pause + live backlog reprioritization per agent stage; retry backoffs preserved; no double-pickup.
 **Depends on:** Phase 36 (Postgres queue backend)
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 37-01-PLAN.md — Schema foundation: PipelineStageControl model + migration 020 (seed 3 rows + CHECK 0-100) + STAGE_TO_FUNCTION/SENTINEL constants [Wave 1]
+- [x] 37-01-PLAN.md — Schema foundation: PipelineStageControl model + migration 020 (seed 3 rows + CHECK 0-100) + STAGE_TO_FUNCTION/SENTINEL constants [Wave 1]
 
 **Wave 2** *(blocked on Wave 1)*
 

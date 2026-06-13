@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 37 planned — ready to execute (Phase 36 shipped #123)"
-last_updated: "2026-06-13T02:25:53.457Z"
-last_activity: 2026-06-13 -- Phase 37 planning complete
+status: executing
+last_updated: "2026-06-13T16:53:20.447Z"
+last_activity: 2026-06-13
 progress:
-  percent: 100
+  percent: 0
 ---
 
 # Project State
@@ -16,16 +16,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 37 — per-stage-pause-and-priority-control-plane (planned, ready to execute)
+**Current focus:** Phase 37 — per-stage-pause-and-priority-control-plane-table-api-worker
 
 ## Current Position
 
-Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — PLANNED
-Plan: 0 of 4
-Status: Ready to execute (Phase 36 shipped — PR #123)
-Last activity: 2026-06-13 -- Phase 37 planning complete
+Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-06-13
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -72,6 +72,9 @@ Progress: [██████████] 100%
 
 (Full milestone decision log archived in `.planning/milestones/v4.0-ROADMAP.md` Milestone Summary. Current-cycle decisions accumulate here.)
 
+- [Phase ?]: Phase 37-01: pipeline_stage_control is a standalone app table separate from SAQ-owned saq_jobs; priority SmallInteger with DB CHECK 0-100 keeps stages inside SAQ's 0-32767 dequeue window
+- [Phase ?]: Phase 37-01: STAGE_TO_FUNCTION/_FUNCTION_TO_STAGE/SENTINEL=9999999999 live in a DB-free constants module so the agent worker can import them without crossing the ORM import boundary
+
 ### Pending Todos
 
 None.
@@ -105,9 +108,10 @@ None.
 | Phase 34 P02 | ~10 min | 3 tasks | 4 files |
 | Phase 34 P03 | ~8 min | 2 tasks | 4 files |
 | Phase 34 P04 | ~18 min | 3 tasks | 4 files |
+| Phase 37 P01 | 3min | 3 tasks | 6 files |
 
 ## Session Continuity
 
-Last session: 2026-06-11T23:04:59.107Z
-Stopped at: Phase 35 UI-SPEC approved
-Resume file: .planning/milestones/v4.0-phases/35-pipeline-determinism-idempotency-per-job-type-observability/35-UI-SPEC.md
+Last session: 2026-06-13T16:53:08.357Z
+Stopped at: Completed 37-01-PLAN.md
+Resume file: None
