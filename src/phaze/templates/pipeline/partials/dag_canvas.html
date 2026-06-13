@@ -128,7 +128,7 @@
    {{ stage }} (never user input) and binds ints into x-text (T-38-XSS). #}
 {% macro stage_controls(stage) %}
 <div id="stage-controls-{{ stage }}" class="mt-2 pt-2 border-t border-gray-100 dark:border-phaze-border" x-data="{ error: false }"
-     @htmx:after-request="if ($event.detail.successful) { const r = JSON.parse($event.detail.xhr.response); $store.pipeline.{{ stage }}Priority = r.priority; $store.pipeline.{{ stage }}Paused = r.paused ? 1 : 0; error = false; } else { error = true; }">
+     @htmx:after-request="if ($event.detail.successful) { try { const r = JSON.parse($event.detail.xhr.response); $store.pipeline.{{ stage }}Priority = r.priority; $store.pipeline.{{ stage }}Paused = r.paused ? 1 : 0; error = false; } catch (e) { error = true; } } else { error = true; }">
   <div class="flex items-center justify-between gap-2">
     {# Pause/Resume — TWO x-show-gated static-hx-post buttons (label + fill flip; not agentBusy-gated). #}
     <button type="button"

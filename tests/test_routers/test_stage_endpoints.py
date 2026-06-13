@@ -56,7 +56,7 @@ async def test_unknown_stage_returns_422(client: AsyncClient, session: AsyncSess
     """An unknown stage is rejected with 422 before any backlog filter is built (T-37-01)."""
     await _seed_stages(session)
 
-    response = await client.post("/pipeline/stages/bogus/priority", json={"delta": 5})
+    response = await client.post("/pipeline/stages/bogus/priority", data={"delta": 5})
     assert response.status_code == 422
     assert response.json()["detail"] == "unknown stage"
 
@@ -66,7 +66,7 @@ async def test_priority_clamps_high(client: AsyncClient, session: AsyncSession) 
     """A delta that would exceed 100 clamps the persisted priority to 100 (T-37-02)."""
     await _seed_stages(session)
 
-    response = await client.post("/pipeline/stages/analyze/priority", json={"delta": 100})
+    response = await client.post("/pipeline/stages/analyze/priority", data={"delta": 100})
     assert response.status_code == 200
     assert response.json() == {"stage": "analyze", "priority": 100, "paused": False}
 
@@ -80,7 +80,7 @@ async def test_priority_clamps_low(client: AsyncClient, session: AsyncSession) -
     """A delta that would drop below 0 clamps the persisted priority to 0 (T-37-02)."""
     await _seed_stages(session)
 
-    response = await client.post("/pipeline/stages/analyze/priority", json={"delta": -100})
+    response = await client.post("/pipeline/stages/analyze/priority", data={"delta": -100})
     assert response.status_code == 200
     assert response.json() == {"stage": "analyze", "priority": 0, "paused": False}
 
@@ -94,7 +94,7 @@ async def test_valid_delta_persists_new_priority(client: AsyncClient, session: A
     """A within-range delta returns and persists the new absolute priority."""
     await _seed_stages(session)
 
-    response = await client.post("/pipeline/stages/analyze/priority", json={"delta": -10})
+    response = await client.post("/pipeline/stages/analyze/priority", data={"delta": -10})
     assert response.status_code == 200
     assert response.json() == {"stage": "analyze", "priority": 40, "paused": False}
 
