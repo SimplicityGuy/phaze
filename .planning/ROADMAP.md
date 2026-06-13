@@ -283,7 +283,7 @@ Plans:
 
 **Requirements**: Drain-style pause + live backlog reprioritization per agent stage; retry backoffs preserved; no double-pickup.
 **Depends on:** Phase 36 (Postgres queue backend)
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 **Wave 1**
@@ -292,7 +292,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 37-02-PLAN.md — apply_stage_control before_enqueue hook (TTL-cached job.queue.pool read) + raw saq_jobs UPDATE service helpers + build_pipeline_queue wiring + import-boundary test [Wave 2]
+- [x] 37-02-PLAN.md — apply_stage_control before_enqueue hook (TTL-cached job.queue.pool read) + raw saq_jobs UPDATE service helpers + build_pipeline_queue wiring + import-boundary test [Wave 2]
 
 **Wave 3** *(blocked on Wave 2)*
 

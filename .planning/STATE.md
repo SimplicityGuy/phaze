@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
-last_updated: "2026-06-13T16:53:20.447Z"
+last_updated: "2026-06-13T17:04:59.745Z"
 last_activity: 2026-06-13
 progress:
   percent: 0
@@ -21,7 +21,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 ## Current Position
 
 Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-06-13
 
@@ -74,6 +74,8 @@ Progress: [░░░░░░░░░░] 0%
 
 - [Phase ?]: Phase 37-01: pipeline_stage_control is a standalone app table separate from SAQ-owned saq_jobs; priority SmallInteger with DB CHECK 0-100 keeps stages inside SAQ's 0-32767 dequeue window
 - [Phase ?]: Phase 37-01: STAGE_TO_FUNCTION/_FUNCTION_TO_STAGE/SENTINEL=9999999999 live in a DB-free constants module so the agent worker can import them without crossing the ORM import boundary
+- [Phase ?]: 37-02: apply_stage_control reads pipeline_stage_control via job.queue.pool (psycopg3), never SQLAlchemy, keeping the agent import boundary intact (T-37-04)
+- [Phase ?]: 37-02: 5s TTL cache (single monotonic window) collapses bulk-enqueue control reads; resume keeps AND scheduled=:SENTINEL guard so retry backoffs are never clobbered
 
 ### Pending Todos
 
@@ -109,9 +111,10 @@ None.
 | Phase 34 P03 | ~8 min | 2 tasks | 4 files |
 | Phase 34 P04 | ~18 min | 3 tasks | 4 files |
 | Phase 37 P01 | 3min | 3 tasks | 6 files |
+| Phase 37 P02 | 12min | 3 tasks | 6 files |
 
 ## Session Continuity
 
-Last session: 2026-06-13T16:53:08.357Z
+Last session: 2026-06-13T17:04:37.238Z
 Stopped at: Completed 37-01-PLAN.md
 Resume file: None
