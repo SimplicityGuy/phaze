@@ -111,6 +111,54 @@
 </div>
 {% endmacro %}
 
+{# ── Phase-38 per-stage operator controls (38-UI-SPEC §Component Inventory — LOCKED). Attached
+   to the 3 agent chips (metadata/analyze/fingerprint). Reads ONLY $store.pipeline.<stage>Paused /
+   <stage>Priority — NEVER nodes.<stage>.blocked / agentBusy, because pausing a BUSY stage is the
+   entire point (drain semantics). Pause/Resume are TWO x-show-gated buttons, each with a STATIC
+   hx-post (RESEARCH A4 — keeps each endpoint statically testable, sidesteps the bound-:hx-post
+   timing question). Update is AUTHORITATIVE-ONLY: the store is written solely from the server JSON
+   in @htmx:after-request (no optimistic mutation), so a racing 5s /pipeline/stats poll can never
+   revert a half-applied state (T-38-OOB). The priority delta is a FIXED ±10 sent via hx-vals; the
+   authoritative [0,100] clamp + DB CHECK live in the Phase-37 endpoint — the ▲/▼ :disabled bounds
+   are a UX mirror, not the security guard (T-38-DELTA). ▲ Higher DECREMENTS the raw number (lower =
+   runs sooner); ▼ Lower INCREMENTS it. The macro interpolates only the hardcoded allowlist value
+   {{ stage }} (never user input) and binds ints into x-text (T-38-XSS). #}
+{% macro stage_controls(stage) %}
+<div id="stage-controls-{{ stage }}" class="mt-2 pt-2 border-t border-gray-100 dark:border-phaze-border" x-data="{ error: false }"
+     @htmx:after-request="if ($event.detail.successful) { const r = JSON.parse($event.detail.xhr.response); $store.pipeline.{{ stage }}Priority = r.priority; $store.pipeline.{{ stage }}Paused = r.paused ? 1 : 0; error = false; } else { error = true; }">
+  <div class="flex items-center justify-between gap-2">
+    {# Pause/Resume — TWO x-show-gated static-hx-post buttons (label + fill flip; not agentBusy-gated). #}
+    <button type="button"
+            x-show="!$store.pipeline.{{ stage }}Paused"
+            hx-post="/pipeline/stages/{{ stage }}/pause" hx-swap="none" hx-disabled-elt="this"
+            :aria-label="($store.pipeline.{{ stage }}Paused ? 'Resume' : 'Pause') + ' {{ stage }} stage'"
+            class="px-2 py-1 text-xs font-semibold rounded-md text-white bg-amber-600 dark:bg-amber-700 hover:bg-amber-700 dark:hover:bg-amber-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
+    <button type="button"
+            x-show="$store.pipeline.{{ stage }}Paused"
+            hx-post="/pipeline/stages/{{ stage }}/resume" hx-swap="none" hx-disabled-elt="this"
+            :aria-label="($store.pipeline.{{ stage }}Paused ? 'Resume' : 'Pause') + ' {{ stage }} stage'"
+            class="px-2 py-1 text-xs font-semibold rounded-md text-white bg-green-600 dark:bg-green-700 hover:bg-green-700 dark:hover:bg-green-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
+    {# Priority stepper — ▲ Higher DECREMENTS (runs sooner), ▼ Lower INCREMENTS. Neutral outline buttons. #}
+    <span class="inline-flex items-center gap-1">
+      <button type="button"
+              hx-post="/pipeline/stages/{{ stage }}/priority" hx-vals='{"delta": -10}' hx-swap="none" hx-disabled-elt="this"
+              :disabled="$store.pipeline.{{ stage }}Priority <= 0"
+              aria-label="Higher priority for {{ stage }} (runs sooner)"
+              class="px-1 py-1 min-h-[28px] text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲ Higher</button>
+      <span class="text-sm font-semibold tabular-nums w-7 text-center"
+            x-text="$store.pipeline.{{ stage }}Priority" :aria-label="'priority ' + $store.pipeline.{{ stage }}Priority"></span>
+      <button type="button"
+              hx-post="/pipeline/stages/{{ stage }}/priority" hx-vals='{"delta": 10}' hx-swap="none" hx-disabled-elt="this"
+              :disabled="$store.pipeline.{{ stage }}Priority >= 100"
+              aria-label="Lower priority for {{ stage }} (runs later)"
+              class="px-1 py-1 min-h-[28px] text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼ Lower</button>
+    </span>
+  </div>
+  <p class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">lower number runs first</p>
+  <span x-show="error" class="block mt-1 text-sm text-rose-600 dark:text-rose-400">Couldn't update. Retry.</span>
+</div>
+{% endmacro %}
+
 {# ── Parent scope: ONE `nodes` getter computes every node's state from the store so the
    SVG chips and the <ol> text-equivalent stay in lockstep. mk() folds done/total/active +
    the gate into { state, pill, pct, reason, label }. LOCKED copy lives here verbatim. ── #}
@@ -214,6 +262,7 @@
         {{ node_count('metadata') }}
         {{ node_bar('metadata', 'bg-sky-600 dark:bg-sky-400') }}
         {{ enqueue_button('metadata', '/pipeline/extract-metadata', 'extract-metadata-response', 'Extract metadata', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+        {{ stage_controls('metadata') }}
       </div>
 
       {# 3 · Analyze (amber, full) — canonical focal node → POST /pipeline/analyze #}
@@ -229,6 +278,7 @@
         {{ node_count('analyze') }}
         {{ node_bar('analyze', 'bg-amber-600 dark:bg-amber-400') }}
         {{ enqueue_button('analyze', '/pipeline/analyze', 'analyze-response', 'Run analysis', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+        {{ stage_controls('analyze') }}
       </div>
 
       {# 4 · Fingerprint (teal, compact) → POST /pipeline/fingerprint — gates on discovered #}
@@ -244,6 +294,7 @@
         {{ node_count('fingerprint') }}
         {{ node_bar('fingerprint', 'bg-teal-600 dark:bg-teal-400') }}
         {{ enqueue_button('fingerprint', '/pipeline/fingerprint', 'fingerprint-response', 'Fingerprint files', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+        {{ stage_controls('fingerprint') }}
       </div>
 
       {# 5 · Scan / Search (rose, compact, tracklist head) — em-dash denominator, NO determinate
