@@ -57,14 +57,18 @@ def _validate_stage(stage: str) -> None:
         raise HTTPException(status_code=422, detail="unknown stage")
 
 
-async def _load_control_row(session: AsyncSession, stage: str) -> PipelineStageControl:
+async def _load_control_row(session: AsyncSession, stage: str, *, lock: bool = False) -> PipelineStageControl:
     """Return the (already-validated) stage's control row, creating it at defaults if absent.
 
     Migration 020 seeds the three rows, so in production ``session.get`` always returns a row.
     The defensive create keeps a fresh / partially-migrated DB from 500ing on the first control
     action and gives a non-null return for the type checker.
+
+    When ``lock`` is true the row is fetched ``FOR UPDATE`` so a read-modify-write (the priority
+    delta) serializes against a concurrent control action on the SAME stage — without it, two
+    in-flight ``+delta`` requests both read the old value and one delta is silently lost (WR-02).
     """
-    row = await session.get(PipelineStageControl, stage)
+    row = await session.get(PipelineStageControl, stage, with_for_update=True) if lock else await session.get(PipelineStageControl, stage)
     if row is None:
         row = PipelineStageControl(stage=stage, paused=False, priority=50)
         session.add(row)
@@ -84,7 +88,7 @@ async def set_priority(
 ) -> dict[str, Any]:
     """Apply a clamped priority delta to ``stage`` and reorder its queued backlog."""
     _validate_stage(stage)
-    row = await _load_control_row(session, stage)
+    row = await _load_control_row(session, stage, lock=True)
     new_priority = max(_PRIORITY_MIN, min(_PRIORITY_MAX, row.priority + body.delta))
     row.priority = new_priority
     await set_stage_priority(session, stage, new_priority)

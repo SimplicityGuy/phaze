@@ -98,6 +98,13 @@ async def _read_stage_control(queue: Any, stage: str) -> tuple[bool, int]:
             {"stage": stage},
         )
         row = await cursor.fetchone()
+    if row is None:
+        # No control row for this stage (pre-migration 020 / manually-deleted row). Best-effort:
+        # enqueue unpaused at the mid-range default rather than subscripting None into the caller's
+        # broad ``except`` as a misleading "read failed". NOT cached, so a freshly-seeded row is
+        # picked up on the next enqueue instead of after the TTL window (WR-01).
+        logger.warning("stage-control row missing; enqueuing unpaused/default", stage=stage)
+        return (False, 50)
     result = (bool(row[0]), int(row[1]))
     if now >= _cache_expires_at:
         # Window elapsed: open a fresh one and drop any stale entries from the prior window.
@@ -134,4 +141,4 @@ async def apply_stage_control(job: Job) -> None:
         job.scheduled = SENTINEL
 
 
-__all__ = ["SENTINEL", "STAGE_TO_FUNCTION", "_FUNCTION_TO_STAGE", "apply_stage_control"]
+__all__ = ["SENTINEL", "STAGE_TO_FUNCTION", "apply_stage_control"]
