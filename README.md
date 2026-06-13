@@ -115,6 +115,11 @@ The pipeline dashboard renders this topology as a single live **SVG DAG canvas**
 stage is a node with a per-job-type progress bar, a live count, and a trigger button gated
 by its upstream dependencies (and by agent/controller availability). DB-truth stage counts
 drive every rendered `done` value; the canvas is seeded once and kept live by a 5s poll.
+The three agent nodes (**Metadata**, **Analyze**, **Fingerprint**) additionally carry a
+**Pause/Resume toggle** and a **priority stepper** (▲ Higher / ▼ Lower, "lower number runs
+first") wired to the per-stage control endpoints below; their live pause/priority state
+rides the same 5s poll. The Discovery node is display-only — scanning is initiated solely
+from the Trigger Scan card (the redundant "Rescan Files" anchor was removed in Phase 38).
 
 ### 📬 Task Queue Routing
 
@@ -145,7 +150,9 @@ Each endpoint mutates the control row and the live backlog in a **single transac
 
 **Adopted defaults (locked):** control-state cache TTL = **5s**; **pause persists across reboots** and re-applies to re-enqueued jobs (the hook stamps the parked state onto restarts — Phase 32 resilience); **resume un-parks only** (it never restores a pre-pause priority); priority is a **delta** op with a default UI step of **±10**.
 
-An unknown stage returns **422** (validated against the metadata/analyze/fingerprint allowlist before any backlog filter is built). These endpoints add **no app-layer auth** — like the rest of `/pipeline/*` and the `/saq` UI, they sit behind the reverse proxy's internal-realm auth on the private LAN. The per-stage pause/priority **UI** (DAG-node toggle + stepper) lands in Phase 38.
+An unknown stage returns **422** (validated against the metadata/analyze/fingerprint allowlist before any backlog filter is built). These endpoints add **no app-layer auth** — like the rest of `/pipeline/*` and the `/saq` UI, they sit behind the reverse proxy's internal-realm auth on the private LAN.
+
+**DAG controls (Phase 38):** each of the three agent nodes carries a Pause/Resume toggle (amber "Pause" ↔ green "Resume") and a ▲ Higher / ▼ Lower priority stepper (the UI steps by ±10; ▲ decrements the number — lower runs sooner). The controls POST to the endpoints above with `hx-swap="none"`; an Alpine `@htmx:after-request` handler writes the authoritative `{priority, paused}` from the JSON response into `$store.pipeline`, and the 5s `/pipeline/stats` poll re-pushes the live per-stage state so every refresh reconciles. The control read is degrade-safe: if `pipeline_stage_control` is unreadable, the dashboard renders the defaults (running, priority 50) and the poll still returns 200 — it never 500s. The former duplicate "Rescan Files" anchor on the Discovery node was removed (scanning lives in the Trigger Scan card).
 
 ## 🌟 Key Features
 

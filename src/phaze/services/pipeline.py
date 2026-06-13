@@ -15,6 +15,7 @@ from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
+from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
@@ -268,6 +269,46 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
             ),
         },
     }
+
+
+# Per-stage pause/priority defaults (Phase 38, REQ-38-4). Mirror the Phase 37 control-table
+# semantics for the three agent stages: unpaused, mid-range priority 50. Returned verbatim
+# whenever the control table is unreadable/absent so the 5s /pipeline/stats poll degrades to a
+# sane default instead of 500ing (T-38-DEGRADE — identical discipline to _safe_count above).
+_DEFAULT_CONTROLS: dict[str, dict[str, int | bool]] = {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
+
+
+async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int | bool]]:
+    """Read the 3 ``pipeline_stage_control`` rows, degrading to defaults so the 5s poll never 500s.
+
+    Returns ``{metadata, analyze, fingerprint}`` each mapping to ``{"paused": bool, "priority": int}``.
+    On the happy path each present stage row overlays its ``paused`` / ``priority`` onto a fresh copy
+    of :data:`_DEFAULT_CONTROLS`; unknown ``stage`` values are ignored (guarded by ``if r.stage in out``).
+
+    Failure isolation mirrors :func:`_safe_count` / :func:`get_queue_activity`: the
+    ``pipeline_stage_control`` table may be absent (pre-migration env) or a DB hiccup may occur, and
+    EITHER must degrade to the three-stage defaults rather than raise into the hot 5s poll path
+    (T-38-DEGRADE). On any exception this logs a warning, rolls back the aborted transaction (guarded,
+    so a failed rollback cannot mask the original error or poison later COUNTs), and returns defaults.
+
+    The caller (:func:`phaze.routers.pipeline._build_dag_context`) coerces ``paused`` to ``int`` ``0``/``1``
+    so the canvas's "every dag value is a server-computed int safe to interpolate into ``x-init``"
+    invariant holds (Pitfall 3 / T-35-11) — never emit a Python ``bool`` through to the template.
+    """
+    try:
+        rows = (await session.execute(select(PipelineStageControl))).scalars().all()
+        out: dict[str, dict[str, int | bool]] = {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
+        for r in rows:
+            if r.stage in out:
+                out[r.stage] = {"paused": r.paused, "priority": r.priority}
+        return out
+    except Exception:
+        logger.warning("stage_controls_degraded", exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("stage_controls_rollback_failed", exc_info=True)
+        return {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
 
 
 async def get_files_by_state(session: AsyncSession, state: FileState) -> list[FileRecord]:

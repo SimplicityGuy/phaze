@@ -28,13 +28,12 @@ Security (threat model):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException
 
 from phaze.database import get_session
 from phaze.models import PipelineStageControl
-from phaze.schemas.pipeline_stages import StagePriorityDelta  # noqa: TC001 (FastAPI body resolved at runtime)
 from phaze.services.stage_control import pause_stage, resume_stage, set_stage_priority
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -83,13 +82,18 @@ def _response(row: PipelineStageControl) -> dict[str, Any]:
 @router.post("/pipeline/stages/{stage}/priority")
 async def set_priority(
     stage: str,
-    body: StagePriorityDelta,
+    delta: Annotated[int, Form()],
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Apply a clamped priority delta to ``stage`` and reorder its queued backlog."""
+    """Apply a clamped priority delta to ``stage`` and reorder its queued backlog.
+
+    ``delta`` is a form field (``application/x-www-form-urlencoded``) to match HTMX's
+    default body encoding and the project's other HTMX endpoints (``duplicates``,
+    ``pipeline_scans``) — the DAG priority steppers post it via ``hx-vals`` (#38 CR-01).
+    """
     _validate_stage(stage)
     row = await _load_control_row(session, stage, lock=True)
-    new_priority = max(_PRIORITY_MIN, min(_PRIORITY_MAX, row.priority + body.delta))
+    new_priority = max(_PRIORITY_MIN, min(_PRIORITY_MAX, row.priority + delta))
     row.priority = new_priority
     await set_stage_priority(session, stage, new_priority)
     await session.commit()

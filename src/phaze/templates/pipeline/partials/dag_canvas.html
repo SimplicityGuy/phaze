@@ -23,21 +23,24 @@
 {# ── Single source-of-truth layout map (anchors) — col0 Discovery · col1 {Metadata,
    Analyze, Fingerprint, Scan/Search} · col2 {Proposals, Scrape} · col3 {Execute, Match}. #}
 {# h values mirror the ACTUAL rendered chip heights (nodes are content-height; `h` only feeds
-   the edge-anchor midpoint `y + h/2`). The four col-1 chips all carry a trigger button and
-   render ~154px tall — the earlier h:76 "compact" sizing assumed button-less chips and let
-   metadata/fingerprint paint over the chip below them. y-positions stack each column with a
-   ~28px gutter so no chip overlaps regardless of idle/disabled/active state (button is always
-   one line). #}
+   the edge-anchor midpoint `y + h/2`). Phase-38 RECOMPUTE: the 3 agent chips (metadata/analyze/
+   fingerprint) now carry BOTH the enqueue button AND the per-stage control row (divider + pause/
+   resume + priority stepper + hint), growing them from ~154px to ~250px. The col-1 gutter is
+   therefore widened to 276px (≥ the ~250px agent-chip height + 16px) so a taller chip cannot paint
+   over the chip below it (38-UI-SPEC Layout Contract; guarded by test_topology_column_one_chips_
+   do_not_overlap). scan_search keeps h:126 (no controls). col-0 discovery + col-2/col-3 nodes
+   (proposals/scrape/execute/match) are re-balanced to their incoming-edge midpoints so the curved
+   edges still land cleanly on the new col-1 anchors. #}
 {% set NODE_LAYOUT = {
-  "discovery":   {"x": 24,  "y": 296, "w": 180, "h": 130},
-  "metadata":    {"x": 320, "y": 24,  "w": 180, "h": 154},
-  "analyze":     {"x": 320, "y": 206, "w": 180, "h": 154},
-  "fingerprint": {"x": 320, "y": 388, "w": 180, "h": 154},
-  "scan_search": {"x": 320, "y": 570, "w": 180, "h": 126},
-  "proposals":   {"x": 624, "y": 105, "w": 180, "h": 174},
-  "scrape":      {"x": 624, "y": 576, "w": 180, "h": 114},
-  "execute":     {"x": 928, "y": 127, "w": 180, "h": 130},
-  "match":       {"x": 928, "y": 576, "w": 180, "h": 114}
+  "discovery":   {"x": 24,  "y": 467, "w": 180, "h": 130},
+  "metadata":    {"x": 320, "y": 24,  "w": 180, "h": 250},
+  "analyze":     {"x": 320, "y": 300, "w": 180, "h": 250},
+  "fingerprint": {"x": 320, "y": 576, "w": 180, "h": 250},
+  "scan_search": {"x": 320, "y": 852, "w": 180, "h": 126},
+  "proposals":   {"x": 624, "y": 200, "w": 180, "h": 174},
+  "scrape":      {"x": 624, "y": 858, "w": 180, "h": 114},
+  "execute":     {"x": 928, "y": 222, "w": 180, "h": 130},
+  "match":       {"x": 928, "y": 858, "w": 180, "h": 114}
 } %}
 
 {# Authoritative edge list (35-STAGE-DEPENDENCIES.md). Metadata→Proposals and
@@ -111,6 +114,54 @@
 </div>
 {% endmacro %}
 
+{# ── Phase-38 per-stage operator controls (38-UI-SPEC §Component Inventory — LOCKED). Attached
+   to the 3 agent chips (metadata/analyze/fingerprint). Reads ONLY $store.pipeline.<stage>Paused /
+   <stage>Priority — NEVER nodes.<stage>.blocked / agentBusy, because pausing a BUSY stage is the
+   entire point (drain semantics). Pause/Resume are TWO x-show-gated buttons, each with a STATIC
+   hx-post (RESEARCH A4 — keeps each endpoint statically testable, sidesteps the bound-:hx-post
+   timing question). Update is AUTHORITATIVE-ONLY: the store is written solely from the server JSON
+   in @htmx:after-request (no optimistic mutation), so a racing 5s /pipeline/stats poll can never
+   revert a half-applied state (T-38-OOB). The priority delta is a FIXED ±10 sent via hx-vals; the
+   authoritative [0,100] clamp + DB CHECK live in the Phase-37 endpoint — the ▲/▼ :disabled bounds
+   are a UX mirror, not the security guard (T-38-DELTA). ▲ Higher DECREMENTS the raw number (lower =
+   runs sooner); ▼ Lower INCREMENTS it. The macro interpolates only the hardcoded allowlist value
+   {{ stage }} (never user input) and binds ints into x-text (T-38-XSS). #}
+{% macro stage_controls(stage) %}
+<div id="stage-controls-{{ stage }}" class="mt-2 pt-2 border-t border-gray-100 dark:border-phaze-border" x-data="{ error: false }"
+     @htmx:after-request="if ($event.detail.successful) { try { const r = JSON.parse($event.detail.xhr.response); $store.pipeline.{{ stage }}Priority = r.priority; $store.pipeline.{{ stage }}Paused = r.paused ? 1 : 0; error = false; } catch (e) { error = true; } } else { error = true; }">
+  <div class="flex items-center justify-between gap-2">
+    {# Pause/Resume — TWO x-show-gated static-hx-post buttons (label + fill flip; not agentBusy-gated). #}
+    <button type="button"
+            x-show="!$store.pipeline.{{ stage }}Paused"
+            hx-post="/pipeline/stages/{{ stage }}/pause" hx-swap="none" hx-disabled-elt="this"
+            :aria-label="($store.pipeline.{{ stage }}Paused ? 'Resume' : 'Pause') + ' {{ stage }} stage'"
+            class="px-2 py-1 text-xs font-semibold rounded-md text-white bg-amber-600 dark:bg-amber-700 hover:bg-amber-700 dark:hover:bg-amber-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
+    <button type="button"
+            x-show="$store.pipeline.{{ stage }}Paused"
+            hx-post="/pipeline/stages/{{ stage }}/resume" hx-swap="none" hx-disabled-elt="this"
+            :aria-label="($store.pipeline.{{ stage }}Paused ? 'Resume' : 'Pause') + ' {{ stage }} stage'"
+            class="px-2 py-1 text-xs font-semibold rounded-md text-white bg-green-600 dark:bg-green-700 hover:bg-green-700 dark:hover:bg-green-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
+    {# Priority stepper — ▲ Higher DECREMENTS (runs sooner), ▼ Lower INCREMENTS. Neutral outline buttons. #}
+    <span class="inline-flex items-center gap-1">
+      <button type="button"
+              hx-post="/pipeline/stages/{{ stage }}/priority" hx-vals='{"delta": -10}' hx-swap="none" hx-disabled-elt="this"
+              :disabled="$store.pipeline.{{ stage }}Priority <= 0"
+              aria-label="Higher priority for {{ stage }} (runs sooner)"
+              class="px-1 py-1 min-h-[28px] text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲ Higher</button>
+      <span class="text-sm font-semibold tabular-nums w-7 text-center"
+            x-text="$store.pipeline.{{ stage }}Priority" :aria-label="'priority ' + $store.pipeline.{{ stage }}Priority"></span>
+      <button type="button"
+              hx-post="/pipeline/stages/{{ stage }}/priority" hx-vals='{"delta": 10}' hx-swap="none" hx-disabled-elt="this"
+              :disabled="$store.pipeline.{{ stage }}Priority >= 100"
+              aria-label="Lower priority for {{ stage }} (runs later)"
+              class="px-1 py-1 min-h-[28px] text-xs rounded border border-gray-300 dark:border-phaze-border disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼ Lower</button>
+    </span>
+  </div>
+  <p class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">lower number runs first</p>
+  <span x-show="error" class="block mt-1 text-sm text-rose-600 dark:text-rose-400">Couldn't update. Retry.</span>
+</div>
+{% endmacro %}
+
 {# ── Parent scope: ONE `nodes` getter computes every node's state from the store so the
    SVG chips and the <ol> text-equivalent stay in lockstep. mk() folds done/total/active +
    the gate into { state, pill, pct, reason, label }. LOCKED copy lives here verbatim. ── #}
@@ -130,7 +181,7 @@
            return { done, total, active, blocked, complete, state, pill, pct, reason, label };
          };
          return {
-           discovery: mk(s.discovered, s.discovered, { cta: 'Rescan Files' }),
+           discovery: mk(s.discovered, s.discovered),
            metadata: mk(s.metadataDone, s.metadataTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Extract Metadata', running: 'Extracting…' }),
            analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
            // Fingerprint — hard upstream is Discovery (reads the file on disk), so gate on
@@ -149,7 +200,7 @@
     <p class="text-xs text-gray-500 dark:text-gray-400 hidden sm:block lg:hidden">Scroll horizontally to see the full graph →</p>
   </div>
 
-  {# Empty-state hint (LOCKED copy) — Discovery's Rescan stays enabled regardless. #}
+  {# Empty-state hint (LOCKED copy) — points the operator at the Trigger Scan card. #}
   <div x-show="$store.pipeline.discovered === 0" class="rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4">
     <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">No files discovered</p>
     <p class="text-sm text-gray-500 dark:text-gray-400">Trigger a scan to populate the pipeline.</p>
@@ -174,8 +225,8 @@
      sm (the stacked <ol> takes over); horizontally scrollable sm–lg. #}
   <div role="group" aria-label="Pipeline stage graph"
        class="hidden sm:block overflow-x-auto rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-bg p-4">
-    <div class="relative" style="width: 1132px; height: 720px;">
-      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1132" height="720" viewBox="0 0 1132 720" fill="none">
+    <div class="relative" style="width: 1132px; height: 1000px;">
+      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1132" height="1000" viewBox="0 0 1132 1000" fill="none">
         {% for edge in EDGES %}
           {% set src = NODE_LAYOUT[edge[0]] %}
           {% set tgt = NODE_LAYOUT[edge[1]] %}
@@ -188,7 +239,7 @@
 
       {# ════════════ Node chips. DOM order = topological order (Tab traverses the pipeline). ════════════ #}
 
-      {# 1 · Discovery (cyan, full) — root; Rescan links to the existing Trigger Scan card. #}
+      {# 1 · Discovery (cyan, full) — root; display-only (scanning lives in the Trigger Scan card). #}
       {% set n = NODE_LAYOUT.discovery %}
       <div id="node-discovery" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;">
@@ -199,8 +250,6 @@
         </div>
         {{ node_count('discovery') }}
         {{ node_bar('discovery', 'bg-cyan-600 dark:bg-cyan-400') }}
-        <a href="#trigger-scan-heading" aria-label="Rescan files (jump to the Trigger Scan card)"
-           class="block w-full mt-1 text-center px-3 py-1.5 text-sm font-semibold rounded-md bg-cyan-600 dark:bg-cyan-700 text-white hover:bg-cyan-700 dark:hover:bg-cyan-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Rescan Files</a>
       </div>
 
       {# 2 · Extract Metadata (sky, compact) → POST /pipeline/extract-metadata #}
@@ -216,6 +265,7 @@
         {{ node_count('metadata') }}
         {{ node_bar('metadata', 'bg-sky-600 dark:bg-sky-400') }}
         {{ enqueue_button('metadata', '/pipeline/extract-metadata', 'extract-metadata-response', 'Extract metadata', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+        {{ stage_controls('metadata') }}
       </div>
 
       {# 3 · Analyze (amber, full) — canonical focal node → POST /pipeline/analyze #}
@@ -231,6 +281,7 @@
         {{ node_count('analyze') }}
         {{ node_bar('analyze', 'bg-amber-600 dark:bg-amber-400') }}
         {{ enqueue_button('analyze', '/pipeline/analyze', 'analyze-response', 'Run analysis', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+        {{ stage_controls('analyze') }}
       </div>
 
       {# 4 · Fingerprint (teal, compact) → POST /pipeline/fingerprint — gates on discovered #}
@@ -246,6 +297,7 @@
         {{ node_count('fingerprint') }}
         {{ node_bar('fingerprint', 'bg-teal-600 dark:bg-teal-400') }}
         {{ enqueue_button('fingerprint', '/pipeline/fingerprint', 'fingerprint-response', 'Fingerprint files', 'bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600') }}
+        {{ stage_controls('fingerprint') }}
       </div>
 
       {# 5 · Scan / Search (rose, compact, tracklist head) — em-dash denominator, NO determinate
@@ -355,6 +407,11 @@
       {% if row[2] %}<span> / —</span>{% else %}<span> / </span><span class="tabular-nums" x-text="nodes.{{ row[0] }}.total"></span>{% endif %}
       — <span x-text="nodes.{{ row[0] }}.pill"></span>
       <template x-if="nodes.{{ row[0] }}.blocked"><span> — <span x-text="nodes.{{ row[0] }}.reason"></span></span></template>
+      {# Phase-38: surface the per-stage pause/priority in the text equivalent (agent stages only). #}
+      {% if row[0] in ['metadata', 'analyze', 'fingerprint'] %}
+      <template x-if="$store.pipeline.{{ row[0] }}Paused"><span> — paused</span></template>
+      <span x-text="' — priority ' + $store.pipeline.{{ row[0] }}Priority"></span>
+      {% endif %}
     </li>
     {% endfor %}
   </ol>

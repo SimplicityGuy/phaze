@@ -29,6 +29,7 @@ from phaze.services.pipeline import (
     get_files_by_state,
     get_pipeline_stats,
     get_queue_activity,
+    get_stage_controls,
     get_stage_progress,
     queue_progress_percent,
 )
@@ -147,6 +148,17 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
         "executedDone": done("execute"),
         "executedTotal": total("execute"),
     }
+
+    # Phase 38 (38-03 / REQ-38-4): overlay the live per-stage pause/priority intent so the
+    # DAG controls reflect authoritative server state across every 5s poll. get_stage_controls
+    # owns the never-500 degrade (returns paused=False/priority=50 defaults on any failure), so
+    # NO try/except is added here. paused is coerced to int 0/1 — never a Python bool — to keep
+    # every dag value a server-computed int safe to interpolate into x-init (Pitfall 3 / T-35-11).
+    controls = await get_stage_controls(session)
+    for stage_name in ("metadata", "analyze", "fingerprint"):
+        dag[f"{stage_name}Paused"] = int(controls[stage_name]["paused"])
+        dag[f"{stage_name}Priority"] = int(controls[stage_name]["priority"])
+
     return {"dag": dag}
 
 

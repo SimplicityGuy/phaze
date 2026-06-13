@@ -113,7 +113,13 @@
                 matchDone: 0, matchTotal: 0,
                 proposalsDone: 0, proposalsTotal: 0,
                 approved: 0,
-                executedDone: 0, executedTotal: 0
+                executedDone: 0, executedTotal: 0,
+                // Phase 38 (38-03): per-stage pause/priority live state (REQ-38-4). Seeded
+                // to int 0 so no control binding reads `undefined` before the first poll;
+                // the dag.items() OOB loop in stats_bar.html pushes the real values each 5s.
+                metadataPaused: 0, metadataPriority: 0,
+                analyzePaused: 0, analyzePriority: 0,
+                fingerprintPaused: 0, fingerprintPriority: 0
             });
         });
     </script>

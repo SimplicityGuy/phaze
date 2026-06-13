@@ -51,6 +51,14 @@ _NEW_STORE_KEYS = (
     "approved",
     "executedDone",
     "executedTotal",
+    # Phase 38 (38-03): per-stage pause/priority live-state keys (REQ-38-4). One edit drives
+    # the store-literal seed test, the int-key context test, AND the OOB-seed test for all 6.
+    "metadataPaused",
+    "metadataPriority",
+    "analyzePaused",
+    "analyzePriority",
+    "fingerprintPaused",
+    "fingerprintPriority",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.
@@ -230,6 +238,71 @@ async def test_build_dag_context_never_raises_on_counter_outage(session: AsyncSe
     ctx = await _build_dag_context(app_state, session, _idle_activity())
     # Empty DB + dead counters → all-zero, but the function returned cleanly (no 500).
     assert ctx["dag"]["metadataDone"] == 0
+
+
+@pytest.mark.asyncio
+async def test_build_dag_context_degrades_to_default_stage_controls(session: AsyncSession) -> None:
+    """The per-stage pause/priority keys flow through as the Phase-37 defaults when the
+    control table is unreadable/empty (T-38-DEGRADE).
+
+    ``get_stage_controls`` mirrors the ``_safe_count`` / ``get_queue_activity`` discipline:
+    on ANY failure (a missing ``pipeline_stage_control`` table in the unit test DB, a DB
+    hiccup) it returns ``paused=False, priority=50`` for every stage and never raises into
+    the 5s poll. ``_build_dag_context`` coerces those defaults to ``int`` (``0`` / ``50``)
+    so the all-ints ``x-init`` invariant holds (Pitfall 3 / T-35-11).
+    """
+    app_state = SimpleNamespace()
+    from phaze.routers.pipeline import _build_dag_context
+
+    ctx = await _build_dag_context(app_state, session, _idle_activity())
+    dag = ctx["dag"]
+    assert dag["metadataPaused"] == 0
+    assert dag["metadataPriority"] == 50
+    assert isinstance(dag["metadataPaused"], int)
+    assert isinstance(dag["metadataPriority"], int)
+
+
+@pytest.mark.asyncio
+async def test_get_stage_controls_degrades_on_db_error() -> None:
+    """get_stage_controls returns the 3-stage defaults and never raises when the SELECT fails.
+
+    This proves the actual T-38-DEGRADE mitigation (the except branch: warn → guarded rollback
+    → defaults) against a session whose ``execute`` raises — a missing ``pipeline_stage_control``
+    table or a DB hiccup. The DB-backed ``_build_dag_context`` degrade test above only exercises
+    the empty-table happy path (zero rows → defaults), so this fake-session test is what actually
+    covers the never-500 rollback branch that keeps the 5s poll alive.
+    """
+    from phaze.services.pipeline import get_stage_controls
+
+    rolled_back = False
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "pipeline_stage_control" does not exist')
+
+        async def rollback(self) -> None:
+            nonlocal rolled_back
+            rolled_back = True
+
+    controls = await get_stage_controls(_ExplodingSession())  # type: ignore[arg-type]
+    assert rolled_back is True
+    assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
+
+
+@pytest.mark.asyncio
+async def test_get_stage_controls_overlays_present_rows(session: AsyncSession) -> None:
+    """A present control row overlays its paused/priority onto the defaults; absent stages keep
+    the defaults. Proves the happy-path overlay loop in get_stage_controls."""
+    from phaze.models.pipeline_stage_control import PipelineStageControl
+    from phaze.services.pipeline import get_stage_controls
+
+    session.add(PipelineStageControl(stage="analyze", paused=True, priority=20))
+    await session.flush()
+
+    controls = await get_stage_controls(session)
+    assert controls["analyze"] == {"paused": True, "priority": 20}
+    assert controls["metadata"] == {"paused": False, "priority": 50}
+    assert controls["fingerprint"] == {"paused": False, "priority": 50}
 
 
 # ---------------------------------------------------------------------------
