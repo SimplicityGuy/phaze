@@ -33,9 +33,15 @@ async def test_lifespan_creates_queue_on_startup() -> None:
 
     mock_queue = MagicMock()
     mock_queue.disconnect = AsyncMock()
+    # Phase 36: the lifespan opens the PostgresQueue broker pool (await connect()).
+    mock_queue.connect = AsyncMock()
+    # Phase 36 (WR-01): shutdown closes the factory-attached cache_redis (await aclose()).
+    mock_queue.cache_redis = AsyncMock()
 
     with (
-        patch("phaze.main.Queue") as mock_queue_cls,
+        # Phase 36: the lifespan builds the controller queue via build_pipeline_queue
+        # (PostgresQueue factory), no longer Queue.from_url.
+        patch("phaze.main.build_pipeline_queue") as mock_build,
         patch("phaze.main.engine") as mock_engine,
         # Phase 27 UAT Gap 2 / Gap 3: lifespan now also invokes run_migrations
         # and ensure_dev_agent. Patch them out so this test stays unit-level.
@@ -47,7 +53,7 @@ async def test_lifespan_creates_queue_on_startup() -> None:
         # controller-queue lifecycle, so disable the flag to skip the unrelated agent read.
         patch("phaze.main.settings.enable_saq_ui", False),
     ):
-        mock_queue_cls.from_url.return_value = mock_queue
+        mock_build.return_value = mock_queue
         mock_conn = AsyncMock()
         mock_engine.begin.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_engine.begin.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -62,10 +68,10 @@ async def test_lifespan_creates_queue_on_startup() -> None:
         app = FastAPI()
         # Invoke the lifespan directly so startup hooks actually run
         async with lifespan(app):
-            # Queue.from_url must have been called exactly once during startup,
-            # named "controller" (Phase 30).
-            mock_queue_cls.from_url.assert_called_once()
-            assert mock_queue_cls.from_url.call_args.kwargs.get("name") == "controller"
+            # build_pipeline_queue must have been called exactly once during startup,
+            # with the queue name "controller" as its first positional arg (Phase 36).
+            mock_build.assert_called_once()
+            assert mock_build.call_args.args[0] == "controller"
             # The named controller queue is stored on app.state; the unnamed default is gone.
             assert app.state.controller_queue is mock_queue
             assert not hasattr(app.state, "queue")
@@ -78,9 +84,14 @@ async def test_lifespan_disconnects_queue_on_shutdown() -> None:
 
     mock_queue = MagicMock()
     mock_queue.disconnect = AsyncMock()
+    # Phase 36: the lifespan opens the PostgresQueue broker pool (await connect()).
+    mock_queue.connect = AsyncMock()
+    # Phase 36 (WR-01): shutdown closes the factory-attached cache_redis (await aclose()).
+    mock_queue.cache_redis = AsyncMock()
 
     with (
-        patch("phaze.main.Queue") as mock_queue_cls,
+        # Phase 36: controller queue built via build_pipeline_queue (PostgresQueue factory).
+        patch("phaze.main.build_pipeline_queue") as mock_build,
         patch("phaze.main.engine") as mock_engine,
         # Phase 27 UAT Gap 2 / Gap 3: see test_lifespan_creates_queue_on_startup above.
         patch("phaze.main.run_migrations", new=AsyncMock()),
@@ -89,7 +100,7 @@ async def test_lifespan_disconnects_queue_on_shutdown() -> None:
         # Phase 33: skip the /saq agent read (see test_lifespan_creates_queue_on_startup).
         patch("phaze.main.settings.enable_saq_ui", False),
     ):
-        mock_queue_cls.from_url.return_value = mock_queue
+        mock_build.return_value = mock_queue
         mock_conn = AsyncMock()
         mock_engine.begin.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_engine.begin.return_value.__aexit__ = AsyncMock(return_value=False)

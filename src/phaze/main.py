@@ -7,7 +7,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis_async
-from saq import Queue
 from sqlalchemy import select, text
 
 from phaze.config import settings
@@ -43,8 +42,7 @@ from phaze.routers import (
 )
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
-from phaze.tasks._shared.deterministic_key import apply_deterministic_key
-from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.web.saq_mount import build_saq_app
 
 
@@ -98,16 +96,19 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Named controller queue (Phase 30) -- consumed by the application-server phaze-worker
     # (phaze.tasks.controller.settings). Replaces the Phase 25 unnamed default queue, which had
     # no consumer and stranded every control-plane enqueue routed to it (the v4.0.6 incident).
-    _app.state.controller_queue = Queue.from_url(settings.redis_url, name="controller")
-    # Register the policy before_enqueue hook so API-side enqueues inherit the longer
-    # timeout / retry budget, exactly like controller.py's module-level queue.
-    _app.state.controller_queue.register_before_enqueue(apply_project_job_defaults)
-    # Phase 35 (D-05): central deterministic-key hook so every routable enqueue from the
-    # API side is keyed `<function>:<natural_id>` and dedups against a re-enqueue. Order vs
-    # apply_project_job_defaults is irrelevant (disjoint Job fields).
-    _app.state.controller_queue.register_before_enqueue(apply_deterministic_key)
-    # AgentTaskRouter -- per-agent SAQ enqueuer (Phase 26 Plan 04, D-20)
-    _app.state.task_router = AgentTaskRouter(redis_url=settings.redis_url)
+    # Phase 36: built via the single `build_pipeline_queue` seam -- a PostgresQueue (broker =
+    # queue_url) with BOTH before_enqueue hooks (apply_project_job_defaults + apply_deterministic_key)
+    # already registered and a decoupled `cache_redis` handle. Conservative pool sizing (2/8) for
+    # the control role keeps the per-queue psycopg3 budget under Postgres max_connections.
+    _app.state.controller_queue = build_pipeline_queue("controller", settings.queue_url, cache_redis_url=settings.redis_url, min_size=2, max_size=8)
+    # Phase 36: open the controller broker pool now. The PostgresQueue pool is built open=False
+    # (no socket at construction) and, unlike the old redis-backed Queue, does NOT auto-connect
+    # on first enqueue -- so the API-side producer must open it explicitly. init_db is idempotent
+    # (CREATE TABLE IF NOT EXISTS saq_jobs/saq_stats/saq_versions); first boot self-creates them.
+    await _app.state.controller_queue.connect()
+    # AgentTaskRouter -- per-agent SAQ enqueuer (Phase 26 Plan 04, D-20). Phase 36: takes
+    # (queue_url, cache_redis_url) -- Postgres broker + Redis cache.
+    _app.state.task_router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url)
     # Shared Redis client for tracklists idempotency cache (Phase 26 Plan 07, D-27).
     # decode_responses=True so .get/.set return str (matches agent_tracklists.py expectations).
     _app.state.redis = redis_async.Redis.from_url(settings.redis_url, decode_responses=True)
@@ -143,12 +144,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
             agents = (await session.execute(agents_stmt)).scalars().all()
         agent_queues = [_app.state.task_router.queue_for(agent.id) for agent in agents]
+        # Phase 36: the dashboard reads each queue's `.info()`, which needs an open psycopg pool.
+        # The PostgresQueue pools are built open=False, so open them here (idempotent connect()).
+        for q in agent_queues:
+            await q.connect()
         _app.mount("/saq", build_saq_app([_app.state.controller_queue, *agent_queues]))
 
     yield
     # Shutdown in reverse construction order.
     await _app.state.task_router.close()
     await _app.state.redis.aclose()
+    # Phase 36 (WR-01): close the factory-attached cache_redis before the pool — disconnect()
+    # closes only the psycopg3 pool, leaving the controller queue's Redis client open.
+    controller_cache_redis = getattr(_app.state.controller_queue, "cache_redis", None)
+    if controller_cache_redis is not None:
+        await controller_cache_redis.aclose()
     await _app.state.controller_queue.disconnect()
     await engine.dispose()
 

@@ -108,17 +108,22 @@ def _route_structlog_through_stdlib() -> "AsyncGenerator[None]":  # type: ignore
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Auto-mark tests that require external services as integration tests.
 
-    Two triggers, because the migration suite reaches Postgres two ways:
-      * any test consuming a DB-backed fixture (``DB_FIXTURES``), and
+    Three triggers, because the migration + queue suites reach Postgres three ways:
+      * any test consuming a DB-backed fixture (``DB_FIXTURES``),
       * every test under ``tests/test_migrations/`` -- those run Alembic against a
         live Postgres, some via the ``migrated_engine`` fixture and some by building
-        their own engine against ``MIGRATIONS_TEST_DATABASE_URL`` inline.
+        their own engine against ``MIGRATIONS_TEST_DATABASE_URL`` inline, and
+      * every test under ``tests/integration/`` (Phase 36) -- those open a real
+        ``PostgresQueue`` against the ephemeral test-db broker (port 5433) and never
+        consume a DB-backed fixture, so the fixture trigger alone would miss them.
 
-    Without the path rule the direct-engine migration tests escape the marker and
-    break ``pytest -m 'not integration'`` when no database is running.
+    Without the path rule the direct-engine migration tests and the real-PG queue
+    integration tests escape the marker and break ``pytest -m 'not integration'``
+    when no database is running.
     """
     for item in items:
-        if DB_FIXTURES & set(getattr(item, "fixturenames", ())) or "test_migrations" in item.path.parts:
+        path_parts = item.path.parts
+        if DB_FIXTURES & set(getattr(item, "fixturenames", ())) or "test_migrations" in path_parts or "integration" in path_parts:
             item.add_marker(pytest.mark.integration)
 
 

@@ -76,7 +76,7 @@ class BaseSettings(PydanticBaseSettings):
     # the shared `_resolve_secret_files` before-validator reads each field's
     # `<ALIAS>_FILE` siblings when the direct env var is unset. `database_url` and
     # `redis_url` live here because both carry credentials and exist on both roles.
-    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = frozenset({"database_url", "redis_url"})
+    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = frozenset({"database_url", "redis_url", "queue_url"})
 
     @model_validator(mode="before")
     @classmethod
@@ -154,6 +154,35 @@ class BaseSettings(PydanticBaseSettings):
         default="redis://redis:6379/0",
         validation_alias=AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url"),
     )
+
+    # Phase 36: PostgresQueue broker DSN. psycopg3's AsyncConnectionPool needs a RAW
+    # libpq DSN (`postgresql://`), NOT the SQLAlchemy dialect form (`postgresql+asyncpg://`)
+    # used by `database_url` -- psycopg3 cannot parse the `+driver` suffix. The
+    # `_strip_sqlalchemy_driver` validator normalizes either dialect form to libpq so an
+    # operator can paste the same DSN they use for `database_url`. Carries DB credentials,
+    # so it is a member of SECRET_FILE_FIELDS (T-36-02); never log the full value.
+    queue_url: str = Field(
+        default="postgresql://phaze:phaze@postgres:5432/phaze",
+        validation_alias=AliasChoices("PHAZE_QUEUE_URL", "queue_url"),
+        description="psycopg3 (libpq) DSN for the PostgresQueue broker (Phase 36).",
+    )
+
+    @field_validator("queue_url", mode="before")
+    @classmethod
+    def _strip_sqlalchemy_driver(cls, value: Any) -> Any:
+        """Normalize a SQLAlchemy dialect DSN to a raw libpq DSN for psycopg3 (T-36-05).
+
+        psycopg3's ``AsyncConnectionPool`` parses a libpq connection string and rejects
+        the ``postgresql+asyncpg://`` / ``postgresql+psycopg://`` dialect forms that
+        SQLAlchemy uses. This before-validator rewrites either ``+driver`` prefix to a
+        bare ``postgresql://`` so the operator can reuse the same DSN shape they set for
+        ``database_url``. Non-string values pass through untouched (let pydantic raise).
+        """
+        if isinstance(value, str):
+            for prefix in ("postgresql+asyncpg://", "postgresql+psycopg://"):
+                if value.startswith(prefix):
+                    return "postgresql://" + value[len(prefix) :]
+        return value
 
     # Application
     debug: bool = False

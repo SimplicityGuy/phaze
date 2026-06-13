@@ -21,15 +21,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from saq import Queue
 import structlog
 
-from phaze.tasks._shared.deterministic_key import apply_deterministic_key
-from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from phaze.tasks._shared.queue_factory import build_pipeline_queue
 
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+    from saq import Queue
 
     from phaze.models.file import FileRecord
 
@@ -41,7 +40,7 @@ class AgentTaskRouter:
     """Lazily-cached per-agent Queue enqueuer.
 
     Usage:
-        router = AgentTaskRouter(redis_url=settings.redis_url)
+        router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url)
         await router.enqueue_for_agent(
             agent_id="fileserver-01",
             task_name="extract_file_metadata",
@@ -62,8 +61,9 @@ class AgentTaskRouter:
     same hook-applied Queue instance without touching the private ``_queue_for``.
     """
 
-    def __init__(self, redis_url: str) -> None:
-        self._redis_url = redis_url
+    def __init__(self, queue_url: str, cache_redis_url: str) -> None:
+        self._queue_url = queue_url
+        self._cache_redis_url = cache_redis_url
         self._queues: dict[str, Queue] = {}
 
     def queue_for(self, agent_id: str) -> Queue:
@@ -83,26 +83,21 @@ class AgentTaskRouter:
         Queue name format is ``phaze-agent-<agent_id>`` per Phase 26 D-18.
         """
         if agent_id not in self._queues:
-            queue = Queue.from_url(
-                self._redis_url,
-                name=f"phaze-agent-{agent_id}",
+            # Phase 36: built via the single `build_pipeline_queue` seam -- a PostgresQueue
+            # (broker = queue_url) with BOTH before_enqueue hooks (apply_project_job_defaults +
+            # apply_deterministic_key) already registered and a decoupled `cache_redis` handle.
+            # The factory owns the hook chain, so the per-agent dispatch path no longer registers
+            # them inline (quick-260609-f96: this path once missed the defaults hook, giving
+            # agent-dispatched scan_directory jobs SAQ's 10s default -- the factory now guarantees
+            # both hooks on every queue). Conservative pool sizing (1/4) per agent keeps the
+            # per-queue psycopg3 budget under Postgres max_connections (RESEARCH Pitfall 4).
+            queue = build_pipeline_queue(
+                f"phaze-agent-{agent_id}",
+                self._queue_url,
+                cache_redis_url=self._cache_redis_url,
+                min_size=1,
+                max_size=4,
             )
-            # Phase 27 UAT Gap 1: SAQ 0.26.3's Worker.__init__ does NOT accept `timeout`,
-            # `retries`, or `keep_result` -- those are per-Job settings. Apply the project's
-            # policy defaults via a `before_enqueue` hook on the Queue so every enqueued
-            # Job inherits the longer timeout / retry budget without breaking Worker
-            # construction. See phaze.tasks._shared.queue_defaults for the hook body.
-            # quick-260609-f96: the controller (controller.py) and agent worker (agent_worker.py)
-            # both register this hook, but this per-agent dispatch path did not -- so
-            # agent-dispatched jobs (notably scan_directory) inherited SAQ's 10s default
-            # and were cancelled with asyncio.TimeoutError after exactly 10s. Register once
-            # here, only on first construction per agent_id (never re-registered on cache hits).
-            queue.register_before_enqueue(apply_project_job_defaults)
-            # Phase 35 (D-05): central deterministic-key hook -- per-agent tasks
-            # (process_file, extract_file_metadata, ...) are keyed `<function>:<natural_id>`
-            # here so a re-dispatch of in-flight work dedups. Registered once per agent_id,
-            # alongside the defaults hook (never re-registered on cache hits).
-            queue.register_before_enqueue(apply_deterministic_key)
             self._queues[agent_id] = queue
         return self._queues[agent_id]
 
@@ -133,6 +128,9 @@ class AgentTaskRouter:
         with Job fields; the explicit overrides are merged last so they win.
         """
         queue = self._queue_for(agent_id)
+        # Phase 36: open the PostgresQueue broker pool (built open=False) before enqueueing.
+        # connect() is idempotent (guarded by self._connected) -- a no-op after the first call.
+        await queue.connect()
         dumped = payload.model_dump(mode="json")
         extra: dict[str, Any] = {}
         if timeout is not None:
@@ -178,5 +176,10 @@ class AgentTaskRouter:
     async def close(self) -> None:
         """Disconnect every cached Queue and clear the cache. Idempotent."""
         for queue in self._queues.values():
+            # Phase 36 (WR-01): close the factory-attached cache_redis handle too —
+            # disconnect() closes only the psycopg3 pool, leaving the Redis client open.
+            cache_redis = getattr(queue, "cache_redis", None)
+            if cache_redis is not None:
+                await cache_redis.aclose()
             await queue.disconnect()
         self._queues.clear()

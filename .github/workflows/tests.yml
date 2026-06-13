@@ -42,6 +42,13 @@ jobs:
     env:
       DATABASE_URL: >-
         postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test
+      # Phase 36: the live-broker queue tests derive the raw libpq PostgresQueue DSN from
+      # TEST_DATABASE_URL (stripping the +asyncpg dialect). Without it they fall back to a
+      # nonexistent "phaze" DB — test_pg_* skip on the connect probe, but the agent-task-router
+      # enqueue tests have no probe and PoolTimeout after 30s. Point the broker at the running
+      # phaze_test service so SAQ's connect() auto-creates saq_jobs and the suite runs for real.
+      TEST_DATABASE_URL: >-
+        postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test
       PHAZE_REDIS_URL: redis://localhost:6379/0
     steps:
       - name: 🔀 Checkout repository

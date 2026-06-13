@@ -132,12 +132,20 @@ async def resolve_queue_for_task(
     - anything else -> ``ValueError`` (fail loud; never returns the default queue).
     """
     if task_name in CONTROLLER_TASKS:
-        return RoutedQueue(app_state.controller_queue, None)
+        queue = app_state.controller_queue
+        # Phase 36: open the PostgresQueue broker pool (built open=False) before the caller
+        # enqueues. connect() is idempotent (guarded by self._connected) -- a no-op after the
+        # first call. Single chokepoint so every routed.queue.enqueue(...) site (and the
+        # background tasks that receive routed.queue) finds an open pool.
+        await queue.connect()
+        return RoutedQueue(queue, None)
     if task_name in AGENT_TASKS:
         if session is None:
             msg = f"resolving per-agent task {task_name!r} requires a database session"
             raise ValueError(msg)
         agent = await select_active_agent(session)
-        return RoutedQueue(app_state.task_router.queue_for(agent.id), agent.id)
+        queue = app_state.task_router.queue_for(agent.id)
+        await queue.connect()
+        return RoutedQueue(queue, agent.id)
     msg = f"unroutable task: {task_name}"
     raise ValueError(msg)

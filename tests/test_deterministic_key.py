@@ -107,13 +107,13 @@ async def test_enqueued_counter_folded_into_key_hook() -> None:
     redis = FakeRedis()
     fid = uuid.uuid4()
     job = Job(function="process_file", kwargs={"file_id": fid})
-    job.queue = SimpleNamespace(redis=redis)  # type: ignore[assignment]
+    job.queue = SimpleNamespace(cache_redis=redis)  # type: ignore[assignment]
     await apply_deterministic_key(job)
     assert redis.store["phaze:pipeline:enqueued:process_file"] == 1
 
 
 async def test_enqueued_counter_skipped_when_no_redis() -> None:
-    # job.queue is None by default -> getattr(None, "redis", None) is None -> no INCR,
+    # job.queue is None by default -> getattr(None, "cache_redis", None) is None -> no INCR,
     # and crucially no raise (best-effort).
     fid = uuid.uuid4()
     job = Job(function="process_file", kwargs={"file_id": fid})
@@ -130,7 +130,7 @@ async def test_enqueued_counter_failure_does_not_block_enqueue() -> None:
 
     fid = uuid.uuid4()
     job = Job(function="process_file", kwargs={"file_id": fid})
-    job.queue = SimpleNamespace(redis=_BoomRedis())  # type: ignore[assignment]
+    job.queue = SimpleNamespace(cache_redis=_BoomRedis())  # type: ignore[assignment]
     await apply_deterministic_key(job)  # must not raise
     assert job.key == f"process_file:{fid}"
 
@@ -143,7 +143,7 @@ async def test_enqueued_counter_failure_does_not_block_enqueue() -> None:
 async def test_increment_completed_bumps_on_complete_status() -> None:
     redis = FakeRedis()
     job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
-    job.queue = SimpleNamespace(redis=redis)  # type: ignore[assignment]
+    job.queue = SimpleNamespace(cache_redis=redis)  # type: ignore[assignment]
     job.status = Status.COMPLETE
     await increment_completed({"job": job})
     assert redis.store["phaze:pipeline:completed:process_file"] == 1
@@ -152,7 +152,7 @@ async def test_increment_completed_bumps_on_complete_status() -> None:
 async def test_increment_completed_noop_on_non_complete_status() -> None:
     redis = FakeRedis()
     job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
-    job.queue = SimpleNamespace(redis=redis)  # type: ignore[assignment]
+    job.queue = SimpleNamespace(cache_redis=redis)  # type: ignore[assignment]
     job.status = Status.FAILED
     await increment_completed({"job": job})
     assert "phaze:pipeline:completed:process_file" not in redis.store
@@ -168,7 +168,7 @@ async def test_increment_completed_noop_for_unregistered_function() -> None:
     # counters only track the keyed pipeline functions).
     redis = FakeRedis()
     job = Job(function="some_unregistered_task", kwargs={})
-    job.queue = SimpleNamespace(redis=redis)  # type: ignore[assignment]
+    job.queue = SimpleNamespace(cache_redis=redis)  # type: ignore[assignment]
     job.status = Status.COMPLETE
     assert "some_unregistered_task" not in _KEY_BUILDERS
     await increment_completed({"job": job})
@@ -182,7 +182,7 @@ async def test_increment_completed_failure_is_swallowed() -> None:
             raise RuntimeError("redis down")
 
     job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
-    job.queue = SimpleNamespace(redis=_BoomRedis())  # type: ignore[assignment]
+    job.queue = SimpleNamespace(cache_redis=_BoomRedis())  # type: ignore[assignment]
     job.status = Status.COMPLETE
     await increment_completed({"job": job})  # must not raise
 

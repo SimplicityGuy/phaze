@@ -41,9 +41,9 @@ Perfect for DJs, music collectors, and live recording enthusiasts who want their
 | Service      | Port | Purpose                            | Key Technologies                         |
 | ------------ | ---- | ---------------------------------- | ---------------------------------------- |
 | **API**      | 8000 | FastAPI application server         | `FastAPI`, `SQLAlchemy`, `asyncpg`       |
-| **Worker**   | --   | SAQ async background task processor| `SAQ`, `Redis`, `essentia`, `mutagen`    |
-| **Postgres** | 5432 | Primary database                   | `PostgreSQL 18`, `Alembic`               |
-| **Redis**    | 6379 | Task queue broker and cache        | `Redis 8`                                |
+| **Worker**   | --   | SAQ async background task processor| `SAQ`, `PostgreSQL`, `essentia`, `mutagen`|
+| **Postgres** | 5432 | Primary database + SAQ queue broker| `PostgreSQL 18`, `Alembic`, `psycopg`    |
+| **Redis**    | 6379 | Cache, rate-limit, counters        | `Redis 8`                                |
 | **Audfprint**| 8001 | Landmark-based audio fingerprinting| `audfprint`                              |
 | **Panako**   | 8002 | Tempo-robust audio fingerprinting  | `Panako`                                 |
 
@@ -61,8 +61,8 @@ graph TD
     end
 
     subgraph Storage ["💾 Storage"]
-        PG[("🐘 PostgreSQL 18<br/>:5432")]
-        REDIS[("🔴 Redis 8<br/>:6379")]
+        PG[("🐘 PostgreSQL 18<br/>:5432<br/>DB + SAQ broker")]
+        REDIS[("🔴 Redis 8<br/>:6379<br/>cache only")]
     end
 
     subgraph Fingerprint ["🎵 Fingerprinting"]
@@ -139,7 +139,7 @@ Unknown task names fail loud (`ValueError`) — they are never silently sent to 
 - **🔒 Safe Operations**: Copy-verify-delete protocol ensures no data loss
 - **📊 Full Audit Trail**: Every file operation is tracked in PostgreSQL
 - **🗺️ Pipeline Observability**: A single SVG DAG canvas dashboard with per-job-type progress bars and dependency-gated stage triggers
-- **⚡ Async Processing**: SAQ task queue with Redis for parallel file analysis — deterministic per-task keys and idempotent re-runs
+- **⚡ Async Processing**: SAQ task queue on PostgreSQL for parallel file analysis — deterministic per-task keys and idempotent re-runs (Redis backs caching/rate-limiting only)
 - **📝 Type Safety**: Full type hints with strict mypy validation and Bandit security scanning
 
 ## 🚀 Quick Start
@@ -257,7 +257,8 @@ GitHub Actions runs on every push and PR:
 | **Web**        | FastAPI + Uvicorn                       | Async API server                     |
 | **Database**   | PostgreSQL 18 + SQLAlchemy + asyncpg    | Primary data store (async ORM)       |
 | **Migrations** | Alembic (async template)                | Database schema management           |
-| **Task Queue** | SAQ + Redis                             | Async background job processing      |
+| **Task Queue** | SAQ on PostgreSQL (psycopg3)            | Async background job processing       |
+| **Cache**      | Redis                                   | LLM rate-limiting + pipeline counters |
 | **Audio Tags** | mutagen                                 | Read/write audio metadata            |
 | **Analysis**   | essentia-tensorflow                     | BPM, key, mood, style detection      |
 | **Fingerprint**| audfprint + Panako                      | Audio deduplication + identification |

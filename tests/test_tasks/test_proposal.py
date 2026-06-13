@@ -26,9 +26,11 @@ def _make_ctx(mock_session: AsyncMock | None = None) -> dict[str, Any]:
     if mock_session is None:
         mock_session = AsyncMock()
     mock_queue = MagicMock()
-    mock_queue.redis = AsyncMock()
+    # Phase 36: the broker is Postgres now -- generate_proposals rate-limits on the DEDICATED
+    # cache-redis handle the control worker stashes at ctx["redis"], NOT ctx["queue"].redis.
     return {
         "queue": mock_queue,
+        "redis": AsyncMock(),
         "proposal_service": AsyncMock(),
         "async_session": _make_session_factory(mock_session),
         "_mock_session": mock_session,
@@ -162,7 +164,7 @@ async def test_generate_proposals_calls_rate_limit(
     mock_rate_limit: AsyncMock,
     mock_store: AsyncMock,
 ) -> None:
-    """generate_proposals calls check_rate_limit with ctx redis and settings max_rpm."""
+    """generate_proposals calls check_rate_limit with ctx["redis"] cache handle and settings max_rpm."""
     from phaze.tasks.proposal import generate_proposals
 
     file_id = uuid.uuid4()
@@ -187,7 +189,7 @@ async def test_generate_proposals_calls_rate_limit(
 
     await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=0)
 
-    mock_rate_limit.assert_called_once_with(ctx["queue"].redis, 30)  # settings.llm_max_rpm default
+    mock_rate_limit.assert_called_once_with(ctx["redis"], 30)  # settings.llm_max_rpm default
 
 
 def test_controller_settings_contains_generate_proposals() -> None:
