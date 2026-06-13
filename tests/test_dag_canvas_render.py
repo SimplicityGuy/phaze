@@ -169,17 +169,22 @@ def test_topology_renders_anchor_derived_bezier_paths() -> None:
 
 
 def test_topology_column_one_chips_do_not_overlap() -> None:
-    """Regression (UAT 35): the 4 stacked column-1 chips must be spaced by at least a real
-    button-chip height, so a content-bearing chip cannot paint over the chip below it.
+    """Regression (UAT 35 + Phase 38): the 4 stacked column-1 chips must be spaced by at least a
+    real chip height, so a content-bearing chip cannot paint over the chip below it.
 
     The original layout gave metadata/fingerprint a "compact" h:76 even though they render a
-    trigger button (~154px tall), so each overlapped the next chip by ~55px. Node chips are
+    trigger button (~154px tall), so each overlapped the next chip by ~55px. Phase 38 added the
+    per-stage control row (pause/resume + priority stepper + hint) to the 3 agent chips, growing
+    them to ~250px — so the guard's min_chip_height is bumped from 150 to 240 (the new measured
+    agent-chip height) and the NODE_LAYOUT col-1 gutter widened to 276px. Node chips are
     content-height (the div sets only left/top/width), so this guards the y-spacing in the
-    NODE_LAYOUT map against the smallest height a button chip actually renders at.
+    NODE_LAYOUT map against the smallest height a control-bearing chip actually renders at; the
+    old 182px gutters would now FAIL this assertion.
     """
     html = _render_canvas()
-    # Minimum rendered height of a column-1 chip that carries a trigger button (measured ~154px).
-    min_chip_height = 150
+    # Minimum rendered height of a column-1 agent chip carrying the enqueue button + the Phase-38
+    # control row (measured ~250px); the old 182px gutters fail at this threshold.
+    min_chip_height = 240
     tops = {}
     for node in ("metadata", "analyze", "fingerprint", "scan_search"):
         m = re.search(rf'id="node-{node}".*?top:\s*(\d+)px', html, re.DOTALL)
