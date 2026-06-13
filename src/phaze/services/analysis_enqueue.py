@@ -61,6 +61,12 @@ async def enqueue_process_file(queue: Any, file: FileRecord, agent_id: str, mode
         agent_id=agent_id,
         models_path=models_path,
     )
+    # Phase 36: the PostgresQueue broker pool is built ``open=False`` and, unlike the old
+    # redis-backed Queue, does NOT auto-connect on first enqueue. ``connect()`` is idempotent
+    # (guarded by ``self._connected``) so this is a no-op after the first call. This path is
+    # reached non-routed too (reboot re-enqueue, integration tests), so opening here covers
+    # every process_file producer regardless of how the queue was obtained.
+    await queue.connect()
     return await queue.enqueue(
         "process_file",
         # Deterministic key so a re-trigger (or the Wave-2 reboot re-enqueue) of an

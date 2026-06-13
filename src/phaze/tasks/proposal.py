@@ -28,7 +28,7 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     Per D-19: Rate-limited via Redis counter.
 
     Args:
-        ctx: SAQ job context (contains queue, proposal_service).
+        ctx: SAQ job context (contains queue, redis cache handle, proposal_service).
         file_ids: List of file UUID strings to process in this batch.
         batch_index: Index of this batch (for logging/tracking).
 
@@ -62,8 +62,10 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
         if not files_context:
             return {"batch": batch_index, "count": 0, "status": "empty"}
 
-        # 2. Rate limit via Redis counter on the queue's Redis connection
-        await check_rate_limit(ctx["queue"].redis, settings.llm_max_rpm)
+        # 2. Rate limit via Redis counter on the DEDICATED cache-redis handle. Phase 36: the
+        # broker is Postgres now, so `ctx["queue"]` (a PostgresQueue) has no `.redis`. The
+        # control worker stashes a decoupled cache client at `ctx["redis"]` (controller.startup).
+        await check_rate_limit(ctx["redis"], settings.llm_max_rpm)
 
         # 3. Call LLM
         proposal_service: ProposalService = ctx["proposal_service"]

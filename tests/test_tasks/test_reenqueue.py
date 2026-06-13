@@ -226,34 +226,37 @@ async def test_empty_discovered_returns_zero(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_real_redis_dedup_returns_none() -> None:
-    """Against real Redis, the second enqueue of an in-flight deterministic key returns None.
+async def test_real_broker_dedup_returns_none() -> None:
+    """Against the real broker, the second enqueue of an in-flight deterministic key returns None.
 
     Pins the production SAQ dedup contract the DedupFakeQueue models: a repeat enqueue of a
-    key still in the per-queue ``incomplete`` set is a clean no-op. Skips when Redis is
-    unavailable (mirrors test_agent_task_router.py's gate); cleans the test key up after.
+    key still in the per-queue ``incomplete`` set is a clean no-op. Phase 36: the broker is
+    PostgresQueue now, so this probes the Postgres broker (the cache-Redis counter INCR folded
+    into the key hook is best-effort/swallowed, so the broker is the dependency under test).
+    Skips when Postgres is unavailable; cleans the test key up after.
     """
     pytest.importorskip("redis")
-    import redis.asyncio as aioredis
-    import redis.exceptions as redis_exc
+    import psycopg
 
     from phaze.services.agent_task_router import AgentTaskRouter
     from phaze.services.analysis_enqueue import enqueue_process_file
 
     redis_url = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+    queue_url = os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze").replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
 
-    # Probe connectivity FIRST so the skip path creates no SAQ queue/connection to clean
-    # up (a skip raised inside the main try would otherwise be overridden by close()
-    # re-raising the same ConnectionError). Mirrors test_agent_task_router.py's intent.
-    probe = aioredis.from_url(redis_url)
+    # Probe broker connectivity FIRST so the skip path creates no SAQ queue/connection to
+    # clean up (a skip raised inside the main try would otherwise be overridden by close()
+    # re-raising the same ConnectionError).
     try:
-        await probe.ping()
-    except (redis_exc.RedisError, OSError) as exc:
-        pytest.skip(f"Redis unavailable: {exc}")
-    finally:
-        await probe.aclose()
+        probe = await psycopg.AsyncConnection.connect(queue_url)
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres broker unavailable: {exc}")
+    else:
+        await probe.close()
 
-    router = AgentTaskRouter(redis_url=redis_url)
+    router = AgentTaskRouter(queue_url=queue_url, cache_redis_url=redis_url)
     queue = router.queue_for("reenqueue-itest")
 
     # In-memory FileRecord is enough to build the payload (no DB needed); a unique id keeps

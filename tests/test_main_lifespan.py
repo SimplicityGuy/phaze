@@ -24,8 +24,6 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 import pytest
 
-from phaze.tasks._shared.deterministic_key import apply_deterministic_key
-from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from tests._queue_fakes import FakeQueue
 
 
@@ -100,16 +98,16 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
     # open real network connections.
     fake_queue = AsyncMock()
     fake_queue.disconnect = AsyncMock()
-    # register_before_enqueue is synchronous on a real saq.Queue -- use a sync mock
-    # so the lifespan call doesn't leave an un-awaited coroutine.
-    fake_queue.register_before_enqueue = MagicMock()
-    fake_queue_cls = MagicMock()
-    fake_queue_cls.from_url = MagicMock(return_value=fake_queue)
-    monkeypatch.setattr(main_module, "Queue", fake_queue_cls)
+    # Phase 36: the lifespan opens the broker pool (await connect()); AsyncMock auto-provides it.
+    fake_queue.connect = AsyncMock()
+    # Phase 36: the controller queue is built via build_pipeline_queue (PostgresQueue factory),
+    # which owns before_enqueue hook registration -- the lifespan no longer registers hooks.
+    fake_build = MagicMock(return_value=fake_queue)
+    monkeypatch.setattr(main_module, "build_pipeline_queue", fake_build)
 
     fake_router = AsyncMock()
     fake_router.close = AsyncMock()
-    monkeypatch.setattr(main_module, "AgentTaskRouter", lambda redis_url: fake_router)  # noqa: ARG005
+    monkeypatch.setattr(main_module, "AgentTaskRouter", lambda **_kw: fake_router)
 
     fake_redis = AsyncMock()
     fake_redis.aclose = AsyncMock()
@@ -125,15 +123,11 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
         assert app.state.controller_queue is fake_queue
         assert not hasattr(app.state, "queue"), "the unnamed default queue (app.state.queue) must be gone (Phase 30)"
 
-    # Phase 30: the controller queue is constructed named and gets the policy hook.
-    fake_queue_cls.from_url.assert_called_once()
-    _from_url_args, from_url_kwargs = fake_queue_cls.from_url.call_args
-    assert from_url_kwargs.get("name") == "controller", f"controller queue must be named 'controller'; got {from_url_kwargs!r}"
-    # Phase 35: the controller queue registers TWO before_enqueue hooks -- the Phase 27
-    # policy-defaults hook AND the Phase 35 central deterministic-key hook.
-    registered_hooks = {call.args[0] for call in fake_queue.register_before_enqueue.call_args_list}
-    assert apply_project_job_defaults in registered_hooks
-    assert apply_deterministic_key in registered_hooks
+    # Phase 36: the controller queue is built via build_pipeline_queue with the name
+    # "controller" as its first positional arg. The factory (covered by test_queue_factory.py)
+    # owns before_enqueue hook registration, so the lifespan itself no longer registers hooks.
+    fake_build.assert_called_once()
+    assert fake_build.call_args.args[0] == "controller", f"controller queue must be named 'controller'; got {fake_build.call_args!r}"
 
     # Migration must precede the engine SELECT 1 (which precedes ensure_dev_agent).
     assert "run_migrations" in call_order, f"run_migrations not invoked: {call_order!r}"
@@ -207,20 +201,21 @@ def _patch_saq_lifespan(
     monkeypatch.setattr(main_module, "async_session", _FakeSessionCM)
 
     # Controller queue double: real str name + async info so saq_web keys/renders it.
+    # Phase 36: built via build_pipeline_queue (PostgresQueue factory); the lifespan opens the
+    # broker pool via await connect().
     controller_queue = MagicMock()
     controller_queue.name = "controller"
-    controller_queue.register_before_enqueue = MagicMock()
     controller_queue.disconnect = AsyncMock()
+    controller_queue.connect = AsyncMock()
     controller_queue.info = AsyncMock(return_value={"workers": {}, "name": "controller", "queued": 0, "active": 0, "scheduled": 0, "jobs": []})
-    fake_queue_cls = MagicMock()
-    fake_queue_cls.from_url = MagicMock(return_value=controller_queue)
-    monkeypatch.setattr(main_module, "Queue", fake_queue_cls)
+    monkeypatch.setattr(main_module, "build_pipeline_queue", MagicMock(return_value=controller_queue))
 
-    # task_router.queue_for -> the cached per-agent Queue (here a Wave 0 FakeQueue with .info).
+    # task_router.queue_for -> the cached per-agent Queue (here a Wave 0 FakeQueue with .info
+    # + a no-op async connect the lifespan opens before mounting /saq).
     fake_router = MagicMock()
     fake_router.close = AsyncMock()
     fake_router.queue_for = MagicMock(return_value=FakeQueue("phaze-agent-nox"))
-    monkeypatch.setattr(main_module, "AgentTaskRouter", lambda redis_url: fake_router)  # noqa: ARG005
+    monkeypatch.setattr(main_module, "AgentTaskRouter", lambda **_kw: fake_router)
 
     fake_redis = AsyncMock()
     fake_redis.aclose = AsyncMock()

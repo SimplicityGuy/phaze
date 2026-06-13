@@ -1,21 +1,21 @@
 """Integration tests for AgentTaskRouter (Phase 26 D-19..D-21, D-30).
 
-Requires a real Redis instance reachable at the URL in `PHAZE_REDIS_URL` env
-(default `redis://localhost:6379/0`). Marked `@pytest.mark.integration` so
-the tests skip cleanly when Redis is unavailable (no `fakeredis` fallback
-because SAQ's Queue.from_url is not compatible with fakeredis at the saq>=0.26
-version we use).
+Phase 36: the broker is PostgresQueue now, so the router takes ``(queue_url, cache_redis_url)``.
+The Postgres broker DSN comes from ``PHAZE_QUEUE_URL`` (or is derived from the integration
+harness' ``TEST_DATABASE_URL`` by stripping the SQLAlchemy ``+asyncpg`` dialect suffix to the
+raw libpq form psycopg3 needs); the cache-Redis DSN comes from ``PHAZE_REDIS_URL``. Marked
+``@pytest.mark.integration`` because the enqueue paths reach the live Postgres broker.
 
 Assertions:
 1. enqueue_for_agent with two distinct agent IDs writes jobs to two distinct
-   Redis queues (no cross-talk).
+   per-agent queues (no cross-talk).
 2. _queue_for() returns the SAME Queue instance on repeated calls for the
    same agent_id (cache identity invariant).
 3. close() disconnects every cached Queue and empties the cache.
 4. enqueue_for_file delegates correctly using FileRecord.agent_id.
 5. _queue_for() registers apply_project_job_defaults as a before_enqueue hook
    on every per-agent Queue (quick-260609-f96 regression guard against the
-   10s scan_directory TimeoutError).
+   10s scan_directory TimeoutError) -- the factory now owns this registration.
 """
 
 from __future__ import annotations
@@ -32,13 +32,18 @@ from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
 
 _REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
-"""Override at test time via `PHAZE_REDIS_URL=redis://...:6379/0 uv run pytest ...`."""
+"""Cache-Redis DSN. Override via `PHAZE_REDIS_URL=redis://...:6379/0 uv run pytest ...`."""
+
+_QUEUE_URL = os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze").replace(
+    "postgresql+asyncpg://", "postgresql://"
+)
+"""Postgres broker DSN (raw libpq form). Derived from TEST_DATABASE_URL in the harness."""
 
 
 @pytest.fixture
 async def router():  # type: ignore[no-untyped-def]
     """Fresh AgentTaskRouter; teardown calls .close()."""
-    r = AgentTaskRouter(redis_url=_REDIS_URL)
+    r = AgentTaskRouter(queue_url=_QUEUE_URL, cache_redis_url=_REDIS_URL)
     yield r
     await r.close()
 
