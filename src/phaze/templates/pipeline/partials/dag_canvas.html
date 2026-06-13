@@ -23,21 +23,24 @@
 {# ── Single source-of-truth layout map (anchors) — col0 Discovery · col1 {Metadata,
    Analyze, Fingerprint, Scan/Search} · col2 {Proposals, Scrape} · col3 {Execute, Match}. #}
 {# h values mirror the ACTUAL rendered chip heights (nodes are content-height; `h` only feeds
-   the edge-anchor midpoint `y + h/2`). The four col-1 chips all carry a trigger button and
-   render ~154px tall — the earlier h:76 "compact" sizing assumed button-less chips and let
-   metadata/fingerprint paint over the chip below them. y-positions stack each column with a
-   ~28px gutter so no chip overlaps regardless of idle/disabled/active state (button is always
-   one line). #}
+   the edge-anchor midpoint `y + h/2`). Phase-38 RECOMPUTE: the 3 agent chips (metadata/analyze/
+   fingerprint) now carry BOTH the enqueue button AND the per-stage control row (divider + pause/
+   resume + priority stepper + hint), growing them from ~154px to ~250px. The col-1 gutter is
+   therefore widened to 276px (≥ the ~250px agent-chip height + 16px) so a taller chip cannot paint
+   over the chip below it (38-UI-SPEC Layout Contract; guarded by test_topology_column_one_chips_
+   do_not_overlap). scan_search keeps h:126 (no controls). col-0 discovery + col-2/col-3 nodes
+   (proposals/scrape/execute/match) are re-balanced to their incoming-edge midpoints so the curved
+   edges still land cleanly on the new col-1 anchors. #}
 {% set NODE_LAYOUT = {
-  "discovery":   {"x": 24,  "y": 296, "w": 180, "h": 130},
-  "metadata":    {"x": 320, "y": 24,  "w": 180, "h": 154},
-  "analyze":     {"x": 320, "y": 206, "w": 180, "h": 154},
-  "fingerprint": {"x": 320, "y": 388, "w": 180, "h": 154},
-  "scan_search": {"x": 320, "y": 570, "w": 180, "h": 126},
-  "proposals":   {"x": 624, "y": 105, "w": 180, "h": 174},
-  "scrape":      {"x": 624, "y": 576, "w": 180, "h": 114},
-  "execute":     {"x": 928, "y": 127, "w": 180, "h": 130},
-  "match":       {"x": 928, "y": 576, "w": 180, "h": 114}
+  "discovery":   {"x": 24,  "y": 467, "w": 180, "h": 130},
+  "metadata":    {"x": 320, "y": 24,  "w": 180, "h": 250},
+  "analyze":     {"x": 320, "y": 300, "w": 180, "h": 250},
+  "fingerprint": {"x": 320, "y": 576, "w": 180, "h": 250},
+  "scan_search": {"x": 320, "y": 852, "w": 180, "h": 126},
+  "proposals":   {"x": 624, "y": 200, "w": 180, "h": 174},
+  "scrape":      {"x": 624, "y": 858, "w": 180, "h": 114},
+  "execute":     {"x": 928, "y": 222, "w": 180, "h": 130},
+  "match":       {"x": 928, "y": 858, "w": 180, "h": 114}
 } %}
 
 {# Authoritative edge list (35-STAGE-DEPENDENCIES.md). Metadata→Proposals and
@@ -222,8 +225,8 @@
      sm (the stacked <ol> takes over); horizontally scrollable sm–lg. #}
   <div role="group" aria-label="Pipeline stage graph"
        class="hidden sm:block overflow-x-auto rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-bg p-4">
-    <div class="relative" style="width: 1132px; height: 720px;">
-      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1132" height="720" viewBox="0 0 1132 720" fill="none">
+    <div class="relative" style="width: 1132px; height: 1000px;">
+      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1132" height="1000" viewBox="0 0 1132 1000" fill="none">
         {% for edge in EDGES %}
           {% set src = NODE_LAYOUT[edge[0]] %}
           {% set tgt = NODE_LAYOUT[edge[1]] %}
@@ -404,6 +407,11 @@
       {% if row[2] %}<span> / —</span>{% else %}<span> / </span><span class="tabular-nums" x-text="nodes.{{ row[0] }}.total"></span>{% endif %}
       — <span x-text="nodes.{{ row[0] }}.pill"></span>
       <template x-if="nodes.{{ row[0] }}.blocked"><span> — <span x-text="nodes.{{ row[0] }}.reason"></span></span></template>
+      {# Phase-38: surface the per-stage pause/priority in the text equivalent (agent stages only). #}
+      {% if row[0] in ['metadata', 'analyze', 'fingerprint'] %}
+      <template x-if="$store.pipeline.{{ row[0] }}Paused"><span> — paused</span></template>
+      <span x-text="' — priority ' + $store.pipeline.{{ row[0] }}Priority"></span>
+      {% endif %}
     </li>
     {% endfor %}
   </ol>
