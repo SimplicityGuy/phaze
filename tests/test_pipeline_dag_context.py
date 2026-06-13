@@ -51,6 +51,14 @@ _NEW_STORE_KEYS = (
     "approved",
     "executedDone",
     "executedTotal",
+    # Phase 38 (38-03): per-stage pause/priority live-state keys (REQ-38-4). One edit drives
+    # the store-literal seed test, the int-key context test, AND the OOB-seed test for all 6.
+    "metadataPaused",
+    "metadataPriority",
+    "analyzePaused",
+    "analyzePriority",
+    "fingerprintPaused",
+    "fingerprintPriority",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.
