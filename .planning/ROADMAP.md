@@ -317,7 +317,7 @@ Plans:
 **Requirements**: Operator can pause/resume and raise/lower priority per agent stage from the DAG; Rescan button gone; live state reflected.
 **Depends on:** Phase 37
 **Rollout:** Final homelab Step D consolidation here if any new env/UI config emerges.
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 **Wave 1**
 
@@ -326,4 +326,4 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 38-02-PLAN.md — stage_controls macro (pause/resume + priority steppers) on the 3 agent nodes + NODE_LAYOUT recompute + <ol> a11y + guard-test updates [Wave 2]
+- [x] 38-02-PLAN.md — stage_controls macro (pause/resume + priority steppers) on the 3 agent nodes + NODE_LAYOUT recompute + <ol> a11y + guard-test updates [Wave 2]
