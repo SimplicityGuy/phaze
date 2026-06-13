@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
 status: executing
-last_updated: "2026-06-13T20:41:27.141Z"
+last_updated: "2026-06-13T20:58:45.601Z"
 last_activity: 2026-06-13
 progress:
   percent: 0
@@ -21,7 +21,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 ## Current Position
 
 Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-06-13
 
@@ -81,6 +81,8 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase ?]: 37-04: control endpoints return {stage, priority, paused} from the PipelineStageControl row (durable intent), never a serialized job's priority (Plan-03 column-vs-blob finding)
 - [Phase ?]: 37-04: control-row ORM mutation + service-helper saq_jobs UPDATE land in one session.commit(); unknown stage -> 422 via allowlist guard; priority delta clamped [0,100]; no app-layer auth (reverse-proxy internal-realm)
 - [Phase 38]: 38-01: removed the unused discovery cta 'Rescan Files' alongside the dead anchor (mk o={} default makes the omission safe); guarded the deletion with a string-absence render assertion
+- [Phase 38]: 38-03: get_stage_controls degrade-safe reader returns paused=False/priority=50 defaults on any failure (mirrors _safe_count); _build_dag_context coerces paused to int 0/1 to hold the all-ints x-init invariant (T-35-11)
+- [Phase 38]: 38-03: the 6 stage-control keys ride the existing dag.items() OOB loop with zero stats_bar.html edit; one _NEW_STORE_KEYS edit drives the store-literal, int-key, and OOB-seed tests
 
 ### Pending Todos
 
@@ -120,9 +122,10 @@ None.
 | Phase 37 P03 | ~20min | 2 tasks | 6 files |
 | Phase 37 P04 | ~6min | 3 tasks | 5 files |
 | Phase 38 P01 | 3min | 2 tasks | 2 files |
+| Phase 38 P03 | ~12min | 3 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-06-13T20:40:43.194Z
+Last session: 2026-06-13T20:58:10.537Z
 Stopped at: Phase 37 merged (#124); Phase 38 planning recovered onto main, ready to execute
 Resume file: None
