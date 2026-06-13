@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from saq import CronJob, Queue
+import redis.asyncio as redis_async
+from saq import CronJob
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 import structlog
 
@@ -32,8 +33,8 @@ from phaze.logging_config import configure_logging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
-from phaze.tasks._shared.deterministic_key import apply_deterministic_key, increment_completed
-from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from phaze.tasks._shared.deterministic_key import increment_completed
+from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.reenqueue import reenqueue_discovered
@@ -57,7 +58,9 @@ async def startup(ctx: dict[str, Any]) -> None:
     # through the same JSON/console pipeline as the api and agent worker.
     configure_logging(level=cfg.log_level, json_logs=cfg.log_json)
 
-    logger.info("phaze.controller startup role=control queue=controller redis=%s", cfg.redis_url)
+    # D-13 token-preview discipline: never log the full broker/cache DSN (either may carry
+    # credentials -- queue_url is a SECRET_FILE_FIELDS member). Report the backend + queue name only.
+    logger.info("phaze.controller startup role=control queue=controller backend=postgres")
 
     # Shared async engine pool for all fileless task functions (INFRA-01 from v1.0).
     task_engine = create_async_engine(
@@ -84,18 +87,22 @@ async def startup(ctx: dict[str, Any]) -> None:
         max_rpm=cfg.llm_max_rpm,  # type: ignore[attr-defined]
     )
 
-    # W4 audit RESULT: `ctx["queue"]` IS read by fileless tasks. Specifically
-    # `phaze.tasks.proposal.generate_proposals` calls `ctx["queue"].redis` for
-    # LLM rate-limit cache, and `phaze.tasks.execution` reads it as well.
-    # Stash the module-level queue so those readers find it.
+    # Phase 36: the broker is Postgres now, so `ctx["queue"]` (the PostgresQueue) no longer
+    # carries a Redis cache client. Stash a DEDICATED cache-redis handle so the cache-plane
+    # readers (generate_proposals rate-limit) read `ctx["redis"]`, NEVER `ctx["queue"].redis`
+    # (PostgresQueue has no `.redis`). Mirrors the discogs_client create/close lifecycle:
+    # created here, closed in shutdown.
+    ctx["redis"] = redis_async.Redis.from_url(cfg.redis_url)
+
+    # The module-level PostgresQueue is still stashed for readers that enqueue follow-on work.
     ctx["queue"] = queue
 
     # Phase 32: per-agent task router for reboot re-enqueue routing. Built ONCE
     # here and reused for the boot-time call + every cron tick (RESEARCH Pitfall 4 --
-    # never construct a fresh AgentTaskRouter per call, it would leak Redis pools).
+    # never construct a fresh AgentTaskRouter per call, it would leak pools).
     # Mirrors the discogs_client create/close lifecycle: created in startup, closed
-    # in shutdown.
-    ctx["task_router"] = AgentTaskRouter(cfg.redis_url)
+    # in shutdown. Phase 36: takes (queue_url, cache_redis_url) -- Postgres broker + Redis cache.
+    ctx["task_router"] = AgentTaskRouter(cfg.queue_url, cfg.redis_url)
 
     # Phase 32 reboot recovery: re-enqueue every DISCOVERED file ONCE on boot so a
     # reboot/Redis-flush resumes analysis with no manual "Run Analysis" (CONTEXT
@@ -122,8 +129,13 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     if discogs_client is not None:
         await discogs_client.close()
 
-    # Phase 32: close the per-agent task router (disconnects every cached Redis
-    # queue; idempotent). Mirrors the discogs_client cleanup above.
+    # Phase 36: close the dedicated cache-redis client (mirrors the discogs_client cleanup).
+    cache_redis = ctx.get("redis")
+    if cache_redis is not None:
+        await cache_redis.aclose()
+
+    # Phase 32: close the per-agent task router (disconnects every cached
+    # queue pool; idempotent). Mirrors the discogs_client cleanup above.
     task_router = ctx.get("task_router")
     if task_router is not None:
         await task_router.close()
@@ -131,15 +143,12 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 
 # Module-level Queue construction. SAQ's `saq <module>.settings` CLI imports
 # this module and reads `settings` as a top-level attribute (RESEARCH §A2).
-queue = Queue.from_url(get_settings().redis_url, name="controller")
-# Phase 27 UAT Gap 1: SAQ 0.26.3's Worker.__init__ does NOT accept `timeout`,
-# `retries`, or `keep_result` -- those are per-Job settings. Apply the project's
-# policy defaults via a `before_enqueue` hook on the Queue so every enqueued
-# Job inherits the longer timeout / retry budget without breaking Worker
-# construction. See phaze.tasks._shared.queue_defaults for the hook body.
-queue.register_before_enqueue(apply_project_job_defaults)
-# Phase 35 (D-05): central deterministic-key hook on the module-level controller queue.
-queue.register_before_enqueue(apply_deterministic_key)
+# Phase 36: built via the single `build_pipeline_queue` seam -- a PostgresQueue (broker =
+# queue_url) with BOTH before_enqueue hooks (apply_project_job_defaults + apply_deterministic_key)
+# already registered and a decoupled `cache_redis` handle attached. Conservative pool sizing
+# (2/8) for the control role keeps the per-queue psycopg3 budget under Postgres max_connections
+# (RESEARCH Pitfall 4). No registration here -- the factory owns the hook chain.
+queue = build_pipeline_queue("controller", get_settings().queue_url, cache_redis_url=get_settings().redis_url, min_size=2, max_size=8)
 
 
 settings = {

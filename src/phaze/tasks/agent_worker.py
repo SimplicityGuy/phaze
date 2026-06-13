@@ -45,7 +45,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from saq import CronJob, Queue
+import redis.asyncio as redis_async
+from saq import CronJob
 import structlog
 
 from phaze.config import AgentSettings, get_settings
@@ -56,9 +57,9 @@ from phaze.tasks._shared.agent_bootstrap import (
     construct_agent_client,
     whoami_with_retry as _whoami_with_retry,
 )
-from phaze.tasks._shared.deterministic_key import apply_deterministic_key, increment_completed
+from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
-from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
@@ -94,6 +95,11 @@ async def startup(ctx: dict[str, Any]) -> None:
         token_preview,
         os.environ.get("PHAZE_AGENT_QUEUE", "<unset>"),
     )
+
+    # Phase 36: dedicated cache-redis handle. The broker is Postgres now, so cache-plane
+    # readers must use a Redis client decoupled from the queue. Symmetric with the control
+    # role's ctx["redis"]; created here, closed in shutdown. from_url is lazy (no socket here).
+    ctx["redis"] = redis_async.Redis.from_url(cfg.redis_url)
 
     # Step 2: Construct PhazeAgentClient (shared bootstrap helper -- Phase 27 D-17).
     client = construct_agent_client(cfg)
@@ -166,6 +172,11 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     if client is not None:
         await client.close()
 
+    # Phase 36: close the dedicated cache-redis client.
+    cache_redis = ctx.get("redis")
+    if cache_redis is not None:
+        await cache_redis.aclose()
+
 
 # Module-level Queue construction. SAQ's `saq <module>.settings` CLI imports
 # this module and reads `settings` as a top-level attribute (RESEARCH §A2).
@@ -177,17 +188,13 @@ if not _queue_name:
     # Common during local dev when env isn't set; clearer than a runtime "queue is empty" mystery.
     msg = "PHAZE_AGENT_QUEUE env var is required for agent_worker. Expected form: phaze-agent-<agent_id>. See Phase 26 D-16."
     raise RuntimeError(msg)
-queue = Queue.from_url(get_settings().redis_url, name=_queue_name)
-# Phase 27 UAT Gap 1: SAQ 0.26.3's Worker.__init__ does NOT accept `timeout`,
-# `retries`, or `keep_result` -- those are per-Job settings. Apply the project's
-# policy defaults via a `before_enqueue` hook on the Queue so every enqueued
-# Job inherits the longer timeout / retry budget without breaking Worker
-# construction. See phaze.tasks._shared.queue_defaults for the hook body.
-queue.register_before_enqueue(apply_project_job_defaults)
-# Phase 35 (D-05): central deterministic-key hook on the agent worker's queue. The agent
-# runs in a separate container but shares the central Redis, so its enqueued/completed
-# INCRs land in the same counters the dashboard reads.
-queue.register_before_enqueue(apply_deterministic_key)
+# Phase 36: built via the single `build_pipeline_queue` seam -- a PostgresQueue (broker =
+# queue_url) with BOTH before_enqueue hooks already registered and a decoupled `cache_redis`
+# handle. The agent runs in a separate container but shares the central cache-Redis, so its
+# enqueued/completed counter INCRs (folded into the hooks via cache_redis) land in the same
+# counters the dashboard reads. Conservative pool sizing (1/4) keeps the per-queue psycopg3
+# budget under Postgres max_connections (RESEARCH Pitfall 4). The factory owns the hook chain.
+queue = build_pipeline_queue(_queue_name, get_settings().queue_url, cache_redis_url=get_settings().redis_url, min_size=1, max_size=4)
 
 
 settings = {
