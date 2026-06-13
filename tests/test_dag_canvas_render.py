@@ -37,7 +37,9 @@ PARTIALS_DIR = TEMPLATES_DIR / "pipeline" / "partials"
 
 _templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# The 17 per-node store sub-keys carried in the `dag` context (35-04 contract).
+# The per-node store sub-keys carried in the `dag` context (35-04 contract + the 6
+# Phase-38 stage-control keys added in 38-03 — metadata/analyze/fingerprint Paused/Priority —
+# which ride the same dag.items() seed/OOB loop).
 _DAG_KEYS = (
     "metadataDone",
     "metadataTotal",
@@ -56,7 +58,30 @@ _DAG_KEYS = (
     "approved",
     "executedDone",
     "executedTotal",
+    # Phase-38 (38-03) per-stage control keys.
+    "metadataPaused",
+    "metadataPriority",
+    "analyzePaused",
+    "analyzePriority",
+    "fingerprintPaused",
+    "fingerprintPriority",
 )
+
+# The three agent stages that carry the Phase-38 pause/resume + priority controls.
+_AGENT_STAGES = ("metadata", "analyze", "fingerprint")
+
+
+def _stage_control_fragment(html: str, stage: str) -> str:
+    """Slice the rendered ``stage_controls(stage)`` macro fragment for assertions.
+
+    Runs from the control container id to its LOCKED inline error copy (one per stage),
+    capturing the full macro output (including the error reveal) without bleeding into the
+    next stage's controls or the enqueue button (which precedes the controls in the chip).
+    """
+    start = html.index(f'id="stage-controls-{stage}"')
+    end = html.index("Couldn't update. Retry.", start)
+    return html[start : end + len("Couldn't update. Retry.")]
+
 
 # All 9 DAG node ids (topological order).
 _NODE_IDS = (
@@ -245,22 +270,126 @@ def test_discovery_node_has_no_rescan_anchor() -> None:
 
 
 # ---------------------------------------------------------------------------
+# stage controls (38-02) — per-stage pause/resume + priority steppers
+# ---------------------------------------------------------------------------
+
+
+def test_controls_render_pause_resume_static_hx_post_per_agent_stage() -> None:
+    """REQ-38-1: each agent chip renders TWO x-show-gated static-hx-post Pause/Resume buttons."""
+    html = _render_canvas()
+    for stage in _AGENT_STAGES:
+        frag = _stage_control_fragment(html, stage)
+        # Pause — static hx-post, shown only while NOT paused.
+        assert f'hx-post="/pipeline/stages/{stage}/pause"' in frag
+        assert f'x-show="!$store.pipeline.{stage}Paused"' in frag
+        # Resume — static hx-post, shown only while paused.
+        assert f'hx-post="/pipeline/stages/{stage}/resume"' in frag
+        assert f'x-show="$store.pipeline.{stage}Paused"' in frag
+        # Label flip (color is never the only signal).
+        assert ">Pause</button>" in frag
+        assert ">Resume</button>" in frag
+
+
+def test_controls_render_priority_steppers_per_agent_stage() -> None:
+    """REQ-38-2: ▲ Higher posts {delta:-10}; ▼ Lower posts {delta:+10}; value binds <stage>Priority."""
+    html = _render_canvas()
+    for stage in _AGENT_STAGES:
+        frag = _stage_control_fragment(html, stage)
+        assert f'hx-post="/pipeline/stages/{stage}/priority"' in frag
+        # ▲ Higher decrements the raw number (runs sooner); disabled at the floor.
+        assert "hx-vals='{\"delta\": -10}'" in frag
+        assert f"$store.pipeline.{stage}Priority <= 0" in frag
+        assert "▲ Higher" in frag
+        # ▼ Lower increments; disabled at the ceiling.
+        assert "hx-vals='{\"delta\": 10}'" in frag
+        assert f"$store.pipeline.{stage}Priority >= 100" in frag
+        assert "▼ Lower" in frag
+        # Raw value bound with tabular-nums so it doesn't reflow as it steps.
+        assert f'x-text="$store.pipeline.{stage}Priority"' in frag
+        assert "tabular-nums" in frag
+
+
+def test_controls_are_authoritative_only_and_store_driven() -> None:
+    """Controls use hx-swap=none + a JSON-parse after-request store writer (no optimistic mutation)."""
+    html = _render_canvas()
+    for stage in _AGENT_STAGES:
+        frag = _stage_control_fragment(html, stage)
+        # Every control is hx-swap=none + self-disabling for the request duration.
+        assert frag.count('hx-swap="none"') == 4  # pause + resume + ▲ + ▼
+        assert frag.count('hx-disabled-elt="this"') == 4
+        # Authoritative store write from the server JSON (paused coerced to int 0/1).
+        assert "JSON.parse($event.detail.xhr.response)" in frag
+        assert f"$store.pipeline.{stage}Priority = r.priority" in frag
+        assert f"$store.pipeline.{stage}Paused = r.paused ? 1 : 0" in frag
+
+
+def test_controls_are_not_agentbusy_gated() -> None:
+    """Controls read ONLY $store.pipeline.<stage>Paused/Priority — never nodes.<stage>.blocked / agentBusy."""
+    html = _render_canvas()
+    for stage in _AGENT_STAGES:
+        frag = _stage_control_fragment(html, stage)
+        assert ".blocked" not in frag, f"{stage} controls must not gate on nodes.{stage}.blocked"
+        assert "agentBusy" not in frag, f"{stage} controls must not gate on agentBusy"
+
+
+def test_controls_carry_dark_class_and_grid_aligned_spacing() -> None:
+    """Every control fragment carries a dark: variant; steppers use px-1 + min-h-[28px] (never px-1.5)."""
+    html = _render_canvas()
+    for stage in _AGENT_STAGES:
+        frag = _stage_control_fragment(html, stage)
+        assert "dark:" in frag, f"{stage} controls missing a dark: class"
+        assert "min-h-[28px]" in frag
+        assert "px-1.5" not in frag, "stepper padding must be the grid-aligned px-1, not px-1.5"
+
+
+def test_controls_render_priority_hint_once_per_agent_stage() -> None:
+    """The static 'lower number runs first' hint appears once per agent node (3 total)."""
+    html = _render_canvas()
+    assert html.count("lower number runs first") == len(_AGENT_STAGES)
+
+
+def test_controls_only_on_agent_stages_not_other_nodes() -> None:
+    """Only the 3 agent chips carry controls — no stage_controls fragment for non-agent nodes."""
+    html = _render_canvas()
+    assert html.count('id="stage-controls-') == len(_AGENT_STAGES)
+    for non_agent in ("discovery", "scan_search", "proposals", "scrape", "execute", "match"):
+        assert f'id="stage-controls-{non_agent}"' not in html
+
+
+# ---------------------------------------------------------------------------
 # gating — triggers, LOCKED predicates/copy, the <ol> fallback
 # ---------------------------------------------------------------------------
 
 
 def test_gating_triggers_post_only_to_existing_endpoints() -> None:
-    """The 4 enqueue triggers POST to the existing endpoints only — no net-new surface."""
+    """Every POST target is an existing endpoint — the 4 enqueue triggers + the Phase-38 controls.
+
+    INTENTIONAL Phase-38 contract change (38-02), NOT an accidental loosening of the original
+    "exactly 4 hx-post" guard: the per-stage pause/resume/priority controls add 12 new
+    ``/pipeline/stages/...`` posts (4 per agent stage). The enqueue-trigger surface is still
+    pinned to exactly its 4 existing endpoints (no net-new trigger surface — T-35-10), and a
+    separate assertion pins the stage-control surface to the known endpoints.
+    """
     html = _render_canvas()
     targets = re.findall(r'hx-post="(/pipeline/[^"]+)"', html)
-    assert sorted(targets) == [
+
+    # The 4 enqueue triggers POST only to the existing Phase-34 endpoints — unchanged.
+    enqueue_targets = sorted(t for t in targets if not t.startswith("/pipeline/stages/"))
+    assert enqueue_targets == [
         "/pipeline/analyze",
         "/pipeline/extract-metadata",
         "/pipeline/fingerprint",
         "/pipeline/proposals",
-    ], targets
-    # Exactly four hx-post calls into /pipeline/ — no other POST target (T-35-10).
-    assert html.count('hx-post="/pipeline/') == 4
+    ], enqueue_targets
+
+    # The Phase-38 stage controls POST only to the existing /pipeline/stages/* endpoints:
+    # pause + resume + priority (x2 steppers) for each of the 3 agent stages = 12 posts.
+    stage_targets = sorted(t for t in targets if t.startswith("/pipeline/stages/"))
+    expected_stage = sorted(f"/pipeline/stages/{stage}/{action}" for stage in _AGENT_STAGES for action in ("pause", "resume", "priority", "priority"))
+    assert stage_targets == expected_stage, stage_targets
+
+    # No POST target outside the enqueue + stage-control surfaces.
+    assert html.count('hx-post="/pipeline/') == len(enqueue_targets) + len(stage_targets)
 
 
 def test_gating_fingerprint_gates_on_discovered_not_metadata_extracted() -> None:
