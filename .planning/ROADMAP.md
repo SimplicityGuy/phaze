@@ -253,7 +253,7 @@ Plans:
 **Requirements**: Queue backend on Postgres; native priority + scheduled-park available; no regression in reboot re-enqueue, SAQ UI, or determinism.
 **Depends on:** Phase 35
 **Rollout:** Ships as a v4.0.x → GHCR publish → homelab redeploy (paired with the Step D homelab change).
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 Plans:
 **Wave 1**
 
@@ -261,7 +261,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 36-02-PLAN.md — Core swap: all 4 construction sites → PostgresQueue via factory + cache-Redis decoupling (proposals, counters, pipeline)
+- [x] 36-02-PLAN.md — Core swap: all 4 construction sites → PostgresQueue via factory + cache-Redis decoupling (proposals, counters, pipeline)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
