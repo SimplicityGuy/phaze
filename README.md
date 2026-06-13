@@ -129,6 +129,24 @@ Unknown task names fail loud (`ValueError`) — they are never silently sent to 
 
 > **Operational note:** Jobs stranded on the legacy `default` queue from before this routing fix (e.g. the `saq:job:default:*` keys from the v4.0.6 incident) are cleared as a one-time **deploy step** after redeploy — re-triggering analysis re-enqueues them correctly onto their named queues. This is an operations task, not application code.
 
+### 🎚️ Per-Stage Pause & Priority
+
+Each of the three agent pipeline stages — **metadata** (`extract_file_metadata`), **analyze** (`process_file`), and **fingerprint** (`fingerprint_file`) — can be paused, resumed, and reprioritized at runtime. The durable operator intent lives in the `pipeline_stage_control` table; a `before_enqueue` hook stamps every NEW stage job from that table, while the control endpoints additionally mutate the EXISTING queued backlog (raw `saq_jobs` UPDATEs) so an action takes effect immediately. The control-table read is cached for **5s** (TTL), so a just-changed priority reaches newly-enqueued jobs within that bounded window.
+
+Each endpoint mutates the control row and the live backlog in a **single transaction** and returns `{stage, priority, paused}` sourced from the control row (the durable intent — a raw `saq_jobs` priority UPDATE reorders the dequeue column but does not rewrite a job's serialized priority, so the control row is the source of truth for the response):
+
+| Endpoint | Action |
+| --- | --- |
+| `POST /pipeline/stages/{stage}/priority` | Apply a signed `{ "delta": int }` to the stage priority. The UI steps by ±10 (10 discrete levels across 0–100); the result is clamped to `[0, 100]` and the new absolute value is returned. Reorders the queued backlog. |
+| `POST /pipeline/stages/{stage}/pause` | **Drain-pause:** in-flight (active) jobs finish; the queued backlog is parked (`scheduled = SENTINEL`, far-future) so it fails the dequeue's `now >= scheduled` gate. Sets `paused = true`. |
+| `POST /pipeline/stages/{stage}/resume` | Un-park **only** the pause-parked rows (sentinel-guarded, so genuine retry backoffs are preserved). Sets `paused = false`. Restores schedulability but **not** priority. |
+
+**Priority semantics:** `priority` maps **directly** onto SAQ's `saq_jobs.priority` — **lower number = higher priority = dequeues sooner** (no inversion). The default is 50; a DB CHECK keeps every stage inside `[0, 100]`, well within SAQ's `0–32767` dequeue window.
+
+**Adopted defaults (locked):** control-state cache TTL = **5s**; **pause persists across reboots** and re-applies to re-enqueued jobs (the hook stamps the parked state onto restarts — Phase 32 resilience); **resume un-parks only** (it never restores a pre-pause priority); priority is a **delta** op with a default UI step of **±10**.
+
+An unknown stage returns **422** (validated against the metadata/analyze/fingerprint allowlist before any backlog filter is built). These endpoints add **no app-layer auth** — like the rest of `/pipeline/*` and the `/saq` UI, they sit behind the reverse proxy's internal-realm auth on the private LAN. The per-stage pause/priority **UI** (DAG-node toggle + stepper) lands in Phase 38.
+
 ## 🌟 Key Features
 
 - **🎵 Broad Format Support**: mp3, m4a, ogg, flac, wav, aiff, wma, aac, opus, plus video (mp4, mkv, avi, webm, mov) and companion files (cue, nfo, m3u)
