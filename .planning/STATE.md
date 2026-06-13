@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 38 planned — ready to execute (Phase 37 merged #124)"
-last_updated: "2026-06-13T19:39:13.027Z"
-last_activity: 2026-06-13 -- Phase 38 planning recovered onto main
+status: executing
+last_updated: "2026-06-13T20:41:27.141Z"
+last_activity: 2026-06-13
 progress:
-  percent: 100
+  percent: 0
 ---
 
 # Project State
@@ -16,16 +16,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 38 — pipeline-dag-pause-priority-ui-and-rescan-button-removal (planned, ready to execute)
+**Current focus:** Phase 38 — pipeline-dag-pause-priority-ui-and-rescan-button-removal
 
 ## Current Position
 
-Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — PLANNED
-Plan: 0 of 3
-Status: Ready to execute (Phase 37 merged — PR #124)
-Last activity: 2026-06-13 -- Phase 38 planning recovered onto main
+Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-06-13
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -80,6 +80,7 @@ Progress: [██████████] 100%
 - [Phase 37]: 37-03: shared tests/integration/conftest.py stage_env fixture (real build_pipeline_queue queue + SQLAlchemy session on the same DB + seeded pipeline_stage_control) proves the helpers on the live saq_jobs dequeue/count/row-lock contract
 - [Phase ?]: 37-04: control endpoints return {stage, priority, paused} from the PipelineStageControl row (durable intent), never a serialized job's priority (Plan-03 column-vs-blob finding)
 - [Phase ?]: 37-04: control-row ORM mutation + service-helper saq_jobs UPDATE land in one session.commit(); unknown stage -> 422 via allowlist guard; priority delta clamped [0,100]; no app-layer auth (reverse-proxy internal-realm)
+- [Phase 38]: 38-01: removed the unused discovery cta 'Rescan Files' alongside the dead anchor (mk o={} default makes the omission safe); guarded the deletion with a string-absence render assertion
 
 ### Pending Todos
 
@@ -118,9 +119,10 @@ None.
 | Phase 37 P02 | 12min | 3 tasks | 6 files |
 | Phase 37 P03 | ~20min | 2 tasks | 6 files |
 | Phase 37 P04 | ~6min | 3 tasks | 5 files |
+| Phase 38 P01 | 3min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-06-13T19:39:13.027Z
+Last session: 2026-06-13T20:40:43.194Z
 Stopped at: Phase 37 merged (#124); Phase 38 planning recovered onto main, ready to execute
 Resume file: None

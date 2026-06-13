@@ -317,11 +317,11 @@ Plans:
 **Requirements**: Operator can pause/resume and raise/lower priority per agent stage from the DAG; Rescan button gone; live state reflected.
 **Depends on:** Phase 37
 **Rollout:** Final homelab Step D consolidation here if any new env/UI config emerges.
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 38-01-PLAN.md — Remove the dead "Rescan Files" anchor from the Discovery node (+ negative guard test) [Wave 1]
+- [x] 38-01-PLAN.md — Remove the dead "Rescan Files" anchor from the Discovery node (+ negative guard test) [Wave 1]
 - [ ] 38-03-PLAN.md — Degrade-safe get_stage_controls + _build_dag_context 6 int keys + base.html store seeds + OOB/store/degrade tests + README [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
