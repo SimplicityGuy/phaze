@@ -39,8 +39,16 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
     - PHAZE_AGENT_API_URL=http://test
     - PHAZE_AGENT_TOKEN=phaze_agent_test
     - PHAZE_AGENT_QUEUE=phaze-agent-test
-    - PHAZE_REDIS_URL=redis://localhost:6379/0   (parsed at import; no connection)
+    - PHAZE_QUEUE_URL=postgresql://...    (Phase 36 Postgres broker DSN; parsed at import,
+      no connection — the PostgresQueue pool is built ``open=False``)
+    - PHAZE_REDIS_URL=redis://localhost:6379/0   (cache plane; parsed at import; no connection)
     - PHAZE_AGENT_SCAN_ROOTS=/tmp (AgentSettings validator requires non-empty list)
+
+    Phase 36 D-25 reinforcement: the broker is now ``PostgresQueue`` (psycopg3). Importing
+    ``agent_worker`` therefore SHOULD pull the psycopg3 broker (``saq.queue.postgres``) but
+    MUST NOT pull ``sqlalchemy.ext.asyncio`` — psycopg3/psycopg_pool are the agent role's
+    only Postgres surface, and the ORM async engine staying out keeps the agent runnable on a
+    host without the SQLAlchemy engine (TASK-01 + DIST-03). The test asserts both directions.
     """
     script = textwrap.dedent("""
         import os
@@ -50,9 +58,13 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
         os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
         os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test-agent")
         os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")
         os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
         import phaze.tasks.agent_worker  # noqa: F401
 
+        # The ORM async engine must NEVER be dragged into the agent import graph. psycopg3
+        # (psycopg / psycopg_pool / saq.queue.postgres) is explicitly NOT forbidden — it is
+        # the Phase-36 broker the agent role is allowed to carry.
         forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
         present = [m for m in forbidden if m in sys.modules]
         if present:
@@ -61,6 +73,12 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
                 mod = sys.modules[m]
                 sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
             sys.exit(1)
+
+        # Positive boundary: the Postgres broker (psycopg3) MUST be the wired backend — proves
+        # the broker swap happened and that it carried psycopg3, not the SQLAlchemy ORM engine.
+        if "saq.queue.postgres" not in sys.modules:
+            sys.stderr.write("EXPECTED BROKER MISSING: saq.queue.postgres not imported\\n")
+            sys.exit(2)
         sys.exit(0)
     """)
     result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
