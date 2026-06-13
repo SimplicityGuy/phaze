@@ -93,8 +93,8 @@ async def apply_deterministic_key(job: Job) -> None:
     (they keep SAQ's random-uuid default key).
 
     The ``enqueued`` counter INCR is folded in here (one hook does key + counter) and is
-    strictly best-effort: the Redis handle is read from ``job.queue.redis`` and any failure
-    is logged, never raised -- a counter hiccup must never block an enqueue.
+    strictly best-effort: the Redis handle is read from ``job.queue.cache_redis`` and any
+    failure is logged, never raised -- a counter hiccup must never block an enqueue.
     """
     builder = _KEY_BUILDERS.get(job.function)
     if builder is None:
@@ -102,11 +102,12 @@ async def apply_deterministic_key(job: Job) -> None:
 
     job.key = f"{job.function}:{builder(job.kwargs or {})}"
 
-    # Best-effort enqueued counter. ``job.queue`` is ``Queue | None``; the redis client is
-    # an instance attribute on the redis-backed Queue (``self.redis``). Degrade silently if
-    # either is absent (e.g. a test fake without a wired redis).
+    # Best-effort enqueued counter. Phase 36: the broker is Postgres now, so the cache client
+    # is the decoupled ``cache_redis`` handle the factory attaches to the queue object (NOT
+    # ``job.queue.redis`` -- PostgresQueue has no such attribute). Degrade silently if it is
+    # absent (e.g. a test fake without a wired cache_redis).
     try:
-        redis = getattr(job.queue, "redis", None)
+        redis = getattr(job.queue, "cache_redis", None)
         if redis is not None:
             await incr_enqueued(redis, job.function)
     except Exception:
@@ -127,7 +128,7 @@ async def increment_completed(ctx: dict[str, Any]) -> None:
     if job.function not in _KEY_BUILDERS:
         return
     try:
-        redis = getattr(job.queue, "redis", None)
+        redis = getattr(job.queue, "cache_redis", None)
         if redis is not None:
             await incr_completed(redis, job.function)
     except Exception:

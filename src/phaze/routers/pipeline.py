@@ -74,13 +74,15 @@ async def _read_pipeline_counters(app_state: Any) -> dict[str, dict[str, int]]:
     Mirrors :func:`get_queue_activity`'s failure isolation: a missing ``app.state``
     handle (the test client skips the lifespan) or any Redis hiccup must degrade the
     counter source to an empty dict so the 5s dashboard poll renders from DB-truth and
-    NEVER 500s (threat T-35-09). The shared ``app.state.redis`` client (decode_responses)
-    is preferred; the SAQ-internal ``controller_queue.redis`` is the fallback handle.
+    NEVER 500s (threat T-35-09). Reads the shared ``app.state.redis`` cache client
+    (decode_responses), which the lifespan always wires. Phase 36: the former
+    ``controller_queue.redis`` fallback is gone -- the broker is Postgres now and has no
+    Redis client to borrow. When ``app.state.redis`` is absent (the test client skips the
+    lifespan) the ``getattr`` returns ``None`` and ``read_counters(None)`` degrades via the
+    except below.
     """
     try:
         redis = getattr(app_state, "redis", None)
-        if redis is None:
-            redis = app_state.controller_queue.redis
         return await read_counters(redis)
     except Exception:
         logger.warning("pipeline_counters_degraded", exc_info=True)

@@ -59,9 +59,10 @@ class FakeRedis:
     Implements only the surface ``phaze.services.pipeline_counters`` touches: ``incr``
     (durable INCR, returns the new value) and ``mget`` (returns ``bytes`` per present key
     or ``None`` for a miss, mirroring a non-``decode_responses`` client so the service's
-    ``_to_int`` bytes-decode path is exercised). Attach to a :class:`DedupFakeQueue` via
-    its ``redis`` attribute so the ``before_enqueue`` key hook's best-effort counter INCR
-    (which reads ``job.queue.redis``) lands somewhere assertable.
+    ``_to_int`` bytes-decode path is exercised). Phase 36: attach to a :class:`FakeQueue` /
+    :class:`DedupFakeQueue` via its ``cache_redis`` attribute so the ``before_enqueue`` key
+    hook's best-effort counter INCR (which reads ``job.queue.cache_redis``, NOT the removed
+    ``job.queue.redis`` -- the broker is Postgres now) lands somewhere assertable.
     """
 
     def __init__(self) -> None:
@@ -100,6 +101,10 @@ class FakeQueue:
         self._info_scheduled = scheduled
         self.captured: list[tuple[str, dict[str, Any]]] = []
         self.captured_policy: list[dict[str, Any]] = []
+        # Phase 36: decoupled cache-redis handle the counter hooks read via
+        # ``getattr(job.queue, "cache_redis", None)`` (the broker is Postgres now, so there is
+        # no ``queue.redis``). A real FakeRedis so a test driving the hooks finds it assertable.
+        self.cache_redis = FakeRedis()
         self.job = AsyncMock(return_value=None)
         self._counter = 0
         # Per-kind queue depths read back by ``count`` (mirrors saq.Queue.count's
@@ -109,6 +114,16 @@ class FakeQueue:
         # When True, ``count`` raises instead of returning — exercises the
         # ``get_queue_activity`` degrade-to-0 path (Plan 01) for a Redis outage.
         self._count_raises = False
+
+    async def connect(self) -> None:
+        """No-op stand-in for ``saq.Queue.connect`` (Phase 36).
+
+        Producer paths now call ``await queue.connect()`` to open the PostgresQueue's
+        psycopg pool before enqueueing (the real pool is built ``open=False``). The fake
+        holds no real connection, so connecting is a no-op -- present only so the producer
+        chokepoints (enqueue_router / enqueue_process_file / enqueue_for_agent) run cleanly
+        against the double.
+        """
 
     async def count(self, kind: str) -> int:
         """Return the seeded depth for ``kind`` (async, mirroring ``saq.Queue.count``).
@@ -297,13 +312,14 @@ def stub_app_state() -> SimpleNamespace:
 
     Used by the unit tests that drive ``resolve_queue_for_task`` directly, where no
     HTTP client / real queue is needed and only the queue *name* and ``agent_id`` are
-    asserted.
+    asserted. Phase 36: each sentinel queue carries a no-op async ``connect`` because
+    ``resolve_queue_for_task`` now opens the PostgresQueue pool before returning.
     """
-    controller_queue = SimpleNamespace(name="controller")
+    controller_queue = SimpleNamespace(name="controller", connect=AsyncMock())
 
     class _StubRouter:
         def queue_for(self, agent_id: str) -> SimpleNamespace:
-            return SimpleNamespace(name=f"phaze-agent-{agent_id}")
+            return SimpleNamespace(name=f"phaze-agent-{agent_id}", connect=AsyncMock())
 
     return SimpleNamespace(controller_queue=controller_queue, task_router=_StubRouter())
 
