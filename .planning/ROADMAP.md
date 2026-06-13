@@ -254,6 +254,7 @@ Plans:
 **Depends on:** Phase 35
 **Rollout:** Ships as a v4.0.x → GHCR publish → homelab redeploy (paired with the Step D homelab change).
 **Plans:** 4/4 plans complete
+**Status:** Complete (verified 2026-06-13 — VERIFICATION.md status: passed, 8/8 must-haves; full suite green 1721 passed; code review WR-01/IN-01/IN-02 resolved).
 Plans:
 **Wave 1**
 
