@@ -33,6 +33,7 @@ from phaze.routers import (
     health,
     pipeline,
     pipeline_scans,
+    pipeline_stages,
     preview,
     proposals,
     scan,
@@ -175,6 +176,10 @@ def create_app() -> FastAPI:
     app.include_router(duplicates.router)
     app.include_router(tracklists.router)
     app.include_router(pipeline.router)
+    # Phase 37: per-stage control-plane endpoints (POST /pipeline/stages/{stage}/
+    # {priority,pause,resume}). Distinct from `pipeline.router` (dashboard + triggers);
+    # mutates the pipeline_stage_control intent row + the live saq_jobs backlog together.
+    app.include_router(pipeline_stages.router)
     app.include_router(search.router)
     app.include_router(tags.router)
     app.include_router(cue.router)
