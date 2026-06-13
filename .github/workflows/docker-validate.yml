@@ -52,8 +52,21 @@ jobs:
           NAME: ${{ matrix.name }}
         run: |
           echo "🔨 Testing build for ${NAME}..."
-          docker build -f "${DOCKERFILE}" "${CONTEXT}"
+          docker build -f "${DOCKERFILE}" -t "phaze-validate-${NAME}:ci" "${CONTEXT}"
           echo "✅ ${NAME} built successfully"
+
+      # Import-smoke for the api image: a successful `docker build` does NOT prove the
+      # image boots — runtime-only ImportErrors (a missing native backend installed
+      # by the deps but not loadable on the slim base) pass the build and crash-loop
+      # at startup. v4.1.0 shipped exactly this: psycopg with no libpq backend ->
+      # `ImportError: no pq wrapper available` on `import phaze.main`. Running the
+      # real import chain here catches that class of regression before release.
+      - name: 🔎 Import smoke — api image boots (import phaze.main)
+        if: matrix.name == 'api'
+        run: |
+          echo "🔎 Importing phaze.main inside the built api image..."
+          docker run --rm "phaze-validate-api:ci" \
+            python -c "import phaze.main; print('✅ import phaze.main OK — native backends (psycopg/essentia) load on the slim base')"
 
   validate-docker-compose:
     runs-on: ubuntu-latest
