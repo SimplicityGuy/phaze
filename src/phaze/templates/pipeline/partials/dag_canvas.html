@@ -130,7 +130,7 @@
            return { done, total, active, blocked, complete, state, pill, pct, reason, label };
          };
          return {
-           discovery: mk(s.discovered, s.discovered, { cta: 'Rescan Files' }),
+           discovery: mk(s.discovered, s.discovered),
            metadata: mk(s.metadataDone, s.metadataTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Extract Metadata', running: 'Extracting…' }),
            analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
            // Fingerprint — hard upstream is Discovery (reads the file on disk), so gate on
@@ -149,7 +149,7 @@
     <p class="text-xs text-gray-500 dark:text-gray-400 hidden sm:block lg:hidden">Scroll horizontally to see the full graph →</p>
   </div>
 
-  {# Empty-state hint (LOCKED copy) — Discovery's Rescan stays enabled regardless. #}
+  {# Empty-state hint (LOCKED copy) — points the operator at the Trigger Scan card. #}
   <div x-show="$store.pipeline.discovered === 0" class="rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4">
     <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">No files discovered</p>
     <p class="text-sm text-gray-500 dark:text-gray-400">Trigger a scan to populate the pipeline.</p>
@@ -188,7 +188,7 @@
 
       {# ════════════ Node chips. DOM order = topological order (Tab traverses the pipeline). ════════════ #}
 
-      {# 1 · Discovery (cyan, full) — root; Rescan links to the existing Trigger Scan card. #}
+      {# 1 · Discovery (cyan, full) — root; display-only (scanning lives in the Trigger Scan card). #}
       {% set n = NODE_LAYOUT.discovery %}
       <div id="node-discovery" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;">
@@ -199,8 +199,6 @@
         </div>
         {{ node_count('discovery') }}
         {{ node_bar('discovery', 'bg-cyan-600 dark:bg-cyan-400') }}
-        <a href="#trigger-scan-heading" aria-label="Rescan files (jump to the Trigger Scan card)"
-           class="block w-full mt-1 text-center px-3 py-1.5 text-sm font-semibold rounded-md bg-cyan-600 dark:bg-cyan-700 text-white hover:bg-cyan-700 dark:hover:bg-cyan-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Rescan Files</a>
       </div>
 
       {# 2 · Extract Metadata (sky, compact) → POST /pipeline/extract-metadata #}
