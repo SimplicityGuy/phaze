@@ -297,3 +297,48 @@ def test_model_bootstrap_stays_postgres_free() -> None:
         check=False,
     )
     assert result.returncode == 0, f"model_bootstrap import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
+def test_stage_control_stays_postgres_free() -> None:
+    """Phase 37 T-37-04 invariant: phaze.tasks._shared.stage_control is Postgres-free.
+
+    The ``apply_stage_control`` before-enqueue hook is registered on EVERY queue via
+    ``build_pipeline_queue`` -- including the agent worker's queue. The agent never enqueues
+    stage jobs, but it DOES import the hook module at queue construction, so the module must
+    NOT pull in:
+    - phaze.database
+    - phaze.tasks.session
+    - sqlalchemy.ext.asyncio
+
+    The hook reads ``pipeline_stage_control`` through the queue's psycopg3 ``pool`` (NOT
+    SQLAlchemy), so importing it under ``PHAZE_ROLE=agent`` must leave sys.modules clean.
+    Parallels ``test_shared_bootstrap_stays_postgres_free`` and is verified by subprocess so a
+    contaminated import cannot poison downstream tests via sys.modules caching.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.tasks._shared.stage_control  # noqa: F401
+
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"stage_control import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"

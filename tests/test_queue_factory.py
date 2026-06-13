@@ -6,7 +6,7 @@ four construction-time contracts with NO live DB and NO live Redis (construction
 ``open=False`` pool):
 
 1. returns a ``saq.queue.postgres.PostgresQueue``;
-2. registers BOTH project before-enqueue hooks (job defaults + deterministic key);
+2. registers all three project before-enqueue hooks (job defaults + deterministic key + stage control);
 3. attaches a decoupled ``cache_redis`` handle the backend-agnostic counter hooks read
    off ``getattr(job.queue, "cache_redis", None)``;
 4. opens NO connection at construction (the pool is created with ``open=False``) — proven
@@ -25,6 +25,7 @@ from saq.queue.postgres import PostgresQueue
 from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
+from phaze.tasks._shared.stage_control import apply_stage_control
 
 
 _PG_URL = "postgresql://u:p@h:5432/d"
@@ -38,12 +39,13 @@ def test_returns_postgres_queue() -> None:
     assert q.name == "controller"
 
 
-def test_both_before_enqueue_hooks_registered() -> None:
-    """Test 2: both Phase 27 + Phase 35 before-enqueue hooks carry over onto the queue."""
+def test_all_before_enqueue_hooks_registered() -> None:
+    """Test 2: all three (Phase 27 + Phase 35 + Phase 37) before-enqueue hooks carry over."""
     q = build_pipeline_queue("controller", _PG_URL, cache_redis_url=_REDIS_URL)
     registered = set(q._before_enqueues.values())
     assert apply_project_job_defaults in registered
     assert apply_deterministic_key in registered
+    assert apply_stage_control in registered
 
 
 def test_attaches_cache_redis_handle() -> None:
