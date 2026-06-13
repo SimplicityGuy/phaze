@@ -8,6 +8,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.file_companion import FileCompanion
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
+from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
@@ -26,6 +27,7 @@ __all__ = [
     "FileRecord",
     "FileState",
     "FingerprintResult",
+    "PipelineStageControl",
     "ProposalStatus",
     "RenameProposal",
     "ScanBatch",

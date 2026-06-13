@@ -216,6 +216,8 @@ __marimo__/
 
 # ML models (downloaded via scripts/download-models.sh)
 models/
+# ...but the source package src/phaze/models/ is real code, not downloaded artifacts.
+!src/phaze/models/
 
 # Claude Code worktrees
 .claude/
