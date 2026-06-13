@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: executing
-last_updated: "2026-06-13T20:58:45.601Z"
+status: verifying
+last_updated: "2026-06-13T21:14:34.362Z"
 last_activity: 2026-06-13
 progress:
   percent: 0
@@ -22,7 +22,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-13
 
 Progress: [░░░░░░░░░░] 0%
@@ -83,6 +83,8 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 38]: 38-01: removed the unused discovery cta 'Rescan Files' alongside the dead anchor (mk o={} default makes the omission safe); guarded the deletion with a string-absence render assertion
 - [Phase 38]: 38-03: get_stage_controls degrade-safe reader returns paused=False/priority=50 defaults on any failure (mirrors _safe_count); _build_dag_context coerces paused to int 0/1 to hold the all-ints x-init invariant (T-35-11)
 - [Phase 38]: 38-03: the 6 stage-control keys ride the existing dag.items() OOB loop with zero stats_bar.html edit; one _NEW_STORE_KEYS edit drives the store-literal, int-key, and OOB-seed tests
+- [Phase 38]: 38-02: stage_controls reusable Jinja macro (id=stage-controls-<stage>) on the 3 agent chips; pause/resume = TWO x-show-gated static-hx-post buttons (not a bound :hx-post), authoritative-only @htmx:after-request JSON-parse store write, no optimistic mutation (T-38-OOB)
+- [Phase 38]: 38-02: agent-chip NODE_LAYOUT gutter widened 182->276px (h 154->250) for the control row; overlap guard min_chip_height bumped 150->240; canvas/SVG grown 720->1000; col-0/col-2/col-3 nodes re-balanced to incoming-edge midpoints
 
 ### Pending Todos
 
@@ -123,9 +125,10 @@ None.
 | Phase 37 P04 | ~6min | 3 tasks | 5 files |
 | Phase 38 P01 | 3min | 2 tasks | 2 files |
 | Phase 38 P03 | ~12min | 3 tasks | 5 files |
+| Phase 38 P02 | 8min | 3 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-06-13T20:58:10.537Z
-Stopped at: Phase 37 merged (#124); Phase 38 planning recovered onto main, ready to execute
+Last session: 2026-06-13T21:14:34.357Z
+Stopped at: Completed 38-02-PLAN.md — Phase 38 complete (all 3 plans), ready for verification
 Resume file: None
