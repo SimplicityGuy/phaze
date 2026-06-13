@@ -262,6 +262,49 @@ async def test_build_dag_context_degrades_to_default_stage_controls(session: Asy
     assert isinstance(dag["metadataPriority"], int)
 
 
+@pytest.mark.asyncio
+async def test_get_stage_controls_degrades_on_db_error() -> None:
+    """get_stage_controls returns the 3-stage defaults and never raises when the SELECT fails.
+
+    This proves the actual T-38-DEGRADE mitigation (the except branch: warn → guarded rollback
+    → defaults) against a session whose ``execute`` raises — a missing ``pipeline_stage_control``
+    table or a DB hiccup. The DB-backed ``_build_dag_context`` degrade test above only exercises
+    the empty-table happy path (zero rows → defaults), so this fake-session test is what actually
+    covers the never-500 rollback branch that keeps the 5s poll alive.
+    """
+    from phaze.services.pipeline import get_stage_controls
+
+    rolled_back = False
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "pipeline_stage_control" does not exist')
+
+        async def rollback(self) -> None:
+            nonlocal rolled_back
+            rolled_back = True
+
+    controls = await get_stage_controls(_ExplodingSession())  # type: ignore[arg-type]
+    assert rolled_back is True
+    assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
+
+
+@pytest.mark.asyncio
+async def test_get_stage_controls_overlays_present_rows(session: AsyncSession) -> None:
+    """A present control row overlays its paused/priority onto the defaults; absent stages keep
+    the defaults. Proves the happy-path overlay loop in get_stage_controls."""
+    from phaze.models.pipeline_stage_control import PipelineStageControl
+    from phaze.services.pipeline import get_stage_controls
+
+    session.add(PipelineStageControl(stage="analyze", paused=True, priority=20))
+    await session.flush()
+
+    controls = await get_stage_controls(session)
+    assert controls["analyze"] == {"paused": True, "priority": 20}
+    assert controls["metadata"] == {"paused": False, "priority": 50}
+    assert controls["fingerprint"] == {"paused": False, "priority": 50}
+
+
 # ---------------------------------------------------------------------------
 # Task 2: HTTP render — OOB seeds on the poll + dashboard full-page never-500
 # ---------------------------------------------------------------------------
