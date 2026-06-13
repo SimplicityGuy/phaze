@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: verifying
+status: "Phase 38 complete — v4.0 stage-pause cycle done"
 last_updated: "2026-06-13T21:14:34.362Z"
-last_activity: 2026-06-13
+last_activity: 2026-06-13 -- Phase 38 complete
 progress:
-  percent: 0
+  percent: 100
 ---
 
 # Project State
@@ -16,16 +16,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 38 — pipeline-dag-pause-priority-ui-and-rescan-button-removal
+**Current focus:** Phase 38 complete — v4.0 stage-pause/priority cycle (36→37→38) done; next is ship Phase 38 + complete-milestone
 
 ## Current Position
 
-Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — EXECUTING
+Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — COMPLETE
 Plan: 3 of 3
-Status: Phase complete — ready for verification
-Last activity: 2026-06-13
+Status: Phase 38 complete (code-verified 4/4 REQs; 5 browser UAT items deferred → 38-HUMAN-UAT.md). Last phase of the v4.0 stage-pause cycle. Next: ship Phase 38 (PR) → release → homelab redeploy → verify-work 37+38.
+Last activity: 2026-06-13 -- Phase 38 complete
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
