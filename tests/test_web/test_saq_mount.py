@@ -10,10 +10,13 @@ DB, no Redis, and no live workers (RESEARCH Pitfall 2).
 """
 
 import ast
+import inspect
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from saq.queue.postgres import PostgresQueue
 import saq.web.starlette as saq_starlette
 
 from phaze.config import settings
@@ -84,3 +87,37 @@ def test_saq_web_single_call_contract() -> None:
     build_saq_app([FakeQueue("a")])
     build_saq_app([FakeQueue("b")])
     assert set(saq_starlette.QUEUES) == {"b"}
+
+
+def test_mount_renders_over_postgres_queue_info() -> None:
+    """REQ-36-4 / T-36-07: the dashboard renders over a real ``PostgresQueue``'s ``.info()``.
+
+    Phase 36 swaps the broker from Redis to Postgres, so the ``/saq`` monitor must keep
+    rendering when handed ``PostgresQueue`` instances. ``saq_web``'s ``/api/queues`` route
+    reads each queue's backend-agnostic ``.info()`` (``saq/web/starlette.py`` ``_get_all_info``)
+    — exactly the surface this migration most threatens (Phase-33 regression surface).
+
+    Constructed ``open=False`` (the ``PostgresQueue.from_url`` default) so NO connection or
+    pool is opened: ``.info()`` is patched to the canonical ``QueueInfo``-shaped mapping the
+    backend returns, proving the mount reuses the PASSED PostgresQueue instance and renders
+    via its ``.info()`` with no live Postgres. A parallel assertion pins that the genuine
+    ``PostgresQueue.info`` is an async backend method (shape parity with the Redis backend).
+    """
+    pg_queue = PostgresQueue.from_url("postgresql://phaze:phaze@localhost:5433/phaze_test", name="controller")
+    pg_queue.info = AsyncMock(  # type: ignore[method-assign]
+        return_value={"workers": {}, "name": "controller", "queued": 3, "active": 1, "scheduled": 0, "jobs": []}
+    )
+
+    app = FastAPI()
+    app.mount("/saq", build_saq_app([pg_queue]))
+    with TestClient(app) as c:
+        resp = c.get("/saq/api/queues")
+        assert resp.status_code == 200
+        rendered = resp.json()["queues"]
+        assert {q["name"] for q in rendered} == {"controller"}
+        assert rendered[0]["queued"] == 3
+
+    # The dashboard read the PASSED PostgresQueue's own ``.info()`` (not a Redis path).
+    pg_queue.info.assert_awaited()
+    # And the real (unpatched) backend method is the async ``.info()`` the route renders over.
+    assert inspect.iscoroutinefunction(PostgresQueue.info)
