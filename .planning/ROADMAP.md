@@ -283,7 +283,7 @@ Plans:
 
 **Requirements**: Drain-style pause + live backlog reprioritization per agent stage; retry backoffs preserved; no double-pickup.
 **Depends on:** Phase 36 (Postgres queue backend)
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -296,7 +296,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 37-03-PLAN.md — Real-PG integration tests: drain-pause (REQ-37-1 + Pitfall-1 count), live reorder (REQ-37-2), sentinel-guarded resume (REQ-37-3), no-double-pickup concurrency (REQ-37-4) [Wave 3]
+- [x] 37-03-PLAN.md — Real-PG integration tests: drain-pause (REQ-37-1 + Pitfall-1 count), live reorder (REQ-37-2), sentinel-guarded resume (REQ-37-3), no-double-pickup concurrency (REQ-37-4) [Wave 3]
 
 **Wave 4** *(blocked on Wave 3)*
 
