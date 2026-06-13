@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 38 complete — v4.0 stage-pause cycle done"
-last_updated: "2026-06-13T21:14:34.362Z"
-last_activity: 2026-06-13 -- Phase 38 complete
+status: "Phase 38 shipped — PR #125"
+last_updated: "2026-06-13T22:04:25.158Z"
+last_activity: 2026-06-13
 progress:
   percent: 100
 ---
@@ -22,8 +22,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — COMPLETE
 Plan: 3 of 3
-Status: Phase 38 complete (code-verified 4/4 REQs; 5 browser UAT items deferred → 38-HUMAN-UAT.md). Last phase of the v4.0 stage-pause cycle. Next: ship Phase 38 (PR) → release → homelab redeploy → verify-work 37+38.
-Last activity: 2026-06-13 -- Phase 38 complete
+Status: Phase 38 shipped — PR #125
+Last activity: 2026-06-13
 
 Progress: [██████████] 100%
 
