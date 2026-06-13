@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: executing
-last_updated: "2026-06-13T17:22:06.209Z"
+status: verifying
+last_updated: "2026-06-13T17:32:33.453Z"
 last_activity: 2026-06-13
 progress:
   percent: 0
@@ -22,7 +22,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 37 (per-stage-pause-and-priority-control-plane-table-api-worker) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-13
 
 Progress: [░░░░░░░░░░] 0%
@@ -78,6 +78,8 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase ?]: 37-02: 5s TTL cache (single monotonic window) collapses bulk-enqueue control reads; resume keeps AND scheduled=:SENTINEL guard so retry backoffs are never clobbered
 - [Phase 37]: 37-03: assert dequeue ORDER + saq_jobs.priority COLUMN, never the deserialized Job.priority (a raw column UPDATE does not rewrite the serialized job blob)
 - [Phase 37]: 37-03: shared tests/integration/conftest.py stage_env fixture (real build_pipeline_queue queue + SQLAlchemy session on the same DB + seeded pipeline_stage_control) proves the helpers on the live saq_jobs dequeue/count/row-lock contract
+- [Phase ?]: 37-04: control endpoints return {stage, priority, paused} from the PipelineStageControl row (durable intent), never a serialized job's priority (Plan-03 column-vs-blob finding)
+- [Phase ?]: 37-04: control-row ORM mutation + service-helper saq_jobs UPDATE land in one session.commit(); unknown stage -> 422 via allowlist guard; priority delta clamped [0,100]; no app-layer auth (reverse-proxy internal-realm)
 
 ### Pending Todos
 
@@ -115,9 +117,10 @@ None.
 | Phase 37 P01 | 3min | 3 tasks | 6 files |
 | Phase 37 P02 | 12min | 3 tasks | 6 files |
 | Phase 37 P03 | ~20min | 2 tasks | 6 files |
+| Phase 37 P04 | ~6min | 3 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-06-13T17:20:47.011Z
+Last session: 2026-06-13T17:32:27.129Z
 Stopped at: Completed 37-01-PLAN.md
 Resume file: None

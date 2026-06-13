@@ -283,7 +283,7 @@ Plans:
 
 **Requirements**: Drain-style pause + live backlog reprioritization per agent stage; retry backoffs preserved; no double-pickup.
 **Depends on:** Phase 36 (Postgres queue backend)
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 **Wave 1**
@@ -300,7 +300,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 37-04-PLAN.md — FastAPI control endpoints (priority delta/pause/resume) + StagePriorityDelta schema + main.py registration + endpoint tests + README [Wave 4]
+- [x] 37-04-PLAN.md — FastAPI control endpoints (priority delta/pause/resume) + StagePriorityDelta schema + main.py registration + endpoint tests + README [Wave 4]
 
 ### Phase 38: Pipeline DAG Pause/Priority UI and Rescan Button Removal
 
