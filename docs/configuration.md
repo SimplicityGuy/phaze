@@ -30,6 +30,7 @@ The secret-bearing fields and their `_FILE` siblings:
 | `openai_api_key`    | control | `OPENAI_API_KEY_FILE` |
 | `database_url`      | all     | `PHAZE_DATABASE_URL_FILE`, `DATABASE_URL_FILE` |
 | `redis_url`         | all     | `PHAZE_REDIS_URL_FILE`, `REDIS_URL_FILE` |
+| `queue_url`         | all     | `PHAZE_QUEUE_URL_FILE` |
 | `agent_token`       | agent   | `PHAZE_AGENT_TOKEN_FILE`, `AGENT_TOKEN_FILE` |
 
 Semantics (implemented by the shared `_resolve_secret_files` validator in `config.py`, which derives the `_FILE` names from each field's existing aliases):
@@ -52,7 +53,8 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 |-----------------------------------|----------|----------------------------------------------------------|-----------------------------------------------------------------------------|
 | `PHAZE_ROLE`                      | No       | `control`                                                | Selects the settings subclass: `control` or `agent`.                        |
 | `PHAZE_DATABASE_URL` (or `DATABASE_URL`) | No | `postgresql+asyncpg://phaze:phaze@postgres:5432/phaze`    | PostgreSQL connection string. Use `localhost` when running on the host instead of in Compose. |
-| `PHAZE_REDIS_URL` (or `REDIS_URL`)| No       | `redis://redis:6379/0`                                    | Redis connection string (SAQ broker). In production agent mode, a password is required (see Per-environment overrides). |
+| `PHAZE_REDIS_URL` (or `REDIS_URL`)| No       | `redis://redis:6379/0`                                    | Redis connection string. **Cache / rate-limit / counters only** — no longer the SAQ broker (see `PHAZE_QUEUE_URL`). In production agent mode, a password is required (see Per-environment overrides). |
+| `PHAZE_QUEUE_URL` (or `queue_url`)| No       | `postgresql://phaze:phaze@postgres:5432/phaze`            | SAQ Postgres broker DSN (Phase 36). Must be the **raw libpq** form (`postgresql://…`), NOT the SQLAlchemy `postgresql+asyncpg://` dialect — psycopg3's pool cannot parse the `+driver` suffix (an `+asyncpg`/`+psycopg` value is auto-normalized). Carries DB credentials, so it is secret-bearing (`PHAZE_QUEUE_URL_FILE`). On agent hosts it points at the app-server Postgres LAN IP:5432 — agents open a psycopg3 pool to it (new firewall edge, relaxes D-25). |
 | `DEBUG`                           | No       | `false`                                                  | Enable debug mode.                                                          |
 | `API_HOST`                        | No       | `0.0.0.0`                                                | API server bind address.                                                    |
 | `API_PORT`                        | No       | `8000`                                                   | API server port.                                                            |
@@ -199,8 +201,9 @@ Phaze has no JSON/YAML/TOML application config file. All runtime configuration f
 A minimal `.env` for a single-host dev bring-up:
 
 ```bash
-# Database + Redis (Docker service names)
+# Database + queue broker + Redis cache (Docker service names)
 DATABASE_URL=postgresql+asyncpg://phaze:phaze@postgres:5432/phaze
+PHAZE_QUEUE_URL=postgresql://phaze:phaze@postgres:5432/phaze   # libpq form, NOT +asyncpg
 REDIS_URL=redis://redis:6379/0
 REDIS_PASSWORD=changeme
 
@@ -228,6 +231,7 @@ Almost every field has a safe default so a fresh clone runs with `docker compose
 Defaults are defined in `src/phaze/config.py`. Highlights:
 
 - `database_url` → `postgresql+asyncpg://phaze:phaze@postgres:5432/phaze`
+- `queue_url` → `postgresql://phaze:phaze@postgres:5432/phaze` (libpq form for the SAQ Postgres broker)
 - `redis_url` → `redis://redis:6379/0`
 - `api_host` → `0.0.0.0`, `api_port` → `8000`
 - `scan_path` → `/data/music`, `output_path` → `/data/output`, `models_path` → `/models`
@@ -240,7 +244,7 @@ Defaults are defined in `src/phaze/config.py`. Highlights:
 
 There are no `.env.development` / `.env.production` files; environment selection is explicit:
 
-- **Host vs container connection strings** — `.env.example` defaults to the Docker service names `postgres` / `redis`. When running a service directly on the host with `uv run`, switch `DATABASE_URL` and `REDIS_URL` to `localhost` (or an SSH tunnel to the home server).
+- **Host vs container connection strings** — `.env.example` defaults to the Docker service names `postgres` / `redis`. When running a service directly on the host with `uv run`, switch `DATABASE_URL`, `PHAZE_QUEUE_URL`, and `REDIS_URL` to `localhost` (or an SSH tunnel to the home server).
 - **Agent dev vs production** — set `PHAZE_AGENT_ENV=production` on agents. This activates two guards:
   - `_enforce_https_in_production` — `agent_api_url` must start with `https://`, otherwise the bearer token travels in cleartext.
   - `_enforce_redis_password_in_production` — `redis_url` must contain a password, paired with the server-side `--requirepass` + LAN-bound port hardening. `dev` (default) permits passwordless Redis so a fresh clone works without extra ceremony.

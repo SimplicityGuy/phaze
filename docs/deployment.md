@@ -25,7 +25,7 @@ The repo ships three compose files plus a dev override:
 | `api` | build `Dockerfile` | `uv run python -m phaze.entrypoint` | `${API_PORT:-8000}:8000` | FastAPI + admin UI behind TLS. Mounts `${CA_PATH:-./certs}:/certs:rw` for the cert bootstrap. |
 | `worker` | build `Dockerfile` | `uv run saq phaze.tasks.controller.settings` | — | Control-role SAQ worker (`PHAZE_ROLE=control`). Fileless; no volume mounts. |
 | `postgres` | `postgres:18-alpine` | — | `5432:5432` | Primary database. Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
-| `redis` | `redis:8-alpine` | `redis-server --requirepass ${REDIS_PASSWORD:?...}` | `${REDIS_BIND_IP:-127.0.0.1}:6379:6379` | Task-queue broker. `--requirepass` fails fast at compose-parse time if `REDIS_PASSWORD` is unset. |
+| `redis` | `redis:8-alpine` | `redis-server --requirepass ${REDIS_PASSWORD:?...}` | `${REDIS_BIND_IP:-127.0.0.1}:6379:6379` | Cache / rate-limit / counters (no longer the SAQ broker — Postgres is, via `PHAZE_QUEUE_URL`). `--requirepass` fails fast at compose-parse time if `REDIS_PASSWORD` is unset. |
 
 `api` and `worker` are built from the same `Dockerfile` and differ only by their `command`: `api` runs the cert-bootstrap entrypoint then uvicorn; `worker` runs the controller SAQ worker with `PHAZE_ROLE=control`.
 
@@ -38,7 +38,7 @@ The repo ships three compose files plus a dev override:
 | `audfprint` | `ghcr.io/simplicityguy/phaze/audfprint:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
 | `panako` | `ghcr.io/simplicityguy/phaze/panako:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
 
-All four services mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** (agents reach the app-server's Redis directly and Postgres only via the HTTP API — DIST-04) and **no `DATABASE_URL`** on any agent service.
+All four services mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis (cache) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker** directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service; the agent's only Postgres connection is the SAQ broker pool.
 
 ## Controller vs Agent roles
 
@@ -73,8 +73,8 @@ The env vars that gate this bootstrap on the agent side are `PHAZE_AGENT_CA_FILE
 
 - Docker Engine 20.10+ and `docker compose` v2.x on both hosts
 - `just` installed on both hosts (or run `docker compose` directly)
-- Both hosts on the same private LAN; no firewall blocking ports 6379 (Redis) or 8000 (API) between them
-- Postgres + Redis are NOT directly exposed to the public internet
+- Both hosts on the same private LAN; no firewall blocking ports 6379 (Redis cache), 5432 (Postgres SAQ broker — agents reach it directly as of Phase 36), or 8000 (API) between them
+- Postgres + Redis are NOT directly exposed to the public internet (LAN-only; the agent→Postgres:5432 edge is private-LAN scoped)
 - On the app-server host: `./certs/` (auto-populated on first start), `.env`
 - On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (auto-downloads on first agent start), `.env`
 
@@ -88,6 +88,8 @@ cd phaze
 cp .env.example .env
 # Edit .env: set REDIS_PASSWORD to a strong unique value (>= 32 chars)
 # Edit .env: set REDIS_BIND_IP to the app-server's private LAN IP (e.g., 192.168.1.10)
+# Edit .env: set PHAZE_QUEUE_URL (raw libpq postgresql:// DSN) — the SAQ Postgres broker.
+#            Defaults to the in-compose `postgres` service; treat as a secret (PHAZE_QUEUE_URL_FILE).
 just up
 ```
 
@@ -198,7 +200,8 @@ cp .env.example.agent .env
 Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` interpolation on `SCAN_PATH`, so docker compose fails fast at parse time if it is unset:
 
 - `PHAZE_AGENT_API_URL=https://<app-server-lan-ip>:8000`
-- `PHAZE_REDIS_URL=redis://default:<REDIS_PASSWORD>@<app-server-lan-ip>:6379/0`
+- `PHAZE_REDIS_URL=redis://default:<REDIS_PASSWORD>@<app-server-lan-ip>:6379/0` (cache only — no longer the SAQ broker)
+- `PHAZE_QUEUE_URL=postgresql://<user>:<password>@<app-server-lan-ip>:5432/phaze` — the SAQ Postgres broker DSN (**raw libpq form**, NOT `postgresql+asyncpg://`). The agent now opens a psycopg3 pool to the app-server Postgres, so its host must be reachable on 5432 (new firewall edge relaxing D-25). Treat it as a secret — prefer `PHAZE_QUEUE_URL_FILE=/run/secrets/phaze_queue_url`.
 - `PHAZE_AGENT_ID=fileserver-east`
 - `PHAZE_AGENT_TOKEN=<the plaintext token from Step 3>`
 - `PHAZE_AGENT_QUEUE=phaze-agent-fileserver-east` — by convention this MUST equal `phaze-agent-<agent_id>` (the value `phaze agents add` printed in Step 3). There is no queue column on the `agents` table; the worker derives the expected name from the token's agent_id and exits non-zero on mismatch.
@@ -312,7 +315,8 @@ Production-critical variables:
 |----------|------|----------------|
 | `REDIS_PASSWORD` | app-server | `redis-server --requirepass`; compose parse fails if unset. Use a unique high-entropy value (>= 32 chars). |
 | `REDIS_BIND_IP` | app-server | Must be the app-server's private LAN IP so agents on other hosts can reach Redis. Never `0.0.0.0`, never a public IP. |
-| `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url` (CR-01) and passwordless `redis_url` (D-06). |
+| `PHAZE_QUEUE_URL` | app-server + file-server | The SAQ Postgres broker DSN (**raw libpq** `postgresql://…`, NOT `+asyncpg`). On agents it points at the app-server Postgres LAN IP:5432 — open that firewall edge (relaxes D-25). Carries DB credentials; use the `_FILE` secret form. Keep the per-queue pool budget under Postgres `max_connections`. |
+| `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url` (CR-01) and passwordless `redis_url` (D-06). Note: there is no production credential guard on `PHAZE_QUEUE_URL` yet — protect it via the LAN-scoped firewall + a strong DB password. |
 | `PHAZE_AGENT_TOKEN` | file-server | The plaintext bearer token; must match the `token_hash` row in `agents`. Generate via `secrets.token_urlsafe(32)`. |
 | `PHAZE_AGENT_CA_FILE` | file-server | Path to the operator-distributed `phaze-ca.crt`; the agent's HTTP client verifies the app-server TLS chain against it. |
 | `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (`v4.0.0`) in production rather than `latest`. |
@@ -320,7 +324,7 @@ Production-critical variables:
 
 ### Secrets via files (Docker secrets)
 
-Every secret-bearing variable accepts a `<VAR>_FILE` sibling that points at a file holding the value, so you can mount a Docker/Swarm secret (or a Kubernetes secret / SOPS-decrypted file) instead of inlining cleartext into the environment. Supported: `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (each also via its `PHAZE_*` alias where one exists), and `PHAZE_AGENT_TOKEN` / `AGENT_TOKEN`. See [docs/configuration.md → Secrets via files](configuration.md#secrets-via-files-_file-convention) for the precedence and newline-stripping rules.
+Every secret-bearing variable accepts a `<VAR>_FILE` sibling that points at a file holding the value, so you can mount a Docker/Swarm secret (or a Kubernetes secret / SOPS-decrypted file) instead of inlining cleartext into the environment. Supported: `DATABASE_URL`, `REDIS_URL`, `PHAZE_QUEUE_URL` (the SAQ Postgres broker DSN — `queue_url`), `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (each also via its `PHAZE_*` alias where one exists), and `PHAZE_AGENT_TOKEN` / `AGENT_TOKEN`. See [docs/configuration.md → Secrets via files](configuration.md#secrets-via-files-_file-convention) for the precedence and newline-stripping rules.
 
 Example — mount the Anthropic key as a Docker secret on the app server and reference it by path (no `ANTHROPIC_API_KEY` in the environment):
 
