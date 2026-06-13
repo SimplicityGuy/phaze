@@ -21,16 +21,25 @@ any legitimate ``scheduled`` (retry backoffs are ``now + small delay``; cron job
 SENTINEL value / Anti-Patterns).
 
 CRITICAL boundary rule (37-RESEARCH Pitfall 4): this module must NOT import
-``phaze.database``, ``phaze.tasks.session``, or ``sqlalchemy.ext.asyncio``. It stays
-pure-constants so the agent worker can import it without pulling the ORM/DB layer across
-the agent import boundary (covered by ``tests/test_task_split.py``). The
-``apply_stage_control`` hook + its TTL cache arrive in Plan 02 -- this module is
-interface-first.
+``phaze.database``, ``phaze.tasks.session``, or ``sqlalchemy.ext.asyncio``. The
+``apply_stage_control`` before-enqueue hook (Plan 02) reads the control table through the
+queue's own psycopg3 ``pool`` -- NOT SQLAlchemy -- so the agent worker can import this
+module without pulling the ORM/DB layer across the agent import boundary (covered by
+``tests/test_task_split.py``).
 """
 
 from __future__ import annotations
 
+import time
+from typing import TYPE_CHECKING
+
 import structlog
+
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from saq import Job
 
 
 logger = structlog.get_logger(__name__)
@@ -56,4 +65,73 @@ _FUNCTION_TO_STAGE: dict[str, str] = {v: k for k, v in STAGE_TO_FUNCTION.items()
 SENTINEL: int = 9999999999
 
 
-__all__ = ["SENTINEL", "STAGE_TO_FUNCTION", "_FUNCTION_TO_STAGE"]
+# In-process TTL cache for the 3-row control table. The before-enqueue hook runs on EVERY
+# enqueue (including bulk runs of ~11k files), so a naive read-through would add one SELECT
+# per enqueue. A tiny module-level cache keyed by stage with a single monotonic expiry
+# collapses a bulk enqueue to ~1 SELECT per stage per TTL window. Staleness is bounded and
+# harmless: the pause/priority endpoints issue the bulk saq_jobs UPDATE for the EXISTING
+# backlog, so the hook only stamps NEW jobs -- a <=5s lag before new jobs pick up a
+# just-changed priority is operationally invisible (37-RESEARCH Pitfall 5 / Open-Q2). TTL is
+# tunable; a single-user admin tool tolerates the bounded staleness.
+_CACHE_TTL_SECONDS: float = 5.0
+_cache: dict[str, tuple[bool, int]] = {}
+_cache_expires_at: float = 0.0
+
+
+async def _read_stage_control(queue: Any, stage: str) -> tuple[bool, int]:
+    """Return ``(paused, priority)`` for ``stage`` via the queue's psycopg3 pool (TTL-cached).
+
+    Reads ``pipeline_stage_control`` through ``queue.pool`` (psycopg3 -- the SAME open
+    PostgresQueue pool SAQ's own ``_enqueue`` uses) so the hook never imports the SQLAlchemy
+    engine / ``phaze.database`` (37-RESEARCH Pitfall 4, agent import boundary). A module-level
+    cache keyed by stage with a single monotonic ``_cache_expires_at`` window collapses
+    bulk-enqueue reads; on window expiry the whole cache is dropped and a fresh window opens.
+    Uses psycopg3 ``%(name)s`` paramstyle with a bound param -- never an f-string (T-37-01).
+    """
+    global _cache_expires_at
+    now = time.monotonic()
+    if now < _cache_expires_at and stage in _cache:
+        return _cache[stage]
+    async with queue.pool.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT paused, priority FROM pipeline_stage_control WHERE stage = %(stage)s",
+            {"stage": stage},
+        )
+        row = await cursor.fetchone()
+    result = (bool(row[0]), int(row[1]))
+    if now >= _cache_expires_at:
+        # Window elapsed: open a fresh one and drop any stale entries from the prior window.
+        _cache.clear()
+        _cache_expires_at = now + _CACHE_TTL_SECONDS
+    _cache[stage] = result
+    return result
+
+
+async def apply_stage_control(job: Job) -> None:
+    """SAQ ``before_enqueue`` hook -- stamp a new stage job with its live priority + park.
+
+    Registered in :func:`phaze.tasks._shared.queue_factory.build_pipeline_queue` AFTER
+    ``apply_deterministic_key`` (so ``job.function`` is final). For a job whose function maps
+    to one of the three agent stages, reads the stage's ``(paused, priority)`` from the
+    TTL-cached control table and sets ``job.priority``; if the stage is paused, ALSO parks the
+    job by setting ``job.scheduled = SENTINEL`` so it fails the dequeue's ``now >= scheduled``
+    gate (REQ-37-1). Non-stage jobs are left completely untouched.
+
+    Best-effort (mirrors :func:`apply_deterministic_key`): ANY control-read failure logs a
+    warning and returns without mutating, so the job enqueues at the default/unpaused state.
+    A control-table hiccup must NEVER block an enqueue (37-RESEARCH Pitfall 4 / T-37-02).
+    """
+    stage = _FUNCTION_TO_STAGE.get(job.function)
+    if stage is None:
+        return
+    try:
+        paused, priority = await _read_stage_control(job.queue, stage)
+    except Exception:
+        logger.warning("stage-control read failed; enqueuing unpaused/default", function=job.function, exc_info=True)
+        return
+    job.priority = priority
+    if paused:
+        job.scheduled = SENTINEL
+
+
+__all__ = ["SENTINEL", "STAGE_TO_FUNCTION", "_FUNCTION_TO_STAGE", "apply_stage_control"]
