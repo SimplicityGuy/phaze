@@ -1,0 +1,34 @@
+---
+status: partial
+phase: 37-per-stage-pause-and-priority-control-plane-table-api-worker
+source: [37-VERIFICATION.md]
+started: 2026-06-13
+updated: 2026-06-13
+---
+
+## Current Test
+
+[awaiting human testing — requires homelab deployment]
+
+## Tests
+
+### 1. Live backlog reprioritization observed end-to-end on homelab
+expected: After deploying the phase and enqueueing a real stage backlog on the homelab Postgres broker, `POST /pipeline/stages/{stage}/priority` with a delta (e.g. `{"delta": -10}` on `analyze`) reorders the queued backlog so lower-priority jobs dequeue sooner, observable via `/saq`.
+why_human: Requires a live running backlog on the homelab Postgres broker with real agent workers consuming jobs — the ephemeral integration-test DB proves the SQL semantics but not end-to-end deployed behavior.
+result: [pending]
+
+### 2. Pause across reboot re-applies to Phase-32 re-enqueued jobs
+expected: After `POST /pipeline/stages/analyze/pause`, rebooting the phaze-api + phaze-worker containers, the Phase-32 reboot re-enqueue path re-parks jobs — re-enqueued `analyze` jobs have `scheduled = SENTINEL` in `saq_jobs` and do not dequeue until `POST /pipeline/stages/analyze/resume`.
+why_human: Requires a real reboot cycle on homelab, the Phase-32 re-enqueue path, and homelab Postgres access — not reproducible locally.
+result: [pending]
+
+## Summary
+
+total: 2
+passed: 0
+issues: 0
+pending: 2
+skipped: 0
+blocked: 0
+
+## Gaps
