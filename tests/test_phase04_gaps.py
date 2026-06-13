@@ -35,6 +35,8 @@ async def test_lifespan_creates_queue_on_startup() -> None:
     mock_queue.disconnect = AsyncMock()
     # Phase 36: the lifespan opens the PostgresQueue broker pool (await connect()).
     mock_queue.connect = AsyncMock()
+    # Phase 36 (WR-01): shutdown closes the factory-attached cache_redis (await aclose()).
+    mock_queue.cache_redis = AsyncMock()
 
     with (
         # Phase 36: the lifespan builds the controller queue via build_pipeline_queue
@@ -84,6 +86,8 @@ async def test_lifespan_disconnects_queue_on_shutdown() -> None:
     mock_queue.disconnect = AsyncMock()
     # Phase 36: the lifespan opens the PostgresQueue broker pool (await connect()).
     mock_queue.connect = AsyncMock()
+    # Phase 36 (WR-01): shutdown closes the factory-attached cache_redis (await aclose()).
+    mock_queue.cache_redis = AsyncMock()
 
     with (
         # Phase 36: controller queue built via build_pipeline_queue (PostgresQueue factory).

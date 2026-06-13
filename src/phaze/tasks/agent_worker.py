@@ -177,6 +177,13 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     if cache_redis is not None:
         await cache_redis.aclose()
 
+    # Phase 36 (WR-01): also close the factory-attached cache_redis on the module-level queue.
+    # The counter hooks read THIS handle (getattr(job.queue, "cache_redis", ...)), and SAQ's
+    # Worker.stop() -> queue.disconnect() closes only the psycopg3 pool, leaving it open.
+    queue_cache_redis = getattr(queue, "cache_redis", None)
+    if queue_cache_redis is not None:
+        await queue_cache_redis.aclose()
+
 
 # Module-level Queue construction. SAQ's `saq <module>.settings` CLI imports
 # this module and reads `settings` as a top-level attribute (RESEARCH §A2).

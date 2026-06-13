@@ -154,6 +154,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Shutdown in reverse construction order.
     await _app.state.task_router.close()
     await _app.state.redis.aclose()
+    # Phase 36 (WR-01): close the factory-attached cache_redis before the pool — disconnect()
+    # closes only the psycopg3 pool, leaving the controller queue's Redis client open.
+    controller_cache_redis = getattr(_app.state.controller_queue, "cache_redis", None)
+    if controller_cache_redis is not None:
+        await controller_cache_redis.aclose()
     await _app.state.controller_queue.disconnect()
     await engine.dispose()
 

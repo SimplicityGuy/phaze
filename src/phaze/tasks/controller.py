@@ -134,6 +134,13 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     if cache_redis is not None:
         await cache_redis.aclose()
 
+    # Phase 36 (WR-01): also close the factory-attached cache_redis on the module-level queue.
+    # The counter hooks read THIS handle (getattr(job.queue, "cache_redis", ...)), and SAQ's
+    # Worker.stop() -> queue.disconnect() closes only the psycopg3 pool, leaving it open.
+    queue_cache_redis = getattr(queue, "cache_redis", None)
+    if queue_cache_redis is not None:
+        await queue_cache_redis.aclose()
+
     # Phase 32: close the per-agent task router (disconnects every cached
     # queue pool; idempotent). Mirrors the discogs_client cleanup above.
     task_router = ctx.get("task_router")

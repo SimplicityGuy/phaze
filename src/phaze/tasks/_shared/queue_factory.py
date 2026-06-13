@@ -68,6 +68,9 @@ def build_pipeline_queue(
     # ``cache_redis`` is a dynamic attribute the counter hooks read via getattr; SAQ's
     # PostgresQueue does not declare it, so the assignment needs an attr-defined ignore.
     q.cache_redis = aioredis.Redis.from_url(cache_redis_url)  # type: ignore[attr-defined]
+    # Pool exhaustion (PoolTimeout) is the identified operational risk (36-RESEARCH Pitfall 4),
+    # so surface the sizing decision at construction time.
+    logger.debug("pipeline_queue_constructed", name=name, min_size=min_size, max_size=max_size, broker="postgres")
     return q
 
 

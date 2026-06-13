@@ -75,6 +75,10 @@ class FakeRedis:
     async def mget(self, keys: list[str]) -> list[bytes | None]:
         return [str(self.store[k]).encode() if k in self.store else None for k in keys]
 
+    async def aclose(self) -> None:
+        # Phase 36 (WR-01): shutdown paths close the factory-attached cache_redis handle.
+        return None
+
 
 class FakeQueue:
     """A named SAQ-queue stand-in that captures every enqueue.

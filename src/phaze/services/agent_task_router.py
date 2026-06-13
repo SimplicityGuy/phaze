@@ -176,5 +176,10 @@ class AgentTaskRouter:
     async def close(self) -> None:
         """Disconnect every cached Queue and clear the cache. Idempotent."""
         for queue in self._queues.values():
+            # Phase 36 (WR-01): close the factory-attached cache_redis handle too —
+            # disconnect() closes only the psycopg3 pool, leaving the Redis client open.
+            cache_redis = getattr(queue, "cache_redis", None)
+            if cache_redis is not None:
+                await cache_redis.aclose()
             await queue.disconnect()
         self._queues.clear()

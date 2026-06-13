@@ -208,6 +208,8 @@ def _patch_saq_lifespan(
     controller_queue.disconnect = AsyncMock()
     controller_queue.connect = AsyncMock()
     controller_queue.info = AsyncMock(return_value={"workers": {}, "name": "controller", "queued": 0, "active": 0, "scheduled": 0, "jobs": []})
+    # Phase 36 (WR-01): shutdown closes the factory-attached cache_redis (await aclose()).
+    controller_queue.cache_redis = AsyncMock()
     monkeypatch.setattr(main_module, "build_pipeline_queue", MagicMock(return_value=controller_queue))
 
     # task_router.queue_for -> the cached per-agent Queue (here a Wave 0 FakeQueue with .info
