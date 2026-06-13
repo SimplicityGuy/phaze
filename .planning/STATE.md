@@ -1,11 +1,10 @@
 ---
 gsd_state_version: 1.0
 milestone: v4.0
-milestone_name: milestone
-status: completed
-stopped_at: Phase 35 UI-SPEC approved
-last_updated: "2026-06-13T01:46:53.100Z"
-last_activity: 2026-06-13 -- Phase 36 marked complete
+milestone_name: Distributed Agents
+status: "Phase 36 shipped — PR #123"
+last_updated: "2026-06-13T02:25:53.457Z"
+last_activity: 2026-06-13
 progress:
   percent: 100
 ---
@@ -23,8 +22,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 36 — COMPLETE
 Plan: 1 of 4
-Status: Phase 36 complete
-Last activity: 2026-06-13 -- Phase 36 marked complete
+Status: Phase 36 shipped — PR #123
+Last activity: 2026-06-13
 
 Progress: [██████████] 100%
 
