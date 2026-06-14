@@ -65,8 +65,11 @@ jobs:
         if: matrix.name == 'api'
         run: |
           echo "🔎 Importing phaze.main inside the built api image..."
+          # Use `uv run` (matching the image CMD `uv run uvicorn ...`) so the import
+          # resolves in the uv-managed venv where phaze + its native deps are installed,
+          # not the system python. UV_NO_SYNC=1 is set in the image, so this won't re-sync.
           docker run --rm "phaze-validate-api:ci" \
-            python -c "import phaze.main; print('✅ import phaze.main OK — native backends (psycopg/essentia) load on the slim base')"
+            uv run python -c "import phaze.main; print('✅ import phaze.main OK — native backends (psycopg/essentia) load on the slim base')"
 
   validate-docker-compose:
     runs-on: ubuntu-latest
