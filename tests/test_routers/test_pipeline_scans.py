@@ -1171,8 +1171,10 @@ async def test_button_disabled_binds_to_store_not_frozen_literal(
     # Triggers bind to the reactive store-derived node state, the single source of truth.
     assert ':disabled="loading || nodes.analyze.blocked"' in response.text
     assert ':disabled="loading || nodes.proposals.blocked"' in response.text
-    # The blocked predicates read $store.pipeline (queue-busy + dependency gates).
-    assert "s.discovered === 0 || s.agentBusy > 0" in response.text  # analyze / metadata / fingerprint
+    # The blocked predicates read $store.pipeline (per-stage busy + dependency gates). t7k FIX2:
+    # each agent stage gates on its OWN in-flight busy count (analyzeBusy here), not a shared
+    # global agentBusy — so running one agent stage no longer locks the other two.
+    assert "s.discovered === 0 || s.analyzeBusy > 0" in response.text  # analyze gates on its own busy count
     assert "s.analyzed === 0 || s.controllerBusy > 0" in response.text  # proposals
     # And it must NOT be a frozen server literal like ``|| 3 === 0``.
     assert "|| 3 === 0" not in response.text
