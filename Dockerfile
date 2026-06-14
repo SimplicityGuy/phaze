@@ -8,12 +8,16 @@ WORKDIR /app
 # ffprobe (ffmpeg), libsndfile.so.1 (libsndfile1), and fpcalc + libchromaprint.so.1
 # (libchromaprint-tools). Without these, `import essentia` fails at runtime and
 # every analysis job dead-letters.
+# libpq5 (v4.1.1): provides libpq.so.5 for psycopg's SAQ PostgresQueue broker (Phase 36).
+# psycopg[binary] bundles its own libpq, but libpq5 is a belt-and-suspenders fallback for
+# the pure-Python psycopg path — without a libpq backend, `import phaze.main` crash-loops
+# with `ImportError: no pq wrapper available` (the v4.1.0 regression).
 # DL3008: versions are intentionally unpinned — Debian-slim apt package versions
 # shift on every base-image refresh and pinning them would break builds on each
 # security update. The base image tag controls the package snapshot instead.
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools \
+    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
