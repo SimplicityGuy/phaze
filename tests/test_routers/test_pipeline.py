@@ -549,6 +549,21 @@ async def test_scan_live_sets_no_eligible_files_returns_200(client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_dashboard_renders_scan_trigger_end_to_end(client: AsyncClient) -> None:
+    """GET /pipeline/ exposes the Fingerprint-Scan trigger + 'Needs agent' gate copy end-to-end (REQ-40-1/2).
+
+    On an empty DB agentOnline == 0, so the Fingerprint-Scan node is gated 'Needs agent' by default
+    (the literal lives in the node getter regardless of state). The rendered dashboard must carry the
+    bulk Scan trigger's hx-post target and the LOCKED gate copy, proving the Phase-40 trigger surface
+    reaches the page (not just the partial render tests)."""
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    body = response.text
+    assert 'hx-post="/pipeline/scan-live-sets"' in body
+    assert "Needs agent" in body
+
+
+@pytest.mark.asyncio
 async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession) -> None:
     """GET /pipeline/stats returns 200 with HTML containing count values."""
     session.add(_make_file(state=FileState.DISCOVERED))
