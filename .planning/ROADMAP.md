@@ -119,7 +119,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 39. Tracklist Search DAG Node | v4.0 | 1/1 | Executed | — |
 | 40. Tracklist Fingerprint-Scan DAG Node | v4.0 | 1/1 | Executed | — |
 | 41. Scrape and Match DAG Triggers | v4.0 | 1/1 | Executed | — |
-| 42. Recovery-Only Pipeline Automation | v4.0 | 0/0 | Not planned | — |
+| 42. Recovery-Only Pipeline Automation | v4.0 | 0/2 | Planned | — |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 

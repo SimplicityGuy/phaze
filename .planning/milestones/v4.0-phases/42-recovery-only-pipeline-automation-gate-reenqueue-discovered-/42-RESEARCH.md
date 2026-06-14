@@ -387,20 +387,25 @@ existing static-SQL / bound-param discipline (no f-string interpolation, mirrori
 | A3 | "Recover" button (Option D's manual half) is desired, not just startup auto-recovery | Q4 | If button is unwanted, fall back to pure Option B |
 | A4 | SAQ `PostgresQueue` reclaims timed-out `active` jobs on its own (no app code needed) | Q2 | If not, in-flight `active` jobs at restart need explicit requeue |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Cold-boot agent-stage recovery.** Startup recovery runs before any agent has checked in, so
    agent stages (metadata/analyze/fingerprint/scan) get skipped (`NoActiveAgentError`). A
    startup-only pass never retries.
-   - Recommendation: Option D's manual Recover button covers this (operator clicks once an agent is
-     online); optionally trigger a one-shot recovery on first agent heartbeat. Decide in plan.
+   - RESOLVED (CONTEXT D5): the manual Recover button is the safety net — operator clicks once an
+     agent is online. No first-heartbeat auto-trigger (would violate the manual-only principle).
 2. **`refresh_tracklists` disposition** (A1) — keep monthly cron, or move to manual Scrape trigger?
+   - RESOLVED (CONTEXT D1, operator): KEEP the monthly cron — maintenance re-scrape of existing data,
+     not pipeline auto-advance.
 3. **`generate_proposals` in recovery** — proposals is controller-side and batch-keyed; confirm the
    recovery batch uses the exact convergence query so keys align (Pitfall 2).
+   - RESOLVED (Plan 01 Task 1): shared `get_proposal_pending_batches` sorts file_ids before chunking;
+     manual triggers and recovery call it → identical batch membership → identical set-hash keys.
 4. **`saq_jobs` `scheduled` rows in the detector** — paused/parked jobs use `scheduled = SENTINEL`
    (`stage_control.py:65`) and are still `queued`; ensure the emptiness `COUNT` includes them so a
-   paused-but-present queue is not misread as "lost." Recommendation: count
-   `status IN ('queued','active')` (parked rows are still `queued`).
+   paused-but-present queue is not misread as "lost."
+   - RESOLVED: detector counts `status IN ('queued','active')` — parked rows (still `queued`) ARE
+     counted, so a paused queue is correctly NOT treated as "lost."
 
 ## Sources
 
