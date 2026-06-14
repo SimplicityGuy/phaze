@@ -374,7 +374,8 @@ Plans:
 **Goal:** Enforce the core principle across the pipeline: the ONLY automatic enqueue is a restart/queue-loss **recovery pass** that restores ALL in-flight stages (metadata, analyze, fingerprint, proposals, tracklist) to their prior queue state — never a steady-state auto-advance. Replace the unconditional every-5-min `reenqueue_discovered` cron (which effectively auto-runs Analyze) with restart/queue-loss detection that reconciles each stage's expected-vs-actual in-flight set once per recovery event.
 **Requirements**: recovery trigger fires on detected restart/queue-loss (not a fixed interval); reconciliation covers every stage, not just DISCOVERED→analyze; idempotent via deterministic keys (no double-enqueue, ref Phase 32 incident); steady-state produces zero automatic enqueues; tests prove no auto-advance when queues are healthy.
 **Depends on:** Phase 32 (reboot re-enqueue resilience — this generalizes and constrains it)
-**Plans:** 0 plans
+**Plans:** 2 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 42 to break down)
+- [ ] 42-01-PLAN.md — Backend recovery engine: recover_orphaned_work producer + queue-loss detector + shared all-stages pending-set helpers (anti-drift) + unit/integration tests
+- [ ] 42-02-PLAN.md — Wiring + surface: remove the */5 auto-advance cron, gate startup recovery, add the /pipeline/recover endpoint + global DAG Recover button + docs
