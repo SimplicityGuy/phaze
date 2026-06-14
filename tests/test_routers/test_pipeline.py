@@ -711,6 +711,85 @@ async def test_dashboard_renders_scrape_and_match_triggers_end_to_end(client: As
     assert "Needs tracklist" in body
 
 
+# ---------------------------------------------------------------------------
+# Phase 42 (REQ-42-1/REQ-42-4/REQ-42-5): the manual /pipeline/recover endpoint calls the
+# SAME gated recover_orphaned_work producer (force=True) the controller startup runs, on a
+# worker-shaped ctx built from app state; the global DAG "Recover" button renders end-to-end.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recover_invokes_recover_orphaned_work_forced(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /pipeline/recover schedules recover_orphaned_work(force=True) on a worker-shaped ctx.
+
+    The endpoint must call the SAME producer as controller startup (D-03 — manual and automatic
+    paths cannot drift), forced (D-05 cold-boot safety net), with a ctx wired from app state: the
+    lifespan ``controller_queue`` (controller stages) + ``task_router`` (per-agent stages) + the
+    module-level ``async_session`` sessionmaker. The producer is patched so no real DB/queue work
+    runs — we only assert the wiring and force flag.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    captured: dict[str, object] = {}
+
+    async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        captured["ctx"] = ctx
+        captured["force"] = force
+        return {"detected_loss": True, "forced": force, "stages": {}}
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
+    controller_queue, task_router = install_fake_queues(client)
+
+    response = await client.post("/pipeline/recover")
+    assert response.status_code == 200
+    assert "Recovery started" in response.text
+    assert "nothing will double-enqueue" in response.text
+
+    await _drain_background()
+    assert captured["force"] is True, "manual Recover must force=True (bypass the no-op detect gate, not the dedup)"
+    ctx = captured["ctx"]
+    assert isinstance(ctx, dict)
+    assert ctx["queue"] is controller_queue, "ctx['queue'] must be the lifespan controller queue (controller stages)"
+    assert ctx["task_router"] is task_router, "ctx['task_router'] must be the lifespan task_router (per-agent stages)"
+    assert "async_session" in ctx, "ctx must carry the async_session sessionmaker for the worker-shaped recovery"
+
+
+@pytest.mark.asyncio
+async def test_recover_returns_200_when_producer_raises_is_isolated(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing background recovery never reaches the HTTP response — the endpoint still returns 200.
+
+    The producer runs fire-and-forget in a background task, so even a raising recover_orphaned_work
+    cannot 500 the request (T-42-06): the operator always gets the "recovery started" fragment.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        raise RuntimeError("recovery boom")
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", boom)
+    install_fake_queues(client)
+
+    response = await client.post("/pipeline/recover")
+    assert response.status_code == 200
+    assert "Recovery started" in response.text
+
+    await _drain_background()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_renders_recover_button_end_to_end(client: AsyncClient) -> None:
+    """GET /pipeline/ exposes the GLOBAL Recover button posting to /pipeline/recover (REQ-42-5).
+
+    The recovery affordance is a pipeline-level action in the DAG header (not a per-stage node), so
+    the rendered dashboard must carry its hx-post target + label, proving the Phase-42 manual recovery
+    surface reaches the page end-to-end (not just the partial render test)."""
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    body = response.text
+    assert 'hx-post="/pipeline/recover"' in body
+    assert "Recover orphaned work" in body
+
+
 @pytest.mark.asyncio
 async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession) -> None:
     """GET /pipeline/stats returns 200 with HTML containing count values."""

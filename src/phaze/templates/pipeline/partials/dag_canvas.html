@@ -257,7 +257,28 @@
      }">
   <div class="flex items-center justify-between gap-4">
     <h2 class="text-lg font-semibold">Pipeline Graph</h2>
-    <p class="text-xs text-gray-500 dark:text-gray-400 hidden sm:block lg:hidden">Scroll horizontally to see the full graph →</p>
+    <div class="flex items-center gap-3">
+      {# Phase 42 (D-02/D-05): GLOBAL pipeline-level "Recover" action — POSTs to /pipeline/recover,
+         which calls the SAME gated recover_orphaned_work producer (force=True) as controller startup.
+         Deliberately DISTINCT from the per-stage blue/rose enqueue buttons: a neutral slate OUTLINE
+         button in the header, NOT a per-stage node (NODE_LAYOUT/EDGES stay 10 nodes / 10 edges). It is
+         NOT gated on per-stage busy/agent signals — the operator may force recovery at any time; the
+         deterministic-key dedup keeps a forced reconcile idempotent. hx-swap=innerHTML replaces the
+         button with the recover_response fragment (the "result" state); hx-indicator shows "Recovering…"
+         in flight; the Alpine error flag reveals an inline retry message on a transport failure. #}
+      <div id="recover-response" class="flex items-center gap-2" x-data="{ error: false }"
+           @htmx:after-request="error = !$event.detail.successful">
+        <button type="button"
+                hx-post="/pipeline/recover" hx-target="#recover-response" hx-swap="innerHTML"
+                hx-indicator="#recover-spinner"
+                @click="error = false"
+                aria-label="Recover orphaned work across all pipeline stages"
+                class="px-3 py-1.5 text-sm font-semibold rounded-md border border-slate-300 dark:border-phaze-border text-slate-700 dark:text-slate-200 bg-white dark:bg-phaze-panel hover:bg-slate-50 dark:hover:bg-phaze-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Recover orphaned work</button>
+        <span id="recover-spinner" class="htmx-indicator text-sm text-gray-500 dark:text-gray-400">Recovering…</span>
+        <span x-show="error" class="text-sm text-rose-600 dark:text-rose-400">Couldn't recover. Retry.</span>
+      </div>
+      <p class="text-xs text-gray-500 dark:text-gray-400 hidden sm:block lg:hidden">Scroll horizontally to see the full graph →</p>
+    </div>
   </div>
 
   {# Empty-state hint (LOCKED copy) — points the operator at the Trigger Scan card. #}
