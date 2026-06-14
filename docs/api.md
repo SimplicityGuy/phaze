@@ -29,6 +29,7 @@
 | POST   | `/pipeline/fingerprint`        | HTMX trigger for fingerprinting          |
 | POST   | `/pipeline/analyze`            | HTMX trigger for audio analysis          |
 | POST   | `/pipeline/proposals`          | HTMX trigger for proposal generation     |
+| POST   | `/pipeline/search-tracklists`  | HTMX trigger for bulk name-based tracklist search (Phase 39) |
 
 Each stage has a JSON trigger (`/api/v1/*`) and an HTMX twin (`/pipeline/*`) that wraps the same enqueue logic and returns a `trigger_response.html` fragment. Both forms enqueue work in a fire-and-forget background task and return immediately with the expected job count, so a large backlog never blocks the HTTP response.
 
@@ -46,7 +47,9 @@ The agent worker validates each payload with `extra="forbid"`, so a `file_id`-on
 
 **`proposals` convergence gate.** `proposals/generate` (and the HTMX `/pipeline/proposals`) only enqueues files that have *both* a `FileMetadata` and an `AnalysisResult` row, chunked into batches of `settings.llm_batch_size` (default 10). `generate_proposals` is a batch task (one job per batch), routed through the same `enqueue_router`.
 
-**DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `fingerprintDone`/`fingerprintTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `scrapeDone`/`scrapeTotal`, `matchDone`/`matchTotal`, `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The 35-05 DAG canvas mirrors these store keys.
+**Bulk tracklist search (Phase 39).** The DAG's Scan / Search node is a manual trigger: `POST /pipeline/search-tracklists` enqueues one `search_tracklist` job per eligible file (music/video files that do **not** already have a linked tracklist), routed through `enqueue_router` to the **controller** queue (`search_tracklist` is a controller task — Phase-30 rule, never the default queue). The button is gated disabled until Metadata has produced tags (`metadataDone > 0`, reason `Needs metadata`) and while a search batch is in flight (`searchBusy > 0`, reason `Search busy`). The deterministic key `search_tracklist:<file_id>` dedups in-flight re-runs, so a double-click/refresh cannot multiply the backlog. Manual only — no auto-trigger (automatic enqueue is reserved for the recovery pass).
+
+**DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `fingerprintDone`/`fingerprintTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `searchBusy` (Phase 39, the Search-node in-flight gate), `scrapeDone`/`scrapeTotal`, `matchDone`/`matchTotal`, `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The 35-05 DAG canvas mirrors these store keys.
 
 ## Pipeline Scans (`/pipeline/scans`)
 

@@ -113,6 +113,13 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 33. SAQ Monitoring UI (mounted in phaze-api) | v4.0 | 4/4 | Complete   | 2026-06-11 |
 | 34. Pipeline Queue-Depth Status & Double-Enqueue Guard | v4.0 | 5/5 | Complete | 2026-06-10 |
 | 35. Pipeline Determinism, Idempotency & Per-Job-Type Observability | v4.0 | 5/5 | Complete | 2026-06-12 |
+| 36. Pipeline Queue Backend Migration (Redis → Postgres SAQ) | v4.0 | — | Complete | 2026-06-12 |
+| 37. Per-Stage Pause and Priority Control Plane | v4.0 | 4/4 | Complete | 2026-06-12 |
+| 38. Pipeline DAG Pause/Priority UI and Rescan Button Removal | v4.0 | 3/3 | Complete | 2026-06-13 |
+| 39. Tracklist Search DAG Node | v4.0 | 1/1 | Executed | — |
+| 40. Tracklist Fingerprint-Scan DAG Node | v4.0 | 0/0 | Not planned | — |
+| 41. Scrape and Match DAG Triggers | v4.0 | 0/0 | Not planned | — |
+| 42. Recovery-Only Pipeline Automation | v4.0 | 0/0 | Not planned | — |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -328,3 +335,46 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 38-02-PLAN.md — stage_controls macro (pause/resume + priority steppers) on the 3 agent nodes + NODE_LAYOUT recompute + <ol> a11y + guard-test updates [Wave 2]
+
+> **Theme (Phases 39-42): "The DAG is the single manual control surface; automation only in recovery."**
+> Today the tracklist sub-chain (Scan/Search, Scrape, Match) is display-only on the DAG — its triggers live on the Tracklists/Proposals pages — and a steady-state cron (`reenqueue_discovered`) effectively auto-runs Analyze. These phases make every stage manually triggerable from the DAG, each gated on its real prerequisite, and confine all automatic enqueueing to a restart/queue-loss recovery pass.
+
+### Phase 39: Tracklist Search DAG Node — bulk manual search_tracklist trigger (button + endpoint + per-stage busy gating), gated on Metadata done
+
+**Goal:** Make the DAG the control surface for name-based tracklist discovery. Split the display-only "Scan / Search" head into a triggerable **Search** node with a bulk pipeline-level endpoint that enqueues `search_tracklist` over eligible files (artist from extracted Metadata tags or parseable filename). Add the DAG trigger button + per-stage busy gating (same pattern as Phase 38 agent stages), **disabled until Metadata has produced tags**. Manual only — no auto-trigger.
+**Requirements**: bulk search endpoint routes via `enqueue_router` (controller queue, not default); button gated on `metadataDone > 0`; per-stage busy count + "busy" gating reusing the Phase-38/quick-t7k pattern; regression tests for gating + routing.
+**Depends on:** Phase 38 (DAG controls/gating pattern)
+**Plans:** 1 plan
+
+Plans:
+- [ ] 39-01-PLAN.md — Bulk search_tracklist trigger endpoint + Search DAG node (metadataDone/searchBusy gate) + tests
+
+### Phase 40: Tracklist Fingerprint-Scan DAG Node — bulk manual scan_live_set trigger (button + endpoint + gating), gated on discovered files + online agent; runs independently of Search
+
+**Goal:** Add a second, independent tracklist-discovery node: a **Fingerprint Scan** node whose bulk endpoint enqueues `scan_live_set` (agent-side audio-fingerprint identification) over discovered files. Add the DAG trigger button + busy gating, **disabled unless there are discovered files AND an online file-server agent** (surface a clear "no active agent" state). Runs independently of Phase 39 — both produce tracklists, no fallback between them.
+**Requirements**: bulk scan endpoint routes per-agent via `AgentTaskRouter` active-agent selection; 0-agent surfaces a visible disabled/empty state; button gated on `discovered > 0` + agent online; regression tests.
+**Depends on:** Phase 38 (DAG pattern); independent of Phase 39
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 40 to break down)
+
+### Phase 41: Scrape and Match DAG Triggers — bulk scrape-pending (scrape_and_store_tracklist) and match-pending (match_tracklist_to_discogs) buttons, gated on tracklist existence
+
+**Goal:** Give the **Scrape** and **Match** nodes real manual triggers. Scrape button bulk-enqueues `scrape_and_store_tracklist` for every tracklist missing a scraped version; Match button bulk-enqueues `match_tracklist_to_discogs` for every tracklist not yet linked to Discogs. Each is "bulk over pending" (skips already-done rows) and **disabled until ≥1 tracklist exists**.
+**Requirements**: two bulk endpoints route to the controller queue via `enqueue_router`; gates on `scrapeTotal`/`matchTotal` derived from tracklist count; both skip already-complete rows (deterministic-key dedup); regression tests for pending-set selection + gating.
+**Depends on:** Phases 39 and 40 (need tracklists to exist before scrape/match are meaningful)
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 41 to break down)
+
+### Phase 42: Recovery-Only Pipeline Automation — gate reenqueue_discovered + generalize so the only automatic enqueue is a restart/queue-loss recovery pass restoring all in-flight stages; no steady-state auto-advance
+
+**Goal:** Enforce the core principle across the pipeline: the ONLY automatic enqueue is a restart/queue-loss **recovery pass** that restores ALL in-flight stages (metadata, analyze, fingerprint, proposals, tracklist) to their prior queue state — never a steady-state auto-advance. Replace the unconditional every-5-min `reenqueue_discovered` cron (which effectively auto-runs Analyze) with restart/queue-loss detection that reconciles each stage's expected-vs-actual in-flight set once per recovery event.
+**Requirements**: recovery trigger fires on detected restart/queue-loss (not a fixed interval); reconciliation covers every stage, not just DISCOVERED→analyze; idempotent via deterministic keys (no double-enqueue, ref Phase 32 incident); steady-state produces zero automatic enqueues; tests prove no auto-advance when queues are healthy.
+**Depends on:** Phase 32 (reboot re-enqueue resilience — this generalizes and constrains it)
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 42 to break down)

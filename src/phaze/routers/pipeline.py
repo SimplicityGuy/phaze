@@ -20,15 +20,18 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
+from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
+    MUSIC_VIDEO_TYPES,
     get_files_by_state,
     get_pipeline_stats,
     get_queue_activity,
+    get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
     get_stage_progress,
@@ -168,6 +171,12 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     dag["metadataBusy"] = int(busy["metadata"])
     dag["analyzeBusy"] = int(busy["analyze"])
     dag["fingerprintBusy"] = int(busy["fingerprint"])
+
+    # Phase 39 (REQ-39-3): the search_tracklist in-flight count gates the DAG Search node "busy".
+    # search_tracklist is a controller task, so it is NOT part of get_stage_busy_counts's three
+    # agent stages -- get_search_busy_count owns its own never-500 SAVEPOINT degrade (returns 0 on
+    # any DB error), so NO try/except is added here; the int rides the same dag.items() seed + OOB loop.
+    dag["searchBusy"] = int(await get_search_busy_count(session))
 
     return {"dag": dag}
 
@@ -644,4 +653,56 @@ async def trigger_fingerprint_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "fingerprinting", "count": count, "no_active_agent": no_active_agent},
+    )
+
+
+# --- Tracklist name-search endpoint (Phase 39, REQ-39-1) ---
+
+
+async def _enqueue_search_jobs(queue: Any, files: list[FileRecord]) -> None:
+    """Background coroutine to enqueue ``search_tracklist`` jobs (one per eligible file).
+
+    ``search_tracklist`` is a CONTROLLER task taking only ``file_id`` (mirrors the single-file
+    ``tracklists.manual_search`` trigger); the deterministic key ``search_tracklist:<file_id>`` is
+    applied centrally by the ``before_enqueue`` hook (Phase 35), so a double-click / refresh
+    collapses an in-flight re-run to a no-op (D, T-39-02). Background-enqueued to avoid HTTP timeout
+    on a large eligible archive (Research pitfall 2). ``files`` attributes are already loaded by the
+    eligible-set query and the request never commits, so reading ``f.id`` here is not a lazy load.
+    """
+    for f in files:
+        await queue.enqueue("search_tracklist", file_id=str(f.id))
+
+
+@router.post("/pipeline/search-tracklists", response_class=HTMLResponse)
+async def trigger_search_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: bulk-trigger name-based tracklist search over eligible files (Phase 39).
+
+    Eligible = music/video files that do NOT already have a tracklist (skip already-matched files so
+    re-runs are cheap and idempotent). ``search_tracklist`` is a CONTROLLER task, routed via
+    :func:`enqueue_router.resolve_queue_for_task` to the controller queue (Phase-30 rule) -- never
+    the consumer-less default queue. Controller tasks never raise ``NoActiveAgentError`` (mirrors
+    ``manual_search``), so no no-active-agent branch is needed. Manual only -- NO auto-trigger
+    (the Phase-39 boundary; automatic enqueue is reserved for the Phase-42 recovery pass).
+    """
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        ~exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
+    )
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
+    count = len(files)
+
+    if count > 0:
+        routed = await enqueue_router.resolve_queue_for_task("search_tracklist", request.app.state, session)
+        task = asyncio.create_task(_enqueue_search_jobs(routed.queue, files))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/trigger_response.html",
+        context={"request": request, "action": "tracklist search", "count": count, "no_active_agent": False},
     )
