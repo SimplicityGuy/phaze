@@ -55,7 +55,14 @@
    distinct label ("Identify Set" vs "Fingerprint"). ONE new edge (discovery→fingerprint_scan); NO
    fingerprint_scan→scrape edge (scan_search is the canonical tracklist head carrying tracklist→scrape
    →match; tracklistDone is the UNION of both producers, so a second producer→scrape edge would
-   double-draw the same logical dependency — keep edges honest per this header's contract). #}
+   double-draw the same logical dependency — keep edges honest per this header's contract).
+   Phase 41 — NO RECOMPUTE: the scrape (x760,y858,h114) and match (x1128,y858,h114) display chips become
+   bulk TRIGGER nodes (enqueue_button → /pipeline/scrape-tracklists / /pipeline/match-tracklists). Both
+   are the LAST/only nodes in the lower half of their columns, so the ~46px button growth (chip bottom
+   ≈ 1018px) overlaps nothing below and stays under the 1340px canvas. NODE_LAYOUT coordinates, the
+   canvas/SVG height, AND the EDGES list (chain stays scan_search→scrape→match) are ALL UNCHANGED — the
+   only edits are the two enqueue buttons + the two gate predicates. NO stage_controls (controller
+   tasks, not paused agent stages). #}
 {% set NODE_LAYOUT = {
   "discovery":       {"x": 24,   "y": 611,  "w": 240, "h": 130},
   "metadata":        {"x": 392,  "y": 24,   "w": 240, "h": 250},
@@ -234,9 +241,17 @@
            // per-agent task triggered here, not a paused agent stage). NO auto-trigger (manual only).
            fingerprint_scan: mk(s.tracklistDone, 0, { blocked: s.discovered === 0 || s.agentOnline === 0 || s.scanBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentOnline === 0 ? 'Needs agent' : (s.scanBusy > 0 ? 'Scan busy' : '')), cta: 'Identify Set', running: 'Scanning…' }),
            proposals: mk(s.proposalsDone, s.proposalsTotal, { blocked: s.analyzed === 0 || s.controllerBusy > 0, reason: s.analyzed === 0 ? 'Waiting on Analyze' : (s.controllerBusy > 0 ? 'Controller busy' : ''), cta: 'Generate Proposals', running: 'Generating…' }),
-           scrape: mk(s.scrapeDone, s.scrapeTotal, { blocked: s.tracklistDone === 0, reason: 'Needs tracklist' }),
+           // Phase 41 (REQ-41-1/REQ-41-3): the Scrape node is now a bulk TRIGGER (scrape_and_store_tracklist
+           // over tracklists with no scraped version). The existence gate uses s.scrapeTotal (= COUNT(tracklists))
+           // — NOT s.tracklistDone — because a null-file_id tracklist still needs scraping and pending = total −
+           // done must use the same total (CONTEXT decision 3). Busy is ordered BEFORE the nothing-pending check
+           // so a running batch shows 'Scraping…' while jobs are still in flight (done has not yet caught up).
+           scrape: mk(s.scrapeDone, s.scrapeTotal, { blocked: s.scrapeTotal === 0 || s.scrapeBusy > 0 || (s.scrapeTotal - s.scrapeDone) <= 0, reason: s.scrapeTotal === 0 ? 'Needs tracklist' : (s.scrapeBusy > 0 ? 'Scraping…' : ((s.scrapeTotal - s.scrapeDone) <= 0 ? 'All scraped' : '')), cta: 'Scrape Tracklists', running: 'Scraping…' }),
            execute: mk(s.executedDone, s.executedTotal, { blocked: s.approved === 0, gatedPill: 'GATED', reason: 'Needs proposals', cta: 'Review queue' }),
-           match: mk(s.matchDone, s.matchTotal, { blocked: s.tracklistDone === 0, reason: 'Needs tracklist' })
+           // Phase 41 (REQ-41-2/REQ-41-3): the Match node is now a bulk TRIGGER (match_tracklist_to_discogs over
+           // tracklists not yet linked to Discogs). Symmetric to scrape: existence on s.matchTotal, busy before the
+           // nothing-pending 'All matched' check.
+           match: mk(s.matchDone, s.matchTotal, { blocked: s.matchTotal === 0 || s.matchBusy > 0 || (s.matchTotal - s.matchDone) <= 0, reason: s.matchTotal === 0 ? 'Needs tracklist' : (s.matchBusy > 0 ? 'Matching…' : ((s.matchTotal - s.matchDone) <= 0 ? 'All matched' : '')), cta: 'Match Tracklists', running: 'Matching…' })
          };
        }
      }">
@@ -407,7 +422,12 @@
         {{ enqueue_button('proposals', '/pipeline/proposals', 'proposals-response', 'Generate proposals', 'bg-purple-600 hover:bg-purple-700') }}
       </div>
 
-      {# 8 · Scrape Tracklist (rose, compact, display-only) — sequential sub-chain #}
+      {# 8 · Scrape Tracklist (rose, compact, TRIGGER) — Phase 41: bulk-posts to /pipeline/scrape-tracklists
+         (scrape_and_store_tracklist over tracklists with no scraped version), gated on existence/pending/busy.
+         NO stage_controls (scrape_and_store_tracklist is a controller task, not a paused agent stage). NO
+         layout recompute: the scrape node (x760,y858,h114) is the last/only node in the lower half of its
+         column, so the ~46px enqueue-button growth (chip bottom ≈ 1018px) overlaps nothing below and stays
+         well under the 1340px canvas — verified, NODE_LAYOUT/EDGES/height UNCHANGED. NO auto-trigger. #}
       {% set n = NODE_LAYOUT.scrape %}
       <div id="node-scrape" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
@@ -419,7 +439,7 @@
         </div>
         {{ node_count('scrape') }}
         {{ node_bar('scrape', 'bg-rose-600 dark:bg-rose-400') }}
-        <p class="text-xs text-gray-500 dark:text-gray-400">seq · needs tracklist</p>
+        {{ enqueue_button('scrape', '/pipeline/scrape-tracklists', 'scrape-tracklists-response', 'Scrape tracklists', 'bg-rose-600 dark:bg-rose-700 hover:bg-rose-700 dark:hover:bg-rose-600') }}
       </div>
 
       {# 9 · Approve → Execute (green, full) — navigational link to the review queue #}
@@ -442,7 +462,12 @@
            x-text="nodes.execute.blocked ? 'Needs proposals' : 'Review queue'"></a>
       </div>
 
-      {# 10 · Match Discogs (rose, compact, display-only) #}
+      {# 10 · Match Discogs (rose, compact, TRIGGER) — Phase 41: bulk-posts to /pipeline/match-tracklists
+         (match_tracklist_to_discogs over tracklists not yet linked to Discogs), gated on existence/pending/busy.
+         NO stage_controls (controller task). NO layout recompute: the match node (x1128,y858,h114) is the
+         last/only node in the lower half of its column, so the ~46px enqueue-button growth (chip bottom ≈
+         1018px) overlaps nothing below and stays under the 1340px canvas — verified, NODE_LAYOUT/EDGES/height
+         UNCHANGED. NO auto-trigger. #}
       {% set n = NODE_LAYOUT.match %}
       <div id="node-match" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
@@ -454,7 +479,7 @@
         </div>
         {{ node_count('match') }}
         {{ node_bar('match', 'bg-rose-600 dark:bg-rose-400') }}
-        <p class="text-xs text-gray-500 dark:text-gray-400">seq · needs tracklist</p>
+        {{ enqueue_button('match', '/pipeline/match-tracklists', 'match-tracklists-response', 'Match tracklists', 'bg-rose-600 dark:bg-rose-700 hover:bg-rose-700 dark:hover:bg-rose-600') }}
       </div>
     </div>
   </div>

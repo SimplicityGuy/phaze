@@ -436,6 +436,107 @@ async def get_scan_busy_count(session: AsyncSession) -> int:
     return 0
 
 
+# Bulk scrape/match in-flight gates (Phase 41, REQ-41-3). Both scrape_and_store_tracklist and
+# match_tracklist_to_discogs are CONTROLLER tasks -- NOT one of the three agent stages tracked by
+# get_stage_busy_counts (that function + its tests stay untouched) -- but their jobs live in the SAME
+# saq_jobs table, so the same key-prefix scan works. The deterministic keys are
+# "scrape_and_store_tracklist:<tracklist_id>" / "match_tracklist_to_discogs:<tracklist_id>" (Phase 35),
+# so each in-flight count is the bucket whose key prefix == the function-name constant. Reuses the SAME
+# static _STAGE_BUSY_SQL grouped scan (no operator input is interpolated -- the only literals are
+# split_part, the status allowlist, and the function-name constants below; T-41-01, mirroring the
+# Phase-37/39/40 static-SQL discipline).
+_SCRAPE_BUSY_FUNCTION = "scrape_and_store_tracklist"
+_MATCH_BUSY_FUNCTION = "match_tracklist_to_discogs"
+
+
+async def get_scrape_busy_count(session: AsyncSession) -> int:
+    """Return the in-flight ``scrape_and_store_tracklist`` job count (``queued`` + ``active``), degrade-safe.
+
+    Counts the ``saq_jobs`` rows whose deterministic key prefix is ``scrape_and_store_tracklist``
+    (status ``IN ('queued', 'active')``). This drives the DAG Scrape node's "Scraping…" gate so a
+    second bulk scrape cannot be launched while one batch is in flight. A paused/parked scrape job
+    (status still ``queued``) counts as busy -- the same accepted semantics as
+    :func:`get_search_busy_count`.
+
+    Failure isolation (T-41-03): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
+    ANY DB error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope
+    is rolled back ALONE -- recovering the aborted Postgres transaction WITHOUT expiring the
+    dashboard's already-loaded ORM objects (a plain ``session.rollback()`` would 500 the page on the
+    next lazy load) and WITHOUT poisoning later queries. The function logs a warning and returns 0 --
+    it NEVER raises into the hot 5s /pipeline/stats poll.
+    """
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+    except Exception:
+        logger.warning("scrape_busy_degraded", exc_info=True)
+        return 0
+    for row in rows:
+        if row[0] == _SCRAPE_BUSY_FUNCTION:
+            return int(row[1])
+    return 0
+
+
+async def get_match_busy_count(session: AsyncSession) -> int:
+    """Return the in-flight ``match_tracklist_to_discogs`` job count (``queued`` + ``active``), degrade-safe.
+
+    Counts the ``saq_jobs`` rows whose deterministic key prefix is ``match_tracklist_to_discogs``
+    (status ``IN ('queued', 'active')``). This drives the DAG Match node's "Matching…" gate so a
+    second bulk match cannot be launched while one batch is in flight. A paused/parked match job
+    (status still ``queued``) counts as busy -- the same accepted semantics as
+    :func:`get_search_busy_count`.
+
+    Failure isolation (T-41-03): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
+    ANY DB error the nested scope is rolled back ALONE -- recovering the aborted Postgres transaction
+    WITHOUT expiring the dashboard's already-loaded ORM objects and WITHOUT poisoning later queries.
+    The function logs a warning and returns 0 -- it NEVER raises into the hot 5s /pipeline/stats poll.
+    """
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+    except Exception:
+        logger.warning("match_busy_degraded", exc_info=True)
+        return 0
+    for row in rows:
+        if row[0] == _MATCH_BUSY_FUNCTION:
+            return int(row[1])
+    return 0
+
+
+async def get_scrape_pending_tracklists(session: AsyncSession) -> list[Tracklist]:
+    """Return the Tracklist rows with NO ``tracklist_versions`` row (the complement of scrape.done).
+
+    The EXACT complement of :func:`get_stage_progress`'s ``scrape.done``
+    (``COUNT(DISTINCT TracklistVersion.tracklist_id)``): a tracklist that already has any scraped
+    version is excluded, so a bulk scrape over this set skips already-done rows (idempotent re-runs;
+    the deterministic ``tracklist_id`` key additionally dedups in-flight replays). Pure ORM
+    ``~exists(...)`` with NO interpolated operator input (T-41-01).
+    """
+    stmt = select(Tracklist).where(~exists(select(TracklistVersion.id).where(TracklistVersion.tracklist_id == Tracklist.id)))
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_match_pending_tracklists(session: AsyncSession) -> list[Tracklist]:
+    """Return the Tracklist rows NOT reachable from ``discogs_links`` (the complement of match.done).
+
+    The EXACT complement of :func:`get_stage_progress`'s ``match.done`` (DISTINCT tracklist_id walked
+    ``discogs_links -> tracklist_tracks -> tracklist_versions``): a tracklist whose version→track→link
+    chain exists is excluded. A tracklist with a scraped version but no discogs link is still
+    match-pending (scrape and match are independent stages). Pure ORM ``.not_in(subquery)`` with NO
+    interpolated operator input (T-41-01).
+    """
+    matched_subq = (
+        select(TracklistVersion.tracklist_id)
+        .select_from(DiscogsLink)
+        .join(TracklistTrack, DiscogsLink.track_id == TracklistTrack.id)
+        .join(TracklistVersion, TracklistTrack.version_id == TracklistVersion.id)
+    )
+    stmt = select(Tracklist).where(Tracklist.id.not_in(matched_subq))
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def count_active_agents(session: AsyncSession) -> int:
     """Return the number of online agents (``revoked_at IS NULL`` AND ``last_seen_at IS NOT NULL``).
 
