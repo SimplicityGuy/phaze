@@ -42,27 +42,43 @@
    the edge `d` path), so `sx+60 < tx-60` holds for every edge and the curves stay clean. The edge `d`
    strings are DERIVED from these anchors (never hand-edited), so they auto-recompute. The canvas/SVG
    grew 1132→1392 wide to fit col3's new right edge (1368 + 24px margin); height grew 1000→1060 in
-   Phase 39 for the scan_search trigger button (see the Phase-39 note below). #}
+   Phase 39 for the scan_search trigger button (see the Phase-39 note below).
+   Phase 40 RECOMPUTE: adds a 5th col-1 node — fingerprint_scan (INDIGO "Identify Set"), the SIBLING
+   tracklist head whose enqueue trigger bulk-posts to /pipeline/scan-live-sets (per-agent
+   scan_live_set, audio-fingerprint set identification). It sits below scan_search at the uniform
+   276px gutter (852 + 276 = y:1128, compact h:126 trigger chip). Discovery is recentred onto the new
+   5-node col-1 midpoint: the col-1 anchor midpoints are now [149, 425, 701, 915, 1191] (mean = 676),
+   so discovery.y = 676 - 130//2 = 611 (467→611). The canvas/SVG HEIGHT grew 1060→1340 (fingerprint_
+   scan bottom ≈ 1128 + 126 + ~46 button ≈ 1300, + margin; same ~208px below-top clearance Phase 39
+   used). WIDTH stays 1392. The new node is a DISTINCT concept from the existing teal `fingerprint`
+   (fingerprint_file DEDUP) node — distinct key (fingerprint_scan), distinct color (indigo vs teal),
+   distinct label ("Identify Set" vs "Fingerprint"). ONE new edge (discovery→fingerprint_scan); NO
+   fingerprint_scan→scrape edge (scan_search is the canonical tracklist head carrying tracklist→scrape
+   →match; tracklistDone is the UNION of both producers, so a second producer→scrape edge would
+   double-draw the same logical dependency — keep edges honest per this header's contract). #}
 {% set NODE_LAYOUT = {
-  "discovery":   {"x": 24,   "y": 467, "w": 240, "h": 130},
-  "metadata":    {"x": 392,  "y": 24,  "w": 240, "h": 250},
-  "analyze":     {"x": 392,  "y": 300, "w": 240, "h": 250},
-  "fingerprint": {"x": 392,  "y": 576, "w": 240, "h": 250},
-  "scan_search": {"x": 392,  "y": 852, "w": 240, "h": 126},
-  "proposals":   {"x": 760,  "y": 200, "w": 240, "h": 174},
-  "scrape":      {"x": 760,  "y": 858, "w": 240, "h": 114},
-  "execute":     {"x": 1128, "y": 222, "w": 240, "h": 130},
-  "match":       {"x": 1128, "y": 858, "w": 240, "h": 114}
+  "discovery":       {"x": 24,   "y": 611,  "w": 240, "h": 130},
+  "metadata":        {"x": 392,  "y": 24,   "w": 240, "h": 250},
+  "analyze":         {"x": 392,  "y": 300,  "w": 240, "h": 250},
+  "fingerprint":     {"x": 392,  "y": 576,  "w": 240, "h": 250},
+  "scan_search":     {"x": 392,  "y": 852,  "w": 240, "h": 126},
+  "fingerprint_scan": {"x": 392, "y": 1128, "w": 240, "h": 126},
+  "proposals":       {"x": 760,  "y": 200,  "w": 240, "h": 174},
+  "scrape":          {"x": 760,  "y": 858,  "w": 240, "h": 114},
+  "execute":         {"x": 1128, "y": 222,  "w": 240, "h": 130},
+  "match":           {"x": 1128, "y": 858,  "w": 240, "h": 114}
 } %}
 
 {# Authoritative edge list (35-STAGE-DEPENDENCIES.md). Metadata→Proposals and
    Analyze→Proposals are the ONLY converging edges; fingerprint/tracklist do NOT
-   enter proposals. #}
+   enter proposals. Phase 40 adds discovery→fingerprint_scan (the sibling tracklist
+   head); NO fingerprint_scan→scrape edge — scan_search carries the tracklist chain. #}
 {% set EDGES = [
   ["discovery", "metadata"],
   ["discovery", "analyze"],
   ["discovery", "fingerprint"],
   ["discovery", "scan_search"],
+  ["discovery", "fingerprint_scan"],
   ["metadata", "proposals"],
   ["analyze", "proposals"],
   ["proposals", "execute"],
@@ -208,6 +224,15 @@
            // and while a search batch is in flight (searchBusy > 0 → 'Search busy'). NO auto-trigger
            // (manual only; auto-enqueue is the Phase-42 recovery pass).
            scan_search: mk(s.tracklistDone, 0, { blocked: s.metadataDone === 0 || s.searchBusy > 0, reason: s.metadataDone === 0 ? 'Needs metadata' : (s.searchBusy > 0 ? 'Search busy' : ''), cta: 'Search Tracklists', running: 'Searching…' }),
+           // Phase 40 (REQ-40-2/REQ-40-3): the Fingerprint-Scan node is the SIBLING tracklist head — a
+           // PER-AGENT trigger (scan_live_set reads audio on the file-server agent). It reuses
+           // s.tracklistDone for its count (the UNION count both producers feed; em-dash denominator, no
+           // determinate bar). Gated until there are discovered files AND an online agent, and while a
+           // scan batch is in flight: blocked on s.discovered===0 ('No files discovered') else
+           // s.agentOnline===0 ('Needs agent') else s.scanBusy>0 ('Scan busy'). agentOnline is a COUNT
+           // where 0 == "no online agent" (fail-safe default). NO stage_controls (scan_live_set is a
+           // per-agent task triggered here, not a paused agent stage). NO auto-trigger (manual only).
+           fingerprint_scan: mk(s.tracklistDone, 0, { blocked: s.discovered === 0 || s.agentOnline === 0 || s.scanBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentOnline === 0 ? 'Needs agent' : (s.scanBusy > 0 ? 'Scan busy' : '')), cta: 'Identify Set', running: 'Scanning…' }),
            proposals: mk(s.proposalsDone, s.proposalsTotal, { blocked: s.analyzed === 0 || s.controllerBusy > 0, reason: s.analyzed === 0 ? 'Waiting on Analyze' : (s.controllerBusy > 0 ? 'Controller busy' : ''), cta: 'Generate Proposals', running: 'Generating…' }),
            scrape: mk(s.scrapeDone, s.scrapeTotal, { blocked: s.tracklistDone === 0, reason: 'Needs tracklist' }),
            execute: mk(s.executedDone, s.executedTotal, { blocked: s.approved === 0, gatedPill: 'GATED', reason: 'Needs proposals', cta: 'Review queue' }),
@@ -245,8 +270,8 @@
      sm (the stacked <ol> takes over); horizontally scrollable sm–lg. #}
   <div role="group" aria-label="Pipeline stage graph"
        class="hidden sm:block overflow-x-auto rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-bg p-4">
-    <div class="relative" style="width: 1392px; height: 1060px;">
-      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1392" height="1060" viewBox="0 0 1392 1060" fill="none">
+    <div class="relative" style="width: 1392px; height: 1340px;">
+      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1392" height="1340" viewBox="0 0 1392 1340" fill="none">
         {% for edge in EDGES %}
           {% set src = NODE_LAYOUT[edge[0]] %}
           {% set tgt = NODE_LAYOUT[edge[1]] %}
@@ -343,7 +368,31 @@
         {{ enqueue_button('scan_search', '/pipeline/search-tracklists', 'search-tracklists-response', 'Search tracklists', 'bg-rose-600 dark:bg-rose-700 hover:bg-rose-700 dark:hover:bg-rose-600') }}
       </div>
 
-      {# 6 · Proposals (purple, full) — the Metadata+Analyze JOIN → POST /pipeline/proposals #}
+      {# 6 · Fingerprint Scan / Identify Set (INDIGO, compact, sibling tracklist head) — em-dash
+         denominator, NO determinate bar. Phase 40: a PER-AGENT TRIGGER — the enqueue_button bulk-posts
+         to /pipeline/scan-live-sets (scan_live_set audio-fingerprint set identification over files
+         without a tracklist), gated on discovered/agentOnline/scanBusy. DISTINCT from the teal
+         `fingerprint` (fingerprint_file DEDUP) node above: distinct key (fingerprint_scan), distinct
+         color (indigo), distinct label ("Identify Set"). It reuses tracklistDone (the union count both
+         tracklist producers feed). NO stage_controls — scan_live_set is a per-agent task triggered
+         here, not a paused agent stage. #}
+      {% set n = NODE_LAYOUT.fingerprint_scan %}
+      <div id="node-fingerprint_scan" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
+           style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
+           :class="nodes.fingerprint_scan.state === 'disabled' ? 'opacity-60' : ''">
+        <div class="absolute inset-x-0 top-0 h-[3px] bg-indigo-600 dark:bg-indigo-400"></div>
+        <div class="flex items-center justify-between gap-2 mt-1">
+          <span class="text-xs font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">Identify Set</span>
+          <span class="inline-flex items-center gap-1">{{ state_icon('fingerprint_scan') }}{{ state_pill('fingerprint_scan') }}</span>
+        </div>
+        {{ node_count('fingerprint_scan', em_dash=true) }}
+        {# Indeterminate track only (no done/total % width computed). #}
+        <div class="w-full bg-gray-200 dark:bg-phaze-panel rounded-full h-[5px] overflow-hidden my-2" aria-hidden="true"></div>
+        <p class="text-xs text-gray-500 dark:text-gray-400">fingerprint scan · per-agent</p>
+        {{ enqueue_button('fingerprint_scan', '/pipeline/scan-live-sets', 'scan-live-sets-response', 'Scan live sets', 'bg-indigo-600 dark:bg-indigo-700 hover:bg-indigo-700 dark:hover:bg-indigo-600') }}
+      </div>
+
+      {# 7 · Proposals (purple, full) — the Metadata+Analyze JOIN → POST /pipeline/proposals #}
       {% set n = NODE_LAYOUT.proposals %}
       <div id="node-proposals" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
@@ -358,7 +407,7 @@
         {{ enqueue_button('proposals', '/pipeline/proposals', 'proposals-response', 'Generate proposals', 'bg-purple-600 hover:bg-purple-700') }}
       </div>
 
-      {# 7 · Scrape Tracklist (rose, compact, display-only) — sequential sub-chain #}
+      {# 8 · Scrape Tracklist (rose, compact, display-only) — sequential sub-chain #}
       {% set n = NODE_LAYOUT.scrape %}
       <div id="node-scrape" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
@@ -373,7 +422,7 @@
         <p class="text-xs text-gray-500 dark:text-gray-400">seq · needs tracklist</p>
       </div>
 
-      {# 8 · Approve → Execute (green, full) — navigational link to the review queue #}
+      {# 9 · Approve → Execute (green, full) — navigational link to the review queue #}
       {% set n = NODE_LAYOUT.execute %}
       <div id="node-execute" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;">
@@ -393,7 +442,7 @@
            x-text="nodes.execute.blocked ? 'Needs proposals' : 'Review queue'"></a>
       </div>
 
-      {# 9 · Match Discogs (rose, compact, display-only) #}
+      {# 10 · Match Discogs (rose, compact, display-only) #}
       {% set n = NODE_LAYOUT.match %}
       <div id="node-match" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
@@ -421,6 +470,7 @@
       ["analyze", "Analyze", false],
       ["fingerprint", "Fingerprint", false],
       ["scan_search", "Scan / Search", true],
+      ["fingerprint_scan", "Identify Set", true],
       ["scrape", "Scrape Tracklist", false],
       ["match", "Match Discogs", false],
       ["proposals", "Proposals", false],
