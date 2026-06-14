@@ -59,6 +59,11 @@ _NEW_STORE_KEYS = (
     "analyzePriority",
     "fingerprintPaused",
     "fingerprintPriority",
+    # t7k FIX2: per-stage in-flight busy counts (replace the single global agentBusy gate). One
+    # edit drives the store-literal seed test, the int-key context test, AND the OOB-seed test.
+    "metadataBusy",
+    "analyzeBusy",
+    "fingerprintBusy",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.
