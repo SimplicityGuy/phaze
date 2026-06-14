@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import text
 
 from phaze.models.file import FileRecord, FileState
-from phaze.services.pipeline import get_files_by_state, get_pipeline_stats, get_queue_activity, get_stage_busy_counts
+from phaze.services.pipeline import get_files_by_state, get_pipeline_stats, get_queue_activity, get_search_busy_count, get_stage_busy_counts
 from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
 
 
@@ -293,6 +293,99 @@ async def test_get_stage_busy_counts_degrade_does_not_poison_session(session: As
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     counts = await get_stage_busy_counts(session)
     assert counts == {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
+    follow_up = await get_pipeline_stats(session)
+    assert follow_up["discovered"] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_search_busy_count (Phase 39, REQ-39-3) — search_tracklist in-flight gate, degrade-safe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_search_busy_count_buckets_by_search_prefix() -> None:
+    """Returns ONLY the ``search_tracklist`` in-flight count; other function prefixes are ignored.
+
+    search_tracklist is a CONTROLLER task (not an agent stage), so it is absent from
+    ``get_stage_busy_counts``'s {metadata,analyze,fingerprint} contract. The key is
+    ``search_tracklist:<file_id>`` (Phase 35), so the SELECT groups by ``split_part(key, ':', 1)``
+    and only the ``search_tracklist`` bucket is summed.
+    """
+
+    class _FakeResult:
+        def __init__(self, rows: list[tuple[str, int]]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[tuple[str, int]]:
+            return self._rows
+
+    class _FakeSession:
+        def __init__(self, rows: list[tuple[str, int]]) -> None:
+            self._rows = rows
+
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult(self._rows)
+
+    rows = [
+        ("search_tracklist", 7),
+        ("extract_file_metadata", 4),  # not search → ignored
+        ("scrape_and_store_tracklist", 3),  # not search → ignored
+    ]
+    assert await get_search_busy_count(_FakeSession(rows)) == 7  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_search_busy_count_zero_when_no_search_rows() -> None:
+    """With no ``search_tracklist`` rows the in-flight count is 0 (not an error)."""
+
+    class _FakeResult:
+        def all(self) -> list[tuple[str, int]]:
+            return [("extract_file_metadata", 4)]
+
+    class _FakeSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult()
+
+    assert await get_search_busy_count(_FakeSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_search_busy_count_degrades_on_db_error() -> None:
+    """get_search_busy_count returns 0 and never raises when the saq_jobs read fails (T-39-03).
+
+    A missing ``saq_jobs`` table or a DB hiccup must degrade to 0 so the hot 5s /pipeline/stats poll
+    keeps serving instead of 500ing. The read runs inside a SAVEPOINT (``begin_nested``); the
+    exception propagates out of the nested scope and is caught by the degrade ``except``.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_search_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_search_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the stage-busy guard).
+
+    DROP ``saq_jobs`` inside this test's uncommitted transaction to deterministically force the
+    absent-table degrade — the only branch that exercises the SAVEPOINT rollback recovery. A
+    follow-up query on the SAME session must still succeed, proving the dashboard's later ORM
+    lazy-loads are not poisoned (the bug a plain ``session.rollback()`` would cause).
+    """
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_search_busy_count(session) == 0
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
     follow_up = await get_pipeline_stats(session)
     assert follow_up["discovered"] == 0

@@ -64,6 +64,10 @@ _NEW_STORE_KEYS = (
     "metadataBusy",
     "analyzeBusy",
     "fingerprintBusy",
+    # Phase 39 (REQ-39-3): search_tracklist in-flight busy count. Rides the same dag.items()
+    # seed/OOB loop so the Search node gate reacts live on every 5s poll. One edit drives the
+    # store-literal seed test, the int-key context test, AND the OOB-seed test.
+    "searchBusy",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.
