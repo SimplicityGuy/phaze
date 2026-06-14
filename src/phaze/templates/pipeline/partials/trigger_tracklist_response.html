@@ -1,0 +1,12 @@
+{# Tracklist-unit HTMX response fragment (Phase 41). A sibling of trigger_response.html with NO
+   no_active_agent branch — scrape_and_store_tracklist / match_tracklist_to_discogs are CONTROLLER
+   tasks (controller queue, never raise NoActiveAgentError), so there is no agent empty-state. The
+   unit is "tracklists" (not "files"); the shared trigger_response.html stays untouched so the 6
+   existing file-unit endpoints + their copy-asserting tests keep using it. #}
+{% if count > 0 %}
+<span class="text-sm text-green-600 dark:text-green-400 font-medium">
+    Enqueued {{ count }} tracklists for {{ action }}.
+</span>
+{% else %}
+<span class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">No tracklists ready for {{ action }}.</span>
+{% endif %}
