@@ -563,6 +563,137 @@ async def test_dashboard_renders_scan_trigger_end_to_end(client: AsyncClient) ->
     assert "Needs agent" in body
 
 
+# ---------------------------------------------------------------------------
+# Phase 41 (REQ-41-1/REQ-41-2/REQ-41-4): bulk scrape + match triggers route to the controller
+# queue (never default), skip already-done rows, render the tracklist-unit empty-state.
+# ---------------------------------------------------------------------------
+
+
+def _make_tracklist(n: int) -> Tracklist:
+    """Build a bare Tracklist row (no version, no discogs chain) — scrape AND match pending."""
+    uid = uuid.uuid4()
+    return Tracklist(id=uid, external_id=f"tl-{n}-{uid.hex}", source_url=f"http://x/{n}")
+
+
+@pytest.mark.asyncio
+async def test_scrape_tracklists_routes_to_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/scrape-tracklists enqueues scrape_and_store_tracklist on the controller queue.
+
+    scrape_and_store_tracklist is a CONTROLLER task (Phase-30 rule). The capture must be exactly
+    {("controller","scrape_and_store_tracklist")} — a routing regression that sent it to the
+    consumer-less default queue is caught here (T-41-04).
+    """
+    tracklists = [_make_tracklist(i) for i in range(3)]
+    session.add_all(tracklists)
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/scrape-tracklists")
+    assert response.status_code == 200
+
+    await _drain_background()
+    assert len(capture) == 3
+    assert {(q, t) for q, t, _ in capture} == {("controller", "scrape_and_store_tracklist")}
+    assert all(q != "default" for q, _, _ in capture)
+    # Each enqueue carries the tracklist_id the deterministic key dedups on.
+    assert {c[2]["tracklist_id"] for c in capture} == {str(tl.id) for tl in tracklists}
+
+
+@pytest.mark.asyncio
+async def test_scrape_tracklists_excludes_versioned(client: AsyncClient, session: AsyncSession) -> None:
+    """A tracklist that already has a scraped version is skipped from the scrape pending set."""
+    from phaze.models.tracklist import TracklistVersion
+
+    pending = _make_tracklist(1)
+    scraped = _make_tracklist(2)
+    session.add_all([pending, scraped])
+    await session.flush()
+    session.add(TracklistVersion(id=uuid.uuid4(), tracklist_id=scraped.id, version_number=1))
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/scrape-tracklists")
+    assert response.status_code == 200
+
+    await _drain_background()
+    assert len(capture) == 1
+    assert capture[0][2]["tracklist_id"] == str(pending.id)
+
+
+@pytest.mark.asyncio
+async def test_scrape_tracklists_no_pending_returns_200(client: AsyncClient) -> None:
+    """A zero-pending POST returns 200 and enqueues nothing (renders the tracklist-unit empty-state)."""
+    capture = wire_fakes(client)
+    response = await client.post("/pipeline/scrape-tracklists")
+    assert response.status_code == 200
+    assert "No tracklists ready for scraping" in response.text
+
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_match_tracklists_routes_to_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/match-tracklists enqueues match_tracklist_to_discogs on the controller queue.
+
+    match_tracklist_to_discogs is a CONTROLLER task (Phase-30 rule). The capture must be exactly
+    {("controller","match_tracklist_to_discogs")} — never the consumer-less default queue (T-41-04).
+    """
+    tracklists = [_make_tracklist(i) for i in range(3)]
+    session.add_all(tracklists)
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/match-tracklists")
+    assert response.status_code == 200
+
+    await _drain_background()
+    assert len(capture) == 3
+    assert {(q, t) for q, t, _ in capture} == {("controller", "match_tracklist_to_discogs")}
+    assert all(q != "default" for q, _, _ in capture)
+    assert {c[2]["tracklist_id"] for c in capture} == {str(tl.id) for tl in tracklists}
+
+
+@pytest.mark.asyncio
+async def test_match_tracklists_excludes_discogs_reachable(client: AsyncClient, session: AsyncSession) -> None:
+    """A tracklist already reachable from discogs_links is skipped from the match pending set."""
+    from phaze.models.discogs_link import DiscogsLink
+    from phaze.models.tracklist import TracklistTrack, TracklistVersion
+
+    pending = _make_tracklist(1)
+    linked = _make_tracklist(2)
+    session.add_all([pending, linked])
+    await session.flush()
+    linked_version = TracklistVersion(id=uuid.uuid4(), tracklist_id=linked.id, version_number=1)
+    session.add(linked_version)
+    await session.flush()
+    track = TracklistTrack(id=uuid.uuid4(), version_id=linked_version.id, position=1)
+    session.add(track)
+    await session.flush()
+    session.add(DiscogsLink(id=uuid.uuid4(), track_id=track.id, discogs_release_id="r1", confidence=0.9))
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/match-tracklists")
+    assert response.status_code == 200
+
+    await _drain_background()
+    assert len(capture) == 1
+    assert capture[0][2]["tracklist_id"] == str(pending.id)
+
+
+@pytest.mark.asyncio
+async def test_match_tracklists_no_pending_returns_200(client: AsyncClient) -> None:
+    """A zero-pending POST returns 200 and enqueues nothing (renders the tracklist-unit empty-state)."""
+    capture = wire_fakes(client)
+    response = await client.post("/pipeline/match-tracklists")
+    assert response.status_code == 200
+    assert "No tracklists ready for matching" in response.text
+
+    await _drain_background()
+    assert capture == []
+
+
 @pytest.mark.asyncio
 async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession) -> None:
     """GET /pipeline/stats returns 200 with HTML containing count values."""

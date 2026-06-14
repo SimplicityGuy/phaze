@@ -10,12 +10,17 @@ import pytest
 from sqlalchemy import text
 
 from phaze.models.file import FileRecord, FileState
+from phaze.models.tracklist import Tracklist
 from phaze.services.pipeline import (
     count_active_agents,
     get_files_by_state,
+    get_match_busy_count,
+    get_match_pending_tracklists,
     get_pipeline_stats,
     get_queue_activity,
     get_scan_busy_count,
+    get_scrape_busy_count,
+    get_scrape_pending_tracklists,
     get_search_busy_count,
     get_stage_busy_counts,
 )
@@ -539,3 +544,185 @@ async def test_count_active_agents_degrades_on_db_error() -> None:
             raise RuntimeError("agents table unavailable")
 
     assert await count_active_agents(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# get_scrape_busy_count / get_match_busy_count (Phase 41, REQ-41-3) — controller-task
+# in-flight gates over the SAME saq_jobs table, degrade-safe (mirror get_search_busy_count).
+# ---------------------------------------------------------------------------
+
+
+class _BusyResult:
+    """Minimal ``.all()`` result double over a fixed list of ``(fn_prefix, count)`` rows."""
+
+    def __init__(self, rows: list[tuple[str, int]]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[tuple[str, int]]:
+        return self._rows
+
+
+class _BusySession:
+    """Fake session whose ``execute`` returns the seeded grouped-prefix rows inside a SAVEPOINT."""
+
+    def __init__(self, rows: list[tuple[str, int]]) -> None:
+        self._rows = rows
+
+    def begin_nested(self) -> _NullSavepoint:
+        return _NullSavepoint()
+
+    async def execute(self, *_args: object, **_kwargs: object) -> _BusyResult:
+        return _BusyResult(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_busy_count_buckets_by_scrape_prefix() -> None:
+    """Returns ONLY the ``scrape_and_store_tracklist`` in-flight count; other prefixes are ignored.
+
+    scrape_and_store_tracklist is a CONTROLLER task (not an agent stage), so it is absent from
+    ``get_stage_busy_counts``'s {metadata,analyze,fingerprint} contract. The key is
+    ``scrape_and_store_tracklist:<tracklist_id>`` (Phase 35), so the SELECT groups by
+    ``split_part(key, ':', 1)`` and only the ``scrape_and_store_tracklist`` bucket is summed.
+    """
+    rows = [
+        ("scrape_and_store_tracklist", 4),
+        ("search_tracklist", 7),  # not scrape → ignored
+        ("match_tracklist_to_discogs", 2),  # not scrape → ignored
+    ]
+    assert await get_scrape_busy_count(_BusySession(rows)) == 4  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_busy_count_zero_when_no_scrape_rows() -> None:
+    """With no ``scrape_and_store_tracklist`` rows the in-flight count is 0 (not an error)."""
+    assert await get_scrape_busy_count(_BusySession([("match_tracklist_to_discogs", 3)])) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_busy_count_degrades_on_db_error() -> None:
+    """get_scrape_busy_count returns 0 and never raises when the saq_jobs read fails (T-41-03).
+
+    A missing ``saq_jobs`` table or a DB hiccup must degrade to 0 so the hot 5s /pipeline/stats poll
+    keeps serving instead of 500ing. The read runs inside a SAVEPOINT (``begin_nested``); the
+    exception propagates out of the nested scope and is caught by the degrade ``except``.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_scrape_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_scrape_busy_count(session) == 0
+    follow_up = await get_pipeline_stats(session)
+    assert follow_up["discovered"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_match_busy_count_buckets_by_match_prefix() -> None:
+    """Returns ONLY the ``match_tracklist_to_discogs`` in-flight count; other prefixes are ignored."""
+    rows = [
+        ("match_tracklist_to_discogs", 6),
+        ("scrape_and_store_tracklist", 4),  # not match → ignored
+        ("search_tracklist", 7),  # not match → ignored
+    ]
+    assert await get_match_busy_count(_BusySession(rows)) == 6  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_match_busy_count_zero_when_no_match_rows() -> None:
+    """With no ``match_tracklist_to_discogs`` rows the in-flight count is 0 (not an error)."""
+    assert await get_match_busy_count(_BusySession([("scrape_and_store_tracklist", 4)])) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_match_busy_count_degrades_on_db_error() -> None:
+    """get_match_busy_count returns 0 and never raises when the saq_jobs read fails (T-41-03)."""
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_match_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_match_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_match_busy_count(session) == 0
+    follow_up = await get_pipeline_stats(session)
+    assert follow_up["discovered"] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_scrape_pending_tracklists / get_match_pending_tracklists (Phase 41, REQ-41-1/REQ-41-2) —
+# the exact complements of get_stage_progress scrape.done / match.done.
+# ---------------------------------------------------------------------------
+
+
+def _make_tracklist(n: int) -> Tracklist:
+    """Build a bare Tracklist row (no version, no discogs chain)."""
+    uid = uuid.uuid4()
+    return Tracklist(id=uid, external_id=f"tl-{n}-{uid.hex}", source_url=f"http://x/{n}")
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_pending_tracklists_excludes_versioned(session: AsyncSession) -> None:
+    """Scrape pending = tracklists with NO tracklist_versions row; a versioned tracklist is excluded."""
+    from phaze.models.tracklist import TracklistVersion
+
+    pending = _make_tracklist(1)
+    scraped = _make_tracklist(2)
+    session.add_all([pending, scraped])
+    await session.flush()
+    session.add(TracklistVersion(id=uuid.uuid4(), tracklist_id=scraped.id, version_number=1))
+    await session.flush()
+
+    result = await get_scrape_pending_tracklists(session)
+    ids = {tl.id for tl in result}
+    assert pending.id in ids
+    assert scraped.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_get_match_pending_tracklists_excludes_discogs_reachable(session: AsyncSession) -> None:
+    """Match pending = tracklists NOT reachable from discogs_links; a linked tracklist is excluded.
+
+    The match-reachable chain is version → TracklistTrack → DiscogsLink (the SAME join-walk
+    get_stage_progress.match.done uses). A tracklist with no discogs chain stays pending even if it
+    HAS a scraped version (scrape and match are independent stages).
+    """
+    from phaze.models.discogs_link import DiscogsLink
+    from phaze.models.tracklist import TracklistTrack, TracklistVersion
+
+    pending = _make_tracklist(1)
+    linked = _make_tracklist(2)
+    session.add_all([pending, linked])
+    await session.flush()
+    # `pending` gets a version (scrape-done) but NO discogs link → still match-pending.
+    session.add(TracklistVersion(id=uuid.uuid4(), tracklist_id=pending.id, version_number=1))
+    linked_version = TracklistVersion(id=uuid.uuid4(), tracklist_id=linked.id, version_number=1)
+    session.add(linked_version)
+    await session.flush()
+    track = TracklistTrack(id=uuid.uuid4(), version_id=linked_version.id, position=1)
+    session.add(track)
+    await session.flush()
+    session.add(DiscogsLink(id=uuid.uuid4(), track_id=track.id, discogs_release_id="r1", confidence=0.9))
+    await session.flush()
+
+    result = await get_match_pending_tracklists(session)
+    ids = {tl.id for tl in result}
+    assert pending.id in ids
+    assert linked.id not in ids
