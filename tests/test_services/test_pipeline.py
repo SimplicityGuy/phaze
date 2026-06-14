@@ -9,20 +9,28 @@ import uuid
 import pytest
 from sqlalchemy import text
 
+from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
+from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist
 from phaze.services.pipeline import (
     count_active_agents,
+    count_inflight_jobs,
     get_files_by_state,
+    get_fingerprint_pending_files,
     get_match_busy_count,
     get_match_pending_tracklists,
+    get_metadata_pending_files,
     get_pipeline_stats,
+    get_proposal_pending_batches,
     get_queue_activity,
     get_scan_busy_count,
     get_scrape_busy_count,
     get_scrape_pending_tracklists,
     get_search_busy_count,
     get_stage_busy_counts,
+    get_untracked_files,
 )
 from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
 
@@ -726,3 +734,185 @@ async def test_get_match_pending_tracklists_excludes_discogs_reachable(session: 
     ids = {tl.id for tl in result}
     assert pending.id in ids
     assert linked.id not in ids
+
+
+# ---------------------------------------------------------------------------
+# Phase 42 (D-03 anti-drift): shared pending-set helpers + queue-loss detector.
+# These four helpers are the ONE source of truth the manual DAG triggers AND the
+# recovery producer read, so the two paths cannot drift apart.
+# ---------------------------------------------------------------------------
+
+
+def _make_pipeline_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> FileRecord:
+    """Build a fully-populated FileRecord row for the pending-set helper tests."""
+    uid = uuid.uuid4()
+    return FileRecord(
+        id=uid,
+        sha256_hash=uid.hex,
+        original_path=f"/music/{uid.hex}.{file_type}",
+        original_filename=f"{uid.hex}.{file_type}",
+        current_path=f"/music/{uid.hex}.{file_type}",
+        file_type=file_type,
+        file_size=1000,
+        state=state,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_metadata_pending_files_returns_only_music_video(session: AsyncSession) -> None:
+    """Metadata pending = every music/video file (any state); a non-music file_type is excluded."""
+    music = _make_pipeline_file(file_type="mp3", state=FileState.DISCOVERED)
+    other = _make_pipeline_file(file_type="txt", state=FileState.DISCOVERED)
+    session.add_all([music, other])
+    await session.flush()
+
+    result = await get_metadata_pending_files(session)
+    ids = {f.id for f in result}
+    assert music.id in ids
+    assert other.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_get_fingerprint_pending_files_unions_metadata_extracted_and_failed_retry(session: AsyncSession) -> None:
+    """Fingerprint pending = METADATA_EXTRACTED union failed-retry (state != FINGERPRINTED), deduped by id.
+
+    A METADATA_EXTRACTED file is in; a failed-fingerprint file still not FINGERPRINTED is in (retry);
+    a FINGERPRINTED file with a failed result is excluded; a plain DISCOVERED file is excluded.
+    """
+    ready = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
+    failed_retry = _make_pipeline_file(state=FileState.ANALYZED)
+    already_done = _make_pipeline_file(state=FileState.FINGERPRINTED)
+    discovered = _make_pipeline_file(state=FileState.DISCOVERED)
+    session.add_all([ready, failed_retry, already_done, discovered])
+    await session.flush()
+    session.add_all(
+        [
+            FingerprintResult(id=uuid.uuid4(), file_id=failed_retry.id, engine="audfprint", status="failed"),
+            FingerprintResult(id=uuid.uuid4(), file_id=already_done.id, engine="audfprint", status="failed"),
+        ]
+    )
+    await session.flush()
+
+    result = await get_fingerprint_pending_files(session)
+    ids = [f.id for f in result]
+    assert ready.id in ids
+    assert failed_retry.id in ids
+    assert already_done.id not in ids
+    assert discovered.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_get_fingerprint_pending_files_dedups_metadata_extracted_with_failed_result(session: AsyncSession) -> None:
+    """A METADATA_EXTRACTED file that ALSO has a failed fingerprint result appears exactly once."""
+    dual = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
+    session.add(dual)
+    await session.flush()
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=dual.id, engine="audfprint", status="failed"))
+    await session.flush()
+
+    result = await get_fingerprint_pending_files(session)
+    ids = [f.id for f in result]
+    assert ids.count(dual.id) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_untracked_files_excludes_files_with_tracklist(session: AsyncSession) -> None:
+    """Untracked = music/video files with NO Tracklist row; a tracked file and a non-music file are out."""
+    untracked = _make_pipeline_file(file_type="mp3")
+    tracked = _make_pipeline_file(file_type="mp3")
+    non_music = _make_pipeline_file(file_type="txt")
+    session.add_all([untracked, tracked, non_music])
+    await session.flush()
+    session.add(Tracklist(id=uuid.uuid4(), file_id=tracked.id, external_id="tl-1", source_url="http://x/1"))
+    await session.flush()
+
+    result = await get_untracked_files(session)
+    ids = {f.id for f in result}
+    assert untracked.id in ids
+    assert tracked.id not in ids
+    assert non_music.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_sorts_then_chunks(session: AsyncSession) -> None:
+    """Convergence files (metadata+analysis) are SORTED by id then chunked -- deterministic batches.
+
+    Sorting before chunking is what aligns the generate_proposals:<sha256(sorted ids)> set-hash key
+    between the manual trigger and recovery (42-RESEARCH Pitfall 2). Insert in arbitrary order and
+    assert the batches are globally sorted and chunked by batch_size.
+    """
+    files = [_make_pipeline_file(state=FileState.ANALYZED) for _ in range(3)]
+    session.add_all(files)
+    await session.flush()
+    related: list[object] = []
+    for f in files:
+        related.append(FileMetadata(file_id=f.id, artist="A", title="T"))
+        related.append(AnalysisResult(file_id=f.id, bpm=120.0))
+    session.add_all(related)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 2)
+
+    flat = [fid for batch in batches for fid in batch]
+    expected = sorted(str(f.id) for f in files)
+    assert flat == expected  # globally sorted, deterministic membership
+    assert [len(b) for b in batches] == [2, 1]  # 3 ids / batch_size 2
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_excludes_files_missing_metadata_or_analysis(session: AsyncSession) -> None:
+    """Convergence gate: a file with ONLY metadata (no analysis) is NOT batched."""
+    only_metadata = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
+    session.add(only_metadata)
+    await session.flush()
+    session.add(FileMetadata(file_id=only_metadata.id, artist="A", title="T"))
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 10)
+    flat = [fid for batch in batches for fid in batch]
+    assert str(only_metadata.id) not in flat
+
+
+@pytest.mark.asyncio
+async def test_count_inflight_jobs_counts_queued_and_active() -> None:
+    """count_inflight_jobs returns the scalar COUNT(*) of in-flight saq_jobs rows."""
+
+    class _ScalarResult:
+        def __init__(self, value: int) -> None:
+            self._value = value
+
+        def scalar(self) -> int:
+            return self._value
+
+    class _FakeSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _ScalarResult:
+            return _ScalarResult(7)
+
+    assert await count_inflight_jobs(_FakeSession()) == 7  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_count_inflight_jobs_degrades_to_zero_on_db_error() -> None:
+    """A missing saq_jobs table or DB hiccup degrades count_inflight_jobs to 0 (never raises, T-42-04)."""
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await count_inflight_jobs(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_count_inflight_jobs_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (no ORM-expiring rollback)."""
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await count_inflight_jobs(session) == 0
+    # A follow-up query on the SAME session still succeeds (the nested rollback did not poison it).
+    follow_up = await get_files_by_state(session, FileState.DISCOVERED)
+    assert follow_up == []

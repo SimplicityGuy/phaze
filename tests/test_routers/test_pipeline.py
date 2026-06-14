@@ -13,6 +13,7 @@ from phaze.config import settings
 from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
@@ -950,6 +951,33 @@ async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: A
     await _drain_background()
     assert len(capture) == 2
     assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "fingerprint_file")}
+
+
+@pytest.mark.asyncio
+async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncClient, session: AsyncSession) -> None:
+    """Phase 42: /pipeline/fingerprint now ALSO enqueues a failed-fingerprint-retry file (D-03 align).
+
+    Previously trigger_fingerprint_ui queried ONLY METADATA_EXTRACTED; routing it through the shared
+    get_fingerprint_pending_files helper aligns it with the API endpoint -- it GAINS the failed-retry
+    scope. A file in ANALYZED state (NOT METADATA_EXTRACTED, NOT FINGERPRINTED) carrying a failed
+    FingerprintResult must now be enqueued. This locks the intended consistency fix.
+    """
+    failed = _make_file(state=FileState.ANALYZED)
+    session.add(failed)
+    await session.flush()
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=failed.id, engine="audfprint", status="failed"))
+    await session.commit()
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/fingerprint")
+    assert response.status_code == 200
+
+    await _drain_background()
+    assert len(capture) == 1
+    queue_name, task_name, payload = capture[0]
+    assert (queue_name, task_name) == ("phaze-agent-nox", "fingerprint_file")
+    assert payload["file_id"] == str(failed.id)
 
 
 @pytest.mark.asyncio
