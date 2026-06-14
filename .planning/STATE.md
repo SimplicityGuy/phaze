@@ -23,7 +23,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — COMPLETE
 Plan: 3 of 3
 Status: Phase 38 shipped — PR #125
-Last activity: 2026-06-14 - Completed quick task 260613-t7k: widen DAG chips + per-stage enqueue gating
+Last activity: 2026-06-14 - Executed Phase 39: tracklist Search DAG node (bulk search trigger, gated on metadata)
 
 Progress: [██████████] 100%
 
