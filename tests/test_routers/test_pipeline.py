@@ -16,7 +16,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
-from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload, ScanLiveSetPayload
 from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
 
 
@@ -461,6 +461,91 @@ async def test_dashboard_renders_search_trigger_end_to_end(client: AsyncClient) 
     body = response.text
     assert 'hx-post="/pipeline/search-tracklists"' in body
     assert "Needs metadata" in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 40 (REQ-40-1/REQ-40-4): bulk fingerprint-scan trigger routes per-agent with the
+# COMPLETE ScanLiveSetPayload (never default/controller), surfaces a no-agent empty-state.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/scan-live-sets enqueues scan_live_set on the PER-AGENT queue (never default/controller).
+
+    scan_live_set is a PER-AGENT task (Phase-30 rule). The capture must be exactly
+    {("phaze-agent-nox","scan_live_set")} — a routing regression that sent it to the consumer-less
+    default queue (or the controller queue) is caught here (T-40-04). Every enqueue must carry the
+    COMPLETE ScanLiveSetPayload (file_id, original_path, agent_id) so no job dead-letters on the
+    extra="forbid" validation (T-40-DL, the v4.0.8 payload-incident class).
+    """
+    files = [_make_file(state=FileState.DISCOVERED) for _ in range(3)]
+    session.add_all(files)
+    await session.commit()
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/scan-live-sets")
+    assert response.status_code == 200
+    assert "fingerprint scan" in response.text
+
+    await _drain_background()
+    assert len(capture) == 3
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "scan_live_set")}
+    assert all(q != "default" for q, _, _ in capture)
+    assert all(q != "controller" for q, _, _ in capture)
+    # Every enqueue carries the COMPLETE payload — model_validate (extra="forbid") must accept it.
+    for _q, _t, kwargs in capture:
+        ScanLiveSetPayload.model_validate(kwargs)
+    assert {c[2]["file_id"] for c in capture} == {str(f.id) for f in files}
+
+
+@pytest.mark.asyncio
+async def test_scan_live_sets_excludes_files_with_existing_tracklist(client: AsyncClient, session: AsyncSession) -> None:
+    """A file that already has a linked tracklist is skipped from the eligible set (idempotent re-run)."""
+    matched = _make_file(state=FileState.DISCOVERED)
+    unmatched = _make_file(state=FileState.DISCOVERED)
+    session.add_all([matched, unmatched])
+    await session.flush()
+    session.add(_link_tracklist(matched))
+    await session.commit()
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/scan-live-sets")
+    assert response.status_code == 200
+
+    await _drain_background()
+    # Only the unmatched file is enqueued; the matched file is excluded.
+    assert len(capture) == 1
+    assert capture[0][2]["file_id"] == str(unmatched.id)
+
+
+@pytest.mark.asyncio
+async def test_scan_live_sets_no_active_agent_renders_empty_state(client: AsyncClient, session: AsyncSession) -> None:
+    """Eligible files but NO online agent → 200, nothing enqueued, no-active-agent copy (never 500)."""
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    await session.commit()
+    capture = wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/pipeline/scan-live-sets")
+    assert response.status_code == 200
+    assert "No active agent available" in response.text
+
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_scan_live_sets_no_eligible_files_returns_200(client: AsyncClient) -> None:
+    """A zero-eligible POST returns 200, enqueues nothing, and never resolves a queue (no agent needed)."""
+    capture = wire_fakes(client)
+    response = await client.post("/pipeline/scan-live-sets")
+    assert response.status_code == 200
+    assert "No files ready for fingerprint scan" in response.text
+
+    await _drain_background()
+    assert capture == []
 
 
 @pytest.mark.asyncio

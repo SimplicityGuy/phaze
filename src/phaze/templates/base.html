@@ -112,6 +112,9 @@
                 // Phase 39 (REQ-39-3): search_tracklist in-flight count gates the DAG Search node
                 // "busy" — rides the same dag.items() seed/OOB poll as the agent busy counts.
                 searchBusy: 0,
+                // Phase 40 (REQ-40-2/REQ-40-3): scan_live_set in-flight count ("Scan busy") + online-agent
+                // count ("Needs agent" when 0) gate the DAG Fingerprint-Scan node — same seed/OOB poll.
+                scanBusy: 0, agentOnline: 0,
                 metadataDone: 0, metadataTotal: 0,
                 fingerprintDone: 0, fingerprintTotal: 0,
                 analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
