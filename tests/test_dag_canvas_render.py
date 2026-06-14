@@ -76,6 +76,10 @@ _DAG_KEYS = (
     # count ("Needs agent" when 0) gating the Fingerprint-Scan node. Both ride the dag.items() loop.
     "scanBusy",
     "agentOnline",
+    # Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight busy
+    # counts gating the Scrape/Match trigger nodes ("Scraping…" / "Matching…"). Both ride the loop.
+    "scrapeBusy",
+    "matchBusy",
 )
 
 # The three agent stages that carry the Phase-38 pause/resume + priority controls.
@@ -419,16 +423,19 @@ def test_gating_triggers_post_only_to_existing_endpoints() -> None:
     html = _render_canvas()
     targets = re.findall(r'hx-post="(/pipeline/[^"]+)"', html)
 
-    # The 6 enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers, the Phase-39
-    # bulk Search trigger (REQ-39-1), and the Phase-40 bulk Fingerprint-Scan trigger (REQ-40-1). No
-    # other net-new trigger surface (T-35-10).
+    # The 8 enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers, the Phase-39
+    # bulk Search trigger (REQ-39-1), the Phase-40 bulk Fingerprint-Scan trigger (REQ-40-1), and the
+    # Phase-41 bulk Scrape + Match triggers (REQ-41-1/REQ-41-2). No other net-new trigger surface
+    # (T-35-10).
     enqueue_targets = sorted(t for t in targets if not t.startswith("/pipeline/stages/"))
     assert enqueue_targets == [
         "/pipeline/analyze",
         "/pipeline/extract-metadata",
         "/pipeline/fingerprint",
+        "/pipeline/match-tracklists",
         "/pipeline/proposals",
         "/pipeline/scan-live-sets",
+        "/pipeline/scrape-tracklists",
         "/pipeline/search-tracklists",
     ], enqueue_targets
 
@@ -469,6 +476,11 @@ def test_gating_locked_disabled_reason_copy_present() -> None:
         # Phase 40 (REQ-40-2/REQ-40-3): the Fingerprint-Scan node's LOCKED gate copy.
         "Needs agent",
         "Scan busy",
+        # Phase 41 (REQ-41-3): the Scrape + Match trigger nodes' LOCKED gate copy.
+        "All scraped",
+        "All matched",
+        "Scraping…",
+        "Matching…",
     ):
         assert reason in html, f"missing LOCKED reason '{reason}'"
 
@@ -499,6 +511,9 @@ def test_gating_predicates_use_busy_and_dependency_gates() -> None:
     # Phase 40: the Fingerprint-Scan node gates on an online-agent count + its own in-flight scan count.
     assert "s.agentOnline === 0" in nodes_block  # fingerprint_scan "Needs agent" gate
     assert "s.scanBusy > 0" in nodes_block  # fingerprint_scan "Scan busy" gate
+    # Phase 41: the Scrape/Match trigger nodes gate on their own in-flight busy counts.
+    assert "s.scrapeBusy > 0" in nodes_block  # scrape "Scraping…" gate
+    assert "s.matchBusy > 0" in nodes_block  # match "Matching…" gate
 
 
 def test_gating_agent_stages_gate_on_own_busy_count() -> None:
@@ -537,6 +552,8 @@ def test_gating_buttons_keep_response_slot_and_inline_error() -> None:
         "proposals-response",
         "search-tracklists-response",
         "scan-live-sets-response",
+        "scrape-tracklists-response",
+        "match-tracklists-response",
     ):
         assert f'id="{slot}"' in html, f"missing response slot {slot}"
     assert "Couldn't enqueue. Retry." in html

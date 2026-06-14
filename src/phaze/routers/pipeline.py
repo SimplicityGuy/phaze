@@ -30,9 +30,13 @@ from phaze.services.pipeline import (
     MUSIC_VIDEO_TYPES,
     count_active_agents,
     get_files_by_state,
+    get_match_busy_count,
+    get_match_pending_tracklists,
     get_pipeline_stats,
     get_queue_activity,
     get_scan_busy_count,
+    get_scrape_busy_count,
+    get_scrape_pending_tracklists,
     get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
@@ -188,6 +192,15 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     # is a count where 0 == "no online agent" (fail-safe default that leaves the node blocked).
     dag["scanBusy"] = int(await get_scan_busy_count(session))
     dag["agentOnline"] = int(await count_active_agents(session))
+
+    # Phase 41 (REQ-41-3): the scrape_and_store_tracklist / match_tracklist_to_discogs in-flight counts
+    # gate the DAG Scrape/Match trigger nodes "busy" (Scraping… / Matching…). Both are controller tasks
+    # (NOT part of get_stage_busy_counts's three agent stages) -- get_scrape_busy_count + get_match_busy_
+    # count each own their own never-500 SAVEPOINT degrade (return 0 on any DB error), so NO try/except is
+    # added here; the ints ride the same dag.items() seed + OOB loop. (scrapeTotal/scrapeDone/matchTotal/
+    # matchDone are already seeded above; the gate derives pending = total - done client-side.)
+    dag["scrapeBusy"] = int(await get_scrape_busy_count(session))
+    dag["matchBusy"] = int(await get_match_busy_count(session))
 
     return {"dag": dag}
 
@@ -784,4 +797,97 @@ async def trigger_scan_live_sets_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "fingerprint scan", "count": count, "no_active_agent": no_active_agent},
+    )
+
+
+# --- Bulk scrape + match tracklist endpoints (Phase 41, REQ-41-1/REQ-41-2) ---
+
+
+async def _enqueue_scrape_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
+    """Background coroutine to enqueue ``scrape_and_store_tracklist`` jobs (one per pending tracklist).
+
+    ``scrape_and_store_tracklist`` is a CONTROLLER task taking only ``tracklist_id`` (mirrors the
+    single-tracklist ``tracklists.rescrape_tracklist`` trigger); the deterministic key
+    ``scrape_and_store_tracklist:<tracklist_id>`` is applied centrally by the ``before_enqueue`` hook
+    (Phase 35), so a double-click / refresh collapses an in-flight re-run to a no-op (D, T-41-02). Set
+    NO explicit ``key=``. Background-enqueued to avoid HTTP timeout on a large pending set (Pitfall 2).
+    ``tracklists`` rows are already loaded by the eligible-set query and the request never commits, so
+    reading ``tl.id`` here is not a lazy load.
+    """
+    for tl in tracklists:
+        await queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tl.id))
+
+
+async def _enqueue_match_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
+    """Background coroutine to enqueue ``match_tracklist_to_discogs`` jobs (one per pending tracklist).
+
+    ``match_tracklist_to_discogs`` is a CONTROLLER task taking only ``tracklist_id`` (mirrors the
+    single-tracklist ``tracklists.match_discogs`` trigger); the deterministic key
+    ``match_tracklist_to_discogs:<tracklist_id>`` is applied centrally by the ``before_enqueue`` hook
+    (Phase 35), so a double-click / refresh dedups in flight (D, T-41-02). Set NO explicit ``key=``.
+    Background-enqueued to avoid HTTP timeout on a large pending set (Pitfall 2).
+    """
+    for tl in tracklists:
+        await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tl.id))
+
+
+@router.post("/pipeline/scrape-tracklists", response_class=HTMLResponse)
+async def trigger_scrape_tracklists_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: bulk-trigger tracklist scraping over the pending set (Phase 41).
+
+    Pending = tracklists with NO scraped version yet (the exact complement of
+    :func:`get_stage_progress`'s ``scrape.done``); already-scraped tracklists are skipped so re-runs
+    are cheap and idempotent. ``scrape_and_store_tracklist`` is a CONTROLLER task, routed via
+    :func:`enqueue_router.resolve_queue_for_task` to the controller queue (Phase-30 rule) -- never the
+    consumer-less default queue. Controller tasks never raise ``NoActiveAgentError`` (mirrors
+    ``rescrape_tracklist``), so no no-active-agent branch is needed. Manual only -- NO auto-trigger
+    (automatic enqueue is reserved for the Phase-42 recovery pass).
+    """
+    tracklists = await get_scrape_pending_tracklists(session)
+    count = len(tracklists)
+
+    if count > 0:
+        routed = await enqueue_router.resolve_queue_for_task("scrape_and_store_tracklist", request.app.state, session)
+        task = asyncio.create_task(_enqueue_scrape_jobs(routed.queue, tracklists))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/trigger_tracklist_response.html",
+        context={"request": request, "action": "scraping", "count": count},
+    )
+
+
+@router.post("/pipeline/match-tracklists", response_class=HTMLResponse)
+async def trigger_match_tracklists_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: bulk-trigger Discogs matching over the pending set (Phase 41).
+
+    Pending = tracklists NOT yet reachable from ``discogs_links`` (the exact complement of
+    :func:`get_stage_progress`'s ``match.done``); already-linked tracklists are skipped so re-runs are
+    cheap and idempotent. ``match_tracklist_to_discogs`` is a CONTROLLER task, routed via
+    :func:`enqueue_router.resolve_queue_for_task` to the controller queue (Phase-30 rule) -- never the
+    consumer-less default queue. Controller tasks never raise ``NoActiveAgentError`` (mirrors
+    ``match_discogs``), so no no-active-agent branch is needed. Manual only -- NO auto-trigger
+    (automatic enqueue is reserved for the Phase-42 recovery pass).
+    """
+    tracklists = await get_match_pending_tracklists(session)
+    count = len(tracklists)
+
+    if count > 0:
+        routed = await enqueue_router.resolve_queue_for_task("match_tracklist_to_discogs", request.app.state, session)
+        task = asyncio.create_task(_enqueue_match_jobs(routed.queue, tracklists))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/trigger_tracklist_response.html",
+        context={"request": request, "action": "matching", "count": count},
     )

@@ -74,6 +74,12 @@ _NEW_STORE_KEYS = (
     # int-key context test, AND the OOB-seed test.
     "scanBusy",
     "agentOnline",
+    # Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight busy
+    # counts gating the DAG Scrape/Match trigger nodes. Both ride the same dag.items() seed/OOB loop
+    # so the gates react live on every 5s poll. One edit drives the store-literal seed test, the
+    # int-key context test, AND the OOB-seed test.
+    "scrapeBusy",
+    "matchBusy",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.

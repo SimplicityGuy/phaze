@@ -118,7 +118,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 38. Pipeline DAG Pause/Priority UI and Rescan Button Removal | v4.0 | 3/3 | Complete | 2026-06-13 |
 | 39. Tracklist Search DAG Node | v4.0 | 1/1 | Executed | — |
 | 40. Tracklist Fingerprint-Scan DAG Node | v4.0 | 1/1 | Executed | — |
-| 41. Scrape and Match DAG Triggers | v4.0 | 0/0 | Not planned | — |
+| 41. Scrape and Match DAG Triggers | v4.0 | 1/1 | Executed | — |
 | 42. Recovery-Only Pipeline Automation | v4.0 | 0/0 | Not planned | — |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -364,10 +364,10 @@ Plans:
 **Goal:** Give the **Scrape** and **Match** nodes real manual triggers. Scrape button bulk-enqueues `scrape_and_store_tracklist` for every tracklist missing a scraped version; Match button bulk-enqueues `match_tracklist_to_discogs` for every tracklist not yet linked to Discogs. Each is "bulk over pending" (skips already-done rows) and **disabled until ≥1 tracklist exists**.
 **Requirements**: two bulk endpoints route to the controller queue via `enqueue_router`; gates on `scrapeTotal`/`matchTotal` derived from tracklist count; both skip already-complete rows (deterministic-key dedup); regression tests for pending-set selection + gating.
 **Depends on:** Phases 39 and 40 (need tracklists to exist before scrape/match are meaningful)
-**Plans:** 0 plans
+**Plans:** 1 plan
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 41 to break down)
+- [ ] 41-01-PLAN.md — bulk Scrape + Match controller-routed triggers, busy/pending service reads, node gating (Needs tracklist / All scraped|matched / Scraping…|Matching…), and regression tests
 
 ### Phase 42: Recovery-Only Pipeline Automation — gate reenqueue_discovered + generalize so the only automatic enqueue is a restart/queue-loss recovery pass restoring all in-flight stages; no steady-state auto-advance
 
