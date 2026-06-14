@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import distinct, exists, func, select
+from sqlalchemy import distinct, exists, func, select, text
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -18,6 +18,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
@@ -309,6 +310,54 @@ async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int |
         except Exception:
             logger.warning("stage_controls_rollback_failed", exc_info=True)
         return {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
+
+
+# Per-stage in-flight gate (Phase 38 follow-up, t7k FIX2). ``saq_jobs`` has NO ``function`` column;
+# the deterministic key is ``<function>:<file_id>`` (Phase 35), so the per-stage in-flight count is
+# bucketed by the key's function prefix. Static SQL with NO interpolated operator input — the only
+# literals are ``split_part`` and the ``status`` allowlist (T-t7k-01, mirroring the Phase-37
+# stage_control discipline). One grouped scan covers all three agent stages.
+_STAGE_BUSY_SQL = text("SELECT split_part(key, ':', 1) AS fn, COUNT(*) AS n FROM saq_jobs WHERE status IN ('queued', 'active') GROUP BY fn")
+
+# Registered-function-name -> stage label (the inverse of STAGE_TO_FUNCTION), built locally so the
+# bucket loop maps each saq_jobs key prefix back to its agent stage; non-stage functions
+# (generate_proposals, scan_directory, ...) are absent here and therefore ignored.
+_BUSY_FUNCTION_TO_STAGE: dict[str, str] = {fn: stage for stage, fn in STAGE_TO_FUNCTION.items()}
+
+
+async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
+    """Return the per-agent-stage in-flight job count ``{metadata, analyze, fingerprint}``.
+
+    Counts ``saq_jobs`` rows with ``status IN ('queued', 'active')`` whose deterministic key prefix
+    maps to one of the three agent stages. This REPLACES the single global ``agentBusy`` gate
+    (queued+active summed across ALL agent queues) that locked all three agent stages together --
+    each stage now gates on ITS OWN in-flight count, so Metadata, Analyze and Fingerprint run in
+    parallel (running one no longer blocks the other two).
+
+    A paused stage's parked rows (status still ``queued``, ``scheduled = SENTINEL``) DO count as busy
+    -- an accepted, documented behavior consistent with the prior global ``agentBusy`` meaning of
+    "has a backlog" (the enqueue button stays blocked while a backlog exists).
+
+    Failure isolation (T-t7k-02): the ``saq_jobs`` read runs inside a SAVEPOINT
+    (``session.begin_nested()``). On ANY DB error (a missing ``saq_jobs`` table in a pre-migration
+    env, a DB hiccup) the nested scope is rolled back ALONE -- recovering the aborted Postgres
+    transaction WITHOUT expiring the dashboard's already-loaded ORM objects (a plain
+    ``session.rollback()`` would expire ``agents`` / ``recent_scans`` and 500 the page on the next
+    lazy load) and WITHOUT poisoning later queries. The function then logs a warning and returns
+    all-zeros -- it NEVER raises into the hot 5s /pipeline/stats poll.
+    """
+    out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+    except Exception:
+        logger.warning("stage_busy_degraded", exc_info=True)
+        return out
+    for row in rows:
+        stage = _BUSY_FUNCTION_TO_STAGE.get(row[0])
+        if stage is not None:
+            out[stage] = int(row[1])
+    return out
 
 
 async def get_files_by_state(session: AsyncSession, state: FileState) -> list[FileRecord]:

@@ -30,17 +30,25 @@
    over the chip below it (38-UI-SPEC Layout Contract; guarded by test_topology_column_one_chips_
    do_not_overlap). scan_search keeps h:126 (no controls). col-0 discovery + col-2/col-3 nodes
    (proposals/scrape/execute/match) are re-balanced to their incoming-edge midpoints so the curved
-   edges still land cleanly on the new col-1 anchors. #}
+   edges still land cleanly on the new col-1 anchors.
+   t7k FIX1 WIDTH RECOMPUTE: the agent chips were widened 180→240px because the Phase-38 control row
+   (Pause button + ▲ Higher / value / ▼ Lower stepper) overflowed the 180px chip and clipped "▼ Lower"
+   to "Low". ALL nodes share the 240px width (uniform column), so the four columns are re-gridded to
+   x = 24 (col0) / 392 (col1) / 760 (col2) / 1128 (col3). Each column gap is 128px (e.g. col0 right edge
+   264 → col1 left 392), which exceeds the ±60px bézier control-point offset (`sx + 60` / `tx - 60` on
+   the edge `d` path), so `sx+60 < tx-60` holds for every edge and the curves stay clean. The edge `d`
+   strings are DERIVED from these anchors (never hand-edited), so they auto-recompute. The canvas/SVG
+   grew 1132→1392 wide to fit col3's new right edge (1368 + 24px margin); height stays 1000. #}
 {% set NODE_LAYOUT = {
-  "discovery":   {"x": 24,  "y": 467, "w": 180, "h": 130},
-  "metadata":    {"x": 320, "y": 24,  "w": 180, "h": 250},
-  "analyze":     {"x": 320, "y": 300, "w": 180, "h": 250},
-  "fingerprint": {"x": 320, "y": 576, "w": 180, "h": 250},
-  "scan_search": {"x": 320, "y": 852, "w": 180, "h": 126},
-  "proposals":   {"x": 624, "y": 200, "w": 180, "h": 174},
-  "scrape":      {"x": 624, "y": 858, "w": 180, "h": 114},
-  "execute":     {"x": 928, "y": 222, "w": 180, "h": 130},
-  "match":       {"x": 928, "y": 858, "w": 180, "h": 114}
+  "discovery":   {"x": 24,   "y": 467, "w": 240, "h": 130},
+  "metadata":    {"x": 392,  "y": 24,  "w": 240, "h": 250},
+  "analyze":     {"x": 392,  "y": 300, "w": 240, "h": 250},
+  "fingerprint": {"x": 392,  "y": 576, "w": 240, "h": 250},
+  "scan_search": {"x": 392,  "y": 852, "w": 240, "h": 126},
+  "proposals":   {"x": 760,  "y": 200, "w": 240, "h": 174},
+  "scrape":      {"x": 760,  "y": 858, "w": 240, "h": 114},
+  "execute":     {"x": 1128, "y": 222, "w": 240, "h": 130},
+  "match":       {"x": 1128, "y": 858, "w": 240, "h": 114}
 } %}
 
 {# Authoritative edge list (35-STAGE-DEPENDENCIES.md). Metadata→Proposals and
@@ -182,10 +190,14 @@
          };
          return {
            discovery: mk(s.discovered, s.discovered),
-           metadata: mk(s.metadataDone, s.metadataTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Extract Metadata', running: 'Extracting…' }),
-           analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
+           // t7k FIX2: each agent stage gates on its OWN in-flight busy count (metadataBusy /
+           // analyzeBusy / fingerprintBusy). The prior single global agent-busy flag locked all
+           // three agent stages together; per-stage gating lets them run in parallel. The
+           // 'Agent busy' reason copy is preserved per-stage.
+           metadata: mk(s.metadataDone, s.metadataTotal, { blocked: s.discovered === 0 || s.metadataBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.metadataBusy > 0 ? 'Agent busy' : ''), cta: 'Extract Metadata', running: 'Extracting…' }),
+           analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.analyzeBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.analyzeBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
            // Fingerprint — hard upstream is Discovery (reads the file on disk), so gate on
-           fingerprint: mk(s.fingerprintDone, s.fingerprintTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Fingerprint Files', running: 'Fingerprinting…' }),
+           fingerprint: mk(s.fingerprintDone, s.fingerprintTotal, { blocked: s.discovered === 0 || s.fingerprintBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.fingerprintBusy > 0 ? 'Agent busy' : ''), cta: 'Fingerprint Files', running: 'Fingerprinting…' }),
            // store.discovered NOT metadataExtracted (UI-SPEC L243 topology correction).
            scan_search: mk(s.tracklistDone, 0, { blocked: s.discovered === 0, reason: s.discovered === 0 ? 'No files discovered' : '' }),
            proposals: mk(s.proposalsDone, s.proposalsTotal, { blocked: s.analyzed === 0 || s.controllerBusy > 0, reason: s.analyzed === 0 ? 'Waiting on Analyze' : (s.controllerBusy > 0 ? 'Controller busy' : ''), cta: 'Generate Proposals', running: 'Generating…' }),
@@ -225,8 +237,8 @@
      sm (the stacked <ol> takes over); horizontally scrollable sm–lg. #}
   <div role="group" aria-label="Pipeline stage graph"
        class="hidden sm:block overflow-x-auto rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-bg p-4">
-    <div class="relative" style="width: 1132px; height: 1000px;">
-      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1132" height="1000" viewBox="0 0 1132 1000" fill="none">
+    <div class="relative" style="width: 1392px; height: 1000px;">
+      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1392" height="1000" viewBox="0 0 1392 1000" fill="none">
         {% for edge in EDGES %}
           {% set src = NODE_LAYOUT[edge[0]] %}
           {% set tgt = NODE_LAYOUT[edge[1]] %}
