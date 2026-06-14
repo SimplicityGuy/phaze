@@ -450,6 +450,20 @@ async def test_search_tracklists_no_eligible_files_returns_200(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_dashboard_renders_search_trigger_end_to_end(client: AsyncClient) -> None:
+    """GET /pipeline/ exposes the Search trigger + 'Needs metadata' gate copy end-to-end (REQ-39-2).
+
+    On an empty DB metadataDone == 0, so the Search node is gated 'Needs metadata' by default. The
+    rendered dashboard must carry the bulk Search trigger's hx-post target and the LOCKED gate copy,
+    proving the Phase-39 trigger surface reaches the page (not just the partial render tests)."""
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    body = response.text
+    assert 'hx-post="/pipeline/search-tracklists"' in body
+    assert "Needs metadata" in body
+
+
+@pytest.mark.asyncio
 async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession) -> None:
     """GET /pipeline/stats returns 200 with HTML containing count values."""
     session.add(_make_file(state=FileState.DISCOVERED))
