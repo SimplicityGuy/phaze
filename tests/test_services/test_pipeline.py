@@ -10,7 +10,15 @@ import pytest
 from sqlalchemy import text
 
 from phaze.models.file import FileRecord, FileState
-from phaze.services.pipeline import get_files_by_state, get_pipeline_stats, get_queue_activity, get_search_busy_count, get_stage_busy_counts
+from phaze.services.pipeline import (
+    count_active_agents,
+    get_files_by_state,
+    get_pipeline_stats,
+    get_queue_activity,
+    get_scan_busy_count,
+    get_search_busy_count,
+    get_stage_busy_counts,
+)
 from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
 
 
@@ -389,3 +397,145 @@ async def test_get_search_busy_count_degrade_does_not_poison_session(session: As
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
     follow_up = await get_pipeline_stats(session)
     assert follow_up["discovered"] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_scan_busy_count (Phase 40, REQ-40-3) — scan_live_set in-flight gate, degrade-safe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_scan_busy_count_buckets_by_scan_prefix() -> None:
+    """Returns ONLY the ``scan_live_set`` in-flight count; other function prefixes are ignored.
+
+    scan_live_set is a PER-AGENT task (not one of get_stage_busy_counts's three agent stages) but its
+    jobs live in the SAME saq_jobs table. The key is ``scan_live_set:<file_id>`` (Phase 35), so the
+    SELECT groups by ``split_part(key, ':', 1)`` and only the ``scan_live_set`` bucket is summed.
+    """
+
+    class _FakeResult:
+        def __init__(self, rows: list[tuple[str, int]]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[tuple[str, int]]:
+            return self._rows
+
+    class _FakeSession:
+        def __init__(self, rows: list[tuple[str, int]]) -> None:
+            self._rows = rows
+
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult(self._rows)
+
+    rows = [
+        ("scan_live_set", 5),
+        ("search_tracklist", 7),  # not scan → ignored
+        ("extract_file_metadata", 4),  # not scan → ignored
+    ]
+    assert await get_scan_busy_count(_FakeSession(rows)) == 5  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scan_busy_count_zero_when_no_scan_rows() -> None:
+    """With no ``scan_live_set`` rows the in-flight count is 0 (not an error)."""
+
+    class _FakeResult:
+        def all(self) -> list[tuple[str, int]]:
+            return [("search_tracklist", 7)]
+
+    class _FakeSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult()
+
+    assert await get_scan_busy_count(_FakeSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scan_busy_count_degrades_on_db_error() -> None:
+    """get_scan_busy_count returns 0 and never raises when the saq_jobs read fails (T-40-03).
+
+    A missing ``saq_jobs`` table or a DB hiccup must degrade to 0 so the hot 5s /pipeline/stats poll
+    keeps serving instead of 500ing. The read runs inside a SAVEPOINT (``begin_nested``); the
+    exception propagates out of the nested scope and is caught by the degrade ``except``.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_scan_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scan_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard).
+
+    DROP ``saq_jobs`` inside this test's uncommitted transaction to deterministically force the
+    absent-table degrade — the only branch that exercises the SAVEPOINT rollback recovery. A
+    follow-up query on the SAME session must still succeed, proving the dashboard's later ORM
+    lazy-loads are not poisoned (the bug a plain ``session.rollback()`` would cause).
+    """
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_scan_busy_count(session) == 0
+    # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
+    follow_up = await get_pipeline_stats(session)
+    assert follow_up["discovered"] == 0
+
+
+# ---------------------------------------------------------------------------
+# count_active_agents (Phase 40, REQ-40-2) — online-agent liveness count, degrade-safe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_active_agents_excludes_revoked_and_never_seen(session: AsyncSession) -> None:
+    """Counts ONLY agents matching select_active_agent's liveness (revoked + never-seen excluded).
+
+    Seeds one online agent (recently seen, not revoked), one revoked agent (``revoked_at`` set), and
+    one never-seen agent (``last_seen_at`` None) — the count must be exactly 1, reusing the EXACT
+    enqueue_router liveness rule (CONTEXT decision 2).
+    """
+    from datetime import UTC, datetime
+
+    from phaze.models.agent import Agent
+
+    await seed_active_agent(session, "nox")  # online: revoked_at NULL, last_seen_at set
+    session.add(Agent(id="revoked", name="revoked", token_hash=None, scan_roots=[], last_seen_at=datetime.now(UTC), revoked_at=datetime.now(UTC)))
+    session.add(Agent(id="never-seen", name="never-seen", token_hash=None, scan_roots=[], last_seen_at=None, revoked_at=None))
+    await session.flush()
+
+    assert await count_active_agents(session) == 1
+
+
+@pytest.mark.asyncio
+async def test_count_active_agents_zero_when_none_online(session: AsyncSession) -> None:
+    """With no online agents the count is 0 (fail-safe default leaves the node blocked 'Needs agent')."""
+    assert await count_active_agents(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_count_active_agents_degrades_on_db_error() -> None:
+    """count_active_agents returns 0 and never raises when the agents read fails (T-40-05).
+
+    The degrade default 0 is FAIL-SAFE: ``agentOnline == 0`` leaves the new node blocked 'Needs
+    agent', so a liveness-read failure can never let a scan launch with no agent online. The read
+    runs inside a SAVEPOINT (``begin_nested``); the exception is caught by the degrade ``except``.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("agents table unavailable")
+
+    assert await count_active_agents(_ExplodingSession()) == 0  # type: ignore[arg-type]

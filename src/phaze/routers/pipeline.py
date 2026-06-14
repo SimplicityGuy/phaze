@@ -22,15 +22,17 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     MUSIC_VIDEO_TYPES,
+    count_active_agents,
     get_files_by_state,
     get_pipeline_stats,
     get_queue_activity,
+    get_scan_busy_count,
     get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
@@ -177,6 +179,15 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     # agent stages -- get_search_busy_count owns its own never-500 SAVEPOINT degrade (returns 0 on
     # any DB error), so NO try/except is added here; the int rides the same dag.items() seed + OOB loop.
     dag["searchBusy"] = int(await get_search_busy_count(session))
+
+    # Phase 40 (REQ-40-2/REQ-40-3): the Fingerprint-Scan node gates on both an in-flight scan_live_set
+    # count ("Scan busy") and an online-agent signal ("Needs agent"). scan_live_set is a per-agent task,
+    # so it is NOT part of get_stage_busy_counts's three agent stages -- get_scan_busy_count + count_
+    # active_agents each own their own never-500 SAVEPOINT degrade (return 0 on any DB error), so NO
+    # try/except is added here; the ints ride the same dag.items() seed + OOB loop. count_active_agents
+    # is a count where 0 == "no online agent" (fail-safe default that leaves the node blocked).
+    dag["scanBusy"] = int(await get_scan_busy_count(session))
+    dag["agentOnline"] = int(await count_active_agents(session))
 
     return {"dag": dag}
 
@@ -705,4 +716,72 @@ async def trigger_search_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "tracklist search", "count": count, "no_active_agent": False},
+    )
+
+
+# --- Tracklist fingerprint-scan endpoint (Phase 40, REQ-40-1) ---
+
+
+async def _enqueue_scan_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
+    """Background coroutine to enqueue ``scan_live_set`` jobs with the COMPLETE payload (T-40-DL).
+
+    ``ScanLiveSetPayload`` (``extra="forbid"``) requires file_id, original_path AND agent_id; a
+    ``file_id``-only enqueue dead-letters EVERY job -- the v4.0.8 payload-incident class. The buggy
+    single-file ``tracklists.trigger_scan`` (which enqueues only ``file_id``) is deliberately NOT
+    copied; this mirrors the CORRECT full-payload producer ``_enqueue_fingerprint_jobs`` (identical
+    field set) instead. Build the complete payload and serialize via ``model_dump(mode="json")`` so
+    the UUID is sent as a string the worker's ``model_validate`` accepts. The deterministic key
+    (``scan_live_set:<file_id>``) is applied centrally by the ``before_enqueue`` hook (Phase 35), so a
+    double-click/refresh dedups in flight (T-40-02) -- no explicit ``key=`` is set here.
+    Background-enqueued to avoid HTTP timeout on a large eligible archive (Pitfall 2).
+    """
+    for f in files:
+        payload = ScanLiveSetPayload(
+            file_id=f.id,
+            original_path=f.original_path,
+            agent_id=agent_id,
+        )
+        await queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
+
+
+@router.post("/pipeline/scan-live-sets", response_class=HTMLResponse)
+async def trigger_scan_live_sets_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: bulk-trigger agent-side fingerprint scan over eligible files (Phase 40).
+
+    Eligible = music/video files that do NOT already have a tracklist (skip already-matched files so
+    re-runs are cheap and idempotent), the SAME query the Phase-39 Search trigger uses. ``scan_live_set``
+    is a PER-AGENT task, routed via :func:`enqueue_router.resolve_queue_for_task` to the active agent's
+    queue (``phaze-agent-<id>``, Phase-30 rule) -- NEVER the consumer-less default queue. With eligible
+    files but no online agent the resolve raises ``NoActiveAgentError``; that is caught, nothing is
+    enqueued, and the no-active-agent empty-state renders (status 200, never 500). Manual only -- NO
+    auto-trigger (automatic enqueue is reserved for the Phase-42 recovery pass).
+    """
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        ~exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
+    )
+    result = await session.execute(stmt)
+    files = list(result.scalars().all())
+    count = len(files)
+    no_active_agent = False
+
+    if count > 0:
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("scan_live_set", request.app.state, session)
+        except enqueue_router.NoActiveAgentError:
+            no_active_agent = True
+        else:
+            # scan_live_set is an AGENT_TASK -- resolve always returns a non-None agent_id.
+            agent_id = cast("str", routed.agent_id)
+            task = asyncio.create_task(_enqueue_scan_jobs(routed.queue, files, agent_id))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/trigger_response.html",
+        context={"request": request, "action": "fingerprint scan", "count": count, "no_active_agent": no_active_agent},
     )

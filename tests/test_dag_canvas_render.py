@@ -72,6 +72,10 @@ _DAG_KEYS = (
     "fingerprintBusy",
     # Phase 39 (REQ-39-3): search_tracklist in-flight busy count gating the Search node.
     "searchBusy",
+    # Phase 40 (REQ-40-2/REQ-40-3): scan_live_set in-flight busy count ("Scan busy") + online-agent
+    # count ("Needs agent" when 0) gating the Fingerprint-Scan node. Both ride the dag.items() loop.
+    "scanBusy",
+    "agentOnline",
 )
 
 # The three agent stages that carry the Phase-38 pause/resume + priority controls.
@@ -90,13 +94,15 @@ def _stage_control_fragment(html: str, stage: str) -> str:
     return html[start : end + len("Couldn't update. Retry.")]
 
 
-# All 9 DAG node ids (topological order).
+# All 10 DAG node ids (topological order). Phase 40 inserts fingerprint_scan immediately after
+# scan_search (contiguous col-1 nodes in DOM/tab order).
 _NODE_IDS = (
     "node-discovery",
     "node-metadata",
     "node-analyze",
     "node-fingerprint",
     "node-scan_search",
+    "node-fingerprint_scan",
     "node-proposals",
     "node-scrape",
     "node-execute",
@@ -170,9 +176,9 @@ def test_topology_edge_list_is_honest() -> None:
 def test_topology_renders_anchor_derived_bezier_paths() -> None:
     """Edges render as cubic-bézier <path d="M..C..> strings derived from the layout map."""
     html = _render_canvas()
-    # One path per edge; nine edges in the authoritative list.
+    # One path per edge; ten edges in the authoritative list (Phase 40: + discovery→fingerprint_scan).
     paths = re.findall(r'<path d="M [\d., ]+C [\d., ]+"', html)
-    assert len(paths) == 9, f"expected 9 anchor-derived edges, found {len(paths)}"
+    assert len(paths) == 10, f"expected 10 anchor-derived edges, found {len(paths)}"
 
 
 def test_topology_column_one_chips_do_not_overlap() -> None:
@@ -193,11 +199,11 @@ def test_topology_column_one_chips_do_not_overlap() -> None:
     # control row (measured ~250px); the old 182px gutters fail at this threshold.
     min_chip_height = 240
     tops = {}
-    for node in ("metadata", "analyze", "fingerprint", "scan_search"):
+    for node in ("metadata", "analyze", "fingerprint", "scan_search", "fingerprint_scan"):
         m = re.search(rf'id="node-{node}".*?top:\s*(\d+)px', html, re.DOTALL)
         assert m, f"could not find top position for node {node}"
         tops[node] = int(m.group(1))
-    ordered = ["metadata", "analyze", "fingerprint", "scan_search"]
+    ordered = ["metadata", "analyze", "fingerprint", "scan_search", "fingerprint_scan"]
     for upper, lower in itertools.pairwise(ordered):
         gap = tops[lower] - tops[upper]
         assert gap >= min_chip_height, (
@@ -216,8 +222,8 @@ def test_topology_chips_widened_to_240_and_columns_do_not_overlap() -> None:
     must clear col-2 (proposals, x=760) left edge.
     """
     html = _render_canvas()
-    # Every one of the 9 node chips renders at the widened 240px inline width.
-    assert html.count("width: 240px") == 9, "all 9 chips must render at the widened 240px"
+    # Every one of the 10 node chips renders at the widened 240px inline width.
+    assert html.count("width: 240px") == 10, "all 10 chips must render at the widened 240px"
     # Column-1 (metadata, x=392) and column-2 (proposals, x=760) must not horizontally overlap.
     m_meta = re.search(r'id="node-metadata".*?left:\s*(\d+)px', html, re.DOTALL)
     m_prop = re.search(r'id="node-proposals".*?left:\s*(\d+)px', html, re.DOTALL)
@@ -242,17 +248,22 @@ def test_topology_canvas_has_aria_group_and_decorative_svg() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_all_nine_node_ids_present() -> None:
-    """All 9 DAG node chips render with stable ids."""
+def test_render_all_node_ids_present() -> None:
+    """All 10 DAG node chips render with stable ids."""
     html = _render_canvas()
     for node_id in _NODE_IDS:
         assert f'id="{node_id}"' in html, f"missing node {node_id}"
 
 
 def test_render_scan_search_uses_em_dash_no_determinate_bar() -> None:
-    """Scan/Search renders a literal em-dash denominator and no done/total %% bar width."""
+    """Scan/Search renders a literal em-dash denominator and no done/total %% bar width.
+
+    Phase 40: fingerprint_scan now follows scan_search in DOM order, so the slice's lower bound moved
+    from the proposals node to the new fingerprint_scan node — keeping this assertion scoped to ONLY
+    the scan_search chip.
+    """
     html = _render_canvas()
-    scan = html[html.index('id="node-scan_search"') : html.index('id="node-proposals"')]
+    scan = html[html.index('id="node-scan_search"') : html.index('id="node-fingerprint_scan"')]
     assert "/ —" in scan, "Scan/Search must render the literal em-dash denominator"
     # No determinate progress fill (no :style width) inside the Scan/Search node.
     assert ":style" not in scan, "Scan/Search must NOT compute a determinate bar width"
@@ -387,7 +398,7 @@ def test_controls_only_on_agent_stages_not_other_nodes() -> None:
     """Only the 3 agent chips carry controls — no stage_controls fragment for non-agent nodes."""
     html = _render_canvas()
     assert html.count('id="stage-controls-') == len(_AGENT_STAGES)
-    for non_agent in ("discovery", "scan_search", "proposals", "scrape", "execute", "match"):
+    for non_agent in ("discovery", "scan_search", "fingerprint_scan", "proposals", "scrape", "execute", "match"):
         assert f'id="stage-controls-{non_agent}"' not in html
 
 
@@ -408,14 +419,16 @@ def test_gating_triggers_post_only_to_existing_endpoints() -> None:
     html = _render_canvas()
     targets = re.findall(r'hx-post="(/pipeline/[^"]+)"', html)
 
-    # The 5 enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers plus the
-    # Phase-39 bulk Search trigger (REQ-39-1). No other net-new trigger surface (T-35-10).
+    # The 6 enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers, the Phase-39
+    # bulk Search trigger (REQ-39-1), and the Phase-40 bulk Fingerprint-Scan trigger (REQ-40-1). No
+    # other net-new trigger surface (T-35-10).
     enqueue_targets = sorted(t for t in targets if not t.startswith("/pipeline/stages/"))
     assert enqueue_targets == [
         "/pipeline/analyze",
         "/pipeline/extract-metadata",
         "/pipeline/fingerprint",
         "/pipeline/proposals",
+        "/pipeline/scan-live-sets",
         "/pipeline/search-tracklists",
     ], enqueue_targets
 
@@ -453,6 +466,9 @@ def test_gating_locked_disabled_reason_copy_present() -> None:
         # Phase 39 (REQ-39-2/REQ-39-3): the Search node's LOCKED gate copy.
         "Needs metadata",
         "Search busy",
+        # Phase 40 (REQ-40-2/REQ-40-3): the Fingerprint-Scan node's LOCKED gate copy.
+        "Needs agent",
+        "Scan busy",
     ):
         assert reason in html, f"missing LOCKED reason '{reason}'"
 
@@ -480,6 +496,9 @@ def test_gating_predicates_use_busy_and_dependency_gates() -> None:
     assert "s.controllerBusy > 0" in nodes_block  # proposals
     assert "s.analyzed === 0" in nodes_block  # proposals dependency gate
     assert "s.approved === 0" in nodes_block  # execute gate
+    # Phase 40: the Fingerprint-Scan node gates on an online-agent count + its own in-flight scan count.
+    assert "s.agentOnline === 0" in nodes_block  # fingerprint_scan "Needs agent" gate
+    assert "s.scanBusy > 0" in nodes_block  # fingerprint_scan "Scan busy" gate
 
 
 def test_gating_agent_stages_gate_on_own_busy_count() -> None:
@@ -499,11 +518,11 @@ def test_gating_agent_stages_gate_on_own_busy_count() -> None:
 
 
 def test_gating_stacked_ol_is_text_equivalent() -> None:
-    """The stacked <ol> exists, is sr-only at >= sm, and lists all 9 stages in order."""
+    """The stacked <ol> exists, is sr-only at >= sm, and lists all 10 stages in order."""
     html = _render_canvas()
     assert "sm:sr-only" in html
     ol = html[html.index("<ol") : html.index("</ol>")]
-    assert ol.count("<li") == 9, "the <ol> must carry all 9 stages"
+    assert ol.count("<li") == 10, "the <ol> must carry all 10 stages"
     # Topological order: Discovery first, Execute last.
     assert ol.index("Discovery") < ol.index("Analyze") < ol.index("Approve")
 
@@ -511,7 +530,14 @@ def test_gating_stacked_ol_is_text_equivalent() -> None:
 def test_gating_buttons_keep_response_slot_and_inline_error() -> None:
     """Each enqueue trigger keeps its HTMX response slot + the LOCKED inline error copy."""
     html = _render_canvas()
-    for slot in ("analyze-response", "extract-metadata-response", "fingerprint-response", "proposals-response", "search-tracklists-response"):
+    for slot in (
+        "analyze-response",
+        "extract-metadata-response",
+        "fingerprint-response",
+        "proposals-response",
+        "search-tracklists-response",
+        "scan-live-sets-response",
+    ):
         assert f'id="{slot}"' in html, f"missing response slot {slot}"
     assert "Couldn't enqueue. Retry." in html
 
@@ -532,12 +558,12 @@ def test_gating_execute_is_navigational_link() -> None:
 
 @pytest.mark.asyncio
 async def test_integration_dashboard_renders_dag_canvas(client: AsyncClient) -> None:
-    """GET /pipeline renders the DAG canvas with all 9 node labels and no legacy markers."""
+    """GET /pipeline renders the DAG canvas with all 10 node labels and no legacy markers."""
     response = await client.get("/pipeline/")
     assert response.status_code == 200
     body = response.text
     assert 'aria-label="Pipeline stage graph"' in body
-    for label in ("Discovery", "Metadata", "Analyze", "Fingerprint", "Scan / Search", "Proposals", "Scrape", "Execute", "Match"):
+    for label in ("Discovery", "Metadata", "Analyze", "Fingerprint", "Scan / Search", "Identify Set", "Proposals", "Scrape", "Execute", "Match"):
         assert label in body, f"missing node label '{label}'"
     # D-01: the Phase-34 stage-cards heading + processing card are gone.
     assert "Pipeline Actions" not in body
@@ -549,9 +575,9 @@ async def test_integration_dashboard_edge_honesty(client: AsyncClient) -> None:
     """The rendered SVG converges only Metadata+Analyze into Proposals (edge honesty)."""
     response = await client.get("/pipeline/")
     body = response.text
-    # Nine anchor-derived bézier edges; none originate at fingerprint/scrape/match into proposals.
+    # Ten anchor-derived bézier edges; none originate at fingerprint/scrape/match into proposals.
     paths = re.findall(r'<path d="M [\d., ]+C [\d., ]+"', body)
-    assert len(paths) == 9
+    assert len(paths) == 10
     src = (PARTIALS_DIR / "dag_canvas.html").read_text(encoding="utf-8")
     edge_block = src[src.index("set EDGES") : src.index("] %}", src.index("set EDGES"))]
     assert '["metadata", "proposals"]' in edge_block
@@ -564,7 +590,9 @@ async def test_integration_dashboard_scan_search_em_dash(client: AsyncClient) ->
     """The rendered Scan/Search node shows the literal em-dash denominator."""
     response = await client.get("/pipeline/")
     body = response.text
-    scan = body[body.index('id="node-scan_search"') : body.index('id="node-proposals"')]
+    # Phase 40: slice ONLY the scan_search chip (its new lower bound is the fingerprint_scan node,
+    # inserted immediately after it in DOM order).
+    scan = body[body.index('id="node-scan_search"') : body.index('id="node-fingerprint_scan"')]
     assert "/ —" in scan
 
 

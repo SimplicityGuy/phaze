@@ -397,6 +397,70 @@ async def get_search_busy_count(session: AsyncSession) -> int:
     return 0
 
 
+# Fingerprint-scan in-flight gate (Phase 40, REQ-40-3). scan_live_set is a PER-AGENT task --
+# NOT one of the three agent stages tracked by get_stage_busy_counts (that function + its tests
+# stay untouched) -- but its jobs live in the SAME saq_jobs table (Postgres backend), so the same
+# key-prefix scan works. The deterministic key is "scan_live_set:<file_id>" (Phase 35), so the
+# in-flight count is the bucket whose key prefix == "scan_live_set". Reuses the SAME static
+# _STAGE_BUSY_SQL grouped scan (no operator input is interpolated -- the only literals are
+# split_part, the status allowlist, and the function-name constant below; T-40-01, mirroring the
+# Phase-37/t7k/Phase-39 static-SQL discipline).
+_SCAN_BUSY_FUNCTION = "scan_live_set"
+
+
+async def get_scan_busy_count(session: AsyncSession) -> int:
+    """Return the in-flight ``scan_live_set`` job count (``queued`` + ``active``), degrade-safe.
+
+    Counts the ``saq_jobs`` rows whose deterministic key prefix is ``scan_live_set`` (status
+    ``IN ('queued', 'active')``). This drives the DAG Fingerprint-Scan node's "Scan busy" gate so a
+    second bulk scan cannot be launched while one batch is in flight. A paused/parked scan job
+    (status still ``queued``) counts as busy -- the same accepted semantics as
+    :func:`get_search_busy_count`.
+
+    Failure isolation (T-40-03): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
+    ANY DB error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope
+    is rolled back ALONE -- recovering the aborted Postgres transaction WITHOUT expiring the
+    dashboard's already-loaded ORM objects (a plain ``session.rollback()`` would 500 the page on the
+    next lazy load) and WITHOUT poisoning later queries. The function logs a warning and returns 0 --
+    it NEVER raises into the hot 5s /pipeline/stats poll.
+    """
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+    except Exception:
+        logger.warning("scan_busy_degraded", exc_info=True)
+        return 0
+    for row in rows:
+        if row[0] == _SCAN_BUSY_FUNCTION:
+            return int(row[1])
+    return 0
+
+
+async def count_active_agents(session: AsyncSession) -> int:
+    """Return the number of online agents (``revoked_at IS NULL`` AND ``last_seen_at IS NOT NULL``).
+
+    Counts agents matching :func:`phaze.services.enqueue_router.select_active_agent`'s EXACT
+    liveness definition (CONTEXT decision 2 -- do NOT invent a new liveness rule): a revoked agent
+    (``revoked_at`` set) and a never-seen agent (``last_seen_at`` None) are both excluded. This drives
+    the DAG Fingerprint-Scan node's "Needs agent" gate -- ``scan_live_set`` is a per-agent task and
+    raises ``NoActiveAgentError`` when no agent is online, so the button must stay disabled until one
+    is.
+
+    Failure isolation (T-40-05): the read runs inside a SAVEPOINT (``session.begin_nested()``) so a
+    DB hiccup on the hot 5s poll does NOT expire the dashboard's loaded ORM objects. On ANY exception
+    it logs ``active_agent_count_degraded`` and returns 0. That degrade default is FAIL-SAFE:
+    ``agentOnline == 0`` leaves the new node blocked "Needs agent", so a liveness-read failure can
+    never let a scan launch with no agent online. It NEVER raises into the 5s /pipeline/stats poll.
+    """
+    try:
+        async with session.begin_nested():
+            count = (await session.execute(select(func.count(Agent.id)).where(Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None)))).scalar()
+    except Exception:
+        logger.warning("active_agent_count_degraded", exc_info=True)
+        return 0
+    return int(count or 0)
+
+
 async def get_files_by_state(session: AsyncSession, state: FileState) -> list[FileRecord]:
     """Get all files in a given pipeline state.
 
