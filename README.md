@@ -121,6 +121,15 @@ first") wired to the per-stage control endpoints below; their live pause/priorit
 rides the same 5s poll. The Discovery node is display-only — scanning is initiated solely
 from the Trigger Scan card (the redundant "Rescan Files" anchor was removed in Phase 38).
 
+**Recovery-only automation (Phase 42).** Steady state produces **zero** automatic
+enqueues — every stage advances only on an operator click. The single exception is a gated
+recovery pass on controller startup: it **no-ops** unless it detects genuine queue-loss
+(empty `saq_jobs` while the DB still shows pending work). Because the SAQ broker is durable
+**Postgres** (Phase 36), a normal restart loses nothing, so the old every-5-min
+auto-advance cron was removed. A global **Recover** button in the DAG header (`POST
+/pipeline/recover`) runs the same idempotent producer on demand (forced cold-boot safety
+net); its deterministic-key dedup means a forced reconcile can never double the backlog.
+
 ### 📬 Task Queue Routing
 
 Every control-plane enqueue (API endpoint or admin-UI action) routes to a **named** SAQ queue that a worker actually consumes — the control plane never produces onto an unnamed `default` queue (which has no consumer). A single chokepoint, `resolve_queue_for_task` in `src/phaze/services/enqueue_router.py`, maps each task name to its destination:
