@@ -70,6 +70,8 @@ _DAG_KEYS = (
     "metadataBusy",
     "analyzeBusy",
     "fingerprintBusy",
+    # Phase 39 (REQ-39-3): search_tracklist in-flight busy count gating the Search node.
+    "searchBusy",
 )
 
 # The three agent stages that carry the Phase-38 pause/resume + priority controls.
@@ -406,13 +408,15 @@ def test_gating_triggers_post_only_to_existing_endpoints() -> None:
     html = _render_canvas()
     targets = re.findall(r'hx-post="(/pipeline/[^"]+)"', html)
 
-    # The 4 enqueue triggers POST only to the existing Phase-34 endpoints — unchanged.
+    # The 5 enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers plus the
+    # Phase-39 bulk Search trigger (REQ-39-1). No other net-new trigger surface (T-35-10).
     enqueue_targets = sorted(t for t in targets if not t.startswith("/pipeline/stages/"))
     assert enqueue_targets == [
         "/pipeline/analyze",
         "/pipeline/extract-metadata",
         "/pipeline/fingerprint",
         "/pipeline/proposals",
+        "/pipeline/search-tracklists",
     ], enqueue_targets
 
     # The Phase-38 stage controls POST only to the existing /pipeline/stages/* endpoints:
@@ -446,6 +450,9 @@ def test_gating_locked_disabled_reason_copy_present() -> None:
         "Waiting on Analyze",
         "Needs proposals",
         "Needs tracklist",
+        # Phase 39 (REQ-39-2/REQ-39-3): the Search node's LOCKED gate copy.
+        "Needs metadata",
+        "Search busy",
     ):
         assert reason in html, f"missing LOCKED reason '{reason}'"
 
@@ -504,7 +511,7 @@ def test_gating_stacked_ol_is_text_equivalent() -> None:
 def test_gating_buttons_keep_response_slot_and_inline_error() -> None:
     """Each enqueue trigger keeps its HTMX response slot + the LOCKED inline error copy."""
     html = _render_canvas()
-    for slot in ("analyze-response", "extract-metadata-response", "fingerprint-response", "proposals-response"):
+    for slot in ("analyze-response", "extract-metadata-response", "fingerprint-response", "proposals-response", "search-tracklists-response"):
         assert f'id="{slot}"' in html, f"missing response slot {slot}"
     assert "Couldn't enqueue. Retry." in html
 

@@ -360,6 +360,43 @@ async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
     return out
 
 
+# Search-tracklist in-flight gate (Phase 39, REQ-39-3). search_tracklist is a CONTROLLER task --
+# NOT one of the three agent stages -- so it is deliberately ABSENT from get_stage_busy_counts's
+# {metadata,analyze,fingerprint} contract (that function + its tests stay untouched). The
+# deterministic key is "search_tracklist:<file_id>" (Phase 35), so the in-flight count is the
+# bucket whose key prefix == "search_tracklist". Reuses the SAME static _STAGE_BUSY_SQL grouped
+# scan (no operator input is interpolated -- the only literals are split_part, the status
+# allowlist, and the function-name constant below; T-39-01, mirroring the Phase-37/t7k discipline).
+_SEARCH_BUSY_FUNCTION = "search_tracklist"
+
+
+async def get_search_busy_count(session: AsyncSession) -> int:
+    """Return the in-flight ``search_tracklist`` job count (``queued`` + ``active``), degrade-safe.
+
+    Counts the ``saq_jobs`` rows whose deterministic key prefix is ``search_tracklist`` (status
+    ``IN ('queued', 'active')``). This drives the DAG Search node's "Search busy" gate so a second
+    bulk search cannot be launched while one batch is in flight. A paused/parked search job (status
+    still ``queued``) counts as busy -- the same accepted semantics as :func:`get_stage_busy_counts`.
+
+    Failure isolation (T-39-03): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
+    ANY DB error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope
+    is rolled back ALONE -- recovering the aborted Postgres transaction WITHOUT expiring the
+    dashboard's already-loaded ORM objects (a plain ``session.rollback()`` would 500 the page on the
+    next lazy load) and WITHOUT poisoning later queries. The function logs a warning and returns 0 --
+    it NEVER raises into the hot 5s /pipeline/stats poll.
+    """
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+    except Exception:
+        logger.warning("search_busy_degraded", exc_info=True)
+        return 0
+    for row in rows:
+        if row[0] == _SEARCH_BUSY_FUNCTION:
+            return int(row[1])
+    return 0
+
+
 async def get_files_by_state(session: AsyncSession, state: FileState) -> list[FileRecord]:
     """Get all files in a given pipeline state.
 

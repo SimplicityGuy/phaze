@@ -15,6 +15,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.tracklist import Tracklist
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload
 from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
 
@@ -375,6 +376,91 @@ async def test_proposals_generate_no_files(client: AsyncClient) -> None:
     data = response.json()
     assert data["enqueued_batches"] == 0
     assert data["total_files"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 39 (REQ-39-1/REQ-39-4): bulk search-tracklist trigger routes to the controller queue
+# ---------------------------------------------------------------------------
+
+
+def _link_tracklist(file_rec: FileRecord) -> Tracklist:
+    """Build a Tracklist row linked to ``file_rec`` (marks the file as already-matched)."""
+    uid = uuid.uuid4()
+    return Tracklist(
+        external_id=uid.hex,
+        source_url=f"https://1001.tl/{uid.hex}",
+        file_id=file_rec.id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_tracklists_routes_to_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/search-tracklists enqueues search_tracklist on the controller queue (never default).
+
+    search_tracklist is a CONTROLLER task (Phase-30 rule). The capture must be exactly
+    {("controller","search_tracklist")} — a routing regression that sent it to the consumer-less
+    default queue is caught here.
+    """
+    files = [_make_file(state=FileState.DISCOVERED) for _ in range(3)]
+    session.add_all(files)
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/search-tracklists")
+    assert response.status_code == 200
+
+    await _drain_background()
+    assert len(capture) == 3
+    assert {(q, t) for q, t, _ in capture} == {("controller", "search_tracklist")}
+    assert all(q != "default" for q, _, _ in capture)
+    # Each enqueue carries the file_id the deterministic key dedups on.
+    assert {c[2]["file_id"] for c in capture} == {str(f.id) for f in files}
+
+
+@pytest.mark.asyncio
+async def test_search_tracklists_excludes_files_with_existing_tracklist(client: AsyncClient, session: AsyncSession) -> None:
+    """A file that already has a linked tracklist is skipped from the eligible set (idempotent re-run)."""
+    matched = _make_file(state=FileState.DISCOVERED)
+    unmatched = _make_file(state=FileState.DISCOVERED)
+    session.add_all([matched, unmatched])
+    await session.flush()
+    session.add(_link_tracklist(matched))
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/search-tracklists")
+    assert response.status_code == 200
+
+    await _drain_background()
+    # Only the unmatched file is enqueued; the matched file is excluded.
+    assert len(capture) == 1
+    assert capture[0][2]["file_id"] == str(unmatched.id)
+
+
+@pytest.mark.asyncio
+async def test_search_tracklists_no_eligible_files_returns_200(client: AsyncClient) -> None:
+    """A zero-eligible POST returns 200 and enqueues nothing (renders the 'No files ready' copy)."""
+    capture = wire_fakes(client)
+    response = await client.post("/pipeline/search-tracklists")
+    assert response.status_code == 200
+    assert "No files ready for tracklist search" in response.text
+
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_renders_search_trigger_end_to_end(client: AsyncClient) -> None:
+    """GET /pipeline/ exposes the Search trigger + 'Needs metadata' gate copy end-to-end (REQ-39-2).
+
+    On an empty DB metadataDone == 0, so the Search node is gated 'Needs metadata' by default. The
+    rendered dashboard must carry the bulk Search trigger's hx-post target and the LOCKED gate copy,
+    proving the Phase-39 trigger surface reaches the page (not just the partial render tests)."""
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    body = response.text
+    assert 'hx-post="/pipeline/search-tracklists"' in body
+    assert "Needs metadata" in body
 
 
 @pytest.mark.asyncio
