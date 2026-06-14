@@ -695,6 +695,22 @@ async def test_match_tracklists_no_pending_returns_200(client: AsyncClient) -> N
 
 
 @pytest.mark.asyncio
+async def test_dashboard_renders_scrape_and_match_triggers_end_to_end(client: AsyncClient) -> None:
+    """GET /pipeline/ exposes BOTH Scrape + Match triggers + the 'Needs tracklist' gate copy (REQ-41-4).
+
+    On an empty DB scrapeTotal/matchTotal == 0, so both nodes are gated 'Needs tracklist' by default
+    (the literal lives in the node getter regardless of state). The rendered dashboard must carry both
+    bulk triggers' hx-post targets, proving the Phase-41 trigger surface reaches the page end-to-end
+    (not just the partial render tests)."""
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    body = response.text
+    assert 'hx-post="/pipeline/scrape-tracklists"' in body
+    assert 'hx-post="/pipeline/match-tracklists"' in body
+    assert "Needs tracklist" in body
+
+
+@pytest.mark.asyncio
 async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession) -> None:
     """GET /pipeline/stats returns 200 with HTML containing count values."""
     session.add(_make_file(state=FileState.DISCOVERED))
