@@ -199,6 +199,29 @@ def test_topology_column_one_chips_do_not_overlap() -> None:
         )
 
 
+def test_topology_chips_widened_to_240_and_columns_do_not_overlap() -> None:
+    """t7k FIX1: the Phase-38 per-stage control row (Pause + ▲ Higher / 50 / ▼ Lower) overflowed the
+    180px node chips and clipped "▼ Lower" to "Low". Every chip is now 240px wide and the four columns
+    are re-gridded (x = 24 / 392 / 760 / 1128) so a wider column-1 chip can never overlap column-2.
+
+    Node chips are content-height (the div sets only left/top/width), so this guards the widened width
+    in the NODE_LAYOUT map AND the horizontal column spacing: col-1 (metadata, x=392) right edge 632
+    must clear col-2 (proposals, x=760) left edge.
+    """
+    html = _render_canvas()
+    # Every one of the 9 node chips renders at the widened 240px inline width.
+    assert html.count("width: 240px") == 9, "all 9 chips must render at the widened 240px"
+    # Column-1 (metadata, x=392) and column-2 (proposals, x=760) must not horizontally overlap.
+    m_meta = re.search(r'id="node-metadata".*?left:\s*(\d+)px', html, re.DOTALL)
+    m_prop = re.search(r'id="node-proposals".*?left:\s*(\d+)px', html, re.DOTALL)
+    assert m_meta and m_prop, "could not parse column-1/column-2 left positions"
+    col1_left = int(m_meta.group(1))
+    col2_left = int(m_prop.group(1))
+    assert col1_left == 392, f"metadata column-1 left must be 392px, got {col1_left}"
+    assert col2_left == 760, f"proposals column-2 left must be 760px, got {col2_left}"
+    assert col2_left >= col1_left + 240, "column-1 right edge must clear column-2 left edge (no overlap)"
+
+
 def test_topology_canvas_has_aria_group_and_decorative_svg() -> None:
     """Canvas is role=group/aria-label and the SVG edge layer is aria-hidden."""
     html = _render_canvas()
