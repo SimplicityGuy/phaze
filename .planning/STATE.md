@@ -23,7 +23,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — COMPLETE
 Plan: 3 of 3
 Status: Phase 38 shipped — PR #125
-Last activity: 2026-06-14 - Executed Phase 40: tracklist Fingerprint-Scan DAG node (bulk scan_live_set, per-agent, gated on discovered+agent online)
+Last activity: 2026-06-14 - Executed Phase 41: Scrape + Match DAG triggers (bulk-over-pending, controller-routed, gated on tracklist existence)
 
 Progress: [██████████] 100%
 
