@@ -190,10 +190,14 @@
          };
          return {
            discovery: mk(s.discovered, s.discovered),
-           metadata: mk(s.metadataDone, s.metadataTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Extract Metadata', running: 'Extracting…' }),
-           analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
+           // t7k FIX2: each agent stage gates on its OWN in-flight busy count (metadataBusy /
+           // analyzeBusy / fingerprintBusy). The prior single global agent-busy flag locked all
+           // three agent stages together; per-stage gating lets them run in parallel. The
+           // 'Agent busy' reason copy is preserved per-stage.
+           metadata: mk(s.metadataDone, s.metadataTotal, { blocked: s.discovered === 0 || s.metadataBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.metadataBusy > 0 ? 'Agent busy' : ''), cta: 'Extract Metadata', running: 'Extracting…' }),
+           analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.analyzeBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.analyzeBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
            // Fingerprint — hard upstream is Discovery (reads the file on disk), so gate on
-           fingerprint: mk(s.fingerprintDone, s.fingerprintTotal, { blocked: s.discovered === 0 || s.agentBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentBusy > 0 ? 'Agent busy' : ''), cta: 'Fingerprint Files', running: 'Fingerprinting…' }),
+           fingerprint: mk(s.fingerprintDone, s.fingerprintTotal, { blocked: s.discovered === 0 || s.fingerprintBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.fingerprintBusy > 0 ? 'Agent busy' : ''), cta: 'Fingerprint Files', running: 'Fingerprinting…' }),
            // store.discovered NOT metadataExtracted (UI-SPEC L243 topology correction).
            scan_search: mk(s.tracklistDone, 0, { blocked: s.discovered === 0, reason: s.discovered === 0 ? 'No files discovered' : '' }),
            proposals: mk(s.proposalsDone, s.proposalsTotal, { blocked: s.analyzed === 0 || s.controllerBusy > 0, reason: s.analyzed === 0 ? 'Waiting on Analyze' : (s.controllerBusy > 0 ? 'Controller busy' : ''), cta: 'Generate Proposals', running: 'Generating…' }),

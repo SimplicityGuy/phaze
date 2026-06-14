@@ -65,6 +65,11 @@ _DAG_KEYS = (
     "analyzePriority",
     "fingerprintPaused",
     "fingerprintPriority",
+    # t7k FIX2 per-stage in-flight busy counts (replace the single global agentBusy gate);
+    # ride the same dag.items() seed/OOB loop so the gating reacts live on every 5s poll.
+    "metadataBusy",
+    "analyzeBusy",
+    "fingerprintBusy",
 )
 
 # The three agent stages that carry the Phase-38 pause/resume + priority controls.
@@ -453,14 +458,37 @@ def test_gating_locked_state_pill_copy_present() -> None:
 
 
 def test_gating_predicates_use_busy_and_dependency_gates() -> None:
-    """The gate predicates read agentBusy / controllerBusy / analyzed / approved."""
+    """The gate predicates read the per-stage busy keys / controllerBusy / analyzed / approved.
+
+    t7k FIX2: the three agent stages no longer share the single global ``agentBusy`` flag — each
+    gates on ITS OWN in-flight count (``metadataBusy`` / ``analyzeBusy`` / ``fingerprintBusy``) so
+    running one stage no longer locks the other two.
+    """
     src = (PARTIALS_DIR / "dag_canvas.html").read_text(encoding="utf-8")
     # The parent x-data `nodes` getter ends just before the "Pipeline Graph" heading.
     nodes_block = src[src.index("get nodes()") : src.index("Pipeline Graph")]
-    assert "s.agentBusy > 0" in nodes_block  # metadata / analyze / fingerprint
+    assert "s.metadataBusy > 0" in nodes_block  # metadata gates on its own busy count
+    assert "s.analyzeBusy > 0" in nodes_block  # analyze gates on its own busy count
+    assert "s.fingerprintBusy > 0" in nodes_block  # fingerprint gates on its own busy count
     assert "s.controllerBusy > 0" in nodes_block  # proposals
     assert "s.analyzed === 0" in nodes_block  # proposals dependency gate
     assert "s.approved === 0" in nodes_block  # execute gate
+
+
+def test_gating_agent_stages_gate_on_own_busy_count() -> None:
+    """t7k FIX2: each agent enqueue gate reads its OWN busy key — one busy stage cannot lock the
+    other two. Rendered with ``analyzeBusy=1`` (metadata/fingerprint idle), the nodes getter still
+    gates metadata on ``s.metadataBusy``, analyze on ``s.analyzeBusy`` and fingerprint on
+    ``s.fingerprintBusy`` (structural per-stage independence — no shared agentBusy flag)."""
+    dag = dict.fromkeys(_DAG_KEYS, 0)
+    dag["analyzeBusy"] = 1
+    html = _render_canvas(dag=dag)
+    nodes_block = html[html.index("get nodes()") : html.index("Pipeline Graph")]
+    assert "s.metadataBusy > 0" in nodes_block
+    assert "s.analyzeBusy > 0" in nodes_block
+    assert "s.fingerprintBusy > 0" in nodes_block
+    # The global agentBusy gate is gone from the agent-stage enqueue predicates.
+    assert "agentBusy" not in nodes_block
 
 
 def test_gating_stacked_ol_is_text_equivalent() -> None:

@@ -29,6 +29,7 @@ from phaze.services.pipeline import (
     get_files_by_state,
     get_pipeline_stats,
     get_queue_activity,
+    get_stage_busy_counts,
     get_stage_controls,
     get_stage_progress,
     queue_progress_percent,
@@ -158,6 +159,15 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     for stage_name in ("metadata", "analyze", "fingerprint"):
         dag[f"{stage_name}Paused"] = int(controls[stage_name]["paused"])
         dag[f"{stage_name}Priority"] = int(controls[stage_name]["priority"])
+
+    # t7k FIX2 (REQ-260613-t7k-FIX2): per-stage in-flight busy counts REPLACE the single global
+    # agentBusy gate so the three agent enqueue buttons gate independently (run in parallel).
+    # get_stage_busy_counts owns the never-500 degrade (all-zeros on any DB error), so NO try/except
+    # is added here; these ints ride the same dag.items() seed + OOB loop with no stats_bar.html edit.
+    busy = await get_stage_busy_counts(session)
+    dag["metadataBusy"] = int(busy["metadata"])
+    dag["analyzeBusy"] = int(busy["analyze"])
+    dag["fingerprintBusy"] = int(busy["fingerprint"])
 
     return {"dag": dag}
 

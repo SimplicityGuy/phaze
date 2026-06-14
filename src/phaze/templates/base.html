@@ -105,6 +105,10 @@
             // `metadataExtracted`; the store keeps both, the gating swap lands in 35-05.
             Alpine.store('pipeline', {
                 discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
+                // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
+                // gate so each agent enqueue button gates on its OWN stage (run in parallel).
+                // agentBusy is kept — the queue_progress card path still reads agent_busy server-side.
+                metadataBusy: 0, analyzeBusy: 0, fingerprintBusy: 0,
                 metadataDone: 0, metadataTotal: 0,
                 fingerprintDone: 0, fingerprintTotal: 0,
                 analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
