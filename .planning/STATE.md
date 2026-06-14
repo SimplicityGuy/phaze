@@ -23,7 +23,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: 38 (pipeline-dag-pause-priority-ui-and-rescan-button-removal) — COMPLETE
 Plan: 3 of 3
 Status: Phase 38 shipped — PR #125
-Last activity: 2026-06-14 - Executed Phase 41: Scrape + Match DAG triggers (bulk-over-pending, controller-routed, gated on tracklist existence)
+Last activity: 2026-06-14 - Executed Phase 42: recovery-only automation (removed 5-min auto-advance cron; gated all-stages recovery on startup + manual Recover button) — completes the DAG-manual-control theme (39-42)
 
 Progress: [██████████] 100%
 
