@@ -13,18 +13,20 @@ Phase 36 migrated the SAQ broker from Redis to Postgres (``saq_jobs`` table, ``P
 Queued and active jobs are now DURABLE across a controller restart -- SAQ re-dequeues the
 surviving ``saq_jobs`` rows itself, and reclaims timed-out ``active`` jobs on its own. The old
 ``reenqueue_discovered`` premise ("Redis is empty after a reboot, so every DISCOVERED file
-re-enqueues") is therefore OBSOLETE: a normal restart loses NOTHING. A genuine "queue-loss" is
+re-enqueues") was therefore OBSOLETE: a normal restart loses NOTHING. A genuine "queue-loss" is
 now the rare, DETECTABLE asymmetry "``saq_jobs`` has zero queued/active rows while the domain DB
 still shows pending work" (a truncate / restore-from-backup / fresh migration).
 
-:func:`recover_orphaned_work` is the Phase-42 producer that supersedes ``reenqueue_discovered``:
+Plan 42-02 ACTED on that reframe: the Analyze-only, Redis-era ``reenqueue_discovered`` producer
+AND its every-5-min controller cron were DELETED, and the controller startup hook now calls
+:func:`recover_orphaned_work` instead. Steady state produces ZERO automatic enqueues -- DO NOT
+re-introduce a steady-state auto-advance cron or the deleted producer.
+
+:func:`recover_orphaned_work` is the Phase-42 producer that REPLACED ``reenqueue_discovered``:
 it reconciles ALL eight pipeline stages (gated on the ``count_inflight_jobs`` loss detector),
 re-enqueuing each stage's shared pending set through the IDENTICAL keyed producer the manual DAG
 triggers use -- so manual and recovery paths cannot drift (D-03) and the deterministic-key dedup
-collapses any surviving live item to a skipped no-op (no doubling, Phase-32 class). The legacy
-``reenqueue_discovered`` (Analyze-only, Redis-era) is RETAINED here ONLY until Plan 42-02 drops
-its controller registration + the ``*/5`` cron and re-points the startup hook at
-``recover_orphaned_work``; do not re-introduce a steady-state auto-advance cron.
+collapses any surviving live item to a skipped no-op (no doubling, Phase-32 class).
 
 Routing carries forward the Phase-32 pitfalls: agent stages (analyze/metadata/fingerprint/
 scan_live_set) route to the active agent's per-agent queue via ``select_active_agent`` +
@@ -66,60 +68,6 @@ if TYPE_CHECKING:
 
 
 logger = structlog.get_logger(__name__)
-
-
-async def reenqueue_discovered(ctx: dict[str, Any]) -> dict[str, int]:
-    """Re-enqueue ``process_file`` for every DISCOVERED file onto the active agent's queue.
-
-    Queries Postgres for ``FileState.DISCOVERED`` rows and funnels each through the
-    Wave-1 shared ``enqueue_process_file`` helper (complete 5-field payload + deterministic
-    ``process_file:<file_id>`` key + ``timeout=14400`` / ``retries=2``). A file whose key is
-    still in flight dedups to a no-op (``enqueue_process_file`` returns ``None``) and is
-    counted as ``skipped``; the rest are ``reenqueued``.
-
-    Returns ``{"reenqueued": N, "skipped": M}``. Degrades gracefully:
-
-    - No DISCOVERED files -> ``{"reenqueued": 0, "skipped": 0}`` without selecting an agent.
-    - No active agent (``NoActiveAgentError``) -> logs a WARNING and returns zeros; never raises.
-
-    One-time post-deploy note (32-RESEARCH Open Question 1): files enqueued before the
-    deterministic-key cutover carry a random uuid key, so a single overlapping re-run may
-    transiently double-enqueue them. This is harmless -- ``process_file`` is idempotent
-    per file, so the redundant run simply re-analyzes and converges.
-    """
-    cfg = get_settings()
-
-    async with ctx["async_session"]() as session:
-        files = await get_files_by_state(session, FileState.DISCOVERED)
-        if not files:
-            return {"reenqueued": 0, "skipped": 0}
-
-        try:
-            agent = await select_active_agent(session)
-        except NoActiveAgentError:
-            logger.warning("reenqueue skipped: no active agent", discovered=len(files))
-            return {"reenqueued": 0, "skipped": 0}
-
-        queue = ctx["task_router"].queue_for(agent.id)
-
-        reenqueued = 0
-        skipped = 0
-        for file in files:
-            job = await enqueue_process_file(queue, file, agent.id, cfg.models_path)
-            if job is None:
-                skipped += 1
-            else:
-                reenqueued += 1
-
-    logger.info(
-        "reenqueue complete",
-        agent=agent.id,
-        queue=f"phaze-agent-{agent.id}",
-        discovered=len(files),
-        reenqueued=reenqueued,
-        skipped=skipped,
-    )
-    return {"reenqueued": reenqueued, "skipped": skipped}
 
 
 # --- Phase 42: gated, all-stages, idempotent recovery producer --------------------------

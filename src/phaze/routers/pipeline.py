@@ -13,7 +13,7 @@ from sqlalchemy import select
 import structlog
 
 from phaze.config import settings
-from phaze.database import get_session
+from phaze.database import async_session, get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.pipeline_scans import build_recent_scans
@@ -42,6 +42,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
 )
 from phaze.services.pipeline_counters import read_counters
+from phaze.tasks.reenqueue import recover_orphaned_work
 
 
 logger = structlog.get_logger(__name__)
@@ -834,4 +835,51 @@ async def trigger_match_tracklists_ui(
         request=request,
         name="pipeline/partials/trigger_tracklist_response.html",
         context={"request": request, "action": "matching", "count": count},
+    )
+
+
+# --- Manual recovery endpoint (Phase 42, D-02/D-05) ---
+
+
+async def _run_recovery(ctx: dict[str, Any]) -> None:
+    """Background coroutine: run the gated all-stages recovery producer (force=True).
+
+    Calls the SAME :func:`recover_orphaned_work` producer the controller startup hook runs
+    (Phase 42, D-03), so the manual and automatic recovery paths cannot drift. ``force=True``
+    bypasses ONLY the no-op queue-loss DETECT gate (this is the operator-driven cold-boot
+    safety net, D-05) -- it never bypasses the per-item deterministic-key dedup, so a forced
+    reconcile over a live queue collapses every still-in-flight item to a skipped no-op and
+    can NEVER double the backlog (Phase-32 doubling class is closed).
+    """
+    await recover_orphaned_work(ctx, force=True)
+
+
+@router.post("/pipeline/recover", response_class=HTMLResponse)
+async def trigger_recover_ui(request: Request) -> HTMLResponse:
+    """HTMX endpoint: manually trigger the gated all-stages recovery pass (Phase 42, D-02/D-05).
+
+    The global DAG "Recover" button posts here. It builds a worker-shaped ``ctx`` from the API
+    app -- the module-level :data:`phaze.database.async_session` sessionmaker (same DB as the
+    ``saq_jobs`` broker), the lifespan-created ``app.state.controller_queue`` (controller stages),
+    and ``app.state.task_router`` (per-agent stages) -- and schedules :func:`recover_orphaned_work`
+    with ``force=True`` as a fire-and-forget background task (same ``_background_tasks`` discipline
+    as every other pipeline trigger, so a large reconcile never blocks the HTTP response). Because
+    the producer runs in the background, this returns immediately with a "recovery started" fragment
+    rather than the final per-stage counts. The endpoint calls the SAME producer as controller
+    startup, so the manual and automatic recovery paths cannot drift (D-03), and the deterministic-key
+    dedup keeps a forced reconcile idempotent (T-42-06/T-42-07) -- it can never 500 on a healthy queue.
+    """
+    ctx: dict[str, Any] = {
+        "async_session": async_session,
+        "queue": request.app.state.controller_queue,
+        "task_router": request.app.state.task_router,
+    }
+    task = asyncio.create_task(_run_recovery(ctx))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/recover_response.html",
+        context={"request": request},
     )

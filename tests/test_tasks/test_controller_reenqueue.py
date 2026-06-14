@@ -1,14 +1,13 @@
-"""Phase 32 Plan 03: controller wiring for reboot re-enqueue.
+"""Phase 42 Plan 02: controller wiring for the recovery-only automation gate.
 
 Two groups:
-1. Registration (``-k cron`` / ``-k functions``) -- ``reenqueue_discovered`` is in
-   ``settings["functions"]`` and a ``CronJob(reenqueue_discovered, cron="*/5 * * * *")``
-   is in ``settings["cron_jobs"]``, with no regression to the existing
-   ``reap_stalled_scans`` / ``refresh_tracklists`` crons.
-2. Startup behavior (``-k startup``) -- mirrors ``test_controller_startup_banner.py``:
-   patch the heavyweight constructors, stash ``ctx["task_router"]``, await
-   ``reenqueue_discovered(ctx)`` once on boot, close the router in shutdown, and
-   prove a raising re-enqueue never aborts boot.
+1. Registration (``-k cron`` / ``-k functions``) -- ``recover_orphaned_work`` is in
+   ``settings["functions"]``; the legacy ``reenqueue_discovered`` is FULLY removed (no
+   import, no function, no cron); the every-5-min ``*/5 * * * *`` auto-advance cron is
+   GONE; and the existing ``reap_stalled_scans`` / ``refresh_tracklists`` crons remain.
+2. Startup behavior (``-k startup``) -- patch the heavyweight constructors, stash
+   ``ctx["task_router"]``, await the gated ``recover_orphaned_work(ctx)`` once on boot,
+   close the router in shutdown, and prove a raising recovery never aborts boot.
 """
 
 from __future__ import annotations
@@ -52,23 +51,38 @@ def _make_router_stub() -> MagicMock:
 # --------------------------------------------------------------------------- #
 
 
-def test_functions_list_includes_reenqueue_discovered() -> None:
-    """reenqueue_discovered must be registered as a controller task function."""
+def test_functions_list_includes_recover_orphaned_work() -> None:
+    """recover_orphaned_work must be registered as a controller task function."""
     from phaze.tasks import controller
-    from phaze.tasks.reenqueue import reenqueue_discovered
+    from phaze.tasks.reenqueue import recover_orphaned_work
 
-    assert reenqueue_discovered in controller.settings["functions"], "reenqueue_discovered not registered in settings['functions']"
+    assert recover_orphaned_work in controller.settings["functions"], "recover_orphaned_work not registered in settings['functions']"
 
 
-def test_cron_registers_reenqueue_every_five_minutes() -> None:
-    """A CronJob(reenqueue_discovered, cron='*/5 * * * *') must be registered."""
+def test_reenqueue_discovered_is_fully_removed() -> None:
+    """The legacy reenqueue_discovered producer must be gone -- no import, no function, no registration."""
+    import phaze.tasks.controller as controller
+    import phaze.tasks.reenqueue as reenqueue
+
+    # The function no longer exists on the reenqueue module.
+    assert not hasattr(reenqueue, "reenqueue_discovered"), "reenqueue_discovered should be deleted from phaze.tasks.reenqueue"
+    # The controller no longer imports it under any name.
+    assert not hasattr(controller, "reenqueue_discovered"), "phaze.tasks.controller should no longer import reenqueue_discovered"
+    # No registered function still carries that name.
+    fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
+    assert "reenqueue_discovered" not in fn_names, "reenqueue_discovered must not remain in settings['functions']"
+
+
+def test_no_auto_advance_cron() -> None:
+    """The every-5-min auto-advance cron is GONE: no */5 cron, and recovery is never a CronJob."""
     from phaze.tasks import controller
-    from phaze.tasks.reenqueue import reenqueue_discovered
+    from phaze.tasks.reenqueue import recover_orphaned_work
 
     cron_jobs = controller.settings["cron_jobs"]
-    matches = [cj for cj in cron_jobs if cj.function is reenqueue_discovered]
-    assert len(matches) == 1, f"expected exactly one reenqueue_discovered CronJob, found {len(matches)}"
-    assert matches[0].cron == "*/5 * * * *", f"reenqueue_discovered cron should be every 5 min, got {matches[0].cron!r}"
+    # Steady-state produces ZERO automatic enqueues -- no every-5-min cron survives.
+    assert all(getattr(cj, "cron", "") != "*/5 * * * *" for cj in cron_jobs), "the */5 auto-advance cron must be removed"
+    # recover_orphaned_work is startup/manual-only -- it must NEVER be wired as a cron.
+    assert all(cj.function is not recover_orphaned_work for cj in cron_jobs), "recover_orphaned_work must not be a CronJob (startup/manual-only)"
 
 
 def test_cron_does_not_regress_existing_jobs() -> None:
@@ -88,15 +102,15 @@ def test_cron_does_not_regress_existing_jobs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_stashes_router_and_calls_reenqueue_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """startup() stashes ctx['task_router'] and awaits reenqueue_discovered(ctx) exactly once."""
+async def test_startup_stashes_router_and_calls_recovery_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """startup() stashes ctx['task_router'] and awaits the gated recover_orphaned_work(ctx) exactly once."""
     _patch_startup_constructors(monkeypatch)
 
     router_stub = _make_router_stub()
     monkeypatch.setattr("phaze.tasks.controller.AgentTaskRouter", lambda *_a, **_kw: router_stub)
 
-    reenqueue_mock = AsyncMock(return_value={"reenqueued": 3, "skipped": 1})
-    monkeypatch.setattr("phaze.tasks.controller.reenqueue_discovered", reenqueue_mock)
+    recover_mock = AsyncMock(return_value={"detected_loss": False, "forced": False, "stages": {}})
+    monkeypatch.setattr("phaze.tasks.controller.recover_orphaned_work", recover_mock)
 
     from phaze.tasks import controller
 
@@ -104,7 +118,8 @@ async def test_startup_stashes_router_and_calls_reenqueue_once(monkeypatch: pyte
     await controller.startup(ctx)
 
     assert ctx["task_router"] is router_stub, "startup did not stash the AgentTaskRouter in ctx['task_router']"
-    reenqueue_mock.assert_awaited_once_with(ctx)
+    # Gated boot recovery: force defaults False so a durable Phase-36 restart is a no-op.
+    recover_mock.assert_awaited_once_with(ctx)
 
 
 @pytest.mark.asyncio
@@ -120,15 +135,15 @@ async def test_shutdown_closes_task_router(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_startup_survives_raising_reenqueue(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A re-enqueue failure must NEVER abort controller boot (boot resilience)."""
+async def test_startup_survives_raising_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A recovery failure must NEVER abort controller boot (boot resilience)."""
     _patch_startup_constructors(monkeypatch)
 
     router_stub = _make_router_stub()
     monkeypatch.setattr("phaze.tasks.controller.AgentTaskRouter", lambda *_a, **_kw: router_stub)
 
-    reenqueue_mock = AsyncMock(side_effect=RuntimeError("boom"))
-    monkeypatch.setattr("phaze.tasks.controller.reenqueue_discovered", reenqueue_mock)
+    recover_mock = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr("phaze.tasks.controller.recover_orphaned_work", recover_mock)
 
     from phaze.tasks import controller
 
@@ -136,6 +151,6 @@ async def test_startup_survives_raising_reenqueue(monkeypatch: pytest.MonkeyPatc
     # Must NOT raise -- the broad try/except swallows the failure.
     await controller.startup(ctx)
 
-    reenqueue_mock.assert_awaited_once_with(ctx)
+    recover_mock.assert_awaited_once_with(ctx)
     # The router is still stashed (built before the guarded call), so shutdown can close it.
     assert ctx["task_router"] is router_stub

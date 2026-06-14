@@ -1,0 +1,12 @@
+{# Recovery HTMX response fragment (Phase 42, D-02/D-05). Swapped into the global "Recover" button's
+   slot in the DAG header after POST /pipeline/recover. Recovery runs fire-and-forget in a background
+   task, so this confirms it STARTED (not the final per-stage counts). Carries the LOCKED idempotency
+   reassurance copy: a forced reconcile dedups every still-in-flight item via its deterministic key, so
+   nothing double-enqueues. NO no_active_agent branch — agent stages skip with zero counts on a cold
+   boot (D-05); the controller stages still reconcile, so the action is always meaningfully "started". #}
+<span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+    Recovery started — re-enqueuing any orphaned work across all stages.
+</span>
+<span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+    Already-running work is deduplicated — nothing will double-enqueue.
+</span>

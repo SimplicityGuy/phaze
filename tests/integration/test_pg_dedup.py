@@ -3,7 +3,7 @@
 Runs against the ephemeral integration-test Postgres broker (``just test-db`` /
 ``just integration-test``, host port 5433). Pins the production SAQ dedup contract
 the ``DedupFakeQueue`` test double models (``tests/_queue_fakes.py``) -- and that
-``reenqueue_discovered`` relies on to count an in-flight file as ``skipped`` -- against
+``recover_orphaned_work`` relies on to count an in-flight item as ``skipped`` -- against
 the live Postgres broker (``saq/queue/postgres.py`` ``_enqueue``, lines 700-755):
 
     INSERT ... ON CONFLICT (key) DO UPDATE
@@ -93,7 +93,7 @@ async def test_in_flight_duplicate_key_returns_none(pg_queue: PostgresQueue) -> 
 async def test_key_reenqueues_after_completion(pg_queue: PostgresQueue) -> None:
     """After the job finishes (terminal status), the same deterministic key enqueues again.
 
-    Mirrors ``reenqueue_discovered``'s contract: an in-flight key is ``skipped`` (no-op),
+    Mirrors ``recover_orphaned_work``'s contract: an in-flight key is ``skipped`` (no-op),
     but once the prior job completes the key is eligible again. The re-enqueue carries a
     strictly-greater ``scheduled`` so it satisfies the second ON CONFLICT clause
     (``new.scheduled > old.scheduled``).

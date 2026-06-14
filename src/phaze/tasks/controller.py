@@ -37,7 +37,7 @@ from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
-from phaze.tasks.reenqueue import reenqueue_discovered
+from phaze.tasks.reenqueue import recover_orphaned_work
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
@@ -104,17 +104,22 @@ async def startup(ctx: dict[str, Any]) -> None:
     # in shutdown. Phase 36: takes (queue_url, cache_redis_url) -- Postgres broker + Redis cache.
     ctx["task_router"] = AgentTaskRouter(cfg.queue_url, cfg.redis_url)
 
-    # Phase 32 reboot recovery: re-enqueue every DISCOVERED file ONCE on boot so a
-    # reboot/Redis-flush resumes analysis with no manual "Run Analysis" (CONTEXT
-    # "Trigger"). Redis is empty after a reboot, so every DISCOVERED file re-enqueues;
-    # mid-run boots dedup to no-ops via the shared deterministic key. Boot resilience
-    # is non-negotiable: a re-enqueue failure must NEVER abort controller boot
-    # (RESEARCH Pitfall 3) -- wrap in a broad try/except and continue.
+    # Phase 42 DURABILITY REFRAME (D-01/D-02 -- DO NOT "restore" a steady-state re-enqueue cron):
+    # Phase 36 moved the SAQ broker from Redis to Postgres (``saq_jobs`` table). Queued/active jobs
+    # are now DURABLE across a controller restart -- SAQ re-dequeues the surviving rows itself, so a
+    # normal reboot loses NOTHING. The old every-5-min ``reenqueue_discovered`` auto-advance cron and
+    # its "Redis is empty after a reboot" premise are therefore OBSOLETE and were removed in Plan
+    # 42-02 (steady state now produces ZERO automatic enqueues). The ONLY automatic enqueue is this
+    # single gated boot recovery: ``recover_orphaned_work`` runs its ``count_inflight_jobs`` loss
+    # detector and no-ops on a durable restart, reconciling ALL stages only on a genuine queue-loss
+    # (truncate / restore-from-backup / fresh migration). The manual DAG "Recover" button calls the
+    # SAME producer (force=True), so the two paths cannot drift. Boot resilience is non-negotiable: a
+    # recovery failure must NEVER abort controller boot (RESEARCH Pitfall 3) -- broad try/except.
     try:
-        counts = await reenqueue_discovered(ctx)
-        logger.info("phaze.controller startup re-enqueue", reenqueued=counts["reenqueued"], skipped=counts["skipped"])
+        result = await recover_orphaned_work(ctx)
+        logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])
     except Exception:
-        logger.exception("reenqueue on startup failed")
+        logger.exception("recover_orphaned_work on startup failed")
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
@@ -170,7 +175,7 @@ settings = {
         search_tracklist,
         scrape_and_store_tracklist,
         reap_stalled_scans,
-        reenqueue_discovered,
+        recover_orphaned_work,
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
@@ -178,11 +183,11 @@ settings = {
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form, matching refresh_tracklists above.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]
-        # Phase 32: mid-run stall recovery (control-only -- needs ctx["async_session"]
-        # + ctx["task_router"]). Every 5 min, not every minute like the reaper:
-        # re-enqueue scans more rows (all DISCOVERED files) than the 1-min reaper,
-        # so 5 min balances recovery latency against DB load (CONTEXT Claude's Discretion).
-        CronJob(reenqueue_discovered, cron="*/5 * * * *"),  # type: ignore[type-var]
+        # Phase 42 (D-01): the every-5-min ``reenqueue_discovered`` auto-advance cron was REMOVED.
+        # With the Phase-36 Postgres broker, queued/active jobs survive a restart, so a steady-state
+        # re-enqueue loop would only churn the DB and risk re-doubling work. Recovery is now a SINGLE
+        # gated boot pass (see ``startup`` -> ``recover_orphaned_work``) plus the manual DAG "Recover"
+        # button -- NO periodic auto-advance. DO NOT re-add a ``recover_orphaned_work`` CronJob here.
     ],
     "startup": startup,
     "shutdown": shutdown,

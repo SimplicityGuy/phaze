@@ -415,11 +415,11 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
 | `apply_deterministic_key` / `increment_completed` | `_shared/deterministic_key.py` | Central `before_enqueue` deterministic-key hook (8-task registry) + `after_process` completed-counter hook |
-| Control settings | `controller.py` | SAQ entry for fileless jobs; on boot + every 5 min runs `reenqueue_discovered` for reboot recovery |
+| Control settings | `controller.py` | SAQ entry for fileless jobs; on boot runs the gated `recover_orphaned_work` (queue-loss recovery, no-op on a durable restart) — no steady-state auto-advance cron (Phase 42) |
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs + cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
 | `extract_file_metadata` | `metadata_extraction.py` | mutagen tag extraction → PUT via HTTP (operator-triggered) |
-| `reenqueue_discovered` | `reenqueue.py` | Reboot/stall recovery: re-enqueue `process_file` for every `FileState.DISCOVERED` file (Postgres = source of truth); in-flight files dedup to a no-op via the shared deterministic key |
+| `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42): no-ops on a durable Postgres-broker restart; on genuine queue-loss (or manual `force`) re-enqueues every stage's pending set through the identical keyed producers the manual triggers use, so in-flight items dedup to a no-op (no doubling). Startup + the manual `/pipeline/recover` button call the same producer |
 | `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
 | `heartbeat_tick` | `heartbeat.py` | 30s cron heartbeat POST |
 
