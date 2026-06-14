@@ -28,7 +28,10 @@
    resume + priority stepper + hint), growing them from ~154px to ~250px. The col-1 gutter is
    therefore widened to 276px (≥ the ~250px agent-chip height + 16px) so a taller chip cannot paint
    over the chip below it (38-UI-SPEC Layout Contract; guarded by test_topology_column_one_chips_
-   do_not_overlap). scan_search keeps h:126 (no controls). col-0 discovery + col-2/col-3 nodes
+   do_not_overlap). Phase 39: scan_search gains an enqueue trigger button (no per-stage controls), so
+   the rendered rose chip grows ~46px taller; its h:126 anchor is unchanged (it is the LAST node in
+   col-1, so a taller chip overlaps nothing below it), but the canvas/SVG height grew 1000→1060 so the
+   button cannot clip the bottom edge. col-0 discovery + col-2/col-3 nodes
    (proposals/scrape/execute/match) are re-balanced to their incoming-edge midpoints so the curved
    edges still land cleanly on the new col-1 anchors.
    t7k FIX1 WIDTH RECOMPUTE: the agent chips were widened 180→240px because the Phase-38 control row
@@ -38,7 +41,8 @@
    264 → col1 left 392), which exceeds the ±60px bézier control-point offset (`sx + 60` / `tx - 60` on
    the edge `d` path), so `sx+60 < tx-60` holds for every edge and the curves stay clean. The edge `d`
    strings are DERIVED from these anchors (never hand-edited), so they auto-recompute. The canvas/SVG
-   grew 1132→1392 wide to fit col3's new right edge (1368 + 24px margin); height stays 1000. #}
+   grew 1132→1392 wide to fit col3's new right edge (1368 + 24px margin); height grew 1000→1060 in
+   Phase 39 for the scan_search trigger button (see the Phase-39 note below). #}
 {% set NODE_LAYOUT = {
   "discovery":   {"x": 24,   "y": 467, "w": 240, "h": 130},
   "metadata":    {"x": 392,  "y": 24,  "w": 240, "h": 250},
@@ -198,8 +202,12 @@
            analyze: mk(s.analyzeDone, s.analyzeTotal, { active: s.analyzeActive, blocked: s.discovered === 0 || s.analyzeBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.analyzeBusy > 0 ? 'Agent busy' : ''), cta: 'Run Analysis', running: 'Running…' }),
            // Fingerprint — hard upstream is Discovery (reads the file on disk), so gate on
            fingerprint: mk(s.fingerprintDone, s.fingerprintTotal, { blocked: s.discovered === 0 || s.fingerprintBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.fingerprintBusy > 0 ? 'Agent busy' : ''), cta: 'Fingerprint Files', running: 'Fingerprinting…' }),
-           // store.discovered NOT metadataExtracted (UI-SPEC L243 topology correction).
-           scan_search: mk(s.tracklistDone, 0, { blocked: s.discovered === 0, reason: s.discovered === 0 ? 'No files discovered' : '' }),
+           // Phase 39 (REQ-39-2/REQ-39-3): the Search node is now a TRIGGER. search_tracklist builds
+           // its query from the artist tag, so the gate moved off s.discovered onto the metadata
+           // signal — blocked until Metadata has produced tags (metadataDone === 0 → 'Needs metadata')
+           // and while a search batch is in flight (searchBusy > 0 → 'Search busy'). NO auto-trigger
+           // (manual only; auto-enqueue is the Phase-42 recovery pass).
+           scan_search: mk(s.tracklistDone, 0, { blocked: s.metadataDone === 0 || s.searchBusy > 0, reason: s.metadataDone === 0 ? 'Needs metadata' : (s.searchBusy > 0 ? 'Search busy' : ''), cta: 'Search Tracklists', running: 'Searching…' }),
            proposals: mk(s.proposalsDone, s.proposalsTotal, { blocked: s.analyzed === 0 || s.controllerBusy > 0, reason: s.analyzed === 0 ? 'Waiting on Analyze' : (s.controllerBusy > 0 ? 'Controller busy' : ''), cta: 'Generate Proposals', running: 'Generating…' }),
            scrape: mk(s.scrapeDone, s.scrapeTotal, { blocked: s.tracklistDone === 0, reason: 'Needs tracklist' }),
            execute: mk(s.executedDone, s.executedTotal, { blocked: s.approved === 0, gatedPill: 'GATED', reason: 'Needs proposals', cta: 'Review queue' }),
@@ -237,8 +245,8 @@
      sm (the stacked <ol> takes over); horizontally scrollable sm–lg. #}
   <div role="group" aria-label="Pipeline stage graph"
        class="hidden sm:block overflow-x-auto rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-bg p-4">
-    <div class="relative" style="width: 1392px; height: 1000px;">
-      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1392" height="1000" viewBox="0 0 1392 1000" fill="none">
+    <div class="relative" style="width: 1392px; height: 1060px;">
+      <svg aria-hidden="true" class="absolute inset-0 pointer-events-none" width="1392" height="1060" viewBox="0 0 1392 1060" fill="none">
         {% for edge in EDGES %}
           {% set src = NODE_LAYOUT[edge[0]] %}
           {% set tgt = NODE_LAYOUT[edge[1]] %}
@@ -312,8 +320,13 @@
         {{ stage_controls('fingerprint') }}
       </div>
 
-      {# 5 · Scan / Search (rose, compact, tracklist head) — em-dash denominator, NO determinate
-         bar, display-only (no bulk pipeline-level endpoint exists → no Scan Tracklists button). #}
+      {# 5 · Scan / Search (rose, compact, tracklist head) — em-dash denominator, NO determinate bar.
+         Phase 39: now a TRIGGER node — the enqueue_button bulk-posts to /pipeline/search-tracklists
+         (name-based search_tracklist over files without a tracklist), gated on metadataDone/searchBusy.
+         The NODE_LAYOUT/EDGES/stats key STAYS `scan_search` (NOT renamed to `search`): Phase 40 adds
+         the SIBLING Fingerprint-Scan node and decides any split then; renaming now would churn
+         NODE_LAYOUT, EDGES, the stats key, _NODE_COMPLETED_FNS and ~6 tests for zero functional gain.
+         NO stage_controls (pause/priority) here — search is a controller task, not a paused agent stage. #}
       {% set n = NODE_LAYOUT.scan_search %}
       <div id="node-scan_search" class="absolute rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-3 overflow-hidden"
            style="left: {{ n.x }}px; top: {{ n.y }}px; width: {{ n.w }}px;"
@@ -327,6 +340,7 @@
         {# Indeterminate track only (no done/total % width computed). #}
         <div class="w-full bg-gray-200 dark:bg-phaze-panel rounded-full h-[5px] overflow-hidden my-2" aria-hidden="true"></div>
         <p class="text-xs text-gray-500 dark:text-gray-400">tracklist head</p>
+        {{ enqueue_button('scan_search', '/pipeline/search-tracklists', 'search-tracklists-response', 'Search tracklists', 'bg-rose-600 dark:bg-rose-700 hover:bg-rose-700 dark:hover:bg-rose-600') }}
       </div>
 
       {# 6 · Proposals (purple, full) — the Metadata+Analyze JOIN → POST /pipeline/proposals #}
