@@ -68,6 +68,12 @@ _NEW_STORE_KEYS = (
     # seed/OOB loop so the Search node gate reacts live on every 5s poll. One edit drives the
     # store-literal seed test, the int-key context test, AND the OOB-seed test.
     "searchBusy",
+    # Phase 40 (REQ-40-2/REQ-40-3): scan_live_set in-flight busy count ("Scan busy") + online-agent
+    # count ("Needs agent" when 0). Both ride the same dag.items() seed/OOB loop so the Fingerprint-
+    # Scan node gate reacts live on every 5s poll. One edit drives the store-literal seed test, the
+    # int-key context test, AND the OOB-seed test.
+    "scanBusy",
+    "agentOnline",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.
