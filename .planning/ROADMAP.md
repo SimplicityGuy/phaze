@@ -344,10 +344,10 @@ Plans:
 **Goal:** Make the DAG the control surface for name-based tracklist discovery. Split the display-only "Scan / Search" head into a triggerable **Search** node with a bulk pipeline-level endpoint that enqueues `search_tracklist` over eligible files (artist from extracted Metadata tags or parseable filename). Add the DAG trigger button + per-stage busy gating (same pattern as Phase 38 agent stages), **disabled until Metadata has produced tags**. Manual only — no auto-trigger.
 **Requirements**: bulk search endpoint routes via `enqueue_router` (controller queue, not default); button gated on `metadataDone > 0`; per-stage busy count + "busy" gating reusing the Phase-38/quick-t7k pattern; regression tests for gating + routing.
 **Depends on:** Phase 38 (DAG controls/gating pattern)
-**Plans:** 0 plans
+**Plans:** 1 plan
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 39 to break down)
+- [ ] 39-01-PLAN.md — Bulk search_tracklist trigger endpoint + Search DAG node (metadataDone/searchBusy gate) + tests
 
 ### Phase 40: Tracklist Fingerprint-Scan DAG Node — bulk manual scan_live_set trigger (button + endpoint + gating), gated on discovered files + online agent; runs independently of Search
 
