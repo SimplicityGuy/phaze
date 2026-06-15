@@ -237,7 +237,7 @@
            // determinate bar). Gated until there are discovered files AND an online agent, and while a
            // scan batch is in flight: blocked on s.discovered===0 ('No files discovered') else
            // s.agentOnline===0 ('Needs agent') else s.scanBusy>0 ('Scan busy'). agentOnline is a COUNT
-           // where 0 == "no online agent" (fail-safe default). NO stage_controls (scan_live_set is a
+           // where 0 == 'no online agent' (fail-safe default). NO stage_controls (scan_live_set is a
            // per-agent task triggered here, not a paused agent stage). NO auto-trigger (manual only).
            fingerprint_scan: mk(s.tracklistDone, 0, { blocked: s.discovered === 0 || s.agentOnline === 0 || s.scanBusy > 0, reason: s.discovered === 0 ? 'No files discovered' : (s.agentOnline === 0 ? 'Needs agent' : (s.scanBusy > 0 ? 'Scan busy' : '')), cta: 'Identify Set', running: 'Scanning…' }),
            proposals: mk(s.proposalsDone, s.proposalsTotal, { blocked: s.analyzed === 0 || s.controllerBusy > 0, reason: s.analyzed === 0 ? 'Waiting on Analyze' : (s.controllerBusy > 0 ? 'Controller busy' : ''), cta: 'Generate Proposals', running: 'Generating…' }),
