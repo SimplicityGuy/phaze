@@ -575,3 +575,143 @@ async def get_files_by_state(session: AsyncSession, state: FileState) -> list[Fi
     stmt = select(FileRecord).where(FileRecord.state == state)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# --- Shared pending-set helpers (Phase 42, D-03 anti-drift) -----------------------------
+#
+# ONE definition of "pending" per stage, consumed by BOTH the Phase 39-41 manual DAG
+# triggers (routers/pipeline.py) AND the Phase-42 recovery producer
+# (tasks/reenqueue.recover_orphaned_work). Recovery and the manual triggers MUST read the
+# SAME query so the two paths cannot drift apart (D-03): an identical pending set funnelled
+# through the IDENTICAL keyed producer yields the IDENTICAL deterministic key, so a recovery
+# re-enqueue dedups cleanly against any surviving in-flight job (no doubling, Phase-32 class).
+# All queries are pure ORM / bound params -- NO f-string SQL (T-42-03).
+
+
+async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
+    """Return all music/video FileRecords -- the metadata-extraction pending set.
+
+    The EXACT set the manual metadata triggers (``trigger_metadata_extraction`` /
+    ``trigger_extraction_ui``) enqueue: every music/video file regardless of state (D-04
+    backfill -- metadata extraction is idempotent per file and the deterministic
+    ``extract_file_metadata:<file_id>`` key dedups an in-flight re-run). Pure ORM
+    ``file_type.in_(MUSIC_VIDEO_TYPES)`` with NO interpolated operator input (T-42-03).
+    """
+    stmt = select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_fingerprint_pending_files(session: AsyncSession) -> list[FileRecord]:
+    """Return METADATA_EXTRACTED files PLUS failed-fingerprint-retry files, de-duplicated by id.
+
+    The EXACT set the manual ``trigger_fingerprint`` API endpoint enqueues: files in
+    ``METADATA_EXTRACTED`` state (ready for fingerprinting) UNION files carrying a
+    ``FingerprintResult`` with ``status == "failed"`` that are not yet ``FINGERPRINTED``
+    (retry per D-16). The two sets are merged and de-duplicated by id (keeping the
+    ``FileRecord`` rows so the full ``FingerprintFilePayload`` can be built downstream).
+
+    Phase 42 consistency fix: the HTMX ``trigger_fingerprint_ui`` endpoint previously queried
+    ONLY ``METADATA_EXTRACTED`` (no failed-retry scope); routing it through this shared helper
+    ALIGNS it with the API endpoint (it GAINS the failed-retry scope) -- an intended fix so the
+    manual UI and API triggers and recovery cannot drift. Pure ORM with NO interpolated
+    operator input (T-42-03).
+    """
+    files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
+
+    failed_stmt = (
+        select(FileRecord)
+        .join(FingerprintResult, FingerprintResult.file_id == FileRecord.id)
+        .where(FingerprintResult.status == "failed")
+        .where(FileRecord.state != FileState.FINGERPRINTED)
+    )
+    failed_files = list((await session.execute(failed_stmt)).scalars().all())
+
+    seen_ids: set[str] = set()
+    out: list[FileRecord] = []
+    for f in [*files, *failed_files]:
+        fid = str(f.id)
+        if fid not in seen_ids:
+            seen_ids.add(fid)
+            out.append(f)
+    return out
+
+
+async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
+    """Return music/video FileRecords with NO ``Tracklist`` row -- the search/scan pending set.
+
+    The EXACT set BOTH the Phase-39 name-search trigger (``trigger_search_ui``) and the
+    Phase-40 fingerprint-scan trigger (``trigger_scan_live_sets_ui``) enqueue: a music/video
+    file that does not yet have a ``Tracklist`` (already-matched files are skipped so re-runs
+    are cheap and idempotent). Pure ORM ``~exists(...)`` with NO interpolated operator input
+    (T-42-03).
+    """
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        ~exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -> list[list[str]]:
+    """Return the ``generate_proposals`` pending set as deterministic, sorted file-id batches.
+
+    Runs the convergence query (files in ``{ANALYZED, METADATA_EXTRACTED}`` with BOTH a
+    ``FileMetadata`` AND an ``AnalysisResult`` row -- the EXACT set the manual proposals
+    triggers use), then SORTS the file-id strings before chunking into ``batch_size`` groups.
+
+    Sorting BEFORE chunking is load-bearing (D-04, 42-RESEARCH Pitfall 2): ``generate_proposals``
+    is keyed on ``generate_proposals:<sha256(sorted file_ids)>`` (an order-independent SET hash),
+    so the manual trigger and recovery MUST produce the IDENTICAL batch MEMBERSHIP to land on the
+    IDENTICAL key and dedup against an in-flight batch. Both paths call THIS helper, so their
+    batches -- and therefore their set-hash keys -- are guaranteed to match. Pure ORM / bound
+    params, NO f-string SQL (T-42-03).
+    """
+    stmt = (
+        select(FileRecord)
+        .where(FileRecord.state.in_([FileState.ANALYZED, FileState.METADATA_EXTRACTED]))
+        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
+        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+    )
+    result = await session.execute(stmt)
+    file_ids = sorted(str(f.id) for f in result.scalars().all())
+    return [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
+
+
+# --- Queue-loss detector (Phase 42, REQ-42-2) -------------------------------------------
+#
+# Static SQL counting saq_jobs rows in flight. After Phase 36 the SAQ broker is Postgres
+# (saq_jobs), so queued/active jobs SURVIVE a controller restart -- a normal reboot loses
+# nothing. A genuine queue-loss is the rare asymmetry "saq_jobs has zero queued/active rows
+# while the domain DB still shows pending work" (truncate / restore-from-backup / fresh
+# migration). This COUNT is the cheap loss signal. Parked/paused jobs use scheduled=SENTINEL
+# but are STILL status='queued', so they ARE counted -- a paused-but-present queue is correctly
+# NOT misread as lost (42-RESEARCH Open Q4). Static literals only -- the only interpolation-free
+# operands are the status allowlist (T-42-03, mirroring the _STAGE_BUSY_SQL discipline).
+_INFLIGHT_COUNT_SQL = text("SELECT COUNT(*) FROM saq_jobs WHERE status IN ('queued', 'active')")
+
+
+async def count_inflight_jobs(session: AsyncSession) -> int:
+    """Return COUNT(*) of ``saq_jobs`` rows with ``status IN ('queued', 'active')``, degrade-safe.
+
+    The queue-loss detector for :func:`phaze.tasks.reenqueue.recover_orphaned_work`: a return of
+    ``0`` while the domain DB shows pending work signals a genuine broker wipe (Phase-36 durability
+    reframe). Parked/paused jobs (status still ``queued``) ARE counted, so a paused queue reads as
+    present, not lost (42-RESEARCH Open Q4).
+
+    Failure isolation (T-42-04): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
+    ANY DB error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope
+    is rolled back ALONE -- recovering the aborted Postgres transaction WITHOUT poisoning the outer
+    session's later pending-set queries. It logs a warning and DEGRADES TO 0, never raising into the
+    controller boot path. A degrade-to-0 false positive is backstopped by the deterministic-key
+    dedup: a reconcile that fires on a non-empty queue collapses every live item to a skipped no-op,
+    so it can never double the queue (T-42-05, accepted).
+    """
+    try:
+        async with session.begin_nested():
+            count = (await session.execute(_INFLIGHT_COUNT_SQL)).scalar()
+    except Exception:
+        logger.warning("inflight_count_degraded", exc_info=True)
+        return 0
+    return int(count or 0)

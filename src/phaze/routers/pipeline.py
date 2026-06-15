@@ -9,30 +9,27 @@ from typing import TYPE_CHECKING, Any, cast
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import exists, select
+from sqlalchemy import select
 import structlog
 
 from phaze.config import settings
-from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.database import get_session
+from phaze.database import async_session, get_session
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
-from phaze.models.fingerprint import FingerprintResult
-from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
-    MUSIC_VIDEO_TYPES,
     count_active_agents,
     get_files_by_state,
+    get_fingerprint_pending_files,
     get_match_busy_count,
     get_match_pending_tracklists,
+    get_metadata_pending_files,
     get_pipeline_stats,
+    get_proposal_pending_batches,
     get_queue_activity,
     get_scan_busy_count,
     get_scrape_busy_count,
@@ -41,9 +38,11 @@ from phaze.services.pipeline import (
     get_stage_busy_counts,
     get_stage_controls,
     get_stage_progress,
+    get_untracked_files,
     queue_progress_percent,
 )
 from phaze.services.pipeline_counters import read_counters
+from phaze.tasks.reenqueue import recover_orphaned_work
 
 
 logger = structlog.get_logger(__name__)
@@ -208,6 +207,8 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.models.tracklist import Tracklist
+
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -288,28 +289,13 @@ async def trigger_proposals(
 
     Uses settings.llm_batch_size (default 10) for batch chunking.
     """
-    # Per D-02: convergence gate -- only propose for files with BOTH metadata AND analysis
-    stmt = (
-        select(FileRecord)
-        .where(
-            FileRecord.state.in_(
-                [
-                    FileState.ANALYZED,
-                    FileState.METADATA_EXTRACTED,
-                ]
-            )
-        )
-        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
-    )
-    result = await session.execute(stmt)
-    files = list(result.scalars().all())
-    if not files:
+    # Per D-02: convergence gate via the shared, deterministically-sorted pending-set helper
+    # (D-03 anti-drift): recovery and this manual trigger build the SAME sorted batches, so their
+    # generate_proposals:<sha256(sorted file_ids)> keys align and dedup (42-RESEARCH Pitfall 2).
+    batches = await get_proposal_pending_batches(session, settings.llm_batch_size)
+    total_files = sum(len(b) for b in batches)
+    if not batches:
         return {"enqueued_batches": 0, "total_files": 0, "message": "No files ready for proposals (need both metadata and analysis)"}
-
-    file_ids = [str(f.id) for f in files]
-    batch_size = settings.llm_batch_size
-    batches = [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
 
     routed = await enqueue_router.resolve_queue_for_task("generate_proposals", request.app.state, session)
     task = asyncio.create_task(_enqueue_proposal_jobs(routed.queue, batches))
@@ -318,8 +304,8 @@ async def trigger_proposals(
 
     return {
         "enqueued_batches": len(batches),
-        "total_files": len(file_ids),
-        "message": f"Enqueued {len(batches)} batches ({len(file_ids)} files) for proposal generation",
+        "total_files": total_files,
+        "message": f"Enqueued {len(batches)} batches ({total_files} files) for proposal generation",
     }
 
 
@@ -451,29 +437,13 @@ async def trigger_proposals_ui(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """HTMX endpoint: trigger proposal generation and return response fragment."""
-    # Per D-02: convergence gate -- only propose for files with BOTH metadata AND analysis
-    stmt = (
-        select(FileRecord)
-        .where(
-            FileRecord.state.in_(
-                [
-                    FileState.ANALYZED,
-                    FileState.METADATA_EXTRACTED,
-                ]
-            )
-        )
-        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
-    )
-    result = await session.execute(stmt)
-    files = list(result.scalars().all())
-    count = len(files)
+    # Per D-02: convergence gate via the shared, deterministically-sorted pending-set helper
+    # (D-03 anti-drift) -- same sorted batches as the API trigger + recovery, so keys align.
+    batches = await get_proposal_pending_batches(session, settings.llm_batch_size)
+    count = sum(len(b) for b in batches)
     batches_count = 0
 
     if count > 0:
-        file_ids = [str(f.id) for f in files]
-        batch_size = settings.llm_batch_size
-        batches = [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
         batches_count = len(batches)
         routed = await enqueue_router.resolve_queue_for_task("generate_proposals", request.app.state, session)
         task = asyncio.create_task(_enqueue_proposal_jobs(routed.queue, batches))
@@ -521,10 +491,7 @@ async def trigger_metadata_extraction(
     Per D-04: queues all files regardless of state for backfill.
     Per D-09: manual API endpoint for re-extraction.
     """
-    music_video_types = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
-    stmt = select(FileRecord).where(FileRecord.file_type.in_(music_video_types))
-    result = await session.execute(stmt)
-    files = list(result.scalars().all())
+    files = await get_metadata_pending_files(session)
 
     if not files:
         return {"enqueued": 0, "message": "No music/video files found"}
@@ -550,10 +517,7 @@ async def trigger_extraction_ui(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """HTMX endpoint: trigger metadata extraction and return response fragment."""
-    music_video_types = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
-    stmt = select(FileRecord).where(FileRecord.file_type.in_(music_video_types))
-    result = await session.execute(stmt)
-    files = list(result.scalars().all())
+    files = await get_metadata_pending_files(session)
     count = len(files)
     no_active_agent = False
 
@@ -605,27 +569,8 @@ async def trigger_fingerprint(
 
     Eligible: files in METADATA_EXTRACTED state, plus files with failed fingerprint results for retry.
     """
-    # Files in METADATA_EXTRACTED state (ready for fingerprinting)
-    files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
-
-    # Also include files with failed fingerprint results (retry per D-16)
-    failed_stmt = (
-        select(FileRecord)
-        .join(FingerprintResult, FingerprintResult.file_id == FileRecord.id)
-        .where(FingerprintResult.status == "failed")
-        .where(FileRecord.state != FileState.FINGERPRINTED)
-    )
-    failed_result = await session.execute(failed_stmt)
-    failed_files = list(failed_result.scalars().all())
-
-    # Deduplicate by ID, keeping the FileRecord so the full payload can be built.
-    seen_ids: set[str] = set()
-    all_files: list[FileRecord] = []
-    for f in [*files, *failed_files]:
-        fid = str(f.id)
-        if fid not in seen_ids:
-            seen_ids.add(fid)
-            all_files.append(f)
+    # Shared pending-set helper (D-03 anti-drift): METADATA_EXTRACTED + failed-retry, deduped by id.
+    all_files = await get_fingerprint_pending_files(session)
 
     if not all_files:
         return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
@@ -657,8 +602,14 @@ async def trigger_fingerprint_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """HTMX endpoint: trigger fingerprinting and return response fragment."""
-    files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
+    """HTMX endpoint: trigger fingerprinting and return response fragment.
+
+    Phase 42: now reads the shared :func:`get_fingerprint_pending_files` helper, so this HTMX
+    endpoint is ALIGNED with the ``/api/v1/fingerprint`` endpoint and recovery -- it GAINS the
+    failed-fingerprint-retry scope (D-03 anti-drift). Previously it queried ONLY
+    ``METADATA_EXTRACTED``; the broadened, deduped pending set is the intended consistency fix.
+    """
+    files = await get_fingerprint_pending_files(session)
     count = len(files)
     no_active_agent = False
 
@@ -711,12 +662,9 @@ async def trigger_search_ui(
     ``manual_search``), so no no-active-agent branch is needed. Manual only -- NO auto-trigger
     (the Phase-39 boundary; automatic enqueue is reserved for the Phase-42 recovery pass).
     """
-    stmt = select(FileRecord).where(
-        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-        ~exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
-    )
-    result = await session.execute(stmt)
-    files = list(result.scalars().all())
+    # Shared pending-set helper (D-03 anti-drift): the SAME untracked-files set the Phase-40 scan
+    # trigger and Phase-42 recovery read, so the three paths cannot drift.
+    files = await get_untracked_files(session)
     count = len(files)
 
     if count > 0:
@@ -772,12 +720,9 @@ async def trigger_scan_live_sets_ui(
     enqueued, and the no-active-agent empty-state renders (status 200, never 500). Manual only -- NO
     auto-trigger (automatic enqueue is reserved for the Phase-42 recovery pass).
     """
-    stmt = select(FileRecord).where(
-        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-        ~exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
-    )
-    result = await session.execute(stmt)
-    files = list(result.scalars().all())
+    # Shared pending-set helper (D-03 anti-drift): the SAME untracked-files set the Phase-39 search
+    # trigger and Phase-42 recovery read.
+    files = await get_untracked_files(session)
     count = len(files)
     no_active_agent = False
 
@@ -890,4 +835,51 @@ async def trigger_match_tracklists_ui(
         request=request,
         name="pipeline/partials/trigger_tracklist_response.html",
         context={"request": request, "action": "matching", "count": count},
+    )
+
+
+# --- Manual recovery endpoint (Phase 42, D-02/D-05) ---
+
+
+async def _run_recovery(ctx: dict[str, Any]) -> None:
+    """Background coroutine: run the gated all-stages recovery producer (force=True).
+
+    Calls the SAME :func:`recover_orphaned_work` producer the controller startup hook runs
+    (Phase 42, D-03), so the manual and automatic recovery paths cannot drift. ``force=True``
+    bypasses ONLY the no-op queue-loss DETECT gate (this is the operator-driven cold-boot
+    safety net, D-05) -- it never bypasses the per-item deterministic-key dedup, so a forced
+    reconcile over a live queue collapses every still-in-flight item to a skipped no-op and
+    can NEVER double the backlog (Phase-32 doubling class is closed).
+    """
+    await recover_orphaned_work(ctx, force=True)
+
+
+@router.post("/pipeline/recover", response_class=HTMLResponse)
+async def trigger_recover_ui(request: Request) -> HTMLResponse:
+    """HTMX endpoint: manually trigger the gated all-stages recovery pass (Phase 42, D-02/D-05).
+
+    The global DAG "Recover" button posts here. It builds a worker-shaped ``ctx`` from the API
+    app -- the module-level :data:`phaze.database.async_session` sessionmaker (same DB as the
+    ``saq_jobs`` broker), the lifespan-created ``app.state.controller_queue`` (controller stages),
+    and ``app.state.task_router`` (per-agent stages) -- and schedules :func:`recover_orphaned_work`
+    with ``force=True`` as a fire-and-forget background task (same ``_background_tasks`` discipline
+    as every other pipeline trigger, so a large reconcile never blocks the HTTP response). Because
+    the producer runs in the background, this returns immediately with a "recovery started" fragment
+    rather than the final per-stage counts. The endpoint calls the SAME producer as controller
+    startup, so the manual and automatic recovery paths cannot drift (D-03), and the deterministic-key
+    dedup keeps a forced reconcile idempotent (T-42-06/T-42-07) -- it can never 500 on a healthy queue.
+    """
+    ctx: dict[str, Any] = {
+        "async_session": async_session,
+        "queue": request.app.state.controller_queue,
+        "task_router": request.app.state.task_router,
+    }
+    task = asyncio.create_task(_run_recovery(ctx))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/recover_response.html",
+        context={"request": request},
     )

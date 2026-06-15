@@ -412,22 +412,28 @@ def test_controls_only_on_agent_stages_not_other_nodes() -> None:
 
 
 def test_gating_triggers_post_only_to_existing_endpoints() -> None:
-    """Every POST target is an existing endpoint — the 4 enqueue triggers + the Phase-38 controls.
+    """Every POST target is an existing endpoint — the 8 enqueue triggers + the Phase-38 controls + the Phase-42 global Recover.
 
     INTENTIONAL Phase-38 contract change (38-02), NOT an accidental loosening of the original
     "exactly 4 hx-post" guard: the per-stage pause/resume/priority controls add 12 new
-    ``/pipeline/stages/...`` posts (4 per agent stage). The enqueue-trigger surface is still
-    pinned to exactly its 4 existing endpoints (no net-new trigger surface — T-35-10), and a
-    separate assertion pins the stage-control surface to the known endpoints.
+    ``/pipeline/stages/...`` posts (4 per agent stage). The per-stage enqueue-trigger surface is
+    still pinned to exactly its 8 existing endpoints (no net-new PER-STAGE trigger — T-35-10); the
+    Phase-42 global ``/pipeline/recover`` is a pipeline-LEVEL action (header, not a node) and is
+    pinned by its own assertion; a separate assertion pins the stage-control surface.
     """
     html = _render_canvas()
     targets = re.findall(r'hx-post="(/pipeline/[^"]+)"', html)
 
-    # The 8 enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers, the Phase-39
-    # bulk Search trigger (REQ-39-1), the Phase-40 bulk Fingerprint-Scan trigger (REQ-40-1), and the
-    # Phase-41 bulk Scrape + Match triggers (REQ-41-1/REQ-41-2). No other net-new trigger surface
-    # (T-35-10).
-    enqueue_targets = sorted(t for t in targets if not t.startswith("/pipeline/stages/"))
+    # Phase 42 (REQ-42-5): the GLOBAL Recover button is a pipeline-level action (DAG header), NOT a
+    # per-stage enqueue trigger — pinned separately so it cannot creep into the per-stage surface.
+    recover_targets = sorted(t for t in targets if t == "/pipeline/recover")
+    assert recover_targets == ["/pipeline/recover"], recover_targets
+
+    # The 8 per-stage enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers, the
+    # Phase-39 bulk Search trigger (REQ-39-1), the Phase-40 bulk Fingerprint-Scan trigger (REQ-40-1),
+    # and the Phase-41 bulk Scrape + Match triggers (REQ-41-1/REQ-41-2). No other net-new per-stage
+    # trigger surface (T-35-10).
+    enqueue_targets = sorted(t for t in targets if not t.startswith("/pipeline/stages/") and t != "/pipeline/recover")
     assert enqueue_targets == [
         "/pipeline/analyze",
         "/pipeline/extract-metadata",
@@ -445,8 +451,8 @@ def test_gating_triggers_post_only_to_existing_endpoints() -> None:
     expected_stage = sorted(f"/pipeline/stages/{stage}/{action}" for stage in _AGENT_STAGES for action in ("pause", "resume", "priority", "priority"))
     assert stage_targets == expected_stage, stage_targets
 
-    # No POST target outside the enqueue + stage-control surfaces.
-    assert html.count('hx-post="/pipeline/') == len(enqueue_targets) + len(stage_targets)
+    # No POST target outside the enqueue + stage-control + global-recover surfaces.
+    assert html.count('hx-post="/pipeline/') == len(enqueue_targets) + len(stage_targets) + len(recover_targets)
 
 
 def test_gating_fingerprint_gates_on_discovered_not_metadata_extracted() -> None:

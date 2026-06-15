@@ -96,7 +96,7 @@ phaze/
 │   │   ├── proposal.py         #   generate_proposals (batch LLM)
 │   │   ├── execution.py        #   execute_approved_batch
 │   │   ├── scan.py             #   scan_live_set (fingerprint matching)
-│   │   ├── reenqueue.py        #   Control-side reboot recovery: re-enqueue DISCOVERED files for analysis
+│   │   ├── reenqueue.py        #   Control-side recover_orphaned_work: gated all-stages queue-loss recovery (Phase 42)
 │   │   ├── scan_reaper.py      #   Control-side cron: reap stalled RUNNING scans (no-progress)
 │   │   ├── tracklist.py        #   scrape/search/refresh tracklists
 │   │   ├── discogs.py          #   match tracklist tracks to Discogs releases
