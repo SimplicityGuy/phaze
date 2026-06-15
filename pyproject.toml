@@ -12,9 +12,9 @@ dependencies = [
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
-    "cryptography>=48.0.0",
+    "cryptography>=49.0.0",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.136.3",
+    "fastapi>=0.137.1",
     "httpx>=0.28.1",
     # Capped on purpose: litellm had a supply-chain attack (malicious 1.82.7/1.82.8,
     # Mar 2026) and ships frequent breaking minors, so CLAUDE.md mandates aggressive
@@ -29,7 +29,7 @@ dependencies = [
     # phaze-api. `psycopg[binary]` bundles libpq (cp314 wheels exist for linux x86_64/
     # aarch64 + macos arm64); the Dockerfile also installs `libpq5` as a belt-and-
     # suspenders fallback for the pure-Python path.
-    "psycopg[binary]>=3.3.0",
+    "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.14.1",
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
     # secret resolution. Already installed transitively via pydantic-settings' env_file
@@ -40,12 +40,12 @@ dependencies = [
     # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
     # but `redis.asyncio` is imported directly across the codebase (cache_redis handle,
     # pipeline counters). Declared explicitly so the import is not a transitive accident.
-    "redis>=4.2,<8.0",
+    "redis>=8.0.0,<9.0",
     # Phase 36: postgres extra pulls psycopg[pool]>=3.2.0 for the PostgresQueue broker.
     "saq[postgres]>=0.26.4",
-    "sqlalchemy>=2.0.50",
+    "sqlalchemy>=2.0.51",
     "sse-starlette>=3.4.4",
-    "structlog>=25.4.0",
+    "structlog>=26.1.0",
     "tenacity>=9.1.4",
     "uvicorn>=0.49.0",
     "watchdog>=6.0.0",
