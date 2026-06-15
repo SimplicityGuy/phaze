@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 import uuid
 
 from fastapi import APIRouter, Depends, Form, Query, Request
@@ -18,6 +18,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
+from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from phaze.services.enqueue_router import NoActiveAgentError, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tracklist_matcher import compute_match_confidence
@@ -227,9 +228,30 @@ async def trigger_scan(
             },
         )
 
-    job_ids: list[str] = []
+    # Parse submitted ids into UUIDs, skipping malformed strings (never a 500).
+    parsed_ids: list[uuid.UUID] = []
     for fid in file_ids:
-        job = await routed.queue.enqueue("scan_live_set", file_id=fid)
+        try:
+            parsed_ids.append(uuid.UUID(fid))
+        except ValueError:
+            continue
+
+    # Resolve the matching FileRecords so each enqueue carries the original_path.
+    records_result = await session.execute(select(FileRecord).where(FileRecord.id.in_(parsed_ids)))
+    records = {record.id: record for record in records_result.scalars()}
+
+    # scan_live_set is an AGENT_TASK, so resolve_queue_for_task always returns a
+    # non-None agent_id; cast narrows str | None -> str for ScanLiveSetPayload.
+    agent_id = cast("str", routed.agent_id)
+
+    job_ids: list[str] = []
+    for file_id in parsed_ids:
+        record = records.get(file_id)
+        if record is None:
+            # No FileRecord for this id; skip rather than dead-letter the job.
+            continue
+        payload = ScanLiveSetPayload(file_id=record.id, original_path=record.original_path, agent_id=agent_id)
+        job = await routed.queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
         if job is not None:
             job_ids.append(job.key)
 
@@ -240,7 +262,7 @@ async def trigger_scan(
             "request": request,
             "job_ids": ",".join(job_ids),
             "agent_id": routed.agent_id,
-            "total": len(file_ids),
+            "total": len(job_ids),
             "completed": 0,
             "done": False,
             "tracklists_created": 0,
