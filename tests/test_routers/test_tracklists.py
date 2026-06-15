@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from tests._queue_fakes import install_fake_queues, seed_active_agent
 
 
@@ -262,23 +263,61 @@ async def test_scan_tab_empty_state(session: AsyncSession, client: AsyncClient) 
 
 @pytest.mark.asyncio
 async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /tracklists/scan routes scan_live_set onto the active agent's queue."""
+    """POST /tracklists/scan enqueues a full ScanLiveSetPayload onto the agent queue."""
     await seed_active_agent(session, "nox")
     _controller, task_router = install_fake_queues(client)
 
-    file_id = str(uuid.uuid4())
-    response = await client.post("/tracklists/scan", data={"file_ids": [file_id]})
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    response = await client.post("/tracklists/scan", data={"file_ids": [str(file.id)]})
     assert response.status_code == 200
     assert "Scanning..." in response.text
 
     # scan_live_set captured on the per-agent queue, never the controller.
     agent_queue = task_router.queues["nox"]
     assert agent_queue.name == "phaze-agent-nox"
-    assert agent_queue.captured == [("scan_live_set", {"file_id": file_id})]
+    assert len(agent_queue.captured) == 1
+    task_name, payload = agent_queue.captured[0]
+    assert task_name == "scan_live_set"
+    assert payload["file_id"] == str(file.id)
+    assert payload["original_path"] == file.original_path
+    assert payload["agent_id"] == "nox"
+    # The enqueued payload must validate against the strict ScanLiveSetPayload so the
+    # worker no longer dead-letters it (the v4.0.8 payload-incident class).
+    assert ScanLiveSetPayload.model_validate(payload)
 
     # The progress partial's poll URL carries agent_id so the status poll targets
     # the same per-agent queue.
     assert "agent_id=nox" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan_skips_file_id_without_record(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/scan skips a file_id with no FileRecord -- nothing enqueued, no dead-letter."""
+    await seed_active_agent(session, "nox")
+    _controller, task_router = install_fake_queues(client)
+
+    missing_id = str(uuid.uuid4())
+    response = await client.post("/tracklists/scan", data={"file_ids": [missing_id]})
+    assert response.status_code == 200
+
+    # No FileRecord for the submitted id -> nothing enqueued for it.
+    assert task_router.queues["nox"].captured == []
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan_skips_malformed_file_id(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/scan skips a non-UUID file_id -- no 500, nothing enqueued."""
+    await seed_active_agent(session, "nox")
+    _controller, task_router = install_fake_queues(client)
+
+    response = await client.post("/tracklists/scan", data={"file_ids": ["not-a-uuid"]})
+    assert response.status_code == 200
+
+    # A malformed id is dropped before the DB query, never enqueued, never a 500.
+    assert task_router.queues["nox"].captured == []
 
 
 @pytest.mark.asyncio
