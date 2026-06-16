@@ -522,6 +522,28 @@ def test_gating_predicates_use_busy_and_dependency_gates() -> None:
     assert "s.matchBusy > 0" in nodes_block  # match "Matching…" gate
 
 
+def test_xdata_getter_has_no_unescaped_double_quotes() -> None:
+    """Regression guard: the parent ``#pipeline-dag`` ``x-data`` getter is an HTML attribute
+    opened with a double quote, so ANY literal ``"`` inside its body — even in a JS comment —
+    prematurely terminates the attribute. The browser then renders the rest of the Alpine
+    expression as visible page text (the Phase-40 ``// where 0 == "no online agent"`` regression).
+    Every JS string and comment in the getter MUST use single quotes.
+    """
+    src = (PARTIALS_DIR / "dag_canvas.html").read_text(encoding="utf-8")
+    # Isolate the parent div's x-data attribute VALUE: from the opening `x-data="` after
+    # `id="pipeline-dag"` up to the `">` that closes the attribute (just before the heading).
+    div_start = src.index('id="pipeline-dag"')
+    attr_start = src.index('x-data="', div_start) + len('x-data="')
+    # The getter body never contains a `">` sequence (JS uses `> 0` and single-quoted strings),
+    # so the FIRST `">` after the opening quote is the true attribute close.
+    attr_value = src[attr_start : src.index('">', attr_start)]
+    assert '"' not in attr_value, (
+        "Unescaped double-quote inside the #pipeline-dag x-data getter — it closes the HTML "
+        "attribute and dumps the Alpine expression as visible text. Use single quotes. Near: "
+        f"...{attr_value[max(0, attr_value.index(chr(34)) - 40) : attr_value.index(chr(34)) + 40]}..."
+    )
+
+
 def test_gating_agent_stages_gate_on_own_busy_count() -> None:
     """t7k FIX2: each agent enqueue gate reads its OWN busy key — one busy stage cannot lock the
     other two. Rendered with ``analyzeBusy=1`` (metadata/fingerprint idle), the nodes getter still
