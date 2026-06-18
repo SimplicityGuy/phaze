@@ -43,6 +43,26 @@ MOCK_ANALYSIS: dict[str, Any] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _patch_agent_settings() -> Any:
+    """Patch ``get_settings`` so ``process_file`` resolves AgentSettings-shaped config.
+
+    ``process_file`` reads the agent-only ``analysis_*`` fields via ``get_settings()``
+    (the module-level ``settings`` singleton is ControlSettings-typed and lacks them).
+    Tests run with the default control role, so every ``process_file`` call would
+    otherwise trip the agent-role guard. This default stub supplies the three Phase-43
+    knobs; tests that assert specific threading override the return value's attrs.
+    """
+    from phaze.config import AgentSettings
+
+    stub = MagicMock(spec=AgentSettings)
+    stub.analysis_inner_timeout_sec = 6600
+    stub.analysis_fine_cap = 60
+    stub.analysis_coarse_cap = 30
+    with patch("phaze.tasks.functions.get_settings", return_value=stub) as m:
+        yield m
+
+
 def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
     """Create a minimal SAQ context dict with an api_client mock."""
     if api_client is None:
@@ -262,15 +282,181 @@ async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
 async def test_process_file_propagates_pool_failure(mock_pool: AsyncMock) -> None:
-    """If essentia raises, process_file re-raises (SAQ will retry)."""
+    """A generic essentia error with no ``ctx['job']`` re-raises and does NOT report.
+
+    With no job in the context (``ctx.get('job') is None``) the worker cannot decide
+    retryability, so it re-raises WITHOUT reporting -- SAQ owns the retry decision.
+    """
     api = AsyncMock()
     api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
     mock_pool.side_effect = RuntimeError("essentia died")
-    ctx = _make_ctx(api_client=api)
+    ctx = _make_ctx(api_client=api)  # no "job" key
 
     with pytest.raises(RuntimeError, match="essentia died"):
         await process_file(ctx, **_make_payload_kwargs())
     api.put_analysis.assert_not_awaited()
+    api.report_analysis_failed.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Phase 43: terminal timeout/crash classification + retry policy + coverage
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_timeout_is_terminal(mock_pool: AsyncMock) -> None:
+    """An inner pebble TimeoutError is terminal: report reason='timeout', return normally.
+
+    The task returns ``status='analysis_failed'`` (normal return -> SAQ marks the job
+    COMPLETE -> NO retry of a deterministically-too-long file). ``put_analysis`` is
+    never called.
+    """
+    file_id = uuid.uuid4()
+    mock_pool.side_effect = TimeoutError("inner pebble timeout")
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result == {"file_id": str(file_id), "status": "analysis_failed"}
+    api.report_analysis_failed.assert_awaited_once()
+    awaited = api.report_analysis_failed.await_args
+    assert awaited.args[0] == file_id
+    assert awaited.args[1].reason == "timeout"
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_process_expired_is_terminal(mock_pool: AsyncMock) -> None:
+    """A pebble ProcessExpired (essentia OOM/crash) is terminal: report reason='crashed'."""
+    from pebble import ProcessExpired
+
+    file_id = uuid.uuid4()
+    mock_pool.side_effect = ProcessExpired("child died", code=1)
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result == {"file_id": str(file_id), "status": "analysis_failed"}
+    api.report_analysis_failed.assert_awaited_once()
+    assert api.report_analysis_failed.await_args.args[1].reason == "crashed"
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_non_retryable_generic_error_reports_then_raises(mock_pool: AsyncMock) -> None:
+    """A generic error on the LAST attempt (``job.retryable is False``) reports then re-raises.
+
+    ``report_analysis_failed(reason='error')`` is called with a truncated detail, then the
+    exception propagates so SAQ records the failed (final) attempt.
+    """
+    mock_pool.side_effect = RuntimeError("boom")
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=False)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await process_file(ctx, **_make_payload_kwargs())
+
+    api.report_analysis_failed.assert_awaited_once()
+    payload = api.report_analysis_failed.await_args.args[1]
+    assert payload.reason == "error"
+    assert payload.error is not None and "boom" in payload.error
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_retryable_generic_error_raises_without_reporting(mock_pool: AsyncMock) -> None:
+    """A generic error with retries left (``job.retryable is True``) re-raises WITHOUT reporting.
+
+    Transient errors must retry (retries=2 -> one real retry), so the worker stays silent and
+    lets SAQ re-run; reporting only happens on the terminal attempt.
+    """
+    mock_pool.side_effect = RuntimeError("transient")
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=True)
+
+    with pytest.raises(RuntimeError, match="transient"):
+        await process_file(ctx, **_make_payload_kwargs())
+
+    api.report_analysis_failed.assert_not_awaited()
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_threads_inner_timeout_and_caps(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """The success path passes the inner timeout + 60/30 caps from AgentSettings to the pool."""
+    stub = _patch_agent_settings.return_value
+    stub.analysis_inner_timeout_sec = 7100
+    stub.analysis_fine_cap = 50
+    stub.analysis_coarse_cap = 25
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs())
+
+    mock_pool.assert_awaited_once()
+    call = mock_pool.await_args
+    assert call.kwargs["timeout"] == 7100
+    assert call.kwargs["fine_cap"] == 50
+    assert call.kwargs["coarse_cap"] == 25
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_forwards_coverage_fields(mock_pool: AsyncMock) -> None:
+    """The five coverage fields from analyze_file are forwarded into AnalysisWritePayload."""
+    analysis = {
+        **MOCK_ANALYSIS,
+        "fine_windows_analyzed": 42,
+        "fine_windows_total": 60,
+        "coarse_windows_analyzed": 18,
+        "coarse_windows_total": 30,
+        "sampled": True,
+    }
+    mock_pool.return_value = analysis
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs())
+
+    body = api.put_analysis.await_args.args[1]
+    assert body.fine_windows_analyzed == 42
+    assert body.fine_windows_total == 60
+    assert body.coarse_windows_analyzed == 18
+    assert body.coarse_windows_total == 30
+    assert body.sampled is True
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_coverage_fields_default_none_when_absent(mock_pool: AsyncMock) -> None:
+    """No coverage keys in the analyze_file dict -> coverage fields stay None (partial-PUT)."""
+    mock_pool.return_value = MOCK_ANALYSIS  # no coverage keys
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs())
+
+    body = api.put_analysis.await_args.args[1]
+    assert body.fine_windows_analyzed is None
+    assert body.fine_windows_total is None
+    assert body.coarse_windows_analyzed is None
+    assert body.coarse_windows_total is None
+    assert body.sampled is None
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)

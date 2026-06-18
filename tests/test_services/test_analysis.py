@@ -15,6 +15,7 @@ from phaze.services.analysis import (
     FineWindow,
     ModelConfig,
     ModelSetConfig,
+    _stride_to_cap,
     aggregate_bpm,
     aggregate_danceability,
     aggregate_dominant,
@@ -308,6 +309,95 @@ def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock)
 
 
 # ---------------------------------------------------------------------------
+# Phase 43: _stride_to_cap even-stride downsampler (pure-Python, NO essentia)
+# ---------------------------------------------------------------------------
+
+
+def _win(idx: int) -> tuple[int, float, float]:
+    """A synthetic (idx, start, end) window tuple with idx-derived bounds."""
+    return (idx, float(idx) * 30.0, float(idx) * 30.0 + 30.0)
+
+
+def test_stride_under_cap_is_noop() -> None:
+    """len(windows) <= cap returns the windows unchanged with sampled False."""
+    windows = [_win(i) for i in range(3)]
+    kept, sampled = _stride_to_cap(windows, 5)
+    assert kept == windows
+    assert sampled is False
+
+
+def test_stride_equal_to_cap_is_noop() -> None:
+    """len(windows) == cap is the boundary: no striding, sampled False."""
+    windows = [_win(i) for i in range(5)]
+    kept, sampled = _stride_to_cap(windows, 5)
+    assert kept == windows
+    assert sampled is False
+
+
+def test_stride_cap_le_zero_is_noop() -> None:
+    """cap <= 0 returns the windows unchanged with sampled False (guard)."""
+    windows = [_win(i) for i in range(10)]
+    kept, sampled = _stride_to_cap(windows, 0)
+    assert kept == windows
+    assert sampled is False
+    kept_neg, sampled_neg = _stride_to_cap(windows, -3)
+    assert kept_neg == windows
+    assert sampled_neg is False
+
+
+def test_stride_cap_one_does_not_divide_by_zero() -> None:
+    """cap == 1 (validated out at config load, but a direct call must not crash on cap-1==0)."""
+    windows = [_win(i) for i in range(10)]
+    kept, sampled = _stride_to_cap(windows, 1)
+    assert kept == windows[:1]
+    assert sampled is True
+
+
+def test_stride_over_cap_bounds_count_and_sets_sampled() -> None:
+    """len(windows) > cap yields len(kept) <= cap and sampled True."""
+    windows = [_win(i) for i in range(100)]
+    kept, sampled = _stride_to_cap(windows, 60)
+    assert sampled is True
+    assert len(kept) <= 60
+
+
+def test_stride_keeps_first_and_last() -> None:
+    """The first and last original windows are always retained (whole-file span)."""
+    windows = [_win(i) for i in range(100)]
+    kept, _sampled = _stride_to_cap(windows, 60)
+    assert kept[0] == windows[0]
+    assert kept[-1] == windows[-1]
+
+
+def test_stride_preserves_original_index_no_renumber() -> None:
+    """Kept tuples retain their ORIGINAL idx; nothing is renumbered to 0..k-1."""
+    windows = [_win(i) for i in range(100)]
+    kept, _sampled = _stride_to_cap(windows, 60)
+    # Each kept tuple must be identical to the original window at its idx.
+    for idx, start, end in kept:
+        assert (idx, start, end) == windows[idx]
+    # The kept indices are a strict subset that is NOT a contiguous 0..k-1 range.
+    kept_indices = [w[0] for w in kept]
+    assert kept_indices != list(range(len(kept)))
+
+
+def test_stride_sorted_ascending_by_index() -> None:
+    """Kept windows are sorted ascending by original idx."""
+    windows = [_win(i) for i in range(57)]
+    kept, _sampled = _stride_to_cap(windows, 30)
+    kept_indices = [w[0] for w in kept]
+    assert kept_indices == sorted(kept_indices)
+
+
+def test_stride_evenly_spaced() -> None:
+    """Picks are approximately evenly spaced across the whole file."""
+    windows = [_win(i) for i in range(101)]  # n=101, cap=11 -> step 10
+    kept, sampled = _stride_to_cap(windows, 11)
+    assert sampled is True
+    assert [w[0] for w in kept] == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+
+
+# ---------------------------------------------------------------------------
 # Phase 31: aggregate-reduction unit tests (pure-Python, NO essentia mock)
 # ---------------------------------------------------------------------------
 
@@ -537,3 +627,89 @@ def test_analyze_file_return_shape_has_windows(_mock_es: MagicMock, mock_get_lab
             assert {"bpm", "musical_key"} <= set(w)
         else:
             assert {"mood", "style", "danceability", "features"} <= set(w)
+
+
+# ---------------------------------------------------------------------------
+# Phase 43: cap-bounded coverage emit (mocked essentia)
+# ---------------------------------------------------------------------------
+
+_COVERAGE_KEYS = ("fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total", "sampled")
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_coverage_under_cap(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """Under the cap, every window is analyzed: analyzed == total and sampled is False."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    for key in _COVERAGE_KEYS:
+        assert key in result, f"missing coverage key: {key}"
+    # 600s -> 20 fine (<=60) + 4 coarse (<=30); nothing strided.
+    assert result["fine_windows_total"] == 20
+    assert result["fine_windows_analyzed"] == 20
+    assert result["coarse_windows_total"] == 4
+    assert result["coarse_windows_analyzed"] == 4
+    assert result["sampled"] is False
+    # analyzed counts equal the emitted window lists.
+    assert result["fine_windows_analyzed"] == len(_fine_dicts(result))
+    assert result["coarse_windows_analyzed"] == len(_coarse_dicts(result))
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_coverage_over_cap_strides(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """Over the cap, analyzed <= cap, total is the natural pre-stride count, sampled is True."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    # 600s -> 20 fine / 4 coarse naturally; force striding via small caps.
+    result = analyze_file("/fake/audio.mp3", "/fake/models", fine_cap=5, coarse_cap=2)
+
+    assert result["fine_windows_total"] == 20  # natural count, BEFORE stride
+    assert result["fine_windows_analyzed"] <= 5
+    assert len(_fine_dicts(result)) <= 5
+    assert result["coarse_windows_total"] == 4
+    assert result["coarse_windows_analyzed"] <= 2
+    assert len(_coarse_dicts(result)) <= 2
+    assert result["sampled"] is True
+    # Whole-file span: first and last natural window indices are retained.
+    fine_indices = [w["window_index"] for w in _fine_dicts(result)]
+    assert 0 in fine_indices
+    assert 19 in fine_indices
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_sampled_true_if_either_pass_strided(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """sampled is the OR of the two passes: striding only the fine pass still flips it True."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    # fine over cap (5 < 20), coarse under cap (30 > 4).
+    result = analyze_file("/fake/audio.mp3", "/fake/models", fine_cap=5)
+
+    assert result["fine_windows_analyzed"] <= 5
+    assert result["coarse_windows_analyzed"] == 4
+    assert result["sampled"] is True
+
+
+def test_aggregates_valid_over_strided_subset() -> None:
+    """Aggregations over a strided subset equal the direct reduction over that subset.
+
+    No algorithm needs contiguous windows: aggregate_* are order-independent
+    reductions, so sampling the windows keeps the aggregate well-defined.
+    """
+    from statistics import median
+
+    fine = [_fine(i, 120.0 + i, "C major", start=float(i) * 30.0, end=float(i) * 30.0 + 30.0) for i in range(100)]
+    tuples = [(w.window_index, w.start_sec, w.end_sec) for w in fine]
+    kept_tuples, sampled = _stride_to_cap(tuples, 60)
+    assert sampled is True
+    kept_idx = {t[0] for t in kept_tuples}
+    subset = [w for w in fine if w.window_index in kept_idx]
+
+    expected = round(median([w.bpm for w in subset if w.bpm is not None]), 1)
+    assert aggregate_bpm(subset) == expected

@@ -20,13 +20,38 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from phaze.schemas.agent_analysis import AnalysisWindowPayload, AnalysisWritePayload
+from pebble import ProcessExpired
+
+from phaze.config import AgentSettings, get_settings
+from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisWindowPayload, AnalysisWritePayload
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.tasks.pool import run_in_process_pool
 
 
 if TYPE_CHECKING:
     from phaze.services.agent_client import PhazeAgentClient
+
+
+# Phase 43 (T-43-09): cap the worker-side exception text before it crosses the HTTP
+# boundary. The control-side `AnalysisFailurePayload.error` is the authoritative bound
+# (max_length=2000); truncating here avoids shipping a huge traceback string at all.
+_ERROR_DETAIL_MAX = 2000
+
+
+def _agent_settings() -> AgentSettings:
+    """Return the AgentSettings for this worker process (Phase 43).
+
+    ``process_file`` is registered ONLY on the agent worker (``PHAZE_ROLE=agent``), so
+    ``get_settings()`` returns an :class:`AgentSettings`. The module-level ``settings``
+    singleton is ``ControlSettings``-typed and intentionally lacks the agent-only
+    ``analysis_*`` fields (config.py docstring), so we MUST resolve via ``get_settings()``
+    and narrow — mirroring the agent_worker startup invariant.
+    """
+    cfg = get_settings()
+    if not isinstance(cfg, AgentSettings):  # pragma: no cover - defensive; worker always agent-role
+        msg = f"process_file requires PHAZE_ROLE=agent; get_settings() returned {type(cfg).__name__}"
+        raise RuntimeError(msg)
+    return cfg
 
 
 # Phase 27 UAT gap-13: defer the essentia-bound import to call time. essentia-tensorflow
@@ -121,13 +146,42 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
     api: PhazeAgentClient = ctx["api_client"]
 
-    # CPU-bound analysis in process pool (D-23: original_path is in the payload, no read-back)
-    analysis = await run_in_process_pool(
-        ctx,
-        _load_analyze_file(),
-        payload.original_path,
-        payload.models_path,
-    )
+    # CPU-bound analysis in the killable pebble pool (D-23: original_path is in the payload).
+    # The inner per-task timeout (settings.analysis_inner_timeout_sec, default 6600s) SIGKILLs a
+    # runaway essentia child and reclaims its slot; the 60/30 caps bound how many windows
+    # analyze_file decodes (Plan 02). Both are threaded from settings here so config drives them.
+    cfg = _agent_settings()
+    try:
+        analysis = await run_in_process_pool(
+            ctx,
+            _load_analyze_file(),
+            payload.original_path,
+            payload.models_path,
+            timeout=cfg.analysis_inner_timeout_sec,
+            fine_cap=cfg.analysis_fine_cap,
+            coarse_cap=cfg.analysis_coarse_cap,
+        )
+    except TimeoutError:
+        # Inner pebble kill: the file is deterministically too long. TERMINAL -- report and
+        # return NORMALLY so SAQ marks the job COMPLETE (no blind re-run of a >timeout file;
+        # T-43-08). RESEARCH §Q5.
+        await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="timeout"))
+        return {"file_id": str(payload.file_id), "status": "analysis_failed"}
+    except ProcessExpired:
+        # essentia OOM/segfault crashed the child. Also deterministic -> TERMINAL the same way.
+        await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed"))
+        return {"file_id": str(payload.file_id), "status": "analysis_failed"}
+    except Exception as exc:
+        # Generic / possibly-transient error. Report ONLY on the terminal attempt (so SAQ has
+        # already exhausted retries), then re-raise so SAQ records the failed attempt. A
+        # retryable attempt re-raises silently so the one real retry (retries=2) can run.
+        job = ctx.get("job")
+        if job is not None and not job.retryable:
+            await api.report_analysis_failed(
+                payload.file_id,
+                AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]),
+            )
+        raise
 
     features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
     mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
@@ -148,6 +202,13 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             style=style_dict,
             danceability=analysis.get("danceability"),
             energy=analysis.get("energy"),
+            # Phase 43 windowed-analysis coverage (the five-field contract analyze_file emits).
+            # Absent keys stay None so the partial-PUT contract preserves unset coverage.
+            fine_windows_analyzed=analysis.get("fine_windows_analyzed"),
+            fine_windows_total=analysis.get("fine_windows_total"),
+            coarse_windows_analyzed=analysis.get("coarse_windows_analyzed"),
+            coarse_windows_total=analysis.get("coarse_windows_total"),
+            sampled=analysis.get("sampled"),
             windows=windows,
         ),
     )

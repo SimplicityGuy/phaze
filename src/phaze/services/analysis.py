@@ -348,6 +348,12 @@ _DEFAULT_FINE_WINDOW_SEC = 30
 _DEFAULT_COARSE_WINDOW_SEC = 180
 _DEFAULT_FINE_MIN_SEC = 15
 
+# Per-file cost caps (Phase 43): bound essentia work to a constant regardless of
+# duration. A file whose natural window count exceeds the cap is strided evenly
+# across the WHOLE file via ``_stride_to_cap`` rather than analyzed window-by-window.
+_DEFAULT_FINE_CAP = 60
+_DEFAULT_COARSE_CAP = 30
+
 
 def _probe_duration_sec(file_path: str) -> float:
     """Return total audio duration in seconds WITHOUT materializing PCM.
@@ -382,6 +388,33 @@ def _iter_windows(total_sec: float, win_sec: int, min_sec: int, *, drop_short_tr
     return windows
 
 
+def _stride_to_cap(windows: list[tuple[int, float, float]], cap: int) -> tuple[list[tuple[int, float, float]], bool]:
+    """Even-stride ``windows`` down to ``<=cap`` entries, preserving original idx.
+
+    Bounds per-file analysis cost to a constant regardless of duration: when a
+    file's natural window count exceeds ``cap`` we sample evenly across the WHOLE
+    file (first and last window always kept) instead of truncating to first-N.
+
+    Returns ``(kept, sampled)``:
+      * ``cap <= 0`` or ``len(windows) <= cap`` → ``(windows, False)`` unchanged.
+      * otherwise → ``(kept, True)`` where ``kept`` retains each original tuple's
+        idx (NO renumbering), is sorted ascending by idx, and never exceeds
+        ``cap`` (rounding collisions dedup via a set, yielding ``<= cap``).
+
+    Math: endpoint-inclusive even stride ``round(i * (n - 1) / (cap - 1))`` for
+    ``i in 0..cap-1`` spans positions ``0 .. n-1`` so the first and last windows
+    are always included (RESEARCH §Q2).
+    """
+    n = len(windows)
+    if cap <= 0 or n <= cap:
+        return windows, False
+    if cap == 1:  # defense-in-depth: cap is validated ge=2 in config, but a direct call must not divide by zero
+        return windows[:1], True
+    picks = {round(i * (n - 1) / (cap - 1)) for i in range(cap)}  # set dedups rounding collisions
+    kept = [windows[p] for p in sorted(picks)]
+    return kept, True
+
+
 def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
     """Run all 11 characteristic model sets + the genre model on one buffer.
 
@@ -408,10 +441,18 @@ def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
     return features
 
 
-def _analyze_fine_windows(file_path: str, total_sec: float, win_sec: int, min_sec: int) -> list[FineWindow]:
-    """FINE pass: BPM + key per ``win_sec`` window via segmented EasyLoader decode."""
+def _analyze_fine_windows(file_path: str, total_sec: float, win_sec: int, min_sec: int, cap: int) -> tuple[list[FineWindow], int, bool]:
+    """FINE pass: BPM + key per ``win_sec`` window via segmented EasyLoader decode.
+
+    Returns ``(windows, total, sampled)`` where ``total`` is the natural window
+    count BEFORE striding and ``sampled`` is True when the cap forced an even
+    stride. ``len(windows)`` (analyzed) counts successful appends; per-window
+    failures are skipped, so it may be below the post-stride target.
+    """
+    natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
+    kept, sampled = _stride_to_cap(natural, cap)
     fine_windows: list[FineWindow] = []
-    for idx, start, end in _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True):
+    for idx, start, end in kept:
         try:
             buf = es.EasyLoader(filename=file_path, sampleRate=_FINE_SAMPLE_RATE, startTime=start, endTime=end)()
             bpm, _beats, confidence, _, _beats_intervals = es.RhythmExtractor2013(method="multifeature")(buf)
@@ -429,13 +470,20 @@ def _analyze_fine_windows(file_path: str, total_sec: float, win_sec: int, min_se
         except Exception:  # per-window failure isolation: skip, never fail the file
             log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
             continue
-    return fine_windows
+    return fine_windows, len(natural), sampled
 
 
-def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, models_dir: str) -> list[CoarseWindow]:
-    """COARSE pass: mood/style/danceability per ``win_sec`` window (no length floor)."""
+def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, models_dir: str, cap: int) -> tuple[list[CoarseWindow], int, bool]:
+    """COARSE pass: mood/style/danceability per ``win_sec`` window (no length floor).
+
+    Returns ``(windows, total, sampled)`` mirroring ``_analyze_fine_windows``:
+    ``total`` is the natural pre-stride count and ``sampled`` is True when the
+    cap forced an even stride.
+    """
+    natural = _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False)
+    kept, sampled = _stride_to_cap(natural, cap)
     coarse_windows: list[CoarseWindow] = []
-    for idx, start, end in _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False):
+    for idx, start, end in kept:
         try:
             buf = es.EasyLoader(filename=file_path, sampleRate=_COARSE_SAMPLE_RATE, startTime=start, endTime=end)()
             features = _run_model_sets(buf, models_dir)
@@ -453,7 +501,7 @@ def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, mode
         except Exception:  # per-window failure isolation: skip, never fail the file
             log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
             continue
-    return coarse_windows
+    return coarse_windows, len(natural), sampled
 
 
 def _representative_features(coarse: list[CoarseWindow]) -> dict[str, Any]:
@@ -476,6 +524,8 @@ def analyze_file(
     fine_window_sec: int = _DEFAULT_FINE_WINDOW_SEC,
     coarse_window_sec: int = _DEFAULT_COARSE_WINDOW_SEC,
     fine_min_sec: int = _DEFAULT_FINE_MIN_SEC,
+    fine_cap: int = _DEFAULT_FINE_CAP,
+    coarse_cap: int = _DEFAULT_COARSE_CAP,
 ) -> dict[str, Any]:
     """Analyze a single audio file via essentia as a two-tier time-series.
 
@@ -496,17 +546,28 @@ def analyze_file(
     file. Window sizes default to the ``AgentSettings`` defaults (30/180/15) and
     may be overridden by the agent worker.
 
+    To keep per-file cost constant regardless of duration, each pass is bounded
+    by a cap (``fine_cap``/``coarse_cap``, defaults 60/30): a file whose natural
+    window count exceeds the cap is strided EVENLY across the whole file instead
+    of analyzed window-by-window (root cause of the 4h-timeout: cost was
+    O(duration)). Under the cap, behavior is unchanged (every window analyzed).
+
     Returns a dict with the representative aggregates
     (``bpm``/``musical_key``/``mood``/``style``/``danceability``/``features``)
     PLUS ``windows``: a flat list of fine + coarse window dicts, each ready for
-    ``AnalysisWindowPayload(**w)``.
+    ``AnalysisWindowPayload(**w)`` — PLUS a five-field coverage contract
+    (``fine_windows_analyzed``/``fine_windows_total``/``coarse_windows_analyzed``/
+    ``coarse_windows_total``/``sampled``) so a sampled file can be re-deepened
+    later (Phase 44). ``*_total`` is the natural pre-stride window count;
+    ``*_analyzed`` is the count actually analyzed (post-stride, minus per-window
+    skips); ``sampled`` is True when either pass was strided.
     """
     _suppress_essentia_logging()
 
     total_sec = _probe_duration_sec(file_path)
 
-    fine_windows = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec)
-    coarse_windows = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir)
+    fine_windows, fine_total, fine_sampled = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec, fine_cap)
+    coarse_windows, coarse_total, coarse_sampled = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, coarse_cap)
 
     windows: list[dict[str, Any]] = [w.as_payload_dict() for w in fine_windows]
     windows.extend(w.as_payload_dict() for w in coarse_windows)
@@ -519,4 +580,9 @@ def analyze_file(
         "danceability": aggregate_danceability(coarse_windows),
         "features": _representative_features(coarse_windows),
         "windows": windows,
+        "fine_windows_analyzed": len(fine_windows),
+        "fine_windows_total": fine_total,
+        "coarse_windows_analyzed": len(coarse_windows),
+        "coarse_windows_total": coarse_total,
+        "sampled": fine_sampled or coarse_sampled,
     }

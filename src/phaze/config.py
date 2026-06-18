@@ -440,6 +440,29 @@ class AgentSettings(BaseSettings):
         description="Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31).",
     )
 
+    # Phase 43: bound per-file analysis cost (kill-on-timeout). The agent worker passes
+    # analysis_inner_timeout_sec to the killable pebble ProcessPool (pool.py); the two
+    # caps bound the number of windows analyze_file decodes (consumed by Plan 02/04).
+    analysis_inner_timeout_sec: int = Field(
+        default=6600,
+        gt=0,
+        lt=7200,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_INNER_TIMEOUT_SEC", "analysis_inner_timeout_sec"),
+        description="Inner pebble per-task analysis timeout; MUST stay below the 7200s SAQ process_file net so the kill is deterministic (Phase 43, RESEARCH Pitfall 2). Enforced lt=7200 so a misconfig can't disable the deterministic kill.",
+    )
+    analysis_fine_cap: int = Field(
+        default=60,
+        ge=2,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_FINE_CAP", "analysis_fine_cap"),
+        description="Maximum number of FINE-tier (BPM/key) windows analyze_file decodes per file (Phase 43). ge=2: even-stride always keeps first+last, so a cap below 2 is invalid (and would divide-by-zero in _stride_to_cap).",
+    )
+    analysis_coarse_cap: int = Field(
+        default=30,
+        ge=2,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_COARSE_CAP", "analysis_coarse_cap"),
+        description="Maximum number of COARSE-tier (mood/style/danceability) windows analyze_file decodes per file (Phase 43). ge=2: even-stride always keeps first+last, so a cap below 2 is invalid (and would divide-by-zero in _stride_to_cap).",
+    )
+
     # Phase 29 D-03: path to the operator-distributed CA cert that the agent's
     # httpx.AsyncClient uses to verify the application-server TLS endpoint.
     # Default `/certs/phaze-ca.crt` matches the bind-mount path inside agent

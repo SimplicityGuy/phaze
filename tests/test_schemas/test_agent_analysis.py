@@ -7,7 +7,13 @@ import uuid
 import pydantic
 import pytest
 
-from phaze.schemas.agent_analysis import AnalysisWindowPayload, AnalysisWritePayload, AnalysisWriteResponse
+from phaze.schemas.agent_analysis import (
+    AnalysisFailurePayload,
+    AnalysisFailureResponse,
+    AnalysisWindowPayload,
+    AnalysisWritePayload,
+    AnalysisWriteResponse,
+)
 
 
 def test_analysis_write_payload_accepts_empty_body() -> None:
@@ -169,6 +175,87 @@ def test_analysis_write_response_shape() -> None:
     """Response carries agent_id + file_id only (minimal echo)."""
     file_id = uuid.uuid4()
     resp = AnalysisWriteResponse(agent_id="agent-a", file_id=file_id)
+
+    assert resp.agent_id == "agent-a"
+    assert resp.file_id == file_id
+
+
+def test_analysis_write_payload_accepts_coverage_fields() -> None:
+    """Phase 43: the five windowed-analysis coverage fields validate and round-trip."""
+    payload = AnalysisWritePayload(
+        bpm=128.0,
+        fine_windows_analyzed=10,
+        fine_windows_total=40,
+        coarse_windows_analyzed=2,
+        coarse_windows_total=8,
+        sampled=True,
+    )
+
+    assert payload.fine_windows_analyzed == 10
+    assert payload.fine_windows_total == 40
+    assert payload.coarse_windows_analyzed == 2
+    assert payload.coarse_windows_total == 8
+    assert payload.sampled is True
+
+
+def test_analysis_write_payload_coverage_default_none() -> None:
+    """Coverage fields are optional -- omitted leaves them None (partial-PUT contract)."""
+    payload = AnalysisWritePayload(bpm=120.0)
+
+    assert payload.fine_windows_analyzed is None
+    assert payload.fine_windows_total is None
+    assert payload.coarse_windows_analyzed is None
+    assert payload.coarse_windows_total is None
+    assert payload.sampled is None
+
+
+def test_analysis_write_payload_rejects_negative_coverage_count() -> None:
+    """Coverage counts are ge=0."""
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisWritePayload.model_validate({"fine_windows_analyzed": -1})
+
+
+def test_analysis_failure_payload_accepts_valid_reasons() -> None:
+    """reason validates against the Literal classifications; error is optional."""
+    for reason in ("timeout", "crashed", "error"):
+        payload = AnalysisFailurePayload(reason=reason)  # type: ignore[arg-type]
+        assert payload.reason == reason
+        assert payload.error is None
+
+
+def test_analysis_failure_payload_accepts_error_detail() -> None:
+    """error free-text detail round-trips."""
+    payload = AnalysisFailurePayload(reason="timeout", error="killed after 7200s")
+
+    assert payload.reason == "timeout"
+    assert payload.error == "killed after 7200s"
+
+
+def test_analysis_failure_payload_rejects_bad_reason() -> None:
+    """reason outside the Literal set raises (input-validation control)."""
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisFailurePayload.model_validate({"reason": "kaboom"})
+
+
+def test_analysis_failure_payload_rejects_oversized_error() -> None:
+    """error max_length=2000 bounds the DoS-via-huge-string threat (T-43-06)."""
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisFailurePayload.model_validate({"reason": "error", "error": "x" * 2001})
+
+
+def test_analysis_failure_payload_rejects_unknown_field() -> None:
+    """extra='forbid' rejects an attempt to smuggle agent_id/file_id in the body (AUTH-01)."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        AnalysisFailurePayload.model_validate({"reason": "error", "agent_id": "spoofed"})
+
+    errors = exc_info.value.errors()
+    assert any(err.get("type") == "extra_forbidden" for err in errors), errors
+
+
+def test_analysis_failure_response_shape() -> None:
+    """Failure response carries agent_id + file_id only (minimal echo)."""
+    file_id = uuid.uuid4()
+    resp = AnalysisFailureResponse(agent_id="agent-a", file_id=file_id)
 
     assert resp.agent_id == "agent-a"
     assert resp.file_id == file_id

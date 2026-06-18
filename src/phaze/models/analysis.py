@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,14 @@ class AnalysisResult(TimestampMixin, Base):
     style: Mapped[str | None] = mapped_column(String(50), nullable=True)
     fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
     features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Phase 43 windowed-analysis coverage (migration 021). All nullable: pre-43
+    # rows and empty-body PUTs leave coverage NULL. These are dedicated columns so
+    # the five-field coverage contract from analyze_file never funnels into `features`.
+    fine_windows_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fine_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coarse_windows_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coarse_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sampled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class AnalysisWindow(TimestampMixin, Base):
