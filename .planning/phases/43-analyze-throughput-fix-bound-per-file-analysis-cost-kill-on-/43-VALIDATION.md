@@ -1,10 +1,11 @@
 ---
 phase: 43
 slug: analyze-throughput-fix
-status: planned
+status: validated
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-06-17
+validated: 2026-06-18
 ---
 
 # Phase 43 — Validation Strategy
@@ -44,16 +45,16 @@ created: 2026-06-17
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 43-01-T1 | 01 | 1 | ANALYZE-KILL-ON-TIMEOUT | T-43-SC | pebble legitimacy verified before install (blocking-human) | manual gate | (checkpoint — pypi.org/project/Pebble) | n/a | ⬜ pending |
-| 43-01-T2 | 01 | 1 | ANALYZE-CONFIG-KNOBS | T-43-02 | inner timeout < SAQ net; PHAZE_* aliases | unit | `uv run pytest tests/test_tasks/test_pool.py -q` | ✅ exists | ⬜ pending |
-| 43-01-T3 | 01 | 1 | ANALYZE-KILL-ON-TIMEOUT, ANALYZE-INNER-TIMEOUT | T-43-01 | runaway child SIGKILLed + slot reclaimed on inner timeout | unit (real pebble, dummy fn) | `uv run pytest tests/test_tasks/test_pool.py -k timeout -q` | ✅ exists | ⬜ pending |
-| 43-02-T1 | 02 | 1 | ANALYZE-BOUND-COST | T-43-03 | cost bounded; even stride across whole file; idx preserved | unit (pure fn) | `uv run pytest tests/test_services/test_analysis.py -k stride -q` | ✅ exists | ⬜ pending |
-| 43-02-T2 | 02 | 1 | ANALYZE-BOUND-COST, ANALYZE-COVERAGE-EMIT | T-43-04 | coverage + sampled emitted; aggregates valid under sampling | unit (mocked essentia) | `uv run pytest tests/test_services/test_analysis.py -q` | ✅ exists | ⬜ pending |
-| 43-03-T1 | 03 | 2 | ANALYZE-COVERAGE-PERSIST, ANALYZE-STATE-MACHINE | — | nullable columns; enum is code-only (no enum migration) | migration round-trip | `uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head` | ✅ creates 021 | ⬜ pending |
-| 43-03-T2 | 03 | 2 | ANALYZE-STATE-MACHINE, ANALYZE-COVERAGE-PERSIST | T-43-07 | coverage to columns not JSONB; non-empty PUT → ANALYZED | integration (DB) | `uv run pytest tests/test_schemas/test_agent_analysis.py tests/test_routers/test_agent_analysis.py -q` | ✅ exists | ⬜ pending |
-| 43-03-T3 | 03 | 2 | ANALYZE-FAILED-ENDPOINT | T-43-05, T-43-06 | agent auth; file_id path-only; bounded error; extra=forbid | integration (DB + respx) | `uv run pytest tests/test_routers/test_agent_analysis.py tests/test_services/test_agent_client_endpoints.py -q` | ✅ exists | ⬜ pending |
-| 43-04-T1 | 04 | 3 | ANALYZE-RETRY-POLICY | T-43-10 | timeout=7200; retries=2 survives defaults hook | unit | `uv run pytest tests/test_services/test_analysis_enqueue.py -q` | ✅ exists | ⬜ pending |
-| 43-04-T2 | 04 | 3 | ANALYZE-TIMEOUT-TERMINAL, ANALYZE-WORKER-WIRING | T-43-08, T-43-09 | TimeoutError/ProcessExpired terminal (no retry); non-retryable reported; coverage forwarded | unit (AsyncMock) | `uv run pytest tests/test_tasks/test_functions.py -q` | ✅ exists | ⬜ pending |
+| 43-01-T1 | 01 | 1 | ANALYZE-KILL-ON-TIMEOUT | T-43-SC | pebble legitimacy verified before install (blocking-human) | manual gate | (checkpoint — pypi.org/project/Pebble) | n/a | ✅ satisfied (pebble==5.2.0 pinned, pure-Python; see 43-SECURITY T-43-SC) |
+| 43-01-T2 | 01 | 1 | ANALYZE-CONFIG-KNOBS | T-43-02 | inner timeout < SAQ net; PHAZE_* aliases | unit | `uv run pytest tests/test_tasks/test_pool.py -q` | ✅ exists | ✅ green (10 passed) |
+| 43-01-T3 | 01 | 1 | ANALYZE-KILL-ON-TIMEOUT, ANALYZE-INNER-TIMEOUT | T-43-01 | runaway child SIGKILLed + slot reclaimed on inner timeout | unit (real pebble, dummy fn) | `uv run pytest tests/test_tasks/test_pool.py -k timeout -q` | ✅ exists | ✅ green (3 passed) |
+| 43-02-T1 | 02 | 1 | ANALYZE-BOUND-COST | T-43-03 | cost bounded; even stride across whole file; idx preserved | unit (pure fn) | `uv run pytest tests/test_services/test_analysis.py -k stride -q` | ✅ exists | ✅ green (12 passed) |
+| 43-02-T2 | 02 | 1 | ANALYZE-BOUND-COST, ANALYZE-COVERAGE-EMIT | T-43-04 | coverage + sampled emitted; aggregates valid under sampling | unit (mocked essentia) | `uv run pytest tests/test_services/test_analysis.py -q` | ✅ exists | ✅ green (44 passed) |
+| 43-03-T1 | 03 | 2 | ANALYZE-COVERAGE-PERSIST, ANALYZE-STATE-MACHINE | — | nullable columns; enum is code-only (no enum migration) | migration round-trip | `uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head` | ✅ creates 021 | ✅ green (020↔021 round-trip clean) |
+| 43-03-T2 | 03 | 2 | ANALYZE-STATE-MACHINE, ANALYZE-COVERAGE-PERSIST | T-43-07 | coverage to columns not JSONB; non-empty PUT → ANALYZED | integration (DB) | `uv run pytest tests/test_schemas/test_agent_analysis.py tests/test_routers/test_agent_analysis.py -q` | ✅ exists | ✅ green (43 passed) |
+| 43-03-T3 | 03 | 2 | ANALYZE-FAILED-ENDPOINT | T-43-05, T-43-06 | agent auth; file_id path-only; bounded error; extra=forbid | integration (DB + respx) | `uv run pytest tests/test_routers/test_agent_analysis.py tests/test_services/test_agent_client_endpoints.py -q` | ✅ exists | ✅ green (26 passed) |
+| 43-04-T1 | 04 | 3 | ANALYZE-RETRY-POLICY | T-43-10 | timeout=7200; retries=2 survives defaults hook | unit | `uv run pytest tests/test_services/test_analysis_enqueue.py -q` | ✅ exists | ✅ green (6 passed) |
+| 43-04-T2 | 04 | 3 | ANALYZE-TIMEOUT-TERMINAL, ANALYZE-WORKER-WIRING | T-43-08, T-43-09 | TimeoutError/ProcessExpired terminal (no retry); non-retryable reported; coverage forwarded | unit (AsyncMock) | `uv run pytest tests/test_tasks/test_functions.py -q` | ✅ exists | ✅ green (24 passed) |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -90,4 +91,22 @@ All Wave-0 test infrastructure already exists in the repo (no scaffolding needed
 - [x] Feedback latency < 120s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** planner-complete (pending execution)
+**Approval:** validated 2026-06-18 — all 9 automated rows green, 43-01-T1 manual supply-chain gate satisfied.
+
+---
+
+## Validation Audit 2026-06-18
+
+State A audit — re-ran every per-task command against the implemented code (ephemeral Postgres+Redis for the DB/migration rows).
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 10 tasks |
+| COVERED (green) | 9 automated + 1 manual gate satisfied |
+| PARTIAL | 0 |
+| MISSING | 0 |
+| Gaps filled (auditor) | 0 (none needed) |
+
+Totals: 168 tests passed across the mapped commands (pool 10+3, analysis 44 [stride 12], schema+router 43, router+client 26, enqueue 6, functions 24) + a clean 020↔021 migration round-trip. `nyquist_compliant: true` confirmed empirically, not just by plan-time assertion.
+
+**Manual-only items remain manual** (real essentia / homelab redeploy) — unchanged, tracked in the table above.
