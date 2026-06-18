@@ -249,9 +249,10 @@ async def test_partial_failure_footer_uses_role_alert(smoke: AsyncClient) -> Non
 async def test_router_registered_in_main_app() -> None:
     """admin_agents.router is registered in main.create_app() (production wiring)."""
     from phaze.main import create_app
+    from tests._route_introspection import effective_route_paths
 
     app = create_app()
-    paths = {route.path for route in app.routes if hasattr(route, "path")}  # type: ignore[attr-defined]
+    paths = effective_route_paths(app)
     # Both handlers must be reachable on the production app.
     assert "/admin/agents" in paths
     assert "/admin/agents/_table" in paths

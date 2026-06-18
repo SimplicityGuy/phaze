@@ -953,9 +953,10 @@ async def test_status_pill_failed_uses_red_surface(
 async def test_router_registered_in_main_app() -> None:
     """pipeline_scans.router is registered in main.create_app() (production wiring)."""
     from phaze.main import create_app
+    from tests._route_introspection import effective_route_paths
 
     app = create_app()
-    paths = {route.path for route in app.routes if hasattr(route, "path")}  # type: ignore[attr-defined]
+    paths = effective_route_paths(app)
     # All handlers must be reachable on the production app.
     assert "/pipeline/scans" in paths
     assert "/pipeline/scans/{batch_id}" in paths
