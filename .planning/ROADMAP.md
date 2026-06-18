@@ -394,11 +394,11 @@ Plans:
 - **Retry policy** — `retries=1` for transient errors, but treat `TimeoutError` as **terminal** (no wasteful re-run); lower the SAQ `process_file` timeout from 14400s to ~2h (inner timeout does the real killing).
 - Regression tests for stride/cap, kill-on-timeout, state transitions, and timeout-terminal retry behavior.
 **Depends on:** none (independent of 39–42; builds on the Phase 31 windowed-analysis design)
-**Plans:** 4 plans (3 waves)
+**Plans:** 2/4 plans executed
 
 Plans:
-- [ ] 43-01-PLAN.md — Kill-on-timeout pebble pool + inner-timeout/cap config knobs (Wave 1)
-- [ ] 43-02-PLAN.md — Cap + even-stride bounding (60/30) + coverage emit in analyze_file (Wave 1)
+- [x] 43-01-PLAN.md — Kill-on-timeout pebble pool + inner-timeout/cap config knobs (Wave 1)
+- [x] 43-02-PLAN.md — Cap + even-stride bounding (60/30) + coverage emit in analyze_file (Wave 1)
 - [ ] 43-03-PLAN.md — State machine (ANALYZED/ANALYSIS_FAILED) + coverage columns (migration 021) + worker-callable failure endpoint (Wave 2)
 - [ ] 43-04-PLAN.md — Enqueue policy (timeout 7200/retries 2) + timeout-terminal classification + coverage forwarding (Wave 3)
 
