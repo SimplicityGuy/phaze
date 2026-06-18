@@ -416,11 +416,13 @@ def test_router_registered_in_main_app() -> None:
     check.
     """
     from phaze.main import create_app
+    from tests._route_introspection import iter_effective_routes
 
     app = create_app()
-    paths = [getattr(r, "path", "") for r in app.routes]
+    routes = list(iter_effective_routes(app))
+    paths = [r.path for r in routes]
     assert any("/api/internal/agent/scan-batches" in p for p in paths), f"agent_scan_batches.router not registered in create_app(); paths={paths}"
 
     # Also confirm the PATCH operation has the right method binding.
-    matching = [r for r in app.routes if "/api/internal/agent/scan-batches" in getattr(r, "path", "")]
+    matching = [r for r in routes if "/api/internal/agent/scan-batches" in r.path]
     assert any("PATCH" in getattr(r, "methods", set()) for r in matching), "No PATCH method bound on the scan-batches route"
