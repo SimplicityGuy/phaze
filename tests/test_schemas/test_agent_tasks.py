@@ -83,6 +83,41 @@ def test_process_file_payload_round_trip() -> None:
     assert rt == payload
 
 
+def test_process_file_payload_caps_default_none() -> None:
+    """Phase 44: a five-field build (the bulk _enqueue_analysis_jobs producer) leaves both caps None."""
+    p = ProcessFilePayload(
+        file_id=uuid.uuid4(),
+        original_path="/music/a.mp3",
+        file_type="mp3",
+        agent_id="agent-a",
+        models_path="/opt/essentia/models",
+    )
+    assert p.fine_cap is None
+    assert p.coarse_cap is None
+
+
+def test_process_file_payload_explicit_caps_round_trip() -> None:
+    """Phase 44: explicit fine_cap/coarse_cap (incl. 0 = analyze-ALL no-op) round-trip as ints."""
+    p = ProcessFilePayload(
+        file_id=uuid.uuid4(),
+        original_path="/music/a.mp3",
+        file_type="mp3",
+        agent_id="agent-a",
+        models_path="/opt/essentia/models",
+        fine_cap=0,
+        coarse_cap=0,
+    )
+    dumped = p.model_dump(mode="json")
+    assert dumped["fine_cap"] == 0
+    assert dumped["coarse_cap"] == 0
+    assert isinstance(dumped["fine_cap"], int)
+    assert isinstance(dumped["coarse_cap"], int)
+    rt = ProcessFilePayload.model_validate(dumped)
+    assert rt == p
+    assert rt.fine_cap == 0
+    assert rt.coarse_cap == 0
+
+
 # -----------------------
 # ExtractMetadataPayload
 # -----------------------
