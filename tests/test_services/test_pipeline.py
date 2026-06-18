@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
@@ -17,6 +18,8 @@ from phaze.models.tracklist import Tracklist
 from phaze.services.pipeline import (
     count_active_agents,
     count_inflight_jobs,
+    get_analysis_failed_count,
+    get_analysis_failed_files,
     get_files_by_state,
     get_fingerprint_pending_files,
     get_match_busy_count,
@@ -30,6 +33,7 @@ from phaze.services.pipeline import (
     get_scrape_pending_tracklists,
     get_search_busy_count,
     get_stage_busy_counts,
+    get_straggler_count,
     get_untracked_files,
 )
 from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
@@ -131,6 +135,70 @@ async def test_get_files_by_state(session: AsyncSession):
     discovered = await get_files_by_state(session, FileState.DISCOVERED)
     assert len(discovered) == 1
     assert discovered[0].id == f1.id
+
+
+# ---------------------------------------------------------------------------
+# ANALYSIS_FAILED bucket (Phase 44, D-02) — count/list read from indexed files.state
+# ---------------------------------------------------------------------------
+
+
+def _failed_file(i: int, state: FileState = FileState.ANALYSIS_FAILED) -> FileRecord:
+    """Build a FileRecord seed in the given state (default ANALYSIS_FAILED)."""
+    return FileRecord(
+        id=uuid.uuid4(),
+        sha256_hash=f"f{i:063d}"[:64],
+        original_path=f"/music/failed{i}.mp3",
+        original_filename=f"failed{i}.mp3",
+        current_path=f"/music/failed{i}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=state,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_failed_count_happy_path(session: AsyncSession) -> None:
+    """Counts exactly the files in ANALYSIS_FAILED; other states are excluded."""
+    session.add_all([_failed_file(0), _failed_file(1), _failed_file(2, FileState.ANALYZED)])
+    await session.commit()
+    assert await get_analysis_failed_count(session) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_failed_files_returns_failed_rows(session: AsyncSession) -> None:
+    """Returns the FileRecords in ANALYSIS_FAILED and only those."""
+    a = _failed_file(0)
+    b = _failed_file(1)
+    session.add_all([a, b, _failed_file(2, FileState.DISCOVERED)])
+    await session.commit()
+    rows = await get_analysis_failed_files(session)
+    assert {r.id for r in rows} == {a.id, b.id}
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_failed_count_degrades_to_zero_on_db_error() -> None:
+    """A forced read error degrades the count to 0 (poll-safe via _safe_count), never raising.
+
+    Mirrors the _safe_count degrade discipline: the hot 5s /pipeline/stats poll must keep serving
+    instead of 500ing when the files read fails.
+    """
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("files table unavailable")
+
+        async def rollback(self) -> None:
+            return None
+
+    assert await get_analysis_failed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_not_in_pipeline_stages() -> None:
+    """ANALYSIS_FAILED is its OWN bucket — never added to the linear PIPELINE_STAGES (D-02)."""
+    from phaze.services.pipeline import PIPELINE_STAGES
+
+    assert FileState.ANALYSIS_FAILED not in PIPELINE_STAGES
 
 
 @pytest.mark.asyncio
@@ -916,3 +984,129 @@ async def test_count_inflight_jobs_degrade_does_not_poison_session(session: Asyn
     # A follow-up query on the SAME session still succeeds (the nested rollback did not poison it).
     follow_up = await get_files_by_state(session, FileState.DISCOVERED)
     assert follow_up == []
+
+
+# ---------------------------------------------------------------------------
+# get_straggler_count (Phase 44, D-01) — active process_file running-age count, degrade-safe
+# ---------------------------------------------------------------------------
+
+
+def _job_blob(started_ms: int | None) -> str:
+    """Serialize a minimal SAQ-style job blob (default json serializer) carrying `started`.
+
+    The real blob is `json.dumps(job.to_dict())` (saq base queue). The straggler reader only
+    reads the top-level `started` epoch-ms int, so a tiny JSON object is a faithful stand-in.
+    A None started omits the field entirely (the dequeued-but-not-yet-stamped case).
+    """
+    d: dict[str, object] = {"key": "process_file:abc", "queue": "phaze-agent-nox"}
+    if started_ms is not None:
+        d["started"] = started_ms
+    return json.dumps(d)
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_counts_only_over_threshold() -> None:
+    """Counts active process_file jobs whose Python-computed running-age exceeds the threshold.
+
+    saq_jobs has NO started SQL column (PATTERNS.md banner) — age is read from the deserialized
+    job blob's `started` (epoch ms). One job started 2h ago (> 1h threshold) counts; one started
+    1s ago does not; one with no `started` (dequeued-but-unstamped) does not.
+    """
+    from saq.utils import now as saq_now
+
+    now_ms = saq_now()
+    threshold_sec = 3600  # 1 hour
+
+    class _FakeResult:
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[tuple[str]]:
+            return self._rows
+
+    class _FakeSession:
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self._rows = rows
+
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult(self._rows)
+
+    rows = [
+        (_job_blob(now_ms - 2 * 3600 * 1000),),  # started 2h ago → straggler
+        (_job_blob(now_ms - 1000),),  # started 1s ago → not yet old
+        (_job_blob(None),),  # no started → not counted
+    ]
+    assert await get_straggler_count(_FakeSession(rows), threshold_sec) == 1  # type: ignore[arg-type]
+
+
+def test_job_started_ms_handles_malformed_blobs() -> None:
+    """A non-JSON, non-dict, or started-less blob returns None (never raises) so the straggler reader is malformed-tolerant.
+
+    saq_jobs is an external broker table; a corrupt/legacy/unexpected blob must degrade to
+    "not countable", never crash the hot 5s poll.
+    """
+    from phaze.services.pipeline import _job_started_ms
+
+    assert _job_started_ms(b"not json at all {{{") is None  # invalid JSON -> None
+    assert _job_started_ms(json.dumps([1, 2, 3])) is None  # JSON but not a dict -> None
+    assert _job_started_ms(json.dumps({"queue": "q"})) is None  # no started -> None
+    assert _job_started_ms(json.dumps({"started": 0})) is None  # non-positive started -> None
+    assert _job_started_ms(json.dumps({"started": "soon"})) is None  # non-int started -> None
+    assert _job_started_ms(12345) is None  # not a (str/bytes/dict) blob -> None
+    assert _job_started_ms({"started": 999}) == 999  # already-a-dict blob -> read directly
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_zero_when_no_active_jobs() -> None:
+    """With no active process_file rows the straggler count is 0 (not an error)."""
+
+    class _FakeResult:
+        def all(self) -> list[tuple[str]]:
+            return []
+
+    class _FakeSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult()
+
+    assert await get_straggler_count(_FakeSession(), 3600) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_degrades_on_db_error() -> None:
+    """get_straggler_count returns 0 and never raises when the saq_jobs read fails (T-44-04).
+
+    A missing saq_jobs table or a DB hiccup must degrade to 0 so the hot 5s /pipeline/stats poll
+    keeps serving instead of 500ing. The read runs inside a SAVEPOINT (begin_nested); the
+    exception propagates out of the nested scope and is caught by the degrade except.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_straggler_count(_ExplodingSession(), 3600) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the busy-count guards).
+
+    DROP saq_jobs inside this test's uncommitted transaction to deterministically force the
+    absent-table degrade — the only branch that exercises the SAVEPOINT rollback recovery. A
+    follow-up query on the SAME session must still succeed, proving the dashboard's later ORM
+    lazy-loads are not poisoned (the bug a plain session.rollback() would cause).
+    """
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_straggler_count(session, 3600) == 0
+    # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
+    follow_up = await get_pipeline_stats(session)
+    assert follow_up["discovered"] == 0
