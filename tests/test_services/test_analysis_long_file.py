@@ -10,9 +10,10 @@ spike's job, not CI's).
 
 1. ``test_long_file_bounded`` — proves the *windowing loop* never accumulates over a
    >=2h file. essentia is mocked so ``EasyLoader`` returns a realistically-sized
-   (~5MB) buffer per window; the loop must discard each buffer. If the loop wrongly
-   retained buffers, 240 fine windows x ~5MB would add >1GB — the asserted RSS
-   increment threshold catches that. This is the bounded-memory-at-2h-scale proof.
+   (~5MB) buffer per window; the loop must discard each buffer. Phase 43 strides a
+   long file down to 60 fine + 30 coarse windows (cost no longer scales with length);
+   if the loop wrongly retained those ~90 buffers x ~5MB it would add >450MB — the
+   asserted RSS increment threshold catches that. This is the bounded-memory proof.
 
 2. ``test_real_decode_short_no_overflow`` — proves the *real* essentia decode path
    (``EasyLoader`` + ``RhythmExtractor2013`` + ``KeyExtractor``) completes on real
@@ -39,7 +40,7 @@ import numpy as np
 import pytest
 
 import phaze.services.analysis as analysis_mod
-from phaze.services.analysis import analyze_file
+from phaze.services.analysis import _DEFAULT_FINE_CAP, analyze_file
 
 
 if TYPE_CHECKING:
@@ -53,10 +54,12 @@ _FINE_BUF_SAMPLES = 1_323_000  # 30s @ 44.1kHz float32 ~= 5.3MB per window buffe
 _SHORT_SEC = 240.0  # 4 min
 _LONG_SEC = 7210.0  # just over 2 hours
 
-# Generous bound: if the loop retained all 240 fine + 40 coarse window buffers it
-# would hold >1.4GB; a non-accumulating loop keeps the long-vs-short peak increment
-# far below this.
-_MAX_RSS_INCREMENT_MB = 400.0
+# Phase 43 strides a >=2h file down to 60 fine + 30 coarse windows. If the loop
+# retained all ~90 ~5MB buffers it would hold >450MB; a non-accumulating loop keeps
+# the long-vs-short peak increment far below this tightened bound. (Pre-43 this was
+# 400MB against ~280 retained buffers; fewer windows now means a lower bound is
+# needed to keep accidental retention detectable.)
+_MAX_RSS_INCREMENT_MB = 200.0
 
 
 def _ru_maxrss_mb() -> float:
@@ -133,10 +136,16 @@ def test_long_file_bounded() -> None:
     short_fine = [w for w in short_result["windows"] if w["tier"] == "fine"]
     long_fine = [w for w in long_result["windows"] if w["tier"] == "fine"]
 
-    # The loop traversed the whole >=2h file (7210s / 30s ~= 240 fine windows).
-    assert len(long_fine) >= 200, f"expected the loop to cover the whole 2h file; got {len(long_fine)} fine windows"
-    # Window count scales with length (the loop really iterates the longer file).
-    assert len(long_fine) > len(short_fine) * 10
+    # Phase 43: per-file cost is bounded by an even-stride cap. The loop still spans
+    # the whole >=2h file (its natural ~240 fine windows are recorded as coverage),
+    # but only the fine cap (60) are kept & decoded — cost no longer scales with length.
+    assert len(long_fine) == _DEFAULT_FINE_CAP, f"long file should be strided down to {_DEFAULT_FINE_CAP} fine windows; got {len(long_fine)}"
+    assert long_result["sampled"] is True
+    assert long_result["fine_windows_total"] >= 200, "coverage must record the full natural window count of the >=2h file"
+    # The short file is under the cap, so it is NOT strided: its count stays natural
+    # and below the cap, and the long file does NOT scale up with length (it is capped).
+    assert len(short_fine) < _DEFAULT_FINE_CAP
+    assert len(short_fine) < len(long_fine) <= _DEFAULT_FINE_CAP
 
     # Peak RSS does NOT scale with file length. ru_maxrss is a monotonic high-water
     # mark, so the increment after the long run over the short run is exactly how
