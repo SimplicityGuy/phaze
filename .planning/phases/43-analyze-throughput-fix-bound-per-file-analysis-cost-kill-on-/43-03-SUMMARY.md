@@ -126,6 +126,11 @@ None — no security surface beyond the planned threat register (T-43-05/06/07 a
 - Control plane now records analysis outcomes durably (analyzed / sampled / failed) and exposes a worker-callable failure path — the worker plans can wire `put_analysis` coverage + `report_analysis_failed` into the bounded analysis loop.
 - No blockers.
 
+## Self-Check: PASSED
+
+- Created files verified present: `alembic/versions/021_add_analysis_coverage_columns.py`, `43-03-SUMMARY.md`.
+- Task commits verified in git: `8d85805`, `44fe34c`, `f55d4ad`; metadata commit `fb2cff6`.
+
 ---
 *Phase: 43-analyze-throughput-fix*
 *Completed: 2026-06-17*
