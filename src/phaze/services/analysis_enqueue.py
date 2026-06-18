@@ -40,12 +40,21 @@ def process_file_job_key(file_id: uuid.UUID) -> str:
     return f"process_file:{file_id}"
 
 
-async def enqueue_process_file(queue: Any, file: FileRecord, agent_id: str, models_path: str) -> Any:
+async def enqueue_process_file(
+    queue: Any,
+    file: FileRecord,
+    agent_id: str,
+    models_path: str,
+    *,
+    fine_cap: int | None = None,
+    coarse_cap: int | None = None,
+) -> Any:
     """Enqueue ONE ``process_file`` job with the deterministic key + full payload + policy.
 
-    Builds a COMPLETE ``ProcessFilePayload`` (all five fields: the FileRecord's
+    Builds a COMPLETE ``ProcessFilePayload`` (the five required fields: the FileRecord's
     ``id`` / ``original_path`` / ``file_type`` plus the resolved ``agent_id`` and
-    ``models_path``) and serializes it via ``model_dump(mode="json")`` so the UUID
+    ``models_path``, plus the optional Phase-44 ``fine_cap`` / ``coarse_cap`` overrides
+    which default ``None``) and serializes it via ``model_dump(mode="json")`` so the UUID
     round-trips as a string and the agent worker's ``ProcessFilePayload.model_validate``
     (``extra="forbid"``) accepts it. Mirrors the working ``agent_files.py`` pattern --
     the pre-Phase-30 bug enqueued only ``file_id`` and dead-lettered every job.
@@ -60,6 +69,11 @@ async def enqueue_process_file(queue: Any, file: FileRecord, agent_id: str, mode
         file_type=file.file_type,
         agent_id=agent_id,
         models_path=models_path,
+        # Phase 44: optional per-job cap override (the "deepen analysis" lever, Plan 03).
+        # Keyword-only + trailing so the positional bulk caller (_enqueue_analysis_jobs) is
+        # unchanged; default None preserves the legacy 60/30 AgentSettings behavior in the worker.
+        fine_cap=fine_cap,
+        coarse_cap=coarse_cap,
     )
     # Phase 36: the PostgresQueue broker pool is built ``open=False`` and, unlike the old
     # redis-backed Queue, does NOT auto-connect on first enqueue. ``connect()`` is idempotent

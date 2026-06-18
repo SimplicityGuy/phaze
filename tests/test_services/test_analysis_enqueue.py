@@ -59,8 +59,11 @@ async def test_enqueue_process_file_complete_payload_and_policy() -> None:
 
     task_name, payload = queue.captured[0]
     assert task_name == "process_file"
-    # Exactly the five ProcessFilePayload fields, nothing else (extra="forbid" contract).
-    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path"}
+    # The five required ProcessFilePayload fields plus the two Phase-44 optional cap fields
+    # (serialized as None when not overridden), nothing else (extra="forbid" contract).
+    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
+    assert payload["fine_cap"] is None
+    assert payload["coarse_cap"] is None
     assert payload["file_id"] == str(fid)
     assert payload["original_path"] == file.original_path
     assert payload["file_type"] == "mp3"
@@ -77,6 +80,45 @@ async def test_enqueue_process_file_complete_payload_and_policy() -> None:
     assert policy["retries"] == 2
     # retries explicitly NOT 1 -- apply_project_job_defaults would clobber 1 -> 4.
     assert policy["retries"] != 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_process_file_caps_default_none() -> None:
+    """Phase 44: with no cap kwargs the serialized payload carries fine_cap/coarse_cap None; key unchanged."""
+    queue = FakeQueue("phaze-agent-nox")
+    fid = uuid.uuid4()
+    file = _fake_file(fid)
+
+    await enqueue_process_file(queue, file, "nox", "/models/pb")
+
+    _, payload = queue.captured[0]
+    assert payload["fine_cap"] is None
+    assert payload["coarse_cap"] is None
+    assert queue.captured_policy[0]["key"] == f"process_file:{fid}"
+    assert queue.captured_policy[0]["timeout"] == 7200
+    assert queue.captured_policy[0]["retries"] == 2
+
+
+@pytest.mark.asyncio
+async def test_enqueue_process_file_threads_explicit_caps() -> None:
+    """Phase 44: explicit fine_cap/coarse_cap (incl. 0) serialize into the payload; deterministic key unchanged."""
+    queue = FakeQueue("phaze-agent-nox")
+    fid = uuid.uuid4()
+    file = _fake_file(fid)
+
+    await enqueue_process_file(queue, file, "nox", "/models/pb", fine_cap=0, coarse_cap=0)
+
+    _, payload = queue.captured[0]
+    assert payload["fine_cap"] == 0
+    assert payload["coarse_cap"] == 0
+    # The exact kwargs the worker receives still validate against the schema.
+    validated = ProcessFilePayload.model_validate(payload)
+    assert validated.fine_cap == 0
+    assert validated.coarse_cap == 0
+    # Single funnel: deterministic key + policy preserved regardless of cap override.
+    assert queue.captured_policy[0]["key"] == process_file_job_key(fid)
+    assert queue.captured_policy[0]["timeout"] == 7200
+    assert queue.captured_policy[0]["retries"] == 2
 
 
 @pytest.mark.asyncio

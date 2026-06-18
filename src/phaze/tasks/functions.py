@@ -151,6 +151,11 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # runaway essentia child and reclaims its slot; the 60/30 caps bound how many windows
     # analyze_file decodes (Plan 02). Both are threaded from settings here so config drives them.
     cfg = _agent_settings()
+    # Phase 44: a per-job payload cap override (the "deepen analysis" lever) takes precedence over
+    # the AgentSettings 60/30 defaults; absent it (None), fall back to config exactly as before. A
+    # cap of 0 reaches analysis.py::_stride_to_cap as the analyze-ALL-windows no-op (not special-cased here).
+    fine_cap = payload.fine_cap if payload.fine_cap is not None else cfg.analysis_fine_cap
+    coarse_cap = payload.coarse_cap if payload.coarse_cap is not None else cfg.analysis_coarse_cap
     try:
         analysis = await run_in_process_pool(
             ctx,
@@ -158,8 +163,8 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             payload.original_path,
             payload.models_path,
             timeout=cfg.analysis_inner_timeout_sec,
-            fine_cap=cfg.analysis_fine_cap,
-            coarse_cap=cfg.analysis_coarse_cap,
+            fine_cap=fine_cap,
+            coarse_cap=coarse_cap,
         )
     except TimeoutError:
         # Inner pebble kill: the file is deterministically too long. TERMINAL -- report and

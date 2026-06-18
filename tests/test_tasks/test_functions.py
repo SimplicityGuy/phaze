@@ -416,6 +416,47 @@ async def test_process_file_threads_inner_timeout_and_caps(mock_pool: AsyncMock,
 
 
 @patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_payload_caps_override_agent_settings(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """Phase 44: payload fine_cap/coarse_cap (incl. 0) override the AgentSettings defaults."""
+    stub = _patch_agent_settings.return_value
+    stub.analysis_fine_cap = 60
+    stub.analysis_coarse_cap = 30
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    kwargs = _make_payload_kwargs()
+    kwargs["fine_cap"] = 0
+    kwargs["coarse_cap"] = 0
+    await process_file(ctx, **kwargs)
+
+    call = mock_pool.await_args
+    # 0 is a meaningful override (analyze-ALL no-op), NOT the 60/30 AgentSettings default.
+    assert call.kwargs["fine_cap"] == 0
+    assert call.kwargs["coarse_cap"] == 0
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_process_file_caps_fall_back_to_agent_settings_when_none(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """Phase 44: absent payload caps (None) fall back to the AgentSettings 60/30 defaults exactly as before."""
+    stub = _patch_agent_settings.return_value
+    stub.analysis_fine_cap = 55
+    stub.analysis_coarse_cap = 22
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    # _make_payload_kwargs omits fine_cap/coarse_cap -> ProcessFilePayload defaults them None.
+    await process_file(ctx, **_make_payload_kwargs())
+
+    call = mock_pool.await_args
+    assert call.kwargs["fine_cap"] == 55
+    assert call.kwargs["coarse_cap"] == 22
+
+
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
 async def test_process_file_forwards_coverage_fields(mock_pool: AsyncMock) -> None:
     """The five coverage fields from analyze_file are forwarded into AnalysisWritePayload."""
     analysis = {
