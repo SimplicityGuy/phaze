@@ -167,3 +167,28 @@ def test_analysis_knobs_honor_env_aliases(monkeypatch: pytest.MonkeyPatch) -> No
     assert agent_settings.analysis_inner_timeout_sec == 1234
     assert agent_settings.analysis_fine_cap == 11
     assert agent_settings.analysis_coarse_cap == 22
+
+
+@pytest.mark.parametrize("env_var", ["PHAZE_ANALYSIS_FINE_CAP", "PHAZE_ANALYSIS_COARSE_CAP"])
+def test_analysis_caps_reject_below_two(monkeypatch: pytest.MonkeyPatch, env_var: str) -> None:
+    """Caps are ge=2: a cap of 1 (or 0) is rejected at load so it can't divide-by-zero in _stride_to_cap."""
+    from pydantic import ValidationError
+
+    from phaze.config import AgentSettings
+
+    _agent_env(monkeypatch)
+    monkeypatch.setenv(env_var, "1")
+    with pytest.raises(ValidationError):
+        AgentSettings()
+
+
+def test_inner_timeout_rejects_at_or_above_outer_net(monkeypatch: pytest.MonkeyPatch) -> None:
+    """inner_timeout is lt=7200: a value >= the SAQ outer net would disable the deterministic kill."""
+    from pydantic import ValidationError
+
+    from phaze.config import AgentSettings
+
+    _agent_env(monkeypatch)
+    monkeypatch.setenv("PHAZE_ANALYSIS_INNER_TIMEOUT_SEC", "7200")
+    with pytest.raises(ValidationError):
+        AgentSettings()

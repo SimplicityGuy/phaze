@@ -408,6 +408,8 @@ def _stride_to_cap(windows: list[tuple[int, float, float]], cap: int) -> tuple[l
     n = len(windows)
     if cap <= 0 or n <= cap:
         return windows, False
+    if cap == 1:  # defense-in-depth: cap is validated ge=2 in config, but a direct call must not divide by zero
+        return windows[:1], True
     picks = {round(i * (n - 1) / (cap - 1)) for i in range(cap)}  # set dedups rounding collisions
     kept = [windows[p] for p in sorted(picks)]
     return kept, True

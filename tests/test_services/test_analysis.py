@@ -345,6 +345,14 @@ def test_stride_cap_le_zero_is_noop() -> None:
     assert sampled_neg is False
 
 
+def test_stride_cap_one_does_not_divide_by_zero() -> None:
+    """cap == 1 (validated out at config load, but a direct call must not crash on cap-1==0)."""
+    windows = [_win(i) for i in range(10)]
+    kept, sampled = _stride_to_cap(windows, 1)
+    assert kept == windows[:1]
+    assert sampled is True
+
+
 def test_stride_over_cap_bounds_count_and_sets_sampled() -> None:
     """len(windows) > cap yields len(kept) <= cap and sampled True."""
     windows = [_win(i) for i in range(100)]
