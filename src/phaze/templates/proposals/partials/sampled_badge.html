@@ -1,0 +1,17 @@
+{# Phase 44 (44-04): render-if-sampled badge with the four coverage counts in the tooltip.
+
+   Structure copied from tracklists/partials/confidence_badge.html (the render-if-present,
+   else-nothing pill). Gate on BOTH `analysis` being present AND `analysis.sampled` truthy:
+     - pre-Phase-43 rows carry NULL coverage AND NULL sampled -> renders NOTHING (D-03)
+     - sampled = False (a full-budget analysis) -> renders NOTHING
+     - sampled = True -> the amber "more data available" pill
+   NULL/false is therefore NEVER an error (T-44-12) -- the badge simply produces no markup.
+
+   The four coverage counts are plain ints rendered through Jinja autoescape into the title=
+   tooltip (T-44-13); no operator free-text is interpolated. #}
+{% if analysis is not none and analysis.sampled %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400"
+      title="fine {{ analysis.fine_windows_analyzed }}/{{ analysis.fine_windows_total }}, coarse {{ analysis.coarse_windows_analyzed }}/{{ analysis.coarse_windows_total }} windows — sampled">
+    Sampled — more data available
+</span>
+{% endif %}
