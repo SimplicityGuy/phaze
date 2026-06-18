@@ -1,0 +1,13 @@
+{% if not_found %}
+<span class="text-sm text-red-600 dark:text-red-400 font-medium">
+    File not found — it may have been removed. Nothing re-enqueued.
+</span>
+{% elif no_active_agent %}
+<span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
+    No active agent available — start an agent worker and retry. Nothing re-enqueued.
+</span>
+{% else %}
+<span class="text-sm text-green-600 dark:text-green-400 font-medium">
+    Re-analysis queued at full window budget (deepen).
+</span>
+{% endif %}

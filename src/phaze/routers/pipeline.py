@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -428,6 +429,63 @@ async def trigger_analysis_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "analysis", "count": count, "no_active_agent": no_active_agent},
+    )
+
+
+@router.post("/pipeline/files/{file_id}/deepen", response_class=HTMLResponse)
+async def deepen_analysis(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: re-analyze ONE sampled file at the full (unbounded) window budget.
+
+    Phase 43 strides long files to bound per-file cost, leaving a "sampled" result. This
+    "deepen analysis" re-trigger re-enqueues that single file's ``process_file`` job with
+    ``fine_cap=0`` / ``coarse_cap=0`` -- the sentinel that ``analysis._stride_to_cap`` treats
+    as the analyze-ALL-windows no-op (D-04) -- so the operator gets a full re-analysis on
+    demand.
+
+    Incident guards (D-05, MANDATORY):
+    - Routing: the queue is resolved via ``enqueue_router.resolve_queue_for_task`` so the job
+      lands on the per-agent ``process_file`` queue, NEVER the consumer-less default queue
+      (Phase-30 misrouting incident). ``process_file`` is an AGENT_TASK; if no agent is online
+      ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT enqueuing --
+      it never falls through to the default queue.
+    - Payload: the re-enqueue funnels through ``enqueue_process_file`` which builds the COMPLETE
+      ``ProcessFilePayload`` (v4.0.8 truncation incident -- a ``file_id``-only payload would
+      dead-letter under ``extra="forbid"``).
+    - Dedup: ``enqueue_process_file`` uses the deterministic ``process_file:<file_id>`` key, so a
+      re-deepen of a file with a live in-flight job dedups to a no-op (D-05); re-deepening an
+      already-ANALYZED file with no live job is a fresh enqueue.
+
+    The typed ``uuid.UUID`` path param yields a 422 on a malformed id; an unknown (well-formed)
+    id resolves to ``None`` and returns a not-found fragment -- never a raw 500 (T-44-10).
+    """
+    result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
+    file = result.scalar_one_or_none()
+
+    not_found = file is None
+    no_active_agent = False
+
+    if file is not None:
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+        except enqueue_router.NoActiveAgentError:
+            # Do NOT fall through to the default queue (Phase-30 guard) -- surface gracefully.
+            no_active_agent = True
+        else:
+            # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id;
+            # cast narrows str | None -> str for ProcessFilePayload.agent_id.
+            agent_id = cast("str", routed.agent_id)
+            # fine_cap=0 / coarse_cap=0 -> _stride_to_cap no-op -> analyze ALL windows (unbounded
+            # deepen, D-04). The single funnel guarantees the full payload + deterministic key.
+            await enqueue_process_file(routed.queue, file, agent_id, settings.models_path, fine_cap=0, coarse_cap=0)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/deepen_response.html",
+        context={"request": request, "not_found": not_found, "no_active_agent": no_active_agent},
     )
 
 

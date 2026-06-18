@@ -18,7 +18,13 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload, ScanLiveSetPayload
-from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
+from tests._queue_fakes import (
+    DedupFakeQueue,
+    DedupFakeTaskRouter,
+    install_fake_queues,
+    seed_active_agent,
+    wire_fakes,
+)
 
 
 if TYPE_CHECKING:
@@ -162,13 +168,18 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     queue_name, task_name, kwargs = capture[0]
     assert (queue_name, task_name) == ("phaze-agent-nox", "process_file")
 
-    # All five required fields present -- not just file_id (the pre-fix bug).
-    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path"}
+    # All five required fields present -- not just file_id (the pre-fix bug). Phase 44-01
+    # added the optional fine_cap/coarse_cap overrides, which serialize as None on the bulk
+    # path (the AgentSettings 60/30 defaults still apply in the worker).
+    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
     assert kwargs["file_id"] == expected_id
     assert kwargs["original_path"] == expected_path
     assert kwargs["file_type"] == expected_type
     assert kwargs["agent_id"] == agent.id
     assert kwargs["models_path"] == settings.models_path
+    # Bulk "Run Analysis" path carries no cap override (deepen is the only elevated-cap caller).
+    assert kwargs["fine_cap"] is None
+    assert kwargs["coarse_cap"] is None
 
     # The exact kwargs the agent worker receives validate against ProcessFilePayload.
     validated = ProcessFilePayload.model_validate(kwargs)
@@ -246,9 +257,10 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     # retries is explicitly NOT 1 (which apply_project_job_defaults would override to 4).
     assert queue.captured_policy[0]["retries"] != 1
     # Payload still complete (job-control keys are split out, not part of the payload).
+    # Phase 44-01 added the optional fine_cap/coarse_cap (None on the bulk path).
     task_name, payload = queue.captured[0]
     assert task_name == "process_file"
-    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path"}
+    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
 
 
 @pytest.mark.asyncio
@@ -343,6 +355,161 @@ async def test_analyze_no_files(client: AsyncClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["enqueued"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 44 Plan 03: POST /pipeline/files/{file_id}/deepen — re-analyze ONE
+# sampled file at the full window budget (fine_cap=0 / coarse_cap=0 -> the
+# _stride_to_cap analyze-ALL-windows no-op). Mirrors the existing /pipeline
+# trigger-test harness (seed_active_agent + the FakeQueue capture doubles) and
+# enforces the D-05 incident guards: per-agent routing (never default queue),
+# the COMPLETE ProcessFilePayload (v4.0.8 guard), and the deterministic
+# process_file:<file_id> dedup key.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deepen_enqueues_elevated_cap_on_per_agent_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """POST .../deepen re-enqueues process_file with fine_cap=0/coarse_cap=0 onto the per-agent queue.
+
+    The elevated (sentinel) cap reaches enqueue_process_file and lands on the resolved
+    ``phaze-agent-nox`` queue — NEVER the consumer-less default queue (Phase-30 guard).
+    """
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+    expected_id = str(file_rec.id)
+    await seed_active_agent(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert response.status_code == 200
+
+    queue = task_router.queues["nox"]
+    assert len(queue.captured) == 1
+    task_name, payload = queue.captured[0]
+    assert (queue.name, task_name) == ("phaze-agent-nox", "process_file")
+    assert queue.name != "default"
+    # The unbounded-deepen sentinel reached the producer and was serialized.
+    assert payload["fine_cap"] == 0
+    assert payload["coarse_cap"] == 0
+    assert payload["file_id"] == expected_id
+
+
+@pytest.mark.asyncio
+async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient, session: AsyncSession) -> None:
+    """The deepen re-enqueue funnels the COMPLETE ProcessFilePayload, not a file_id-only payload (v4.0.8 guard).
+
+    A file_id-only payload would dead-letter under ``extra="forbid"`` (the v4.0.8 incident).
+    Assert all five required fields PLUS the two Phase-44 cap overrides are present and the
+    exact kwargs validate against ProcessFilePayload.
+    """
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+    expected_id = str(file_rec.id)
+    expected_path = file_rec.original_path
+    expected_type = file_rec.file_type
+    agent = await seed_active_agent(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert response.status_code == 200
+
+    queue = task_router.queues["nox"]
+    assert len(queue.captured) == 1
+    _, payload = queue.captured[0]
+    # All five required fields present (not just file_id) plus the cap overrides.
+    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
+    assert payload["file_id"] == expected_id
+    assert payload["original_path"] == expected_path
+    assert payload["file_type"] == expected_type
+    assert payload["agent_id"] == agent.id
+    assert payload["models_path"] == settings.models_path
+
+    # The exact kwargs the agent worker receives validate against ProcessFilePayload.
+    validated = ProcessFilePayload.model_validate(payload)
+    assert str(validated.file_id) == expected_id
+    assert validated.fine_cap == 0
+    assert validated.coarse_cap == 0
+
+
+@pytest.mark.asyncio
+async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncClient, session: AsyncSession) -> None:
+    """The deepen re-enqueue carries process_file:<file_id>, so an in-flight repeat dedups to a no-op (D-05).
+
+    Uses the DedupFakeQueue (models SAQ's incomplete-set dedup): the first deepen enqueues
+    and registers the key; an immediate second deepen of the same in-flight file is a no-op
+    (no second capture). After the job ``finish``-es, a third deepen re-enqueues fresh.
+    """
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+    expected_key = f"process_file:{file_rec.id}"
+    await seed_active_agent(session)
+
+    # Wire the dedup-aware router so the deterministic key collapses an in-flight repeat.
+    router = DedupFakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = DedupFakeQueue("controller")
+    app.state.task_router = router
+
+    # First deepen: enqueues + registers the key.
+    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r1.status_code == 200
+    queue = router.queues["nox"]
+    assert len(queue.captured) == 1
+    assert queue.captured_policy[0]["key"] == expected_key
+
+    # Second deepen while in-flight: deduped to a no-op (no new capture).
+    r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r2.status_code == 200
+    assert len(queue.captured) == 1
+
+    # Once the job completes, the same key re-enqueues fresh (already-ANALYZED, no live job).
+    queue.finish(expected_key)
+    r3 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r3.status_code == 200
+    assert len(queue.captured) == 2
+    assert queue.captured_policy[1]["key"] == expected_key
+
+
+@pytest.mark.asyncio
+async def test_deepen_no_active_agent_does_not_enqueue(client: AsyncClient, session: AsyncSession) -> None:
+    """When no agent is online the deepen endpoint surfaces a fragment and does NOT enqueue (Phase-30 guard).
+
+    NoActiveAgentError must NOT fall through to the consumer-less default queue.
+    """
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+    capture = wire_fakes(client)  # no active agent seeded
+
+    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert response.status_code == 200
+    assert "no active agent" in response.text.lower()
+    # Nothing enqueued anywhere — never the default queue.
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_deepen_unknown_file_returns_not_found_fragment(client: AsyncClient, session: AsyncSession) -> None:
+    """A well-formed but unknown file_id returns a not-found fragment (200), never a 500, and enqueues nothing."""
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    missing_id = uuid.uuid4()
+    response = await client.post(f"/pipeline/files/{missing_id}/deepen")
+    assert response.status_code == 200
+    assert "not found" in response.text.lower()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_deepen_malformed_file_id_returns_422(client: AsyncClient) -> None:
+    """A malformed (non-uuid) file_id is rejected by the typed path param with 422 (T-44-10)."""
+    response = await client.post("/pipeline/files/not-a-uuid/deepen")
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -901,8 +1068,9 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     queue_name, task_name, kwargs = capture[0]
     assert queue_name == "phaze-agent-nox"
     assert task_name == "process_file"
-    # Complete payload -- all five ProcessFilePayload fields, not just file_id.
-    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path"}
+    # Complete payload -- all five ProcessFilePayload fields, not just file_id. Phase 44-01
+    # added the optional fine_cap/coarse_cap overrides (None on the bulk path).
+    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
     ProcessFilePayload.model_validate(kwargs)
 
 
