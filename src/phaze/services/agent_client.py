@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 
     # Phase 26 Plan 03 schemas (now merged; type: ignore tripwires retired).
     from phaze.schemas.agent_analysis import (
+        AnalysisFailurePayload,
+        AnalysisFailureResponse,
         AnalysisWritePayload,
         AnalysisWriteResponse,
     )
@@ -260,6 +262,23 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return AnalysisWriteResponse.model_validate(response.json())
+
+    async def report_analysis_failed(self, file_id: uuid.UUID, payload: AnalysisFailurePayload) -> AnalysisFailureResponse:
+        """POST /api/internal/agent/analysis/{file_id}/failed -- terminal-failure report (Phase 43).
+
+        Marks the file ``ANALYSIS_FAILED`` on the control plane. Inherits the
+        tenacity retry policy (D-11) + exception hierarchy (D-12) via the
+        ``_request`` funnel -- 5xx retries, 4xx (e.g. a 422 on a bad body) surface
+        immediately. ``file_id`` rides the path only (AUTH-01); the body carries
+        ``reason``/``error``."""
+        from phaze.schemas.agent_analysis import AnalysisFailureResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json=payload.model_dump(mode="json"),
+        )
+        return AnalysisFailureResponse.model_validate(response.json())
 
     async def create_tracklist(self, payload: TracklistCreatePayload) -> TracklistCreateResponse:
         """POST /api/internal/agent/tracklists -- atomic tracklist insert (D-27)."""

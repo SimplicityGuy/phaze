@@ -33,14 +33,22 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_analysis import AnalysisWritePayload, AnalysisWriteResponse
+from phaze.schemas.agent_analysis import (
+    AnalysisFailurePayload,
+    AnalysisFailureResponse,
+    AnalysisWritePayload,
+    AnalysisWriteResponse,
+)
 
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/internal/agent/analysis", tags=["agent-internal"])
 
@@ -181,3 +189,34 @@ async def put_analysis(
 
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
+
+
+@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=AnalysisFailureResponse)
+async def report_analysis_failed(
+    file_id: uuid.UUID,
+    body: AnalysisFailurePayload,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AnalysisFailureResponse:
+    """Mark a file's analysis as terminally failed (Phase 43).
+
+    The Postgres-free worker calls this when windowed analysis terminally fails
+    (timeout / crash / error) so the file leaves `discovered`/in-flight and lands
+    in ``ANALYSIS_FAILED`` -- making the outcome durable and visible, and keeping
+    re-triggers from re-enqueuing it. Mirrors ``put_analysis``'s auth + path-only
+    ``file_id`` shape: ``agent`` comes from ``get_authenticated_agent`` (token,
+    never body) and the UPDATE is scoped strictly to the PATH ``file_id`` so a
+    forged body cannot fail an arbitrary file (AUTH-01, T-43-05). The
+    ``reason``/``error`` detail is validated + bounded by the payload (T-43-06);
+    the terminal state itself is the durable signal recorded here.
+    """
+    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+    await session.commit()
+    logger.warning(
+        "analysis_failed reported",
+        file_id=str(file_id),
+        agent_id=agent.id,
+        reason=body.reason,
+        error=body.error,
+    )
+    return AnalysisFailureResponse(agent_id=agent.id, file_id=file_id)

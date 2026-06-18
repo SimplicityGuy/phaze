@@ -423,6 +423,75 @@ async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], sess
 
 
 @pytest.mark.asyncio
+async def test_analysis_failed_sets_state(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST /{file_id}/failed advances files.state to 'analysis_failed' and echoes agent_id/file_id."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json={"reason": "timeout", "error": "killed after 7200s"},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent_id"] == agent.id
+    assert body["file_id"] == str(file_id)
+
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.ANALYSIS_FAILED
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_bad_reason_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A reason outside the Literal set returns 422 and does NOT change state."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json={"reason": "kaboom"},
+        )
+
+    assert response.status_code == 422
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.DISCOVERED, "a 422 body must not advance state"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_extra_field_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """extra='forbid' rejects an attempt to smuggle agent_id in the failure body (AUTH-01)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json={"reason": "error", "agent_id": "spoofed-agent"},
+        )
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_missing_auth_returns_401(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """No Authorization header on the failure endpoint -> 401."""
+    agent, _ = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, token=None) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_analysis_missing_auth_returns_401(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """No Authorization header -> 401 (HTTPBearer auto_error)."""
     agent, _ = seed_test_agent
