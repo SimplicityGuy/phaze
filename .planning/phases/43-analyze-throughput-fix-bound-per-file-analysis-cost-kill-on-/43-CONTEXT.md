@@ -87,11 +87,25 @@ badge, deepen-analysis re-trigger). **Out of scope (Backlog):** distributed clou
   path the worker calls (extend `put_analysis` payload for coverage; add a failure-report endpoint or
   field for terminal failure). Fixing state also fixes the latent "re-enqueue all 11428" bug.
 
-### Retry policy
-- `retries=1` (transient errors: agent crash, network) but treat **`TimeoutError` as terminal** →
-  mark `ANALYSIS_FAILED`, do NOT re-run (same file → same wall, wasteful). Change at
-  `analysis_enqueue.py:83` + add timeout-terminal handling in the worker task body
-  (`src/phaze/tasks/functions.py:114 process_file`).
+### Retry policy (CORRECTED 2026-06-17 after research — SAQ semantics)
+- **KEEP `retries=2`** at `analysis_enqueue.py:83` (do NOT change to 1). In SAQ `retryable = retries
+  > attempts` with `attempts` starting at 1, so `retries=2` = exactly **one** real retry; and
+  `apply_project_job_defaults` CLOBBERS any job left at the SAQ default `retries==1` up to
+  `worker_max_retries` (4) — so literal `retries=1` would both mean "0 retries" AND get clobbered.
+  `retries=2` is the faithful implementation of "retry once for transient errors."
+- Treat **`TimeoutError` as terminal**: the SAQ job timeout is enforced OUTSIDE the task
+  (`asyncio.wait_for(shield(task), job.timeout)`) so the task body cannot catch it. Instead the
+  **inner pebble timeout** (set below the SAQ timeout) raises a catchable `TimeoutError`/`ProcessExpired`
+  inside `process_file` (`src/phaze/tasks/functions.py:114`); on that, the worker reports
+  `ANALYSIS_FAILED` via the control API and does NOT re-raise-for-retry (no wasteful re-run).
+- Lower the SAQ `process_file` timeout from `14400` to **~2h (7200s)** at `analysis_enqueue.py:78`
+  (outer safety net; the inner pebble timeout, set lower, does the real killing).
+
+### Kill mechanism — `pebble` (CONFIRMED dependency, 2026-06-17)
+- Add `pebble` via `uv add` (mature, pure-Python, no compiled wheel → cp314-safe). Use
+  `ProcessPool.schedule(func, args=, timeout=)` → SIGKILLs + recycles the child on timeout and raises
+  a catchable `TimeoutError`. Bridge to async with `asyncio.wrap_future` (NOT `run_in_executor`).
+  Replaces the `ProcessPoolExecutor` in `src/phaze/tasks/pool.py`.
 - Lower the SAQ `process_file` timeout from `14400` to **~2h (7200s)** at `analysis_enqueue.py:78`
   (inner analysis timeout does the real killing; 2h is the outer safety net).
 
