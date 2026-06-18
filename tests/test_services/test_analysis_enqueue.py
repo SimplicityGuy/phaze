@@ -2,7 +2,7 @@
 
 ``services/analysis_enqueue.py`` owns the single source of truth for the
 deterministic SAQ job key (``process_file:<file_id>``), the complete 5-field
-``ProcessFilePayload``, and the job policy (``timeout=14400`` / ``retries=2``).
+``ProcessFilePayload``, and the job policy (``timeout=7200`` / ``retries=2``).
 Both producers -- the dashboard "Run Analysis" path and the Wave-2 reboot
 re-enqueue path -- funnel through it so SAQ's per-queue deterministic-key dedup
 can collapse a repeat enqueue of an in-flight file to a no-op (32-RESEARCH §Q4).
@@ -50,7 +50,7 @@ async def test_enqueue_process_file_captures_deterministic_key() -> None:
 
 @pytest.mark.asyncio
 async def test_enqueue_process_file_complete_payload_and_policy() -> None:
-    """The enqueue carries the 5-field payload plus ``timeout=14400`` / ``retries=2``."""
+    """The enqueue carries the 5-field payload plus ``timeout=7200`` / ``retries=2``."""
     queue = FakeQueue("phaze-agent-nox")
     fid = uuid.uuid4()
     file = _fake_file(fid)
@@ -70,7 +70,31 @@ async def test_enqueue_process_file_complete_payload_and_policy() -> None:
     assert str(ProcessFilePayload.model_validate(payload).file_id) == str(fid)
 
     policy = queue.captured_policy[0]
-    assert policy["timeout"] == 14400
+    # Phase 43: outer SAQ safety net lowered 14400 -> 7200 (inner pebble
+    # analysis_inner_timeout_sec=6600 does the real, deterministic kill first).
+    assert policy["timeout"] == 7200
+    assert policy["timeout"] != 14400
     assert policy["retries"] == 2
     # retries explicitly NOT 1 -- apply_project_job_defaults would clobber 1 -> 4.
     assert policy["retries"] != 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_policy_survives_apply_project_job_defaults() -> None:
+    """A Job built with the enqueue policy (timeout=7200/retries=2) is NOT clobbered.
+
+    ``apply_project_job_defaults`` only overrides a Job attribute still sitting at
+    its SAQ default (timeout==10, retries==1, ttl==600). The Phase 43 enqueue
+    policy carries 7200/2 -- both differ from the SAQ defaults -- so the
+    before-enqueue hook MUST leave them untouched (RESEARCH Pitfall 1: retries=1
+    would be the trap that gets clobbered to worker_max_retries==4).
+    """
+    from saq import Job
+
+    from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+
+    job = Job(function="process_file", timeout=7200, retries=2)
+    await apply_project_job_defaults(job)
+
+    assert job.timeout == 7200
+    assert job.retries == 2

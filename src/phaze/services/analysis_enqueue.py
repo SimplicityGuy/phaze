@@ -72,10 +72,12 @@ async def enqueue_process_file(queue: Any, file: FileRecord, agent_id: str, mode
         # Deterministic key so a re-trigger (or the Wave-2 reboot re-enqueue) of an
         # already in-flight file dedups to a no-op (SAQ incomplete-set; 32-RESEARCH §Q4).
         key=process_file_job_key(file.id),
-        # 4h bounded: exceeds the longest legit set (~3h) yet lets SAQ reclaim a
-        # dead/restarted worker's job (spike 31-01 + restart-resilience). Hardcoded
-        # like pipeline_scans.py.
-        timeout=14400,
+        # Phase 43: outer SAQ safety net, lowered from the prior 4h bound to 2h (7200s). This is
+        # NOT the real bound any more -- the inner pebble per-task timeout (settings.analysis_inner_timeout_sec,
+        # default 6600s) SIGKILLs a runaway essentia child first, so the kill is deterministic
+        # (RESEARCH §Q5 / Pitfall 2: inner 6600 < outer 7200). The outer net only matters if a
+        # worker dies/restarts mid-job so SAQ can reclaim the slot. Hardcoded like pipeline_scans.py.
+        timeout=7200,
         # retries=2 (NOT 1): apply_project_job_defaults (tasks/_shared/queue_defaults.py)
         # only fills jobs still at the SAQ default retries==1, clobbering it to
         # worker_max_retries(4). retries=2 is honored and stays in the locked 1-2 band,
