@@ -687,11 +687,13 @@ async def test_cross_tenant_403_with_two_agents(
 def test_router_registered_in_main_app() -> None:
     """Plan 28-02 Part D: phaze.main.create_app() must include the agent_exec_batches router."""
     from phaze.main import create_app
+    from tests._route_introspection import iter_effective_routes
 
     app = create_app()
-    paths = [getattr(r, "path", "") for r in app.routes]
+    routes = list(iter_effective_routes(app))
+    paths = [r.path for r in routes]
     assert any("/api/internal/agent/exec-batches" in p for p in paths), f"agent_exec_batches.router not registered in create_app(); paths={paths}"
-    matching = [r for r in app.routes if "/api/internal/agent/exec-batches" in getattr(r, "path", "")]
+    matching = [r for r in routes if "/api/internal/agent/exec-batches" in r.path]
     assert any("POST" in getattr(r, "methods", set()) for r in matching), "No POST method bound on the exec-batches route"
 
 

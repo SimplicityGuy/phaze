@@ -7,6 +7,7 @@ import pytest
 
 from phaze.config import Settings
 from phaze.main import create_app
+from tests._route_introspection import effective_route_paths
 
 
 # --- Gap 1: Core Settings defaults ---
@@ -69,8 +70,7 @@ def test_create_app_title_is_phaze() -> None:
 def test_create_app_has_health_route() -> None:
     """create_app() registers the /health route."""
     app = create_app()
-    route_paths = [route.path for route in app.routes]  # type: ignore[union-attr]
-    assert "/health" in route_paths
+    assert "/health" in effective_route_paths(app)
 
 
 # --- Gap 3: Database session factory ---
