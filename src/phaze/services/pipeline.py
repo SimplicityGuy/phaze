@@ -577,6 +577,43 @@ async def get_files_by_state(session: AsyncSession, state: FileState) -> list[Fi
     return list(result.scalars().all())
 
 
+# --- ANALYSIS_FAILED bucket (Phase 44, D-02) --------------------------------------------
+#
+# The files that GAVE UP -- terminal windowed-analysis failure (Phase 43 sets
+# FileState.ANALYSIS_FAILED). This is its OWN bucket, intentionally ABSENT from
+# PIPELINE_STAGES (lines 40-49): adding it there would double-count failed files in the
+# linear stat bar. Surfaced on the dashboard alongside the STRAGGLER bucket (still grinding)
+# as two distinct outcomes of the 4h-timeout incident. Reads the indexed files.state
+# (ix_files_state, models/file.py:74) -- NOT saq_jobs (a failed file has no live job).
+
+
+async def get_analysis_failed_files(session: AsyncSession) -> list[FileRecord]:
+    """Return the FileRecords in ``FileState.ANALYSIS_FAILED`` (the analysis-gave-up bucket).
+
+    A one-liner reuse of :func:`get_files_by_state` (D-02): the failed list reads the indexed
+    ``files.state = 'analysis_failed'`` directly. Distinct from the STRAGGLER bucket
+    (:func:`get_straggler_count`, still-running jobs from ``saq_jobs``) -- these files have
+    terminally failed and carry no live job.
+    """
+    return await get_files_by_state(session, FileState.ANALYSIS_FAILED)
+
+
+async def get_analysis_failed_count(session: AsyncSession) -> int:
+    """Return COUNT of files in ``FileState.ANALYSIS_FAILED``, degrading to 0 on any DB error.
+
+    Poll-safe via :func:`_safe_count` (mirrors the ANALYZED-count precedent in
+    :func:`get_pipeline_stats`): a DB hiccup degrades this node to 0 and rolls back the aborted
+    transaction rather than 500ing the hot 5s /pipeline/stats poll. ``ANALYSIS_FAILED`` is its
+    own bucket and is deliberately NOT added to ``PIPELINE_STAGES`` (D-02 -- it would double-count
+    in the linear bar).
+    """
+    return await _safe_count(
+        session,
+        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.ANALYSIS_FAILED),
+        node="analysis_failed",
+    )
+
+
 # --- Shared pending-set helpers (Phase 42, D-03 anti-drift) -----------------------------
 #
 # ONE definition of "pending" per stage, consumed by BOTH the Phase 39-41 manual DAG

@@ -463,6 +463,18 @@ class AgentSettings(BaseSettings):
         description="Maximum number of COARSE-tier (mood/style/danceability) windows analyze_file decodes per file (Phase 43). ge=2: even-stride always keeps first+last, so a cap below 2 is invalid (and would divide-by-zero in _stride_to_cap).",
     )
 
+    # Phase 44: how long an in-flight `process_file` analyze job may run before the dashboard
+    # flags it as a STRAGGLER (still grinding, distinct from ANALYSIS_FAILED which gave up).
+    # Default tied to analysis_inner_timeout_sec (6600s): a job past the inner-timeout horizon
+    # is, by definition, overdue. Read by get_straggler_count in services/pipeline.py.
+    straggler_threshold_sec: int = Field(
+        default=6600,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_STRAGGLER_THRESHOLD_SEC", "straggler_threshold_sec"),
+        description="Running-age threshold (seconds) above which an active process_file analyze job is flagged a straggler on the pipeline dashboard (Phase 44). Default 6600 mirrors analysis_inner_timeout_sec; lt=86400 caps it at one day.",
+    )
+
     # Phase 29 D-03: path to the operator-distributed CA cert that the agent's
     # httpx.AsyncClient uses to verify the application-server TLS endpoint.
     # Default `/certs/phaze-ca.crt` matches the bind-mount path inside agent

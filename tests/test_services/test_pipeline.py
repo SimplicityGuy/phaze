@@ -17,6 +17,8 @@ from phaze.models.tracklist import Tracklist
 from phaze.services.pipeline import (
     count_active_agents,
     count_inflight_jobs,
+    get_analysis_failed_count,
+    get_analysis_failed_files,
     get_files_by_state,
     get_fingerprint_pending_files,
     get_match_busy_count,
@@ -131,6 +133,70 @@ async def test_get_files_by_state(session: AsyncSession):
     discovered = await get_files_by_state(session, FileState.DISCOVERED)
     assert len(discovered) == 1
     assert discovered[0].id == f1.id
+
+
+# ---------------------------------------------------------------------------
+# ANALYSIS_FAILED bucket (Phase 44, D-02) — count/list read from indexed files.state
+# ---------------------------------------------------------------------------
+
+
+def _failed_file(i: int, state: FileState = FileState.ANALYSIS_FAILED) -> FileRecord:
+    """Build a FileRecord seed in the given state (default ANALYSIS_FAILED)."""
+    return FileRecord(
+        id=uuid.uuid4(),
+        sha256_hash=f"f{i:063d}"[:64],
+        original_path=f"/music/failed{i}.mp3",
+        original_filename=f"failed{i}.mp3",
+        current_path=f"/music/failed{i}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=state,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_failed_count_happy_path(session: AsyncSession) -> None:
+    """Counts exactly the files in ANALYSIS_FAILED; other states are excluded."""
+    session.add_all([_failed_file(0), _failed_file(1), _failed_file(2, FileState.ANALYZED)])
+    await session.commit()
+    assert await get_analysis_failed_count(session) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_failed_files_returns_failed_rows(session: AsyncSession) -> None:
+    """Returns the FileRecords in ANALYSIS_FAILED and only those."""
+    a = _failed_file(0)
+    b = _failed_file(1)
+    session.add_all([a, b, _failed_file(2, FileState.DISCOVERED)])
+    await session.commit()
+    rows = await get_analysis_failed_files(session)
+    assert {r.id for r in rows} == {a.id, b.id}
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_failed_count_degrades_to_zero_on_db_error() -> None:
+    """A forced read error degrades the count to 0 (poll-safe via _safe_count), never raising.
+
+    Mirrors the _safe_count degrade discipline: the hot 5s /pipeline/stats poll must keep serving
+    instead of 500ing when the files read fails.
+    """
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("files table unavailable")
+
+        async def rollback(self) -> None:
+            return None
+
+    assert await get_analysis_failed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_not_in_pipeline_stages() -> None:
+    """ANALYSIS_FAILED is its OWN bucket — never added to the linear PIPELINE_STAGES (D-02)."""
+    from phaze.services.pipeline import PIPELINE_STAGES
+
+    assert FileState.ANALYSIS_FAILED not in PIPELINE_STAGES
 
 
 @pytest.mark.asyncio
