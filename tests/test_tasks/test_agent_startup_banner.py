@@ -168,7 +168,7 @@ async def test_startup_raises_when_role_is_not_agent(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_shutdown_closes_pool_engines_and_client() -> None:
-    """shutdown() must shutdown the process pool, close each orchestrator engine, and close the api_client."""
+    """shutdown() must stop/join the pebble process pool, close each orchestrator engine, and close the api_client."""
     import phaze.tasks.agent_worker as aw
 
     pool = MagicMock()
@@ -186,7 +186,8 @@ async def test_shutdown_closes_pool_engines_and_client() -> None:
     }
     await aw.shutdown(ctx)
 
-    pool.shutdown.assert_called_once_with(wait=True)
+    pool.stop.assert_called_once_with()
+    pool.join.assert_called_once_with()
     engine_a.close.assert_awaited_once()
     api_client.close.assert_awaited_once()
 

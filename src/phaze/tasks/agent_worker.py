@@ -158,9 +158,11 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     """SAQ shutdown hook for the agent role."""
     logger.info("phaze.tasks.agent_worker shutdown")
 
+    # Phase 43: pebble ProcessPool shuts down via stop()/join() (not shutdown()).
     pool = ctx.get("process_pool")
     if pool is not None:
-        pool.shutdown(wait=True)
+        pool.stop()
+        pool.join()
 
     orchestrator = ctx.get("fingerprint_orchestrator")
     if orchestrator is not None:
