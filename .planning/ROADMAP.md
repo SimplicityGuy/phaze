@@ -348,6 +348,7 @@ Plans:
 **Status:** Complete (shipped — PR #129).
 
 Plans:
+
 - [x] 39-01-PLAN.md — Bulk search_tracklist trigger endpoint + Search DAG node (metadataDone/searchBusy gate) + tests
 
 ### Phase 40: Tracklist Fingerprint-Scan DAG Node — bulk manual scan_live_set trigger (button + endpoint + gating), gated on discovered files + online agent; runs independently of Search
@@ -359,6 +360,7 @@ Plans:
 **Status:** Complete (shipped — PR #130).
 
 Plans:
+
 - [x] Shipped via PR #130 (planned inline; no separate plan file)
 
 ### Phase 41: Scrape and Match DAG Triggers — bulk scrape-pending (scrape_and_store_tracklist) and match-pending (match_tracklist_to_discogs) buttons, gated on tracklist existence
@@ -370,6 +372,7 @@ Plans:
 **Status:** Complete (shipped — PR #131).
 
 Plans:
+
 - [x] 41-01-PLAN.md — bulk Scrape + Match controller-routed triggers, busy/pending service reads, node gating (Needs tracklist / All scraped|matched / Scraping…|Matching…), and regression tests
 
 ### Phase 42: Recovery-Only Pipeline Automation — gate reenqueue_discovered + generalize so the only automatic enqueue is a restart/queue-loss recovery pass restoring all in-flight stages; no steady-state auto-advance
@@ -381,6 +384,7 @@ Plans:
 **Status:** Complete (shipped — PR #132).
 
 Plans:
+
 - [x] 42-01-PLAN.md — Backend recovery engine: recover_orphaned_work producer + queue-loss detector + shared all-stages pending-set helpers (anti-drift) + unit/integration tests
 - [x] 42-02-PLAN.md — Wiring + surface: remove the */5 auto-advance cron, gate startup recovery, add the /pipeline/recover endpoint + global DAG Recover button + docs
 
@@ -388,15 +392,18 @@ Plans:
 
 **Goal:** Make the Analyze stage actually drain. Long DJ/concert essentia analysis legitimately exceeds the 4h timeout (root-caused 2026-06-17: 72 timeouts vs 60 completions over ~57h; cost is O(file duration)). Bound per-file cost so a 3h set costs ≈ a 20-min track, kill runaway essentia children deterministically, stop wasteful retries, and make analysis outcomes (done / sampled / failed) visible in the file state machine. Backend-only — redeployable to the homelab immediately. Full root cause + decisions: `.planning/debug/analyze-4h-timeouts.md`.
 **Requirements**:
+
 - Cap + **even stride** windowing — caps **60 fine / 30 coarse** per file (config-exposed); when a file exceeds the cap, stride evenly across the whole file (constant cost, full-file coverage). Emit coverage (`windows_analyzed`/`windows_total`, `sampled` flag).
 - **Kill-on-timeout** — replace the bare `ProcessPoolExecutor` (whose child is not killed on cancel, leaking compute + starving the 4-of-8 pool) with `pebble.ProcessPool` (or equiv) + an inner per-task timeout that SIGKILLs/recycles the child, below the SAQ job timeout.
 - **State-machine fix** — set `FileState.ANALYZED` on successful analysis PUT; add `ANALYSIS_FAILED` on terminal failure; persist sampled/coverage (Alembic migration). Fixes the latent "re-enqueue all 11,428" bug (every file currently stuck `discovered`). Worker is Postgres-free → terminal-failure/coverage marking goes via a new control API endpoint.
 - **Retry policy** — `retries=1` for transient errors, but treat `TimeoutError` as **terminal** (no wasteful re-run); lower the SAQ `process_file` timeout from 14400s to ~2h (inner timeout does the real killing).
 - Regression tests for stride/cap, kill-on-timeout, state transitions, and timeout-terminal retry behavior.
+
 **Depends on:** none (independent of 39–42; builds on the Phase 31 windowed-analysis design)
 **Plans:** 4/4 plans complete
 
 Plans:
+
 - [x] 43-01-PLAN.md — Kill-on-timeout pebble pool + inner-timeout/cap config knobs (Wave 1)
 - [x] 43-02-PLAN.md — Cap + even-stride bounding (60/30) + coverage emit in analyze_file (Wave 1)
 - [x] 43-03-PLAN.md — State machine (ANALYZED/ANALYSIS_FAILED) + coverage columns (migration 021) + worker-callable failure endpoint (Wave 2)
@@ -408,11 +415,18 @@ Plans:
 **Requirements**: dashboard straggler/`ANALYSIS_FAILED` count + list; sampled badge driven by the coverage fields; "deepen analysis" action enqueues `process_file` with an elevated cap (via a payload flag); regression tests for the new reads + re-trigger.
 **Depends on:** Phase 43 (consumes its state/coverage fields + control API)
 **Plans:** 4 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 44-01-PLAN.md — ProcessFilePayload fine/coarse cap fields + enqueue_process_file pass-through + worker process_file threading (deepen backend lever)
 - [ ] 44-02-PLAN.md — degrade-safe straggler (saq_jobs) + ANALYSIS_FAILED (files.state) dashboard service reads + straggler_threshold_sec knob
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 44-03-PLAN.md — POST /pipeline/files/{file_id}/deepen re-trigger (per-agent routing, full payload, deterministic-key dedup)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 44-04-PLAN.md — dashboard straggler/failed card + sampled badge partial + deepen button + router context wiring
 
 ## Backlog (unscheduled — no phase number yet)
