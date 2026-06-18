@@ -224,7 +224,7 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     Delegates each enqueue to the FastAPI-free shared producer
     ``services.analysis_enqueue.enqueue_process_file``. That helper owns the
     deterministic job key (``process_file:<file_id>``), the complete 5-field
-    ``ProcessFilePayload``, and the job policy (``timeout=14400`` / ``retries=2``)
+    ``ProcessFilePayload``, and the job policy (``timeout=7200`` / ``retries=2``)
     -- so this dashboard path and the Wave-2 agent-reboot re-enqueue path cannot
     drift: both emit the IDENTICAL key, letting SAQ's per-queue deterministic-key
     dedup collapse a repeat enqueue of an in-flight file to a no-op (32-RESEARCH §Q4).

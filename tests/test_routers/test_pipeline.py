@@ -218,12 +218,14 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
 
 @pytest.mark.asyncio
 async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
-    """Phase 31: POST /api/v1/analyze enqueues process_file with timeout=14400 + retries=2.
+    """Phase 43: POST /api/v1/analyze enqueues process_file with timeout=7200 + retries=2.
 
-    Restart-resilience amendment: a bounded-generous 4h timeout (exceeds the longest
-    legitimate set, spike 31-01) lets SAQ reclaim a dead/restarted worker's in-flight
-    job, while retries=2 stays in the locked 1-2 band so apply_project_job_defaults
-    does NOT clobber it to worker_max_retries (the retries==1 -> 4 churn).
+    The outer SAQ timeout was lowered from the Phase 31 4h bound (14400) to a 2h net
+    (7200): Phase 43 caps per-file cost (even-stride), so the inner pebble per-task
+    timeout (analysis_inner_timeout_sec, 6600 < 7200) does the real killing and the
+    outer net only reclaims a dead/restarted worker's slot. retries=2 stays in the
+    locked 1-2 band so apply_project_job_defaults does NOT clobber it to
+    worker_max_retries (the retries==1 -> 4 churn).
     """
     file_rec = _make_file(state=FileState.DISCOVERED)
     session.add(file_rec)
@@ -240,7 +242,7 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     queue = task_router.queues["nox"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
-    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 14400, "retries": 2}
+    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
     # retries is explicitly NOT 1 (which apply_project_job_defaults would override to 4).
     assert queue.captured_policy[0]["retries"] != 1
     # Payload still complete (job-control keys are split out, not part of the payload).
@@ -281,7 +283,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
 
 @pytest.mark.asyncio
 async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
-    """Phase 31: the HTMX /pipeline/analyze path also enqueues with timeout=14400 + retries=2."""
+    """Phase 43: the HTMX /pipeline/analyze path also enqueues with timeout=7200 + retries=2."""
     file_rec = _make_file(state=FileState.DISCOVERED)
     session.add(file_rec)
     await session.commit()
@@ -296,24 +298,24 @@ async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClie
     queue = task_router.queues["nox"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
-    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 14400, "retries": 2}
+    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
 
 
 @pytest.mark.asyncio
 async def test_process_file_enqueue_policy_survives_project_defaults_hook() -> None:
-    """The before_enqueue hook leaves the explicit timeout=14400 / retries=2 intact.
+    """The before_enqueue hook leaves the explicit timeout=7200 / retries=2 intact.
 
     apply_project_job_defaults only overrides a Job still at the SAQ defaults
-    (timeout==10, retries==1). An explicit retries=2 (and timeout=14400) is honored,
+    (timeout==10, retries==1). An explicit retries=2 (and timeout=7200) is honored,
     proving the process_file enqueue escapes the retries==1 -> worker_max_retries clobber.
     """
     from saq import Job
 
     from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
-    job = Job(function="process_file", timeout=14400, retries=2)
+    job = Job(function="process_file", timeout=7200, retries=2)
     await apply_project_job_defaults(job)
-    assert job.timeout == 14400
+    assert job.timeout == 7200
     assert job.retries == 2
 
 
