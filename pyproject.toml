@@ -29,6 +29,7 @@ dependencies = [
     # phaze-api. `psycopg[binary]` bundles libpq (cp314 wheels exist for linux x86_64/
     # aarch64 + macos arm64); the Dockerfile also installs `libpq5` as a belt-and-
     # suspenders fallback for the pure-Python path.
+    "pebble>=5.2.0",
     "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.14.1",
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
