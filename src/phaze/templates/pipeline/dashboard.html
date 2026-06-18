@@ -16,6 +16,10 @@
     <!-- Phase 27: Recent Scans mini-table -->
     {% include "pipeline/partials/recent_scans_table.html" %}
 
+    <!-- Phase 44: straggler + ANALYSIS_FAILED count card. Lives OUTSIDE #pipeline-stats;
+         kept live by the stats_bar.html hx-swap-oob fragment on each 5s poll. -->
+    {% include "pipeline/partials/straggler_failed_card.html" %}
+
     <!-- Stats bar (polled via HTMX every 5s). Still carries the per-node OOB seeds
          (35-04) that drive the DAG canvas bindings on each tick. -->
     <div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">
