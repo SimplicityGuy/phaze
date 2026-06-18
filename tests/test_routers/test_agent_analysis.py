@@ -349,6 +349,63 @@ async def test_analysis_window_idempotent_delete_scoped_to_path_file_id(
 
 
 @pytest.mark.asyncio
+async def test_analysis_put_advances_state_and_persists_coverage_columns(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 43: a non-empty PUT advances files.state to 'analyzed' and lands coverage in dedicated columns (not features)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={
+                "bpm": 128.0,
+                "fine_windows_analyzed": 10,
+                "fine_windows_total": 40,
+                "coarse_windows_analyzed": 2,
+                "coarse_windows_total": 8,
+                "sampled": True,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    session.expire_all()
+
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.ANALYZED, "non-empty PUT must advance state to analyzed"
+
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    # Coverage landed in dedicated columns (Pitfall 3 -- NOT the features JSONB).
+    assert row.fine_windows_analyzed == 10
+    assert row.fine_windows_total == 40
+    assert row.coarse_windows_analyzed == 2
+    assert row.coarse_windows_total == 8
+    assert row.sampled is True
+    # features must stay NULL -- no coverage field leaked into the JSONB overflow.
+    assert row.features is None, "coverage fields must not funnel into features JSONB"
+
+
+@pytest.mark.asyncio
+async def test_analysis_empty_put_does_not_advance_state(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 43: an empty-body PUT ({}) is a no-op -- state stays as it was (DISCOVERED)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={})
+
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.DISCOVERED, "empty PUT must NOT advance state"
+
+
+@pytest.mark.asyncio
 async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """D-16: extra='forbid' rejects unknown fields (AUTH-01 -- no agent_id forgery)."""
     agent, raw_token = seed_test_agent
@@ -363,6 +420,75 @@ async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], sess
     assert response.status_code == 422
     errors = response.json()["detail"]
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_sets_state(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST /{file_id}/failed advances files.state to 'analysis_failed' and echoes agent_id/file_id."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json={"reason": "timeout", "error": "killed after 7200s"},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent_id"] == agent.id
+    assert body["file_id"] == str(file_id)
+
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.ANALYSIS_FAILED
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_bad_reason_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A reason outside the Literal set returns 422 and does NOT change state."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json={"reason": "kaboom"},
+        )
+
+    assert response.status_code == 422
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.DISCOVERED, "a 422 body must not advance state"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_extra_field_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """extra='forbid' rejects an attempt to smuggle agent_id in the failure body (AUTH-01)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json={"reason": "error", "agent_id": "spoofed-agent"},
+        )
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_missing_auth_returns_401(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """No Authorization header on the failure endpoint -> 401."""
+    agent, _ = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, token=None) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert r.status_code == 401
 
 
 @pytest.mark.asyncio

@@ -30,16 +30,25 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.file import FileRecord, FileState
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_analysis import AnalysisWritePayload, AnalysisWriteResponse
+from phaze.schemas.agent_analysis import (
+    AnalysisFailurePayload,
+    AnalysisFailureResponse,
+    AnalysisWritePayload,
+    AnalysisWriteResponse,
+)
 
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/internal/agent/analysis", tags=["agent-internal"])
 
@@ -49,7 +58,23 @@ router = APIRouter(prefix="/api/internal/agent/analysis", tags=["agent-internal"
 # stays unchanged this phase (no Alembic migration), while D-26's wire contract
 # is fully honored end-to-end. Plan 11's process_file rewrite produces the same
 # wire shape; a future migration can promote these to dedicated columns.
-_ANALYSIS_COLUMN_FIELDS: frozenset[str] = frozenset({"bpm", "musical_key", "mood", "style", "fingerprint", "features"})
+_ANALYSIS_COLUMN_FIELDS: frozenset[str] = frozenset(
+    {
+        "bpm",
+        "musical_key",
+        "mood",
+        "style",
+        "fingerprint",
+        "features",
+        # Phase 43 windowed-analysis coverage -- dedicated columns (migration 021),
+        # so these hit real columns instead of the `features` JSONB overflow (Pitfall 3).
+        "fine_windows_analyzed",
+        "fine_windows_total",
+        "coarse_windows_analyzed",
+        "coarse_windows_total",
+        "sampled",
+    }
+)
 
 
 def _summarize_dict_to_string(value: dict[str, float]) -> str:
@@ -153,5 +178,45 @@ async def put_analysis(
                 pg_insert(AnalysisWindow).values([{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in body.windows])
             )
 
+    # Phase 43 state-advance: a non-empty write (any aggregate/coverage field the
+    # client actually set) means analysis produced a real result, so advance the
+    # file to ANALYZED in the SAME transaction. This is what was missing -- without
+    # it every analyzed file stayed `discovered`, so re-triggers re-enqueued the
+    # whole archive. An empty-body PUT (`{}`) leaves `dumped` falsy and is a no-op:
+    # state is preserved. `file_id` is the PATH value only (AUTH-01).
+    if dumped:
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYZED))
+
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
+
+
+@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=AnalysisFailureResponse)
+async def report_analysis_failed(
+    file_id: uuid.UUID,
+    body: AnalysisFailurePayload,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AnalysisFailureResponse:
+    """Mark a file's analysis as terminally failed (Phase 43).
+
+    The Postgres-free worker calls this when windowed analysis terminally fails
+    (timeout / crash / error) so the file leaves `discovered`/in-flight and lands
+    in ``ANALYSIS_FAILED`` -- making the outcome durable and visible, and keeping
+    re-triggers from re-enqueuing it. Mirrors ``put_analysis``'s auth + path-only
+    ``file_id`` shape: ``agent`` comes from ``get_authenticated_agent`` (token,
+    never body) and the UPDATE is scoped strictly to the PATH ``file_id`` so a
+    forged body cannot fail an arbitrary file (AUTH-01, T-43-05). The
+    ``reason``/``error`` detail is validated + bounded by the payload (T-43-06);
+    the terminal state itself is the durable signal recorded here.
+    """
+    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+    await session.commit()
+    logger.warning(
+        "analysis_failed reported",
+        file_id=str(file_id),
+        agent_id=agent.id,
+        reason=body.reason,
+        error=body.error,
+    )
+    return AnalysisFailureResponse(agent_id=agent.id, file_id=file_id)

@@ -20,7 +20,7 @@ import httpx
 import pytest
 import respx
 
-from phaze.services.agent_client import PhazeAgentClient
+from phaze.services.agent_client import AgentApiClientError, PhazeAgentClient
 
 
 _BASE_URL = "http://app.test"
@@ -232,6 +232,55 @@ async def test_patch_scan_batch_uses_correct_url_and_exclude_unset(client):  # t
     # exclude_unset=True -- processed_files + error_message were not set, so must not appear
     assert "processed_files" not in sent_body, "processed_files should be excluded (exclude_unset=True)"
     assert "error_message" not in sent_body, "error_message should be excluded (exclude_unset=True)"
+
+
+@respx.mock
+async def test_report_analysis_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """report_analysis_failed -> POST /api/internal/agent/analysis/{file_id}/failed, returns AnalysisFailureResponse."""
+    from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisFailureResponse
+
+    file_id = uuid.uuid4()
+
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(
+            200,
+            json={"agent_id": "agent-01", "file_id": str(file_id)},
+        ),
+    )
+
+    payload = AnalysisFailurePayload(reason="timeout", error="killed after 7200s")
+
+    result = await client.report_analysis_failed(file_id, payload)
+
+    assert route.called
+    assert route.call_count == 1
+    assert isinstance(result, AnalysisFailureResponse), f"Expected AnalysisFailureResponse, got {type(result)}"
+    assert result.agent_id == "agent-01"
+    assert result.file_id == file_id
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["reason"] == "timeout"
+    assert sent_body["error"] == "killed after 7200s"
+
+
+@respx.mock
+async def test_report_analysis_failed_does_not_retry_on_4xx(client):  # type: ignore[no-untyped-def]
+    """A 422 from the failure endpoint surfaces immediately as AgentApiClientError (no retry, D-11/D-12)."""
+    from phaze.schemas.agent_analysis import AnalysisFailurePayload
+
+    file_id = uuid.uuid4()
+
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(422, json={"detail": "bad body"}),
+    )
+
+    payload = AnalysisFailurePayload(reason="error")
+
+    with pytest.raises(AgentApiClientError):
+        await client.report_analysis_failed(file_id, payload)
+
+    # 4xx must NOT be retried -- exactly one HTTP call.
+    assert route.call_count == 1, "4xx must surface immediately without retry"
 
 
 @respx.mock
