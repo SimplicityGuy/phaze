@@ -34,6 +34,9 @@ class FileState(enum.StrEnum):
     METADATA_EXTRACTED = "metadata_extracted"
     FINGERPRINTED = "fingerprinted"
     ANALYZED = "analyzed"
+    # Phase 43: terminal failure of windowed analysis (timeout / crash / error).
+    # Code-only -- FileRecord.state is String(30), so no enum migration is needed.
+    ANALYSIS_FAILED = "analysis_failed"
     PROPOSAL_GENERATED = "proposal_generated"
     APPROVED = "approved"
     REJECTED = "rejected"
