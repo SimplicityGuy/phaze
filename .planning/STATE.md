@@ -1,11 +1,10 @@
 ---
 gsd_state_version: 1.0
 milestone: v4.0
-milestone_name: milestone
-status: completed
-stopped_at: Completed 38-02-PLAN.md — Phase 38 complete (all 3 plans), ready for verification
-last_updated: "2026-06-18T17:09:51.503Z"
-last_activity: 2026-06-18 -- Phase 44 marked complete
+milestone_name: Distributed Agents
+status: "Phase 44 shipped — PR #143"
+last_updated: "2026-06-18T18:38:39.932Z"
+last_activity: 2026-06-18
 progress:
   total_phases: 15
   completed_phases: 2
@@ -27,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 44 — COMPLETE
 Plan: 1 of 4
-Status: Phase 44 complete
-Last activity: 2026-06-18 -- Phase 44 marked complete
+Status: Phase 44 shipped — PR #143
+Last activity: 2026-06-18
 
 Progress: [██████████] 100%
 
