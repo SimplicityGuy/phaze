@@ -1042,6 +1042,23 @@ async def test_get_straggler_count_counts_only_over_threshold() -> None:
     assert await get_straggler_count(_FakeSession(rows), threshold_sec) == 1  # type: ignore[arg-type]
 
 
+def test_job_started_ms_handles_malformed_blobs() -> None:
+    """A non-JSON, non-dict, or started-less blob returns None (never raises) so the straggler reader is malformed-tolerant.
+
+    saq_jobs is an external broker table; a corrupt/legacy/unexpected blob must degrade to
+    "not countable", never crash the hot 5s poll.
+    """
+    from phaze.services.pipeline import _job_started_ms
+
+    assert _job_started_ms(b"not json at all {{{") is None  # invalid JSON -> None
+    assert _job_started_ms(json.dumps([1, 2, 3])) is None  # JSON but not a dict -> None
+    assert _job_started_ms(json.dumps({"queue": "q"})) is None  # no started -> None
+    assert _job_started_ms(json.dumps({"started": 0})) is None  # non-positive started -> None
+    assert _job_started_ms(json.dumps({"started": "soon"})) is None  # non-int started -> None
+    assert _job_started_ms(12345) is None  # not a (str/bytes/dict) blob -> None
+    assert _job_started_ms({"started": 999}) == 999  # already-a-dict blob -> read directly
+
+
 @pytest.mark.asyncio
 async def test_get_straggler_count_zero_when_no_active_jobs() -> None:
     """With no active process_file rows the straggler count is 0 (not an error)."""
