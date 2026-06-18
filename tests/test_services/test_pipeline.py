@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
@@ -32,6 +33,7 @@ from phaze.services.pipeline import (
     get_scrape_pending_tracklists,
     get_search_busy_count,
     get_stage_busy_counts,
+    get_straggler_count,
     get_untracked_files,
 )
 from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
@@ -982,3 +984,112 @@ async def test_count_inflight_jobs_degrade_does_not_poison_session(session: Asyn
     # A follow-up query on the SAME session still succeeds (the nested rollback did not poison it).
     follow_up = await get_files_by_state(session, FileState.DISCOVERED)
     assert follow_up == []
+
+
+# ---------------------------------------------------------------------------
+# get_straggler_count (Phase 44, D-01) — active process_file running-age count, degrade-safe
+# ---------------------------------------------------------------------------
+
+
+def _job_blob(started_ms: int | None) -> str:
+    """Serialize a minimal SAQ-style job blob (default json serializer) carrying `started`.
+
+    The real blob is `json.dumps(job.to_dict())` (saq base queue). The straggler reader only
+    reads the top-level `started` epoch-ms int, so a tiny JSON object is a faithful stand-in.
+    A None started omits the field entirely (the dequeued-but-not-yet-stamped case).
+    """
+    d: dict[str, object] = {"key": "process_file:abc", "queue": "phaze-agent-nox"}
+    if started_ms is not None:
+        d["started"] = started_ms
+    return json.dumps(d)
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_counts_only_over_threshold() -> None:
+    """Counts active process_file jobs whose Python-computed running-age exceeds the threshold.
+
+    saq_jobs has NO started SQL column (PATTERNS.md banner) — age is read from the deserialized
+    job blob's `started` (epoch ms). One job started 2h ago (> 1h threshold) counts; one started
+    1s ago does not; one with no `started` (dequeued-but-unstamped) does not.
+    """
+    from saq.utils import now as saq_now
+
+    now_ms = saq_now()
+    threshold_sec = 3600  # 1 hour
+
+    class _FakeResult:
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[tuple[str]]:
+            return self._rows
+
+    class _FakeSession:
+        def __init__(self, rows: list[tuple[str]]) -> None:
+            self._rows = rows
+
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult(self._rows)
+
+    rows = [
+        (_job_blob(now_ms - 2 * 3600 * 1000),),  # started 2h ago → straggler
+        (_job_blob(now_ms - 1000),),  # started 1s ago → not yet old
+        (_job_blob(None),),  # no started → not counted
+    ]
+    assert await get_straggler_count(_FakeSession(rows), threshold_sec) == 1  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_zero_when_no_active_jobs() -> None:
+    """With no active process_file rows the straggler count is 0 (not an error)."""
+
+    class _FakeResult:
+        def all(self) -> list[tuple[str]]:
+            return []
+
+    class _FakeSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult()
+
+    assert await get_straggler_count(_FakeSession(), 3600) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_degrades_on_db_error() -> None:
+    """get_straggler_count returns 0 and never raises when the saq_jobs read fails (T-44-04).
+
+    A missing saq_jobs table or a DB hiccup must degrade to 0 so the hot 5s /pipeline/stats poll
+    keeps serving instead of 500ing. The read runs inside a SAVEPOINT (begin_nested); the
+    exception propagates out of the nested scope and is caught by the degrade except.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_straggler_count(_ExplodingSession(), 3600) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_straggler_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the busy-count guards).
+
+    DROP saq_jobs inside this test's uncommitted transaction to deterministically force the
+    absent-table degrade — the only branch that exercises the SAVEPOINT rollback recovery. A
+    follow-up query on the SAME session must still succeed, proving the dashboard's later ORM
+    lazy-loads are not poisoned (the bug a plain session.rollback() would cause).
+    """
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_straggler_count(session, 3600) == 0
+    # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
+    follow_up = await get_pipeline_stats(session)
+    assert follow_up["discovered"] == 0
