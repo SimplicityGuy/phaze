@@ -341,6 +341,20 @@ class ControlSettings(BaseSettings):
     llm_batch_size: int = 10
     llm_max_companion_chars: int = 3000
 
+    # Phase 44: how long an in-flight `process_file` analyze job may run before the dashboard
+    # flags it as a STRAGGLER (still grinding, distinct from ANALYSIS_FAILED which gave up).
+    # Default tied to the agent's analysis_inner_timeout_sec (6600s): a job past the
+    # inner-timeout horizon is, by definition, overdue. Read by the control-plane dashboard
+    # (routers/pipeline.py) via get_straggler_count in services/pipeline.py -- it lives on
+    # ControlSettings because the dashboard reads the module-level (Control-typed) `settings`.
+    straggler_threshold_sec: int = Field(
+        default=6600,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_STRAGGLER_THRESHOLD_SEC", "straggler_threshold_sec"),
+        description="Running-age threshold (seconds) above which an active process_file analyze job is flagged a straggler on the pipeline dashboard (Phase 44). Default 6600 mirrors analysis_inner_timeout_sec; lt=86400 caps it at one day.",
+    )
+
 
 class AgentSettings(BaseSettings):
     """File-server role: HTTP client to the application server, file-bound SAQ tasks.

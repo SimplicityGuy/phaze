@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -23,6 +24,7 @@ from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
+    get_analysis_failed_count,
     get_files_by_state,
     get_fingerprint_pending_files,
     get_match_busy_count,
@@ -38,6 +40,7 @@ from phaze.services.pipeline import (
     get_stage_busy_counts,
     get_stage_controls,
     get_stage_progress,
+    get_straggler_count,
     get_untracked_files,
     queue_progress_percent,
 )
@@ -350,6 +353,14 @@ async def dashboard(
     # the dashboard context. _build_dag_context isolates its own counter-source failures.
     dag_ctx = await _build_dag_context(request.app.state, session, activity)
 
+    # Phase 44 (44-04): the STRAGGLER count (long-running in-flight process_file jobs,
+    # "still grinding") and the ANALYSIS_FAILED count ("gave up") -- two distinct buckets
+    # (44-02 D-02). Both reads are degrade-safe (the Plan-02 services own the never-500
+    # SAVEPOINT/_safe_count degrade and return 0 on any DB error), so NO try/except is added
+    # here -- same service-owns-degrade wiring idiom as the busy counts above (175-178).
+    straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
+    analysis_failed_count = await get_analysis_failed_count(session)
+
     context = {
         "request": request,
         "stats": stats,
@@ -357,6 +368,8 @@ async def dashboard(
         "settings_batch_size": settings.llm_batch_size,
         "agents": agents,
         "recent_scans": recent_scans_rows,
+        "straggler_count": straggler_count,
+        "analysis_failed_count": analysis_failed_count,
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -382,6 +395,11 @@ async def pipeline_stats_partial(
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
     # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
     dag_ctx = await _build_dag_context(request.app.state, session, activity)
+    # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
+    # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
+    # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
+    straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
+    analysis_failed_count = await get_analysis_failed_count(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -394,6 +412,8 @@ async def pipeline_stats_partial(
             "stats": stats,
             "settings_batch_size": settings.llm_batch_size,
             "oob_counts": True,
+            "straggler_count": straggler_count,
+            "analysis_failed_count": analysis_failed_count,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
@@ -428,6 +448,63 @@ async def trigger_analysis_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "analysis", "count": count, "no_active_agent": no_active_agent},
+    )
+
+
+@router.post("/pipeline/files/{file_id}/deepen", response_class=HTMLResponse)
+async def deepen_analysis(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: re-analyze ONE sampled file at the full (unbounded) window budget.
+
+    Phase 43 strides long files to bound per-file cost, leaving a "sampled" result. This
+    "deepen analysis" re-trigger re-enqueues that single file's ``process_file`` job with
+    ``fine_cap=0`` / ``coarse_cap=0`` -- the sentinel that ``analysis._stride_to_cap`` treats
+    as the analyze-ALL-windows no-op (D-04) -- so the operator gets a full re-analysis on
+    demand.
+
+    Incident guards (D-05, MANDATORY):
+    - Routing: the queue is resolved via ``enqueue_router.resolve_queue_for_task`` so the job
+      lands on the per-agent ``process_file`` queue, NEVER the consumer-less default queue
+      (Phase-30 misrouting incident). ``process_file`` is an AGENT_TASK; if no agent is online
+      ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT enqueuing --
+      it never falls through to the default queue.
+    - Payload: the re-enqueue funnels through ``enqueue_process_file`` which builds the COMPLETE
+      ``ProcessFilePayload`` (v4.0.8 truncation incident -- a ``file_id``-only payload would
+      dead-letter under ``extra="forbid"``).
+    - Dedup: ``enqueue_process_file`` uses the deterministic ``process_file:<file_id>`` key, so a
+      re-deepen of a file with a live in-flight job dedups to a no-op (D-05); re-deepening an
+      already-ANALYZED file with no live job is a fresh enqueue.
+
+    The typed ``uuid.UUID`` path param yields a 422 on a malformed id; an unknown (well-formed)
+    id resolves to ``None`` and returns a not-found fragment -- never a raw 500 (T-44-10).
+    """
+    result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
+    file = result.scalar_one_or_none()
+
+    not_found = file is None
+    no_active_agent = False
+
+    if file is not None:
+        try:
+            routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+        except enqueue_router.NoActiveAgentError:
+            # Do NOT fall through to the default queue (Phase-30 guard) -- surface gracefully.
+            no_active_agent = True
+        else:
+            # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id;
+            # cast narrows str | None -> str for ProcessFilePayload.agent_id.
+            agent_id = cast("str", routed.agent_id)
+            # fine_cap=0 / coarse_cap=0 -> _stride_to_cap no-op -> analyze ALL windows (unbounded
+            # deepen, D-04). The single funnel guarantees the full payload + deterministic key.
+            await enqueue_process_file(routed.queue, file, agent_id, settings.models_path, fine_cap=0, coarse_cap=0)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/deepen_response.html",
+        context={"request": request, "not_found": not_found, "no_active_agent": no_active_agent},
     )
 
 

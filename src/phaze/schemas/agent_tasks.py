@@ -35,6 +35,12 @@ class ProcessFilePayload(BaseModel):
     file_type: str
     agent_id: str
     models_path: str  # essentia .pb files; only ProcessFile needs this
+    # Phase 44: optional per-job analysis cap overrides (the "deepen analysis" lever).
+    # Default None preserves the bulk _enqueue_analysis_jobs producer (five fields only) under
+    # extra="forbid". When set, the worker prefers these over the AgentSettings 60/30 defaults;
+    # a cap of 0 reaches analysis.py::_stride_to_cap as the analyze-ALL-windows no-op (unbounded).
+    fine_cap: int | None = None
+    coarse_cap: int | None = None
 
 
 class ExtractMetadataPayload(BaseModel):

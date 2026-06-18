@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
-from phaze.models.analysis import AnalysisWindow
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.proposal import ProposalStatus
 from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
@@ -274,12 +274,22 @@ async def proposal_timeline(
     coarse = [w for w in windows if w.tier == "coarse"]
     total_sec = max((w.end_sec for w in windows), default=0.0)
 
+    # Phase 44 (44-04): also fetch the 1:1 AnalysisResult so the timeline can render the
+    # "Sampled — more data available" badge (+ coverage tooltip) and the "Deepen analysis"
+    # button. scalar_one_or_none() -> None for a file with no analysis row yet; the badge
+    # template gates on `analysis is not none and analysis.sampled`, so a missing or NULL/false
+    # sampled value renders NOTHING (D-03 / T-44-12), never an error.
+    analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
+    analysis = analysis_result.scalar_one_or_none()
+
     return templates.TemplateResponse(
         request=request,
         name="proposals/partials/analysis_timeline.html",
         context={
             "request": request,
             "proposal": proposal,
+            "analysis": analysis,
+            "file_id": file_id,
             "has_windows": bool(windows),
             "timeline_w": TIMELINE_W,
             "timeline_h": TIMELINE_H,

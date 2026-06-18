@@ -1,0 +1,33 @@
+{# Phase 44 (44-04): straggler + ANALYSIS_FAILED count card.
+
+   Two DISTINCT buckets (44-02 D-02), never merged into the linear stat bar:
+     - straggler_count       = long-running in-flight process_file jobs ("still grinding")
+     - analysis_failed_count = files terminally in ANALYSIS_FAILED ("gave up")
+
+   Both counts arrive in the context from the Plan-02 degrade-safe service reads
+   (get_straggler_count / get_analysis_failed_count); a degraded read surfaces as 0, so the
+   card always renders a (possibly zero) number and NEVER raises (T-44-11). The values are
+   plain ints rendered through Jinja autoescape -- no operator free-text is interpolated.
+
+   Rendered inline in dashboard.html on first load (#straggler-failed-card lives OUTSIDE the
+   #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment
+   on every 5s poll (oob=True) so the counts stay live without re-rendering the DAG buttons.
+   Same id on both renders is the OOB contract. #}
+<section id="straggler-failed-card"
+         aria-labelledby="straggler-failed-heading"
+         {% if oob %}hx-swap-oob="true"{% endif %}
+         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
+    <h2 id="straggler-failed-heading" class="text-lg font-semibold">Analysis Health</h2>
+    <div class="grid grid-cols-2 gap-4">
+        <div class="bg-amber-50 dark:bg-amber-950 rounded-lg p-4 text-center">
+            <p class="text-2xl font-bold text-amber-700 dark:text-amber-400">{{ straggler_count }}</p>
+            <p class="text-sm text-amber-600 dark:text-amber-400">Stragglers</p>
+            <p class="text-xs text-amber-500 dark:text-amber-500 mt-1">still grinding (long-running)</p>
+        </div>
+        <div class="bg-red-50 dark:bg-red-950 rounded-lg p-4 text-center">
+            <p class="text-2xl font-bold text-red-700 dark:text-red-400">{{ analysis_failed_count }}</p>
+            <p class="text-sm text-red-600 dark:text-red-400">Analysis failed</p>
+            <p class="text-xs text-red-500 dark:text-red-500 mt-1">gave up (terminal)</p>
+        </div>
+    </div>
+</section>

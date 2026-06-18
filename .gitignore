@@ -237,3 +237,4 @@ graphify-out/graph.html
 # Vim
 *.swp
 .superpowers/
+.playwright-mcp/
