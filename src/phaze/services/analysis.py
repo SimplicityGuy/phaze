@@ -382,6 +382,31 @@ def _iter_windows(total_sec: float, win_sec: int, min_sec: int, *, drop_short_tr
     return windows
 
 
+def _stride_to_cap(windows: list[tuple[int, float, float]], cap: int) -> tuple[list[tuple[int, float, float]], bool]:
+    """Even-stride ``windows`` down to ``<=cap`` entries, preserving original idx.
+
+    Bounds per-file analysis cost to a constant regardless of duration: when a
+    file's natural window count exceeds ``cap`` we sample evenly across the WHOLE
+    file (first and last window always kept) instead of truncating to first-N.
+
+    Returns ``(kept, sampled)``:
+      * ``cap <= 0`` or ``len(windows) <= cap`` → ``(windows, False)`` unchanged.
+      * otherwise → ``(kept, True)`` where ``kept`` retains each original tuple's
+        idx (NO renumbering), is sorted ascending by idx, and never exceeds
+        ``cap`` (rounding collisions dedup via a set, yielding ``<= cap``).
+
+    Math: endpoint-inclusive even stride ``round(i * (n - 1) / (cap - 1))`` for
+    ``i in 0..cap-1`` spans positions ``0 .. n-1`` so the first and last windows
+    are always included (RESEARCH §Q2).
+    """
+    n = len(windows)
+    if cap <= 0 or n <= cap:
+        return windows, False
+    picks = {round(i * (n - 1) / (cap - 1)) for i in range(cap)}  # set dedups rounding collisions
+    kept = [windows[p] for p in sorted(picks)]
+    return kept, True
+
+
 def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
     """Run all 11 characteristic model sets + the genre model on one buffer.
 
