@@ -1,4 +1,21 @@
 <td colspan="7" class="bg-gray-50 dark:bg-phaze-panel px-6 py-4">
+    {# Phase 44 (44-04): sampled badge + Deepen-analysis action. The badge renders ONLY when
+       analysis.sampled is truthy (NULL/false -> nothing, D-03); the Deepen button is gated on
+       the same condition and POSTs to the Plan-03 endpoint, swapping its fragment into the
+       adjacent result anchor. file_id is a typed uuid rendered into the path only (T-44-13). #}
+    {% if analysis is not none and analysis.sampled %}
+    <div class="flex items-center gap-3 mb-3">
+        {% include "proposals/partials/sampled_badge.html" %}
+        <button type="button"
+                hx-post="/pipeline/files/{{ file_id }}/deepen"
+                hx-target="#deepen-result-{{ file_id }}"
+                hx-swap="innerHTML"
+                class="text-xs font-semibold px-3 py-1 rounded-md bg-amber-600 dark:bg-amber-700 text-white hover:bg-amber-700 dark:hover:bg-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg">
+            Deepen analysis
+        </button>
+        <span id="deepen-result-{{ file_id }}" aria-live="polite"></span>
+    </div>
+    {% endif %}
     {% if not has_windows %}
     <p class="text-sm text-gray-400 dark:text-gray-500">No analysis windows for this file.</p>
     {% else %}

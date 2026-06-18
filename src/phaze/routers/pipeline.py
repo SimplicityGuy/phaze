@@ -24,6 +24,7 @@ from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
+    get_analysis_failed_count,
     get_files_by_state,
     get_fingerprint_pending_files,
     get_match_busy_count,
@@ -39,6 +40,7 @@ from phaze.services.pipeline import (
     get_stage_busy_counts,
     get_stage_controls,
     get_stage_progress,
+    get_straggler_count,
     get_untracked_files,
     queue_progress_percent,
 )
@@ -351,6 +353,14 @@ async def dashboard(
     # the dashboard context. _build_dag_context isolates its own counter-source failures.
     dag_ctx = await _build_dag_context(request.app.state, session, activity)
 
+    # Phase 44 (44-04): the STRAGGLER count (long-running in-flight process_file jobs,
+    # "still grinding") and the ANALYSIS_FAILED count ("gave up") -- two distinct buckets
+    # (44-02 D-02). Both reads are degrade-safe (the Plan-02 services own the never-500
+    # SAVEPOINT/_safe_count degrade and return 0 on any DB error), so NO try/except is added
+    # here -- same service-owns-degrade wiring idiom as the busy counts above (175-178).
+    straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
+    analysis_failed_count = await get_analysis_failed_count(session)
+
     context = {
         "request": request,
         "stats": stats,
@@ -358,6 +368,8 @@ async def dashboard(
         "settings_batch_size": settings.llm_batch_size,
         "agents": agents,
         "recent_scans": recent_scans_rows,
+        "straggler_count": straggler_count,
+        "analysis_failed_count": analysis_failed_count,
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -383,6 +395,11 @@ async def pipeline_stats_partial(
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
     # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
     dag_ctx = await _build_dag_context(request.app.state, session, activity)
+    # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
+    # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
+    # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
+    straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
+    analysis_failed_count = await get_analysis_failed_count(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -395,6 +412,8 @@ async def pipeline_stats_partial(
             "stats": stats,
             "settings_batch_size": settings.llm_batch_size,
             "oob_counts": True,
+            "straggler_count": straggler_count,
+            "analysis_failed_count": analysis_failed_count,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,

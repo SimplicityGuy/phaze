@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from phaze.models.analysis import AnalysisWindow
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord, FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
@@ -432,3 +432,105 @@ async def test_timeline_escapes_label_xss(client: AsyncClient, session: AsyncSes
     assert response.status_code == 200
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
     assert "<script>alert(1)</script>" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 44 Plan 04 Task 2: sampled badge + Deepen-analysis button on the timeline
+#
+# The timeline route also fetches the 1:1 AnalysisResult and passes `analysis`
+# + `file_id` into the context. The badge renders ONLY when analysis.sampled is
+# truthy (NULL/false -> nothing, never an error); the Deepen button is gated on
+# the same condition and POSTs to the Plan-03 /pipeline/files/{file_id}/deepen
+# endpoint.
+# ---------------------------------------------------------------------------
+
+
+async def add_analysis_result(
+    session: AsyncSession,
+    file_id: uuid.UUID,
+    *,
+    sampled: bool | None,
+    fine_analyzed: int | None = 20,
+    fine_total: int | None = 100,
+    coarse_analyzed: int | None = 5,
+    coarse_total: int | None = 30,
+) -> None:
+    """Seed the 1:1 AnalysisResult row driving the sampled badge."""
+    session.add(
+        AnalysisResult(
+            file_id=file_id,
+            bpm=128.0,
+            musical_key="Am",
+            sampled=sampled,
+            fine_windows_analyzed=fine_analyzed,
+            fine_windows_total=fine_total,
+            coarse_windows_analyzed=coarse_analyzed,
+            coarse_windows_total=coarse_total,
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_timeline_renders_sampled_badge_and_deepen_button(client: AsyncClient, session: AsyncSession) -> None:
+    """A file whose AnalysisResult.sampled is True shows the badge (with coverage tooltip) + Deepen button."""
+    proposal = await create_test_proposal(session)
+    await add_analysis_windows(session, proposal.file_id)
+    await add_analysis_result(session, proposal.file_id, sampled=True)
+
+    response = await client.get(f"/proposals/{proposal.id}/timeline")
+    assert response.status_code == 200
+    # Badge present.
+    assert "Sampled — more data available" in response.text
+    # The four coverage counts ride the tooltip.
+    assert "fine 20/100, coarse 5/30 windows — sampled" in response.text
+    # Deepen button POSTs to the Plan-03 endpoint for THIS file_id.
+    assert f'hx-post="/pipeline/files/{proposal.file_id}/deepen"' in response.text
+    assert "Deepen analysis" in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeline_no_badge_when_sampled_false(client: AsyncClient, session: AsyncSession) -> None:
+    """A full-budget analysis (sampled=False) renders NEITHER the badge NOR the Deepen button."""
+    proposal = await create_test_proposal(session)
+    await add_analysis_windows(session, proposal.file_id)
+    await add_analysis_result(session, proposal.file_id, sampled=False)
+
+    response = await client.get(f"/proposals/{proposal.id}/timeline")
+    assert response.status_code == 200
+    assert "Sampled — more data available" not in response.text
+    assert "Deepen analysis" not in response.text
+    assert "/deepen" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeline_no_badge_when_sampled_null(client: AsyncClient, session: AsyncSession) -> None:
+    """A pre-Phase-43 row (sampled=NULL coverage) renders NOTHING -- never an error (D-03 / T-44-12)."""
+    proposal = await create_test_proposal(session)
+    await add_analysis_windows(session, proposal.file_id)
+    await add_analysis_result(
+        session,
+        proposal.file_id,
+        sampled=None,
+        fine_analyzed=None,
+        fine_total=None,
+        coarse_analyzed=None,
+        coarse_total=None,
+    )
+
+    response = await client.get(f"/proposals/{proposal.id}/timeline")
+    assert response.status_code == 200
+    assert "Sampled — more data available" not in response.text
+    assert "Deepen analysis" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeline_no_badge_when_no_analysis_row(client: AsyncClient, session: AsyncSession) -> None:
+    """A file with NO AnalysisResult row at all renders the timeline without error and no badge."""
+    proposal = await create_test_proposal(session)
+    await add_analysis_windows(session, proposal.file_id)
+
+    response = await client.get(f"/proposals/{proposal.id}/timeline")
+    assert response.status_code == 200
+    assert "Sampled — more data available" not in response.text
+    assert "Deepen analysis" not in response.text
