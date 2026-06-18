@@ -366,11 +366,11 @@ essentia is heavy and x86-only — **never run real essentia in unit tests**; mo
 | A3 | Leaving the 79 already-analyzed files' `state` at `DISCOVERED` (no state backfill) is acceptable | Runtime State Inventory | If not, planner adds a one-off reconcile task. |
 | A4 | Coverage column names/types (`*_windows_analyzed/total` Integer, `sampled` Boolean) | Q3 | Names are Discretion; low risk. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **`retries=1` literal vs intent (A2).** What we know: SAQ `retries=1` = 0 retries AND is clobbered to 4 by the defaults hook. What's unclear: whether the user wants 0, 1, or "one" retry. Recommendation: use `retries=2` ("one retry"), confirm with user at planning/discuss.
-2. **Backlog re-enqueue reach.** What we know: 11356 queued jobs carry the old `timeout=14400`. What's unclear: whether this phase includes the operator purge+re-enqueue or defers to a homelab redeploy prompt. Recommendation: code the policy here; treat backlog re-enqueue as a deploy step (out of phase code).
-3. **Inner timeout value.** Default ~6600s (below 7200 SAQ net) is a guess; with caps 60/30 the real per-file cost should be far lower. Recommendation: set generously below the SAQ net; tune after post-deploy re-measure.
+1. **`retries=1` literal vs intent (A2).** RESOLVED: **KEEP `retries=2`** per the locked decision in 43-CONTEXT.md `<decisions>` (= exactly one real retry; dodges the SAQ-default clobber-to-4). User confirmed 2026-06-17.
+2. **Backlog re-enqueue reach.** RESOLVED: **out-of-phase deploy step** per 43-CONTEXT.md phase boundary — code the policy here; the operator purge+re-enqueue of the 11356 old-timeout jobs happens at homelab redeploy, not in phase code. User confirmed non-blocking 2026-06-17.
+3. **Inner timeout value.** RESOLVED: **default 6600s** (Plan 01 Task 2), below the 7200s SAQ net; tune after post-deploy re-measure.
 
 ## Environment Availability
 

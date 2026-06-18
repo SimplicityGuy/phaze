@@ -143,8 +143,8 @@ badge, deepen-analysis re-trigger). **Out of scope (Backlog):** distributed clou
 <specifics>
 ## Specific Ideas
 
-- Caps: 60 fine / 30 coarse. SAQ timeout 7200s. retries=1, TimeoutError terminal.
-- New dependency candidate: `pebble` (killable ProcessPool). Verify cp314 + uv compatibility.
+- Caps: 60 fine / 30 coarse. SAQ timeout 7200s. **retries=2** (= one real retry — see locked decision; do NOT use 1), TimeoutError terminal.
+- Dependency `pebble` (killable ProcessPool) — CONFIRMED (pure-Python, cp314-safe via uv).
 - Alembic migration adds coverage columns to `analysis` (e.g. windows_analyzed/total per tier + sampled bool).
 - New `FileState.ANALYSIS_FAILED` value (string enum, no DB migration for the enum itself).
 - Min 85% coverage; `uv run` for everything; ruff/mypy clean; pre-commit must pass (no --no-verify).
