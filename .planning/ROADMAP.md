@@ -414,7 +414,7 @@ Plans:
 **Goal:** Surface the analysis outcomes Phase 43 starts recording. Add a dashboard count/list of failed/straggler files, a "sampled — more data available" badge on files that were strided, and a "deepen analysis" re-trigger that re-enqueues a sampled file with a higher/unbounded window budget. Lands after Phase 43 so the backend truth exists first.
 **Requirements**: dashboard straggler/`ANALYSIS_FAILED` count + list; sampled badge driven by the coverage fields; "deepen analysis" action enqueues `process_file` with an elevated cap (via a payload flag); regression tests for the new reads + re-trigger.
 **Depends on:** Phase 43 (consumes its state/coverage fields + control API)
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 Plans:
 **Wave 1**
 
@@ -423,7 +423,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 44-03-PLAN.md — POST /pipeline/files/{file_id}/deepen re-trigger (per-agent routing, full payload, deterministic-key dedup)
+- [x] 44-03-PLAN.md — POST /pipeline/files/{file_id}/deepen re-trigger (per-agent routing, full payload, deterministic-key dedup)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
