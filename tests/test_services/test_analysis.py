@@ -15,6 +15,7 @@ from phaze.services.analysis import (
     FineWindow,
     ModelConfig,
     ModelSetConfig,
+    _stride_to_cap,
     aggregate_bpm,
     aggregate_danceability,
     aggregate_dominant,
@@ -305,6 +306,87 @@ def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock)
     assert "genre" in ar.features
     for model_set in MODEL_SETS:
         assert model_set.name in ar.features
+
+
+# ---------------------------------------------------------------------------
+# Phase 43: _stride_to_cap even-stride downsampler (pure-Python, NO essentia)
+# ---------------------------------------------------------------------------
+
+
+def _win(idx: int) -> tuple[int, float, float]:
+    """A synthetic (idx, start, end) window tuple with idx-derived bounds."""
+    return (idx, float(idx) * 30.0, float(idx) * 30.0 + 30.0)
+
+
+def test_stride_under_cap_is_noop() -> None:
+    """len(windows) <= cap returns the windows unchanged with sampled False."""
+    windows = [_win(i) for i in range(3)]
+    kept, sampled = _stride_to_cap(windows, 5)
+    assert kept == windows
+    assert sampled is False
+
+
+def test_stride_equal_to_cap_is_noop() -> None:
+    """len(windows) == cap is the boundary: no striding, sampled False."""
+    windows = [_win(i) for i in range(5)]
+    kept, sampled = _stride_to_cap(windows, 5)
+    assert kept == windows
+    assert sampled is False
+
+
+def test_stride_cap_le_zero_is_noop() -> None:
+    """cap <= 0 returns the windows unchanged with sampled False (guard)."""
+    windows = [_win(i) for i in range(10)]
+    kept, sampled = _stride_to_cap(windows, 0)
+    assert kept == windows
+    assert sampled is False
+    kept_neg, sampled_neg = _stride_to_cap(windows, -3)
+    assert kept_neg == windows
+    assert sampled_neg is False
+
+
+def test_stride_over_cap_bounds_count_and_sets_sampled() -> None:
+    """len(windows) > cap yields len(kept) <= cap and sampled True."""
+    windows = [_win(i) for i in range(100)]
+    kept, sampled = _stride_to_cap(windows, 60)
+    assert sampled is True
+    assert len(kept) <= 60
+
+
+def test_stride_keeps_first_and_last() -> None:
+    """The first and last original windows are always retained (whole-file span)."""
+    windows = [_win(i) for i in range(100)]
+    kept, _sampled = _stride_to_cap(windows, 60)
+    assert kept[0] == windows[0]
+    assert kept[-1] == windows[-1]
+
+
+def test_stride_preserves_original_index_no_renumber() -> None:
+    """Kept tuples retain their ORIGINAL idx; nothing is renumbered to 0..k-1."""
+    windows = [_win(i) for i in range(100)]
+    kept, _sampled = _stride_to_cap(windows, 60)
+    # Each kept tuple must be identical to the original window at its idx.
+    for idx, start, end in kept:
+        assert (idx, start, end) == windows[idx]
+    # The kept indices are a strict subset that is NOT a contiguous 0..k-1 range.
+    kept_indices = [w[0] for w in kept]
+    assert kept_indices != list(range(len(kept)))
+
+
+def test_stride_sorted_ascending_by_index() -> None:
+    """Kept windows are sorted ascending by original idx."""
+    windows = [_win(i) for i in range(57)]
+    kept, _sampled = _stride_to_cap(windows, 30)
+    kept_indices = [w[0] for w in kept]
+    assert kept_indices == sorted(kept_indices)
+
+
+def test_stride_evenly_spaced() -> None:
+    """Picks are approximately evenly spaced across the whole file."""
+    windows = [_win(i) for i in range(101)]  # n=101, cap=11 -> step 10
+    kept, sampled = _stride_to_cap(windows, 11)
+    assert sampled is True
+    assert [w[0] for w in kept] == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 
 
 # ---------------------------------------------------------------------------
