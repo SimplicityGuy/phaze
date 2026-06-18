@@ -78,3 +78,8 @@ None.
 - `90c5775` feat(44-01): add optional fine_cap/coarse_cap to ProcessFilePayload
 - `e6be702` test(44-01): add failing tests for cap threading producer->payload->worker
 - `3425d6b` feat(44-01): thread cap override producer->payload->worker->analyze_file
+
+## Self-Check: PASSED
+
+- SUMMARY.md present at the plan path
+- All four task commits (74aae30, 90c5775, e6be702, 3425d6b) exist in git history
