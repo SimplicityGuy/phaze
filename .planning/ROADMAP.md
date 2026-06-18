@@ -345,9 +345,10 @@ Plans:
 **Requirements**: bulk search endpoint routes via `enqueue_router` (controller queue, not default); button gated on `metadataDone > 0`; per-stage busy count + "busy" gating reusing the Phase-38/quick-t7k pattern; regression tests for gating + routing.
 **Depends on:** Phase 38 (DAG controls/gating pattern)
 **Plans:** 1 plan
+**Status:** Complete (shipped — PR #129).
 
 Plans:
-- [ ] 39-01-PLAN.md — Bulk search_tracklist trigger endpoint + Search DAG node (metadataDone/searchBusy gate) + tests
+- [x] 39-01-PLAN.md — Bulk search_tracklist trigger endpoint + Search DAG node (metadataDone/searchBusy gate) + tests
 
 ### Phase 40: Tracklist Fingerprint-Scan DAG Node — bulk manual scan_live_set trigger (button + endpoint + gating), gated on discovered files + online agent; runs independently of Search
 
@@ -355,9 +356,10 @@ Plans:
 **Requirements**: bulk scan endpoint routes per-agent via `AgentTaskRouter` active-agent selection; 0-agent surfaces a visible disabled/empty state; button gated on `discovered > 0` + agent online; regression tests.
 **Depends on:** Phase 38 (DAG pattern); independent of Phase 39
 **Plans:** 0 plans
+**Status:** Complete (shipped — PR #130).
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 40 to break down)
+- [x] Shipped via PR #130 (planned inline; no separate plan file)
 
 ### Phase 41: Scrape and Match DAG Triggers — bulk scrape-pending (scrape_and_store_tracklist) and match-pending (match_tracklist_to_discogs) buttons, gated on tracklist existence
 
@@ -365,9 +367,10 @@ Plans:
 **Requirements**: two bulk endpoints route to the controller queue via `enqueue_router`; gates on `scrapeTotal`/`matchTotal` derived from tracklist count; both skip already-complete rows (deterministic-key dedup); regression tests for pending-set selection + gating.
 **Depends on:** Phases 39 and 40 (need tracklists to exist before scrape/match are meaningful)
 **Plans:** 1 plan
+**Status:** Complete (shipped — PR #131).
 
 Plans:
-- [ ] 41-01-PLAN.md — bulk Scrape + Match controller-routed triggers, busy/pending service reads, node gating (Needs tracklist / All scraped|matched / Scraping…|Matching…), and regression tests
+- [x] 41-01-PLAN.md — bulk Scrape + Match controller-routed triggers, busy/pending service reads, node gating (Needs tracklist / All scraped|matched / Scraping…|Matching…), and regression tests
 
 ### Phase 42: Recovery-Only Pipeline Automation — gate reenqueue_discovered + generalize so the only automatic enqueue is a restart/queue-loss recovery pass restoring all in-flight stages; no steady-state auto-advance
 
@@ -375,7 +378,37 @@ Plans:
 **Requirements**: recovery trigger fires on detected restart/queue-loss (not a fixed interval); reconciliation covers every stage, not just DISCOVERED→analyze; idempotent via deterministic keys (no double-enqueue, ref Phase 32 incident); steady-state produces zero automatic enqueues; tests prove no auto-advance when queues are healthy.
 **Depends on:** Phase 32 (reboot re-enqueue resilience — this generalizes and constrains it)
 **Plans:** 2 plans
+**Status:** Complete (shipped — PR #132).
 
 Plans:
-- [ ] 42-01-PLAN.md — Backend recovery engine: recover_orphaned_work producer + queue-loss detector + shared all-stages pending-set helpers (anti-drift) + unit/integration tests
-- [ ] 42-02-PLAN.md — Wiring + surface: remove the */5 auto-advance cron, gate startup recovery, add the /pipeline/recover endpoint + global DAG Recover button + docs
+- [x] 42-01-PLAN.md — Backend recovery engine: recover_orphaned_work producer + queue-loss detector + shared all-stages pending-set helpers (anti-drift) + unit/integration tests
+- [x] 42-02-PLAN.md — Wiring + surface: remove the */5 auto-advance cron, gate startup recovery, add the /pipeline/recover endpoint + global DAG Recover button + docs
+
+### Phase 43: Analyze Throughput Fix — bound per-file analysis cost, kill-on-timeout, and surface analysis state
+
+**Goal:** Make the Analyze stage actually drain. Long DJ/concert essentia analysis legitimately exceeds the 4h timeout (root-caused 2026-06-17: 72 timeouts vs 60 completions over ~57h; cost is O(file duration)). Bound per-file cost so a 3h set costs ≈ a 20-min track, kill runaway essentia children deterministically, stop wasteful retries, and make analysis outcomes (done / sampled / failed) visible in the file state machine. Backend-only — redeployable to the homelab immediately. Full root cause + decisions: `.planning/debug/analyze-4h-timeouts.md`.
+**Requirements**:
+- Cap + **even stride** windowing — caps **60 fine / 30 coarse** per file (config-exposed); when a file exceeds the cap, stride evenly across the whole file (constant cost, full-file coverage). Emit coverage (`windows_analyzed`/`windows_total`, `sampled` flag).
+- **Kill-on-timeout** — replace the bare `ProcessPoolExecutor` (whose child is not killed on cancel, leaking compute + starving the 4-of-8 pool) with `pebble.ProcessPool` (or equiv) + an inner per-task timeout that SIGKILLs/recycles the child, below the SAQ job timeout.
+- **State-machine fix** — set `FileState.ANALYZED` on successful analysis PUT; add `ANALYSIS_FAILED` on terminal failure; persist sampled/coverage (Alembic migration). Fixes the latent "re-enqueue all 11,428" bug (every file currently stuck `discovered`). Worker is Postgres-free → terminal-failure/coverage marking goes via a new control API endpoint.
+- **Retry policy** — `retries=1` for transient errors, but treat `TimeoutError` as **terminal** (no wasteful re-run); lower the SAQ `process_file` timeout from 14400s to ~2h (inner timeout does the real killing).
+- Regression tests for stride/cap, kill-on-timeout, state transitions, and timeout-terminal retry behavior.
+**Depends on:** none (independent of 39–42; builds on the Phase 31 windowed-analysis design)
+**Plans:** TBD (run /gsd:plan-phase 43 to break down)
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 43 to break down)
+
+### Phase 44: Analyze Observability UI — straggler/failed count, sampled badge, deepen-analysis re-trigger
+
+**Goal:** Surface the analysis outcomes Phase 43 starts recording. Add a dashboard count/list of failed/straggler files, a "sampled — more data available" badge on files that were strided, and a "deepen analysis" re-trigger that re-enqueues a sampled file with a higher/unbounded window budget. Lands after Phase 43 so the backend truth exists first.
+**Requirements**: dashboard straggler/`ANALYSIS_FAILED` count + list; sampled badge driven by the coverage fields; "deepen analysis" action enqueues `process_file` with an elevated cap (via a payload flag); regression tests for the new reads + re-trigger.
+**Depends on:** Phase 43 (consumes its state/coverage fields + control API)
+**Plans:** TBD (run /gsd:plan-phase 44 to break down)
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 44 to break down)
+
+## Backlog (unscheduled — no phase number yet)
+
+- **Distributed cloud analysis (burst the backlog).** Offload long-file analysis to cloud x86 workers via the existing agent model: stage file to object storage → cloud worker pulls (presigned GET) → analyzes → PUTs result; **reconcile by `file_id`** (already end-to-end), sha256 for download integrity. Only new pieces: optional `source_url`+`sha256` on `ProcessFilePayload` + a "stager". essentia is **x86-only** (no aarch64 wheel; source build infeasible). Best near-free path = **GCP $300/90-day trial, x86 e2 spot, GCS same-region** (≈$0 out of pocket); min-cost paid = OCI E5 preemptible (~$100, free egress). **Gate: only pursue if nox throughput is still insufficient after the Phase 43 redeploy + re-measure** — bounding may make this moot. Full design: memory `reference-essentia-arm64-cloud-burst` + `project-analyze-4h-timeout-incident`.
