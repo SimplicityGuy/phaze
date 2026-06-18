@@ -30,13 +30,14 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.file import FileRecord, FileState
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import AnalysisWritePayload, AnalysisWriteResponse
 
@@ -49,7 +50,23 @@ router = APIRouter(prefix="/api/internal/agent/analysis", tags=["agent-internal"
 # stays unchanged this phase (no Alembic migration), while D-26's wire contract
 # is fully honored end-to-end. Plan 11's process_file rewrite produces the same
 # wire shape; a future migration can promote these to dedicated columns.
-_ANALYSIS_COLUMN_FIELDS: frozenset[str] = frozenset({"bpm", "musical_key", "mood", "style", "fingerprint", "features"})
+_ANALYSIS_COLUMN_FIELDS: frozenset[str] = frozenset(
+    {
+        "bpm",
+        "musical_key",
+        "mood",
+        "style",
+        "fingerprint",
+        "features",
+        # Phase 43 windowed-analysis coverage -- dedicated columns (migration 021),
+        # so these hit real columns instead of the `features` JSONB overflow (Pitfall 3).
+        "fine_windows_analyzed",
+        "fine_windows_total",
+        "coarse_windows_analyzed",
+        "coarse_windows_total",
+        "sampled",
+    }
+)
 
 
 def _summarize_dict_to_string(value: dict[str, float]) -> str:
@@ -152,6 +169,15 @@ async def put_analysis(
             await session.execute(
                 pg_insert(AnalysisWindow).values([{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in body.windows])
             )
+
+    # Phase 43 state-advance: a non-empty write (any aggregate/coverage field the
+    # client actually set) means analysis produced a real result, so advance the
+    # file to ANALYZED in the SAME transaction. This is what was missing -- without
+    # it every analyzed file stayed `discovered`, so re-triggers re-enqueued the
+    # whole archive. An empty-body PUT (`{}`) leaves `dumped` falsy and is a no-op:
+    # state is preserved. `file_id` is the PATH value only (AUTH-01).
+    if dumped:
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYZED))
 
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)

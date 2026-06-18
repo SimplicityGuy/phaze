@@ -56,6 +56,15 @@ class AnalysisWritePayload(BaseModel):
     style: dict[str, float] | None = None
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     energy: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Phase 43 windowed-analysis coverage (the five-field contract analyze_file
+    # returns). These land in dedicated `analysis` columns -- the router adds them
+    # to `_ANALYSIS_COLUMN_FIELDS` so they do NOT funnel into `features` JSONB. All
+    # optional so partial-PUT preserves unset coverage; counts are `ge=0`.
+    fine_windows_analyzed: int | None = Field(default=None, ge=0)
+    fine_windows_total: int | None = Field(default=None, ge=0)
+    coarse_windows_analyzed: int | None = Field(default=None, ge=0)
+    coarse_windows_total: int | None = Field(default=None, ge=0)
+    sampled: bool | None = None
     # Per-window time-series (Phase 31). `| None` default preserves the partial-PUT
     # contract (router only replaces windows when this is not None); `max_length`
     # bounds the DoS-via-huge-bulk-insert threat (a 24h file at 30s windows is
@@ -65,6 +74,29 @@ class AnalysisWritePayload(BaseModel):
 
 class AnalysisWriteResponse(BaseModel):
     """Minimal echo response confirming the upsert (D-26 success body)."""
+
+    agent_id: str
+    file_id: uuid.UUID
+
+
+class AnalysisFailurePayload(BaseModel):
+    """Terminal analysis-failure report body (Phase 43).
+
+    The Postgres-free worker POSTs this to ``/analysis/{file_id}/failed`` when
+    windowed analysis terminally fails (timeout / crash / error). ``reason`` is a
+    ``Literal`` so the wire can only carry the three classifications; ``error`` is
+    a bounded free-text detail string (``max_length`` caps the DoS-via-huge-string
+    threat, T-43-06). ``extra='forbid'`` rejects any attempt to smuggle an
+    ``agent_id``/``file_id`` in the body (AUTH-01)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Literal["timeout", "crashed", "error"]
+    error: str | None = Field(default=None, max_length=2000)
+
+
+class AnalysisFailureResponse(BaseModel):
+    """Minimal echo confirming the terminal-failure report (Phase 43)."""
 
     agent_id: str
     file_id: uuid.UUID
