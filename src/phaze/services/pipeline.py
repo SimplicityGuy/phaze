@@ -362,6 +362,37 @@ async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
     return out
 
 
+# Live-broker key set (Phase 45). ``saq_jobs`` is SAQ-owned -- this is a READ-ONLY probe of the
+# live broker, never an Alembic-managed table (mirrors the _STAGE_BUSY_SQL / _INFLIGHT_COUNT_SQL
+# discipline). Recovery subtracts this set from the scheduling-ledger rows to find work that was
+# scheduled then lost; parked/paused jobs keep status='queued' and so correctly stay IN this live
+# set (out of the orphan set). Static SQL with NO interpolated operator input -- the only literals
+# are the column name and the status allowlist (T-45 read-only probe).
+_LIVE_KEYS_SQL = text("SELECT key FROM saq_jobs WHERE status IN ('queued', 'active')")
+
+
+async def get_live_job_keys(session: AsyncSession) -> set[str]:
+    """Return the set of ``saq_jobs`` keys currently ``queued`` or ``active``. Degrade-safe.
+
+    The recovery exclusion set: ``ledger - live keys`` is exactly the previously-scheduled work
+    that is no longer live (lost). ``queued``/``active`` are the only LIVE statuses; SAQ sweeps
+    terminal (COMPLETE/FAILED/ABORTED) rows ~10 min after they end, so a terminal row is NOT a
+    durable signal -- the ledger owns its own durable clear.
+
+    Failure isolation: the read runs inside a SAVEPOINT (``session.begin_nested()``). On ANY DB
+    error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope is
+    rolled back ALONE and the function returns an EMPTY set -- it never raises into the recovery
+    producer (clones the get_stage_busy_counts isolation verbatim).
+    """
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_LIVE_KEYS_SQL)).all()
+    except Exception:
+        logger.warning("live_job_keys_degraded", exc_info=True)
+        return set()
+    return {row[0] for row in rows}
+
+
 # Search-tracklist in-flight gate (Phase 39, REQ-39-3). search_tracklist is a CONTROLLER task --
 # NOT one of the three agent stages -- so it is deliberately ABSENT from get_stage_busy_counts's
 # {metadata,analyze,fingerprint} contract (that function + its tests stay untouched). The
