@@ -61,9 +61,10 @@ instead of raising. The cached ``task_router`` is reused, never reconstructed pe
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 import structlog
 
 from phaze.config import get_settings
@@ -75,7 +76,7 @@ from phaze.services.pipeline import (
     get_live_job_keys,
     get_metadata_pending_files,
 )
-from phaze.services.scheduling_ledger import get_ledger_rows
+from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 
 
@@ -302,3 +303,93 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
 # ``deterministic_key`` is import-safe here -- this module is control-only and never loaded by the
 # agent worker (tests/test_task_split.py enforces the reverse direction).
 _ALL_KEYED_FUNCTIONS: tuple[str, ...] = tuple(_KEY_BUILDERS)
+
+
+# --- Phase 45 Plan 04: one-time idempotent startup ledger backfill (locked decision #3) --
+#
+# Between the 022 migration landing and the before_enqueue WRITE hook starting to populate the
+# ledger, jobs ALREADY in ``saq_jobs`` (the in-flight cohort + any residual incident jobs) have no
+# ledger row, so recovery could not see them. ``backfill_ledger_from_saq_jobs`` closes that gap ONCE
+# by seeding the ledger from the live queued/active ``saq_jobs`` rows. It is a CONTROL-SIDE runtime
+# reconcile -- NEVER an Alembic data step (Alembic must never read/write the SAQ-owned saq_jobs
+# table; T-45-15). It is idempotent (``insert_ledger_if_absent`` == ON CONFLICT DO NOTHING) so it is
+# safe to run on every boot and becomes a cheap no-op once the transition cohort drains.
+#
+# Read-only probe of the SAQ-owned table: SELECT only ``job`` (the serialized blob) + ``key``. The
+# SAQ default serializer is ``json.dumps`` (build_pipeline_queue sets no custom dump/load), so the
+# blob is a JSON object carrying top-level ``function`` / ``kwargs`` / ``key`` -- we parse it with
+# the SAME tolerant idiom as ``pipeline._job_started_ms`` (no ``saq.Job`` construction, which would
+# need the live queue object and raise on a queue-name mismatch). Only the status allowlist literal
+# is in the SQL -- no operator input is interpolated (T-44-05 discipline).
+_BACKFILL_SAQ_JOBS_SQL = text("SELECT job, key FROM saq_jobs WHERE status IN ('queued', 'active')")
+
+
+def _parse_job_blob(blob: object) -> dict[str, Any] | None:
+    """Deserialize a SAQ ``saq_jobs.job`` blob to its dict, or None if unreadable (T-45-12).
+
+    Mirrors ``pipeline._job_started_ms``: ``json.loads`` a str/bytes blob (the default json.dumps
+    serializer), pass a pre-decoded dict through, and treat anything that is not JSON / not a dict
+    as None so one malformed/malicious row skips ALONE instead of aborting the batch.
+    """
+    try:
+        data = json.loads(blob) if isinstance(blob, (str, bytes, bytearray)) else blob
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]:
+    """Seed the scheduling ledger from the live queued/active ``saq_jobs`` rows (idempotent).
+
+    For each ``saq_jobs`` row with status in ``('queued', 'active')``: deserialize its job blob to
+    recover ``function`` / ``kwargs`` / ``key``; if the function is a KEYED pipeline function
+    (in :data:`deterministic_key._KEY_BUILDERS`) insert a ledger row with ON CONFLICT (key) DO
+    NOTHING (via the Plan-01-owned :func:`insert_ledger_if_absent`, routing stamped via
+    :func:`routing_for_function`). A non-keyed / random-key row is SKIPPED (no ledger row).
+
+    The DO NOTHING conflict clause makes this:
+
+    - idempotent -- a second call over the same broker state inserts 0 (every key already present);
+    - non-clobbering -- a row already written by the before_enqueue WRITE hook is left UNTOUCHED, so
+      the (possibly fresher) hook payload always wins (T-45-13).
+
+    Degrade-safe (T-45-14): the read runs inside a SAVEPOINT (``session.begin_nested()``); a missing
+    ``saq_jobs`` table (a pre-migration env) rolls the nested scope back ALONE and returns an empty
+    tally. The caller commits. NEVER raises -- a backfill failure must not abort controller boot.
+
+    Returns ``{"inserted": N, "skipped": M}`` where ``inserted`` counts ledger ``insert_if_absent``
+    calls issued for keyed rows and ``skipped`` counts rows that were not keyed or whose blob/key
+    could not be parsed. (DO NOTHING makes ``inserted`` an UPPER bound on rows actually written --
+    a row already present is a no-op INSERT; the integration test asserts the row count, not this
+    tally, for the no-overwrite case.)
+    """
+    tally = {"inserted": 0, "skipped": 0}
+
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_BACKFILL_SAQ_JOBS_SQL)).all()
+    except Exception:
+        logger.warning("ledger_backfill_degraded: saq_jobs read failed (pre-migration env?)", exc_info=True)
+        return tally
+
+    for row in rows:
+        blob, key = row[0], row[1]
+        data = _parse_job_blob(blob)
+        if data is None:
+            tally["skipped"] += 1
+            continue
+        function = data.get("function")
+        # Belt-and-suspenders: trust the blob's function, but fall back to the saq_jobs key prefix
+        # (``<function>:<natural_id>``) so a row missing the field is still classified correctly.
+        if not isinstance(function, str) and isinstance(key, str):
+            function = key.split(":", 1)[0]
+        if not isinstance(function, str) or function not in _KEY_BUILDERS or not isinstance(key, str):
+            tally["skipped"] += 1
+            continue
+        kwargs = data.get("kwargs")
+        if not isinstance(kwargs, dict):
+            kwargs = {}
+        await insert_ledger_if_absent(session, key=key, function=function, kwargs=dict(kwargs))
+        tally["inserted"] += 1
+
+    return tally

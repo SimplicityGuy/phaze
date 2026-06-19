@@ -633,6 +633,131 @@ async def test_count_inflight_jobs_reads_real_saq_jobs() -> None:
         await engine.dispose()
 
 
+# --- Phase 45 Plan 04: startup wiring -- backfill runs BEFORE recovery ------------------
+
+
+@pytest.mark.asyncio
+async def test_startup_backfills_ledger_before_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """controller.startup calls backfill_ledger_from_saq_jobs BEFORE recover_orphaned_work.
+
+    The one-time idempotent backfill (Plan 04) must seed the ledger from live saq_jobs BEFORE the
+    gated boot recovery reads it, so the in-flight cohort is recoverable on first boot (no blind
+    window). Both run in their OWN try/except so neither aborts boot. We spy on both controller-side
+    names with a shared call-order list and assert backfill precedes recovery, each awaited once.
+    """
+    import contextlib as _contextlib
+    from unittest.mock import AsyncMock, MagicMock
+
+    # Patch the heavyweight startup constructors so no real connections open.
+    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+
+    # async_session() must return an async-context-manager session so the backfill's
+    # `async with ctx["async_session"]() as session` works against the spy.
+    @_contextlib.asynccontextmanager
+    async def _fake_session_cm() -> Any:
+        yield MagicMock(name="session", commit=AsyncMock())
+
+    def _fake_sessionmaker(*_a: Any, **_kw: Any) -> Any:
+        return _fake_session_cm
+
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", _fake_sessionmaker)
+    monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
+    monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())
+
+    fake_cfg = MagicMock()
+    fake_cfg.redis_url = "redis://localhost:6379/0"
+    fake_cfg.database_url = "postgresql+asyncpg://test"
+    fake_cfg.debug = False
+    fake_cfg.discogsography_url = "http://test"
+    fake_cfg.llm_model = "stub-model"
+    fake_cfg.llm_max_rpm = 60
+    fake_cfg.log_level = "INFO"
+    fake_cfg.log_json = True
+    fake_cfg.anthropic_api_key = None
+    fake_cfg.openai_api_key = None
+    monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
+
+    router_stub = MagicMock(name="AgentTaskRouterStub")
+    router_stub.close = AsyncMock()
+    router_stub.queue_for = MagicMock()
+    monkeypatch.setattr("phaze.tasks.controller.AgentTaskRouter", lambda *_a, **_kw: router_stub)
+
+    call_order: list[str] = []
+
+    async def _spy_backfill(_session: Any) -> dict[str, int]:
+        call_order.append("backfill")
+        return {"inserted": 0, "skipped": 0}
+
+    async def _spy_recover(_ctx: dict[str, Any]) -> dict[str, Any]:
+        call_order.append("recover")
+        return {"detected_loss": False, "forced": False, "stages": {}}
+
+    backfill_mock = AsyncMock(side_effect=_spy_backfill)
+    recover_mock = AsyncMock(side_effect=_spy_recover)
+    monkeypatch.setattr("phaze.tasks.controller.backfill_ledger_from_saq_jobs", backfill_mock)
+    monkeypatch.setattr("phaze.tasks.controller.recover_orphaned_work", recover_mock)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    await controller.startup(ctx)
+
+    backfill_mock.assert_awaited_once()
+    recover_mock.assert_awaited_once_with(ctx)
+    assert call_order == ["backfill", "recover"], f"backfill must run before recovery, got {call_order}"
+
+
+@pytest.mark.asyncio
+async def test_startup_survives_raising_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backfill failure must NEVER abort controller boot, and recovery must still run after it."""
+    import contextlib as _contextlib
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+
+    @_contextlib.asynccontextmanager
+    async def _fake_session_cm() -> Any:
+        yield MagicMock(name="session", commit=AsyncMock())
+
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: _fake_session_cm)
+    monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
+    monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())
+
+    fake_cfg = MagicMock()
+    fake_cfg.redis_url = "redis://localhost:6379/0"
+    fake_cfg.database_url = "postgresql+asyncpg://test"
+    fake_cfg.debug = False
+    fake_cfg.discogsography_url = "http://test"
+    fake_cfg.llm_model = "stub-model"
+    fake_cfg.llm_max_rpm = 60
+    fake_cfg.log_level = "INFO"
+    fake_cfg.log_json = True
+    fake_cfg.anthropic_api_key = None
+    fake_cfg.openai_api_key = None
+    monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
+
+    router_stub = MagicMock(name="AgentTaskRouterStub")
+    router_stub.close = AsyncMock()
+    monkeypatch.setattr("phaze.tasks.controller.AgentTaskRouter", lambda *_a, **_kw: router_stub)
+
+    backfill_mock = AsyncMock(side_effect=RuntimeError("backfill boom"))
+    recover_mock = AsyncMock(return_value={"detected_loss": False, "forced": False, "stages": {}})
+    monkeypatch.setattr("phaze.tasks.controller.backfill_ledger_from_saq_jobs", backfill_mock)
+    monkeypatch.setattr("phaze.tasks.controller.recover_orphaned_work", recover_mock)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    # Must NOT raise -- the backfill's own try/except swallows the failure.
+    await controller.startup(ctx)
+
+    backfill_mock.assert_awaited_once()
+    # Recovery still runs even though the backfill failed (independent try/except blocks).
+    recover_mock.assert_awaited_once_with(ctx)
+
+
 # Silence the unused-import lint for the analysis model imported for parity with the prior
 # harness seed shape (kept available for future domain-completed seeding scenarios).
 _ = AnalysisResult
