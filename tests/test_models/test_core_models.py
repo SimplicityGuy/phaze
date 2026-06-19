@@ -5,7 +5,7 @@ from phaze.models.base import Base
 
 
 def test_all_tables_defined() -> None:
-    """All 16 expected tables should be defined in metadata."""
+    """All 17 expected tables should be defined in metadata."""
     table_names = set(Base.metadata.tables.keys())
     expected = {
         "agents",
@@ -24,6 +24,7 @@ def test_all_tables_defined() -> None:
         "discogs_links",
         "tag_write_log",
         "pipeline_stage_control",
+        "scheduling_ledger",
     }
     assert expected == table_names
 
