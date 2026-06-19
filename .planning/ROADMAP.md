@@ -122,7 +122,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 42. Recovery-Only Pipeline Automation | v4.0 | 2/2 | Executed | — |
 | 43. Analyze Throughput Fix | v4.0 | 4/4 | Complete | 2026-06-17 |
 | 44. Analyze Observability UI | v4.0 | 4/4 | Complete | 2026-06-18 |
-| 45. Scheduling Ledger for Orphan Recovery | v4.0 | 0/4 | Planned | — |
+| 45. Scheduling Ledger for Orphan Recovery | v4.0 | 1/4 | In Progress|  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -437,13 +437,13 @@ Plans:
 **Goal:** Add a durable scheduling ledger that records "this `<task>:<natural_id>` was enqueued" at the single `before_enqueue` chokepoint and clears it on completion AND terminal failure, so recovery re-queues exactly `ledger − live saq_jobs keys − completed` through the existing keyed producers — never the complement-of-done domain backlog that detonated the queue (~11.4k never-scheduled files) in the 2026-06-18 incident.
 **Requirements**: L-01 durable ledger written at the single before_enqueue chokepoint; L-02 ledger cleared on completion AND terminal failure (controller stages via after_process, agent stages via the existing control-side callback handlers); L-03 recovery re-queues `ledger − live keys − completed` via existing keyed producers; L-04 idempotent startup backfill from live saq_jobs; L-05 control-only boundary preserved (agent worker stays Postgres-free); L-06 reversible Alembic migration 022 + 85% coverage.
 **Depends on:** Phase 42
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 
 **Wave 1**
 
-- [ ] 45-01-PLAN.md — SchedulingLedger model + migration 022 + ledger service (upsert/clear/read + routing) + get_live_job_keys + WRITE hook + controller-stage CLEAR hook + queue ledger_sessionmaker wiring
+- [x] 45-01-PLAN.md — SchedulingLedger model + migration 022 + ledger service (upsert/clear/read + routing) + get_live_job_keys + WRITE hook + controller-stage CLEAR hook + queue ledger_sessionmaker wiring
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
