@@ -26,6 +26,8 @@ the role startup (Plan 02), never here.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import redis.asyncio as aioredis
 from saq.queue.postgres import PostgresQueue
 import structlog
@@ -33,6 +35,14 @@ import structlog
 from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks._shared.stage_control import apply_stage_control
+
+
+if TYPE_CHECKING:
+    # TYPE-ONLY: keep ``sqlalchemy.ext.asyncio`` OUT of the runtime import graph. This module is
+    # built by the AGENT worker too (its queue), which must stay Postgres-free (test_task_split).
+    # The ledger_sessionmaker param is None on the agent path, so no async_sessionmaker is needed
+    # at runtime there.
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
 logger = structlog.get_logger(__name__)
@@ -45,6 +55,7 @@ def build_pipeline_queue(
     cache_redis_url: str,
     min_size: int = 1,
     max_size: int = 4,
+    ledger_sessionmaker: async_sessionmaker | None = None,
 ) -> PostgresQueue:
     """Construct the project's ``PostgresQueue`` with both hooks + a decoupled cache handle.
 
@@ -56,6 +67,10 @@ def build_pipeline_queue(
         cache_redis_url: Redis DSN for the ``cache_redis`` handle the counter hooks read.
         min_size: psycopg3 pool minimum connections (default 1).
         max_size: psycopg3 pool maximum connections (default 4).
+        ledger_sessionmaker: OPTIONAL control-side ``async_sessionmaker``. When provided it is
+            attached to the queue as ``q.ledger_sessionmaker`` so the ledger before_enqueue /
+            after_process hooks can WRITE / CLEAR. Omit it (the default) on the agent worker
+            queue to keep that queue Postgres-free (the hooks degrade to a logged no-op).
 
     Returns:
         A :class:`PostgresQueue` with ``apply_project_job_defaults``,
@@ -77,6 +92,13 @@ def build_pipeline_queue(
     # ``cache_redis`` is a dynamic attribute the counter hooks read via getattr; SAQ's
     # PostgresQueue does not declare it, so the assignment needs an attr-defined ignore.
     q.cache_redis = aioredis.Redis.from_url(cache_redis_url)  # type: ignore[attr-defined]
+    # Phase 45: attach the control-side scheduling-ledger sessionmaker when provided (symmetric
+    # with cache_redis -- a dynamic attr the before_enqueue / after_process hooks read via
+    # getattr). Provided ONLY on the control-side queues (controller + per-agent router queues);
+    # omitted on the agent worker queue so the ledger hooks degrade to a logged no-op there,
+    # preserving the Postgres-free agent boundary (T-45-02).
+    if ledger_sessionmaker is not None:
+        q.ledger_sessionmaker = ledger_sessionmaker  # type: ignore[attr-defined]
     # Pool exhaustion (PoolTimeout) is the identified operational risk (36-RESEARCH Pitfall 4),
     # so surface the sizing decision at construction time.
     logger.debug("pipeline_queue_constructed", name=name, min_size=min_size, max_size=max_size, broker="postgres")

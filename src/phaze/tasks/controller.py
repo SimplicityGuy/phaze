@@ -103,12 +103,22 @@ async def startup(ctx: dict[str, Any]) -> None:
     # The module-level PostgresQueue is still stashed for readers that enqueue follow-on work.
     ctx["queue"] = queue
 
+    # Phase 45 (L-01/L-02): attach the control-side scheduling-ledger sessionmaker to BOTH the
+    # module-level controller queue AND every per-agent router queue, so the before_enqueue WRITE
+    # hook records each control-side enqueue and the after_process hook clears controller-stage
+    # rows on terminal status. The module-level queue is constructed at import time BEFORE the
+    # engine exists, so the handle is attached HERE (once the engine + sessionmaker are built).
+    # ``ctx["async_session"]`` is the control-side sessionmaker bound to ``task_engine``.
+    queue.ledger_sessionmaker = ctx["async_session"]  # type: ignore[attr-defined]
+
     # Phase 32: per-agent task router for reboot re-enqueue routing. Built ONCE
     # here and reused for the boot-time call + every cron tick (RESEARCH Pitfall 4 --
     # never construct a fresh AgentTaskRouter per call, it would leak pools).
     # Mirrors the discogs_client create/close lifecycle: created in startup, closed
     # in shutdown. Phase 36: takes (queue_url, cache_redis_url) -- Postgres broker + Redis cache.
-    ctx["task_router"] = AgentTaskRouter(cfg.queue_url, cfg.redis_url)
+    # Phase 45: pass the ledger sessionmaker so each per-agent queue the router builds attaches it
+    # (the agent-routed recovery/startup enqueues record their ledger rows control-side).
+    ctx["task_router"] = AgentTaskRouter(cfg.queue_url, cfg.redis_url, ledger_sessionmaker=ctx["async_session"])
 
     # Phase 42 DURABILITY REFRAME (D-01/D-02 -- DO NOT "restore" a steady-state re-enqueue cron):
     # Phase 36 moved the SAQ broker from Redis to Postgres (``saq_jobs`` table). Queued/active jobs

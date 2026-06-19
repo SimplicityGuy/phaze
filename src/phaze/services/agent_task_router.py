@@ -29,6 +29,7 @@ from phaze.tasks._shared.queue_factory import build_pipeline_queue
 if TYPE_CHECKING:
     from pydantic import BaseModel
     from saq import Queue
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from phaze.models.file import FileRecord
 
@@ -61,9 +62,15 @@ class AgentTaskRouter:
     same hook-applied Queue instance without touching the private ``_queue_for``.
     """
 
-    def __init__(self, queue_url: str, cache_redis_url: str) -> None:
+    def __init__(self, queue_url: str, cache_redis_url: str, ledger_sessionmaker: async_sessionmaker | None = None) -> None:
         self._queue_url = queue_url
         self._cache_redis_url = cache_redis_url
+        # Phase 45: OPTIONAL control-side scheduling-ledger sessionmaker. When provided, every
+        # per-agent queue this router builds gets it attached so the before_enqueue WRITE hook
+        # records the manual/recovery enqueue in the durable ledger. The control-side producers
+        # (the API lifespan + the controller worker) pass it; nothing else does, so the agent
+        # boundary is untouched.
+        self._ledger_sessionmaker = ledger_sessionmaker
         self._queues: dict[str, Queue] = {}
 
     def queue_for(self, agent_id: str) -> Queue:
@@ -97,6 +104,7 @@ class AgentTaskRouter:
                 cache_redis_url=self._cache_redis_url,
                 min_size=1,
                 max_size=4,
+                ledger_sessionmaker=self._ledger_sessionmaker,
             )
             self._queues[agent_id] = queue
         return self._queues[agent_id]
