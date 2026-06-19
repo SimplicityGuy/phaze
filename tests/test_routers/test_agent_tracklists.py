@@ -15,8 +15,10 @@ from sqlalchemy import select
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord, FileState
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers import agent_tracklists
+from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
 if TYPE_CHECKING:
@@ -85,6 +87,19 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
     session.add(file_record)
     await session.commit()
     return file_id
+
+
+async def _seed_ledger(session: AsyncSession, file_id: uuid.UUID) -> str:
+    key = f"scan_live_set:{file_id}"
+    await upsert_ledger_entry(session, key=key, function="scan_live_set", kwargs={"file_id": str(file_id)})
+    await session.commit()
+    return key
+
+
+async def _ledger_present(session: AsyncSession, key: str) -> bool:
+    session.expire_all()
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
+    return row is not None
 
 
 @pytest.mark.integration
@@ -320,3 +335,143 @@ async def test_tracklist_concurrent_writer_returns_409_after_poll_exhaustion(
 
     assert r.status_code == 409, r.text
     assert "duplicate in-flight request" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02): scan_live_set scheduling-ledger clear -- match path + terminal-ack endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_tracklist_create_clears_scan_ledger(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """The owner-path create_tracklist (a MATCH) clears scan_live_set:<file_id> in-transaction."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = await _seed_ledger(session, file_id)
+    assert await _ledger_present(session, key)
+
+    payload = {
+        "file_id": str(file_id),
+        "source": "fingerprint",
+        "external_id": f"fp-clear-{file_id.hex[:8]}",
+        "request_id": str(uuid.uuid4()),
+        "tracks": [{"position": 1, "artist": "A", "title": "T1"}],
+    }
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post("/api/internal/agent/tracklists", json=payload)
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "match-path create_tracklist must clear the scan ledger row"
+
+
+@pytest.mark.integration
+async def test_tracklist_cached_replay_does_not_clear_again(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """The fast-path/cached replay does NO DB work; a ledger row re-seeded after the first
+    delivery survives the cached return (the clear only happens on the owner-path transaction)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = await _seed_ledger(session, file_id)
+    payload = {
+        "file_id": str(file_id),
+        "source": "fingerprint",
+        "external_id": f"fp-cached-{file_id.hex[:8]}",
+        "request_id": str(uuid.uuid4()),
+        "tracks": [{"position": 1, "artist": "A", "title": "T1"}],
+    }
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r1 = await ac.post("/api/internal/agent/tracklists", json=payload)
+        assert r1.status_code == 200, r1.text
+        assert not await _ledger_present(session, key)
+
+        # Re-seed the row, then replay the SAME request_id -> fast-path cached return (no DB work).
+        await _seed_ledger(session, file_id)
+        r2 = await ac.post("/api/internal/agent/tracklists", json=payload)
+
+    assert r2.status_code == 200, r2.text
+    assert r1.json() == r2.json()
+    assert await _ledger_present(session, key), "the cached fast-path must NOT clear (no DB work on replay)"
+
+
+@pytest.mark.integration
+async def test_scan_terminal_ack_clears_ledger(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """POST /tracklists/{file_id}/scanned clears scan_live_set:<file_id> and returns 200."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = await _seed_ledger(session, file_id)
+    assert await _ledger_present(session, key)
+
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/tracklists/{file_id}/scanned")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["file_id"] == str(file_id)
+    assert body["cleared"] is True
+    assert not await _ledger_present(session, key)
+
+
+@pytest.mark.integration
+async def test_scan_terminal_ack_absent_is_noop(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """Acking with no ledger row present is a clean no-op (still 200) -- a re-delivered ack."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"scan_live_set:{file_id}"
+    assert not await _ledger_present(session, key)
+
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/tracklists/{file_id}/scanned")
+
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.integration
+async def test_scan_terminal_ack_uses_path_file_id_not_redirected(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """The ack key uses the PATH file_id; another file's ledger row is untouched (T-45-05)."""
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+    key_a = await _seed_ledger(session, file_a)
+    key_b = await _seed_ledger(session, file_b)
+
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/tracklists/{file_a}/scanned")
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key_a)
+    assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared"
+
+
+@pytest.mark.integration
+async def test_scan_terminal_ack_requires_auth(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """No Authorization header on the ack endpoint -> 401 (AUTH-01)."""
+    agent, _ = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, redis_client, token=None) as ac:
+        r = await ac.post(f"/api/internal/agent/tracklists/{file_id}/scanned")
+
+    assert r.status_code == 401

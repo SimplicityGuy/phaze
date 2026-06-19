@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     )
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
     from phaze.schemas.agent_tracklists import (
+        ScanTerminalAckResponse,
         TracklistCreatePayload,
         TracklistCreateResponse,
     )
@@ -290,6 +291,22 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return TracklistCreateResponse.model_validate(response.json())
+
+    async def report_scan_terminal(self, file_id: uuid.UUID) -> ScanTerminalAckResponse:
+        """POST /api/internal/agent/tracklists/{file_id}/scanned -- scan terminal-ack (Phase 45 L-02).
+
+        The agent calls this on a ``scan_live_set`` no-match COMPLETE or a retries-exhausted
+        terminal failure so the control side clears the ``scan_live_set:<file_id>`` scheduling-
+        ledger row (the MATCH path clears via ``create_tracklist``). ``file_id`` rides the path
+        only (AUTH-01); no body. httpx-only -- NO database import, keeping the agent worker
+        Postgres-free (tests/test_task_split.py)."""
+        from phaze.schemas.agent_tracklists import ScanTerminalAckResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/tracklists/{file_id}/scanned",
+        )
+        return ScanTerminalAckResponse.model_validate(response.json())
 
     async def post_execution_log(self, payload: ExecutionLogCreate) -> ExecutionLogCreateResponse:
         """POST /api/internal/agent/execution-log -- INSERT-on-conflict-do-nothing."""
