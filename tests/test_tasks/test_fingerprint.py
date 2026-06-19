@@ -131,3 +131,111 @@ async def test_rejects_extra_kwargs() -> None:
         await fingerprint_file(ctx, **bad_kwargs)
     orchestrator.ingest_all.assert_not_awaited()
     api.put_fingerprint.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02 / CR-02): terminal-failure ack discipline (mirrors process_file)
+# ---------------------------------------------------------------------------
+
+
+def _job_stub(*, retryable: bool) -> MagicMock:
+    """A minimal SAQ Job stub exposing only the ``.retryable`` attribute the guard reads."""
+    job = MagicMock()
+    job.retryable = retryable
+    return job
+
+
+async def test_terminal_attempt_acks_then_raises() -> None:
+    """Terminal attempt (job not retryable): report_fingerprint_failed called once, then re-raise."""
+    from phaze.tasks.fingerprint import fingerprint_file
+
+    api = AsyncMock()
+    api.put_fingerprint = AsyncMock(return_value=MagicMock())
+    api.report_fingerprint_failed = AsyncMock()
+    orchestrator = AsyncMock()
+    orchestrator.ingest_all = AsyncMock(side_effect=RuntimeError("sidecar down"))
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    ctx["job"] = _job_stub(retryable=False)
+    file_id = uuid.uuid4()
+
+    with pytest.raises(RuntimeError, match="sidecar down"):
+        await fingerprint_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_fingerprint_failed.assert_awaited_once_with(file_id)
+
+
+async def test_terminal_attempt_acks_on_put_loop_failure() -> None:
+    """A failure mid per-engine PUT loop on the terminal attempt also acks once then re-raises."""
+    from phaze.tasks.fingerprint import fingerprint_file
+
+    api = AsyncMock()
+    api.put_fingerprint = AsyncMock(side_effect=RuntimeError("PUT 500"))
+    api.report_fingerprint_failed = AsyncMock()
+    orchestrator = AsyncMock()
+    orchestrator.ingest_all = AsyncMock(return_value={"audfprint": _make_ingest_result("success")})
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    ctx["job"] = _job_stub(retryable=False)
+    file_id = uuid.uuid4()
+
+    with pytest.raises(RuntimeError, match="PUT 500"):
+        await fingerprint_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_fingerprint_failed.assert_awaited_once_with(file_id)
+
+
+async def test_retryable_attempt_does_not_ack() -> None:
+    """Retryable attempt: NO ack (row survives for the real retry), still re-raises."""
+    from phaze.tasks.fingerprint import fingerprint_file
+
+    api = AsyncMock()
+    api.put_fingerprint = AsyncMock()
+    api.report_fingerprint_failed = AsyncMock()
+    orchestrator = AsyncMock()
+    orchestrator.ingest_all = AsyncMock(side_effect=RuntimeError("transient"))
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    ctx["job"] = _job_stub(retryable=True)
+
+    with pytest.raises(RuntimeError, match="transient"):
+        await fingerprint_file(ctx, **_make_payload_kwargs())
+
+    api.report_fingerprint_failed.assert_not_awaited()
+
+
+async def test_job_absent_does_not_ack() -> None:
+    """No job in ctx (pure unit context): NO ack, still re-raises (mirrors `job is not None`)."""
+    from phaze.tasks.fingerprint import fingerprint_file
+
+    api = AsyncMock()
+    api.put_fingerprint = AsyncMock()
+    api.report_fingerprint_failed = AsyncMock()
+    orchestrator = AsyncMock()
+    orchestrator.ingest_all = AsyncMock(side_effect=RuntimeError("boom"))
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)  # no "job" key
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await fingerprint_file(ctx, **_make_payload_kwargs())
+
+    api.report_fingerprint_failed.assert_not_awaited()
+
+
+async def test_success_path_does_not_ack() -> None:
+    """Success path: report_fingerprint_failed is NOT called even on the terminal attempt."""
+    from phaze.tasks.fingerprint import fingerprint_file
+
+    api = AsyncMock()
+    api.put_fingerprint = AsyncMock(return_value=MagicMock())
+    api.report_fingerprint_failed = AsyncMock()
+    orchestrator = AsyncMock()
+    orchestrator.ingest_all = AsyncMock(
+        return_value={
+            "audfprint": _make_ingest_result("success"),
+            "panako": _make_ingest_result("success"),
+        },
+    )
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    ctx["job"] = _job_stub(retryable=False)
+
+    result = await fingerprint_file(ctx, **_make_payload_kwargs())
+
+    assert result["status"] == "fingerprinted"
+    api.report_fingerprint_failed.assert_not_awaited()

@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
-from phaze.services.scheduling_ledger import upsert_ledger_entry
+from phaze.services.scheduling_ledger import clear_ledger_entry, upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks.reenqueue import _DOMAIN_COMPLETED_STAGES, is_domain_completed, recover_orphaned_work
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
@@ -398,6 +398,76 @@ async def test_fingerprint_pending_row_replays(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["stages"]["fingerprint_file"] == {"reenqueued": 1, "skipped": 0}
+
+
+# --- CR-02 regression: the terminal-failure clear (not the predicate) closes the loop -------
+
+
+@pytest.mark.asyncio
+async def test_cleared_metadata_row_is_not_reenqueued(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-02: a terminally-failed metadata file whose ledger row was CLEARED is NOT re-enqueued.
+
+    The file is a music DISCOVERED file -- it IS in get_metadata_pending_files, so
+    is_domain_completed can NEVER fire for it (the broken predicate the phase relied on). Yet
+    after the /failed terminal-ack clears extract_file_metadata:<file_id>, the row is simply
+    absent from the ledger, so recover_orphaned_work cannot replay it. This proves the CLEAR
+    closes the unbounded recovery re-enqueue loop -- independent of the predicate.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)  # music file -> still in metadata pending set
+    session.add(f)
+    await session.commit()
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+    # Simulate the POST /{file_id}/failed terminal ack: the control-side clear removes the row.
+    await clear_ledger_entry(session, key)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert controller_queue.captured == []
+    assert router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_cleared_fingerprint_row_is_not_reenqueued(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-02: a terminally-failed fingerprint file whose ledger row was CLEARED is NOT re-enqueued.
+
+    The file is METADATA_EXTRACTED -- it IS in get_fingerprint_pending_files, so the predicate
+    can never mark it done. After the /failed terminal-ack clears fingerprint_file:<file_id>,
+    the absent row keeps recover_orphaned_work from replaying it. The CLEAR is what stops the loop.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.METADATA_EXTRACTED)  # still in fingerprint pending set
+    session.add(f)
+    await session.commit()
+    key = await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+    await clear_ledger_entry(session, key)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
+    assert controller_queue.captured == []
+    assert router.queues == {}
 
 
 @pytest.mark.asyncio

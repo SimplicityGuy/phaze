@@ -44,22 +44,34 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
 
     api: PhazeAgentClient = ctx["api_client"]
 
-    # Sync mutagen call -- I/O bound header read on the local file
-    tags = extract_tags(payload.original_path)
-    logger.debug("metadata tags read", file_id=str(payload.file_id), artist=tags.artist, title=tags.title, duration=tags.duration)
+    try:
+        # Sync mutagen call -- I/O bound header read on the local file
+        tags = extract_tags(payload.original_path)
+        logger.debug("metadata tags read", file_id=str(payload.file_id), artist=tags.artist, title=tags.title, duration=tags.duration)
 
-    # Map to Phase 25 MetadataWriteRequest schema; PUT idempotent upsert (CR-01 field-level LWW)
-    body = MetadataWriteRequest(
-        artist=tags.artist,
-        title=tags.title,
-        album=tags.album,
-        year=tags.year,
-        genre=tags.genre,
-        track_number=tags.track_number,
-        duration=tags.duration,
-        bitrate=tags.bitrate,
-        raw_tags=tags.raw_tags,
-    )
-    await api.put_metadata(payload.file_id, body)
+        # Map to Phase 25 MetadataWriteRequest schema; PUT idempotent upsert (CR-01 field-level LWW)
+        body = MetadataWriteRequest(
+            artist=tags.artist,
+            title=tags.title,
+            album=tags.album,
+            year=tags.year,
+            genre=tags.genre,
+            track_number=tags.track_number,
+            duration=tags.duration,
+            bitrate=tags.bitrate,
+            raw_tags=tags.raw_tags,
+        )
+        await api.put_metadata(payload.file_id, body)
+    except Exception:
+        # Phase 45 (L-02 / CR-02): clear the scheduling-ledger row on the TERMINAL attempt only,
+        # then re-raise so SAQ records the failed attempt. A retryable attempt (or job absent in a
+        # pure unit test) re-raises silently so the one real retry can run -- the row survives for
+        # it (T-45-06). Mirrors process_file's generic guard (functions.py:179-189). Without this
+        # ack a terminally-failed metadata file stays in get_metadata_pending_files forever, so
+        # is_domain_completed can never fire and recover_orphaned_work re-enqueues it on every pass.
+        job = ctx.get("job")
+        if job is not None and not job.retryable:
+            await api.report_metadata_failed(payload.file_id)
+        raise
     logger.info("metadata extraction completed", file_id=str(payload.file_id), status="extracted")
     return {"file_id": str(payload.file_id), "status": "extracted"}

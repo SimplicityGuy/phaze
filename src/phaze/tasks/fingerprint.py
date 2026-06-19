@@ -37,20 +37,33 @@ async def fingerprint_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]
 
     logger.info("fingerprint started", file_id=str(payload.file_id))
 
-    # Submit to both audfprint + panako (local sidecars)
-    results = await orchestrator.ingest_all(payload.original_path)
+    try:
+        # Submit to both audfprint + panako (local sidecars)
+        results = await orchestrator.ingest_all(payload.original_path)
 
-    # PUT per-engine result via HTTP -- idempotent on (file_id, engine) UQ
-    all_success = True
-    for engine_name, engine_result in results.items():
-        body = FingerprintWriteRequest(
-            status=engine_result.status,
-            error_message=engine_result.error,
-        )
-        await api.put_fingerprint(payload.file_id, engine_name, body)
-        logger.debug("fingerprint engine result", file_id=str(payload.file_id), engine=engine_name, status=engine_result.status)
-        if engine_result.status != "success":
-            all_success = False
+        # PUT per-engine result via HTTP -- idempotent on (file_id, engine) UQ
+        all_success = True
+        for engine_name, engine_result in results.items():
+            body = FingerprintWriteRequest(
+                status=engine_result.status,
+                error_message=engine_result.error,
+            )
+            await api.put_fingerprint(payload.file_id, engine_name, body)
+            logger.debug("fingerprint engine result", file_id=str(payload.file_id), engine=engine_name, status=engine_result.status)
+            if engine_result.status != "success":
+                all_success = False
+    except Exception:
+        # Phase 45 (L-02 / CR-02): clear the single-per-file scheduling-ledger row on the TERMINAL
+        # attempt only (a failure anywhere in the orchestrator submit or the per-engine PUT loop),
+        # then re-raise so SAQ records the failed attempt. A retryable attempt (or job absent in a
+        # pure unit test) re-raises silently so the one real retry can run -- the row survives for
+        # it (T-45-06). Mirrors process_file's generic guard (functions.py:179-189). Without this
+        # ack a terminally-failed fingerprint file stays in get_fingerprint_pending_files forever,
+        # so is_domain_completed can never fire and recover_orphaned_work re-enqueues it every pass.
+        job = ctx.get("job")
+        if job is not None and not job.retryable:
+            await api.report_fingerprint_failed(payload.file_id)
+        raise
 
     status = "fingerprinted" if all_success else "partial"
     logger.info("fingerprint completed", file_id=str(payload.file_id), status=status, engines=len(results))
