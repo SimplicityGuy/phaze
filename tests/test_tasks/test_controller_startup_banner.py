@@ -34,6 +34,10 @@ async def test_controller_startup_logs_role_banner(
     # pin concrete values so the central pipeline renders deterministic JSON to stdout.
     fake_cfg.log_level = "INFO"
     fake_cfg.log_json = True
+    # startup() now bridges the LLM keys into os.environ; pin them to None so the
+    # MagicMock doesn't yield a non-str auto-attribute for the env assignment.
+    fake_cfg.anthropic_api_key = None
+    fake_cfg.openai_api_key = None
     monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
 
     # Import AFTER patching. The module-level Queue.from_url already ran at first import
@@ -51,6 +55,56 @@ async def test_controller_startup_logs_role_banner(
     assert "queue=controller" in text, f"banner missing queue=controller: {text!r}"
     # Verify the W4 fix landed: ctx["queue"] is stashed
     assert "queue" in ctx, "controller.startup did not stash ctx['queue'] (W4)"
+
+
+@pytest.mark.asyncio
+async def test_controller_startup_exports_llm_api_key_for_litellm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bug A regression: startup() must bridge the file-loaded Anthropic key into
+    ``ANTHROPIC_API_KEY`` so litellm authenticates. Originally nothing called the
+    bridge, so every generate_proposals raised AuthenticationError.
+    """
+    import os
+
+    from pydantic import SecretStr
+
+    # startup() mutates os.environ directly (litellm reads it there); snapshot/restore
+    # so the key cannot leak into ControlSettings() in unrelated tests.
+    _saved = os.environ.get("ANTHROPIC_API_KEY")
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
+    monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())
+
+    fake_cfg = MagicMock()
+    fake_cfg.redis_url = "redis://localhost:6379/0"
+    fake_cfg.database_url = "postgresql+asyncpg://test"
+    fake_cfg.debug = False
+    fake_cfg.discogsography_url = "http://test"
+    fake_cfg.llm_model = "stub-model"
+    fake_cfg.llm_max_rpm = 60
+    fake_cfg.log_level = "INFO"
+    fake_cfg.log_json = True
+    # The two fields the bridge reads -- concrete values (a MagicMock would break the
+    # `is not None` guard and os.environ assignment).
+    fake_cfg.anthropic_api_key = SecretStr("sk-ant-startup-test")
+    fake_cfg.openai_api_key = None
+    monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    try:
+        await controller.startup(ctx)
+        assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-startup-test"
+    finally:
+        if _saved is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = _saved
 
 
 @pytest.mark.asyncio

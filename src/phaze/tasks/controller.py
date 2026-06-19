@@ -28,7 +28,7 @@ from saq import CronJob
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 import structlog
 
-from phaze.config import get_settings
+from phaze.config import export_llm_api_keys, get_settings
 from phaze.logging_config import configure_logging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
@@ -57,6 +57,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     # central structlog pipeline here BEFORE the first log so its lines render
     # through the same JSON/console pipeline as the api and agent worker.
     configure_logging(level=cfg.log_level, json_logs=cfg.log_json)
+
+    # Bug A (June 2026): litellm reads provider creds from os.environ, never from
+    # ControlSettings. The LLM keys arrive via the <VAR>_FILE secret convention as
+    # SecretStr fields, so bridge them into ANTHROPIC_API_KEY / OPENAI_API_KEY here --
+    # otherwise every generate_proposals acompletion() raises AuthenticationError.
+    export_llm_api_keys(anthropic_api_key=cfg.anthropic_api_key, openai_api_key=cfg.openai_api_key)  # type: ignore[attr-defined]
 
     # D-13 token-preview discipline: never log the full broker/cache DSN (either may carry
     # credentials -- queue_url is a SECRET_FILE_FIELDS member). Report the backend + queue name only.
