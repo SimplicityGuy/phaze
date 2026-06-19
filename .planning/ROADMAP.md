@@ -163,7 +163,7 @@ Plans:
 **Decisions:** Reboot recovery = startup/cron re-enqueue from Postgres (chosen over Redis AOF persistence), 2026-06-10. Re-enqueue runs in the CONTROLLER worker (direct Postgres + routing), not the agent worker; deterministic SAQ key `process_file:<file_id>` in a shared FastAPI-free helper used by BOTH the dashboard and the reboot path; analysis stage only.
 **Depends on:** Phase 31
 **Rollout:** Follows v4.0.10; ships as a subsequent v4.0.x → GHCR publish → homelab redeploy.
-**Plans:** 4/4 plans complete
+**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
 
 Plans:
 
@@ -186,7 +186,7 @@ Plans:
 
 **Constraints:** No standalone web server, no new bound port, no auth middleware — the only change is mounting `saq_web` into the existing FastAPI app.
 **Depends on:** Phase 31 (controller queue + lifespan queue wiring already in place from Phase 30/31)
-**Plans:** 4/4 plans complete
+**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
 Plans:
 
 - [x] 33-00-PLAN.md — Wave 0 harness: add FakeQueue.info() so saq_web renders without Redis
@@ -263,7 +263,7 @@ Plans:
 **Requirements**: Queue backend on Postgres; native priority + scheduled-park available; no regression in reboot re-enqueue, SAQ UI, or determinism.
 **Depends on:** Phase 35
 **Rollout:** Ships as a v4.0.x → GHCR publish → homelab redeploy (paired with the Step D homelab change).
-**Plans:** 4/4 plans complete
+**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
 **Status:** Complete (verified 2026-06-13 — VERIFICATION.md status: passed, 8/8 must-haves; full suite green 1721 passed; code review WR-01/IN-01/IN-02 resolved).
 Plans:
 **Wave 1**
@@ -293,7 +293,7 @@ Plans:
 
 **Requirements**: Drain-style pause + live backlog reprioritization per agent stage; retry backoffs preserved; no double-pickup.
 **Depends on:** Phase 36 (Postgres queue backend)
-**Plans:** 4/4 plans complete
+**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
 **Status:** Complete (verified 2026-06-13 — VERIFICATION.md status: human_needed, 21/21 code must-haves verified; full suite green 1739 passed; code review WR-01/WR-02/IN-01 resolved; 2 homelab deployment-confidence UAT items deferred to 37-HUMAN-UAT.md).
 
 Plans:
@@ -403,7 +403,7 @@ Plans:
 - Regression tests for stride/cap, kill-on-timeout, state transitions, and timeout-terminal retry behavior.
 
 **Depends on:** none (independent of 39–42; builds on the Phase 31 windowed-analysis design)
-**Plans:** 4/4 plans complete
+**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
 
 Plans:
 
@@ -417,7 +417,7 @@ Plans:
 **Goal:** Surface the analysis outcomes Phase 43 starts recording. Add a dashboard count/list of failed/straggler files, a "sampled — more data available" badge on files that were strided, and a "deepen analysis" re-trigger that re-enqueues a sampled file with a higher/unbounded window budget. Lands after Phase 43 so the backend truth exists first.
 **Requirements**: dashboard straggler/`ANALYSIS_FAILED` count + list; sampled badge driven by the coverage fields; "deepen analysis" action enqueues `process_file` with an elevated cap (via a payload flag); regression tests for the new reads + re-trigger.
 **Depends on:** Phase 43 (consumes its state/coverage fields + control API)
-**Plans:** 4/4 plans complete
+**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
 Plans:
 **Wave 1**
 
@@ -437,7 +437,7 @@ Plans:
 **Goal:** Add a durable scheduling ledger that records "this `<task>:<natural_id>` was enqueued" at the single `before_enqueue` chokepoint and clears it on completion AND terminal failure, so recovery re-queues exactly `ledger − live saq_jobs keys − completed` through the existing keyed producers — never the complement-of-done domain backlog that detonated the queue (~11.4k never-scheduled files) in the 2026-06-18 incident.
 **Requirements**: L-01 durable ledger written at the single before_enqueue chokepoint; L-02 ledger cleared on completion AND terminal failure (controller stages via after_process, agent stages via the existing control-side callback handlers); L-03 recovery re-queues `ledger − live keys − completed` via existing keyed producers; L-04 idempotent startup backfill from live saq_jobs; L-05 control-only boundary preserved (agent worker stays Postgres-free); L-06 reversible Alembic migration 022 + 85% coverage.
 **Depends on:** Phase 42
-**Plans:** 4/4 plans complete
+**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
 
 Plans:
 
@@ -453,6 +453,11 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 
 - [x] 45-04-PLAN.md — idempotent startup backfill_ledger_from_saq_jobs (deserialize queued/active blobs, DO NOTHING, keyed-only) + startup wiring before recovery
+
+**Gap closure (wave 1)** *(close L-02 sub-gaps CR-01 + CR-02 from 45-VERIFICATION.md; parallel — disjoint files)*
+
+- [ ] 45-05-PLAN.md — CR-01: guard the scan_live_set no-match report_scan_terminal call (re-raise on retryable, swallow+log on terminal) so a controller hiccup no longer leaks scan_live_set:<file_id>
+- [ ] 45-06-PLAN.md — CR-02: add POST /{file_id}/failed terminal-failure callbacks for extract_file_metadata + fingerprint_file (control-side ledger clear) + agent-worker terminal-attempt acks + recovery regression test
 
 ## Backlog (unscheduled — no phase number yet)
 
