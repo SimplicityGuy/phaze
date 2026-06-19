@@ -101,7 +101,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # queue_url) with BOTH before_enqueue hooks (apply_project_job_defaults + apply_deterministic_key)
     # already registered and a decoupled `cache_redis` handle. Conservative pool sizing (2/8) for
     # the control role keeps the per-queue psycopg3 budget under Postgres max_connections.
-    _app.state.controller_queue = build_pipeline_queue("controller", settings.queue_url, cache_redis_url=settings.redis_url, min_size=2, max_size=8)
+    # Phase 45 (L-01): pass the control-side scheduling-ledger sessionmaker (``async_session``,
+    # bound to the API engine) so the before_enqueue WRITE hook records every manual DAG-trigger
+    # enqueue in the durable ledger -- the manual and recovery paths must both write it or recovery
+    # cannot distinguish "scheduled-and-lost" from "never scheduled" (the 2026-06-18 incident).
+    _app.state.controller_queue = build_pipeline_queue(
+        "controller",
+        settings.queue_url,
+        cache_redis_url=settings.redis_url,
+        min_size=2,
+        max_size=8,
+        ledger_sessionmaker=async_session,
+    )
     # Phase 36: open the controller broker pool now. The PostgresQueue pool is built open=False
     # (no socket at construction) and, unlike the old redis-backed Queue, does NOT auto-connect
     # on first enqueue -- so the API-side producer must open it explicitly. init_db is idempotent
@@ -109,7 +120,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     await _app.state.controller_queue.connect()
     # AgentTaskRouter -- per-agent SAQ enqueuer (Phase 26 Plan 04, D-20). Phase 36: takes
     # (queue_url, cache_redis_url) -- Postgres broker + Redis cache.
-    _app.state.task_router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url)
+    # Phase 45: pass the ledger sessionmaker so each per-agent queue the router builds attaches it
+    # (manual agent-routed DAG triggers record their ledger rows control-side).
+    _app.state.task_router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url, ledger_sessionmaker=async_session)
     # Shared Redis client for tracklists idempotency cache (Phase 26 Plan 07, D-27).
     # decode_responses=True so .get/.set return str (matches agent_tracklists.py expectations).
     _app.state.redis = redis_async.Redis.from_url(settings.redis_url, decode_responses=True)

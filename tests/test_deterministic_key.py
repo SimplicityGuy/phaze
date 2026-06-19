@@ -221,3 +221,222 @@ def test_unkeyed_allow_list_has_no_stale_entries() -> None:
 
 def test_key_builders_and_unkeyed_are_disjoint() -> None:
     assert not (set(_KEY_BUILDERS) & _UNKEYED_TASKS)
+
+
+# ---------------------------------------------------------------------------
+# Phase 45: ledger WRITE hook + controller-stage CLEAR hook
+# ---------------------------------------------------------------------------
+
+
+class _FakeSession:
+    """Minimal async-context-manager session double the ledger hooks open via ``sm()``.
+
+    Records ``commit`` calls so a test can assert the hook committed its own short-lived
+    session. ``execute`` is unused here because the tests patch the ledger service
+    functions (``upsert_ledger_entry`` / ``clear_ledger_entry``) to capture the call args
+    directly -- the hook's contract is "open a session, call the service, commit".
+    """
+
+    def __init__(self) -> None:
+        self.committed = False
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def commit(self) -> None:
+        self.committed = True
+
+
+class _FakeSessionmaker:
+    """A callable that returns a fresh :class:`_FakeSession` (mirrors ``async_sessionmaker``)."""
+
+    def __init__(self) -> None:
+        self.sessions: list[_FakeSession] = []
+
+    def __call__(self) -> _FakeSession:
+        s = _FakeSession()
+        self.sessions.append(s)
+        return s
+
+
+async def test_write_hook_upserts_ledger_when_sessionmaker_present(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: list[dict[str, object]] = []
+
+    async def _fake_upsert(session: object, *, key: str, function: str, kwargs: dict[str, object]) -> None:
+        captured.append({"key": key, "function": function, "kwargs": kwargs})
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.upsert_ledger_entry", _fake_upsert)
+
+    sm = _FakeSessionmaker()
+    fid = uuid.uuid4()
+    job = Job(function="process_file", kwargs={"file_id": fid})
+    job.queue = SimpleNamespace(cache_redis=FakeRedis(), ledger_sessionmaker=sm)  # type: ignore[assignment]
+    await apply_deterministic_key(job)
+
+    assert job.key == f"process_file:{fid}"
+    assert len(captured) == 1
+    assert captured[0]["key"] == f"process_file:{fid}"
+    assert captured[0]["function"] == "process_file"
+    assert captured[0]["kwargs"] == {"file_id": fid}
+    assert sm.sessions[0].committed is True
+
+
+async def test_write_hook_noop_without_sessionmaker(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # No ledger_sessionmaker on the queue (the agent queue / a test fake): the hook must NOT
+    # call the ledger service and must NOT raise -- identical to the cache_redis-absent path.
+    called = False
+
+    async def _fake_upsert(*_a: object, **_k: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.upsert_ledger_entry", _fake_upsert)
+
+    fid = uuid.uuid4()
+    job = Job(function="process_file", kwargs={"file_id": fid})
+    job.queue = SimpleNamespace(cache_redis=FakeRedis())  # type: ignore[assignment]
+    await apply_deterministic_key(job)
+
+    assert job.key == f"process_file:{fid}"
+    assert called is False
+
+
+async def test_write_hook_skips_non_keyed_function(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # A function NOT in _KEY_BUILDERS returns early (random-uuid key) -- NO ledger write even
+    # when a sessionmaker is present.
+    called = False
+
+    async def _fake_upsert(*_a: object, **_k: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.upsert_ledger_entry", _fake_upsert)
+
+    job = Job(function="heartbeat_tick", kwargs={})
+    job.queue = SimpleNamespace(ledger_sessionmaker=_FakeSessionmaker())  # type: ignore[assignment]
+    await apply_deterministic_key(job)
+
+    assert called is False
+
+
+async def test_write_hook_ledger_failure_does_not_block_enqueue(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # A ledger hiccup must be swallowed -- the key is still set and the hook returns normally.
+    async def _boom_upsert(*_a: object, **_k: object) -> None:
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.upsert_ledger_entry", _boom_upsert)
+
+    fid = uuid.uuid4()
+    job = Job(function="process_file", kwargs={"file_id": fid})
+    job.queue = SimpleNamespace(ledger_sessionmaker=_FakeSessionmaker())  # type: ignore[assignment]
+    await apply_deterministic_key(job)  # must not raise
+    assert job.key == f"process_file:{fid}"
+
+
+async def test_clear_hook_clears_on_terminal_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    for status in (Status.COMPLETE, Status.FAILED, Status.ABORTED):
+        cleared: list[str] = []
+
+        async def _fake_clear(session: object, key: str, _sink: list[str] = cleared) -> None:
+            _sink.append(key)
+
+        monkeypatch.setattr("phaze.services.scheduling_ledger.clear_ledger_entry", _fake_clear)
+
+        sm = _FakeSessionmaker()
+        job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
+        job.key = "process_file:k"
+        job.queue = SimpleNamespace(cache_redis=FakeRedis(), ledger_sessionmaker=sm)  # type: ignore[assignment]
+        job.status = status
+        await increment_completed({"job": job})
+
+        assert cleared == ["process_file:k"], f"status {status} must clear the ledger row"
+        assert sm.sessions[0].committed is True
+
+
+async def test_clear_hook_does_not_clear_on_retry_queued(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # A retry sets job.status = Status.QUEUED (NOT terminal): the row must survive.
+    cleared: list[str] = []
+
+    async def _fake_clear(session: object, key: str) -> None:
+        cleared.append(key)
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.clear_ledger_entry", _fake_clear)
+
+    job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
+    job.key = "process_file:k"
+    job.queue = SimpleNamespace(cache_redis=FakeRedis(), ledger_sessionmaker=_FakeSessionmaker())  # type: ignore[assignment]
+    job.status = Status.QUEUED
+    await increment_completed({"job": job})
+
+    assert cleared == [], "a QUEUED (retry) job must NOT clear its ledger row"
+
+
+async def test_clear_hook_noop_without_sessionmaker(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # On the agent worker (no ledger_sessionmaker) the clear is a logged no-op -- agent-stage
+    # clears are Plan 02's job (callback handlers). No call, no raise.
+    called = False
+
+    async def _fake_clear(*_a: object, **_k: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.clear_ledger_entry", _fake_clear)
+
+    job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
+    job.key = "process_file:k"
+    job.queue = SimpleNamespace(cache_redis=FakeRedis())  # type: ignore[assignment]
+    job.status = Status.COMPLETE
+    await increment_completed({"job": job})
+
+    assert called is False
+
+
+async def test_clear_hook_skips_non_keyed_function(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    called = False
+
+    async def _fake_clear(*_a: object, **_k: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.clear_ledger_entry", _fake_clear)
+
+    job = Job(function="some_unregistered_task", kwargs={})
+    job.key = "some_unregistered_task:k"
+    job.queue = SimpleNamespace(ledger_sessionmaker=_FakeSessionmaker())  # type: ignore[assignment]
+    job.status = Status.COMPLETE
+    await increment_completed({"job": job})
+
+    assert called is False
+
+
+async def test_clear_hook_completed_counter_still_fires_on_complete(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # The existing completed-counter INCR on COMPLETE must be preserved alongside the new clear.
+    async def _fake_clear(session: object, key: str) -> None:
+        return None
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.clear_ledger_entry", _fake_clear)
+
+    redis = FakeRedis()
+    job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
+    job.key = "process_file:k"
+    job.queue = SimpleNamespace(cache_redis=redis, ledger_sessionmaker=_FakeSessionmaker())  # type: ignore[assignment]
+    job.status = Status.COMPLETE
+    await increment_completed({"job": job})
+
+    assert redis.store["phaze:pipeline:completed:process_file"] == 1
+
+
+async def test_clear_hook_ledger_failure_is_swallowed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    async def _boom_clear(*_a: object, **_k: object) -> None:
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr("phaze.services.scheduling_ledger.clear_ledger_entry", _boom_clear)
+
+    job = Job(function="process_file", kwargs={"file_id": uuid.uuid4()})
+    job.key = "process_file:k"
+    job.queue = SimpleNamespace(cache_redis=FakeRedis(), ledger_sessionmaker=_FakeSessionmaker())  # type: ignore[assignment]
+    job.status = Status.FAILED
+    await increment_completed({"job": job})  # must not raise
