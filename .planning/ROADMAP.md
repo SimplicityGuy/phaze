@@ -122,7 +122,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 42. Recovery-Only Pipeline Automation | v4.0 | 2/2 | Executed | — |
 | 43. Analyze Throughput Fix | v4.0 | 4/4 | Complete | 2026-06-17 |
 | 44. Analyze Observability UI | v4.0 | 4/4 | Complete | 2026-06-18 |
-| 45. Scheduling Ledger for Orphan Recovery | v4.0 | 4/4 | Complete   | 2026-06-19 |
+| 45. Scheduling Ledger for Orphan Recovery | v4.0 | 5/6 | In Progress|  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -437,7 +437,7 @@ Plans:
 **Goal:** Add a durable scheduling ledger that records "this `<task>:<natural_id>` was enqueued" at the single `before_enqueue` chokepoint and clears it on completion AND terminal failure, so recovery re-queues exactly `ledger − live saq_jobs keys − completed` through the existing keyed producers — never the complement-of-done domain backlog that detonated the queue (~11.4k never-scheduled files) in the 2026-06-18 incident.
 **Requirements**: L-01 durable ledger written at the single before_enqueue chokepoint; L-02 ledger cleared on completion AND terminal failure (controller stages via after_process, agent stages via the existing control-side callback handlers); L-03 recovery re-queues `ledger − live keys − completed` via existing keyed producers; L-04 idempotent startup backfill from live saq_jobs; L-05 control-only boundary preserved (agent worker stays Postgres-free); L-06 reversible Alembic migration 022 + 85% coverage.
 **Depends on:** Phase 42
-**Plans:** 6 plans (4 complete; 2 gap-closure for L-02 — wave 1)
+**Plans:** 5/6 plans executed
 
 Plans:
 
@@ -456,7 +456,7 @@ Plans:
 
 **Gap closure (wave 1)** *(close L-02 sub-gaps CR-01 + CR-02 from 45-VERIFICATION.md; parallel — disjoint files)*
 
-- [ ] 45-05-PLAN.md — CR-01: guard the scan_live_set no-match report_scan_terminal call (re-raise on retryable, swallow+log on terminal) so a controller hiccup no longer leaks scan_live_set:<file_id>
+- [x] 45-05-PLAN.md — CR-01: guard the scan_live_set no-match report_scan_terminal call (re-raise on retryable, swallow+log on terminal) so a controller hiccup no longer leaks scan_live_set:<file_id>
 - [ ] 45-06-PLAN.md — CR-02: add POST /{file_id}/failed terminal-failure callbacks for extract_file_metadata + fingerprint_file (control-side ledger clear) + agent-worker terminal-attempt acks + recovery regression test
 
 ## Backlog (unscheduled — no phase number yet)
