@@ -96,7 +96,21 @@ async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # No-match COMPLETE: this scan run has NO tracklist callback, so it must ack the
         # control side directly to clear scan_live_set:<file_id> -- otherwise a legitimate
         # no-match scan would re-enqueue on EVERY recovery (Phase 45 Blocker 2 / T-45-16).
-        await api.report_scan_terminal(payload.file_id)
+        #
+        # Guard the ack exactly like the match-failure handler at the bottom of this function
+        # (and functions.py:179-189): re-raise on a RETRYABLE attempt so SAQ retries and the
+        # row survives for the real retry; on the TERMINAL attempt the ack is best-effort --
+        # swallow + log so the no_matches COMPLETE still returns (CR-01 / T-45-16). The one
+        # difference from the match path: a no-match is a clean COMPLETE, so the terminal-ack
+        # failure does NOT re-raise -- blocking the return would leak the ledger row forever.
+        try:
+            await api.report_scan_terminal(payload.file_id)
+        except Exception:
+            job = ctx.get("job")
+            if job is not None and not job.retryable:
+                logger.warning("scan_live_set no-match terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
+            else:
+                raise  # retryable (or job absent): let SAQ retry; the row survives for the real retry
         return {"file_id": str(payload.file_id), "status": "no_matches"}
 
     # Build the wire payload. Idempotency key = stable UUID per file_id so SAQ retries
