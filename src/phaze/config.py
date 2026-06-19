@@ -562,6 +562,28 @@ def get_settings() -> BaseSettings:
     return ControlSettings()
 
 
+def export_llm_api_keys(*, anthropic_api_key: SecretStr | None, openai_api_key: SecretStr | None) -> None:
+    """Bridge file-loaded LLM secrets into the provider env vars litellm reads.
+
+    litellm resolves provider credentials from the process environment
+    (``ANTHROPIC_API_KEY`` / ``OPENAI_API_KEY``), never from phaze's settings. Phaze
+    loads these keys via the ``<VAR>_FILE`` secret convention into ``SecretStr`` fields
+    on :class:`ControlSettings`, so without this bridge every ``litellm.acompletion``
+    call raises ``AuthenticationError: Missing Anthropic API Key`` (Bug A, June 2026 --
+    ``generate_proposals`` had never succeeded in deployment).
+
+    Called once from the control worker's startup hook. Each present key is exported
+    ONLY when the bare provider env var is unset, so an operator-supplied
+    ``ANTHROPIC_API_KEY`` always wins. The secret value is never logged.
+    """
+    for env_name, secret in (
+        ("ANTHROPIC_API_KEY", anthropic_api_key),
+        ("OPENAI_API_KEY", openai_api_key),
+    ):
+        if secret is not None and not os.environ.get(env_name):
+            os.environ[env_name] = secret.get_secret_value()
+
+
 def _build_default_settings() -> ControlSettings:
     """Construct the module-level singleton. Splits out from `get_settings()` so the
     module-level type checks as `ControlSettings` — every existing call site reads

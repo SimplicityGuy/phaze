@@ -35,6 +35,10 @@ def _patch_startup_constructors(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_cfg.llm_max_rpm = 60
     fake_cfg.log_level = "INFO"
     fake_cfg.log_json = True
+    # startup() bridges the LLM keys into os.environ; pin to None so the MagicMock
+    # doesn't yield a non-str auto-attribute for the env assignment.
+    fake_cfg.anthropic_api_key = None
+    fake_cfg.openai_api_key = None
     monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
 
 
