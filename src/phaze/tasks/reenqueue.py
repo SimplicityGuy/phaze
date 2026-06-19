@@ -146,23 +146,19 @@ async def _build_done_sets(session: AsyncSession) -> dict[str, set[str]]:
     SWEEP queries (``get_files_by_state``/``get_untracked_files``/``get_proposal_pending_batches``/
     ``get_scrape_pending_tracklists``/``get_match_pending_tracklists``) are GONE from recovery.
     """
-    analyze_done = {str(fid) for fid in (await session.scalars(_select_done_analyze_ids())).all()}
-    metadata_pending = {str(f.id) for f in await get_metadata_pending_files(session)}
-    fingerprint_pending = {str(f.id) for f in await get_fingerprint_pending_files(session)}
     return {
-        "process_file": analyze_done,
-        # "done" == NOT pending for the two callback-less stages.
-        "extract_file_metadata": _ABSENT,  # sentinel handled in is_domain_completed via the pending set
-        "fingerprint_file": _ABSENT,
-        # Stash the pending membership separately so is_domain_completed can test "absent from pending".
-        "_metadata_pending": metadata_pending,
-        "_fingerprint_pending": fingerprint_pending,
+        # process_file: an EXPLICIT done set (file ids in a terminal analyze state).
+        _ANALYZE_DONE: {str(fid) for fid in (await session.scalars(_select_done_analyze_ids())).all()},
+        # metadata/fingerprint: the PENDING membership; is_domain_completed treats "absent" as done.
+        _METADATA_PENDING: {str(f.id) for f in await get_metadata_pending_files(session)},
+        _FINGERPRINT_PENDING: {str(f.id) for f in await get_fingerprint_pending_files(session)},
     }
 
 
-# Sentinel marking a stage whose done-set is expressed as "absent from the pending membership"
-# rather than an explicit done set (see _build_done_sets / is_domain_completed).
-_ABSENT: set[str] = set()
+# Stable done-set keys (avoid stringly-typed drift between _build_done_sets and is_domain_completed).
+_ANALYZE_DONE = "analyze_done"
+_METADATA_PENDING = "metadata_pending"
+_FINGERPRINT_PENDING = "fingerprint_pending"
 
 
 def _select_done_analyze_ids() -> Any:
@@ -201,11 +197,11 @@ def is_domain_completed(row: SchedulingLedger, done_sets: dict[str, set[str]]) -
     if fid is None:
         return False
     if function == "process_file":
-        return fid in done_sets["process_file"]
+        return fid in done_sets[_ANALYZE_DONE]
     if function == "extract_file_metadata":
-        return fid not in done_sets["_metadata_pending"]
+        return fid not in done_sets[_METADATA_PENDING]
     # fingerprint_file
-    return fid not in done_sets["_fingerprint_pending"]
+    return fid not in done_sets[_FINGERPRINT_PENDING]
 
 
 async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) -> None:
