@@ -11,7 +11,7 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.fingerprint import FingerprintResult
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_fingerprint import FingerprintWriteRequest, FingerprintWriteResponse
+from phaze.schemas.agent_fingerprint import FingerprintFailureResponse, FingerprintWriteRequest, FingerprintWriteResponse
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
@@ -54,3 +54,36 @@ async def put_fingerprint(
     await clear_ledger_entry(session, f"fingerprint_file:{file_id}")
     await session.commit()
     return FingerprintWriteResponse(agent_id=agent.id, file_id=file_id, engine=engine)
+
+
+@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=FingerprintFailureResponse)
+async def report_fingerprint_failed(
+    file_id: uuid.UUID,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> FingerprintFailureResponse:
+    """Terminal-ack for a retries-exhausted ``fingerprint_file`` run (Phase 45 L-02 / CR-02).
+
+    ``put_fingerprint`` clears the ledger row on SUCCESS; this endpoint closes the
+    terminal-failure hole so EVERY ``fingerprint_file`` run clears
+    ``fingerprint_file:<file_id>`` exactly once. Without it, a terminally-failed
+    fingerprint file stays in ``get_fingerprint_pending_files`` (METADATA_EXTRACTED files
+    PLUS ``FingerprintResult(status="failed")`` rows both keep it in the pending set), so
+    ``is_domain_completed`` can never fire and ``recover_orphaned_work`` re-enqueues it on
+    every recovery pass forever -- the unbounded recovery re-enqueue loop the ledger was
+    introduced to prevent (CR-02).
+
+    The ledger key is a SINGLE key per file (NOT per engine -- the fingerprint_file task
+    enqueues ONE job per file, keyed by file_id), so the ack path takes no ``engine`` and
+    clears the single per-file key. ``agent`` is bound from the auth dep (token, never body
+    -- AUTH-01); the clear key is reconstructed from the PATH ``file_id`` ONLY + the fixed
+    function name, matching the deterministic WRITE key exactly, so a forged request cannot
+    redirect the clear to another file's key (T-45-05). Clearing an absent row is a clean
+    no-op (still 200). The endpoint writes no FileState -- fingerprinting has no dedicated
+    terminal state; clearing the ledger row is the sole required control-side effect.
+    """
+    await clear_ledger_entry(session, f"fingerprint_file:{file_id}")
+    await session.commit()
+    # Touch ``agent`` so ARG001 doesn't fire; the binding's real role is auth-gating.
+    _ = agent.id
+    return FingerprintFailureResponse(agent_id=agent.id, file_id=file_id, cleared=True)

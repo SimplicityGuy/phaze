@@ -215,3 +215,72 @@ async def test_fingerprint_put_clear_uses_path_file_id_not_redirected(seed_test_
     assert r.status_code == 200, r.text
     assert not await _ledger_present(session, key_a)
     assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared"
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02 / CR-02): POST /{file_id}/failed terminal-failure ledger clear
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_failed_clears_ledger(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A terminal-failure POST clears the single-per-file fingerprint_file:<file_id> (closes CR-02)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"fingerprint_file:{file_id}"
+    await _seed_ledger(session, key, "fingerprint_file", file_id)
+    assert await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/fingerprints/{file_id}/failed")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["agent_id"] == agent.id
+    assert body["file_id"] == str(file_id)
+    assert body["cleared"] is True
+    assert not await _ledger_present(session, key), "terminal-failure callback must clear the single-per-file ledger row"
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_failed_is_noop_when_absent(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A terminal-failure POST with NO ledger row still returns 200 (no-op clear)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"fingerprint_file:{file_id}"
+    assert not await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/fingerprints/{file_id}/failed")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is True
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_failed_uses_path_file_id_not_redirected(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The terminal clear key uses the PATH file_id; another file's row is untouched (T-45-05).
+
+    Also locks the single-per-file key: the /failed path takes NO engine, so the key is
+    fingerprint_file:<file_id> regardless of which engine triggered the terminal failure.
+    """
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+    key_a = f"fingerprint_file:{file_a}"
+    key_b = f"fingerprint_file:{file_b}"
+    await _seed_ledger(session, key_a, "fingerprint_file", file_a)
+    await _seed_ledger(session, key_b, "fingerprint_file", file_b)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/fingerprints/{file_a}/failed")
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key_a)
+    assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared by the terminal ack"
