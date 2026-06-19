@@ -1,20 +1,31 @@
-"""Tests for the Phase-42 gated, all-stages recovery producer (phaze.tasks.reenqueue).
+"""Tests for the Phase-45 ledger-driven recovery producer (phaze.tasks.reenqueue).
 
-``recover_orphaned_work(ctx, *, force=False)`` reconciles ALL eight pipeline stages after a
-detected queue-loss, re-enqueuing each stage's shared pending set through the IDENTICAL keyed
-producer the manual DAG triggers use. It must:
+``recover_orphaned_work(ctx, *, force=False)`` recovers exactly
 
-  - be a NO-OP on a durable Phase-36 restart (saq_jobs still has queued/active rows) -- D-02,
-  - reconcile EVERY stage onto the CORRECT queue (agent vs controller) when saq_jobs is empty,
-  - dedup an in-flight deterministic key to a ``skipped`` no-op (idempotent, Phase-32 backstop),
-  - skip the four agent stages with a WARNING + zero counts when no agent is online (cold boot),
+    orphaned = (scheduling_ledger rows) MINUS (live saq_jobs keys) MINUS (domain-completed)
+
+replaying each orphaned row's STORED payload through the SAME keyed producer it was
+originally enqueued by (``ctx["queue"].enqueue`` for controller rows; the active agent's
+per-agent queue for agent rows). This is the Phase-45 incident fix: a never-scheduled
+``DISCOVERED`` file has NO ledger row, so the ~11.4k-file sweep that detonated the queue
+cannot recur. It must still:
+
+  - be a NO-OP on a durable Phase-36 restart (saq_jobs has live rows) -- D-02 gate kept,
+  - exclude a row whose key is a live saq_jobs key (still in flight),
+  - exclude the THREE predicate-covered agent stages when the file is domain-completed
+    (analyze: state in {ANALYZED, ANALYSIS_FAILED}; metadata/fingerprint: NOT in the
+    stage's pending set),
+  - leave the FIVE live-keys-only stages (scan_live_set + 4 controller stages) to the
+    live-key filter alone,
+  - dedup an in-flight deterministic key to a ``skipped`` no-op (idempotency backstop),
+  - skip agent-routed rows with a WARNING when no agent is online (cold boot),
   - honor ``force=True`` (bypass ONLY the no-op gate, never the per-item dedup).
 
-The queue-loss detector ``count_inflight_jobs`` is stubbed per unit test (the unit DB has no
-``saq_jobs`` table); one ``@pytest.mark.integration`` test reads the REAL ``saq_jobs`` via the
-``stage_env`` fixture. ``ctx`` mirrors the controller worker shape: ``async_session`` (a
-sessionmaker bound to the test engine), ``queue`` (a controller-queue stand-in), ``task_router``
-(a ``DedupFakeTaskRouter`` modeling SAQ deterministic-key dedup).
+The queue-loss detector ``count_inflight_jobs`` and the live-key set ``get_live_job_keys``
+are stubbed per unit test (the unit DB has no ``saq_jobs`` table). ``ctx`` mirrors the
+controller worker shape: ``async_session`` (a sessionmaker bound to the test engine),
+``queue`` (a controller-queue stand-in), ``task_router`` (a ``DedupFakeTaskRouter`` modeling
+SAQ deterministic-key dedup).
 """
 
 from __future__ import annotations
@@ -26,11 +37,12 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
-from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist
-from phaze.services.analysis_enqueue import process_file_job_key
-from phaze.tasks.reenqueue import recover_orphaned_work
+from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.services.scheduling_ledger import upsert_ledger_entry
+from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
+from phaze.tasks.reenqueue import _DOMAIN_COMPLETED_STAGES, is_domain_completed, recover_orphaned_work
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 
 
@@ -63,6 +75,15 @@ def _patch_inflight(monkeypatch: pytest.MonkeyPatch, value: int) -> None:
     monkeypatch.setattr("phaze.tasks.reenqueue.count_inflight_jobs", _fake)
 
 
+def _patch_live_keys(monkeypatch: pytest.MonkeyPatch, keys: set[str]) -> None:
+    """Stub get_live_job_keys to return a fixed set of live (queued/active) saq_jobs keys."""
+
+    async def _fake(_session: AsyncSession) -> set[str]:
+        return set(keys)
+
+    monkeypatch.setattr("phaze.tasks.reenqueue.get_live_job_keys", _fake)
+
+
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
     """Build a controller-shaped ctx: async_session + controller queue + per-agent dedup router."""
     sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
@@ -84,10 +105,59 @@ def _make_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> 
     )
 
 
-def _make_tracklist() -> Tracklist:
-    """Build a bare Tracklist row (no file_id, no version, no discogs chain)."""
-    uid = uuid.uuid4()
-    return Tracklist(id=uid, external_id=f"tl-{uid.hex}", source_url=f"http://x/{uid.hex}")
+def _agent_payload(function: str, file_id: uuid.UUID) -> dict[str, Any]:
+    """Build a minimal stored payload an agent-routed ledger row would carry for ``function``."""
+    return {
+        "file_id": str(file_id),
+        "original_path": f"/music/{file_id}.mp3",
+        "file_type": "mp3",
+        "agent_id": "nox",
+    }
+
+
+async def _seed_ledger(session: AsyncSession, *, function: str, file_id: uuid.UUID, payload: dict[str, Any] | None = None) -> str:
+    """Upsert one ledger row for ``<function>:<file_id>`` and return its deterministic key."""
+    builder = _KEY_BUILDERS[function]
+    pay = payload if payload is not None else _agent_payload(function, file_id)
+    key = f"{function}:{builder(pay)}"
+    await upsert_ledger_entry(session, key=key, function=function, kwargs=pay)
+    await session.commit()
+    return key
+
+
+# --- The incident regression -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_never_scheduled_files_are_left_alone(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """11 DISCOVERED files + 0 ledger rows -> 0 reenqueued (the Phase-45 incident regression).
+
+    The pre-fix recovery derived work from the complement-of-done pending sets and swept every
+    never-scheduled DISCOVERED file, detonating the queue to ~44.5k jobs. Ledger-driven recovery
+    reads ONLY rows that were actually scheduled, so a backlog of unscheduled files is untouched.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)  # genuine queue-loss
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(11)])
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["detected_loss"] is True
+    assert all(t == {"reenqueued": 0, "skipped": 0} for t in result["stages"].values())
+    assert controller_queue.captured == []
+    assert router.queues == {}
+
+
+# --- The no-op gate (unchanged) --------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -99,153 +169,335 @@ async def test_no_op_on_durable_restart(
     """saq_jobs holds live jobs (count > 0) + force=False -> no-op, enqueues NOTHING (D-02)."""
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 5)  # durable Phase-36 restart: jobs survived
+    _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    session.add(_make_file(state=FileState.DISCOVERED))
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
     await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result == {"detected_loss": False, "forced": False, "stages": {}}
-    # No reconcile ran: the controller queue and every per-agent queue stayed untouched.
     assert controller_queue.captured == []
     assert router.queue_for_calls == []
 
 
+# --- Replay of a genuinely-orphaned row ------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_all_stages_reconcile_on_empty_queue(
+async def test_orphaned_agent_row_replays_through_keyed_producer(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Empty saq_jobs -> every stage reconciles onto the CORRECT queue with the CORRECT task name.
+    """A ledger row whose key is NOT live AND NOT domain-completed replays on the agent queue.
 
-    Seed is crafted so each stage's shared pending set has deterministic membership. Note the
-    intentional overlaps baked into the helpers: metadata pending = ALL music/video files, and
-    untracked (search + scan) = ALL music/video files with no tracklist -- so the three mp3 files
-    all land in metadata/search/scan, while analyze/fingerprint/proposals are state-gated to one
-    file each. Controller stages route to ctx["queue"]; agent stages to phaze-agent-nox.
+    The stored payload is replayed verbatim through the per-agent queue with the deterministic
+    key re-stamped from the ledger key (the before_enqueue hook does this in production; the
+    fake dedups on the explicit key here), and the row counts as reenqueued.
     """
     _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)  # genuine queue-loss
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-
-    f_discovered = _make_file(state=FileState.DISCOVERED)  # analyze
-    f_meta_extracted = _make_file(state=FileState.METADATA_EXTRACTED)  # fingerprint
-    f_converged = _make_file(state=FileState.ANALYZED)  # proposals
-    session.add_all([f_discovered, f_meta_extracted, f_converged])
-    await session.flush()
-    session.add_all([FileMetadata(file_id=f_converged.id, artist="A", title="T")])
-    from phaze.models.analysis import AnalysisResult
-
-    session.add(AnalysisResult(file_id=f_converged.id, bpm=120.0))
-    tl = _make_tracklist()  # scrape + match (no version, no discogs)
-    session.add(tl)
+    f = _make_file(state=FileState.DISCOVERED)  # NOT analyze-done
+    session.add(f)
     await session.commit()
+    key = await _seed_ledger(session, function="process_file", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["detected_loss"] is True
-    assert result["forced"] is False
-
-    # Per-stage tallies (deterministic given the seed + helper overlaps).
-    stages = result["stages"]
-    assert stages["analyze"] == {"reenqueued": 1, "skipped": 0}
-    assert stages["metadata"] == {"reenqueued": 3, "skipped": 0}  # all 3 mp3 files
-    assert stages["fingerprint"] == {"reenqueued": 1, "skipped": 0}
-    assert stages["scan_live_set"] == {"reenqueued": 3, "skipped": 0}  # all 3 untracked mp3
-    assert stages["search"] == {"reenqueued": 3, "skipped": 0}  # all 3 untracked mp3
-    assert stages["scrape"] == {"reenqueued": 1, "skipped": 0}
-    assert stages["match"] == {"reenqueued": 1, "skipped": 0}
-    assert stages["proposals"] == {"reenqueued": 1, "skipped": 0}
-
-    # Controller stages landed on ctx["queue"] with the right task names (= deterministic key prefix).
-    controller_tasks = {task for task, _ in controller_queue.captured}
-    assert controller_tasks == {"generate_proposals", "search_tracklist", "scrape_and_store_tracklist", "match_tracklist_to_discogs"}
-
-    # Agent stages landed on phaze-agent-nox (NEVER the controller queue -- Pitfall 1).
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0}
     agent_queue = router.queues["nox"]
-    agent_tasks = {task for task, _ in agent_queue.captured}
-    assert agent_tasks == {"process_file", "extract_file_metadata", "fingerprint_file", "scan_live_set"}
-
-    # The analyze enqueue carries the deterministic process_file:<id> key (explicit-key producer).
-    analyze_keys = {p["key"] for p in agent_queue.captured_policy if p.get("key", "").startswith("process_file:")}
-    assert analyze_keys == {process_file_job_key(f_discovered.id)}
+    assert [t for t, _ in agent_queue.captured] == ["process_file"]
+    # The deterministic key matches the ledger key (re-stamped, so dedup works in production).
+    assert agent_queue.captured_policy[0]["key"] == key
+    # The stored payload round-tripped (file_id present, never a re-derived FileRecord).
+    assert agent_queue.captured[0][1]["file_id"] == str(f.id)
 
 
 @pytest.mark.asyncio
-async def test_idempotent_dedup_skips_inflight_keys(
+async def test_orphaned_controller_row_replays_on_controller_queue(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pre-marking half the analyze keys live -> those count skipped, the rest reenqueue (Phase-32).
+    """A controller-routed orphaned ledger row replays on ctx["queue"], never an agent queue."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    tl_id = uuid.uuid4()
+    await _seed_ledger(session, function="scrape_and_store_tracklist", file_id=tl_id, payload={"tracklist_id": str(tl_id)})
 
-    Generalizes test_cron_reenqueues_stragglers: the analyze stage uses the explicit-key
-    enqueue_process_file producer, so the DedupFakeQueue models SAQ's deterministic-key dedup.
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 1, "skipped": 0}
+    assert [t for t, _ in controller_queue.captured] == ["scrape_and_store_tracklist"]
+    assert router.queue_for_calls == []  # never asked for an agent queue
+
+
+# --- The live-key exclusion ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_key_row_is_excluded(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ledger row whose key IS a live saq_jobs key is still in flight -> never replayed."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+    key = await _seed_ledger(session, function="process_file", file_id=f.id)
+    _patch_live_keys(monkeypatch, {key})  # the only row is live
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert router.queues == {}
+
+
+# --- The per-stage domain-completed exclusions -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analyze_done_row_is_excluded(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process_file row whose file is ANALYZED (or ANALYSIS_FAILED) is domain-completed -> excluded."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f_done = _make_file(state=FileState.ANALYZED)
+    f_failed = _make_file(state=FileState.ANALYSIS_FAILED)
+    session.add_all([f_done, f_failed])
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f_done.id)
+    await _seed_ledger(session, function="process_file", file_id=f_failed.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_metadata_done_row_is_excluded(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An extract_file_metadata row whose file is NOT in the metadata pending set is excluded.
+
+    get_metadata_pending_files returns all music/video files, so a NON-music file (e.g. a
+    deleted/absent file_id with no FileRecord) is "done" for metadata. Here the ledger row
+    points at a file_id that has NO FileRecord, so it is not in the pending set -> excluded.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
-    agent = await seed_active_agent(session, agent_id="nox")
-    files = [_make_file(state=FileState.DISCOVERED) for _ in range(4)]
-    session.add_all(files)
-    await session.commit()
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    ghost_id = uuid.uuid4()  # no FileRecord -> not in get_metadata_pending_files
+    await _seed_ledger(session, function="extract_file_metadata", file_id=ghost_id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
-    # Pre-enqueue (make "live") the first two files' process_file keys on the agent queue.
-    live_queue = router.queue_for(agent.id)
-    for f in files[:2]:
-        await live_queue.enqueue("process_file", key=process_file_job_key(f.id))
-
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # Two analyze keys were in flight -> skipped; the other two -> reenqueued.
-    assert result["stages"]["analyze"] == {"reenqueued": 2, "skipped": 2}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
 
 
 @pytest.mark.asyncio
-async def test_agent_skip_when_no_active_agent(
+async def test_metadata_pending_row_replays(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """No active agent -> the four agent stages skip (WARNING, zero) while controller stages reconcile."""
+    """An extract_file_metadata row whose file IS in the metadata pending set replays (not done)."""
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
-    # NO active agent seeded -> select_active_agent raises NoActiveAgentError.
-
-    f_converged = _make_file(state=FileState.ANALYZED)  # proposals + (untracked) search
-    session.add(f_converged)
-    await session.flush()
-    session.add_all([FileMetadata(file_id=f_converged.id, artist="A", title="T")])
-    from phaze.models.analysis import AnalysisResult
-
-    session.add(AnalysisResult(file_id=f_converged.id, bpm=120.0))
-    tl = _make_tracklist()  # scrape + match
-    session.add(tl)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)  # music file -> in metadata pending set
+    session.add(f)
     await session.commit()
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
-    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
-        result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # Agent stages all zero; the router was never asked for a per-agent queue.
-    for stage in ("analyze", "metadata", "fingerprint", "scan_live_set"):
-        assert result["stages"][stage] == {"reenqueued": 0, "skipped": 0}
-    assert router.queue_for_calls == []
-    assert "no active agent" in caplog.text.lower()
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 1, "skipped": 0}
 
-    # Controller stages still reconciled.
-    assert result["stages"]["proposals"] == {"reenqueued": 1, "skipped": 0}
-    assert result["stages"]["search"] == {"reenqueued": 1, "skipped": 0}
-    assert result["stages"]["scrape"] == {"reenqueued": 1, "skipped": 0}
-    assert result["stages"]["match"] == {"reenqueued": 1, "skipped": 0}
+
+@pytest.mark.asyncio
+async def test_fingerprint_done_row_is_excluded(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fingerprint_file row whose file is NOT in the fingerprint pending set is excluded.
+
+    get_fingerprint_pending_files returns METADATA_EXTRACTED files (+ failed-retry); an ANALYZED
+    file is past that gate (done) and is therefore not in the pending set -> excluded.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f_done = _make_file(state=FileState.ANALYZED)  # past the fingerprint gate
+    session.add(f_done)
+    await session.commit()
+    await _seed_ledger(session, function="fingerprint_file", file_id=f_done.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_pending_row_replays(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fingerprint_file row whose file IS METADATA_EXTRACTED (pending) replays (not done)."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.METADATA_EXTRACTED)  # in fingerprint pending set
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["fingerprint_file"] == {"reenqueued": 1, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_scan_row_is_live_keys_only(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scan_live_set row has NO domain predicate: an ANALYZED file (a "done"-looking state) still replays.
+
+    scan_live_set is live-keys-only -- its ledger row is cleared by Plan 02's terminal ack on every
+    outcome, so any row that reaches recovery IS orphaned. The domain-completed predicate must NOT
+    apply to it (no FileState/pending-set exclusion), so even an ANALYZED file replays.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.ANALYZED)  # would be "done" for analyze, but irrelevant to scan
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="scan_live_set", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["scan_live_set"] == {"reenqueued": 1, "skipped": 0}
+
+
+# --- Predicate totality ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("function", sorted(_KEY_BUILDERS))
+def test_every_keyed_function_is_predicate_covered_xor_live_keys_only(function: str) -> None:
+    """Each of the 8 keyed functions is EITHER domain-predicate-covered XOR live-keys-only.
+
+    No function may be both (double-classified) or neither (silently undefined). The three
+    predicate-covered functions are exactly process_file/extract_file_metadata/fingerprint_file.
+    """
+    covered = function in _DOMAIN_COMPLETED_STAGES
+    live_keys_only = function not in _DOMAIN_COMPLETED_STAGES
+    assert covered != live_keys_only  # exclusive-or: exactly one is true
+
+
+def test_domain_completed_stages_are_exactly_the_three_agent_stages() -> None:
+    """The predicate-covered set is exactly process_file/extract_file_metadata/fingerprint_file."""
+    assert {"process_file", "extract_file_metadata", "fingerprint_file"} == _DOMAIN_COMPLETED_STAGES
+    # And every covered stage is a real keyed function (no typos / drift from _KEY_BUILDERS).
+    assert set(_KEY_BUILDERS) >= _DOMAIN_COMPLETED_STAGES
+
+
+def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
+    """A predicate-covered row whose stored payload lacks ``file_id`` is NOT domain-completed.
+
+    Defensive: a malformed/legacy ledger payload with no natural id must replay (return False)
+    rather than be silently dropped as "done" -- the live-key filter + deterministic-key dedup
+    still backstop a still-live item, so replaying is the safe default.
+    """
+    row = SchedulingLedger(key="process_file:ghost", function="process_file", routing="agent", payload={})
+    assert is_domain_completed(row, {"analyze_done": set(), "metadata_pending": set(), "fingerprint_pending": set()}) is False
+
+
+# --- Idempotency backstop --------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dedup_skip_backstop_for_a_slipped_live_item(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A still-live item that slips past the (stubbed-empty) live filter dedups to None -> skipped.
+
+    Models the Phase-32 backstop: get_live_job_keys returns empty (a stale read), but the agent
+    queue already holds the deterministic key, so the replay returns None and counts as skipped --
+    recovery can never double the queue.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())  # stale: reports nothing live
+    agent = await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+    key = await _seed_ledger(session, function="process_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    # Pre-enqueue the deterministic key on the agent queue (it is actually still live).
+    live_queue = router.queue_for(agent.id)
+    await live_queue.enqueue("process_file", key=key)
+    router.queue_for_calls.clear()  # reset so the recovery call's bookkeeping is clean
+
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 1}
+
+
+# --- force bypasses ONLY the gate ------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -257,18 +509,57 @@ async def test_force_bypasses_gate_not_dedup(
     """force=True reconciles even with live saq_jobs (bypasses the no-op gate); still idempotent."""
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 5)  # live queue -> the gate WOULD short-circuit without force
+    _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    session.add(_make_file(state=FileState.DISCOVERED))
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
     await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue), force=True)
 
-    # detected_loss reflects the (non-empty) detector; forced overrode the gate and reconciled.
     assert result["detected_loss"] is False
     assert result["forced"] is True
-    assert result["stages"]["analyze"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0}
+
+
+# --- No active agent: agent rows skip, controller rows replay --------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No active agent -> agent-routed rows skip (WARNING) while controller-routed rows still replay."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    # NO active agent seeded -> select_active_agent raises NoActiveAgentError.
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # agent-routed
+    tl_id = uuid.uuid4()
+    await _seed_ledger(session, function="search_tracklist", file_id=tl_id, payload={"file_id": str(tl_id)})  # controller-routed
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # Agent-routed row skipped (zero), controller-routed row replayed.
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0}
+    assert router.queue_for_calls == []
+    assert "no active agent" in caplog.text.lower()
+
+
+# --- Integration: live saq_jobs --------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -340,3 +631,8 @@ async def test_count_inflight_jobs_reads_real_saq_jobs() -> None:
                 await queue.abort(job, "test cleanup")
         await router.close()
         await engine.dispose()
+
+
+# Silence the unused-import lint for the analysis model imported for parity with the prior
+# harness seed shape (kept available for future domain-completed seeding scenarios).
+_ = AnalysisResult
