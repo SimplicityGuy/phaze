@@ -93,6 +93,10 @@ async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
     matches = await orchestrator.combined_query(payload.original_path)
     if not matches:
+        # No-match COMPLETE: this scan run has NO tracklist callback, so it must ack the
+        # control side directly to clear scan_live_set:<file_id> -- otherwise a legitimate
+        # no-match scan would re-enqueue on EVERY recovery (Phase 45 Blocker 2 / T-45-16).
+        await api.report_scan_terminal(payload.file_id)
         return {"file_id": str(payload.file_id), "status": "no_matches"}
 
     # Build the wire payload. Idempotency key = stable UUID per file_id so SAQ retries
@@ -112,15 +116,26 @@ async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         for i, match in enumerate(matches)
     ]
 
-    response = await api.create_tracklist(
-        TracklistCreatePayload(
-            file_id=payload.file_id,
-            source="fingerprint",
-            external_id=external_id,
-            tracks=tracks,
-            request_id=request_id,
-        ),
-    )
+    try:
+        response = await api.create_tracklist(
+            TracklistCreatePayload(
+                file_id=payload.file_id,
+                source="fingerprint",
+                external_id=external_id,
+                tracks=tracks,
+                request_id=request_id,
+            ),
+        )
+    except Exception:
+        # A terminal failure of the MATCH path (e.g. the tracklist POST exhausting retries):
+        # ack ONLY on the retries-exhausted attempt (mirrors functions.py:183-189) so the
+        # ledger row is cleared exactly once, then re-raise so SAQ records the failed attempt.
+        # A retryable attempt re-raises silently so the row survives for the real retry
+        # (Phase 45 T-45-06). The successful match clears via create_tracklist -- no double-ack.
+        job = ctx.get("job")
+        if job is not None and not job.retryable:
+            await api.report_scan_terminal(payload.file_id)
+        raise
 
     return {
         "file_id": str(payload.file_id),

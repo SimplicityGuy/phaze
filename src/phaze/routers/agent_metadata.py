@@ -12,6 +12,7 @@ from phaze.models.agent import Agent
 from phaze.models.metadata import FileMetadata
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_metadata import MetadataWriteRequest, MetadataWriteResponse
+from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 router = APIRouter(prefix="/api/internal/agent/metadata", tags=["agent-internal"])
@@ -67,5 +68,8 @@ async def put_metadata(
         # Avoids Postgres "SET clause empty" syntax error.
         stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
     await session.execute(stmt)
+    # Phase 45 (L-02): clear the extract_file_metadata:<file_id> ledger row in the SAME
+    # transaction as the metadata upsert. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
+    await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")
     await session.commit()
     return MetadataWriteResponse(agent_id=agent.id, file_id=file_id)

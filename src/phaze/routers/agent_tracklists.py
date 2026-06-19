@@ -19,6 +19,7 @@ Decisions implemented: D-27 (endpoint shape, request-id idempotency, 1h TTL).
 
 import asyncio
 from typing import Annotated
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 import redis.asyncio as redis_async
@@ -30,7 +31,12 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_tracklists import TracklistCreatePayload, TracklistCreateResponse
+from phaze.schemas.agent_tracklists import (
+    ScanTerminalAckResponse,
+    TracklistCreatePayload,
+    TracklistCreateResponse,
+)
+from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 router = APIRouter(prefix="/api/internal/agent/tracklists", tags=["agent-internal"])
@@ -153,6 +159,14 @@ async def create_tracklist(
     # Step E: UPDATE Tracklist.latest_version_id pointer to the new version.
     await session.execute(update(Tracklist).where(Tracklist.id == tracklist_id).values(latest_version_id=version_id))
 
+    # Phase 45 (L-02): clear the scan_live_set:<file_id> ledger row in the SAME owner-path
+    # transaction as the tracklist write -- the MATCH terminal outcome for scan_live_set. The
+    # fast-path/cached return above does NO DB work and so does NO clear: a replayed match
+    # callback already cleared on its first delivery (and an absent-key clear is a no-op anyway).
+    # Key from body.file_id (the trusted tracklist target) + the fixed function name (AUTH-01 /
+    # T-45-05: agent identity is bound from the auth dep, never a redirect field).
+    await clear_ledger_entry(session, f"scan_live_set:{body.file_id}")
+
     await session.commit()
 
     # Step F: cache the response under resp_key (with TTL) for future replays.
@@ -166,3 +180,28 @@ async def create_tracklist(
     # (Depends() invocation enforces 401/403 before we reach this body).
     _ = agent.id
     return response
+
+
+@router.post("/{file_id}/scanned", status_code=status.HTTP_200_OK, response_model=ScanTerminalAckResponse)
+async def ack_scan_terminal(
+    file_id: uuid.UUID,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScanTerminalAckResponse:
+    """Terminal-ack for a no-match / failed ``scan_live_set`` run (Phase 45 L-02).
+
+    ``create_tracklist`` clears the ledger row on a MATCH; this endpoint closes the
+    no-match early-return AND the retries-exhausted terminal-failure holes so EVERY
+    ``scan_live_set`` run clears ``scan_live_set:<file_id>`` exactly once -- a legitimate
+    no-match scan can never re-enqueue on every recovery (Blocker 2 / T-45-16).
+
+    ``agent`` is bound from the auth dep (token, never body -- AUTH-01); the clear key is
+    reconstructed from the PATH ``file_id`` ONLY + the fixed function name, so a forged
+    request cannot redirect the clear to another file's key (T-45-05). Clearing an absent
+    row is a clean no-op (still 200) -- a re-delivered ack is harmless.
+    """
+    await clear_ledger_entry(session, f"scan_live_set:{file_id}")
+    await session.commit()
+    # Touch ``agent`` so ARG001 doesn't fire; the binding's real role is auth-gating.
+    _ = agent.id
+    return ScanTerminalAckResponse(file_id=file_id, cleared=True)
