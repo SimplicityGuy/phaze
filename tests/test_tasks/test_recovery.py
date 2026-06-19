@@ -39,9 +39,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
-from phaze.tasks.reenqueue import _DOMAIN_COMPLETED_STAGES, recover_orphaned_work
+from phaze.tasks.reenqueue import _DOMAIN_COMPLETED_STAGES, is_domain_completed, recover_orphaned_work
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 
 
@@ -447,6 +448,17 @@ def test_domain_completed_stages_are_exactly_the_three_agent_stages() -> None:
     assert {"process_file", "extract_file_metadata", "fingerprint_file"} == _DOMAIN_COMPLETED_STAGES
     # And every covered stage is a real keyed function (no typos / drift from _KEY_BUILDERS).
     assert set(_KEY_BUILDERS) >= _DOMAIN_COMPLETED_STAGES
+
+
+def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
+    """A predicate-covered row whose stored payload lacks ``file_id`` is NOT domain-completed.
+
+    Defensive: a malformed/legacy ledger payload with no natural id must replay (return False)
+    rather than be silently dropped as "done" -- the live-key filter + deterministic-key dedup
+    still backstop a still-live item, so replaying is the safe default.
+    """
+    row = SchedulingLedger(key="process_file:ghost", function="process_file", routing="agent", payload={})
+    assert is_domain_completed(row, {"analyze_done": set(), "metadata_pending": set(), "fingerprint_pending": set()}) is False
 
 
 # --- Idempotency backstop --------------------------------------------------------------
