@@ -12,6 +12,7 @@ from phaze.models.agent import Agent
 from phaze.models.fingerprint import FingerprintResult
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_fingerprint import FingerprintWriteRequest, FingerprintWriteResponse
+from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 router = APIRouter(prefix="/api/internal/agent/fingerprints", tags=["agent-internal"])
@@ -45,5 +46,11 @@ async def put_fingerprint(
         },
     )
     await session.execute(stmt)
+    # Phase 45 (L-02): clear the fingerprint_file:<file_id> ledger row in the SAME transaction
+    # as the fingerprint upsert. The ledger key is a SINGLE key per file (NOT per engine -- the
+    # fingerprint_file task enqueues ONE job per file, keyed by file_id), so clearing on any
+    # engine PUT is correct; a second engine PUT is a clean no-op. Key from the PATH file_id
+    # ONLY (engine is NOT part of the ledger key; AUTH-01 / T-45-05).
+    await clear_ledger_entry(session, f"fingerprint_file:{file_id}")
     await session.commit()
     return FingerprintWriteResponse(agent_id=agent.id, file_id=file_id, engine=engine)
