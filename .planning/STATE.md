@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 44 shipped — PR #143"
-last_updated: "2026-06-18T18:38:39.932Z"
+status: "Phase 45 planned (4 plans, checker PASS) — ready to execute"
+last_updated: "2026-06-18T22:30:00.000Z"
 last_activity: 2026-06-18
 progress:
   total_phases: 15
@@ -20,16 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 44 — analyze-observability-ui-straggler-failed-count-sampled-badg
+**Current focus:** Phase 45 — scheduling-ledger-for-orphan-recovery (planned, ready to execute)
 
 ## Current Position
 
-Phase: 44 — COMPLETE
-Plan: 1 of 4
-Status: Phase 44 shipped — PR #143
+Phase: 45 — PLANNED (4 plans, 3 waves; plan-checker PASS after 1 revision)
+Plan: 0 of 4 executed
+Status: Plans cleared for execution — run /gsd:execute-phase 45 on a worktree branch
 Last activity: 2026-06-18
 
-Progress: [██████████] 100%
+Progress: [          ] 0%
 
 ## Performance Metrics
 
@@ -66,6 +66,7 @@ Progress: [██████████] 100%
 
 ### Roadmap Evolution
 
+- Phase 45 added (2026-06-18): Scheduling Ledger for Orphan Recovery — surfaced by live incident: clicking "Recover orphaned work" (`recover_orphaned_work(force=True)`) bypassed the loss-detection gate and reconciled the ENTIRE complement-of-done backlog of all 8 stages, detonating the queue to ~44,500 jobs over ~11,400 never-scheduled DISCOVERED files. Root issue: no record anywhere that a stage was ever *scheduled* for an item (pending sets = complement-of-done). Operator principle: recovery must only re-queue work that was previously scheduled and lost; never-scheduled work is not yet orphaned. Approach: durable scheduling ledger written at the single `before_enqueue` chokepoint (`apply_deterministic_key`), cleared on completion (`increment_completed` after_process); `recover_orphaned_work` = ledger − live saq_jobs keys − completed. Survives a saq_jobs truncate (the only real post-Phase-36 loss case). `force` becomes "reconcile the ledger now," not "sweep the backlog." Successor to the Phase 39–42 DAG-manual-control + recovery line. NOTE: phase.add mis-numbered it 43 (collided with existing 43/44, wrong dir tree) — manually renumbered to 45 + dir moved to `.planning/phases/45-...`.
 - Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.
 - Phase 31 added (2026-06-10): Windowed Time-Series Audio Analysis — surfaced by live incident after v4.0.9 redeploy: `RhythmExtractor2013` `OnsetDetectionGlobal` buffer overflow crashes whole-file BPM on multi-hour sets (79% of the 11,428-file archive is >50 MB), 0 files analyzed. Fix = stream-decode + per-window analysis (two tiers: BPM/key 30s, mood/style/danceability 3min), queryable `analysis_window` child table + aggregates on `analysis`. Design spec: docs/superpowers/specs/2026-06-10-windowed-analysis-design.md. Brainstormed decisions: scope=everything-as-time-series via two tiers; storage=queryable child table (option B); UI=compact+HTMX-expand timeline (option B). Ships v4.0.10.
 - Phase 34 added (2026-06-10): Pipeline Queue-Depth Status & Double-Enqueue Guard — surfaced by live UX bug: operator clicked "Run Analysis", refreshed, and all status vanished (DB shows files as `DISCOVERED` whether or not enqueued; verified 11,429 incomplete `process_file` jobs live on `phaze-agent-nox`, 0 analyzed, button still clickable → double-enqueue risk). Fix = read live SAQ queue depth (`Queue.count`) via `app.state.controller_queue` + per-agent `task_router`, new `get_queue_activity` service, surface through existing 5s `/pipeline/stats` poll, persistent OOB "Processing" card (progress = DB `analyzed`/(analyzed+agent_busy)), coarse Alpine `$store.pipeline` button disable (agent_busy gates Analyze/Fingerprint/Metadata; controller_busy gates Proposals). Brainstormed decisions (operator, 2026-06-10): disable scope = coarse (all agent buttons); indicator = progress bar + counts; progress `done` = DB analyzed count (not SAQ `complete`, survives worker restart). NOTE: numbered 34 because phase.add counted directories (max=31) and collided with the text-only Phase 32/33 entries; renumbered 32→34 + directory renamed. Ships a subsequent v4.0.x.
