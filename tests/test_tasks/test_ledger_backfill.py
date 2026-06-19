@@ -257,7 +257,33 @@ async def test_backfill_seeds_keyed_skips_random_is_idempotent_and_no_overwrite(
 
     async def _seed_saq_jobs() -> None:
         async with await psycopg.AsyncConnection.connect(_RAW_DSN) as conn:
-            await conn.execute("CREATE TABLE IF NOT EXISTS saq_jobs (key TEXT PRIMARY KEY, job BYTEA, queue TEXT, status TEXT)")
+            # Create saq_jobs with SAQ's CANONICAL postgres schema (saq.queue.postgres_migrations),
+            # not a minimal stand-in. The table is shared across the ephemeral DB, so a 4-column
+            # stub here would poison SAQ's own `init_db()` ("column scheduled does not exist") in any
+            # other integration test that builds a real PostgresQueue. lock_key/priority/scheduled
+            # all carry defaults, so the 4-column INSERT below still works against the full schema.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saq_jobs (
+                    key TEXT PRIMARY KEY,
+                    lock_key SERIAL NOT NULL,
+                    job BYTEA NOT NULL,
+                    queue TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    priority SMALLINT NOT NULL DEFAULT 0,
+                    group_key TEXT,
+                    scheduled BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()),
+                    expire_at BIGINT
+                )
+                """
+            )
+            # ``backfill_ledger_from_saq_jobs`` scans saq_jobs GLOBALLY (prod semantics), and the
+            # table is shared across the ephemeral DB. Other broker integration tests can leave
+            # keyed queued/active rows behind under a random suite order, which would inflate the
+            # ``inserted`` tally below. Truncating makes the seeded set the only live content, so the
+            # exact-count assertions are deterministic regardless of test order. Safe because pytest
+            # runs serially and every broker test is self-contained (creates + cleans its own rows).
+            await conn.execute("TRUNCATE saq_jobs")
             rows = [
                 (keyed_queued_key, _blob("process_file", keyed_queued_key, keyed_queued_id).encode(), queue_name, "queued"),
                 (keyed_active_key, _blob("extract_file_metadata", keyed_active_key, keyed_active_id).encode(), queue_name, "active"),
