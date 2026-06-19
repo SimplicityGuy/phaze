@@ -122,7 +122,7 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 42. Recovery-Only Pipeline Automation | v4.0 | 2/2 | Executed | — |
 | 43. Analyze Throughput Fix | v4.0 | 4/4 | Complete | 2026-06-17 |
 | 44. Analyze Observability UI | v4.0 | 4/4 | Complete | 2026-06-18 |
-| 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete   | 2026-06-19 |
+| 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete    | 2026-06-19 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
