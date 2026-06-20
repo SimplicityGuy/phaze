@@ -62,7 +62,13 @@ async def fingerprint_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]
         # so is_domain_completed can never fire and recover_orphaned_work re-enqueues it every pass.
         job = ctx.get("job")
         if job is not None and not job.retryable:
-            await api.report_fingerprint_failed(payload.file_id)
+            # Best-effort ack: if report_fingerprint_failed ALSO raises (E2) while handling the
+            # original failure (E1), swallow + log E2 so the bare `raise` below always re-raises
+            # E1 -- SAQ must record the real task error, not the ack error (WR-01).
+            try:
+                await api.report_fingerprint_failed(payload.file_id)
+            except Exception:
+                logger.warning("fingerprint_file terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
         raise
 
     status = "fingerprinted" if all_success else "partial"

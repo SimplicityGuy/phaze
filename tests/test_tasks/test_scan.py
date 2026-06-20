@@ -194,6 +194,29 @@ async def test_scan_match_failure_without_job_in_ctx_does_not_ack() -> None:
     api.report_scan_terminal.assert_not_awaited()
 
 
+async def test_scan_match_terminal_ack_failure_reraises_original_error() -> None:
+    """WR-01: on the TERMINAL attempt, if the ack ALSO raises (E2), the ORIGINAL task error (E1)
+    must propagate -- not the ack error. The ack is awaited once and its failure is swallowed."""
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.scan import scan_live_set
+
+    matches = [CombinedMatch(track_id="t1", confidence=80.0)]
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock(side_effect=RuntimeError("controller 5xx"))
+    api.report_scan_terminal = AsyncMock(side_effect=AgentApiServerError("ack boom"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=matches)
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    ctx["job"] = MagicMock(retryable=False)
+    file_id = uuid.uuid4()
+
+    # E1 (the create_tracklist RuntimeError) propagates -- NOT E2 (the AgentApiServerError ack).
+    with pytest.raises(RuntimeError, match="controller 5xx"):
+        await scan_live_set(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_scan_terminal.assert_awaited_once_with(file_id)
+
+
 # ---------------------------------------------------------------------------
 # Phase 45 (CR-01 / T-45-16): scan terminal-ack on the NO-MATCH path
 # ---------------------------------------------------------------------------

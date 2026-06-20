@@ -183,6 +183,28 @@ async def test_terminal_attempt_acks_on_put_loop_failure() -> None:
     api.report_fingerprint_failed.assert_awaited_once_with(file_id)
 
 
+async def test_terminal_ack_failure_reraises_original_error() -> None:
+    """WR-01: on the TERMINAL attempt, if report_fingerprint_failed ALSO raises (E2), the ORIGINAL
+    task error (E1) must propagate -- not the ack error. The ack is awaited once, failure swallowed."""
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.fingerprint import fingerprint_file
+
+    api = AsyncMock()
+    api.put_fingerprint = AsyncMock(return_value=MagicMock())
+    api.report_fingerprint_failed = AsyncMock(side_effect=AgentApiServerError("ack boom"))
+    orchestrator = AsyncMock()
+    orchestrator.ingest_all = AsyncMock(side_effect=RuntimeError("controller 5xx"))
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    ctx["job"] = _job_stub(retryable=False)
+    file_id = uuid.uuid4()
+
+    # E1 (the ingest_all RuntimeError) propagates -- NOT E2 (the AgentApiServerError ack).
+    with pytest.raises(RuntimeError, match="controller 5xx"):
+        await fingerprint_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_fingerprint_failed.assert_awaited_once_with(file_id)
+
+
 async def test_retryable_attempt_does_not_ack() -> None:
     """Retryable attempt: NO ack (row survives for the real retry), still re-raises."""
     from phaze.tasks.fingerprint import fingerprint_file

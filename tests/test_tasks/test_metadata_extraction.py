@@ -155,6 +155,27 @@ async def test_terminal_attempt_acks_then_raises(mock_extract: MagicMock) -> Non
 
 
 @patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_terminal_ack_failure_reraises_original_error(mock_extract: MagicMock) -> None:
+    """WR-01: on the TERMINAL attempt, if report_metadata_failed ALSO raises (E2), the ORIGINAL
+    task error (E1) must propagate -- not the ack error. The ack is awaited once, failure swallowed."""
+    from phaze.services.agent_client import AgentApiServerError
+
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(side_effect=RuntimeError("controller 5xx"))
+    api.report_metadata_failed = AsyncMock(side_effect=AgentApiServerError("ack boom"))
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = _job_stub(retryable=False)
+    file_id = uuid.uuid4()
+    mock_extract.return_value = ExtractedTags(artist="A")
+
+    # E1 (the put_metadata RuntimeError) propagates -- NOT E2 (the AgentApiServerError ack).
+    with pytest.raises(RuntimeError, match="controller 5xx"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_metadata_failed.assert_awaited_once_with(file_id)
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
 async def test_retryable_attempt_does_not_ack(mock_extract: MagicMock) -> None:
     """Retryable attempt: NO ack (row survives for the real retry), still re-raises."""
     api = AsyncMock()

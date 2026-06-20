@@ -71,7 +71,13 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
         # is_domain_completed can never fire and recover_orphaned_work re-enqueues it on every pass.
         job = ctx.get("job")
         if job is not None and not job.retryable:
-            await api.report_metadata_failed(payload.file_id)
+            # Best-effort ack: if report_metadata_failed ALSO raises (E2) while handling the
+            # original failure (E1), swallow + log E2 so the bare `raise` below always re-raises
+            # E1 -- SAQ must record the real task error, not the ack error (WR-01).
+            try:
+                await api.report_metadata_failed(payload.file_id)
+            except Exception:
+                logger.warning("extract_file_metadata terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
         raise
     logger.info("metadata extraction completed", file_id=str(payload.file_id), status="extracted")
     return {"file_id": str(payload.file_id), "status": "extracted"}

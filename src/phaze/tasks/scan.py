@@ -148,7 +148,14 @@ async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # (Phase 45 T-45-06). The successful match clears via create_tracklist -- no double-ack.
         job = ctx.get("job")
         if job is not None and not job.retryable:
-            await api.report_scan_terminal(payload.file_id)
+            # The terminal ack is best-effort: if it ALSO raises (E2) while we are handling the
+            # original failure (E1), swallow + log E2 so the bare `raise` below always re-raises
+            # E1 -- SAQ must record the real task error, not the ack error (WR-01). The ledger row
+            # may leak on this one ack failure, but reconcile sweeps it; masking E1 is worse.
+            try:
+                await api.report_scan_terminal(payload.file_id)
+            except Exception:
+                logger.warning("scan_live_set match-failure terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
         raise
 
     return {
