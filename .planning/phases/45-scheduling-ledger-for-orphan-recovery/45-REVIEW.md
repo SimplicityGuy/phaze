@@ -14,10 +14,10 @@ files_reviewed_list:
   - src/phaze/services/agent_client.py
 findings:
   critical: 0
-  warning: 2
+  warning: 0
   info: 1
-  total: 3
-status: issues_found
+  total: 1
+status: resolved
 ---
 
 # Phase 45: Gap-Closure Code Review Report (45-05 + 45-06)
@@ -25,7 +25,7 @@ status: issues_found
 **Reviewed:** 2026-06-19T22:57:19Z
 **Depth:** standard
 **Files Reviewed:** 8
-**Status:** issues_found
+**Status:** resolved (both warnings closed 2026-06-20 by quick task 260620-jvu)
 
 > This report covers the gap-closure pass only (plans 45-05 and 45-06).
 > The original phase-45 review findings for all other files are in the
@@ -73,11 +73,22 @@ no-match path in `scan.py` correctly avoids this by nesting the ack in its own `
 the other three handlers do not. This pattern is inherited from `functions.py:183-189` but is
 worth fixing in the new code rather than perpetuating.
 
+> **Both warnings CLOSED 2026-06-20** by quick task `260620-jvu` (harden-ledger-ack-warnings).
+> WR-01: the three terminal-ack `except` handlers now nest the ack in a swallow-and-log
+> `try/except`, so the original task error always re-raises (commit d9123af). WR-02: both
+> failure schemas now use `cleared: Literal[True]`, machine-enforcing the always-True invariant
+> (commit d992f84). IN-01 (info) is out of scope and remains open.
+
 ---
 
 ## Warnings
 
 ### WR-01: Terminal ack call is unguarded inside `except` block — double-failure leaves ledger row un-cleared
+
+**Resolved:** 2026-06-20 — fixed in quick task 260620-jvu (commit d9123af). All three terminal-ack
+`except` handlers now wrap the ack in a nested `try/except` that swallows + logs on the terminal
+attempt; the trailing `raise` always re-raises the original task error (E1). New tests in
+`test_scan.py`, `test_metadata_extraction.py`, and `test_fingerprint.py` prove no exception masking.
 
 **File:** `src/phaze/tasks/scan.py:149-152`
 Also: `src/phaze/tasks/metadata_extraction.py:73-75`, `src/phaze/tasks/fingerprint.py:64-66`
@@ -164,6 +175,10 @@ and in `fingerprint.py` around `report_fingerprint_failed` (line 65).
 ---
 
 ### WR-02: Failure response schemas use `cleared: bool` instead of `Literal[True]`
+
+**Resolved:** 2026-06-20 — fixed in quick task 260620-jvu (commit d992f84). Both
+`MetadataFailureResponse` and `FingerprintFailureResponse` now declare `cleared: Literal[True]`,
+so Pydantic raises `ValidationError` on `cleared=False`. New schema-construction tests prove it.
 
 **File:** `src/phaze/schemas/agent_metadata.py:48`
 Also: `src/phaze/schemas/agent_fingerprint.py:38`
