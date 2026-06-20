@@ -1,5 +1,6 @@
 """Pydantic schemas for PUT /api/internal/agent/fingerprints/{file_id}/{engine} (phase-25)."""
 
+from typing import Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -35,4 +36,4 @@ class FingerprintFailureResponse(BaseModel):
 
     agent_id: str
     file_id: uuid.UUID
-    cleared: bool
+    cleared: Literal[True]

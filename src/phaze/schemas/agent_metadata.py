@@ -1,5 +1,6 @@
 """Pydantic schemas for PUT /api/internal/agent/metadata/{file_id} (phase-25)."""
 
+from typing import Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -45,4 +46,4 @@ class MetadataFailureResponse(BaseModel):
 
     agent_id: str
     file_id: uuid.UUID
-    cleared: bool
+    cleared: Literal[True]

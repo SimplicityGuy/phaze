@@ -359,3 +359,26 @@ async def test_metadata_failed_uses_path_file_id_not_redirected(seed_test_agent:
     assert r.status_code == 200, r.text
     assert not await _ledger_present(session, key_a)
     assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared by the terminal ack"
+
+
+# ---------------------------------------------------------------------------
+# WR-02: MetadataFailureResponse.cleared is a Literal[True] invariant (no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_metadata_failure_response_accepts_cleared_true() -> None:
+    """cleared=True constructs successfully (the only valid value)."""
+    from phaze.schemas.agent_metadata import MetadataFailureResponse
+
+    resp = MetadataFailureResponse(agent_id="a", file_id=uuid.uuid4(), cleared=True)
+    assert resp.cleared is True
+
+
+def test_metadata_failure_response_rejects_cleared_false() -> None:
+    """WR-02: cleared=False is machine-rejected by Pydantic (Literal[True] invariant)."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_metadata import MetadataFailureResponse
+
+    with pytest.raises(ValidationError):
+        MetadataFailureResponse(agent_id="a", file_id=uuid.uuid4(), cleared=False)
