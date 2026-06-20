@@ -125,6 +125,103 @@ async def test_rejects_extra_kwargs(mock_extract: MagicMock) -> None:
     api.put_metadata.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02 / CR-02): terminal-failure ack discipline (mirrors process_file)
+# ---------------------------------------------------------------------------
+
+
+def _job_stub(*, retryable: bool) -> MagicMock:
+    """A minimal SAQ Job stub exposing only the ``.retryable`` attribute the guard reads."""
+    job = MagicMock()
+    job.retryable = retryable
+    return job
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_terminal_attempt_acks_then_raises(mock_extract: MagicMock) -> None:
+    """Terminal attempt (job not retryable): report_metadata_failed called once, then re-raise."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(side_effect=RuntimeError("server down"))
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = _job_stub(retryable=False)
+    file_id = uuid.uuid4()
+    mock_extract.return_value = ExtractedTags(artist="A")
+
+    with pytest.raises(RuntimeError, match="server down"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_metadata_failed.assert_awaited_once_with(file_id)
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_terminal_ack_failure_reraises_original_error(mock_extract: MagicMock) -> None:
+    """WR-01: on the TERMINAL attempt, if report_metadata_failed ALSO raises (E2), the ORIGINAL
+    task error (E1) must propagate -- not the ack error. The ack is awaited once, failure swallowed."""
+    from phaze.services.agent_client import AgentApiServerError
+
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(side_effect=RuntimeError("controller 5xx"))
+    api.report_metadata_failed = AsyncMock(side_effect=AgentApiServerError("ack boom"))
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = _job_stub(retryable=False)
+    file_id = uuid.uuid4()
+    mock_extract.return_value = ExtractedTags(artist="A")
+
+    # E1 (the put_metadata RuntimeError) propagates -- NOT E2 (the AgentApiServerError ack).
+    with pytest.raises(RuntimeError, match="controller 5xx"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_metadata_failed.assert_awaited_once_with(file_id)
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_retryable_attempt_does_not_ack(mock_extract: MagicMock) -> None:
+    """Retryable attempt: NO ack (row survives for the real retry), still re-raises."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(side_effect=RuntimeError("transient"))
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = _job_stub(retryable=True)
+    mock_extract.return_value = ExtractedTags(artist="A")
+
+    with pytest.raises(RuntimeError, match="transient"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs())
+
+    api.report_metadata_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_job_absent_does_not_ack(mock_extract: MagicMock) -> None:
+    """No job in ctx (pure unit context): NO ack, still re-raises (mirrors `job is not None`)."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(side_effect=RuntimeError("boom"))
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)  # no "job" key
+    mock_extract.return_value = ExtractedTags(artist="A")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await extract_file_metadata(ctx, **_make_payload_kwargs())
+
+    api.report_metadata_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_success_path_does_not_ack(mock_extract: MagicMock) -> None:
+    """Success path: report_metadata_failed is NOT called even on the terminal attempt."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(return_value=MagicMock())
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = _job_stub(retryable=False)
+    mock_extract.return_value = ExtractedTags(artist="A")
+
+    result = await extract_file_metadata(ctx, **_make_payload_kwargs())
+
+    assert result["status"] == "extracted"
+    api.report_metadata_failed.assert_not_awaited()
+
+
 # NOTE (Phase 35 D-06): the former ``test_run_scan_auto_enqueues_extraction`` test (which
 # asserted run_scan auto-enqueues the metadata-extraction task per the retired D-09) has been
 # removed. Metadata extraction is now operator-triggered ONLY; the inverse regression guard

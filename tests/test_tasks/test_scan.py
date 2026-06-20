@@ -46,6 +46,9 @@ async def test_scan_no_matches_returns_no_matches() -> None:
     assert result["status"] == "no_matches"
     assert result["file_id"] == str(file_id)
     api.create_tracklist.assert_not_awaited()
+    # Phase 45 (L-02): a no-match COMPLETE must ack exactly once so the ledger row clears
+    # (otherwise a legitimate no-match scan re-enqueues on every recovery -- T-45-16).
+    api.report_scan_terminal.assert_awaited_once_with(file_id)
 
 
 async def test_scan_with_matches_posts_tracklist() -> None:
@@ -84,6 +87,9 @@ async def test_scan_with_matches_posts_tracklist() -> None:
     # Artist/title intentionally None per W5 Option (b) -- controller-side enrichment
     assert body.tracks[0].artist is None
     assert body.tracks[0].title is None
+    # Phase 45 (L-02): the MATCH path clears via create_tracklist -- it must NOT also ack
+    # (no double-clear of scan_live_set:<file_id>).
+    api.report_scan_terminal.assert_not_awaited()
 
 
 async def test_scan_request_id_is_stable_across_calls() -> None:
@@ -125,6 +131,167 @@ async def test_orchestrator_error_propagates() -> None:
     with pytest.raises(RuntimeError, match="audfprint down"):
         await scan_live_set(ctx, **_make_payload_kwargs())
     api.create_tracklist.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02): scan terminal-ack on the create_tracklist failure path
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_match_terminal_failure_acks_then_raises() -> None:
+    """A retries-EXHAUSTED create_tracklist failure acks once, then re-raises (T-45-06)."""
+    from phaze.tasks.scan import scan_live_set
+
+    matches = [CombinedMatch(track_id="t1", confidence=80.0)]
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock(side_effect=RuntimeError("controller 5xx after retries"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=matches)
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    # SAQ job on its terminal (non-retryable) attempt.
+    ctx["job"] = MagicMock(retryable=False)
+    file_id = uuid.uuid4()
+
+    with pytest.raises(RuntimeError, match="controller 5xx"):
+        await scan_live_set(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_scan_terminal.assert_awaited_once_with(file_id)
+
+
+async def test_scan_match_retryable_failure_does_not_ack() -> None:
+    """A RETRYABLE create_tracklist failure re-raises WITHOUT acking -- the row survives for the retry."""
+    from phaze.tasks.scan import scan_live_set
+
+    matches = [CombinedMatch(track_id="t1", confidence=80.0)]
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock(side_effect=RuntimeError("transient"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=matches)
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    # SAQ job that still has a retry left.
+    ctx["job"] = MagicMock(retryable=True)
+
+    with pytest.raises(RuntimeError, match="transient"):
+        await scan_live_set(ctx, **_make_payload_kwargs())
+
+    api.report_scan_terminal.assert_not_awaited()
+
+
+async def test_scan_match_failure_without_job_in_ctx_does_not_ack() -> None:
+    """No job in ctx (pure unit context) -> the terminal guard is skipped; just re-raise."""
+    from phaze.tasks.scan import scan_live_set
+
+    matches = [CombinedMatch(track_id="t1", confidence=80.0)]
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock(side_effect=RuntimeError("boom"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=matches)
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)  # no "job" key
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await scan_live_set(ctx, **_make_payload_kwargs())
+
+    api.report_scan_terminal.assert_not_awaited()
+
+
+async def test_scan_match_terminal_ack_failure_reraises_original_error() -> None:
+    """WR-01: on the TERMINAL attempt, if the ack ALSO raises (E2), the ORIGINAL task error (E1)
+    must propagate -- not the ack error. The ack is awaited once and its failure is swallowed."""
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.scan import scan_live_set
+
+    matches = [CombinedMatch(track_id="t1", confidence=80.0)]
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock(side_effect=RuntimeError("controller 5xx"))
+    api.report_scan_terminal = AsyncMock(side_effect=AgentApiServerError("ack boom"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=matches)
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    ctx["job"] = MagicMock(retryable=False)
+    file_id = uuid.uuid4()
+
+    # E1 (the create_tracklist RuntimeError) propagates -- NOT E2 (the AgentApiServerError ack).
+    with pytest.raises(RuntimeError, match="controller 5xx"):
+        await scan_live_set(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_scan_terminal.assert_awaited_once_with(file_id)
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (CR-01 / T-45-16): scan terminal-ack on the NO-MATCH path
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_no_match_terminal_ack_raise_on_terminal_attempt_swallows_and_returns() -> None:
+    """No-match + ack raises on the TERMINAL attempt -> swallow + log, still return no_matches.
+
+    The terminal-ack is best-effort on the no-match branch: a clean COMPLETE found no
+    tracklist, so a controller hiccup on the retries-exhausted attempt must NOT block the
+    no_matches return -- the alternative leaks scan_live_set:<file_id> forever (T-45-16).
+    """
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.scan import scan_live_set
+
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock()
+    api.report_scan_terminal = AsyncMock(side_effect=AgentApiServerError("controller 5xx after retries"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=[])
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    # SAQ job on its terminal (non-retryable) attempt.
+    ctx["job"] = MagicMock(retryable=False)
+    file_id = uuid.uuid4()
+
+    result = await scan_live_set(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result["status"] == "no_matches"
+    assert result["file_id"] == str(file_id)
+    api.report_scan_terminal.assert_awaited_once_with(file_id)
+    api.create_tracklist.assert_not_awaited()
+
+
+async def test_scan_no_match_terminal_ack_raise_on_retryable_attempt_reraises() -> None:
+    """No-match + ack raises on a RETRYABLE attempt -> re-raise so SAQ retries (row survives)."""
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.scan import scan_live_set
+
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock()
+    api.report_scan_terminal = AsyncMock(side_effect=AgentApiServerError("transient"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=[])
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+    # SAQ job that still has a retry left.
+    ctx["job"] = MagicMock(retryable=True)
+    file_id = uuid.uuid4()
+
+    with pytest.raises(AgentApiServerError, match="transient"):
+        await scan_live_set(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_scan_terminal.assert_awaited_once_with(file_id)
+
+
+async def test_scan_no_match_terminal_ack_raise_without_job_reraises() -> None:
+    """No-match + ack raises with job absent from ctx -> treated as NON-terminal -> re-raise.
+
+    Mirrors the match-path guard exactly: a None job is not "terminal", so the conservative
+    behavior is to re-raise (let SAQ retry; the row survives for the real retry).
+    """
+    from phaze.services.agent_client import AgentApiServerError
+    from phaze.tasks.scan import scan_live_set
+
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock()
+    api.report_scan_terminal = AsyncMock(side_effect=AgentApiServerError("boom"))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=[])
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)  # no "job" key
+    file_id = uuid.uuid4()
+
+    with pytest.raises(AgentApiServerError, match="boom"):
+        await scan_live_set(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    api.report_scan_terminal.assert_awaited_once_with(file_id)
 
 
 async def test_http_error_propagates() -> None:

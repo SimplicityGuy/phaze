@@ -31,7 +31,7 @@ dependencies = [
     # suspenders fallback for the pure-Python path.
     "pebble>=5.2.0",
     "psycopg[binary]>=3.3.4",
-    "pydantic-settings>=2.14.1",
+    "pydantic-settings>=2.14.2",
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
     # secret resolution. Already installed transitively via pydantic-settings' env_file
     # support; declared explicitly so the direct import is not a transitive accident.

@@ -11,6 +11,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
@@ -32,6 +33,7 @@ __all__ = [
     "RenameProposal",
     "ScanBatch",
     "ScanStatus",
+    "SchedulingLedger",
     "TagWriteLog",
     "TagWriteStatus",
     "Tracklist",

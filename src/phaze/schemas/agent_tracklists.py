@@ -50,3 +50,18 @@ class TracklistCreateResponse(BaseModel):
     tracklist_id: uuid.UUID
     version: int
     track_count: int
+
+
+class ScanTerminalAckResponse(BaseModel):
+    """Success body of POST /tracklists/{file_id}/scanned (Phase 45 L-02).
+
+    The terminal-ack endpoint the scan task calls on a no-match COMPLETE or a
+    retries-exhausted terminal failure, so every ``scan_live_set`` run clears its
+    ``scan_live_set:<file_id>`` scheduling-ledger row exactly once (the match path
+    clears via ``create_tracklist``). ``cleared`` is always ``True`` -- the clear is
+    a no-op when the row is already absent, but the ack semantics are "the row is
+    gone now" regardless.
+    """
+
+    file_id: uuid.UUID
+    cleared: bool

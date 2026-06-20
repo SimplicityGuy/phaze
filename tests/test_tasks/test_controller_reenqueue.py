@@ -12,16 +12,25 @@ Two groups:
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 
+@contextlib.asynccontextmanager
+async def _fake_session_cm() -> Any:
+    """An async-context-manager session stub so the startup ledger backfill's `async with` works."""
+    yield MagicMock(name="session", commit=AsyncMock())
+
+
 def _patch_startup_constructors(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch the heavyweight startup constructors so no real connections open."""
     monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    # async_sessionmaker(...) must return a CALLABLE that yields an async-cm session: the Phase-45
+    # startup ledger backfill opens `async with ctx["async_session"]() as session`.
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: lambda *_a2, **_kw2: _fake_session_cm())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
     monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())

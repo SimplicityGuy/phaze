@@ -46,6 +46,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWritePayload,
     AnalysisWriteResponse,
 )
+from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 logger = structlog.get_logger(__name__)
@@ -187,6 +188,13 @@ async def put_analysis(
     if dumped:
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYZED))
 
+    # Phase 45 (L-02): clear the agent-stage scheduling-ledger row in the SAME transaction
+    # as the result write. The agent worker is Postgres-free, so this control-side callback
+    # is the earliest control-visible moment the analyze outcome is known. Key is reconstructed
+    # from the fixed function name + the PATH file_id ONLY (never a body field -- AUTH-01 /
+    # T-45-05: a body field cannot redirect the clear to another file's key).
+    await clear_ledger_entry(session, f"process_file:{file_id}")
+
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
 
@@ -211,6 +219,10 @@ async def report_analysis_failed(
     the terminal state itself is the durable signal recorded here.
     """
     await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+    # Phase 45 (L-02, locked decision #1 -- THE POISON CASE): a terminal analyze failure must
+    # NOT recovery-re-queue. Clear the process_file:<file_id> ledger row in the SAME transaction
+    # as the ANALYSIS_FAILED state write. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
+    await clear_ledger_entry(session, f"process_file:{file_id}")
     await session.commit()
     logger.warning(
         "analysis_failed reported",

@@ -18,7 +18,9 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_metadata import router as agent_metadata_router
+from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
 if TYPE_CHECKING:
@@ -55,6 +57,17 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
     )
     await session.commit()
     return file_id
+
+
+async def _seed_ledger(session: AsyncSession, key: str, function: str, file_id: uuid.UUID) -> None:
+    await upsert_ledger_entry(session, key=key, function=function, kwargs={"file_id": str(file_id)})
+    await session.commit()
+
+
+async def _ledger_present(session: AsyncSession, key: str) -> bool:
+    session.expire_all()
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
+    return row is not None
 
 
 @pytest.mark.asyncio
@@ -221,3 +234,151 @@ async def test_metadata_empty_put_is_noop_for_existing_row(
     row = result.scalar_one()
     assert row.artist == "Aphex Twin"
     assert row.title == "Xtal"
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02): extract_file_metadata ledger clear on the success callback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_success_clears_ledger(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A successful metadata PUT clears extract_file_metadata:<file_id> in the same transaction."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, key, "extract_file_metadata", file_id)
+    assert await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "A"})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "metadata callback must clear the ledger row"
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_clear_is_noop_when_absent(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A success callback with NO ledger row still returns 200 (no-op clear)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    assert not await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "A"})
+
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_clear_uses_path_file_id_not_redirected(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The clear key uses the PATH file_id; another file's ledger row is untouched (T-45-05)."""
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+    key_a = f"extract_file_metadata:{file_a}"
+    key_b = f"extract_file_metadata:{file_b}"
+    await _seed_ledger(session, key_a, "extract_file_metadata", file_a)
+    await _seed_ledger(session, key_b, "extract_file_metadata", file_b)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.put(f"/api/internal/agent/metadata/{file_a}", json={"artist": "A"})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key_a)
+    assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared"
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02 / CR-02): POST /{file_id}/failed terminal-failure ledger clear
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_clears_ledger(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A terminal-failure POST clears extract_file_metadata:<file_id> (closes CR-02)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, key, "extract_file_metadata", file_id)
+    assert await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["agent_id"] == agent.id
+    assert body["file_id"] == str(file_id)
+    assert body["cleared"] is True
+    assert not await _ledger_present(session, key), "terminal-failure callback must clear the ledger row"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_is_noop_when_absent(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A terminal-failure POST with NO ledger row still returns 200 (no-op clear)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    assert not await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is True
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_uses_path_file_id_not_redirected(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The terminal clear key uses the PATH file_id; another file's row is untouched (T-45-05)."""
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+    key_a = f"extract_file_metadata:{file_a}"
+    key_b = f"extract_file_metadata:{file_b}"
+    await _seed_ledger(session, key_a, "extract_file_metadata", file_a)
+    await _seed_ledger(session, key_b, "extract_file_metadata", file_b)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_a}/failed")
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key_a)
+    assert await _ledger_present(session, key_b), "another file's ledger row must NOT be cleared by the terminal ack"
+
+
+# ---------------------------------------------------------------------------
+# WR-02: MetadataFailureResponse.cleared is a Literal[True] invariant (no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_metadata_failure_response_accepts_cleared_true() -> None:
+    """cleared=True constructs successfully (the only valid value)."""
+    from phaze.schemas.agent_metadata import MetadataFailureResponse
+
+    resp = MetadataFailureResponse(agent_id="a", file_id=uuid.uuid4(), cleared=True)
+    assert resp.cleared is True
+
+
+def test_metadata_failure_response_rejects_cleared_false() -> None:
+    """WR-02: cleared=False is machine-rejected by Pydantic (Literal[True] invariant)."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_metadata import MetadataFailureResponse
+
+    with pytest.raises(ValidationError):
+        MetadataFailureResponse(agent_id="a", file_id=uuid.uuid4(), cleared=False)

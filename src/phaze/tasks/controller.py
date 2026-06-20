@@ -37,7 +37,7 @@ from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
-from phaze.tasks.reenqueue import recover_orphaned_work
+from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
@@ -103,12 +103,22 @@ async def startup(ctx: dict[str, Any]) -> None:
     # The module-level PostgresQueue is still stashed for readers that enqueue follow-on work.
     ctx["queue"] = queue
 
+    # Phase 45 (L-01/L-02): attach the control-side scheduling-ledger sessionmaker to BOTH the
+    # module-level controller queue AND every per-agent router queue, so the before_enqueue WRITE
+    # hook records each control-side enqueue and the after_process hook clears controller-stage
+    # rows on terminal status. The module-level queue is constructed at import time BEFORE the
+    # engine exists, so the handle is attached HERE (once the engine + sessionmaker are built).
+    # ``ctx["async_session"]`` is the control-side sessionmaker bound to ``task_engine``.
+    queue.ledger_sessionmaker = ctx["async_session"]  # type: ignore[attr-defined]
+
     # Phase 32: per-agent task router for reboot re-enqueue routing. Built ONCE
     # here and reused for the boot-time call + every cron tick (RESEARCH Pitfall 4 --
     # never construct a fresh AgentTaskRouter per call, it would leak pools).
     # Mirrors the discogs_client create/close lifecycle: created in startup, closed
     # in shutdown. Phase 36: takes (queue_url, cache_redis_url) -- Postgres broker + Redis cache.
-    ctx["task_router"] = AgentTaskRouter(cfg.queue_url, cfg.redis_url)
+    # Phase 45: pass the ledger sessionmaker so each per-agent queue the router builds attaches it
+    # (the agent-routed recovery/startup enqueues record their ledger rows control-side).
+    ctx["task_router"] = AgentTaskRouter(cfg.queue_url, cfg.redis_url, ledger_sessionmaker=ctx["async_session"])
 
     # Phase 42 DURABILITY REFRAME (D-01/D-02 -- DO NOT "restore" a steady-state re-enqueue cron):
     # Phase 36 moved the SAQ broker from Redis to Postgres (``saq_jobs`` table). Queued/active jobs
@@ -121,6 +131,22 @@ async def startup(ctx: dict[str, Any]) -> None:
     # (truncate / restore-from-backup / fresh migration). The manual DAG "Recover" button calls the
     # SAME producer (force=True), so the two paths cannot drift. Boot resilience is non-negotiable: a
     # recovery failure must NEVER abort controller boot (RESEARCH Pitfall 3) -- broad try/except.
+    # Phase 45 Plan 04 (L-04/L-05, locked decision #3): ONE-TIME idempotent startup ledger backfill,
+    # run BEFORE recovery so the in-flight cohort already in saq_jobs (and any residual incident jobs)
+    # is recoverable on first boot -- no blind window between the 022 migration landing and the
+    # before_enqueue WRITE hook populating the ledger. This is a CONTROL-SIDE runtime reconcile, NOT
+    # an Alembic data step (Alembic must never touch saq_jobs). It is idempotent (ON CONFLICT DO
+    # NOTHING) so it stays safe on every boot and becomes a cheap no-op once the transition cohort
+    # drains. Wrapped in its OWN try/except so a backfill failure logs and NEVER aborts boot or blocks
+    # the subsequent recovery (boot resilience, T-45-14).
+    try:
+        async with ctx["async_session"]() as session:
+            tally = await backfill_ledger_from_saq_jobs(session)
+            await session.commit()
+        logger.info("phaze.controller startup ledger backfill", inserted=tally["inserted"], skipped=tally["skipped"])
+    except Exception:
+        logger.exception("ledger backfill on startup failed")
+
     try:
         result = await recover_orphaned_work(ctx)
         logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])

@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING, Any
 
-from saq.job import Status
+from saq.job import TERMINAL_STATUSES, Status
 import structlog
 
 from phaze.services.pipeline_counters import incr_completed, incr_enqueued
@@ -114,26 +114,80 @@ async def apply_deterministic_key(job: Job) -> None:
         # Counter is a cache; never block the enqueue on a Redis hiccup.
         logger.warning("pipeline enqueued-counter increment failed", function=job.function, exc_info=True)
 
+    # Phase 45 (L-01): durable scheduling-ledger WRITE at the single before_enqueue chokepoint.
+    # The DB handle hangs off the queue (symmetric with cache_redis); it is ONLY present on the
+    # control-side queues (controller + per-agent router queues). On the agent worker queue (and
+    # test fakes) it is absent, so this whole block degrades to a logged no-op -- the agent
+    # boundary stays Postgres-free (T-45-02). The import is function-LOCAL so the module-level
+    # graph never pulls phaze.services.scheduling_ledger (and thus phaze.models / sqlalchemy.ext
+    # .asyncio) on the agent path -- it executes only when ledger_sessionmaker is present.
+    try:
+        sm = getattr(job.queue, "ledger_sessionmaker", None)
+        if sm is not None:
+            # INTENTIONAL function-local import (PLC0415 suppressed on the import line below):
+            # this module is _shared (the agent worker imports it); a top-level import of the
+            # ledger service would drag phaze.models / sqlalchemy.ext.asyncio into the agent graph
+            # and break the Postgres-free boundary (test_task_split). It runs only when a
+            # control-side ledger_sessionmaker is present.
+            from phaze.services.scheduling_ledger import upsert_ledger_entry  # noqa: PLC0415
+
+            async with sm() as session:
+                await upsert_ledger_entry(session, key=job.key, function=job.function, kwargs=dict(job.kwargs or {}))
+                await session.commit()
+    except Exception:
+        # The ledger is best-effort here; a hiccup degrades to "row not written" (recovered by the
+        # Plan-04 backfill / next recovery) and must NEVER block an enqueue (T-45-03).
+        logger.warning("scheduling-ledger upsert failed", function=job.function, key=job.key, exc_info=True)
+
 
 async def increment_completed(ctx: dict[str, Any]) -> None:
-    """SAQ ``after_process`` hook -- bump ``completed`` on a ``Status.COMPLETE`` outcome.
+    """SAQ ``after_process`` hook -- bump ``completed`` on COMPLETE + clear the ledger on terminal.
 
     Wired as a Worker constructor kwarg (``"after_process"``) in both worker settings dicts
-    (35-RESEARCH Q2). Runs for every terminal outcome; only a ``Status.COMPLETE`` job bumps
-    the counter. Best-effort: any failure is logged, never raised.
+    (35-RESEARCH Q2). ``after_process`` runs in a ``finally`` after EVERY outcome, so
+    ``job.status`` is the authoritative terminal/non-terminal signal: ``finish()`` sets a
+    terminal status, ``retry()`` sets ``Status.QUEUED``.
+
+    Two best-effort actions, both gated on ``job.function in _KEY_BUILDERS`` and never raising:
+
+    1. completed-counter INCR -- only on ``Status.COMPLETE`` (preserves the Phase-35 contract).
+    2. Phase 45 (L-02, controller half) scheduling-ledger CLEAR -- on ``job.status in
+       TERMINAL_STATUSES`` {COMPLETE, FAILED, ABORTED}, NOT on a retry (Status.QUEUED). Locked
+       decision #1: a terminal ``failed`` clears the row (no poison re-queue) just like success.
+       The clear only reaches Postgres when ``ledger_sessionmaker`` is present (controller
+       worker); on the agent worker (no handle) it is a logged no-op -- agent-stage clears are
+       Plan 02's job (the control-side callback handlers).
     """
     job = ctx.get("job")
-    if job is None or job.status != Status.COMPLETE:
+    if job is None or job.function not in _KEY_BUILDERS:
         return
-    if job.function not in _KEY_BUILDERS:
-        return
-    try:
-        redis = getattr(job.queue, "cache_redis", None)
-        if redis is not None:
-            await incr_completed(redis, job.function)
-    except Exception:
-        # Counter is a cache; never block job teardown on a Redis hiccup.
-        logger.warning("pipeline completed-counter increment failed", function=job.function, exc_info=True)
+
+    if job.status == Status.COMPLETE:
+        try:
+            redis = getattr(job.queue, "cache_redis", None)
+            if redis is not None:
+                await incr_completed(redis, job.function)
+        except Exception:
+            # Counter is a cache; never block job teardown on a Redis hiccup.
+            logger.warning("pipeline completed-counter increment failed", function=job.function, exc_info=True)
+
+    if job.status in TERMINAL_STATUSES:
+        # Function-LOCAL import (mirrors the WRITE hook) so the agent import graph stays
+        # Postgres-free; it executes only when ledger_sessionmaker is present (control-side).
+        try:
+            sm = getattr(job.queue, "ledger_sessionmaker", None)
+            if sm is not None:
+                # INTENTIONAL function-local import (see apply_deterministic_key; PLC0415 suppressed
+                # on the import line): keeps the ledger service out of the agent's _shared import
+                # graph; runs only when a control-side ledger_sessionmaker is present.
+                from phaze.services.scheduling_ledger import clear_ledger_entry  # noqa: PLC0415
+
+                async with sm() as session:
+                    await clear_ledger_entry(session, job.key)
+                    await session.commit()
+        except Exception:
+            # Best-effort: a clear hiccup leaves the row for the next recovery; never raise (T-45-03).
+            logger.warning("scheduling-ledger clear failed", function=job.function, key=job.key, exc_info=True)
 
 
 __all__ = ["apply_deterministic_key", "increment_completed"]

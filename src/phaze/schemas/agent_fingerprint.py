@@ -1,5 +1,6 @@
 """Pydantic schemas for PUT /api/internal/agent/fingerprints/{file_id}/{engine} (phase-25)."""
 
+from typing import Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,3 +21,19 @@ class FingerprintWriteResponse(BaseModel):
     agent_id: str
     file_id: uuid.UUID
     engine: str
+
+
+class FingerprintFailureResponse(BaseModel):
+    """Success body of POST /fingerprints/{file_id}/failed (Phase 45 L-02 / CR-02).
+
+    The terminal-ack endpoint the fingerprint task calls on a retries-exhausted
+    failure so every ``fingerprint_file`` run clears its single-per-file
+    ``fingerprint_file:<file_id>`` scheduling-ledger row exactly once (the success
+    path clears via ``put_fingerprint``). The ledger key is per-file, NOT per
+    engine, so there is no ``engine`` field here. ``cleared`` is always ``True``
+    -- the clear is a no-op when the row is already absent.
+    """
+
+    agent_id: str
+    file_id: uuid.UUID
+    cleared: Literal[True]

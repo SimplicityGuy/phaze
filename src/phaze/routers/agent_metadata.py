@@ -11,7 +11,8 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.metadata import FileMetadata
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_metadata import MetadataWriteRequest, MetadataWriteResponse
+from phaze.schemas.agent_metadata import MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
+from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 router = APIRouter(prefix="/api/internal/agent/metadata", tags=["agent-internal"])
@@ -67,5 +68,38 @@ async def put_metadata(
         # Avoids Postgres "SET clause empty" syntax error.
         stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
     await session.execute(stmt)
+    # Phase 45 (L-02): clear the extract_file_metadata:<file_id> ledger row in the SAME
+    # transaction as the metadata upsert. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
+    await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")
     await session.commit()
     return MetadataWriteResponse(agent_id=agent.id, file_id=file_id)
+
+
+@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=MetadataFailureResponse)
+async def report_metadata_failed(
+    file_id: uuid.UUID,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> MetadataFailureResponse:
+    """Terminal-ack for a retries-exhausted ``extract_file_metadata`` run (Phase 45 L-02 / CR-02).
+
+    ``put_metadata`` clears the ledger row on SUCCESS; this endpoint closes the
+    terminal-failure hole so EVERY ``extract_file_metadata`` run clears
+    ``extract_file_metadata:<file_id>`` exactly once. Without it, a terminally-failed
+    metadata file stays in ``get_metadata_pending_files`` (which returns ALL music/video
+    files regardless of state), so ``is_domain_completed`` can never fire and
+    ``recover_orphaned_work`` re-enqueues it on every recovery pass forever -- the
+    unbounded recovery re-enqueue loop the ledger was introduced to prevent (CR-02).
+
+    ``agent`` is bound from the auth dep (token, never body -- AUTH-01); the clear key is
+    reconstructed from the PATH ``file_id`` ONLY + the fixed function name, matching the
+    deterministic WRITE key exactly, so a forged request cannot redirect the clear to
+    another file's key (T-45-05). Clearing an absent row is a clean no-op (still 200).
+    The endpoint writes no FileState -- metadata has no dedicated terminal state; clearing
+    the ledger row is the sole required control-side effect.
+    """
+    await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")
+    await session.commit()
+    # Touch ``agent`` so ARG001 doesn't fire; the binding's real role is auth-gating.
+    _ = agent.id
+    return MetadataFailureResponse(agent_id=agent.id, file_id=file_id, cleared=True)

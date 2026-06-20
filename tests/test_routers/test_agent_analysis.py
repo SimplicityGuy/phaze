@@ -21,7 +21,9 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord, FileState
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_analysis import router as agent_analysis_router
+from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
 if TYPE_CHECKING:
@@ -65,6 +67,18 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
     )
     await session.commit()
     return file_id
+
+
+async def _seed_ledger(session: AsyncSession, key: str, function: str, file_id: uuid.UUID) -> None:
+    """Seed a scheduling-ledger row so the callback's clear has something to remove."""
+    await upsert_ledger_entry(session, key=key, function=function, kwargs={"file_id": str(file_id)})
+    await session.commit()
+
+
+async def _ledger_present(session: AsyncSession, key: str) -> bool:
+    session.expire_all()
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
+    return row is not None
 
 
 @pytest.mark.asyncio
@@ -513,3 +527,74 @@ async def test_analysis_unknown_token_returns_403(seed_test_agent: tuple[Agent, 
         r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 120.0})
 
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Phase 45 (L-02): agent-stage scheduling-ledger clear on the control-side callbacks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_success_clears_ledger(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A successful PUT clears process_file:<file_id> in the same transaction as ANALYZED."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    await _seed_ledger(session, key, "process_file", file_id)
+    assert await _ledger_present(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 128.0})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "successful analyze callback must clear the ledger row"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_clears_ledger_poison_case(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST /{file_id}/failed clears process_file:<file_id> -- locked decision #1, the poison case."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    await _seed_ledger(session, key, "process_file", file_id)
+    assert await _ledger_present(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key), "terminal-failure callback must clear the ledger row (no recovery re-queue)"
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_clear_is_noop_when_ledger_absent(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A success callback with NO ledger row (e.g. a re-delivered callback) still returns 200."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    assert not await _ledger_present(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 128.0})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key)
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_clear_uses_path_file_id_not_redirected(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The clear key uses the PATH file_id; another file's ledger row is untouched (T-45-05)."""
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+    key_a = f"process_file:{file_a}"
+    key_b = f"process_file:{file_b}"
+    await _seed_ledger(session, key_a, "process_file", file_a)
+    await _seed_ledger(session, key_b, "process_file", file_b)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_a}", json={"bpm": 128.0})
+
+    assert r.status_code == 200, r.text
+    assert not await _ledger_present(session, key_a), "the PATH file_a ledger row must be cleared"
+    assert await _ledger_present(session, key_b), "another file's ledger row must NOT be redirected/cleared"

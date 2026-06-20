@@ -56,16 +56,17 @@ if TYPE_CHECKING:
         ExecutionLogPatchResponse,
     )
     from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
-    from phaze.schemas.agent_fingerprint import FingerprintWriteRequest, FingerprintWriteResponse
+    from phaze.schemas.agent_fingerprint import FingerprintFailureResponse, FingerprintWriteRequest, FingerprintWriteResponse
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
     from phaze.schemas.agent_identity import AgentIdentity
-    from phaze.schemas.agent_metadata import MetadataWriteRequest, MetadataWriteResponse
+    from phaze.schemas.agent_metadata import MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
     from phaze.schemas.agent_proposals import (
         ProposalStatePatch,
         ProposalStateResponse,
     )
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
     from phaze.schemas.agent_tracklists import (
+        ScanTerminalAckResponse,
         TracklistCreatePayload,
         TracklistCreateResponse,
     )
@@ -280,6 +281,39 @@ class PhazeAgentClient:
         )
         return AnalysisFailureResponse.model_validate(response.json())
 
+    async def report_metadata_failed(self, file_id: uuid.UUID) -> MetadataFailureResponse:
+        """POST /api/internal/agent/metadata/{file_id}/failed -- metadata terminal-ack (Phase 45 L-02 / CR-02).
+
+        The agent calls this on a retries-exhausted ``extract_file_metadata`` terminal
+        failure so the control side clears the ``extract_file_metadata:<file_id>``
+        scheduling-ledger row (the success path clears via ``put_metadata``). ``file_id``
+        rides the path only (AUTH-01); no body. httpx-only -- NO database import, keeping
+        the agent worker Postgres-free (tests/test_task_split.py)."""
+        from phaze.schemas.agent_metadata import MetadataFailureResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/metadata/{file_id}/failed",
+        )
+        return MetadataFailureResponse.model_validate(response.json())
+
+    async def report_fingerprint_failed(self, file_id: uuid.UUID) -> FingerprintFailureResponse:
+        """POST /api/internal/agent/fingerprints/{file_id}/failed -- fingerprint terminal-ack (Phase 45 L-02 / CR-02).
+
+        The agent calls this on a retries-exhausted ``fingerprint_file`` terminal failure
+        so the control side clears the single-per-file ``fingerprint_file:<file_id>``
+        scheduling-ledger row (the success path clears via ``put_fingerprint``). The clear
+        key is per-file, NOT per engine. ``file_id`` rides the path only (AUTH-01); no body.
+        httpx-only -- NO database import, keeping the agent worker Postgres-free
+        (tests/test_task_split.py)."""
+        from phaze.schemas.agent_fingerprint import FingerprintFailureResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/fingerprints/{file_id}/failed",
+        )
+        return FingerprintFailureResponse.model_validate(response.json())
+
     async def create_tracklist(self, payload: TracklistCreatePayload) -> TracklistCreateResponse:
         """POST /api/internal/agent/tracklists -- atomic tracklist insert (D-27)."""
         from phaze.schemas.agent_tracklists import TracklistCreateResponse  # noqa: PLC0415
@@ -290,6 +324,22 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return TracklistCreateResponse.model_validate(response.json())
+
+    async def report_scan_terminal(self, file_id: uuid.UUID) -> ScanTerminalAckResponse:
+        """POST /api/internal/agent/tracklists/{file_id}/scanned -- scan terminal-ack (Phase 45 L-02).
+
+        The agent calls this on a ``scan_live_set`` no-match COMPLETE or a retries-exhausted
+        terminal failure so the control side clears the ``scan_live_set:<file_id>`` scheduling-
+        ledger row (the MATCH path clears via ``create_tracklist``). ``file_id`` rides the path
+        only (AUTH-01); no body. httpx-only -- NO database import, keeping the agent worker
+        Postgres-free (tests/test_task_split.py)."""
+        from phaze.schemas.agent_tracklists import ScanTerminalAckResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/tracklists/{file_id}/scanned",
+        )
+        return ScanTerminalAckResponse.model_validate(response.json())
 
     async def post_execution_log(self, payload: ExecutionLogCreate) -> ExecutionLogCreateResponse:
         """POST /api/internal/agent/execution-log -- INSERT-on-conflict-do-nothing."""
