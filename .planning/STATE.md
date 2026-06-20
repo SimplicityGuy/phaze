@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: 45
 Plan: Not started
 Status: Milestone complete
-Last activity: 2026-06-19
+Last activity: 2026-06-20 - Completed quick task 260620-jvu: harden Phase 45 code-review warnings (WR-01, WR-02)
 
 Progress: [██████████] 100%
 
@@ -117,6 +117,7 @@ None.
 | 260606-n0y | Reconcile GHCR image paths: cleanup targets canonical bare `phaze`, orphan `phaze/api` documented as deprecated, publish/cleanup parity guard test | 2026-06-06 | a993aea | [260606-n0y-reconcile-ghcr-image-paths-stop-orphanin](./quick/260606-n0y-reconcile-ghcr-image-paths-stop-orphanin/) |
 | 260606-n7g | Switch audfprint/panako sidecars in docker-compose.agent.yml to pull published GHCR images (commented build fallback); update deployment docs + tests | 2026-06-06 | 95cd630 | [260606-n7g-switch-audfprint-panako-sidecars-in-dock](./quick/260606-n7g-switch-audfprint-panako-sidecars-in-dock/) |
 | 260606-nha | Add `phaze agents add` management CLI (token mint + sha256 hash + id-charset validation + queue-name output) and document PHAZE_AGENT_QUEUE = phaze-agent-<agent_id> convention | 2026-06-06 | 602488a | [260606-nha-add-a-phaze-agents-add-management-cli-ge](./quick/260606-nha-add-a-phaze-agents-add-management-cli-ge/) |
+| 260620-jvu | Harden Phase 45 code-review warnings: WR-01 nested swallow+log guard on terminal-ack except blocks (scan match-failure, metadata, fingerprint) so a double-failure re-raises the original error; WR-02 `cleared: Literal[True]` on failure-response schemas | 2026-06-20 | d9123af | [260620-jvu-harden-ledger-ack-warnings](./quick/260620-jvu-harden-ledger-ack-warnings/) |
 | 260608-i21 | Harden agent model bootstrap against transient download failures: per-file retry with bounded backoff+jitter, explicit httpx timeouts, atomic os.replace, Content-Length truncation check, fail-fast 4xx / retry 5xx (Verified) | 2026-06-08 | b0ddc4f | [260608-i21-harden-agent-model-bootstrap-against-tra](./quick/260608-i21-harden-agent-model-bootstrap-against-tra/) |
 | 260608-jbg | Validate model integrity on bootstrap via per-file HEAD Content-Length size check (size-only); shared bounded-retry+timeout across HEAD+GET so no request can wedge the worker; remove count-only gate (always validate); re-download truncated/corrupt files; correct stale ~150MB estimate to ~3.1GB/34 files (Verified). Extends PR #91. | 2026-06-08 | b86babd | [260608-jbg-validate-model-integrity-on-bootstrap-vi](./quick/260608-jbg-validate-model-integrity-on-bootstrap-vi/) |
 | 260609-f96 | Fix scan_directory 10s asyncio.TimeoutError: AgentTaskRouter._queue_for built per-agent SAQ queues without the apply_project_job_defaults before_enqueue hook, so agent-dispatched jobs inherited SAQ's 10s default instead of worker_job_timeout=600. Register the hook on each per-agent queue (3rd call site) + regression test. Found live on nox/lux v4.0.4. | 2026-06-09 | c6c7e20 | [260609-f96-fix-scan-directory-10s-timeouterror-regi](./quick/260609-f96-fix-scan-directory-10s-timeouterror-regi/) |
