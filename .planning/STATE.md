@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 Phase: 45
 Plan: Not started
 Status: Phase 45 shipped — PR #146
-Last activity: 2026-06-20
+Last activity: 2026-06-22 - Completed quick task 260622-i0w: scanned/deduped/unique reconciliation in pipeline UI
 
 Progress: [██████████] 100%
 
@@ -115,6 +115,7 @@ None.
 | 260608-mbc | Fix three scan-incident issues: container uid→1000:1000 (Dockerfile), scan_directory surfaces permission-denied walks as failed, ScanBatch.completed_at + migration 015 so elapsed freezes | 2026-06-08 | cdc3c59 | [260608-mbc-fix-three-scan-incident-issues-in-one-pr](./quick/260608-mbc-fix-three-scan-incident-issues-in-one-pr/) |
 | 260606-n0y | Reconcile GHCR image paths: cleanup targets canonical bare `phaze`, orphan `phaze/api` documented as deprecated, publish/cleanup parity guard test | 2026-06-06 | a993aea | [260606-n0y-reconcile-ghcr-image-paths-stop-orphanin](./quick/260606-n0y-reconcile-ghcr-image-paths-stop-orphanin/) |
 | 260606-n7g | Switch audfprint/panako sidecars in docker-compose.agent.yml to pull published GHCR images (commented build fallback); update deployment docs + tests | 2026-06-06 | 95cd630 | [260606-n7g-switch-audfprint-panako-sidecars-in-dock](./quick/260606-n7g-switch-audfprint-panako-sidecars-in-dock/) |
+| 260622-i0w | Add scanned/deduped/unique reconciliation to pipeline UI (Discovery DAG node + Recent Scans FILES cell); explains the discovery-vs-agent count gap as NFC-collision dedup, not lost work | 2026-06-22 | 8d805bd | [260622-i0w-add-scanned-deduped-unique-reconciliatio](./quick/260622-i0w-add-scanned-deduped-unique-reconciliatio/) |
 | 260606-nha | Add `phaze agents add` management CLI (token mint + sha256 hash + id-charset validation + queue-name output) and document PHAZE_AGENT_QUEUE = phaze-agent-<agent_id> convention | 2026-06-06 | 602488a | [260606-nha-add-a-phaze-agents-add-management-cli-ge](./quick/260606-nha-add-a-phaze-agents-add-management-cli-ge/) |
 | 260620-jvu | Harden Phase 45 code-review warnings: WR-01 nested swallow+log guard on terminal-ack except blocks (scan match-failure, metadata, fingerprint) so a double-failure re-raises the original error; WR-02 `cleared: Literal[True]` on failure-response schemas | 2026-06-20 | d9123af | [260620-jvu-harden-ledger-ack-warnings](./quick/260620-jvu-harden-ledger-ack-warnings/) |
 | 260608-i21 | Harden agent model bootstrap against transient download failures: per-file retry with bounded backoff+jitter, explicit httpx timeouts, atomic os.replace, Content-Length truncation check, fail-fast 4xx / retry 5xx (Verified) | 2026-06-08 | b0ddc4f | [260608-i21-harden-agent-model-bootstrap-against-tra](./quick/260608-i21-harden-agent-model-bootstrap-against-tra/) |
