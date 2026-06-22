@@ -19,6 +19,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -62,6 +63,132 @@ async def get_pipeline_stats(session: AsyncSession) -> dict[str, int]:
     counts: dict[str, int] = {row[0]: row[1] for row in result.all()}
     # Ensure all stages are present (default 0)
     return {stage.value: counts.get(stage.value, 0) for stage in PIPELINE_STAGES}
+
+
+# --- Scanned / deduped / unique reconciliation (quick 260622-i0w) -----------------------
+#
+# The Discovery DAG node shows COUNT(files) while the agent scan total is SUM(scan_batches
+# .total_files). The two legitimately differ: an agent walks total_files paths but each path
+# upserts onto the NFC-normalized composite unique key (agent_id, original_path), so duplicate
+# / normalization-collision walks collapse onto an existing row instead of inserting a new one.
+# That gap is "deduped", NOT lost work. These helpers compute it degrade-safely so the apparent
+# bug reads as a self-explaining reconciliation.
+#
+# LOCKED formulas:
+#   scanned   = SUM over agents of (each agent's MOST RECENT completed ScanBatch).total_files
+#               (re-scan-safe: a re-scan makes a NEW completed batch; summing ALL would inflate).
+#   deduped   = max(0, scanned - discovery_done); discovery_done = COUNT(all FileRecord rows).
+#   per-agent = max(0, agent_latest_completed.total_files - COUNT(files WHERE agent_id = X)).
+# A None scanned (no completed batches OR a DB error) is the "hide the whole line" sentinel,
+# deliberately distinct from a real 0.
+
+
+def deduped_count(scanned: int | None, unique: int) -> int | None:
+    """Pure reconciliation arithmetic: None passthrough + clamp-to-zero (no I/O, unit-testable).
+
+    Returns None when ``scanned`` is None (the UI then HIDES the reconciliation line — a None
+    scan total is "unavailable", not "zero deduped"). Otherwise returns ``max(0, scanned - unique)``
+    so the deduped count can never go negative when more files exist than the latest scan walked
+    (a stale/older scan total against a freshly-grown file table).
+    """
+    if scanned is None:
+        return None
+    return max(0, scanned - unique)
+
+
+async def get_scanned_total(session: AsyncSession) -> int | None:
+    """SUM each agent's LATEST completed ``ScanBatch.total_files``, degrading to None on any error.
+
+    Re-scan-safe: a re-scan creates a NEW completed batch for the same agent, so summing ALL
+    completed batches would double-count. Instead a window function ranks each agent's completed
+    batches by ``created_at`` DESC and only ``rn == 1`` (the most recent) is summed.
+
+    Returns None (NOT 0) both when there are no completed batches and on any DB error: None is the
+    "hide the reconciliation" sentinel, distinct from a genuine scanned total of 0. Mirrors the
+    :func:`_safe_count` / :func:`get_stage_controls` degrade discipline (log → guarded rollback →
+    sentinel) so it never raises into the 5s dashboard poll.
+    """
+    try:
+        ranked = (
+            select(
+                ScanBatch.total_files.label("total_files"),
+                func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+            )
+            .where(ScanBatch.status == ScanStatus.COMPLETED.value)
+            .subquery()
+        )
+        total = (await session.execute(select(func.sum(ranked.c.total_files)).where(ranked.c.rn == 1))).scalar()
+        return int(total) if total is not None else None
+    except Exception:
+        logger.warning("scanned_total_degraded", exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("scanned_total_rollback_failed", exc_info=True)
+        return None
+
+
+async def get_global_reconciliation(session: AsyncSession) -> dict[str, int | None]:
+    """Return ``{"scanned": int|None, "deduped": int|None}`` for the Discovery DAG-node subtitle.
+
+    ``scanned`` is :func:`get_scanned_total`; when it degrades to None the whole reconciliation is
+    the hidden state ``{"scanned": None, "deduped": None}`` (no DB work attempted). Otherwise
+    ``discovery_done`` is COUNT(ALL FileRecord rows) via :func:`_safe_count` — note total_files
+    counts only extractable music/video while discovery_done counts ALL rows; the LOCKED formula is
+    still ``scanned - discovery_done`` (the gap IS the dedup/collision count). ``deduped`` clamps to
+    0 when discovery_done ≥ scanned. Both reads degrade independently, so the dict never raises into
+    the 5s poll.
+    """
+    scanned = await get_scanned_total(session)
+    if scanned is None:
+        return {"scanned": None, "deduped": None}
+    # discovery_done counts ALL rows (no file_type filter) so the subtraction is consistent with the
+    # Discovery node's COUNT(files); total_files counts only music/video, but scanned - all-rows is
+    # the LOCKED dedup formula.
+    discovery_done = await _safe_count(session, select(func.count(FileRecord.id)), node="reconcile_discovery")
+    return {"scanned": scanned, "deduped": deduped_count(scanned, discovery_done)}
+
+
+async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Per-agent ``{agent_id: {"scanned", "unique", "deduped"}}``, degrading to ``{}`` on any error.
+
+    For each agent with a latest completed batch: ``scanned`` = that batch's ``total_files`` (re-scan
+    -safe via the same ``row_number()`` rank as :func:`get_scanned_total`), ``unique`` = COUNT of the
+    agent's FileRecord rows, ``deduped`` = ``max(0, scanned - unique)`` (mirrors :func:`deduped_count`
+    — ``scanned`` is never None here so the value is always a plain int). The per-agent file counts
+    come from one grouped ``SELECT agent_id, COUNT(id) GROUP BY agent_id`` joined in Python.
+
+    An empty map means "no annotations"; the template hides any agent whose deduped is 0. Wrapped in
+    the standard log → guarded rollback → ``{}`` degrade so it never raises into the dashboard poll.
+    """
+    try:
+        ranked = (
+            select(
+                ScanBatch.agent_id.label("agent_id"),
+                ScanBatch.total_files.label("total_files"),
+                func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+            )
+            .where(ScanBatch.status == ScanStatus.COMPLETED.value)
+            .subquery()
+        )
+        latest_rows = (await session.execute(select(ranked.c.agent_id, ranked.c.total_files).where(ranked.c.rn == 1))).all()
+
+        count_rows = (await session.execute(select(FileRecord.agent_id, func.count(FileRecord.id)).group_by(FileRecord.agent_id))).all()
+        counts_by_agent = {agent_id: int(count) for agent_id, count in count_rows}
+
+        out: dict[str, dict[str, int]] = {}
+        for agent_id, total_files in latest_rows:
+            scanned = int(total_files)
+            unique = counts_by_agent.get(agent_id, 0)
+            out[agent_id] = {"scanned": scanned, "unique": unique, "deduped": max(0, scanned - unique)}
+        return out
+    except Exception:
+        logger.warning("agent_reconciliations_degraded", exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("agent_reconciliations_rollback_failed", exc_info=True)
+        return {}
 
 
 async def get_queue_activity(app_state: Any, session: AsyncSession) -> dict[str, int]:
