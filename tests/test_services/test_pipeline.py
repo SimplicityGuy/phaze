@@ -1243,6 +1243,25 @@ async def test_get_scanned_total_degrades_to_none_on_db_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_scanned_total_degrades_when_rollback_also_fails() -> None:
+    """Even if the guarded rollback itself raises, scanned still degrades to None (no escape).
+
+    Exercises the nested ``except`` that logs ``scanned_total_rollback_failed`` — the last-ditch
+    branch where the session is so broken the rollback fails too. The function must still swallow
+    everything and return the hidden-state sentinel rather than propagating into the 5s poll.
+    """
+
+    class _DoublyExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("scan_batches table unavailable")
+
+        async def rollback(self) -> None:
+            raise RuntimeError("connection already closed")
+
+    assert await get_scanned_total(_DoublyExplodingSession()) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
 async def test_get_global_reconciliation_happy_path(session: AsyncSession) -> None:
     """scanned 11428 with 11106 discovered files → {'scanned': 11428, 'deduped': 322}."""
     await seed_active_agent(session, "nox")
@@ -1316,3 +1335,22 @@ async def test_get_agent_reconciliations_degrades_to_empty_on_db_error() -> None
             return None
 
     assert await get_agent_reconciliations(_ExplodingSession()) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_reconciliations_degrades_when_rollback_also_fails() -> None:
+    """Even if the guarded rollback itself raises, the per-agent map still degrades to ``{}``.
+
+    Exercises the nested ``except`` that logs ``agent_reconciliations_rollback_failed`` — the
+    last-ditch branch where the rollback fails too. The function must swallow everything and return
+    the empty map (no annotations) rather than propagating into the 5s dashboard poll.
+    """
+
+    class _DoublyExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("scan_batches table unavailable")
+
+        async def rollback(self) -> None:
+            raise RuntimeError("connection already closed")
+
+    assert await get_agent_reconciliations(_DoublyExplodingSession()) == {}  # type: ignore[arg-type]
