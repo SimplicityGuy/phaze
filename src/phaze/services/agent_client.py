@@ -98,7 +98,14 @@ def _should_retry(exc: BaseException) -> bool:
     (D-11, D-32). Tested in ``tests/test_services/test_agent_client.py`` via
     ``route.call_count`` assertions.
     """
-    if isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout)):
+    # httpx.TransportError is the base of EVERY transport-level failure: connect/read/write/pool
+    # timeouts (TimeoutException) AND connect/read/write/network errors (NetworkError). The prior
+    # narrow tuple (ConnectError, ReadTimeout, WriteTimeout) silently EXCLUDED ConnectTimeout and
+    # PoolTimeout -- both TimeoutException subclasses -- so a "host up but not accepting in time"
+    # boot-ordering failure escaped unwrapped and crashed the agent watcher (2026-06-21, 316
+    # restarts). 4xx/5xx arrive as HTTPStatusError (handled below), so widening here cannot swallow
+    # an auth/client error.
+    if isinstance(exc, httpx.TransportError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return 500 <= exc.response.status_code < 600
@@ -163,7 +170,8 @@ class PhazeAgentClient:
 
         Retry policy (D-11):
         - 3 attempts total; ``wait_exponential_jitter(initial=0.5, max=4.0)``.
-        - Retry on ``ConnectError``, ``ReadTimeout``, ``WriteTimeout``, and 5xx.
+        - Retry on any ``httpx.TransportError`` (connect/read/write/pool timeout +
+          connect/network error) and 5xx.
         - 4xx surfaces immediately (no retry) via ``_should_retry``.
 
         Exception mapping (D-12):
@@ -196,7 +204,11 @@ class PhazeAgentClient:
             if 400 <= status_code < 500:
                 raise AgentApiClientError(f"{method} {path} -> {status_code}: {e.response.text}") from e
             raise AgentApiServerError(f"{method} {path} -> {status_code} after retries") from e
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout) as e:
+        except httpx.TransportError as e:
+            # Every transport-level failure (connect/read/write/pool timeout + connect/network
+            # error) maps to a retryable AgentApiServerError. Matches _should_retry's predicate so
+            # the class that is retried is exactly the class that is wrapped -- no transport error
+            # can escape this funnel unwrapped (the 2026-06-21 ConnectTimeout crash-loop class).
             logger.warning("agent_api method=%s path=%s error=%s", method, path, type(e).__name__)
             raise AgentApiServerError(f"{method} {path} network failure after retries") from e
         # Defensive: tenacity AsyncRetrying with reraise=True always either returns
