@@ -27,6 +27,7 @@ from phaze.services.pipeline import (
     get_analysis_failed_count,
     get_files_by_state,
     get_fingerprint_pending_files,
+    get_global_reconciliation,
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
@@ -361,6 +362,13 @@ async def dashboard(
     straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
     analysis_failed_count = await get_analysis_failed_count(session)
 
+    # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
+    # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
+    # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
+    # owns the never-500 degrade (returns {scanned: None, deduped: None} on any error), so NO
+    # try/except here — same wiring idiom as get_queue_activity / dag_ctx above.
+    recon = await get_global_reconciliation(session)
+
     context = {
         "request": request,
         "stats": stats,
@@ -370,6 +378,8 @@ async def dashboard(
         "recent_scans": recent_scans_rows,
         "straggler_count": straggler_count,
         "analysis_failed_count": analysis_failed_count,
+        "reconcile_scanned": recon["scanned"],
+        "reconcile_deduped": recon["deduped"],
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,

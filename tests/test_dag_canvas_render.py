@@ -138,8 +138,14 @@ def _render_canvas(
     agent_busy: int = 0,
     controller_busy: int = 0,
     dag: dict[str, int] | None = None,
+    reconcile_scanned: int | None = None,
+    reconcile_deduped: int | None = None,
 ) -> str:
-    """Render dag_canvas.html with a representative dashboard context."""
+    """Render dag_canvas.html with a representative dashboard context.
+
+    ``reconcile_scanned`` / ``reconcile_deduped`` default to None (the hidden state) so the existing
+    topology/gating tests render with NO Discovery reconciliation subtitle.
+    """
     if dag is None:
         dag = dict.fromkeys(_DAG_KEYS, 0)
     response = _templates.TemplateResponse(
@@ -154,6 +160,8 @@ def _render_canvas(
             "agent_busy": agent_busy,
             "controller_busy": controller_busy,
             "dag": dag,
+            "reconcile_scanned": reconcile_scanned,
+            "reconcile_deduped": reconcile_deduped,
         },
     )
     return response.body.decode()
@@ -317,6 +325,39 @@ def test_discovery_node_has_no_rescan_anchor() -> None:
     html = _render_canvas()
     assert "Rescan Files" not in html
     assert 'href="#trigger-scan-heading"' not in html
+
+
+# ---------------------------------------------------------------------------
+# scanned/deduped reconciliation subtitle (quick 260622-i0w) — Discovery node only
+# ---------------------------------------------------------------------------
+
+
+def _discovery_node_fragment(html: str) -> str:
+    """Slice the Discovery chip (``#node-discovery`` up to the next node) for scoped assertions."""
+    start = html.index('id="node-discovery"')
+    end = html.index('id="node-metadata"', start)
+    return html[start:end]
+
+
+def test_reconciliation_subtitle_renders_when_deduped_positive() -> None:
+    """With reconcile_deduped > 0 the Discovery node shows the 'N scanned · M deduped' subtitle."""
+    fragment = _discovery_node_fragment(_render_canvas(reconcile_scanned=11428, reconcile_deduped=322))
+    assert "11428 scanned" in fragment
+    assert "322 deduped" in fragment
+
+
+def test_reconciliation_subtitle_hidden_when_deduped_zero() -> None:
+    """With reconcile_deduped == 0 (nothing collapsed) the subtitle is absent — no '0 deduped' text."""
+    fragment = _discovery_node_fragment(_render_canvas(reconcile_scanned=11428, reconcile_deduped=0))
+    assert "scanned" not in fragment
+    assert "deduped" not in fragment
+
+
+def test_reconciliation_subtitle_hidden_when_scanned_unavailable() -> None:
+    """With reconcile_deduped is None (scan total unavailable) the subtitle is absent (hidden state)."""
+    fragment = _discovery_node_fragment(_render_canvas(reconcile_scanned=None, reconcile_deduped=None))
+    assert "scanned" not in fragment
+    assert "deduped" not in fragment
 
 
 # ---------------------------------------------------------------------------

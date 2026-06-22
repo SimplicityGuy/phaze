@@ -42,6 +42,7 @@ from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
+from phaze.services.pipeline import get_agent_reconciliations
 from phaze.services.scan_deletion import delete_scan_cascade
 
 
@@ -248,11 +249,18 @@ async def build_recent_scans(session: AsyncSession) -> list[ScanBatch]:
     # Iterable[tuple[str, str]]; ruff's C416 dict() rewrite is suppressed here.
     agent_name_by_id = {agent_id: name for agent_id, name in name_result.all()}  # noqa: C416
 
+    # quick 260622-i0w: per-agent scanned/deduped/unique reconciliation, fetched ONCE so each row's
+    # FILES cell can show "→ N unique · M deduped". get_agent_reconciliations owns the never-500
+    # degrade (returns {} on any DB error → no annotations), so no try/except here. Attaching it in
+    # the SHARED helper keeps dashboard() and delete_scan() in lockstep automatically.
+    recon_by_agent = await get_agent_reconciliations(session)
+
     for batch in rows:
         batch._agent_name = agent_name_by_id.get(batch.agent_id, batch.agent_id)  # type: ignore[attr-defined]
         batch._elapsed_seconds = elapsed_seconds(batch) if batch.created_at else None  # type: ignore[attr-defined]
         batch._seconds_since_progress = seconds_since_progress(batch) if batch.created_at else None  # type: ignore[attr-defined]
         batch._is_stalled = is_scan_stalled(batch)  # type: ignore[attr-defined]
+        batch._reconciliation = recon_by_agent.get(batch.agent_id)  # type: ignore[attr-defined]
     return rows
 
 
