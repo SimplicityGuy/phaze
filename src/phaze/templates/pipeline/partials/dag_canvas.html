@@ -331,6 +331,14 @@
         </div>
         {{ node_count('discovery') }}
         {{ node_bar('discovery', 'bg-cyan-600 dark:bg-cyan-400') }}
+        {# quick 260622-i0w: server-rendered scanned/deduped reconciliation subtitle. Shown ONLY when
+           the agent scan total exceeds the row count (deduped > 0) — explains the gap as dedup /
+           NFC-normalization collisions, NOT lost work. Hidden when nothing deduped or scanned is
+           unavailable (reconcile_deduped is None/0). Rendered once on full-page load; the canvas is
+           never OOB-swapped on the 5s poll. #}
+        {% if reconcile_deduped and reconcile_deduped > 0 %}
+        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ reconcile_scanned }} scanned · {{ reconcile_deduped }} deduped</div>
+        {% endif %}
       </div>
 
       {# 2 · Extract Metadata (sky, compact) → POST /pipeline/extract-metadata #}

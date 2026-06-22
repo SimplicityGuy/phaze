@@ -14,14 +14,18 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
+from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
 from phaze.services.pipeline import (
     count_active_agents,
     count_inflight_jobs,
+    deduped_count,
+    get_agent_reconciliations,
     get_analysis_failed_count,
     get_analysis_failed_files,
     get_files_by_state,
     get_fingerprint_pending_files,
+    get_global_reconciliation,
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
@@ -29,6 +33,7 @@ from phaze.services.pipeline import (
     get_proposal_pending_batches,
     get_queue_activity,
     get_scan_busy_count,
+    get_scanned_total,
     get_scrape_busy_count,
     get_scrape_pending_tracklists,
     get_search_busy_count,
@@ -1110,3 +1115,242 @@ async def test_get_straggler_count_degrade_does_not_poison_session(session: Asyn
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
     follow_up = await get_pipeline_stats(session)
     assert follow_up["discovered"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Scanned / deduped / unique reconciliation (quick 260622-i0w) — turns the
+# Discovery-count vs agent-scan-total gap into a self-explaining reconciliation.
+#   scanned   = SUM over agents of (each agent's LATEST completed batch).total_files
+#   deduped   = max(0, scanned - discovery_done)  [global: discovery_done = COUNT(all files)]
+#   per-agent = max(0, agent_latest_total_files - agent file-row count)
+# A None scanned (no completed batches / DB error) hides the whole line.
+# ---------------------------------------------------------------------------
+
+
+def _completed_batch(agent_id: str, total_files: int, *, status: str = ScanStatus.COMPLETED.value, created_at: object = None) -> ScanBatch:
+    """Build a ScanBatch seed; set ``created_at`` explicitly when latest-per-agent ordering matters."""
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        scan_path="/music",
+        status=status,
+        total_files=total_files,
+        processed_files=total_files,
+    )
+    if created_at is not None:
+        batch.created_at = created_at  # type: ignore[assignment]
+    return batch
+
+
+def _recon_file(agent_id: str, i: int) -> FileRecord:
+    """Build a unique FileRecord owned by ``agent_id`` (the reconciliation groups by agent_id)."""
+    uid = uuid.uuid4()
+    return FileRecord(
+        id=uid,
+        sha256_hash=uid.hex,
+        original_path=f"/music/{agent_id}/{i}-{uid.hex}.mp3",
+        original_filename=f"{i}.mp3",
+        current_path=f"/music/{agent_id}/{i}-{uid.hex}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=FileState.DISCOVERED,
+        agent_id=agent_id,
+    )
+
+
+def test_deduped_count_none_passthrough() -> None:
+    """A None ``scanned`` passes through as None so the UI hides the reconciliation line."""
+    assert deduped_count(None, 5) is None
+
+
+def test_deduped_count_basic_arithmetic() -> None:
+    """deduped = scanned - unique when scanned > unique."""
+    assert deduped_count(10, 4) == 6
+
+
+def test_deduped_count_clamps_negative_to_zero() -> None:
+    """deduped never goes negative: more files than scanned clamps to 0."""
+    assert deduped_count(3, 8) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_single_completed_batch(session: AsyncSession) -> None:
+    """One agent with one completed batch (total_files=100) → scanned 100."""
+    await seed_active_agent(session, "nox")
+    session.add(_completed_batch("nox", 100))
+    await session.commit()
+    assert await get_scanned_total(session) == 100
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_rescan_counts_latest_only(session: AsyncSession) -> None:
+    """A second completed batch (a re-scan) counts the LATEST only — never doubles the total."""
+    from datetime import datetime
+
+    await seed_active_agent(session, "nox")
+    # Naive datetimes: the test-DB create_all schema makes created_at TIMESTAMP WITHOUT TIME ZONE.
+    earlier = _completed_batch("nox", 100, created_at=datetime(2026, 1, 1, 10, 0, 0))
+    later = _completed_batch("nox", 120, created_at=datetime(2026, 1, 1, 11, 0, 0))
+    session.add_all([earlier, later])
+    await session.commit()
+    # Latest (120), not the sum (220) and not the earlier (100).
+    assert await get_scanned_total(session) == 120
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_sums_across_agents(session: AsyncSession) -> None:
+    """scanned sums each agent's latest completed batch: 100 (nox) + 50 (lux) → 150."""
+    await seed_active_agent(session, "nox")
+    await seed_active_agent(session, "lux")
+    session.add_all([_completed_batch("nox", 100), _completed_batch("lux", 50)])
+    await session.commit()
+    assert await get_scanned_total(session) == 150
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_ignores_non_completed(session: AsyncSession) -> None:
+    """RUNNING / FAILED / LIVE batches never contribute to scanned."""
+    await seed_active_agent(session, "nox")
+    session.add_all(
+        [
+            _completed_batch("nox", 100),
+            _completed_batch("nox", 999, status=ScanStatus.RUNNING.value),
+            _completed_batch("nox", 999, status=ScanStatus.FAILED.value),
+        ]
+    )
+    await session.commit()
+    assert await get_scanned_total(session) == 100
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_empty_db_returns_none(session: AsyncSession) -> None:
+    """No completed batches → None (the 'hide' sentinel, distinct from a real 0)."""
+    assert await get_scanned_total(session) is None
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_degrades_to_none_on_db_error() -> None:
+    """A forced read error degrades scanned to None (hidden state), never raising into the 5s poll."""
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("scan_batches table unavailable")
+
+        async def rollback(self) -> None:
+            return None
+
+    assert await get_scanned_total(_ExplodingSession()) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_degrades_when_rollback_also_fails() -> None:
+    """Even if the guarded rollback itself raises, scanned still degrades to None (no escape).
+
+    Exercises the nested ``except`` that logs ``scanned_total_rollback_failed`` — the last-ditch
+    branch where the session is so broken the rollback fails too. The function must still swallow
+    everything and return the hidden-state sentinel rather than propagating into the 5s poll.
+    """
+
+    class _DoublyExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("scan_batches table unavailable")
+
+        async def rollback(self) -> None:
+            raise RuntimeError("connection already closed")
+
+    assert await get_scanned_total(_DoublyExplodingSession()) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_global_reconciliation_happy_path(session: AsyncSession) -> None:
+    """scanned 11428 with 11106 discovered files → {'scanned': 11428, 'deduped': 322}."""
+    await seed_active_agent(session, "nox")
+    session.add(_completed_batch("nox", 11428))
+    # 5 files stands in for the discovery_done COUNT; assert the arithmetic, not a 11106-row seed.
+    session.add_all([_recon_file("nox", i) for i in range(5)])
+    await session.commit()
+    recon = await get_global_reconciliation(session)
+    assert recon == {"scanned": 11428, "deduped": 11423}
+
+
+@pytest.mark.asyncio
+async def test_get_global_reconciliation_hidden_when_scanned_unavailable(session: AsyncSession) -> None:
+    """When get_scanned_total degrades to None the whole reconciliation is the hidden state."""
+    recon = await get_global_reconciliation(session)  # empty DB → no completed batches → None
+    assert recon == {"scanned": None, "deduped": None}
+
+
+@pytest.mark.asyncio
+async def test_get_global_reconciliation_clamps_when_discovery_ge_scanned(session: AsyncSession) -> None:
+    """deduped clamps to 0 when discovery_done ≥ scanned (never negative)."""
+    await seed_active_agent(session, "nox")
+    session.add(_completed_batch("nox", 2))
+    session.add_all([_recon_file("nox", i) for i in range(5)])  # 5 files > scanned 2
+    await session.commit()
+    recon = await get_global_reconciliation(session)
+    assert recon == {"scanned": 2, "deduped": 0}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_reconciliations_per_agent_dedup(session: AsyncSession) -> None:
+    """Per-agent: A latest 100 with 90 rows → deduped 10; B latest 50 with 50 rows → deduped 0."""
+    await seed_active_agent(session, "nox")
+    await seed_active_agent(session, "lux")
+    session.add_all([_completed_batch("nox", 100), _completed_batch("lux", 50)])
+    session.add_all([_recon_file("nox", i) for i in range(90)])
+    session.add_all([_recon_file("lux", i) for i in range(50)])
+    await session.commit()
+
+    recon = await get_agent_reconciliations(session)
+    assert recon["nox"] == {"scanned": 100, "unique": 90, "deduped": 10}
+    assert recon["lux"] == {"scanned": 50, "unique": 50, "deduped": 0}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_reconciliations_rescan_counts_latest_only(session: AsyncSession) -> None:
+    """A second completed batch for one agent counts the latest total_files only."""
+    from datetime import datetime
+
+    await seed_active_agent(session, "nox")
+    # Naive datetimes: the test-DB create_all schema makes created_at TIMESTAMP WITHOUT TIME ZONE.
+    earlier = _completed_batch("nox", 100, created_at=datetime(2026, 1, 1, 10, 0, 0))
+    later = _completed_batch("nox", 120, created_at=datetime(2026, 1, 1, 11, 0, 0))
+    session.add_all([earlier, later])
+    session.add_all([_recon_file("nox", i) for i in range(90)])
+    await session.commit()
+
+    recon = await get_agent_reconciliations(session)
+    assert recon["nox"] == {"scanned": 120, "unique": 90, "deduped": 30}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_reconciliations_degrades_to_empty_on_db_error() -> None:
+    """A forced read error degrades to an empty map (no annotations), never raising."""
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("scan_batches table unavailable")
+
+        async def rollback(self) -> None:
+            return None
+
+    assert await get_agent_reconciliations(_ExplodingSession()) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_reconciliations_degrades_when_rollback_also_fails() -> None:
+    """Even if the guarded rollback itself raises, the per-agent map still degrades to ``{}``.
+
+    Exercises the nested ``except`` that logs ``agent_reconciliations_rollback_failed`` — the
+    last-ditch branch where the rollback fails too. The function must swallow everything and return
+    the empty map (no annotations) rather than propagating into the 5s dashboard poll.
+    """
+
+    class _DoublyExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("scan_batches table unavailable")
+
+        async def rollback(self) -> None:
+            raise RuntimeError("connection already closed")
+
+    assert await get_agent_reconciliations(_DoublyExplodingSession()) == {}  # type: ignore[arg-type]

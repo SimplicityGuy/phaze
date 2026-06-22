@@ -65,6 +65,9 @@
                     </td>
                     <td class="px-4 py-3 font-mono text-xs text-gray-700 dark:text-gray-300">
                         {{ batch.processed_files }} / {{ batch.total_files or '—' }}
+                        {# quick 260622-i0w: per-agent reconciliation — shown only when this agent's
+                           scan total collapsed onto existing rows (deduped > 0). Hidden otherwise. #}
+                        {% if batch._reconciliation and batch._reconciliation.deduped > 0 %}<span class="text-xs text-gray-500 dark:text-gray-400">→ {{ batch._reconciliation.unique }} unique · {{ batch._reconciliation.deduped }} deduped</span>{% endif %}
                     </td>
                     <td class="px-4 py-3 text-gray-500 dark:text-gray-400">{{ batch.created_at.strftime('%Y-%m-%d %H:%M') if batch.created_at else '—' }}</td>
                     <td class="px-4 py-3 text-gray-500 dark:text-gray-400">
