@@ -244,6 +244,13 @@ failing stage never 500s the 5-second poll. The Scan/Search node is counter-only
 (`total=None`, rendered `done / —`): no table defines "should get a tracklist", so no
 denominator is fabricated.
 
+`get_global_reconciliation` / `get_agent_reconciliations` (`services/pipeline.py`) explain the
+Discovery `COUNT(files)` vs agent scan-total (`SUM(scan_batches.total_files)`) gap as dedup, not
+lost work: `scanned` sums each agent's LATEST completed batch (re-scan-safe via `row_number()`) and
+`deduped = max(0, scanned − discovery_done)`. The Discovery node renders a `scanned · deduped`
+subtitle and each Recent Scans row a per-agent `→ N unique · M deduped` annotation, both shown only
+when `deduped > 0` and degrade-safe (None / `{}` → hidden).
+
 ### Dashboard DAG canvas
 
 `_build_dag_context` (`routers/pipeline.py`) reconciles three sources per node (D-03):
@@ -401,6 +408,7 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | `run_scan` / `discover_and_hash_files` | `ingestion.py` | Directory walk, hash, bulk upsert (rows only; no auto-enqueue) |
 | `ProposalService` / `store_proposals` | `proposal.py` | LLM calling, context build, confidence clamp, idempotent partial-index proposal upsert |
 | `get_pipeline_stats` / `get_stage_progress` | `pipeline.py` | Linear state counts + per-DAG-node DB-truth `COUNT(DISTINCT)` reconcile (the rendering authority) |
+| `get_global_reconciliation` / `get_agent_reconciliations` | `pipeline.py` | Scanned-vs-file-row dedup reconciliation (latest completed batch per agent); degrade-safe, hidden when `deduped == 0` |
 | `incr_*` / `read_counters` | `pipeline_counters.py` | Durable Redis per-function enqueued/completed counters (non-authoritative cache) |
 | `execute_approved_batch` | `tasks/execution.py` | Per-agent copy → verify → delete with write-ahead log + containment guard |
 | `AgentTaskRouter` | `agent_task_router.py` | Per-agent SAQ enqueuer (`phaze-agent-<id>`) |
