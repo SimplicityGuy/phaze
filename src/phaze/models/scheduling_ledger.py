@@ -23,6 +23,14 @@ Columns:
                      ``ProcessFilePayload`` / ``ExtractMetadataPayload`` / etc. on replay -- not
                      just the natural id (the ``extra="forbid"`` schemas would otherwise reject).
   - ``enqueued_at``: server-default timestamp of the (re)enqueue.
+  - ``timeout``    : nullable SAQ Job ``timeout`` (seconds) captured at enqueue time so recovery
+                     replays the SAME bound. NULL means "the producer did not set an explicit
+                     timeout" -- replay omits it and the queue's ``before_enqueue`` default applies.
+                     Critical for ``process_file`` (analyze): its 7200s outer net must survive a
+                     replay, else a recovered long concert set falls back to the 600s default and
+                     times out (the gap behind the recover-button timeout-loss bug).
+  - ``retries``    : nullable SAQ Job ``retries`` budget, captured + replayed for the same reason
+                     (``process_file`` pins retries=2 to kill the long-file re-analysis churn).
 
 NO foreign keys to ``files`` / ``tracklists``: the row must survive even if its target row is
 mid-flight; the natural id lives inside ``payload``.
@@ -36,7 +44,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 — SQLAlchemy resolves Mapped[] annotations at runtime
 from typing import Any
 
-from sqlalchemy import Index, String, func
+from sqlalchemy import Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,5 +61,9 @@ class SchedulingLedger(TimestampMixin, Base):
     routing: Mapped[str] = mapped_column(String(16), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     enqueued_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    # Nullable SAQ Job policy captured at enqueue time so recovery replays the SAME bound (NULL =>
+    # producer set no explicit value; replay falls back to the queue before_enqueue default).
+    timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retries: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (Index("ix_scheduling_ledger_function", "function"),)

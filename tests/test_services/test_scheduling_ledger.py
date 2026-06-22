@@ -127,6 +127,53 @@ async def test_clear_entry_deletes_and_is_noop_when_absent(session) -> None:  # 
 
 
 @pytest.mark.asyncio
+async def test_upsert_stores_and_refreshes_timeout_and_retries(session) -> None:  # type: ignore[no-untyped-def]
+    """The WRITE hook captures the job's effective timeout/retries so recovery can replay the
+    SAME policy. Without this, a recovered ``process_file`` (analyze) job loses its 7200s bound
+    and falls back to the 600s default -- a 12x reduction that times out every long concert set.
+    """
+    fid = uuid.uuid4()
+    key = f"process_file:{fid}"
+    await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": str(fid)}, timeout=7200, retries=2)
+    await session.commit()
+
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one()
+    assert row.timeout == 7200
+    assert row.retries == 2
+
+    # A re-enqueue of the same key refreshes the policy too (ON CONFLICT DO UPDATE).
+    await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": str(fid)}, timeout=3600, retries=1)
+    await session.commit()
+    session.expire_all()
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one()
+    assert row.timeout == 3600
+    assert row.retries == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_defaults_timeout_and_retries_to_none(session) -> None:  # type: ignore[no-untyped-def]
+    """timeout/retries are OPTIONAL: a caller that omits them stores NULL, and replay then falls
+    back to the queue's before_enqueue defaults exactly as before (backward-compatible)."""
+    await upsert_ledger_entry(session, key="search_tracklist:s1", function="search_tracklist", kwargs={"file_id": "s1"})
+    await session.commit()
+
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == "search_tracklist:s1"))).scalar_one()
+    assert row.timeout is None
+    assert row.retries is None
+
+
+@pytest.mark.asyncio
+async def test_insert_if_absent_stores_timeout_and_retries(session) -> None:  # type: ignore[no-untyped-def]
+    """The Plan-04 backfill primitive also carries timeout/retries through from the live broker blob."""
+    await insert_ledger_if_absent(session, key="process_file:bf1", function="process_file", kwargs={"file_id": "bf1"}, timeout=7200, retries=2)
+    await session.commit()
+
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == "process_file:bf1"))).scalar_one()
+    assert row.timeout == 7200
+    assert row.retries == 2
+
+
+@pytest.mark.asyncio
 async def test_get_ledger_rows_returns_all(session) -> None:  # type: ignore[no-untyped-def]
     await upsert_ledger_entry(session, key="process_file:1", function="process_file", kwargs={"file_id": "1"})
     await upsert_ledger_entry(session, key="generate_proposals:2", function="generate_proposals", kwargs={"file_ids": ["2"]})

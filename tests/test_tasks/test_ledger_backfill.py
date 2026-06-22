@@ -120,6 +120,7 @@ class _SeededSession:
     def __init__(self, rows: list[tuple[object, object]]) -> None:
         self._rows = rows
         self.inserted_keys: list[str] = []
+        self.inserted_params: list[dict[str, Any]] = []
 
     def begin_nested(self) -> Any:
         class _Nested:
@@ -146,6 +147,7 @@ class _SeededSession:
         with contextlib.suppress(Exception):
             params = statement.compile().params
             self.inserted_keys.append(params["key_m0"])
+            self.inserted_params.append(params)
         return None
 
 
@@ -180,6 +182,26 @@ async def test_backfill_loop_seeds_keyed_skips_everything_else() -> None:
 
     assert tally == {"inserted": 2, "skipped": 3}, tally
     assert set(session.inserted_keys) == {key_a, key_b}
+
+
+@pytest.mark.asyncio
+async def test_backfill_carries_timeout_and_retries_from_blob() -> None:
+    """The SAQ job blob serializes top-level ``timeout`` / ``retries`` (Job dataclass fields), so
+    the backfill seeds them into the ledger -- giving even the in-flight transition cohort the
+    correct replay policy (the live backlog was enqueued with timeout=7200 already in the blob)."""
+    fid = uuid.uuid4()
+    key = f"process_file:{fid}"
+    rows: list[tuple[object, object]] = [
+        (json.dumps({"function": "process_file", "key": key, "kwargs": {"file_id": str(fid)}, "timeout": 7200, "retries": 2}).encode(), key),
+    ]
+    session = _SeededSession(rows)
+
+    tally = await backfill_ledger_from_saq_jobs(session)  # type: ignore[arg-type]
+
+    assert tally == {"inserted": 1, "skipped": 0}, tally
+    params = session.inserted_params[0]
+    assert params["timeout_m0"] == 7200
+    assert params["retries_m0"] == 2
 
 
 @pytest.mark.asyncio
