@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 45
 Plan: Not started
-Status: Phase 45 shipped — PR #146
-Last activity: 2026-06-22 - Completed quick task 260622-i0w: scanned/deduped/unique reconciliation in pipeline UI
+Status: Quick task 260622-i0w shipped — PR #150 (Phase 45 shipped — PR #146)
+Last activity: 2026-06-22 - Shipped quick task 260622-i0w: scanned/deduped/unique reconciliation in pipeline UI (PR #150)
 
 Progress: [██████████] 100%
 
