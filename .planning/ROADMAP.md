@@ -464,10 +464,10 @@ Plans:
 **Goal:** A file-server agent worker saturated with multi-hour `process_file` analysis jobs still reports liveness and stays `alive` — the heartbeat runs as an asyncio background task in the worker startup hook (cancelled on shutdown), decoupled from the SAQ `worker_max_jobs` dispatch pool that the old `CronJob` heartbeat competed for and was starved by.
 **Requirements**: Heartbeat fires on a fixed ~30s cadence independent of dispatch-pool saturation (proven by test); CronJob removed; all existing defensive behavior preserved; ≥85% coverage; docs + orphaned `cron:heartbeat_tick` row cleanup documented.
 **Depends on:** Phase 45
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 
-- [ ] 46-01-PLAN.md — Background-task heartbeat: send_heartbeat/_heartbeat_loop refactor + interval constant, startup launch/shutdown cancel + CronJob removal, starvation-independence + defensive-branch tests, docs + orphaned-cron-row cleanup
+- [x] 46-01-PLAN.md — Background-task heartbeat: send_heartbeat/_heartbeat_loop refactor + interval constant, startup launch/shutdown cancel + CronJob removal, starvation-independence + defensive-branch tests, docs + orphaned-cron-row cleanup
 
 ## Backlog (unscheduled — no phase number yet)
 

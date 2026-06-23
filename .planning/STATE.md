@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: executing
-last_updated: "2026-06-23T18:23:08.589Z"
-last_activity: 2026-06-23 -- Phase 46 execution started
+status: verifying
+last_updated: "2026-06-23T18:38:03.160Z"
+last_activity: 2026-06-23
 progress:
   total_phases: 3
   completed_phases: 3
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 Phase: 46 (heartbeat-starvation-fix) — EXECUTING
 Plan: 1 of 1
-Status: Executing Phase 46
-Last activity: 2026-06-23 -- Phase 46 execution started
+Status: Phase complete — ready for verification
+Last activity: 2026-06-23
 
 Progress: [██████████] 100%
 
@@ -92,6 +92,7 @@ Progress: [██████████] 100%
 - [Phase 38]: 38-03: the 6 stage-control keys ride the existing dag.items() OOB loop with zero stats_bar.html edit; one _NEW_STORE_KEYS edit drives the store-literal, int-key, and OOB-seed tests
 - [Phase 38]: 38-02: stage_controls reusable Jinja macro (id=stage-controls-<stage>) on the 3 agent chips; pause/resume = TWO x-show-gated static-hx-post buttons (not a bound :hx-post), authoritative-only @htmx:after-request JSON-parse store write, no optimistic mutation (T-38-OOB)
 - [Phase 38]: 38-02: agent-chip NODE_LAYOUT gutter widened 182->276px (h 154->250) for the control row; overlap guard min_chip_height bumped 150->240; canvas/SVG grown 720->1000; col-0/col-2/col-3 nodes re-balanced to incoming-edge midpoints
+- [Phase ?]: Phase 46-01: agent liveness heartbeat runs as an asyncio background task launched in agent_worker startup (cancelled in shutdown), NOT a SAQ CronJob — a CronJob competed for worker_max_jobs dispatch slots and was starved by multi-hour process_file jobs (busy-agent-DEAD incident); heartbeat_tick kept as a back-compat shim; one-time DELETE of orphaned cron:heartbeat_tick row from saq_jobs documented for redeploy
 
 ### Pending Todos
 
@@ -141,9 +142,10 @@ None.
 | Phase 38 P02 | 8min | 3 tasks | 2 files |
 | Phase 45 P05 | ~5 min | 1 tasks | 2 files |
 | Phase 45 P06 | ~25 min | 2 tasks | 12 files |
+| Phase 46 P01 | ~20min | 3 tasks | 8 files |
 
 ## Session Continuity
 
-Last session: 2026-06-19T22:47:35.525Z
-Stopped at: Completed 38-02-PLAN.md — Phase 38 complete (all 3 plans), ready for verification
+Last session: 2026-06-23T18:37:39.155Z
+Stopped at: Completed 46-01-PLAN.md — Phase 46 complete, ready for verification
 Resume file: None
