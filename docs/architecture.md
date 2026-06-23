@@ -286,10 +286,10 @@ lifespan as `app.state.task_router`.
   matching. It connects to Postgres directly.
 - **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the
   file-bound functions: `process_file`, `extract_file_metadata`, `fingerprint_file`,
-  `scan_live_set`, `scan_directory`, `execute_approved_batch`, and `heartbeat_tick`. Its
-  startup hook authenticates against the application server, downloads essentia weights if
-  missing, builds the `FingerprintOrchestrator` (audfprint + Panako adapters), and creates
-  the essentia process pool.
+  `scan_live_set`, `scan_directory`, and `execute_approved_batch`. Its startup hook
+  authenticates against the application server, downloads essentia weights if missing, builds
+  the `FingerprintOrchestrator` (audfprint + Panako adapters), creates the essentia process
+  pool, and launches the liveness heartbeat as an asyncio background task (Phase 46).
 
 ### Registration, heartbeat, and liveness
 
@@ -302,7 +302,7 @@ sequenceDiagram
     API->>DB: resolve Agent by token_hash
     API-->>W: AgentIdentity (agent_id, scan_roots)
     Note over W: assert agent_id == PHAZE_AGENT_QUEUE suffix
-    loop every 30s (cron)
+    loop every 30s (asyncio background task)
         W->>API: POST /api/internal/agent/heartbeat
         API->>DB: update last_seen_at + last_status
     end
@@ -319,9 +319,15 @@ sequenceDiagram
   transient network errors retry three times with exponential jitter, while **4xx is never
   retried** (auth/validation failures surface immediately). It exposes a 4-class exception
   hierarchy (`AgentApiError` base, plus auth / client / server subclasses).
-- **Heartbeat.** `tasks/heartbeat.heartbeat_tick` is a 30-second SAQ cron handler that POSTs
-  agent version, worker PID, and queue depth; failures log a warning and retry on the next
-  tick.
+- **Heartbeat.** `tasks/heartbeat._heartbeat_loop` is an in-process asyncio background task
+  (launched in the agent worker `startup` hook, cancelled on `shutdown`) that calls
+  `send_heartbeat` every 30 seconds (`AGENT_HEARTBEAT_INTERVAL_SECONDS`) to POST agent
+  version, worker PID, and queue depth; failures log a warning and the loop ticks again on
+  the next interval. It is deliberately **not** a SAQ cron job: a CronJob competes for the
+  `worker_max_jobs` dispatch slots and gets starved by multi-hour `process_file` jobs,
+  marking a healthy busy agent DEAD (Phase 46 incident). Because `process_file` runs essentia
+  in a pebble ProcessPool (Phase 43), the event loop is free for the background task to tick
+  on cadence regardless of dispatch saturation.
 - **Liveness.** `services/agent_liveness.py` (pure functions) classifies each agent as
   `alive` (< 90s since last seen), `stale` (90-300s), `dead` (>= 300s), `revoked`, or
   `never`, and provides the sort key for the read-only admin page at `/admin/agents`
@@ -424,12 +430,12 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | ----------- | ---- | ---- |
 | `apply_deterministic_key` / `increment_completed` | `_shared/deterministic_key.py` | Central `before_enqueue` deterministic-key hook (8-task registry) + `after_process` completed-counter hook |
 | Control settings | `controller.py` | SAQ entry for fileless jobs; on boot runs the gated `recover_orphaned_work` (queue-loss recovery, no-op on a durable restart) — no steady-state auto-advance cron (Phase 42) |
-| Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs + cron |
+| Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs; the liveness heartbeat runs as a startup asyncio background task (Phase 46), not a cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
 | `extract_file_metadata` | `metadata_extraction.py` | mutagen tag extraction → PUT via HTTP (operator-triggered) |
 | `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42/45): no-ops on a durable Postgres-broker restart; on genuine queue-loss (or manual `force`) replays each orphaned scheduling-ledger row — payload **and** stored `timeout`/`retries` policy — through the identical keyed producers, so in-flight items dedup (no doubling) and a recovered long `process_file` keeps its 7200s bound instead of the 600s default. Startup + the manual `/pipeline/recover` button call the same producer |
 | `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
-| `heartbeat_tick` | `heartbeat.py` | 30s cron heartbeat POST |
+| `_heartbeat_loop` / `send_heartbeat` | `heartbeat.py` | 30s heartbeat POST run as a startup asyncio background task (Phase 46), not a SAQ cron; `heartbeat_tick` retained as a thin back-compat shim |
 
 ## 🗂️ Directory Rationale
 
