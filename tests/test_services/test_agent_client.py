@@ -146,6 +146,42 @@ async def test_connect_error_retries_then_raises_server_error(client):  # type: 
 
 
 @respx.mock
+async def test_connect_timeout_retries_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+    """A ``httpx.ConnectTimeout`` (the API host is up but not accepting the TCP connection in
+    time -- the cross-host boot-ordering case) must be retried like any other transient transport
+    error and surface as ``AgentApiServerError``, NOT escape raw.
+
+    Regression for the 2026-06-21 agent-watcher crash-loop (316 restarts): ``ConnectTimeout`` is a
+    ``httpx.TimeoutException`` subclass, NOT a ``httpx.ConnectError``, so the narrow except tuple
+    let it propagate unwrapped past ``whoami_with_retry`` and crash the process on every restart.
+    """
+    from phaze.schemas.agent_analysis import AnalysisWritePayload
+
+    file_id = uuid.uuid4()
+    route = respx.put(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}").mock(
+        side_effect=httpx.ConnectTimeout("simulated connect timeout"),
+    )
+    with pytest.raises(AgentApiServerError):
+        await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
+    assert route.call_count == 3
+
+
+@respx.mock
+async def test_pool_timeout_retries_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+    """A ``httpx.PoolTimeout`` (no free connection in the pool) is likewise a transient transport
+    error: retried three times then wrapped as ``AgentApiServerError`` rather than escaping raw."""
+    from phaze.schemas.agent_analysis import AnalysisWritePayload
+
+    file_id = uuid.uuid4()
+    route = respx.put(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}").mock(
+        side_effect=httpx.PoolTimeout("simulated pool timeout"),
+    )
+    with pytest.raises(AgentApiServerError):
+        await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
+    assert route.call_count == 3
+
+
+@respx.mock
 async def test_bearer_token_absent_from_warning_logs_on_500(client, caplog):  # type: ignore[no-untyped-def]
     """D-13: bearer token must never appear in WARNING logs emitted by _request() on HTTP failure.
 

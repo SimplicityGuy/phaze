@@ -213,9 +213,22 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
     so a still-live item dedups to None). NEVER a raw random-key enqueue. A None return (dedup)
     counts as skipped; otherwise reenqueued. extra='forbid' agent schemas re-validate the stored
     payload on dequeue, so a malformed row dead-letters rather than executing (T-45-10).
+
+    The stored SAQ Job policy (``row.timeout`` / ``row.retries``) is replayed too when present, so
+    a recovered long ``process_file`` keeps its 7200s/retries=2 bound. Were they omitted, the
+    queue's ``apply_project_job_defaults`` before_enqueue hook would stamp the job back to the 600s
+    role default -- a 12x reduction that times out every long concert set on recovery (the
+    recover-button timeout-loss bug). A NULL column (legacy/backfilled row, or a producer that set
+    no explicit policy) is left out so the default applies exactly as before.
     """
+    # Job-control kwargs only when the ledger captured them (NULL => fall back to queue defaults).
+    policy: dict[str, Any] = {}
+    if row.timeout is not None:
+        policy["timeout"] = row.timeout
+    if row.retries is not None:
+        policy["retries"] = row.retries
     await queue.connect()
-    job = await queue.enqueue(row.function, key=row.key, **(row.payload or {}))
+    job = await queue.enqueue(row.function, key=row.key, **policy, **(row.payload or {}))
     if job is None:
         tally["skipped"] += 1
     else:
@@ -389,7 +402,12 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
         kwargs = data.get("kwargs")
         if not isinstance(kwargs, dict):
             kwargs = {}
-        await insert_ledger_if_absent(session, key=key, function=function, kwargs=dict(kwargs))
+        # The SAQ default json.dumps serializer writes timeout/retries (Job dataclass fields) at the
+        # blob top level. Carry them through so even the in-flight transition cohort (e.g. the live
+        # backlog enqueued with timeout=7200) recovers with its real bound, not the 600s default.
+        timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
+        retries = data.get("retries") if isinstance(data.get("retries"), int) else None
+        await insert_ledger_if_absent(session, key=key, function=function, kwargs=dict(kwargs), timeout=timeout, retries=retries)
         tally["inserted"] += 1
 
     return tally

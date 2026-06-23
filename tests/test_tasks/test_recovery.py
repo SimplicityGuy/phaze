@@ -115,12 +115,20 @@ def _agent_payload(function: str, file_id: uuid.UUID) -> dict[str, Any]:
     }
 
 
-async def _seed_ledger(session: AsyncSession, *, function: str, file_id: uuid.UUID, payload: dict[str, Any] | None = None) -> str:
+async def _seed_ledger(
+    session: AsyncSession,
+    *,
+    function: str,
+    file_id: uuid.UUID,
+    payload: dict[str, Any] | None = None,
+    timeout: int | None = None,
+    retries: int | None = None,
+) -> str:
     """Upsert one ledger row for ``<function>:<file_id>`` and return its deterministic key."""
     builder = _KEY_BUILDERS[function]
     pay = payload if payload is not None else _agent_payload(function, file_id)
     key = f"{function}:{builder(pay)}"
-    await upsert_ledger_entry(session, key=key, function=function, kwargs=pay)
+    await upsert_ledger_entry(session, key=key, function=function, kwargs=pay, timeout=timeout, retries=retries)
     await session.commit()
     return key
 
@@ -220,6 +228,61 @@ async def test_orphaned_agent_row_replays_through_keyed_producer(
     assert agent_queue.captured_policy[0]["key"] == key
     # The stored payload round-tripped (file_id present, never a re-derived FileRecord).
     assert agent_queue.captured[0][1]["file_id"] == str(f.id)
+
+
+@pytest.mark.asyncio
+async def test_replay_preserves_stored_timeout_and_retries(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery replays a row with its STORED SAQ policy so a recovered long ``process_file``
+    keeps its 7200s/retries=2 bound -- not the 600s before_enqueue default that would time out
+    every long concert set. Regression for the recover-button timeout-loss bug.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id, timeout=7200, retries=2)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    policy = router.queues["nox"].captured_policy[0]
+    assert policy["timeout"] == 7200
+    assert policy["retries"] == 2
+
+
+@pytest.mark.asyncio
+async def test_replay_omits_policy_when_ledger_has_none(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-existing ledger row with NULL timeout/retries (written before this change, or a
+    producer that set no explicit policy) replays WITHOUT timeout/retries, so the queue's
+    before_enqueue default applies exactly as before -- backward compatible."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # no timeout/retries
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    policy = router.queues["nox"].captured_policy[0]
+    assert "timeout" not in policy
+    assert "retries" not in policy
 
 
 @pytest.mark.asyncio

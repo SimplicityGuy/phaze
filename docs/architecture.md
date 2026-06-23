@@ -416,7 +416,7 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | `PhazeAgentClient` | `agent_client.py` | Agent → server HTTP wrapper (tenacity, no-4xx-retry) |
 | `classify` / `sort_key` | `agent_liveness.py` | Agent liveness classification for admin UI |
 | `FingerprintOrchestrator` | `fingerprint.py` | Multi-engine fingerprint coordination |
-| `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: builds the complete `ProcessFilePayload` + job policy (`timeout=14400` / `retries=2`); the central `before_enqueue` hook stamps the deterministic key `process_file:<file_id>`. Used by both the dashboard analyze path and the reboot re-enqueue task so in-flight files dedup |
+| `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: builds the complete `ProcessFilePayload` + job policy (`timeout=7200` / `retries=2`); the central `before_enqueue` hook stamps the deterministic key `process_file:<file_id>` and records the effective `timeout`/`retries` in the scheduling ledger so recovery replays the same policy. Used by both the dashboard analyze path and the reboot re-enqueue task so in-flight files dedup |
 
 ### Tasks (`src/phaze/tasks/`)
 
@@ -427,7 +427,7 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs + cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |
 | `extract_file_metadata` | `metadata_extraction.py` | mutagen tag extraction → PUT via HTTP (operator-triggered) |
-| `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42): no-ops on a durable Postgres-broker restart; on genuine queue-loss (or manual `force`) re-enqueues every stage's pending set through the identical keyed producers the manual triggers use, so in-flight items dedup to a no-op (no doubling). Startup + the manual `/pipeline/recover` button call the same producer |
+| `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42/45): no-ops on a durable Postgres-broker restart; on genuine queue-loss (or manual `force`) replays each orphaned scheduling-ledger row — payload **and** stored `timeout`/`retries` policy — through the identical keyed producers, so in-flight items dedup (no doubling) and a recovered long `process_file` keeps its 7200s bound instead of the 600s default. Startup + the manual `/pipeline/recover` button call the same producer |
 | `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
 | `heartbeat_tick` | `heartbeat.py` | 30s cron heartbeat POST |
 

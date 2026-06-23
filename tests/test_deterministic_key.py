@@ -265,14 +265,27 @@ class _FakeSessionmaker:
 async def test_write_hook_upserts_ledger_when_sessionmaker_present(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: list[dict[str, object]] = []
 
-    async def _fake_upsert(session: object, *, key: str, function: str, kwargs: dict[str, object]) -> None:
-        captured.append({"key": key, "function": function, "kwargs": kwargs})
+    async def _fake_upsert(
+        session: object,
+        *,
+        key: str,
+        function: str,
+        kwargs: dict[str, object],
+        timeout: int | None = None,
+        retries: int | None = None,
+    ) -> None:
+        captured.append({"key": key, "function": function, "kwargs": kwargs, "timeout": timeout, "retries": retries})
 
     monkeypatch.setattr("phaze.services.scheduling_ledger.upsert_ledger_entry", _fake_upsert)
 
     sm = _FakeSessionmaker()
     fid = uuid.uuid4()
     job = Job(function="process_file", kwargs={"file_id": fid})
+    # Production registers apply_project_job_defaults BEFORE this hook, so job.timeout/retries are
+    # the FINAL effective policy by the time the ledger write fires (7200/2 for process_file). The
+    # hook must capture them so recovery can replay the same bound.
+    job.timeout = 7200
+    job.retries = 2
     job.queue = SimpleNamespace(cache_redis=FakeRedis(), ledger_sessionmaker=sm)  # type: ignore[assignment]
     await apply_deterministic_key(job)
 
@@ -281,6 +294,8 @@ async def test_write_hook_upserts_ledger_when_sessionmaker_present(monkeypatch) 
     assert captured[0]["key"] == f"process_file:{fid}"
     assert captured[0]["function"] == "process_file"
     assert captured[0]["kwargs"] == {"file_id": fid}
+    assert captured[0]["timeout"] == 7200
+    assert captured[0]["retries"] == 2
     assert sm.sessions[0].committed is True
 
 

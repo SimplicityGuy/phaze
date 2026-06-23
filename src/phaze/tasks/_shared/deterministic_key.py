@@ -132,7 +132,18 @@ async def apply_deterministic_key(job: Job) -> None:
             from phaze.services.scheduling_ledger import upsert_ledger_entry  # noqa: PLC0415
 
             async with sm() as session:
-                await upsert_ledger_entry(session, key=job.key, function=job.function, kwargs=dict(job.kwargs or {}))
+                # apply_project_job_defaults is registered BEFORE this hook (queue_factory), so
+                # job.timeout / job.retries are the FINAL effective policy here -- capture them so
+                # recovery replays the SAME bound (critical for process_file's 7200s/retries=2,
+                # else a recovered long set falls back to the 600s default and times out).
+                await upsert_ledger_entry(
+                    session,
+                    key=job.key,
+                    function=job.function,
+                    kwargs=dict(job.kwargs or {}),
+                    timeout=job.timeout,
+                    retries=job.retries,
+                )
                 await session.commit()
     except Exception:
         # The ledger is best-effort here; a hiccup degrades to "row not written" (recovered by the

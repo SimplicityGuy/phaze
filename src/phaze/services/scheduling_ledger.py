@@ -58,14 +58,25 @@ def routing_for_function(function: str) -> str:
     raise ValueError(f"{function!r} is not a routable task (absent from AGENT_TASKS and CONTROLLER_TASKS)")
 
 
-async def upsert_ledger_entry(session: AsyncSession, *, key: str, function: str, kwargs: dict[str, Any]) -> None:
+async def upsert_ledger_entry(
+    session: AsyncSession,
+    *,
+    key: str,
+    function: str,
+    kwargs: dict[str, Any],
+    timeout: int | None = None,
+    retries: int | None = None,
+) -> None:
     """Upsert one ledger row (idempotent ON CONFLICT DO UPDATE) -- the WRITE hook primitive.
 
     A re-enqueue of a still-scheduled key refreshes ``payload`` / ``enqueued_at`` /
-    ``function`` / ``routing`` instead of erroring on the duplicate PK. The caller commits.
+    ``function`` / ``routing`` / ``timeout`` / ``retries`` instead of erroring on the duplicate
+    PK. ``timeout`` / ``retries`` are the SAQ Job policy captured at enqueue time so recovery can
+    replay the SAME bound (None => producer set no explicit value; replay omits it). The caller
+    commits.
     """
     routing = routing_for_function(function)
-    values = {"key": key, "function": function, "routing": routing, "payload": kwargs}
+    values = {"key": key, "function": function, "routing": routing, "payload": kwargs, "timeout": timeout, "retries": retries}
     stmt = pg_insert(SchedulingLedger).values([values])
     stmt = stmt.on_conflict_do_update(
         index_elements=["key"],
@@ -73,21 +84,32 @@ async def upsert_ledger_entry(session: AsyncSession, *, key: str, function: str,
             "function": stmt.excluded.function,
             "routing": stmt.excluded.routing,
             "payload": stmt.excluded.payload,
+            "timeout": stmt.excluded.timeout,
+            "retries": stmt.excluded.retries,
             "enqueued_at": func.now(),
         },
     )
     await session.execute(stmt)
 
 
-async def insert_ledger_if_absent(session: AsyncSession, *, key: str, function: str, kwargs: dict[str, Any]) -> None:
+async def insert_ledger_if_absent(
+    session: AsyncSession,
+    *,
+    key: str,
+    function: str,
+    kwargs: dict[str, Any],
+    timeout: int | None = None,
+    retries: int | None = None,
+) -> None:
     """Insert one ledger row ONLY if the key is absent (ON CONFLICT DO NOTHING).
 
     The Plan-04 backfill primitive: it seeds a row for a live broker key WITHOUT clobbering
     an existing (possibly fresher hook-written) row. Differs from :func:`upsert_ledger_entry`
-    only in the conflict clause; the ``values()`` build is identical. The caller commits.
+    only in the conflict clause; the ``values()`` build is identical (including the captured
+    ``timeout`` / ``retries`` policy). The caller commits.
     """
     routing = routing_for_function(function)
-    values = {"key": key, "function": function, "routing": routing, "payload": kwargs}
+    values = {"key": key, "function": function, "routing": routing, "payload": kwargs, "timeout": timeout, "retries": retries}
     stmt = pg_insert(SchedulingLedger).values([values]).on_conflict_do_nothing(index_elements=["key"])
     await session.execute(stmt)
 
