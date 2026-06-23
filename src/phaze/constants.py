@@ -49,13 +49,26 @@ EXTENSION_MAP: dict[str, FileCategory] = {
 BULK_INSERT_BATCH_SIZE: int = 1000
 """Number of records per bulk INSERT batch for database ingestion."""
 
+AGENT_HEARTBEAT_INTERVAL_SECONDS: int = 30
+"""Phase 46: cadence (seconds) of the agent liveness heartbeat loop.
+
+Single source of truth for the heartbeat cadence. The heartbeat runs as an
+asyncio background task launched in the agent worker startup hook (NOT a SAQ
+CronJob), so it cannot be starved by a saturated ``worker_max_jobs`` dispatch
+pool — the Phase 46 incident where a busy-but-healthy agent was wrongly marked
+DEAD. Kept at 30s (matches the prior cron cadence). ``AGENT_LIVENESS_ALIVE_SECONDS``
+(90) is intentionally 3x this value so a single missed beat never flips a healthy
+agent to 'stale'.
+"""
+
 AGENT_LIVENESS_ALIVE_SECONDS: int = 90
 """Phase 29 D-12: seconds since `last_seen_at` below which an agent is 'alive'.
 
-The threshold is 3x the heartbeat cadence (30s) so a single missed beat does
-not flip an otherwise-healthy agent to 'stale'. Shared by the classifier
-(``phaze.services.agent_liveness.classify``), the UI render, and the
-classify-matrix tests so every consumer reads the same source of truth.
+The threshold is 3x ``AGENT_HEARTBEAT_INTERVAL_SECONDS`` (the heartbeat cadence)
+so a single missed beat does not flip an otherwise-healthy agent to 'stale'.
+Shared by the classifier (``phaze.services.agent_liveness.classify``), the UI
+render, and the classify-matrix tests so every consumer reads the same source of
+truth.
 """
 
 AGENT_LIVENESS_STALE_SECONDS: int = 300
