@@ -459,6 +459,16 @@ Plans:
 - [x] 45-05-PLAN.md — CR-01: guard the scan_live_set no-match report_scan_terminal call (re-raise on retryable, swallow+log on terminal) so a controller hiccup no longer leaks scan_live_set:<file_id>
 - [x] 45-06-PLAN.md — CR-02: add POST /{file_id}/failed terminal-failure callbacks for extract_file_metadata + fingerprint_file (control-side ledger clear) + agent-worker terminal-attempt acks + recovery regression test
 
+### Phase 46: Heartbeat Starvation Fix — decouple agent liveness heartbeat from the SAQ worker concurrency pool so a worker saturated with long process_file jobs still reports liveness and is not marked DEAD
+
+**Goal:** A file-server agent worker saturated with multi-hour `process_file` analysis jobs still reports liveness and stays `alive` — the heartbeat runs as an asyncio background task in the worker startup hook (cancelled on shutdown), decoupled from the SAQ `worker_max_jobs` dispatch pool that the old `CronJob` heartbeat competed for and was starved by.
+**Requirements**: Heartbeat fires on a fixed ~30s cadence independent of dispatch-pool saturation (proven by test); CronJob removed; all existing defensive behavior preserved; ≥85% coverage; docs + orphaned `cron:heartbeat_tick` row cleanup documented.
+**Depends on:** Phase 45
+**Plans:** 1 plan
+Plans:
+
+- [ ] 46-01-PLAN.md — Background-task heartbeat: send_heartbeat/_heartbeat_loop refactor + interval constant, startup launch/shutdown cancel + CronJob removal, starvation-independence + defensive-branch tests, docs + orphaned-cron-row cleanup
+
 ## Backlog (unscheduled — no phase number yet)
 
 - **Distributed cloud analysis (burst the backlog).** Offload long-file analysis to cloud x86 workers via the existing agent model: stage file to object storage → cloud worker pulls (presigned GET) → analyzes → PUTs result; **reconcile by `file_id`** (already end-to-end), sha256 for download integrity. Only new pieces: optional `source_url`+`sha256` on `ProcessFilePayload` + a "stager". essentia is **x86-only** (no aarch64 wheel; source build infeasible). Best near-free path = **GCP $300/90-day trial, x86 e2 spot, GCS same-region** (≈$0 out of pocket); min-cost paid = OCI E5 preemptible (~$100, free egress). **Gate: only pursue if nox throughput is still insufficient after the Phase 43 redeploy + re-measure** — bounding may make this moot. Full design: memory `reference-essentia-arm64-cloud-burst` + `project-analyze-4h-timeout-incident`.
