@@ -90,8 +90,8 @@ workers (control + agent), the watcher, and the CLI/scripts.
 INFO proves work is happening — model downloads, scans (`scan started` / `scan progress` /
 `scan completed`), fingerprints, metadata extraction, executions, Discogs/tracklist matching,
 and per-agent task enqueues all emit at INFO. `DEBUG` adds per-file (`file discovered`,
-`model ok`) and intermediate detail; the 30-second agent heartbeat stays at DEBUG so it never
-floods INFO. To watch a running scan in detail: `PHAZE_LOG_LEVEL=DEBUG`.
+`model ok`) and intermediate detail; the 30-second agent heartbeat background task stays at
+DEBUG so it never floods INFO. To watch a running scan in detail: `PHAZE_LOG_LEVEL=DEBUG`.
 
 ## Fingerprint service settings (all roles)
 

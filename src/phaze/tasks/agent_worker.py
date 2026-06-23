@@ -41,12 +41,12 @@ Docker invocation (Phase 29 docker-compose.agent.yml):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from pathlib import Path
 from typing import Any
 
 import redis.asyncio as redis_async
-from saq import CronJob
 import structlog
 
 from phaze.config import AgentSettings, get_settings
@@ -63,7 +63,7 @@ from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
-from phaze.tasks.heartbeat import heartbeat_tick
+from phaze.tasks.heartbeat import _heartbeat_loop
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.scan import scan_directory, scan_live_set
@@ -132,6 +132,15 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["agent_identity"] = identity
     ctx["agent_queue_name"] = expected_queue
 
+    # Phase 46: launch the liveness heartbeat as an asyncio background task OUTSIDE the
+    # SAQ dispatch pool. As a CronJob it competed for the same worker_max_jobs slots as
+    # multi-hour process_file jobs and got starved (~50min gaps vs the 300s DEAD
+    # threshold), marking a healthy busy agent DEAD. The event loop is free (essentia
+    # runs in a pebble ProcessPool, Phase 43), so a plain task ticks reliably. It needs
+    # only api_client + agent_identity (already set); it reads ctx["worker"].queue lazily
+    # and degrades queue_depth to 0 if the worker is not yet attached.
+    ctx["heartbeat_task"] = asyncio.create_task(_heartbeat_loop(ctx))
+
     # Step 5: Construct fingerprint orchestrator (B1 -- fingerprint_file + scan_live_set
     # read ctx["fingerprint_orchestrator"]). AudfprintAdapter + PanakoAdapter are
     # HTTP wrappers around local sidecars; they do NOT pull phaze.database into the
@@ -157,6 +166,15 @@ async def startup(ctx: dict[str, Any]) -> None:
 async def shutdown(ctx: dict[str, Any]) -> None:
     """SAQ shutdown hook for the agent role."""
     logger.info("phaze.tasks.agent_worker shutdown")
+
+    # Phase 46: cancel the background heartbeat FIRST, before closing api_client, so an
+    # in-flight heartbeat POST never hits a closed client. Guarded: the key may be absent
+    # if startup never reached the launch point.
+    heartbeat_task = ctx.get("heartbeat_task")
+    if heartbeat_task is not None:
+        heartbeat_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat_task
 
     # Phase 43: pebble ProcessPool shuts down via stop()/join() (not shutdown()).
     pool = ctx.get("process_pool")
@@ -218,14 +236,11 @@ settings = {
         scan_live_set,
         scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
         execute_approved_batch,
-        heartbeat_tick,  # Phase 29 D-08: SAQ-dispatched 30s cron handler
     ],
-    "cron_jobs": [
-        # Phase 29 D-08 + RESEARCH Critical Discovery #2: trailing-seconds
-        # 6-field form (croniter 6.x default). "*/30 * * * * *" would fire
-        # every second. Smoke-tested at module import time via croniter.
-        CronJob(heartbeat_tick, cron="* * * * * */30", unique=True, timeout=10),  # type: ignore[type-var]
-    ],
+    # Phase 46: NO heartbeat CronJob. The liveness heartbeat runs as an asyncio
+    # background task launched in startup (ctx["heartbeat_task"]) so it cannot be
+    # starved by a saturated worker_max_jobs dispatch pool. SAQ's Worker treats
+    # cron_jobs as optional (defaults to []), so the key is omitted entirely.
     "concurrency": get_settings().worker_max_jobs,
     "startup": startup,
     "shutdown": shutdown,

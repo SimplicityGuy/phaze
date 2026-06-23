@@ -238,7 +238,7 @@ You should see:
 - `Models downloaded successfully to /models`
 - `phaze.tasks.agent_worker startup complete agent_id=fileserver-east queue=phaze-agent-fileserver-east`
 
-After ~5 minutes, the heartbeat cron starts firing every 30s against `POST /api/internal/agent/heartbeat`.
+After ~5 minutes, the heartbeat — an asyncio background task in the agent worker (every 30s) — starts firing against `POST /api/internal/agent/heartbeat`.
 
 > **Run both stacks on one host (dev convenience):** `just up-all` runs `docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d`. This is for development only — production keeps the app-server and file-server stacks on separate hosts to preserve filesystem isolation (DIST-01).
 
@@ -265,7 +265,7 @@ You should see the agent reach **alive** within ~60s of `just up-agent`.
 
 If the row shows **never**: the agent worker has not completed startup yet. Check the worker logs.
 
-If the row shows **stale** then **dead**: the worker is up but heartbeats are not reaching the app-server. Check the agent worker logs for `heartbeat failed: ...` WARNING lines, and verify the agent can reach `https://<app-server>:8000/api/internal/agent/heartbeat` with the correct CA cert and token.
+If the row shows **stale** then **dead**: the worker is up but heartbeats are not reaching the app-server. Check the agent worker logs for `heartbeat failed: ...` WARNING lines, and verify the agent can reach `https://<app-server>:8000/api/internal/agent/heartbeat` with the correct CA cert and token. If a **busy** worker (high CPU, actively analyzing) still appears stale/dead, confirm the agent image carries the Phase 46 build — before it, the heartbeat ran as a SAQ cron job that competed for the `worker_max_jobs` dispatch slots and was starved by multi-hour `process_file` jobs; the fix runs the heartbeat as an in-process asyncio background task that cannot be starved.
 
 ## The watcher service
 
@@ -372,10 +372,20 @@ To stop and restart cleanly without rebuilding: `just down` (`docker compose dow
 
 > Do **not** `rm -rf ./certs/` as part of a rollback — that triggers a full CA regeneration and breaks every agent until the new `phaze-ca.crt` is re-distributed (see CA Rotation below).
 
+## One-time cleanup after the Phase 46 heartbeat fix
+
+Builds **before** Phase 46 registered the heartbeat as a SAQ `CronJob` with `unique=True`, which parks a deterministic row keyed `cron:heartbeat_tick` in the Postgres broker (`saq_jobs`). After you redeploy the new agent image, nothing re-schedules that row (the heartbeat now runs as an in-process asyncio background task), so it lingers as a stale parked entry. Run this one-time cleanup **after the new agent image is deployed**, against the queue database (`PHAZE_QUEUE_URL`):
+
+```sql
+DELETE FROM saq_jobs WHERE key = 'cron:heartbeat_tick';
+```
+
+It is harmless if the row is already absent (e.g. on a fresh broker or after a `saq_jobs` truncate). This mirrors the prior Redis orphaned-cron-purge runbook, adapted to the Postgres broker.
+
 ## Monitoring & Health
 
 - **API health endpoint:** `GET /health` returns `{"status":"ok"}` and checks database connectivity (`SELECT 1`). It requires Postgres to be reachable. Use it as the app-server liveness probe: `curl --cacert ./certs/phaze-ca.crt https://<app-server>:8000/health`.
-- **Agent heartbeat / liveness:** each agent worker runs a SAQ cron handler every 30s (`phaze.tasks.heartbeat`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth}`. The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
+- **Agent heartbeat / liveness:** each agent worker runs an asyncio background task in the agent worker (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs (Phase 46). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
 - **Sidecar health:** the `audfprint` and `panako` fingerprint sidecars expose `/health`; `just audfprint-health` and `just panako-health` exec into the worker and curl them.
 - **Worker health:** `just worker-health` runs the SAQ `--check` against the controller worker; `just worker-logs` follows its logs.
 - **Logging:** services log to stdout/stderr (`docker compose logs -f <service>`). The cert-bootstrap banner additionally lands in `docker compose logs api` via `logger.warning()`. No external metrics/tracing exporter (Sentry, Datadog, OpenTelemetry) is configured in this repo. <!-- VERIFY: any external log aggregation, alerting, or metrics dashboard configured at the deployment level (outside the repo) is not represented here. -->

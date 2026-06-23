@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Distributed Agents
-status: "Phase 45 shipped — PR #146"
-last_updated: "2026-06-20T21:40:47.451Z"
-last_activity: 2026-06-20
+status: verifying
+last_updated: "2026-06-23T18:38:03.160Z"
+last_activity: 2026-06-23
 progress:
   total_phases: 3
   completed_phases: 3
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Milestone complete
+**Current focus:** Phase 46 — heartbeat-starvation-fix
 
 ## Current Position
 
-Phase: 45
-Plan: Not started
-Status: Quick task 260622-i0w shipped — PR #150 (Phase 45 shipped — PR #146)
-Last activity: 2026-06-22 - Shipped quick task 260622-i0w: scanned/deduped/unique reconciliation in pipeline UI (PR #150)
+Phase: 46 (heartbeat-starvation-fix) — EXECUTING
+Plan: 1 of 1
+Status: Phase complete — ready for verification
+Last activity: 2026-06-23
 
 Progress: [██████████] 100%
 
@@ -66,6 +66,7 @@ Progress: [██████████] 100%
 
 ### Roadmap Evolution
 
+- Phase 46 added (2026-06-23): Heartbeat Starvation Fix — decouple the agent liveness heartbeat from the SAQ worker concurrency pool. Surfaced by live incident: agent `nox` showed `DEAD` (last seen 39m ago) while the `phaze-agent-worker` container was healthy and pegged at ~394% CPU. Root cause: `heartbeat_tick` is a SAQ `CronJob` registered in the same agent worker (`agent_worker.py:227`), so it competes for the same `worker_max_jobs=8` concurrency slots as `process_file`. With all 8 slots full of multi-hour analysis jobs (long concert sets, 2–3.6h each), the 30s heartbeat cron could only run when a slot freed (~every 50 min) → `last_seen` exceeded the 300s staleness threshold (`constants.py:61`) → control plane marked the busy agent DEAD, which also blocks new agent-task routing (fingerprint/metadata). Fix: run the heartbeat independent of the job concurrency pool so a saturated worker still reports liveness. Distinct from the Phase 43 analyze-throughput work (that bounds job cost; this guarantees liveness regardless of job cost). NOTE: phase.add mis-numbered it 43 (counted dirs, max=42; collided with shipped text-only 43/44/45) — manually renumbered to 46 + dir renamed to `46-heartbeat-starvation-fix`.
 - Phase 45 added (2026-06-18): Scheduling Ledger for Orphan Recovery — surfaced by live incident: clicking "Recover orphaned work" (`recover_orphaned_work(force=True)`) bypassed the loss-detection gate and reconciled the ENTIRE complement-of-done backlog of all 8 stages, detonating the queue to ~44,500 jobs over ~11,400 never-scheduled DISCOVERED files. Root issue: no record anywhere that a stage was ever *scheduled* for an item (pending sets = complement-of-done). Operator principle: recovery must only re-queue work that was previously scheduled and lost; never-scheduled work is not yet orphaned. Approach: durable scheduling ledger written at the single `before_enqueue` chokepoint (`apply_deterministic_key`), cleared on completion (`increment_completed` after_process); `recover_orphaned_work` = ledger − live saq_jobs keys − completed. Survives a saq_jobs truncate (the only real post-Phase-36 loss case). `force` becomes "reconcile the ledger now," not "sweep the backlog." Successor to the Phase 39–42 DAG-manual-control + recovery line. NOTE: phase.add mis-numbered it 43 (collided with existing 43/44, wrong dir tree) — manually renumbered to 45 + dir moved to `.planning/phases/45-...`.
 - Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.
 - Phase 31 added (2026-06-10): Windowed Time-Series Audio Analysis — surfaced by live incident after v4.0.9 redeploy: `RhythmExtractor2013` `OnsetDetectionGlobal` buffer overflow crashes whole-file BPM on multi-hour sets (79% of the 11,428-file archive is >50 MB), 0 files analyzed. Fix = stream-decode + per-window analysis (two tiers: BPM/key 30s, mood/style/danceability 3min), queryable `analysis_window` child table + aggregates on `analysis`. Design spec: docs/superpowers/specs/2026-06-10-windowed-analysis-design.md. Brainstormed decisions: scope=everything-as-time-series via two tiers; storage=queryable child table (option B); UI=compact+HTMX-expand timeline (option B). Ships v4.0.10.
@@ -91,6 +92,7 @@ Progress: [██████████] 100%
 - [Phase 38]: 38-03: the 6 stage-control keys ride the existing dag.items() OOB loop with zero stats_bar.html edit; one _NEW_STORE_KEYS edit drives the store-literal, int-key, and OOB-seed tests
 - [Phase 38]: 38-02: stage_controls reusable Jinja macro (id=stage-controls-<stage>) on the 3 agent chips; pause/resume = TWO x-show-gated static-hx-post buttons (not a bound :hx-post), authoritative-only @htmx:after-request JSON-parse store write, no optimistic mutation (T-38-OOB)
 - [Phase 38]: 38-02: agent-chip NODE_LAYOUT gutter widened 182->276px (h 154->250) for the control row; overlap guard min_chip_height bumped 150->240; canvas/SVG grown 720->1000; col-0/col-2/col-3 nodes re-balanced to incoming-edge midpoints
+- [Phase ?]: Phase 46-01: agent liveness heartbeat runs as an asyncio background task launched in agent_worker startup (cancelled in shutdown), NOT a SAQ CronJob — a CronJob competed for worker_max_jobs dispatch slots and was starved by multi-hour process_file jobs (busy-agent-DEAD incident); heartbeat_tick kept as a back-compat shim; one-time DELETE of orphaned cron:heartbeat_tick row from saq_jobs documented for redeploy
 
 ### Pending Todos
 
@@ -140,9 +142,10 @@ None.
 | Phase 38 P02 | 8min | 3 tasks | 2 files |
 | Phase 45 P05 | ~5 min | 1 tasks | 2 files |
 | Phase 45 P06 | ~25 min | 2 tasks | 12 files |
+| Phase 46 P01 | ~20min | 3 tasks | 8 files |
 
 ## Session Continuity
 
-Last session: 2026-06-19T22:47:35.525Z
-Stopped at: Completed 38-02-PLAN.md — Phase 38 complete (all 3 plans), ready for verification
+Last session: 2026-06-23T18:37:39.155Z
+Stopped at: Completed 46-01-PLAN.md — Phase 46 complete, ready for verification
 Resume file: None
