@@ -133,7 +133,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 44. Analyze Observability UI | v4.0 | 4/4 | Complete | 2026-06-18 |
 | 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete    | 2026-06-19 |
 | 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
-| 47. Official arm64 essentia agent image | v5.0 | 0/0 | Not started | - |
+| 47. Official arm64 essentia agent image | v5.0 | 2/4 | In Progress|  |
 | 48. Compute-agent type | v5.0 | 0/0 | Not started | - |
 | 49. Duration routing & backfill | v5.0 | 0/0 | Not started | - |
 | 50. Push pipeline | v5.0 | 0/0 | Not started | - |
@@ -501,8 +501,8 @@ Plans:
 
 **Wave 1**
 
-- [ ] 47-01-PLAN.md — arm64 agent Dockerfile (3.13 + essentia-from-source + 4 spike fixes; scoped requires-python reconciliation)
-- [ ] 47-03-PLAN.md — parity toolkit: bpm/key-exact + epsilon comparator, shared dump CLI, deterministic reference clip
+- [x] 47-01-PLAN.md — arm64 agent Dockerfile (3.13 + essentia-from-source + 4 spike fixes; scoped requires-python reconciliation)
+- [x] 47-03-PLAN.md — parity toolkit: bpm/key-exact + epsilon comparator, shared dump CLI, deterministic reference clip
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
