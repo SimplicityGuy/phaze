@@ -496,7 +496,11 @@ Plans:
   1. Operator can pull an arm64-tagged phaze agent image from GHCR that boots and imports essentia successfully on arm64 hardware.
   2. CI builds and pushes the arm64 image on a **native arm64 runner** (no QEMU) on the same release triggers as the x86 image, so a matching arm64 tag appears on every release.
   3. A CI parity guard runs full analysis (MusiCNN + discogs-effnet) on the arm64 image and confirms results match the x86 path within tolerance (BPM/key exact, model scores within a small epsilon); the build fails if parity breaks.
-**Plans**: TBD
+**Plans**: 4 plans
+- [ ] 47-01-PLAN.md — arm64 agent Dockerfile (3.13 + essentia-from-source + 4 spike fixes; scoped requires-python reconciliation)
+- [ ] 47-02-PLAN.md — CI native-arm64 build + push (-arm64 tags, import-smoke), hadolint matrix, just recipes, tag test
+- [ ] 47-03-PLAN.md — parity toolkit: bpm/key-exact + epsilon comparator, shared dump CLI, deterministic reference clip
+- [ ] 47-04-PLAN.md — CI parity guard (x86 golden + build-blocking arm64 compare; fix #4 real-audio proof) + docs
 
 ### Phase 48: Compute-agent type
 **Goal**: phaze recognizes a "compute agent" — a media-less, scan-rootless `kind="compute"` Agent that pulls analysis jobs and PUTs results exactly like a file-server agent, visible as available cloud capacity on the Agents admin page.
