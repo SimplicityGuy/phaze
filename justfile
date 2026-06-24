@@ -302,7 +302,9 @@ parity-golden-regen TAG="latest":
     REGISTRY="ghcr.io"
     OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
     REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
-    IMAGE="${REGISTRY}/${OWNER}/${REPO}/api:{{TAG}}"
+    # CI publishes the api image at the bare-repo URL (image_suffix="" for api,
+    # Phase 29 D-15) — ghcr.io/<owner>/<repo>:<tag>, NOT a /api sub-path. Match it.
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}"
     # 1. Provision the essentia model weights locally (host ./models).
     echo "📥 Provisioning models into ./models ..."
     bash scripts/download-models.sh models

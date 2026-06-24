@@ -197,9 +197,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
 
+    # load-only job (push: false) — never writes to the registry. Registry write
+    # is contained to the parity-gated pusher (parity-guard, T-47-08); this job
+    # needs at most read access for cache/base-image pulls.
     permissions:
       contents: read
-      packages: write
+      packages: read
 
     # Exposed for the 47-04 parity-gated push: it pushes these exact -arm64 tags
     # WITH these OCI labels (provenance/sbom/labels + the push live in 47-04 — the

@@ -148,8 +148,16 @@ def _extract_api_metadata_action_step(workflow_data: dict[str, Any]) -> dict[str
     differentiation in `images:`), any docker/metadata-action step is
     returned.
     """
-    for job in (workflow_data.get("jobs") or {}).values():
-        for step in job.get("steps", []) or []:
+    jobs = workflow_data.get("jobs") or {}
+    # Target the api publisher explicitly: phase 47 added build-arm64 and
+    # parity-golden-x86 jobs that also use docker/metadata-action, so a
+    # first-match scan would silently check the wrong tag strategy if jobs
+    # are reordered. Fall back to a first-match scan only if the api job is
+    # named differently (single shared-step workflow).
+    api_job = jobs.get("build-and-push")
+    candidate_jobs = [api_job] if api_job else list(jobs.values())
+    for job in candidate_jobs:
+        for step in (job or {}).get("steps", []) or []:
             uses = (step.get("uses") or "").lower()
             if "docker/metadata-action" in uses:
                 return step  # type: ignore[no-any-return]
