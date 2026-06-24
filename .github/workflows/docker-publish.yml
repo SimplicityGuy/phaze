@@ -293,3 +293,94 @@ jobs:
           echo "🔎 Importing inside ${FIRST_TAG} ..."
           docker run --rm "${FIRST_TAG}" \
             python3 -c "import phaze.tasks.agent_worker; import essentia.standard; print('✅ arm64 agent boots')"
+
+  # ============================================================================
+  # PARITY GOLDEN (x86) — authoritative golden producer (Phase 47 / CLOUDIMG-03)
+  # ----------------------------------------------------------------------------
+  # Runs the SHARED dump_analysis.py inside the freshly-built x86 api image over
+  # the committed reference clip, producing golden-x86.json — the x86 reference
+  # the native-arm64 parity-guard compares against. The docker run is DELEGATED to
+  # `just parity-dump` (workflows delegate to just — MEMORY) so CI and operators
+  # share one dump path; the x86 api image uses the default INTERP="uv run python"
+  # (the uv-managed venv where phaze + essentia are installed). The golden is
+  # produced + uploaded only on non-PR events, where the api image is pushed.
+  parity-golden-x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-and-push
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: "🏷️ Set lowercase image name"
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "IMAGE_NAME=$(echo "$REPO" | tr "[:upper:]" "[:lower:]")" >> "$GITHUB_ENV"
+
+      - name: "🔀 Checkout repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: "🔧 Setup Just"
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "📊 Resolve the x86 api image tag"
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          # Bare-repo URL (Phase 29 D-15: the api image is published at
+          # ghcr.io/<owner>/phaze with no sub-path). Mirror the api job's tag set
+          # so the first resolved tag is the freshly-built image to dump from.
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: "📦 Cache essentia models"
+        id: models-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          # Keyed on the single-source model URL/manifest list so a model change
+          # busts the cache without re-downloading ~3GB on every run (Pitfall 4).
+          path: models
+          key: essentia-models-${{ hashFiles('src/phaze/scripts/download_models.py') }}
+
+      - name: "📥 Provision essentia models"
+        if: steps.models-cache.outputs.cache-hit != 'true'
+        run: bash scripts/download-models.sh models
+
+      - name: "🔒 Log in to the GitHub Container Registry"
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "🥇 Produce golden-x86.json from the x86 api image"
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          X86_IMAGE=$(echo "${TAGS}" | head -n1)
+          echo "📥 Pulling ${X86_IMAGE} ..."
+          docker pull "${X86_IMAGE}"
+          # Shared dump path; default INTERP="uv run python" for the uv-based x86 image.
+          just parity-dump "${X86_IMAGE}" ./models scripts/parity/golden-x86.json
+
+      - name: "📤 Upload golden-x86.json"
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: parity-golden-x86
+          path: scripts/parity/golden-x86.json
+          if-no-files-found: error
