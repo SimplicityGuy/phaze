@@ -267,6 +267,33 @@ image-push:
         echo "✅ ${SERVICE} pushed"
     done
 
+[doc('Build the arm64 essentia agent image locally (operator fallback to the CI build-arm64 job)')]
+[group('docker')]
+image-build-arm64 TAG="latest":
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
+    echo "🐳 Building ${IMAGE} (Dockerfile.agent-arm64, native arm64 essentia)..."
+    docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
+    echo "✅ built ${IMAGE}"
+
+[doc('Build + push the arm64 essentia agent image to GHCR (operator fallback; CI push is parity-gated in 47-04)')]
+[group('docker')]
+image-push-arm64 TAG="latest":
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
+    echo "🐳 Building and pushing ${IMAGE}..."
+    docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
+    docker push "${IMAGE}"
+    echo "✅ ${IMAGE} pushed"
+
 [doc('Regenerate the x86 parity golden JSON from the reference clip (operator path; CI in plan 47-04 is authoritative)')]
 [group('docker')]
 parity-golden-regen TAG="latest":
