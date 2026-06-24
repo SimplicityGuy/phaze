@@ -267,6 +267,29 @@ image-push:
         echo "✅ ${SERVICE} pushed"
     done
 
+[doc('Regenerate the x86 parity golden JSON from the reference clip (operator path; CI in plan 47-04 is authoritative)')]
+[group('docker')]
+parity-golden-regen TAG="latest":
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}/api:{{TAG}}"
+    # 1. Provision the essentia model weights locally (host ./models).
+    echo "📥 Provisioning models into ./models ..."
+    bash scripts/download-models.sh models
+    # 2. Run the SHARED dump tool inside the x86 api image over the committed reference clip.
+    #    This writes scripts/parity/golden-x86.json for offline inspection.
+    #    NOTE: CI (plan 47-04) is the AUTHORITATIVE golden producer; this is the operator regen path.
+    echo "🐳 Generating golden-x86.json via ${IMAGE} ..."
+    docker run --rm \
+        -v "$(pwd)/scripts/parity:/parity" \
+        -v "$(pwd)/models:/models:ro" \
+        "${IMAGE}" \
+        uv run python /parity/dump_analysis.py /parity/reference.wav /models --out /parity/golden-x86.json
+    echo "✅ wrote scripts/parity/golden-x86.json"
+
 [doc('Validate docker-compose.yml syntax')]
 [group('docker')]
 docker-compose-validate:
