@@ -145,8 +145,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /bin/
 #   2. Install the pure-Python phaze package itself with the requires-python gate bypassed
 #      for this one image (uv has NO --ignore-requires-python; this single justified bare-pip
 #      line is the documented agent-image exception).
+# --no-hashes is REQUIRED: uv.lock records hashes only for the repo's cp314 wheels
+# (requires-python >=3.14), but this image installs onto cp313, so binary deps like
+# psycopg-binary resolve to their cp313 wheel whose hash is absent from the lock — a
+# hashed export hard-fails with "Hash mismatch". Dropping hashes keeps the frozen
+# VERSION pins (still reproducible) while letting the cross-ABI wheel install.
 COPY pyproject.toml uv.lock ./
-RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt > /tmp/agent-reqs.txt \
+RUN uv export --frozen --no-dev --no-emit-project --no-hashes --format requirements-txt > /tmp/agent-reqs.txt \
     && uv pip install --system --python /usr/local/bin/python3 --no-cache -r /tmp/agent-reqs.txt
 
 COPY src/ src/

@@ -294,7 +294,11 @@ jobs:
           # re-validate requires-python >=3.14 and miss those packages.
           FIRST_TAG=$(echo "${TAGS}" | head -n1)
           echo "🔎 Importing inside ${FIRST_TAG} ..."
-          docker run --rm "${FIRST_TAG}" \
+          # PHAZE_AGENT_QUEUE is required at import time: agent_worker.py builds its
+          # SAQ queue at module scope and raises if the env var is unset (Phase 26
+          # D-16). The smoke value is throwaway — it only needs to satisfy the guard
+          # so the real import + essentia load are exercised.
+          docker run --rm -e PHAZE_AGENT_QUEUE=phaze-agent-smoketest "${FIRST_TAG}" \
             python3 -c "import phaze.tasks.agent_worker; import essentia.standard; print('✅ arm64 agent boots')"
 
   # ============================================================================
