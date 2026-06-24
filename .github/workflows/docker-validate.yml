@@ -31,6 +31,14 @@ jobs:
           - name: panako
             dockerfile: services/panako/Dockerfile.panako
             context: .
+          # Phase 47 CLOUDIMG-02: hadolint-gate the arm64 agent Dockerfile. The
+          # real native build runs in docker-publish.yml's build-arm64 job — a
+          # full QEMU C++ compile on this x86 ubuntu-latest runner is forbidden
+          # (slow + flaky), so the "Test Docker build" + import-smoke steps below
+          # are guarded off for this entry (lint-only).
+          - name: agent-arm64
+            dockerfile: Dockerfile.agent-arm64
+            context: .
 
     steps:
       - name: 🔀 Checkout repository
@@ -45,7 +53,10 @@ jobs:
           dockerfile: ${{ matrix.dockerfile }}
           failure-threshold: error
 
+      # Skipped for agent-arm64: a native build runs in docker-publish.yml's
+      # build-arm64 job; a QEMU C++ compile here would be prohibitively slow.
       - name: 🐳 Test Docker build
+        if: matrix.name != 'agent-arm64'
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
           CONTEXT: ${{ matrix.context }}
