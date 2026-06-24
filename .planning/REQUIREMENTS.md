@@ -67,4 +67,4 @@ Each maps to exactly one roadmap phase (Traceability below).
 | CLOUDPIPE-01..05 | Phase 50 | Pending |
 | CLOUDDEPLOY-01..04 | Phase 51 | Pending |
 
-_(Phase numbers continue from v4.0's last phase (46); finalized by the roadmapper.)_
+_Phase numbers 47-51 continue from v4.0's last phase (46). Finalized by the roadmapper 2026-06-24; 18 requirements, 100% coverage, one phase each. See ROADMAP.md §"Phase Details (v5.0)"._
