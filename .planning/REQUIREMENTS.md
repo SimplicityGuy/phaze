@@ -9,9 +9,9 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Official arm64 image (CLOUDIMG)
 
-- [ ] **CLOUDIMG-01**: An official arm64 essentia analysis agent image is published to GHCR, building essentia **from source** (the essentia-tensorflow wheel is x86-only) with the proven spike fixes baked in.
-- [ ] **CLOUDIMG-02**: The arm64 image is built and pushed by CI on a **native arm64 runner** (no QEMU) on the same release triggers as the x86 images, with matching tags.
-- [ ] **CLOUDIMG-03**: A CI/test guard confirms the arm64 image runs full analysis (MusiCNN + discogs-effnet) and produces results matching the x86 path within tolerance (BPM/key exact; model scores within a small epsilon).
+- [x] **CLOUDIMG-01**: An official arm64 essentia analysis agent image is published to GHCR, building essentia **from source** (the essentia-tensorflow wheel is x86-only) with the proven spike fixes baked in.
+- [x] **CLOUDIMG-02**: The arm64 image is built and pushed by CI on a **native arm64 runner** (no QEMU) on the same release triggers as the x86 images, with matching tags.
+- [x] **CLOUDIMG-03**: A CI/test guard confirms the arm64 image runs full analysis (MusiCNN + discogs-effnet) and produces results matching the x86 path within tolerance (BPM/key exact; model scores within a small epsilon).
 
 ### Compute-agent type (CLOUDAGENT)
 

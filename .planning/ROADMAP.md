@@ -133,7 +133,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 44. Analyze Observability UI | v4.0 | 4/4 | Complete | 2026-06-18 |
 | 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete    | 2026-06-19 |
 | 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
-| 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete   | 2026-06-24 |
+| 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete    | 2026-06-24 |
 | 48. Compute-agent type | v5.0 | 0/0 | Not started | - |
 | 49. Duration routing & backfill | v5.0 | 0/0 | Not started | - |
 | 50. Push pipeline | v5.0 | 0/0 | Not started | - |
