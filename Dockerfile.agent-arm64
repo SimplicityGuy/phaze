@@ -1,0 +1,175 @@
+# syntax=docker/dockerfile:1
+#
+# Dockerfile.agent-arm64 — production arm64 (linux/aarch64) essentia analysis agent.
+#
+# CLOUDIMG-01: the essentia-tensorflow wheel is x86-only (no linux/aarch64 wheel
+# exists), so this image builds essentia FROM SOURCE against the AWS-maintained
+# `tensorflow` aarch64 wheel. It transcribes the PROVEN spike recipe
+# (`spike/arm64-essentia-analysis`, PASS 2026-06-23) into a hardened, reproducible
+# build: Python 3.13 + TensorFlow 2.20.0 + essentia at a pinned commit SHA, with all
+# four spike integration fixes baked in. Foundation of the v5.0 Cloud Burst path
+# (OCI Always-Free Ampere A1: 4 cores / 24 GB).
+#
+# Build (native arm64 host — ubuntu-24.04-arm in CI, or Apple Silicon / colima):
+#   docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t <ghcr>/phaze:<tag>-arm64 .
+
+FROM python:3.13-slim-bookworm
+
+# TF version (override with --build-arg). 2.20.0 is the spike-proven combo: 2.19 has
+# NO cp313 aarch64 wheel — only 2.20.0 / 2.21.0 do; 2.20.0 is the one essentia's glue
+# was proven against. Pinned exact (no range) for reproducibility / supply-chain integrity.
+ARG TF_VERSION=2.20.0
+
+# --- essentia source-build dependencies (compile-time only; all have aarch64 pkgs) ---
+# Eigen/FFTW/libav/samplerate/taglib/chromaprint = the standard essentia deps.
+# DL3008: Debian-slim apt versions shift on every base-image refresh; pinning would
+# break builds on each security update. The base image tag controls the package snapshot.
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        git \
+        wget \
+        pkg-config \
+        libeigen3-dev \
+        libyaml-dev \
+        libfftw3-dev \
+        libavcodec-dev \
+        libavformat-dev \
+        libavutil-dev \
+        libswresample-dev \
+        libsamplerate0-dev \
+        libtag1-dev \
+        libchromaprint-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Single toolchain (system gcc + pip manylinux wheels) so the libstdc++ CXX11 ABI
+# matches between essentia and libtensorflow — mixing ABIs is the essentia #977
+# `undefined symbol: _ZTINSt6thread6_StateE` segfault. This bare-pip install is the
+# RESEARCH-granted agent-image exception: the TF wheel MUST be the toolchain essentia links.
+# DL3013: numpy/pyyaml float to match the pinned TF wheel; TF itself is pinned via ARG.
+# hadolint ignore=DL3013
+RUN python3 -m pip install --no-cache-dir numpy pyyaml "tensorflow==${TF_VERSION}" \
+    && python3 -c "import tensorflow as tf, platform; print('TF', tf.__version__, 'machine', platform.machine())"
+
+# essentia pinned to a HARDCODED commit SHA for reproducibility / supply-chain integrity
+# (T-47-01): NO moving master/HEAD, NO build-time remote SHA resolution. Resolved ONCE from
+# MTG/essentia master on 2026-06-24 — the spike-era state the TF-2.20.0 glue below was
+# proven against (the spike used a `--depth 1` master clone that recorded no SHA, so this
+# is the pinned default it was effectively built at). This SHA is TRUSTED only once it
+# passes the 47-04 parity guard: a fresh-master divergence would be caught there on real
+# audio, never silently shipped.
+ARG ESSENTIA_SHA=b9fa6cb674ca43dfb94d28d293aeda441c6745db
+
+WORKDIR /src
+# FULL clone (NOT --depth 1) so the pinned-SHA checkout resolves. Official MTG repo only.
+RUN git clone https://github.com/MTG/essentia.git \
+    && git -C essentia checkout "${ESSENTIA_SHA}"
+WORKDIR /src/essentia
+
+# FIX #1 — setup_from_python.sh (written for TF ~2.5-2.12) leaves DANGLING symlinks on
+# modern TF: it hardcodes the old `tensorflow_core` pywrap name and assumes
+# libtensorflow_framework.so.2 lives in /usr/local/lib. Repoint both at the real wheel
+# .so files; the heavy C++ runtime symbols moved to libtensorflow_cc.so.2 (the 211 KB
+# _pywrap is now just a shim), so the pywrap slot maps to libtensorflow_cc.so.2.
+RUN bash src/3rdparty/tensorflow/setup_from_python.sh \
+    && TF=$(python3 -c "import tensorflow,os;print(os.path.dirname(tensorflow.__file__))") \
+    && ln -sf "$TF/libtensorflow_cc.so.2"        /usr/local/lib/libpywrap_tensorflow_internal.so \
+    && ln -sf "$TF/libtensorflow_framework.so.2" /usr/local/lib/libtensorflow_framework.so \
+    && ldconfig
+
+# FIX #2 (LIBRARY_PATH = link-time -L search; /usr/local/lib isn't on Debian gcc's default)
+# + FIX #3 partial (LD_LIBRARY_PATH = runtime; covers our symlinks + the wheel dir).
+ENV LIBRARY_PATH=/usr/local/lib \
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/python3.13/site-packages/tensorflow
+
+# ~324 s C++ compile against the installed TF wheel.
+RUN python3 waf configure --build-static --with-python --with-tensorflow \
+    && python3 waf -j"$(nproc)" \
+    && python3 waf install \
+    && ldconfig
+
+# FIX #3 final — libtensorflow_cc.so.2 has a transitive DT_NEEDED on the pip-wheel-vendored
+# libomp-<hash>.so.5 in the sibling tensorflow.libs/ dir. Add it so essentia can dlopen the
+# full TF stack at runtime. Placed AFTER the compile layer so it doesn't bust the ~324 s cache.
+ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/python3.13/site-packages/tensorflow:/usr/local/lib/python3.13/site-packages/tensorflow.libs
+
+# FIX #4 — dual-OpenMP runtime conflict (the one OPEN production blocker; NOT in the spike
+# Dockerfile because its smoke test dodged it with np.sin). TF's vendored LLVM libomp and
+# numpy's OpenBLAS libgomp collide when numpy C-extensions load in the same process AFTER
+# essentia/TF — a segfault. OMP_NUM_THREADS=1 is the primary mitigation (serializes the OpenMP
+# runtimes to one thread, defusing the collision). Set in this post-compile env layer so it
+# persists to runtime without busting the compile cache. Documented fallback if =1 alone is
+# insufficient: LD_PRELOAD a single OpenMP runtime, e.g.
+#   LD_PRELOAD=/usr/local/lib/python3.13/site-packages/tensorflow.libs/libomp-*.so
+# CANNOT be proven by hadolint or a synthetic np.sin signal — its real validation is a
+# real-audio analyze through phaze.services.analysis.analyze_file on a native arm64 runner,
+# which is OWNED BY PLAN 47-04 (Assumption A1: do NOT assume benign).
+ENV OMP_NUM_THREADS=1
+
+# Models (frozen TF1 graphs, arch-independent) are mounted at /models at runtime, never
+# baked — keeps the build independent of the flaky essentia.upf.edu download (Pattern 3,
+# T-47-05: no secrets/downloads at build).
+RUN mkdir -p /models
+
+# --- runtime native libs (the v4.0.9 / v4.1.1 crash-loop incident class, T-47-06) -----
+# These MUST be present in the final image or the agent crash-loops on import: essentia's
+# native _essentia extension links libatomic.so.1 (libatomic1); decode/fingerprint needs
+# ffmpeg + ffprobe (ffmpeg), libsndfile.so.1 (libsndfile1), and fpcalc + libchromaprint.so.1
+# (libchromaprint-tools — note: the source build above uses libchromaprint-DEV headers; the
+# runtime needs the -TOOLS fpcalc binary); libpq5 backs psycopg's SAQ PostgresQueue broker.
+# Kept here explicitly so a future multi-stage split that drops the -dev packages can't
+# regress the crash-loop. import-smoke validation owned by plan 47-02.
+# DL3008: see the rationale on the source-build apt layer above (intentionally unpinned).
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install uv only as a dependency resolver/installer — NOT as a runtime launcher.
+COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /bin/
+
+# --- D-47-PY: scope the 3.13 exception to THIS image; the repo's 3.14 contract stays pure ---
+# Mirrors the pyproject.toml:16 essentia arch-gate style: the main app is Python 3.14
+# exclusively (essentia-tensorflow ships cp314 x86 wheels there), but the arm64 agent has
+# NO cp314 aarch64 TF wheel, so it MUST run on 3.13. We DO NOT relax
+# `requires-python = ">=3.14,<3.15"` in pyproject.toml — the exception lives only here.
+#
+# Mechanism, ALL targeting the base /usr/local/bin/python3 (3.13) so the runtime CMD below
+# sees exactly these packages:
+#   1. Export the locked third-party closure for the already-declared aarch64 [tool.uv]
+#      environment (essentia-tensorflow is marker-excluded on linux/aarch64 — we built it
+#      from source above) and install it into the system interpreter with uv.
+#   2. Install the pure-Python phaze package itself with the requires-python gate bypassed
+#      for this one image (uv has NO --ignore-requires-python; this single justified bare-pip
+#      line is the documented agent-image exception).
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt > /tmp/agent-reqs.txt \
+    && uv pip install --system --python /usr/local/bin/python3 --no-cache -r /tmp/agent-reqs.txt
+
+COPY src/ src/
+COPY alembic/ alembic/
+COPY alembic.ini ./
+
+# phaze itself: --no-deps (closure already installed above), --ignore-requires-python (the
+# scoped 3.13 bypass), targeting the SAME /usr/local/bin/python3 the --system install populated.
+# DL3013: the local project (".") carries its own version; no pin applies.
+# hadolint ignore=DL3013
+RUN python3 -m pip install --no-cache-dir --no-deps --ignore-requires-python .
+
+# Non-root user pinned to uid/gid 1000 for media-read parity (the scan-uid incident fix:
+# a -r system account auto-assigned uid 999 could not read uid-1000-owned media -> 0-file
+# scans). Placed AFTER all root-requiring layers.
+RUN groupadd -g 1000 phaze && useradd -m -u 1000 -g 1000 phaze
+USER phaze
+
+# Agent role CMD — invoke the system interpreter DIRECTLY, never the uv launcher. The uv
+# launcher resolves against a project .venv and re-validates requires-python >=3.14 against
+# this 3.13 interpreter, so it would NEITHER see the --system packages NOR resolve the
+# interpreter (the image could fail its own boot/import-smoke). `python3 -m saq` is the exact
+# equivalent of the `saq` console_script (saq.__main__:main) and hits the same
+# /usr/local/bin/python3 the install used. agent_worker.settings is the agent role
+# (D-25: must NOT import phaze.database) — NOT the api uvicorn entry.
+CMD ["python3", "-m", "saq", "phaze.tasks.agent_worker.settings"]
