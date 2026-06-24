@@ -75,7 +75,7 @@ Full details: `.planning/milestones/v4.0-ROADMAP.md`
 
 Analyze long-duration audio (≥90 min) on a free OCI Ampere A1 (arm64) "compute agent" reached over Tailscale, instead of locally — clearing the long-set backlog that exceeds the local analysis timeout (the 144 `analysis_failed` long files are the backfill work-list).
 
-- [ ] **Phase 47: Official arm64 essentia agent image** — build essentia from source on a native arm64 CI runner, publish to GHCR with a parity guard
+- [x] **Phase 47: Official arm64 essentia agent image** — build essentia from source on a native arm64 CI runner, publish to GHCR with a parity guard (completed 2026-06-24)
 - [ ] **Phase 48: Compute-agent type** — register a media-less `kind="compute"` agent that drains its queue + PUTs results, surfaced on the Agents page
 - [ ] **Phase 49: Duration routing & backfill** — route ≥90min files to an online compute agent (else "awaiting cloud"), backfill the 144 timed-out long files via the Phase 45 ledger
 - [ ] **Phase 50: Push pipeline** — rsync-over-Tailscale "stay one ahead" push to the compute agent's scratch dir, sha256-verify, ephemeral cleanup, idempotent re-drive
@@ -133,7 +133,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 44. Analyze Observability UI | v4.0 | 4/4 | Complete | 2026-06-18 |
 | 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete    | 2026-06-19 |
 | 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
-| 47. Official arm64 essentia agent image | v5.0 | 3/4 | In Progress|  |
+| 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete   | 2026-06-24 |
 | 48. Compute-agent type | v5.0 | 0/0 | Not started | - |
 | 49. Duration routing & backfill | v5.0 | 0/0 | Not started | - |
 | 50. Push pipeline | v5.0 | 0/0 | Not started | - |
@@ -510,7 +510,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 47-04-PLAN.md — CI parity guard (x86 golden + build-blocking arm64 compare; fix #4 real-audio proof) + docs
+- [x] 47-04-PLAN.md — CI parity guard (x86 golden + build-blocking arm64 compare; fix #4 real-audio proof) + docs
 
 ### Phase 48: Compute-agent type
 
