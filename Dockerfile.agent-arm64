@@ -98,3 +98,65 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/python3.13/site-packages/tenso
 # baked — keeps the build independent of the flaky essentia.upf.edu download (Pattern 3,
 # T-47-05: no secrets/downloads at build).
 RUN mkdir -p /models
+
+# --- runtime native libs (the v4.0.9 / v4.1.1 crash-loop incident class, T-47-06) -----
+# These MUST be present in the final image or the agent crash-loops on import: essentia's
+# native _essentia extension links libatomic.so.1 (libatomic1); decode/fingerprint needs
+# ffmpeg + ffprobe (ffmpeg), libsndfile.so.1 (libsndfile1), and fpcalc + libchromaprint.so.1
+# (libchromaprint-tools — note: the source build above uses libchromaprint-DEV headers; the
+# runtime needs the -TOOLS fpcalc binary); libpq5 backs psycopg's SAQ PostgresQueue broker.
+# Kept here explicitly so a future multi-stage split that drops the -dev packages can't
+# regress the crash-loop. import-smoke validation owned by plan 47-02.
+# DL3008: see the rationale on the source-build apt layer above (intentionally unpinned).
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install uv only as a dependency resolver/installer — NOT as a runtime launcher.
+COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /bin/
+
+# --- D-47-PY: scope the 3.13 exception to THIS image; the repo's 3.14 contract stays pure ---
+# Mirrors the pyproject.toml:16 essentia arch-gate style: the main app is Python 3.14
+# exclusively (essentia-tensorflow ships cp314 x86 wheels there), but the arm64 agent has
+# NO cp314 aarch64 TF wheel, so it MUST run on 3.13. We DO NOT relax
+# `requires-python = ">=3.14,<3.15"` in pyproject.toml — the exception lives only here.
+#
+# Mechanism, ALL targeting the base /usr/local/bin/python3 (3.13) so the runtime CMD below
+# sees exactly these packages:
+#   1. Export the locked third-party closure for the already-declared aarch64 [tool.uv]
+#      environment (essentia-tensorflow is marker-excluded on linux/aarch64 — we built it
+#      from source above) and install it into the system interpreter with uv.
+#   2. Install the pure-Python phaze package itself with the requires-python gate bypassed
+#      for this one image (uv has NO --ignore-requires-python; this single justified bare-pip
+#      line is the documented agent-image exception).
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt > /tmp/agent-reqs.txt \
+    && uv pip install --system --python /usr/local/bin/python3 --no-cache -r /tmp/agent-reqs.txt
+
+COPY src/ src/
+COPY alembic/ alembic/
+COPY alembic.ini ./
+
+# phaze itself: --no-deps (closure already installed above), --ignore-requires-python (the
+# scoped 3.13 bypass), targeting the SAME /usr/local/bin/python3 the --system install populated.
+# DL3013: the local project (".") carries its own version; no pin applies.
+# hadolint ignore=DL3013
+RUN python3 -m pip install --no-cache-dir --no-deps --ignore-requires-python .
+
+# Non-root user pinned to uid/gid 1000 for media-read parity (the scan-uid incident fix:
+# a -r system account auto-assigned uid 999 could not read uid-1000-owned media -> 0-file
+# scans). Placed AFTER all root-requiring layers.
+RUN groupadd -g 1000 phaze && useradd -m -u 1000 -g 1000 phaze
+USER phaze
+
+# Agent role CMD — invoke the system interpreter DIRECTLY, never the uv launcher. The uv
+# launcher resolves against a project .venv and re-validates requires-python >=3.14 against
+# this 3.13 interpreter, so it would NEITHER see the --system packages NOR resolve the
+# interpreter (the image could fail its own boot/import-smoke). `python3 -m saq` is the exact
+# equivalent of the `saq` console_script (saq.__main__:main) and hits the same
+# /usr/local/bin/python3 the install used. agent_worker.settings is the agent role
+# (D-25: must NOT import phaze.database) — NOT the api uvicorn entry.
+CMD ["python3", "-m", "saq", "phaze.tasks.agent_worker.settings"]
