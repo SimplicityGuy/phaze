@@ -128,6 +128,10 @@ None - no external service configuration required. (The `parity-golden-regen` re
 - The comparator, shared dump contract, and committed reference clip are ready for plan 47-04's CI parity jobs (x86 golden + arm64 actual run the same `dump_analysis.py`, then shell out to `compare_analysis.py`).
 - Open follow-up for 47-04: tune `atol` empirically from observed x86↔arm64 deltas (currently a conservative `1e-4` placeholder), and produce the authoritative `golden-x86.json` in CI.
 
+## Self-Check: PASSED
+
+All 7 created files exist on disk; all 4 commits (`593ce47`, `92e2aa6`, `6c83e31`, `940dd30`) are present in git history.
+
 ---
 *Phase: 47-official-arm64-essentia-agent-image*
 *Completed: 2026-06-24*
