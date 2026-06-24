@@ -94,6 +94,19 @@ RUN python3 waf configure --build-static --with-python --with-tensorflow \
 # full TF stack at runtime. Placed AFTER the compile layer so it doesn't bust the ~324 s cache.
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/python3.13/site-packages/tensorflow:/usr/local/lib/python3.13/site-packages/tensorflow.libs
 
+# FIX #4 — dual-OpenMP runtime conflict (the one OPEN production blocker; NOT in the spike
+# Dockerfile because its smoke test dodged it with np.sin). TF's vendored LLVM libomp and
+# numpy's OpenBLAS libgomp collide when numpy C-extensions load in the same process AFTER
+# essentia/TF — a segfault. OMP_NUM_THREADS=1 is the primary mitigation (serializes the OpenMP
+# runtimes to one thread, defusing the collision). Set in this post-compile env layer so it
+# persists to runtime without busting the compile cache. Documented fallback if =1 alone is
+# insufficient: LD_PRELOAD a single OpenMP runtime, e.g.
+#   LD_PRELOAD=/usr/local/lib/python3.13/site-packages/tensorflow.libs/libomp-*.so
+# CANNOT be proven by hadolint or a synthetic np.sin signal — its real validation is a
+# real-audio analyze through phaze.services.analysis.analyze_file on a native arm64 runner,
+# which is OWNED BY PLAN 47-04 (Assumption A1: do NOT assume benign).
+ENV OMP_NUM_THREADS=1
+
 # Models (frozen TF1 graphs, arch-independent) are mounted at /models at runtime, never
 # baked — keeps the build independent of the flaky essentia.upf.edu download (Pattern 3,
 # T-47-05: no secrets/downloads at build).
