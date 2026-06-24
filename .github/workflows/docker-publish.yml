@@ -293,3 +293,234 @@ jobs:
           echo "🔎 Importing inside ${FIRST_TAG} ..."
           docker run --rm "${FIRST_TAG}" \
             python3 -c "import phaze.tasks.agent_worker; import essentia.standard; print('✅ arm64 agent boots')"
+
+  # ============================================================================
+  # PARITY GOLDEN (x86) — authoritative golden producer (Phase 47 / CLOUDIMG-03)
+  # ----------------------------------------------------------------------------
+  # Runs the SHARED dump_analysis.py inside the freshly-built x86 api image over
+  # the committed reference clip, producing golden-x86.json — the x86 reference
+  # the native-arm64 parity-guard compares against. The docker run is DELEGATED to
+  # `just parity-dump` (workflows delegate to just — MEMORY) so CI and operators
+  # share one dump path; the x86 api image uses the default INTERP="uv run python"
+  # (the uv-managed venv where phaze + essentia are installed). The golden is
+  # produced + uploaded only on non-PR events, where the api image is pushed.
+  parity-golden-x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-and-push
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: "🏷️ Set lowercase image name"
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "IMAGE_NAME=$(echo "$REPO" | tr "[:upper:]" "[:lower:]")" >> "$GITHUB_ENV"
+
+      - name: "🔀 Checkout repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: "🔧 Setup Just"
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "📊 Resolve the x86 api image tag"
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          # Bare-repo URL (Phase 29 D-15: the api image is published at
+          # ghcr.io/<owner>/phaze with no sub-path). Mirror the api job's tag set
+          # so the first resolved tag is the freshly-built image to dump from.
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: "📦 Cache essentia models"
+        id: models-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          # Keyed on the single-source model URL/manifest list so a model change
+          # busts the cache without re-downloading ~3GB on every run (Pitfall 4).
+          path: models
+          key: essentia-models-${{ hashFiles('src/phaze/scripts/download_models.py') }}
+
+      - name: "📥 Provision essentia models"
+        if: steps.models-cache.outputs.cache-hit != 'true'
+        run: bash scripts/download-models.sh models
+
+      - name: "🔒 Log in to the GitHub Container Registry"
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "🥇 Produce golden-x86.json from the x86 api image"
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          X86_IMAGE=$(echo "${TAGS}" | head -n1)
+          echo "📥 Pulling ${X86_IMAGE} ..."
+          docker pull "${X86_IMAGE}"
+          # Shared dump path; default INTERP="uv run python" for the uv-based x86 image.
+          just parity-dump "${X86_IMAGE}" ./models scripts/parity/golden-x86.json
+
+      - name: "📤 Upload golden-x86.json"
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: parity-golden-x86
+          path: scripts/parity/golden-x86.json
+          if-no-files-found: error
+
+  # ============================================================================
+  # PARITY GUARD (native arm64) — build-blocking compare + GATED push (CLOUDIMG-02/03)
+  # ----------------------------------------------------------------------------
+  # The TRUE parity gate. On a native aarch64 runner it (b) REBUILDS the arm64
+  # agent image from the warmed scope=arm64 cache (content-addressed ⇒ identical
+  # digest to build-arm64) with load:true, (c) runs the SAME dump_analysis.py over
+  # reference.wav inside it and compares against the x86 golden via
+  # compare_analysis.py — a NON-ZERO exit FAILS this step, and because a later
+  # step never runs after a failed one, (d) the GATED registry push is SKIPPED, so
+  # a parity-divergent image NEVER reaches GHCR (Warning 1 / T-47-08). The gated
+  # push carries BOTH the resolved -arm64 tags AND the OCI labels from build-arm64
+  # plus provenance/sbom (T-47-04). Driving REAL audio through analyze_file here is
+  # the runtime proof that spike fix #4 (dual-OpenMP, OMP_NUM_THREADS=1) holds on
+  # real workloads — not the spike's np.sin (T-47-09 / CLOUDIMG-01).
+  parity-guard:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    needs: [build-arm64, parity-golden-x86]
+
+    permissions:
+      contents: read
+      # packages: write is for the FINAL gated push step ONLY (not any pre-parity publish).
+      packages: write
+
+    steps:
+      - name: "🏷️ Set lowercase image name"
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "IMAGE_NAME=$(echo "$REPO" | tr "[:upper:]" "[:lower:]")" >> "$GITHUB_ENV"
+
+      - name: "🔀 Checkout repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: "📦 Install uv"
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: "🐍 Set up Python"
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: "🔧 Setup Just"
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "🔧 Set up Docker Buildx"
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+        with:
+          platforms: linux/arm64
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: "📦 Cache essentia models"
+        id: models-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: models
+          key: essentia-models-${{ hashFiles('src/phaze/scripts/download_models.py') }}
+
+      - name: "📥 Provision essentia models"
+        if: github.event_name != 'pull_request' && steps.models-cache.outputs.cache-hit != 'true'
+        run: bash scripts/download-models.sh models
+
+      - name: "📥 Install dependencies (for the comparator)"
+        run: just install
+
+      - name: "📥 Download the x86 golden"
+        if: github.event_name != 'pull_request'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: parity-golden-x86
+          path: scripts/parity
+
+      - name: "🚀 Rebuild the arm64 image from the warmed cache (load, no push)"
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.agent-arm64
+          platforms: linux/arm64
+          # build-push-action cannot `load` + `push` together (Info 2): we LOAD here
+          # so the image is local for the parity dump; the push is step (d). The
+          # content-addressed scope=arm64 cache (warmed by build-arm64) ⇒ identical
+          # digest to the image build-arm64 already import-smoked.
+          push: false
+          load: true
+          tags: ${{ needs.build-arm64.outputs.tags }}
+          cache-from: type=gha,scope=arm64
+          build-args: |
+            TF_VERSION=2.20.0
+
+      - name: "🔬 Parity compare (build-blocking) — arm64 actual vs x86 golden"
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ needs.build-arm64.outputs.tags }}
+        run: |
+          ARM64_IMAGE=$(echo "${TAGS}" | head -n1)
+          # Dump via the SHARED recipe — python3 (NOT uv run) so it runs on the
+          # agent image's --system 3.13 interpreter (Warning 2). REAL audio through
+          # analyze_file ⇒ a green run proves fix #4 holds (no dual-OpenMP segfault).
+          just parity-dump "${ARM64_IMAGE}" ./models scripts/parity/actual.json python3
+          # Compare on the runner. A non-zero exit FAILS this step → the gated push
+          # below is SKIPPED (a divergent image never reaches GHCR — CLOUDIMG-03).
+          # --atol is the comparator default (1e-4); BPM/key are asserted EXACT by
+          # compare_analysis.py. Tune the epsilon from the first real CI deltas.
+          uv run python scripts/parity/compare_analysis.py \
+            scripts/parity/golden-x86.json scripts/parity/actual.json --atol 1e-4
+
+      - name: "🔒 Log in to the GitHub Container Registry"
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "🚀 GATED push — validated arm64 image → GHCR (tags + OCI labels + attestations)"
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.agent-arm64
+          platforms: linux/arm64
+          # Reached ONLY when the parity compare above passed (a failed step stops
+          # the job). Cache replay of the validated image, now PUSHED with the same
+          # -arm64 tags AND OCI source/revision/version labels the x86 image carries
+          # (needs.build-arm64.outputs.labels — T-47-04) plus provenance/sbom (V14).
+          push: true
+          tags: ${{ needs.build-arm64.outputs.tags }}
+          labels: ${{ needs.build-arm64.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha,scope=arm64
+          build-args: |
+            TF_VERSION=2.20.0
