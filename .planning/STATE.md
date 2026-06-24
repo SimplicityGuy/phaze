@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.0
-milestone_name: Distributed Agents
-status: verifying
-last_updated: "2026-06-23T18:38:03.160Z"
-last_activity: 2026-06-23
+milestone: v5.0
+milestone_name: Cloud Burst Analysis
+status: planning
+last_updated: "2026-06-24T19:00:11.762Z"
+last_activity: 2026-06-24
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 14
-  completed_plans: 14
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,12 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 ## Current Position
 
-Phase: 46 (heartbeat-starvation-fix) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
-Last activity: 2026-06-23
-
-Progress: [██████████] 100%
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-06-24 — Milestone v5.0 started
 
 ## Performance Metrics
 
