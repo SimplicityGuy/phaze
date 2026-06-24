@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.0
-milestone_name: Distributed Agents
-status: verifying
-last_updated: "2026-06-23T18:38:03.160Z"
-last_activity: 2026-06-23
+milestone: v5.0
+milestone_name: Cloud Burst Analysis
+status: planning
+last_updated: "2026-06-24T19:00:11.762Z"
+last_activity: 2026-06-24
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 14
-  completed_plans: 14
-  percent: 100
+  total_phases: 5
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -20,16 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 46 — heartbeat-starvation-fix
+**Current focus:** Phase 47 — official arm64 essentia agent image (v5.0 Cloud Burst Analysis)
 
 ## Current Position
 
-Phase: 46 (heartbeat-starvation-fix) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
-Last activity: 2026-06-23
-
-Progress: [██████████] 100%
+Phase: 47 — Official arm64 essentia agent image (not started)
+Plan: —
+Status: Roadmap drafted (5 phases, 47-51); ready to plan Phase 47
+Last activity: 2026-06-24 — v5.0 roadmap created
 
 ## Performance Metrics
 
@@ -66,6 +64,7 @@ Progress: [██████████] 100%
 
 ### Roadmap Evolution
 
+- v5.0 Cloud Burst Analysis roadmap created (2026-06-24): 5 phases (47-51), one per requirement category, in dependency order — **47** Official arm64 essentia agent image (build from source on a native arm64 CI runner, GHCR publish, parity guard; CLOUDIMG-01..03); **48** Compute-agent type (`kind="compute"` media-less agent, drains per-agent SAQ queue + HTTP result PUT, Agents-page badge/liveness/depth; CLOUDAGENT-01..03); **49** Duration routing & backfill (capability-aware `enqueue_router` on `metadata.duration` threshold default 90min, "awaiting cloud" hold when no compute agent online, backfill the 144 `analysis_failed` long files via the Phase 45 scheduling ledger; CLOUDROUTE-01..04); **50** Push pipeline (control-plane "stay one ahead" orchestrator + file-server `push_file_to_cloud` rsync/SSH-over-Tailscale to A1 scratch, `ProcessFilePayload.ephemeral`, sha256 verify, scratch delete, idempotent re-drive; CLOUDPIPE-01..05); **51** Deployment/config/docs (`docker-compose.cloud-agent.yml` + Tailscale, all pydantic-settings knobs with `_FILE` secrets, OCI A1 + Tailscale-ACL runbook scoping A1→lux:{5432,6379,8000}+nox→A1:22 + least-privilege queue role, master enable toggle; CLOUDDEPLOY-01..04). 18 requirements, 100% coverage, no orphans. Design brainstormed + approved this session. Replaces the "Distributed cloud analysis" backlog item (now narrowed to rsync-over-Tailscale to A1 local disk — no object storage — because arm64 essentia builds from source, proven on `spike/arm64-essentia-analysis`). Each phase = own PR.
 - Phase 46 added (2026-06-23): Heartbeat Starvation Fix — decouple the agent liveness heartbeat from the SAQ worker concurrency pool. Surfaced by live incident: agent `nox` showed `DEAD` (last seen 39m ago) while the `phaze-agent-worker` container was healthy and pegged at ~394% CPU. Root cause: `heartbeat_tick` is a SAQ `CronJob` registered in the same agent worker (`agent_worker.py:227`), so it competes for the same `worker_max_jobs=8` concurrency slots as `process_file`. With all 8 slots full of multi-hour analysis jobs (long concert sets, 2–3.6h each), the 30s heartbeat cron could only run when a slot freed (~every 50 min) → `last_seen` exceeded the 300s staleness threshold (`constants.py:61`) → control plane marked the busy agent DEAD, which also blocks new agent-task routing (fingerprint/metadata). Fix: run the heartbeat independent of the job concurrency pool so a saturated worker still reports liveness. Distinct from the Phase 43 analyze-throughput work (that bounds job cost; this guarantees liveness regardless of job cost). NOTE: phase.add mis-numbered it 43 (counted dirs, max=42; collided with shipped text-only 43/44/45) — manually renumbered to 46 + dir renamed to `46-heartbeat-starvation-fix`.
 - Phase 45 added (2026-06-18): Scheduling Ledger for Orphan Recovery — surfaced by live incident: clicking "Recover orphaned work" (`recover_orphaned_work(force=True)`) bypassed the loss-detection gate and reconciled the ENTIRE complement-of-done backlog of all 8 stages, detonating the queue to ~44,500 jobs over ~11,400 never-scheduled DISCOVERED files. Root issue: no record anywhere that a stage was ever *scheduled* for an item (pending sets = complement-of-done). Operator principle: recovery must only re-queue work that was previously scheduled and lost; never-scheduled work is not yet orphaned. Approach: durable scheduling ledger written at the single `before_enqueue` chokepoint (`apply_deterministic_key`), cleared on completion (`increment_completed` after_process); `recover_orphaned_work` = ledger − live saq_jobs keys − completed. Survives a saq_jobs truncate (the only real post-Phase-36 loss case). `force` becomes "reconcile the ledger now," not "sweep the backlog." Successor to the Phase 39–42 DAG-manual-control + recovery line. NOTE: phase.add mis-numbered it 43 (collided with existing 43/44, wrong dir tree) — manually renumbered to 45 + dir moved to `.planning/phases/45-...`.
 - Phase 30 added (2026-06-09): Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue (9 sites across pipeline.py, tracklists.py, scan.py/ingestion.py) targets the consumer-less `default` queue. Surfaced by live incident: "Run analysis" stranded 11,428 `process_file` jobs. See phase CONTEXT.md.

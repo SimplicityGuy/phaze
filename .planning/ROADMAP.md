@@ -6,6 +6,7 @@
 - ✅ **v2.0 Metadata Enrichment & Tracklist Integration** — Phases 12-17 (shipped 2026-04-02)
 - ✅ **v3.0 Cross-Service Intelligence & File Enrichment** — Phases 18-23 (shipped 2026-04-04)
 - ✅ **v4.0 Distributed Agents** — Phases 24-29 (shipped 2026-05-17)
+- 🔜 **v5.0 Cloud Burst Analysis** — Phases 47-51 (in planning)
 
 ## Phases
 
@@ -70,9 +71,17 @@ Full details: `.planning/milestones/v4.0-ROADMAP.md`
 
 </details>
 
-### Next Milestone — TBD
+### v5.0 Cloud Burst Analysis (Phases 47-51) — IN PLANNING
 
-_Run `/gsd:new-milestone` to scope the next milestone (questioning → research → requirements → roadmap)._
+Analyze long-duration audio (≥90 min) on a free OCI Ampere A1 (arm64) "compute agent" reached over Tailscale, instead of locally — clearing the long-set backlog that exceeds the local analysis timeout (the 144 `analysis_failed` long files are the backfill work-list).
+
+- [ ] **Phase 47: Official arm64 essentia agent image** — build essentia from source on a native arm64 CI runner, publish to GHCR with a parity guard
+- [ ] **Phase 48: Compute-agent type** — register a media-less `kind="compute"` agent that drains its queue + PUTs results, surfaced on the Agents page
+- [ ] **Phase 49: Duration routing & backfill** — route ≥90min files to an online compute agent (else "awaiting cloud"), backfill the 144 timed-out long files via the Phase 45 ledger
+- [ ] **Phase 50: Push pipeline** — rsync-over-Tailscale "stay one ahead" push to the compute agent's scratch dir, sha256-verify, ephemeral cleanup, idempotent re-drive
+- [ ] **Phase 51: Deployment, config & docs** — cloud-agent compose + Tailscale, all config knobs (`_FILE` secrets), OCI A1 / Tailscale-ACL runbook, master enable toggle
+
+Detail sections under "## Phase Details (v5.0)" below.
 
 ## Progress
 
@@ -123,6 +132,12 @@ _Run `/gsd:new-milestone` to scope the next milestone (questioning → research 
 | 43. Analyze Throughput Fix | v4.0 | 4/4 | Complete | 2026-06-17 |
 | 44. Analyze Observability UI | v4.0 | 4/4 | Complete | 2026-06-18 |
 | 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete    | 2026-06-19 |
+| 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
+| 47. Official arm64 essentia agent image | v5.0 | 0/0 | Not started | - |
+| 48. Compute-agent type | v5.0 | 0/0 | Not started | - |
+| 49. Duration routing & backfill | v5.0 | 0/0 | Not started | - |
+| 50. Push pipeline | v5.0 | 0/0 | Not started | - |
+| 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -469,6 +484,65 @@ Plans:
 
 - [x] 46-01-PLAN.md — Background-task heartbeat: send_heartbeat/_heartbeat_loop refactor + interval constant, startup launch/shutdown cancel + CronJob removal, starvation-independence + defensive-branch tests, docs + orphaned-cron-row cleanup
 
+## Phase Details (v5.0 Cloud Burst Analysis)
+
+> **Milestone goal:** Long sets that can't finish locally get analyzed on free cloud compute (OCI Always-Free A1, arm64), unattended. Dependency order: image → compute-agent type → routing+backfill → push pipeline → deployment+docs. Each phase = its own PR (worktree branch). arm64 essentia is proven this session (`spike/arm64-essentia-analysis`: BPM bit-identical, mood/style labels exact, window-for-window).
+
+### Phase 47: Official arm64 essentia agent image
+**Goal**: An official arm64 essentia analysis agent image exists on GHCR — essentia built **from source** (the wheel is x86-only) with the proven spike fixes — published by CI on a native arm64 runner, and proven to match the x86 analysis path.
+**Depends on**: Phase 46 (prior milestone shipped); first v5.0 phase — no intra-milestone dependency.
+**Requirements**: CLOUDIMG-01, CLOUDIMG-02, CLOUDIMG-03
+**Success Criteria** (what must be TRUE):
+  1. Operator can pull an arm64-tagged phaze agent image from GHCR that boots and imports essentia successfully on arm64 hardware.
+  2. CI builds and pushes the arm64 image on a **native arm64 runner** (no QEMU) on the same release triggers as the x86 image, so a matching arm64 tag appears on every release.
+  3. A CI parity guard runs full analysis (MusiCNN + discogs-effnet) on the arm64 image and confirms results match the x86 path within tolerance (BPM/key exact, model scores within a small epsilon); the build fails if parity breaks.
+**Plans**: TBD
+
+### Phase 48: Compute-agent type
+**Goal**: phaze recognizes a "compute agent" — a media-less, scan-rootless `kind="compute"` Agent that pulls analysis jobs and PUTs results exactly like a file-server agent, visible as available cloud capacity on the Agents admin page.
+**Depends on**: Phase 47 (a working compute agent runs the arm64 image).
+**Requirements**: CLOUDAGENT-01, CLOUDAGENT-02, CLOUDAGENT-03
+**Success Criteria** (what must be TRUE):
+  1. Operator can register a compute agent with empty scan roots and an explicit `kind="compute"` marker, and it appears on the Agents admin page.
+  2. The Agents admin page distinguishes the compute agent (kind badge + liveness + queue depth) so the operator can see available cloud capacity at a glance.
+  3. The compute agent drains its per-agent SAQ queue and PUTs analysis results over HTTP, with no access to media or app ORM tables (only the SAQ Postgres broker + cache Redis + HTTP API — import-boundary test passes).
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 49: Duration routing & backfill
+**Goal**: Analysis jobs route by duration — long files (≥ configurable threshold, default 90 min) go to an online compute agent, short files stay local with unchanged behavior, and the existing timed-out long files can be backfilled to the cloud without re-detonating the queue.
+**Depends on**: Phase 48 (a compute agent + its queue must exist to route to); Phase 45 (scheduling ledger, already shipped).
+**Requirements**: CLOUDROUTE-01, CLOUDROUTE-02, CLOUDROUTE-03, CLOUDROUTE-04
+**Success Criteria** (what must be TRUE):
+  1. A file whose `metadata.duration` ≥ the threshold is enqueued to an available compute agent's queue instead of the local agent.
+  2. A file below the threshold continues to analyze on the local file-server agent with unchanged behavior.
+  3. When no compute agent is online, a ≥threshold file is held in an "awaiting cloud" state and is **never** silently analyzed locally (where it would time out); the operator can see it waiting.
+  4. Operator can backfill the existing 144 `analysis_failed` long files to the cloud, scoped through the Phase 45 scheduling ledger so only previously-scheduled work is re-driven (no whole-backlog over-enqueue).
+**Plans**: TBD
+
+### Phase 50: Push pipeline
+**Goal**: A cloud-routed long file physically reaches the compute agent's local disk, is integrity-verified, analyzed, and cleaned up — the control plane keeping the pipeline "one ahead" with no orphaned scratch files and no double-enqueues.
+**Depends on**: Phase 49 (routing must place files on the cloud queue first).
+**Requirements**: CLOUDPIPE-01, CLOUDPIPE-02, CLOUDPIPE-03, CLOUDPIPE-04, CLOUDPIPE-05
+**Success Criteria** (what must be TRUE):
+  1. When the control plane schedules a cloud file, a file-server agent pushes it to the compute agent's scratch directory over rsync/SSH-over-Tailscale (the file-server initiates; the compute agent only receives into scratch).
+  2. The compute agent verifies sha256 against the `FileRecord` after transfer before analyzing; a mismatch fails the job cleanly and triggers a re-push.
+  3. The compute agent deletes its scratch copy after analysis completes (success or terminal failure), bounding local disk to the in-flight set.
+  4. The control plane keeps at most the configured number of cloud files staged-or-in-flight ("stay one ahead", default 2 = one analyzing + one staged), driven by the scheduling ledger.
+  5. A failed or interrupted push/analysis is re-driven with no orphaned scratch files and no double-enqueue (idempotent, ledger-tracked).
+**Plans**: TBD
+
+### Phase 51: Deployment, config & docs
+**Goal**: The compute agent is deployable and fully operator-controlled — a Tailscale-connected compose stack, every cloud-burst parameter configurable, an OCI A1 + Tailscale-ACL provisioning runbook, and a single master toggle that reverts to all-local analysis.
+**Depends on**: Phase 50 (deploys the full working push pipeline).
+**Requirements**: CLOUDDEPLOY-01, CLOUDDEPLOY-02, CLOUDDEPLOY-03, CLOUDDEPLOY-04
+**Success Criteria** (what must be TRUE):
+  1. Operator can bring up the compute agent from a cloud-agent compose file with Tailscale connectivity, no media mount, a scratch volume, and the arm64 image.
+  2. Every cloud-burst parameter — threshold, max in-flight, agent concurrency, scratch dir, push SSH target, cloud queue name, and the master enable toggle — is configurable via pydantic-settings with `_FILE`-secret support.
+  3. Operator can follow a runbook to provision an OCI Always-Free A1 and a Tailscale ACL scoping the A1 to exactly `lux:{5432,6379,8000}` + `nox→A1:22`, plus a least-privilege Postgres role for the queue broker.
+  4. Operator can disable the entire cloud-burst feature with a single config toggle, reverting to all-local analysis with no other change.
+**Plans**: TBD
+
 ## Backlog (unscheduled — no phase number yet)
 
-- **Distributed cloud analysis (burst the backlog).** Offload long-file analysis to cloud x86 workers via the existing agent model: stage file to object storage → cloud worker pulls (presigned GET) → analyzes → PUTs result; **reconcile by `file_id`** (already end-to-end), sha256 for download integrity. Only new pieces: optional `source_url`+`sha256` on `ProcessFilePayload` + a "stager". essentia is **x86-only** (no aarch64 wheel; source build infeasible). Best near-free path = **GCP $300/90-day trial, x86 e2 spot, GCS same-region** (≈$0 out of pocket); min-cost paid = OCI E5 preemptible (~$100, free egress). **Gate: only pursue if nox throughput is still insufficient after the Phase 43 redeploy + re-measure** — bounding may make this moot. Full design: memory `reference-essentia-arm64-cloud-burst` + `project-analyze-4h-timeout-incident`.
+- **Distributed cloud analysis (burst the backlog).** _[SCHEDULED as v5.0 Cloud Burst Analysis, Phases 47-51 — narrowed to rsync-over-Tailscale to a free arm64 OCI A1 (essentia built from source), no object storage. See Phase Details (v5.0).]_ Offload long-file analysis to cloud x86 workers via the existing agent model: stage file to object storage → cloud worker pulls (presigned GET) → analyzes → PUTs result; **reconcile by `file_id`** (already end-to-end), sha256 for download integrity. Only new pieces: optional `source_url`+`sha256` on `ProcessFilePayload` + a "stager". essentia is **x86-only** (no aarch64 wheel; source build infeasible). Best near-free path = **GCP $300/90-day trial, x86 e2 spot, GCS same-region** (≈$0 out of pocket); min-cost paid = OCI E5 preemptible (~$100, free egress). **Gate: only pursue if nox throughput is still insufficient after the Phase 43 redeploy + re-measure** — bounding may make this moot. Full design: memory `reference-essentia-arm64-cloud-burst` + `project-analyze-4h-timeout-incident`.

@@ -8,9 +8,23 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
+## Current Milestone: v5.0 Cloud Burst Analysis
+
+**Goal:** Analyze long-duration audio (≥90 min) on a free OCI Ampere A1 (arm64) "compute agent" reached over Tailscale, instead of locally — clearing the long-set backlog that exceeds the local analysis timeout (cost scales with seek-depth/duration; the 144 `analysis_failed` long files are the backfill work-list).
+
+**Target features:**
+- Official arm64 agent image (essentia built from source — the wheel is x86-only) published to GHCR via a native arm64 CI runner
+- A "compute agent" type: a registered Agent with no scan roots / no media, pure extra compute
+- Duration-based, capability-aware routing: <90 min → local agent; ≥90 min → cloud agent (else queued "awaiting cloud", never silently run locally and time out)
+- An rsync-over-Tailscale "stay one ahead" push pipeline orchestrated by the control plane (nox pushes a file to the A1 scratch dir; A1 analyzes from local disk and deletes after); no object storage
+- Cloud-agent deployment (compose + Tailscale) and an OCI A1 + Tailscale-ACL provisioning runbook
+- All parameters configurable (threshold, in-flight depth, concurrency, scratch dir, push target, enable toggle)
+
+**Key context:** arm64 essentia-tensorflow is proven this session (Docker spike, branch `spike/arm64-essentia-analysis`) — production `analyze_file` on arm64 reproduced x86 results window-for-window (BPM bit-identical, mood/style labels exact). Post-Phase-36 the SAQ broker is PostgresQueue (Redis is only the cache handle), so the cloud agent reaches lux Postgres:5432 + Redis:6379 + phaze-api:8000 over Tailscale.
+
 ## Current State
 
-**v4.0 Distributed Agents shipped 2026-05-17.** Phaze now runs across two hosts: a control-plane application server and one or more file-server agents. Planning next milestone.
+**v4.0 Distributed Agents shipped 2026-05-17.** Phaze now runs across two hosts: a control-plane application server and one or more file-server agents. **v5.0 Cloud Burst Analysis in planning** (2026-06-24).
 
 **Phase 30 (post-v4.0 fix, complete 2026-06-10):** Resolved systemic control-plane SAQ queue misrouting — every manually-triggered UI/API enqueue previously targeted a consumer-less unnamed `default` queue (stranded 11,428 jobs in the v4.0.6 incident). All enqueue sites (pipeline, tracklists, scan/ingestion) now route through a shared `enqueue_router.resolve_queue_for_task` helper: controller-bound tasks → named `controller` queue, per-agent tasks → `phaze-agent-<id>` via active-agent selection (0-agent surfaces a 503/empty-state). A static AST guard test prevents recurrence.
 
@@ -106,7 +120,13 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 ### Active
 
-_To be defined by the next milestone via `/gsd:new-milestone`._
+_v5.0 Cloud Burst Analysis (detailed REQ-IDs in `REQUIREMENTS.md`):_
+- Official arm64 essentia agent image published to GHCR (native arm64 CI build)
+- Compute-agent type (no scan roots) with capability-aware, duration-based analysis routing
+- Backfill of the 144 timed-out long files to the cloud agent via the Phase 45 scheduling ledger
+- rsync-over-Tailscale "stay one ahead" push pipeline (control-plane orchestrated, ephemeral scratch + sha256 verify)
+- Cloud-agent deployment + OCI A1 / Tailscale-ACL runbook
+- All cloud parameters configurable via pydantic-settings (`_FILE`-secret-capable)
 
 ### Out of Scope
 
@@ -121,9 +141,9 @@ _To be defined by the next milestone via `/gsd:new-milestone`._
 - Acoustic near-duplicate detection via fingerprint similarity — deferred
 - Public network access — private LAN only
 - Offline mode — real-time server tool, not a desktop app
-- Files transferred between application server and file server — v4.0 keeps files local to file servers; transfer would defeat the boundary
+- Files transferred between application server and file server — v4.0 keeps files local to file servers; transfer would defeat the boundary. **(Narrowed in v5.0: still no app↔file-server transfer, but a file-server agent may push a long file to an ephemeral *cloud compute agent* for analysis-only, then delete it — extra compute, not a data home.)**
 - Postgres replication / read-replica on file server — agents stay HTTP-only (Option II in v4.0 grilling was rejected)
-- Tailscale / mesh networking — plain private LAN chosen in v4.0 (Q10b)
+- ~~Tailscale / mesh networking — plain private LAN chosen in v4.0 (Q10b)~~ **(Reversed in v5.0: Tailscale is the transport for the off-LAN cloud compute agent — nox→A1 rsync + A1→lux queue/cache/API, locked by ACL.)**
 
 ## Context
 
@@ -211,4 +231,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-10 after Phase 30 (control-plane SAQ queue misrouting fix)*
+*Last updated: 2026-06-24 — started milestone v5.0 Cloud Burst Analysis*
