@@ -179,3 +179,117 @@ jobs:
           if [[ -n "${CACHE_HIT}" ]]; then
             echo "::notice title=Cache Performance::Docker cache hit for ${SERVICE_NAME}"
           fi
+
+  # ============================================================================
+  # ARM64 AGENT IMAGE (Phase 47 — CLOUDIMG-01/02)
+  # ----------------------------------------------------------------------------
+  # Builds Dockerfile.agent-arm64 on a NATIVE aarch64 runner (ubuntu-24.04-arm,
+  # free for public repos — NO QEMU emulation; the essentia C++ source compile is
+  # ~324s cold). This job deliberately does NOT push: it `load`s the image
+  # locally, runs an import-smoke (catches the v4.1.0-class "builds but does not
+  # boot" regression — CLOUDIMG-01), and WARMS the shared `scope=arm64` gha cache.
+  # It RESOLVES the matching `-arm64` tags AND the OCI metadata labels and exposes
+  # BOTH as job outputs so the 47-04 parity-guard publish step pushes EXACTLY
+  # these tags WITH the same source/revision/version labels the x86 image carries.
+  # The registry push is GATED on the 47-04 real-audio numeric parity guard, so a
+  # parity-divergent image can never reach GHCR ahead of the guard (T-47-08).
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+      packages: write
+
+    # Exposed for the 47-04 parity-gated push: it pushes these exact -arm64 tags
+    # WITH these OCI labels (provenance/sbom/labels + the push live in 47-04 — the
+    # `load` exporter here cannot emit attestations; this job only resolves them).
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+
+    steps:
+      - name: "🏷️ Set lowercase image name"
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "IMAGE_NAME=$(echo "$REPO" | tr "[:upper:]" "[:lower:]")" >> "$GITHUB_ENV"
+
+      - name: "🔀 Checkout repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: "🔒 Log in to the GitHub Container Registry"
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "📊 Extract metadata (tags, labels) for Docker"
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          # Bare-repo URL (no sub-path) — the arm64 agent image is a platform
+          # variant of the api image, distinguished only by the -arm64 tag suffix.
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # flavor.suffix=-arm64 applies the suffix to ALL generated tags;
+          # onlatest=true additionally applies it to the `latest` tag (verified
+          # against docker/metadata-action docs — Assumption A5). This yields
+          # `latest-arm64` + `<version>-arm64` cleanly without explicit raw tags.
+          flavor: |
+            suffix=-arm64,onlatest=true
+          # latest-arm64 (default branch) + <version>-arm64 (release tag). The
+          # branch/pr patterns guarantee a non-empty, loadable tag on every
+          # trigger (a PR resolves none of latest/semver/ref-tag, which would
+          # leave `load: true` with no tag to run the import-smoke against).
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: "🔧 Set up Docker Buildx"
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+        with:
+          platforms: linux/arm64
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: "🚀 Build (load, no push) the arm64 agent image — phaze:*-arm64"
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.agent-arm64
+          platforms: linux/arm64
+          # NO push from this job: build-push-action cannot set both `load` and
+          # `push`, and the registry push is GATED on the 47-04 parity guard.
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          # WARM the shared scope=arm64 gha cache so the 47-04 parity-guard build
+          # + gated push REPLAY these layers instead of recompiling essentia.
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,scope=arm64,mode=max
+          # No provenance/sbom/labels here — the `load` (docker) exporter cannot
+          # emit attestations; labels are applied at the 47-04 gated registry push.
+          build-args: |
+            TF_VERSION=2.20.0
+
+      - name: "🔎 Import smoke — arm64 agent image boots (import phaze.tasks.agent_worker + essentia.standard)"
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Use the FIRST loaded tag. Invoke the system interpreter DIRECTLY
+          # (python3 -c, NOT `uv run`) to match the image CMD `python3 -m saq ...`:
+          # the agent image installs --system on 3.13, and `uv run` would
+          # re-validate requires-python >=3.14 and miss those packages.
+          FIRST_TAG=$(echo "${TAGS}" | head -n1)
+          echo "🔎 Importing inside ${FIRST_TAG} ..."
+          docker run --rm "${FIRST_TAG}" \
+            python3 -c "import phaze.tasks.agent_worker; import essentia.standard; print('✅ arm64 agent boots')"
