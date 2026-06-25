@@ -15,7 +15,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Compute-agent type (CLOUDAGENT)
 
-- [ ] **CLOUDAGENT-01**: An operator can register a **compute agent** — an Agent with empty scan roots, no media, and an explicit `kind="compute"` capability marker.
+- [x] **CLOUDAGENT-01**: An operator can register a **compute agent** — an Agent with empty scan roots, no media, and an explicit `kind="compute"` capability marker.
 - [x] **CLOUDAGENT-02**: A compute agent drains its per-agent SAQ queue and PUTs analysis results over HTTP exactly like a file-server agent, with no access to media or app ORM tables (only the SAQ Postgres broker + cache Redis + HTTP API).
 - [x] **CLOUDAGENT-03**: The Agents admin page distinguishes compute agents (kind badge + liveness + queue depth) so the operator can see available cloud capacity.
 
@@ -62,7 +62,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CLOUDIMG-01..03 | Phase 47 | Pending |
-| CLOUDAGENT-01..03 | Phase 48 | Pending |
+| CLOUDAGENT-01..03 | Phase 48 | Complete (live admin-page check deferred to manual per 48-VALIDATION) |
 | CLOUDROUTE-01..04 | Phase 49 | Pending |
 | CLOUDPIPE-01..05 | Phase 50 | Pending |
 | CLOUDDEPLOY-01..04 | Phase 51 | Pending |
