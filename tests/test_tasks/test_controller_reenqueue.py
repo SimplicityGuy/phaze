@@ -87,13 +87,22 @@ def test_reenqueue_discovered_is_fully_removed() -> None:
 
 
 def test_no_auto_advance_cron() -> None:
-    """The every-5-min auto-advance cron is GONE: no */5 cron, and recovery is never a CronJob."""
+    """No GENERAL pipeline auto-advance cron survives, and recovery is never a CronJob.
+
+    Phase 49: the ONLY ``*/5 * * * *`` cron permitted is ``release_awaiting_cloud`` -- a NARROW
+    recovery-only drain scoped solely to the ``AWAITING_CLOUD -> compute`` transition (D-03). It is
+    NOT a general pipeline auto-advance (the deleted ``reenqueue_discovered`` premise), so the
+    schedule-string ban is refined to "no */5 cron OTHER than the held-file release".
+    """
     from phaze.tasks import controller
     from phaze.tasks.reenqueue import recover_orphaned_work
+    from phaze.tasks.release_awaiting_cloud import release_awaiting_cloud
 
     cron_jobs = controller.settings["cron_jobs"]
-    # Steady-state produces ZERO automatic enqueues -- no every-5-min cron survives.
-    assert all(getattr(cj, "cron", "") != "*/5 * * * *" for cj in cron_jobs), "the */5 auto-advance cron must be removed"
+    # Steady-state produces ZERO GENERAL auto-advance enqueues -- the only */5 cron is the narrow
+    # held-file release; any OTHER */5 cron would be a forbidden general auto-advance.
+    offenders = [cj for cj in cron_jobs if getattr(cj, "cron", "") == "*/5 * * * *" and cj.function is not release_awaiting_cloud]
+    assert offenders == [], "no general */5 auto-advance cron may survive (only release_awaiting_cloud is allowed)"
     # recover_orphaned_work is startup/manual-only -- it must NEVER be wired as a cron.
     assert all(cj.function is not recover_orphaned_work for cj in cron_jobs), "recover_orphaned_work must not be a CronJob (startup/manual-only)"
 

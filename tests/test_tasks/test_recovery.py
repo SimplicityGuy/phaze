@@ -42,7 +42,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import clear_ledger_entry, upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
-from phaze.tasks.reenqueue import _DOMAIN_COMPLETED_STAGES, is_domain_completed, recover_orphaned_work
+from phaze.tasks.reenqueue import _ANALYZE_DONE, _DOMAIN_COMPLETED_STAGES, _build_done_sets, is_domain_completed, recover_orphaned_work
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 
 
@@ -559,6 +559,37 @@ async def test_scan_row_is_live_keys_only(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["stages"]["scan_live_set"] == {"reenqueued": 1, "skipped": 0}
+
+
+# --- Phase 49 D-04: AWAITING_CLOUD stays pending in recovery ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_awaiting_cloud_file_stays_pending_in_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-04: an AWAITING_CLOUD file is NOT analyze-done and NOT domain-completed for process_file.
+
+    A held (duration-routed) file must keep being re-driven by recovery/release until it is genuinely
+    analyzed, so it must NEVER be classified as done. The analyze done-set is {ANALYZED,
+    ANALYSIS_FAILED} ONLY, and AWAITING_CLOUD is deliberately ABSENT from it -- D-04 is satisfied BY
+    OMISSION (no source change to ``_DOMAIN_COMPLETED_STAGES`` or the done-set). This test guards the
+    omission so a future done-set edit cannot silently mark a held file complete.
+    """
+    f = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(f)
+    await session.commit()
+
+    done_sets = await _build_done_sets(session)
+
+    # The AWAITING_CLOUD file is NOT in the analyze done-set ({ANALYZED, ANALYSIS_FAILED}).
+    assert str(f.id) not in done_sets[_ANALYZE_DONE]
+
+    # A process_file ledger row for the held file is NOT domain-completed -> recovery would replay it.
+    row = SchedulingLedger(key=f"process_file:{f.id}", function="process_file", routing="agent", payload={"file_id": str(f.id)})
+    assert is_domain_completed(row, done_sets) is False
 
 
 # --- Predicate totality ----------------------------------------------------------------
