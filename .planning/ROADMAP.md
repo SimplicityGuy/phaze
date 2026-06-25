@@ -134,7 +134,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete    | 2026-06-19 |
 | 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
 | 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete    | 2026-06-24 |
-| 48. Compute-agent type | v5.0 | 0/0 | Not started | - |
+| 48. Compute-agent type | v5.0 | 0/3 | Planned | - |
 | 49. Duration routing & backfill | v5.0 | 0/0 | Not started | - |
 | 50. Push pipeline | v5.0 | 0/0 | Not started | - |
 | 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
@@ -523,8 +523,19 @@ Plans:
   2. The Agents admin page distinguishes the compute agent (kind badge + liveness + queue depth) so the operator can see available cloud capacity at a glance.
   3. The compute agent drains its per-agent SAQ queue and PUTs analysis results over HTTP, with no access to media or app ORM tables (only the SAQ Postgres broker + cache Redis + HTTP API — import-boundary test passes).
 
-**Plans**: TBD
+**Plans**: 3 plans (2 waves)
 **UI hint**: yes
+
+Plans:
+
+**Wave 1**
+
+- [ ] 48-01-PLAN.md — Schema foundation: Agent.kind column + ck_agents_kind_enum CHECK + migration 024 (backfill 'fileserver')
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 48-02-PLAN.md — Registration: `agents add --kind` flag (relax scan-roots for compute) + AgentSettings.kind (relax empty-scan-roots startup gate)
+- [ ] 48-03-PLAN.md — Visibility + boundary: kind badge partial + Kind column on the Agents admin page (per UI-SPEC) + reaffirm compute-agent ORM import boundary
 
 ### Phase 49: Duration routing & backfill
 
