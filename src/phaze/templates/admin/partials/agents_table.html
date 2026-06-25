@@ -34,6 +34,7 @@
             <thead class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase border-b border-gray-200 dark:border-phaze-border">
                 <tr>
                     <th scope="col" class="px-4 py-3">Agent</th>
+                    <th scope="col" class="px-4 py-3">Kind</th>
                     <th scope="col" class="px-4 py-3">Status</th>
                     <th scope="col" class="px-4 py-3">Queue</th>
                     <th scope="col" class="px-4 py-3">Last seen</th>
@@ -48,6 +49,7 @@
                         <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 block" title="{{ agent.id }}">{{ agent.name }}</span>
                         <span class="font-mono text-xs text-gray-500 dark:text-gray-400 block">{{ agent.id }}</span>
                     </td>
+                    <td class="px-4 py-3">{% include "admin/partials/_kind_badge.html" %}</td>
                     <td class="px-4 py-3">{% include "admin/partials/_status_pill.html" %}</td>
                     <td class="px-4 py-3">
                         {% if agent.last_status and agent.last_status.get('queue_depth') is not none %}

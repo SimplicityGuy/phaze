@@ -49,18 +49,21 @@ async def smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
     now = datetime.now(UTC)
     session.add_all(
         [
-            Agent(id="alive-agent", name="AliveBox", scan_roots=["/data/music"], last_seen_at=now),
+            # alive-agent is the seeded kind='compute' row (Phase 48 kind-badge contract).
+            Agent(id="alive-agent", name="AliveBox", scan_roots=["/data/music"], last_seen_at=now, kind="compute"),
             Agent(
                 id="stale-agent",
                 name="StaleBox",
                 scan_roots=["/data/music"],
                 last_seen_at=now - timedelta(seconds=120),
+                kind="fileserver",
             ),
             Agent(
                 id="dead-agent",
                 name="DeadBox",
                 scan_roots=["/data/music"],
                 last_seen_at=now - timedelta(seconds=600),
+                kind="fileserver",
             ),
             Agent(
                 id="revoked-agent",
@@ -68,8 +71,9 @@ async def smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
                 scan_roots=["/data/music"],
                 last_seen_at=now,
                 revoked_at=now,
+                kind="fileserver",
             ),
-            Agent(id="never-agent", name="NeverBox", scan_roots=["/data/music"]),
+            Agent(id="never-agent", name="NeverBox", scan_roots=["/data/music"], kind="fileserver"),
         ]
     )
     await session.commit()
@@ -169,6 +173,70 @@ async def test_status_pills_render_all_5_states(smoke: AsyncClient) -> None:
     # NEVER — same gray-100/800 surface (visually unified "no signal").
     assert "NEVER" in body
     assert "bg-gray-100 dark:bg-gray-800" in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 48 — Kind badge (CLOUDAGENT-03), UI-SPEC §Component Contract LOCKED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kind_badge_compute_renders(smoke: AsyncClient) -> None:
+    """Full-page GET /admin/agents renders the COMPUTE badge for a kind='compute' row.
+
+    Palette + label + aria-label are LOCKED by 48-UI-SPEC §Component Contract.
+    """
+    response = await smoke.get("/admin/agents")
+    body = response.text
+    assert "COMPUTE" in body
+    assert "bg-indigo-100 dark:bg-indigo-950" in body
+    assert "text-indigo-700 dark:text-indigo-400" in body
+    assert 'aria-label="Kind: compute"' in body
+    # LOCKED geometry copied verbatim from _status_pill.html.
+    assert "text-xs font-semibold px-2 py-0.5 rounded-full" in body
+
+
+@pytest.mark.asyncio
+async def test_kind_badge_fileserver_renders(smoke: AsyncClient) -> None:
+    """Full-page GET /admin/agents renders the FILE SERVER badge for a kind='fileserver' row."""
+    response = await smoke.get("/admin/agents")
+    body = response.text
+    assert "FILE SERVER" in body
+    assert "bg-slate-100" in body
+    assert "dark:bg-slate-800" in body
+    assert "text-slate-700 dark:text-slate-300" in body
+    assert 'aria-label="Kind: file server"' in body
+
+
+@pytest.mark.asyncio
+async def test_kind_badge_in_poll_partial(smoke: AsyncClient) -> None:
+    """The HTMX poll partial GET /admin/agents/_table renders the same kind badges.
+
+    Avoids the Pitfall-5 first-load-vs-poll flicker: one include site covers both
+    the full-page and the 5s poll render paths.
+    """
+    response = await smoke.get("/admin/agents/_table")
+    body = response.text
+    assert "COMPUTE" in body
+    assert "bg-indigo-100 dark:bg-indigo-950" in body
+    assert 'aria-label="Kind: compute"' in body
+    assert "FILE SERVER" in body
+    assert "bg-slate-100" in body
+    assert 'aria-label="Kind: file server"' in body
+
+
+@pytest.mark.asyncio
+async def test_kind_column_header_present(smoke: AsyncClient) -> None:
+    """A "Kind" column header sits AFTER "Agent" and BEFORE "Status" (UI-SPEC §Placement)."""
+    response = await smoke.get("/admin/agents/_table")
+    body = response.text
+    pos_agent = body.find(">Agent<")
+    pos_kind = body.find(">Kind<")
+    pos_status = body.find(">Status<")
+    assert pos_agent > 0, "Agent header missing"
+    assert pos_kind > 0, "Kind header missing"
+    assert pos_status > 0, "Status header missing"
+    assert pos_agent < pos_kind < pos_status, f"Kind column not between Agent and Status: {pos_agent=} {pos_kind=} {pos_status=}"
 
 
 @pytest.mark.asyncio
