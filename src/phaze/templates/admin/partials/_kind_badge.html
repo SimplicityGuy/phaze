@@ -1,0 +1,15 @@
+{# Phase 48 (CLOUDAGENT-03): agent kind badge. Mirrors _status_pill.html geometry
+   (text-xs font-semibold px-2 py-0.5 rounded-full — project-wide pill ladder, LOCKED
+   by 48-UI-SPEC §Spacing). Expects `agent` in context (loop variable from
+   agents_table.html). Palette + labels + aria-labels LOCKED by 48-UI-SPEC
+   §Component Contract: compute=indigo (cloud capacity pops), fileserver=slate
+   (quiet cool-neutral baseline recedes). Defensive if/elif/else mirrors
+   _status_pill.html — any out-of-enum kind falls through to the neutral
+   fileserver branch so the cell is never blank (T-48-02 tampering mitigation).
+   Color is never the sole signal: each badge carries an uppercase label AND an
+   aria-label. Text-only (no icon — design system has no icon library). #}
+{% if agent.kind == 'compute' %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400" aria-label="Kind: compute">COMPUTE</span>
+{% else %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300" aria-label="Kind: file server">FILE SERVER</span>
+{% endif %}
