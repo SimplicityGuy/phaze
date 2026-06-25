@@ -36,7 +36,7 @@ from phaze.services.enqueue_router import (
     resolve_queue_for_task,
     select_active_agent,
 )
-from tests._queue_fakes import stub_app_state
+from tests._queue_fakes import seed_active_agent, stub_app_state
 
 
 if TYPE_CHECKING:
@@ -137,6 +137,57 @@ async def test_select_active_agent_excludes_never_seen(session: AsyncSession) ->
 
     with pytest.raises(NoActiveAgentError):
         await select_active_agent(session)
+
+
+# ---------------------------------------------------------------------------
+# select_active_agent — kind scoping (Phase 49 D-13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_select_active_agent_kind_compute_returns_only_compute(session: AsyncSession) -> None:
+    """kind='compute' returns the compute agent even when a newer fileserver exists."""
+    await seed_active_agent(session, "fileserver-01", kind="fileserver")
+    compute = await seed_active_agent(session, "compute-01", kind="compute")
+
+    agent = await select_active_agent(session, kind="compute")
+
+    assert agent.id == compute.id
+    assert agent.kind == "compute"
+
+
+@pytest.mark.asyncio
+async def test_select_active_agent_kind_fileserver_excludes_compute(session: AsyncSession) -> None:
+    """kind='fileserver' excludes compute agents, even a more-recently-seen one."""
+    fileserver = await seed_active_agent(session, "fileserver-01", kind="fileserver")
+    # Seeded second -> greater last_seen_at; would win without the kind filter.
+    await seed_active_agent(session, "compute-01", kind="compute")
+
+    agent = await select_active_agent(session, kind="fileserver")
+
+    assert agent.id == fileserver.id
+    assert agent.kind == "fileserver"
+
+
+@pytest.mark.asyncio
+async def test_select_active_agent_no_kind_preserves_back_compat(session: AsyncSession) -> None:
+    """No kind -> most-recently-seen of ANY kind (existing callers unchanged)."""
+    await seed_active_agent(session, "fileserver-01", kind="fileserver")
+    compute = await seed_active_agent(session, "compute-01", kind="compute")
+
+    agent = await select_active_agent(session)
+
+    # compute-01 was seeded last (greater last_seen_at) -> wins regardless of kind.
+    assert agent.id == compute.id
+
+
+@pytest.mark.asyncio
+async def test_select_active_agent_kind_absent_raises(session: AsyncSession) -> None:
+    """kind='compute' with no compute agent online raises NoActiveAgentError."""
+    await seed_active_agent(session, "fileserver-01", kind="fileserver")
+
+    with pytest.raises(NoActiveAgentError):
+        await select_active_agent(session, kind="compute")
 
 
 # ---------------------------------------------------------------------------
