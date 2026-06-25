@@ -101,6 +101,7 @@ ignore = [
 "__init__.py" = ["F401"]
 "src/phaze/main.py" = ["T201"]
 "src/phaze/cli/**" = ["T201"]
+"scripts/parity/**" = ["T201"]
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
 "services/**" = ["S603", "S607"]
 

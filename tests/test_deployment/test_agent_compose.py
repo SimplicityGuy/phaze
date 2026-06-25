@@ -148,8 +148,16 @@ def _extract_api_metadata_action_step(workflow_data: dict[str, Any]) -> dict[str
     differentiation in `images:`), any docker/metadata-action step is
     returned.
     """
-    for job in (workflow_data.get("jobs") or {}).values():
-        for step in job.get("steps", []) or []:
+    jobs = workflow_data.get("jobs") or {}
+    # Target the api publisher explicitly: phase 47 added build-arm64 and
+    # parity-golden-x86 jobs that also use docker/metadata-action, so a
+    # first-match scan would silently check the wrong tag strategy if jobs
+    # are reordered. Fall back to a first-match scan only if the api job is
+    # named differently (single shared-step workflow).
+    api_job = jobs.get("build-and-push")
+    candidate_jobs = [api_job] if api_job else list(jobs.values())
+    for job in candidate_jobs:
+        for step in (job or {}).get("steps", []) or []:
             uses = (step.get("uses") or "").lower()
             if "docker/metadata-action" in uses:
                 return step  # type: ignore[no-any-return]
@@ -195,6 +203,89 @@ def test_docker_publish_workflow_tags_both_latest_and_version() -> None:
     assert not missing, (
         f"docker-publish.yml tag patterns missing: {missing}\nFound tags: {tags}\n"
         "Fix: add the missing pattern(s) under jobs.<job>.steps[uses=docker/metadata-action].with.tags."
+    )
+
+
+def _extract_build_arm64_metadata_step(workflow_data: dict[str, Any]) -> dict[str, Any] | None:
+    """Locate the ``docker/metadata-action`` step inside the ``build-arm64`` job.
+
+    Phase 47 CLOUDIMG-02 adds a dedicated native-arm64 build job to
+    docker-publish.yml. Its metadata-action step resolves the ``-arm64``-suffixed
+    tags (and OCI labels) that the 47-04 parity-gated push later publishes. This
+    helper returns ``None`` if either the job or its metadata-action step is
+    absent, so the caller can emit a precise failure.
+    """
+    job = (workflow_data.get("jobs") or {}).get("build-arm64")
+    if not isinstance(job, dict):
+        return None
+    for step in job.get("steps", []) or []:
+        uses = (step.get("uses") or "").lower()
+        if "docker/metadata-action" in uses:
+            return step  # type: ignore[no-any-return]
+    return None
+
+
+def _flavor_lines(step: dict[str, Any]) -> list[str]:
+    """Return the docker/metadata-action ``with.flavor:`` block split on newlines."""
+    flavor_raw = (step.get("with") or {}).get("flavor", "")
+    return [line.strip() for line in str(flavor_raw).splitlines() if line.strip()]
+
+
+def test_docker_publish_arm64_job_tags_latest_and_version() -> None:
+    """CLOUDIMG-02: the build-arm64 job emits BOTH a latest-arm64 AND a version-arm64 tag.
+
+    The Phase 51 cloud-agent compose pins a ``<version>-arm64`` image tag, and a
+    rolling ``latest-arm64`` must track the default branch. Both come from the
+    ``build-arm64`` job's ``docker/metadata-action`` step. This test fails if the
+    job is missing, or if a refactor drops the ``-arm64`` suffix (e.g. removes the
+    ``flavor: suffix=-arm64`` line) or the latest/version tag patterns — catching
+    the regression in CI rather than after the cloud compose can no longer resolve
+    the image.
+
+    Two equivalent tag mechanisms are accepted:
+      1. ``flavor: suffix=-arm64`` applied over base ``type=raw,value=latest`` +
+         ``type=semver,pattern={{version}}`` (or ``type=ref,event=tag``) patterns.
+      2. explicit ``type=raw,value=latest-arm64`` + ``type=semver,pattern={{version}}-arm64``
+         (or ``type=ref,event=tag`` with a ``-arm64`` suffix) patterns.
+    """
+    assert PUBLISH_WORKFLOW_PATH.exists(), f"docker-publish.yml missing at {PUBLISH_WORKFLOW_PATH}"
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW_PATH.read_text())
+
+    assert "build-arm64" in (workflow.get("jobs") or {}), (
+        "docker-publish.yml is missing the `build-arm64` job. CLOUDIMG-02 requires a native-arm64 "
+        "build job that resolves the matching -arm64 tags for the 47-04 parity-gated push."
+    )
+
+    step = _extract_build_arm64_metadata_step(workflow)
+    assert step is not None, (
+        "The `build-arm64` job has no docker/metadata-action step. It must resolve the -arm64 tags "
+        "(latest-arm64 + <version>-arm64) and expose them as job outputs for the gated push."
+    )
+
+    tags = _metadata_action_tag_lines(step)
+    flavor = _flavor_lines(step)
+    assert tags, f"build-arm64 metadata-action step has no `with.tags:` block; got step={step!r}"
+
+    suffix_via_flavor = any("suffix=-arm64" in f for f in flavor)
+    # Base (suffix-applied) patterns, present in EITHER mechanism.
+    has_latest = any("value=latest" in t for t in tags)
+    has_version = any(("type=semver" in t) or ("type=ref,event=tag" in t) for t in tags)
+    # Explicit-suffix fallback patterns.
+    has_explicit_latest_arm64 = any("value=latest-arm64" in t for t in tags)
+    has_explicit_version_arm64 = any("-arm64" in t and (("type=semver" in t) or ("type=ref,event=tag" in t)) for t in tags)
+
+    latest_arm64_ok = (suffix_via_flavor and has_latest) or has_explicit_latest_arm64
+    version_arm64_ok = (suffix_via_flavor and has_version) or has_explicit_version_arm64
+
+    missing: list[str] = []
+    if not latest_arm64_ok:
+        missing.append("a latest-arm64 tag (flavor: suffix=-arm64 over type=raw,value=latest, or explicit type=raw,value=latest-arm64)")
+    if not version_arm64_ok:
+        missing.append("a <version>-arm64 tag (flavor: suffix=-arm64 over type=semver/type=ref,event=tag, or an explicit -arm64 semver/ref pattern)")
+    assert not missing, (
+        f"build-arm64 job tag strategy is missing: {missing}\nflavor={flavor}\ntags={tags}\n"
+        "Fix: restore the -arm64 suffix (flavor: suffix=-arm64,onlatest=true) and the latest+version tag patterns "
+        "under jobs.build-arm64.steps[uses=docker/metadata-action].with."
     )
 
 

@@ -267,6 +267,99 @@ image-push:
         echo "✅ ${SERVICE} pushed"
     done
 
+[doc('Build the arm64 essentia agent image locally (operator fallback to the CI build-arm64 job)')]
+[group('docker')]
+image-build-arm64 TAG="latest":
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
+    echo "🐳 Building ${IMAGE} (Dockerfile.agent-arm64, native arm64 essentia)..."
+    docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
+    echo "✅ built ${IMAGE}"
+
+[doc('Build + push the arm64 essentia agent image to GHCR (operator fallback; CI push is parity-gated in 47-04)')]
+[group('docker')]
+image-push-arm64 TAG="latest":
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
+    echo "🐳 Building and pushing ${IMAGE}..."
+    docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
+    docker push "${IMAGE}"
+    echo "✅ ${IMAGE} pushed"
+
+[doc('Regenerate the x86 parity golden JSON from the reference clip (operator path; CI in plan 47-04 is authoritative)')]
+[group('docker')]
+parity-golden-regen TAG="latest":
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    # CI publishes the api image at the bare-repo URL (image_suffix="" for api,
+    # Phase 29 D-15) — ghcr.io/<owner>/<repo>:<tag>, NOT a /api sub-path. Match it.
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}"
+    # 1. Provision the essentia model weights locally (host ./models).
+    echo "📥 Provisioning models into ./models ..."
+    bash scripts/download-models.sh models
+    # 2. Run the SHARED dump tool inside the x86 api image over the committed reference clip.
+    #    This writes scripts/parity/golden-x86.json for offline inspection.
+    #    NOTE: CI (plan 47-04) is the AUTHORITATIVE golden producer; this is the operator regen path.
+    echo "🐳 Generating golden-x86.json via ${IMAGE} ..."
+    docker run --rm \
+        -v "$(pwd)/scripts/parity:/parity" \
+        -v "$(pwd)/models:/models:ro" \
+        "${IMAGE}" \
+        uv run python /parity/dump_analysis.py /parity/reference.wav /models --out /parity/golden-x86.json
+    echo "✅ wrote scripts/parity/golden-x86.json"
+
+[doc('Run the shared analyze_file dump inside an image; INTERP picks "uv run python" (x86 uv image) vs python3 (arm64 --system 3.13 agent image)')]
+[group('docker')]
+parity-dump IMAGE MODELS="./models" OUT="scripts/parity/actual.json" INTERP="uv run python":
+    #!/usr/bin/env bash
+    set -e
+    # The SHARED dump path BOTH CI parity jobs delegate to (workflows delegate to
+    # just — MEMORY). INTERP selects the in-image interpreter: the x86 api image
+    # runs the uv-managed venv (default "uv run python"); the arm64 agent image
+    # installs --system on 3.13 and MUST run python3 directly (uv run would
+    # re-validate requires-python >=3.14 and miss the --system packages).
+    OUT_BASE=$(basename "{{OUT}}")
+    echo "🐳 Dumping analyze_file from {{IMAGE}} (interp: {{INTERP}}) → {{OUT}} ..."
+    docker run --rm \
+        -v "$(pwd)/scripts:/scripts" \
+        -v "$(pwd)/{{MODELS}}:/models:ro" \
+        "{{IMAGE}}" \
+        {{INTERP}} /scripts/parity/dump_analysis.py /scripts/parity/reference.wav /models --out "/scripts/parity/${OUT_BASE}"
+    PRODUCED="scripts/parity/${OUT_BASE}"
+    if [ "${PRODUCED}" != "{{OUT}}" ]; then
+        cp "${PRODUCED}" "{{OUT}}"
+    fi
+    echo "✅ wrote {{OUT}}"
+
+[doc('Run the arm64↔x86 numeric parity check locally (operator mirror of the CI parity-guard)')]
+[group('docker')]
+parity-check TAG="latest":
+    #!/usr/bin/env bash
+    set -e
+    REGISTRY="ghcr.io"
+    OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
+    REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
+    IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
+    # 1. Provision the essentia model weights locally (host ./models).
+    echo "📥 Provisioning models into ./models ..."
+    bash scripts/download-models.sh models
+    # 2. Dump the arm64 actual via the shared recipe — direct python3 for the agent image.
+    just parity-dump "${IMAGE}" ./models scripts/parity/actual.json python3
+    # 3. Compare against the committed/CI golden (non-zero exit on any parity break).
+    echo "🔬 Comparing scripts/parity/actual.json against scripts/parity/golden-x86.json ..."
+    uv run python scripts/parity/compare_analysis.py scripts/parity/golden-x86.json scripts/parity/actual.json
+
 [doc('Validate docker-compose.yml syntax')]
 [group('docker')]
 docker-compose-validate:
