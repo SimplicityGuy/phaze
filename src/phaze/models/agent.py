@@ -25,6 +25,7 @@ class Agent(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'fileserver'"))
     scan_roots: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -34,5 +35,9 @@ class Agent(TimestampMixin, Base):
         CheckConstraint(
             "id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'",
             name="id_charset",
+        ),
+        CheckConstraint(
+            "kind IN ('fileserver', 'compute')",
+            name="kind_enum",
         ),
     )
