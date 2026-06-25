@@ -90,12 +90,18 @@ class RoutedQueue(NamedTuple):
     agent_id: str | None
 
 
-async def select_active_agent(session: AsyncSession) -> Agent:
+async def select_active_agent(session: AsyncSession, kind: str | None = None) -> Agent:
     """Return the most-recently-seen non-revoked agent.
 
     Filters ``revoked_at IS NULL`` AND ``last_seen_at IS NOT NULL``, orders by
     ``last_seen_at DESC`` and takes the first row. The ``revoked_at IS NULL``
     predicate excludes ``legacy-application-server`` (permanently revoked).
+
+    Phase 49 (D-13): when ``kind`` is given (``"compute"`` / ``"fileserver"``) the
+    selection is scoped to agents of that ``Agent.kind`` — the deterministic
+    most-recently-seen rule still holds, but only within the requested kind.
+    ``kind=None`` preserves the original behavior (any kind), so every existing
+    caller (e.g. :func:`resolve_queue_for_task`) is unchanged.
 
     Raises :class:`NoActiveAgentError` when no agent satisfies the filter — the
     consuming sites surface a clear error/empty-state instead of a silent success.
@@ -109,6 +115,8 @@ async def select_active_agent(session: AsyncSession) -> Agent:
         .order_by(Agent.last_seen_at.desc())
         .limit(1)
     )
+    if kind is not None:
+        stmt = stmt.where(Agent.kind == kind)
     result = await session.execute(stmt)
     agent = result.scalar_one_or_none()
     if agent is None:
