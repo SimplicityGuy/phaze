@@ -135,7 +135,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
 | 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete    | 2026-06-24 |
 | 48. Compute-agent type | v5.0 | 3/3 | Complete   | 2026-06-25 |
-| 49. Duration routing & backfill | v5.0 | 0/0 | Not started | - |
+| 49. Duration routing & backfill | v5.0 | 1/4 | In Progress|  |
 | 50. Push pipeline | v5.0 | 0/0 | Not started | - |
 | 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
 
@@ -552,7 +552,7 @@ Plans:
 **Plans**: 4 plans (3 waves)
 **Wave 1**
 
-- [ ] 49-01-PLAN.md — Routing foundation: cloud_route_threshold_sec config, FileState.AWAITING_CLOUD, kind-filtered select_active_agent, duration/awaiting/backfill service helpers (Wave 1)
+- [x] 49-01-PLAN.md — Routing foundation: cloud_route_threshold_sec config, FileState.AWAITING_CLOUD, kind-filtered select_active_agent, duration/awaiting/backfill service helpers (Wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
