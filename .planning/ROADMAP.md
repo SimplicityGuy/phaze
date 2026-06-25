@@ -77,7 +77,7 @@ Analyze long-duration audio (≥90 min) on a free OCI Ampere A1 (arm64) "compute
 
 - [x] **Phase 47: Official arm64 essentia agent image** — build essentia from source on a native arm64 CI runner, publish to GHCR with a parity guard (completed 2026-06-24)
 - [x] **Phase 48: Compute-agent type** — register a media-less `kind="compute"` agent that drains its queue + PUTs results, surfaced on the Agents page (completed 2026-06-25)
-- [ ] **Phase 49: Duration routing & backfill** — route ≥90min files to an online compute agent (else "awaiting cloud"), backfill the 144 timed-out long files via the Phase 45 ledger
+- [x] **Phase 49: Duration routing & backfill** — route ≥90min files to an online compute agent (else "awaiting cloud"), backfill the 144 timed-out long files via the Phase 45 ledger (completed 2026-06-25)
 - [ ] **Phase 50: Push pipeline** — rsync-over-Tailscale "stay one ahead" push to the compute agent's scratch dir, sha256-verify, ephemeral cleanup, idempotent re-drive
 - [ ] **Phase 51: Deployment, config & docs** — cloud-agent compose + Tailscale, all config knobs (`_FILE` secrets), OCI A1 / Tailscale-ACL runbook, master enable toggle
 
@@ -135,7 +135,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
 | 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete    | 2026-06-24 |
 | 48. Compute-agent type | v5.0 | 3/3 | Complete   | 2026-06-25 |
-| 49. Duration routing & backfill | v5.0 | 3/4 | In Progress|  |
+| 49. Duration routing & backfill | v5.0 | 4/4 | Complete   | 2026-06-25 |
 | 50. Push pipeline | v5.0 | 0/0 | Not started | - |
 | 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
 
@@ -561,7 +561,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 49-03-PLAN.md — Backfill endpoint + "Backfill to cloud" button + ledger-scoped re-drive (Wave 3)
+- [x] 49-03-PLAN.md — Backfill endpoint + "Backfill to cloud" button + ledger-scoped re-drive (Wave 3)
 
 ### Phase 50: Push pipeline
 
