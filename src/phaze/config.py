@@ -355,6 +355,21 @@ class ControlSettings(BaseSettings):
         description="Running-age threshold (seconds) above which an active process_file analyze job is flagged a straggler on the pipeline dashboard (Phase 44). Default 6600 mirrors analysis_inner_timeout_sec; lt=86400 caps it at one day.",
     )
 
+    # Phase 49 D-07: files whose joined FileMetadata.duration is at/above this threshold
+    # are routed to a cloud compute agent (held in FileState.AWAITING_CLOUD) instead of the
+    # on-prem file-server. The per-file router (Plan 02), backfill (Plan 03), and release
+    # cron (Plan 04) all compare against this single knob. Bounded (gt=0, lt=86400) like
+    # straggler_threshold_sec so an out-of-range operator value fails fast at startup (T-49-01)
+    # and never reaches the SQL `duration >= threshold` compare. Lives on ControlSettings
+    # because the control plane owns routing decisions.
+    cloud_route_threshold_sec: int = Field(
+        default=5400,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_CLOUD_ROUTE_THRESHOLD_SEC", "cloud_route_threshold_sec"),
+        description="Duration threshold (seconds) at/above which a file is routed to a cloud compute agent for analysis (Phase 49). Default 5400 (90 min); lt=86400 caps it at one day.",
+    )
+
 
 class AgentSettings(BaseSettings):
     """File-server role: HTTP client to the application server, file-bound SAQ tasks.
