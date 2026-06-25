@@ -4,8 +4,11 @@ Out-of-scope discoveries logged during execution (per executor SCOPE BOUNDARY). 
 NOT fixed by the discovering plan; they are surfaced for the orchestrator / verifier / a
 follow-up quick task.
 
-## DEF-48-01 — Stale agents-table column assertion (wave-1 escapee)
+## DEF-48-01 — Stale agents-table column assertion (wave-1 escapee) — ✅ RESOLVED
 
+- **Resolution:** Fixed during execute-phase post-merge cleanup — added `"kind"` to the
+  `expected` set and updated the docstring (commit on branch `gsd/phase-48-compute-agent-type`).
+  Full integration suite now green: **2071 passed, 0 failed**.
 - **Discovered during:** Plan 48-03 execution (wave 2), full-suite verification run.
 - **File:** `tests/test_migrations/test_012_upgrade.py::test_agents_table_columns`
 - **Status:** FAILING on a pristine DB (and already failing at the wave-2 base commit `2e97705`,
