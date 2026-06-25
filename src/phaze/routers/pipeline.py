@@ -25,7 +25,8 @@ from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
     get_analysis_failed_count,
-    get_files_by_state,
+    get_awaiting_cloud_count,
+    get_discovered_files_with_duration,
     get_fingerprint_pending_files,
     get_global_reconciliation,
     get_match_busy_count,
@@ -245,6 +246,96 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
         await enqueue_process_file(queue, f, agent_id, models_path)
 
 
+async def _route_discovered_by_duration(
+    app_state: Any,
+    session: AsyncSession,
+    files_with_duration: list[tuple[FileRecord, float | None]],
+    threshold_sec: int,
+    models_path: str,
+) -> dict[str, int]:
+    """Route each DISCOVERED file to a queue by its duration (Phase 49, D-06/D-11/D-02).
+
+    The single per-file routing decision shared by the "Run Analysis" trigger (this module)
+    and the Plan-03 backfill producer, so the two paths cannot drift. The two kind-scoped
+    active agents are resolved INDEPENDENTLY -- each in its OWN ``try/except
+    NoActiveAgentError`` -- exactly ONCE before the loop (never per file: that was the
+    RESEARCH anti-pattern). Each queue is obtained via ``app_state.task_router.queue_for``
+    (the Phase-30 invariant -- never the consumer-less default queue).
+
+    Per file, on the captured ``(file, duration)`` tuples:
+
+    - ``duration is None`` or ``< threshold_sec`` AND a fileserver agent is online -> enqueue
+      ``process_file`` onto the fileserver queue (``local``), unchanged from today.
+    - ``duration is None`` or ``< threshold_sec`` AND NO fileserver agent online -> count as
+      ``skipped`` (cannot route locally) -- NO enqueue, NO state change, the run continues.
+    - ``duration >= threshold_sec`` AND a compute agent is online -> enqueue ``process_file``
+      onto the compute queue (``cloud``), INDEPENDENT of fileserver availability.
+    - ``duration >= threshold_sec`` AND NO compute agent online -> set the row's state to
+      ``AWAITING_CLOUD`` (``awaiting``); it is NEVER silently analyzed locally (the
+      load-bearing CLOUDROUTE-02 safety invariant, T-49-03).
+
+    The held AWAITING_CLOUD UPDATEs are committed with an explicit ``await session.commit()``
+    BEFORE the enqueues are backgrounded (``get_session`` does NOT auto-commit -- RESEARCH
+    Pitfall 3). ``enqueue_process_file`` is reused verbatim for BOTH local and cloud so the
+    identical deterministic key (``process_file:<id>``) drives cross-path dedup (D-10).
+
+    Returns ``{"local": N, "cloud": M, "awaiting": K, "skipped": S, "no_active_agent": 0|1}``;
+    ``no_active_agent`` is 1 only when BOTH agent kinds are absent (nothing routable at all),
+    the sole condition under which the caller surfaces the no-active-agent response.
+    """
+    try:
+        fileserver_agent: Agent | None = await enqueue_router.select_active_agent(session, kind="fileserver")
+    except enqueue_router.NoActiveAgentError:
+        fileserver_agent = None
+    try:
+        compute_agent: Agent | None = await enqueue_router.select_active_agent(session, kind="compute")
+    except enqueue_router.NoActiveAgentError:
+        compute_agent = None
+
+    fileserver_q = app_state.task_router.queue_for(fileserver_agent.id) if fileserver_agent is not None else None
+    compute_q = app_state.task_router.queue_for(compute_agent.id) if compute_agent is not None else None
+
+    local_files: list[FileRecord] = []
+    cloud_files: list[FileRecord] = []
+    skipped = 0
+    held = 0
+
+    for file, duration in files_with_duration:
+        is_long = duration is not None and duration >= threshold_sec
+        if is_long:
+            if compute_agent is not None:
+                cloud_files.append(file)
+            else:
+                file.state = FileState.AWAITING_CLOUD
+                held += 1
+        elif fileserver_agent is not None:
+            local_files.append(file)
+        else:
+            skipped += 1
+
+    # Commit the AWAITING_CLOUD held-state UPDATEs BEFORE backgrounding the enqueues
+    # (get_session does not auto-commit -- RESEARCH Pitfall 3).
+    if held:
+        await session.commit()
+
+    if local_files and fileserver_q is not None and fileserver_agent is not None:
+        local_task = asyncio.create_task(_enqueue_analysis_jobs(fileserver_q, local_files, fileserver_agent.id, models_path))
+        _background_tasks.add(local_task)
+        local_task.add_done_callback(_background_tasks.discard)
+    if cloud_files and compute_q is not None and compute_agent is not None:
+        cloud_task = asyncio.create_task(_enqueue_analysis_jobs(compute_q, cloud_files, compute_agent.id, models_path))
+        _background_tasks.add(cloud_task)
+        cloud_task.add_done_callback(_background_tasks.discard)
+
+    return {
+        "local": len(local_files),
+        "cloud": len(cloud_files),
+        "awaiting": held,
+        "skipped": skipped,
+        "no_active_agent": int(fileserver_agent is None and compute_agent is None),
+    }
+
+
 async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:
     """Background coroutine to enqueue generate_proposals jobs for batched file IDs."""
     for idx, batch in enumerate(batches):
@@ -256,32 +347,53 @@ async def trigger_analysis(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Enqueue process_file jobs for all DISCOVERED files (per D-01, D-04).
+    """Enqueue process_file jobs for all DISCOVERED files, routed per-file by duration (Phase 49, D-06/D-11/D-12).
 
-    One SAQ job per file. Enqueue runs in a background task to avoid
-    HTTP timeout on large file counts. Returns immediately
-    with the expected enqueue count.
+    Long (``>= cloud_route_threshold_sec``) files route to a COMPUTE agent's queue;
+    short/null-duration files route to the FILESERVER queue exactly as before; a long file
+    with no compute agent online is HELD in ``AWAITING_CLOUD`` (committed, NEVER silently
+    analyzed locally -- D-02); short/null files with no fileserver online are reported
+    ``skipped`` without aborting the run. One SAQ job per routed file; the enqueues run in a
+    background task (via the shared router helper) to avoid HTTP timeout on large file counts.
+    Returns the split counts. The no-active-agent message is returned ONLY when BOTH agent
+    kinds are absent (nothing routable at all).
     """
-    files = await get_files_by_state(session, FileState.DISCOVERED)
-    if not files:
+    files_with_duration = await get_discovered_files_with_duration(session)
+    if not files_with_duration:
         return {"enqueued": 0, "message": "No files in DISCOVERED state"}
 
-    try:
-        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
-    except enqueue_router.NoActiveAgentError:
-        return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
+    counts = await _route_discovered_by_duration(
+        request.app.state,
+        session,
+        files_with_duration,
+        settings.cloud_route_threshold_sec,
+        settings.models_path,
+    )
 
-    # process_file is an AGENT_TASK, so resolve_queue_for_task always returns a
-    # non-None agent_id (RoutedQueue.agent_id is only None for controller tasks);
-    # cast narrows str | None -> str for the ProcessFilePayload.agent_id field.
-    agent_id = cast("str", routed.agent_id)
+    if counts["no_active_agent"]:
+        # Both kinds absent -- nothing was routable. Any long files were still committed to
+        # AWAITING_CLOUD (surfaced via the count card); short/null files were skipped.
+        return {
+            "enqueued": 0,
+            "local": 0,
+            "cloud": 0,
+            "awaiting_cloud": counts["awaiting"],
+            "skipped": counts["skipped"],
+            "message": _NO_ACTIVE_AGENT_MESSAGE,
+        }
 
-    # Background enqueue to avoid HTTP timeout (per Research pitfall 2)
-    task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, files, agent_id, settings.models_path))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-    return {"enqueued": len(files), "message": f"Enqueued {len(files)} files for analysis"}
+    enqueued = counts["local"] + counts["cloud"]
+    return {
+        "enqueued": enqueued,
+        "local": counts["local"],
+        "cloud": counts["cloud"],
+        "awaiting_cloud": counts["awaiting"],
+        "skipped": counts["skipped"],
+        "message": (
+            f"Enqueued {counts['local']} local, {counts['cloud']} cloud; "
+            f"{counts['awaiting']} awaiting cloud, {counts['skipped']} skipped (no local agent)"
+        ),
+    }
 
 
 @router.post("/api/v1/proposals/generate")
@@ -362,6 +474,12 @@ async def dashboard(
     straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
     analysis_failed_count = await get_analysis_failed_count(session)
 
+    # Phase 49 (49-02, D-05): the "Awaiting cloud" held-file count -- long files held back
+    # because no compute agent was online when analysis routed them. get_awaiting_cloud_count
+    # owns the never-500 _safe_count degrade (returns 0 on any DB error), so NO try/except is
+    # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
+    awaiting_cloud_count = await get_awaiting_cloud_count(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -378,6 +496,7 @@ async def dashboard(
         "recent_scans": recent_scans_rows,
         "straggler_count": straggler_count,
         "analysis_failed_count": analysis_failed_count,
+        "awaiting_cloud_count": awaiting_cloud_count,
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         **activity,
@@ -410,6 +529,10 @@ async def pipeline_stats_partial(
     # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
     straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
     analysis_failed_count = await get_analysis_failed_count(session)
+    # Phase 49 (49-02, D-05): the same AWAITING_CLOUD held count the dashboard seeds, re-pushed
+    # on every 5s poll so the awaiting_cloud_card stays live via its OOB swap. Degrade-safe at the
+    # service layer (Plan 01), so NO router try/except -- mirrors the straggler/failed wiring.
+    awaiting_cloud_count = await get_awaiting_cloud_count(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -424,6 +547,7 @@ async def pipeline_stats_partial(
             "oob_counts": True,
             "straggler_count": straggler_count,
             "analysis_failed_count": analysis_failed_count,
+            "awaiting_cloud_count": awaiting_cloud_count,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
@@ -436,28 +560,46 @@ async def trigger_analysis_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """HTMX endpoint: trigger analysis and return response fragment."""
-    files = await get_files_by_state(session, FileState.DISCOVERED)
-    count = len(files)
-    no_active_agent = False
+    """HTMX endpoint: trigger per-file duration-routed analysis and return the split-count fragment (Phase 49).
 
-    if count > 0:
-        try:
-            routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
-        except enqueue_router.NoActiveAgentError:
-            no_active_agent = True
-        else:
-            # process_file is an AGENT_TASK -- resolve always returns a non-None
-            # agent_id; cast narrows str | None -> str for ProcessFilePayload.
-            agent_id = cast("str", routed.agent_id)
-            task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, files, agent_id, settings.models_path))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+    Mirrors :func:`trigger_analysis`: long files route to a compute agent, short/null files to
+    the fileserver, long files with no compute agent are held in ``AWAITING_CLOUD``, and
+    short/null files with no fileserver are skipped without aborting the run. The fragment
+    reports ``N local, M cloud, K awaiting cloud`` (+ a skipped bucket). The no-active-agent
+    fragment is rendered ONLY when BOTH agent kinds are absent (nothing routable).
+    """
+    files_with_duration = await get_discovered_files_with_duration(session)
+    count = len(files_with_duration)
+
+    if count == 0:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/trigger_response.html",
+            context={"request": request, "action": "analysis", "count": 0, "no_active_agent": False},
+        )
+
+    counts = await _route_discovered_by_duration(
+        request.app.state,
+        session,
+        files_with_duration,
+        settings.cloud_route_threshold_sec,
+        settings.models_path,
+    )
 
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "analysis", "count": count, "no_active_agent": no_active_agent},
+        context={
+            "request": request,
+            "action": "analysis",
+            "count": count,
+            "no_active_agent": bool(counts["no_active_agent"]),
+            "split_counts": True,
+            "local": counts["local"],
+            "cloud": counts["cloud"],
+            "awaiting": counts["awaiting"],
+            "skipped": counts["skipped"],
+        },
     )
 
 

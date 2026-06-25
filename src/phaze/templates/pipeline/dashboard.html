@@ -20,6 +20,10 @@
          kept live by the stats_bar.html out-of-band (OOB) fragment on each 5s poll. -->
     {% include "pipeline/partials/straggler_failed_card.html" %}
 
+    <!-- Phase 49 (D-05): "Awaiting cloud" held-file count card. Lives OUTSIDE #pipeline-stats;
+         re-pushed OOB by stats_bar.html on each 5s poll. -->
+    {% include "pipeline/partials/awaiting_cloud_card.html" %}
+
     <!-- Stats bar (polled via HTMX every 5s). Still carries the per-node OOB seeds
          (35-04) that drive the DAG canvas bindings on each tick. -->
     <div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">
