@@ -281,21 +281,15 @@ Note: the backfill can seed the ledger explicitly, but since `enqueue_process_fi
 | A2 | Releasing a held file by enqueuing to compute, while leaving its state at `AWAITING_CLOUD` until ANALYZED, is acceptable UX (count card still shows it as awaiting until analyzed) | Architecture / release | If the operator expects the card to drop immediately on release, the release path must also move state (e.g. → DISCOVERED). Design decision for the planner. |
 | A3 | `seed_active_agent` test helper relies on `Agent.kind` server_default `'fileserver'`; a compute-agent fixture needs `kind="compute"` set explicitly | Validation Architecture | Tests for compute routing will mis-seed if the helper isn't extended. Low risk — easily fixed in Wave 0. |
 
-## Open Questions
+## Open Questions (ALL RESOLVED 2026-06-25)
 
-1. **What triggers held-file release? (BLOCKING for the release sub-feature)**
-   - What we know: D-03 wants automatic release with ~5 min latency; the */5 cron it references is gone (Phase 42); held files have no ledger row.
-   - What's unclear: whether to add a new narrow `CronJob` (cleanest match to "~5 min latency"), make it event-driven on compute-agent heartbeat, or manual-only.
-   - Recommendation: propose a new dedicated `CronJob(release_awaiting_cloud, "*/5 * * * *")` that is explicitly scoped to AWAITING_CLOUD→compute (NOT a general auto-advance, so it respects the Phase-42 principle), gated on a compute agent being online. Surface this to the operator in discuss/plan before locking, citing the Phase-42 "no steady-state auto-advance" tension.
+1. **What triggers held-file release? (was BLOCKING)** — **RESOLVED → CONTEXT D-03 (RECONCILED).** Operator chose a NEW dedicated `CronJob(release_awaiting_cloud, "*/5 * * * *")` scoped only to AWAITING_CLOUD→compute, gated on a compute agent online, state-driven scan (NOT ledger replay, NOT a resurrection of the deleted */5 reenqueue cron). Implemented in Plan 49-04.
 
-2. **Does the released/enqueued file leave AWAITING_CLOUD immediately, or only on ANALYZED?** (A2)
-   - Recommendation: on release, enqueue to compute AND reset state to `DISCOVERED` (symmetry with the D-09 backfill reset), so the count card is honest and the file re-enters the normal DISCOVERED-is-ready model. Confirm with operator.
+2. **Does the released file leave AWAITING_CLOUD immediately, or only on ANALYZED? (A2)** — **RESOLVED → CONTEXT D-03a.** On release, enqueue to compute AND reset state to `DISCOVERED` (symmetry with D-09 backfill reset). Implemented in Plan 49-04.
 
-3. **Is the explicit `insert_ledger_if_absent` in D-09 redundant for the enqueued branch?**
-   - What we know: `enqueue_process_file` on a control-side queue already writes the ledger via the `before_enqueue` hook.
-   - Recommendation: keep the explicit seed only for files that backfill routes to `AWAITING_CLOUD` (held, not enqueued); for the enqueued branch the hook covers it. Avoid a double-write.
+3. **Is the explicit `insert_ledger_if_absent` in D-09 redundant for the enqueued branch?** — **RESOLVED → CONTEXT D-09 + Plan 49-03.** Keep the explicit seed ONLY for files backfill routes to AWAITING_CLOUD (held, not enqueued); the enqueued branch's `before_enqueue` hook already writes the ledger. No double-write.
 
-4. **The 144 count — confirm live (A1).** Recommend the first backfill plan task verify the count against the DB and surface it in the button label.
+4. **The 144 count — confirm live (A1).** — **RESOLVED → 49-VALIDATION.md "Manual-Only Verifications."** Backfill plan verifies the count against the live DB (`SELECT count(*) … state='analysis_failed' AND duration >= 5400`) and surfaces it in the button label.
 
 ## Environment Availability
 
