@@ -18,11 +18,15 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
 from phaze.services.pipeline import (
     count_active_agents,
+    count_backfill_candidates,
     count_inflight_jobs,
     deduped_count,
     get_agent_reconciliations,
     get_analysis_failed_count,
     get_analysis_failed_files,
+    get_awaiting_cloud_count,
+    get_backfill_candidates,
+    get_discovered_files_with_duration,
     get_files_by_state,
     get_fingerprint_pending_files,
     get_global_reconciliation,
@@ -1354,3 +1358,144 @@ async def test_get_agent_reconciliations_degrades_when_rollback_also_fails() -> 
             raise RuntimeError("connection already closed")
 
     assert await get_agent_reconciliations(_DoublyExplodingSession()) == {}  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Phase 49 duration-routing helpers (D-05, D-09/D-10): duration join,
+# awaiting-cloud count, and backfill candidates (ANALYSIS_FAILED + duration>=N)
+# ---------------------------------------------------------------------------
+
+
+def _file(i: int, state: FileState) -> FileRecord:
+    """Build a FileRecord seed in the given state (unique hash/path per ``i``)."""
+    return FileRecord(
+        id=uuid.uuid4(),
+        sha256_hash=f"d{i:063d}"[:64],
+        original_path=f"/music/dur{i}.mp3",
+        original_filename=f"dur{i}.mp3",
+        current_path=f"/music/dur{i}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=state,
+    )
+
+
+def _metadata_for(file_id: uuid.UUID, duration: float | None) -> FileMetadata:
+    """Build a FileMetadata row for ``file_id`` carrying ``duration`` (or None)."""
+    return FileMetadata(id=uuid.uuid4(), file_id=file_id, duration=duration)
+
+
+@pytest.mark.asyncio
+async def test_get_discovered_files_with_duration_joins_duration(session: AsyncSession) -> None:
+    """Each DISCOVERED file is paired with its joined FileMetadata.duration."""
+    f = _file(0, FileState.DISCOVERED)
+    session.add(f)
+    await session.flush()
+    session.add(_metadata_for(f.id, 6000.0))
+    await session.commit()
+
+    rows = await get_discovered_files_with_duration(session)
+
+    assert len(rows) == 1
+    record, duration = rows[0]
+    assert record.id == f.id
+    assert duration == 6000.0
+
+
+@pytest.mark.asyncio
+async def test_get_discovered_files_with_duration_outerjoin_null(session: AsyncSession) -> None:
+    """A DISCOVERED file with no metadata row still appears, with duration None (LEFT JOIN)."""
+    f = _file(1, FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+
+    rows = await get_discovered_files_with_duration(session)
+
+    assert len(rows) == 1
+    record, duration = rows[0]
+    assert record.id == f.id
+    assert duration is None
+
+
+@pytest.mark.asyncio
+async def test_get_discovered_files_with_duration_excludes_other_states(session: AsyncSession) -> None:
+    """Only DISCOVERED files are returned; an ANALYZED file is excluded."""
+    discovered = _file(2, FileState.DISCOVERED)
+    other = _file(3, FileState.ANALYZED)
+    session.add_all([discovered, other])
+    await session.commit()
+
+    rows = await get_discovered_files_with_duration(session)
+
+    assert {r.id for r, _ in rows} == {discovered.id}
+
+
+@pytest.mark.asyncio
+async def test_get_awaiting_cloud_count_happy_path(session: AsyncSession) -> None:
+    """Counts exactly the files in AWAITING_CLOUD; other states are excluded (D-05)."""
+    session.add_all([_file(4, FileState.AWAITING_CLOUD), _file(5, FileState.AWAITING_CLOUD), _file(6, FileState.DISCOVERED)])
+    await session.commit()
+
+    assert await get_awaiting_cloud_count(session) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_awaiting_cloud_count_degrades_to_zero_on_db_error() -> None:
+    """A forced read error degrades the count to 0 (poll-safe via _safe_count), never raising."""
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("files table unavailable")
+
+        async def rollback(self) -> None:
+            return None
+
+    assert await get_awaiting_cloud_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidates_filters_by_state_and_duration(session: AsyncSession) -> None:
+    """Only ANALYSIS_FAILED files whose joined duration >= threshold are candidates (D-09/D-10).
+
+    A long ANALYSIS_FAILED file qualifies; a short one, a null-duration one, and a long file
+    in another state are all EXCLUDED — proving the explicit duration filter that closes the
+    over-enqueue class (NOT a bare ANALYSIS_FAILED count).
+    """
+    threshold = 5400
+
+    long_failed = _file(7, FileState.ANALYSIS_FAILED)
+    short_failed = _file(8, FileState.ANALYSIS_FAILED)
+    null_failed = _file(9, FileState.ANALYSIS_FAILED)
+    long_other = _file(10, FileState.DISCOVERED)
+    session.add_all([long_failed, short_failed, null_failed, long_other])
+    await session.flush()
+    session.add_all(
+        [
+            _metadata_for(long_failed.id, 6000.0),
+            _metadata_for(short_failed.id, 120.0),
+            _metadata_for(null_failed.id, None),
+            _metadata_for(long_other.id, 6000.0),
+        ]
+    )
+    await session.commit()
+
+    assert await count_backfill_candidates(session, threshold) == 1
+
+    rows = await get_backfill_candidates(session, threshold)
+    assert len(rows) == 1
+    record, duration = rows[0]
+    assert record.id == long_failed.id
+    assert duration == 6000.0
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidates_boundary_is_inclusive(session: AsyncSession) -> None:
+    """A file exactly at the threshold qualifies (>=, not >)."""
+    threshold = 5400
+    at_threshold = _file(11, FileState.ANALYSIS_FAILED)
+    session.add(at_threshold)
+    await session.flush()
+    session.add(_metadata_for(at_threshold.id, float(threshold)))
+    await session.commit()
+
+    assert await count_backfill_candidates(session, threshold) == 1
