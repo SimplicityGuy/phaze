@@ -358,6 +358,212 @@ async def test_analyze_no_files(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 49 Plan 02: per-file duration router (D-06/D-11/D-02/D-12).
+#
+# Long (>= cloud_route_threshold_sec) files route to a COMPUTE agent's queue
+# (independent of fileserver availability); short/null-duration files route to
+# the FILESERVER queue exactly as before; a long file with no compute agent is
+# HELD in AWAITING_CLOUD (committed, NEVER silently analyzed locally); short/null
+# files with no fileserver are reported "skipped" without aborting the run. The
+# Run-analysis response reports the split counts, and the no-active-agent fragment
+# is surfaced ONLY when BOTH agent kinds are absent.
+# ---------------------------------------------------------------------------
+
+_LONG = 6000.0  # >= cloud_route_threshold_sec default (5400)
+_SHORT = 100.0  # < threshold
+
+
+def _make_file_with_duration(duration: float | None, *, state: str = FileState.DISCOVERED) -> tuple[FileRecord, FileMetadata | None]:
+    """Build a DISCOVERED FileRecord plus an optional FileMetadata row carrying ``duration``.
+
+    A ``None`` duration is modeled as the absence of a metadata row (the LEFT OUTER JOIN in
+    ``get_discovered_files_with_duration`` yields ``duration=None``) — exercising the
+    null-routes-local branch.
+    """
+    uid = uuid.uuid4()
+    file_rec = FileRecord(
+        id=uid,
+        sha256_hash=uid.hex,
+        original_path=f"/music/{uid.hex}.mp3",
+        original_filename=f"{uid.hex}.mp3",
+        current_path=f"/music/{uid.hex}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=state,
+    )
+    md = FileMetadata(file_id=uid, duration=duration) if duration is not None else None
+    return file_rec, md
+
+
+async def _persist_files_with_duration(session: AsyncSession, specs: list[float | None]) -> list[FileRecord]:
+    """Persist one DISCOVERED file per duration spec (+ metadata) and return the records."""
+    files: list[FileRecord] = []
+    mds: list[FileMetadata] = []
+    for dur in specs:
+        f, md = _make_file_with_duration(dur)
+        files.append(f)
+        if md is not None:
+            mds.append(md)
+    session.add_all(files)
+    await session.flush()
+    if mds:
+        session.add_all(mds)
+    await session.commit()
+    return files
+
+
+@pytest.mark.asyncio
+async def test_analyze_long_file_routes_to_compute_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """A >=threshold file with a compute agent online lands on the compute queue, NOT the fileserver queue (D-11)."""
+    (long_file,) = await _persist_files_with_duration(session, [_LONG])
+    # Seed compute FIRST then fileserver so the kind-agnostic most-recently-seen rule would pick
+    # the fileserver — proving the route is kind-driven, not recency-driven.
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cloud"] == 1
+    assert data["local"] == 0
+
+    await _drain_background()
+    assert len(capture) == 1
+    queue_name, task_name, payload = capture[0]
+    assert (queue_name, task_name) == ("phaze-agent-cloud", "process_file")
+    assert queue_name != "phaze-agent-nox"
+    assert payload["file_id"] == str(long_file.id)
+
+
+@pytest.mark.asyncio
+async def test_analyze_long_routes_compute_even_without_fileserver(client: AsyncClient, session: AsyncSession) -> None:
+    """Degenerate topology: only a compute agent online -> long file routes to compute, short file is skipped, run NOT aborted."""
+    long_file, short_file = await _persist_files_with_duration(session, [_LONG, _SHORT])
+    await seed_active_agent(session, "cloud", kind="compute")  # NO fileserver online
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cloud"] == 1
+    assert data["skipped"] == 1
+    assert data["local"] == 0
+    assert data["awaiting_cloud"] == 0
+
+    await _drain_background()
+    # Only the long file is enqueued (onto compute); the short file is skipped, never enqueued.
+    assert len(capture) == 1
+    queue_name, task_name, payload = capture[0]
+    assert (queue_name, task_name) == ("phaze-agent-cloud", "process_file")
+    assert payload["file_id"] == str(long_file.id)
+    # The short file stays DISCOVERED (skipped != held, no state change).
+    await session.refresh(short_file)
+    assert short_file.state == FileState.DISCOVERED
+
+
+@pytest.mark.asyncio
+async def test_analyze_long_file_no_compute_holds_awaiting_cloud(client: AsyncClient, session: AsyncSession) -> None:
+    """A >=threshold file with no compute agent online transitions to AWAITING_CLOUD with NO process_file enqueue (D-02)."""
+    (long_file,) = await _persist_files_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")  # fileserver only, no compute
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["awaiting_cloud"] == 1
+    assert data["cloud"] == 0
+    assert data["local"] == 0
+
+    await _drain_background()
+    # The held file is NEVER enqueued (the load-bearing CLOUDROUTE-02 safety invariant).
+    assert capture == []
+    await session.refresh(long_file)
+    assert long_file.state == FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_analyze_short_and_null_route_to_fileserver_with_key(client: AsyncClient, session: AsyncSession) -> None:
+    """A <threshold file AND a null-duration file both route to the fileserver queue with key process_file:<id> (D-06)."""
+    short_file, null_file = await _persist_files_with_duration(session, [_SHORT, None])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["local"] == 2
+    assert data["cloud"] == 0
+
+    await _drain_background()
+    queue = task_router.queues["nox"]
+    assert len(queue.captured) == 2
+    assert {p["key"] for p in queue.captured_policy} == {f"process_file:{short_file.id}", f"process_file:{null_file.id}"}
+
+
+@pytest.mark.asyncio
+async def test_analyze_no_agents_at_all_surfaces_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """The no-active-agent fragment/message is emitted ONLY when BOTH agent kinds are absent (nothing routable)."""
+    await _persist_files_with_duration(session, [_SHORT])
+    capture = wire_fakes(client)  # neither a fileserver nor a compute agent seeded
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued"] == 0
+    assert "no active agent" in data["message"].lower()
+
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_analyze_ui_reports_split_counts(client: AsyncClient, session: AsyncSession) -> None:
+    """The HTMX /pipeline/analyze response renders the split counts 'N local, M cloud, K awaiting cloud' (D-12)."""
+    await _persist_files_with_duration(session, [_LONG, _SHORT, None])
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/analyze")
+    assert response.status_code == 200
+    text = response.text
+    # long -> cloud (1); short + null -> local (2); none held; none skipped.
+    assert "2 local" in text
+    assert "1 cloud" in text
+    assert "awaiting cloud" in text
+
+
+@pytest.mark.asyncio
+async def test_analyze_ui_reports_skipped_when_no_local_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """With only a compute agent online, the HTMX response reports the short/null files as skipped (no local agent)."""
+    await _persist_files_with_duration(session, [_LONG, _SHORT])
+    await seed_active_agent(session, "cloud", kind="compute")  # no fileserver
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/analyze")
+    assert response.status_code == 200
+    text = response.text
+    assert "1 cloud" in text
+    assert "skipped" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_analyze_ui_no_agents_renders_no_active_agent_fragment(client: AsyncClient, session: AsyncSession) -> None:
+    """The HTMX path surfaces the no-active-agent fragment ONLY when both kinds are absent."""
+    await _persist_files_with_duration(session, [_SHORT])
+    capture = wire_fakes(client)  # no agents at all
+
+    response = await client.post("/pipeline/analyze")
+    assert response.status_code == 200
+    assert "No active agent available" in response.text
+
+    await _drain_background()
+    assert capture == []
+
+
+# ---------------------------------------------------------------------------
 # Phase 44 Plan 03: POST /pipeline/files/{file_id}/deepen — re-analyze ONE
 # sampled file at the full window budget (fine_cap=0 / coarse_cap=0 -> the
 # _stride_to_cap analyze-ALL-windows no-op). Mirrors the existing /pipeline
