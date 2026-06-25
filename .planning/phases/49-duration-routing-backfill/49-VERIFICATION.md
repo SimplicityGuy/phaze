@@ -1,16 +1,19 @@
 ---
 phase: 49-duration-routing-backfill
 verified: 2026-06-25T21:30:00Z
-status: human_needed
+status: passed
+human_verification_resolved: 2026-06-25T00:00:00Z
 score: 10/10 must-haves verified
 overrides_applied: 0
 human_verification:
   - test: "Trigger 'Run Analysis' with only long files and NO agents online — check the HTMX response copy"
     expected: "The response should mention that K files are awaiting cloud (currently, the no_active_agent branch wins and renders 'No files enqueued for analysis' — WR-01 deferred cosmetic issue)"
     why_human: "Template branch precedence ({% if no_active_agent %} wins over split_counts) cannot be verified without a live browser rendering; automated tests confirm the counts ARE in the context but do not assert which template branch the UI renders when no_active_agent=1 and awaiting>0"
+    resolution: "PASS — WR-01 fixed (commit e603c3c) and confirmed live in /gsd:verify-work (49-UAT.md Test 3): the no-agent response rendered '1 held awaiting cloud, 1 skipped' instead of '0 files enqueued'."
   - test: "Verify the 'Awaiting cloud' count card updates live on the dashboard"
     expected: "After files are held in AWAITING_CLOUD (either via Run Analysis or Backfill with no compute agent), the card renders a non-zero count on first load, and re-renders the correct count on the 5s pipeline/stats poll (OOB swap)"
     why_human: "Card wiring is unit-tested (dashboard() and pipeline_stats_partial() contexts confirmed, OOB include confirmed in templates), but the live update cadence is a browser-level interaction"
+    resolution: "PASS — confirmed live in /gsd:verify-work (49-UAT.md Tests 1-2): GET /pipeline/ rendered the card (count tracked DB truth 1→3); GET /pipeline/stats re-emitted #awaiting-cloud-card with hx-swap-oob='true'."
 ---
 
 # Phase 49: Duration-Routing Backfill Verification Report
