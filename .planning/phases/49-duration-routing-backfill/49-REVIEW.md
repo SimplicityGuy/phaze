@@ -35,7 +35,7 @@ status: issues_found
 resolution:
   cr_01: resolved   # commit a55482d — kind-aware recovery (Option A) + 3 regression tests
   wr_03: resolved   # commit a55482d — corrected stale release_awaiting_cloud docstring
-  wr_01: deferred    # cosmetic HTMX count display; tracked follow-up
+  wr_01: resolved    # commit e603c3c — no-agent trigger response now surfaces the held awaiting-cloud count
   wr_02: deferred    # deepen_analysis is pre-existing, outside Phase-49 scope; tracked follow-up
   in_01: deferred    # verify file_metadata.file_id unique constraint; tracked follow-up
   in_02: deferred    # controller.startup forward-ref cleanup; tracked follow-up
