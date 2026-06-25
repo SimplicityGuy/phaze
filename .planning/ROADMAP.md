@@ -134,7 +134,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 45. Scheduling Ledger for Orphan Recovery | v4.0 | 6/6 | Complete    | 2026-06-19 |
 | 46. Heartbeat Starvation Fix | v4.0 | 1/1 | Complete | 2026-06-23 |
 | 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete    | 2026-06-24 |
-| 48. Compute-agent type | v5.0 | 0/3 | Planned | - |
+| 48. Compute-agent type | v5.0 | 1/3 | In Progress|  |
 | 49. Duration routing & backfill | v5.0 | 0/0 | Not started | - |
 | 50. Push pipeline | v5.0 | 0/0 | Not started | - |
 | 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
@@ -530,7 +530,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 48-01-PLAN.md — Schema foundation: Agent.kind column + ck_agents_kind_enum CHECK + migration 024 (backfill 'fileserver')
+- [x] 48-01-PLAN.md — Schema foundation: Agent.kind column + ck_agents_kind_enum CHECK + migration 024 (backfill 'fileserver')
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
