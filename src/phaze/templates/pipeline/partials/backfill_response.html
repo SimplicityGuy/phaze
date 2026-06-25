@@ -1,0 +1,15 @@
+{# Backfill-to-cloud HTMX response fragment (Phase 49, D-08/D-09). Swapped into the global
+   "Backfill to cloud" button's slot in the DAG header after POST /pipeline/backfill-cloud.
+   Reports the count-confirmed result of re-driving the timed-out long set
+   (ANALYSIS_FAILED ∧ duration >= threshold) through the per-file duration router: how many
+   routed to a compute agent now ({{ cloud }}) and how many are held in AWAITING_CLOUD until a
+   compute agent comes online ({{ awaiting }}). All values are server-computed plain ints
+   (no operator free-text) rendered through Jinja autoescape. A zero-candidate run prints the
+   neutral "nothing to backfill" copy. #}
+{% if count > 0 %}
+<span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+    Backfilled {{ count }} long files: {{ cloud }} cloud, {{ awaiting }} awaiting cloud.
+</span>
+{% else %}
+<span class="text-sm text-gray-500 dark:text-gray-400">No timed-out long files to backfill.</span>
+{% endif %}

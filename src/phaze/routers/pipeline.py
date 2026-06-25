@@ -18,14 +18,16 @@ from phaze.database import async_session, get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ScanLiveSetPayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
-from phaze.services.analysis_enqueue import enqueue_process_file
+from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
+    count_backfill_candidates,
     get_analysis_failed_count,
     get_awaiting_cloud_count,
+    get_backfill_candidates,
     get_discovered_files_with_duration,
     get_fingerprint_pending_files,
     get_global_reconciliation,
@@ -47,6 +49,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
 )
 from phaze.services.pipeline_counters import read_counters
+from phaze.services.scheduling_ledger import insert_ledger_if_absent
 from phaze.tasks.reenqueue import recover_orphaned_work
 
 
@@ -599,6 +602,98 @@ async def trigger_analysis_ui(
             "cloud": counts["cloud"],
             "awaiting": counts["awaiting"],
             "skipped": counts["skipped"],
+        },
+    )
+
+
+def _held_backfill_ledger_payload(file: FileRecord, models_path: str) -> dict[str, Any]:
+    """Build the ``process_file`` payload stored on a backfill-HELD file's scheduling-ledger row.
+
+    A held file has NO compute agent assigned yet (that is the reason it is held), so ``agent_id``
+    is recorded empty: the real agent is stamped at RELEASE time by ``enqueue_process_file``'s
+    ``before_enqueue`` ON CONFLICT DO UPDATE (the Plan-04 release cron). All five required
+    ``ProcessFilePayload`` fields are present so a forced ``recover_orphaned_work`` replay
+    re-validates cleanly under ``extra="forbid"`` rather than dead-lettering (T-45-10).
+    """
+    return ProcessFilePayload(
+        file_id=file.id,
+        original_path=file.original_path,
+        file_type=file.file_type,
+        agent_id="",
+        models_path=models_path,
+    ).model_dump(mode="json")
+
+
+@router.post("/pipeline/backfill-cloud", response_class=HTMLResponse)
+async def trigger_backfill_cloud(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: backfill the timed-out long files to the cloud (Phase 49, D-08/D-09/D-10).
+
+    Selects EXACTLY the timed-out long set — ``ANALYSIS_FAILED ∧ duration >= cloud_route_threshold_sec``
+    (the explicit :func:`count_backfill_candidates` / :func:`get_backfill_candidates` filter, NOT a
+    whole-backlog ``ANALYSIS_FAILED`` sweep) — resets each row to ``DISCOVERED`` (committed BEFORE any
+    enqueue, RESEARCH Pitfall 3), and routes the candidates through the SAME per-file duration router
+    (:func:`_route_discovered_by_duration`) "Run Analysis" uses, so the two paths cannot drift: a
+    compute agent online -> the compute queue (``cloud``); none online -> held in ``AWAITING_CLOUD``.
+
+    For the HELD branch ONLY (never enqueued, so no ``before_enqueue`` hook fired) an explicit
+    :func:`insert_ledger_if_absent` row is seeded (D-09) so the held file is durable scheduled work;
+    the enqueued branch's row is owned by the hook (no double-write — RESEARCH Open-Q3). The
+    deterministic ``process_file:<id>`` key plus the explicit ANALYSIS_FAILED filter close the
+    over-enqueue class (D-10): a double-click is a no-op (the candidates have already left the
+    ANALYSIS_FAILED state), and short / never-failed files are never touched.
+    """
+    threshold = settings.cloud_route_threshold_sec
+    count = await count_backfill_candidates(session, threshold)
+    if count == 0:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/backfill_response.html",
+            context={"request": request, "count": 0},
+        )
+
+    candidates = await get_backfill_candidates(session, threshold)
+    for file, _duration in candidates:
+        file.state = FileState.DISCOVERED
+    # RESEARCH Pitfall 3: explicit commit of the DISCOVERED reset BEFORE routing/backgrounding the
+    # enqueues (get_session does NOT auto-commit). The UPDATE is a bounded set (the filtered candidates).
+    await session.commit()
+
+    counts = await _route_discovered_by_duration(
+        request.app.state,
+        session,
+        candidates,
+        threshold,
+        settings.models_path,
+    )
+
+    # D-09 / RESEARCH Open-Q3: seed a ledger row ONLY for files the router HELD in AWAITING_CLOUD
+    # (every backfill candidate is long, so the router never produces local/skipped here). The router
+    # mutates ``file.state`` in place for held files, so the held set is detectable on the in-memory
+    # candidate records (expire_on_commit=False preserves attribute values across its commit).
+    held_files = [file for file, _ in candidates if file.state == FileState.AWAITING_CLOUD]
+    for file in held_files:
+        await insert_ledger_if_absent(
+            session,
+            key=process_file_job_key(file.id),
+            function="process_file",
+            kwargs=_held_backfill_ledger_payload(file, settings.models_path),
+            timeout=7200,
+            retries=2,
+        )
+    if held_files:
+        await session.commit()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/backfill_response.html",
+        context={
+            "request": request,
+            "count": count,
+            "cloud": counts["cloud"],
+            "awaiting": counts["awaiting"],
         },
     )
 

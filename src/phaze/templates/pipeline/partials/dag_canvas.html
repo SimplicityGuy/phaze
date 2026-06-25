@@ -277,6 +277,25 @@
         <span id="recover-spinner" class="htmx-indicator text-sm text-gray-500 dark:text-gray-400">Recovering…</span>
         <span x-show="error" class="text-sm text-rose-600 dark:text-rose-400">Couldn't recover. Retry.</span>
       </div>
+      {# Phase 49 (D-08): GLOBAL pipeline-level "Backfill to cloud" action — POSTs to
+         /pipeline/backfill-cloud, which re-drives the timed-out long set
+         (ANALYSIS_FAILED ∧ duration ≥ threshold) through the SAME per-file duration router as
+         "Run Analysis". Mirrors the Recover button exactly: a neutral slate OUTLINE header action,
+         NOT a per-stage DAG node (NODE_LAYOUT/EDGES stay 10 nodes / 10 edges). hx-swap=innerHTML
+         replaces the button with the backfill_response fragment (the count-confirmed result);
+         hx-indicator shows "Backfilling…" in flight; the Alpine error flag reveals an inline retry
+         message on a transport failure. #}
+      <div id="backfill-response" class="flex items-center gap-2" x-data="{ error: false }"
+           @htmx:after-request="error = !$event.detail.successful">
+        <button type="button"
+                hx-post="/pipeline/backfill-cloud" hx-target="#backfill-response" hx-swap="innerHTML"
+                hx-indicator="#backfill-spinner"
+                @click="error = false"
+                aria-label="Backfill timed-out long files to the cloud"
+                class="px-3 py-1.5 text-sm font-semibold rounded-md border border-slate-300 dark:border-phaze-border text-slate-700 dark:text-slate-200 bg-white dark:bg-phaze-panel hover:bg-slate-50 dark:hover:bg-phaze-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Backfill to cloud</button>
+        <span id="backfill-spinner" class="htmx-indicator text-sm text-gray-500 dark:text-gray-400">Backfilling…</span>
+        <span x-show="error" class="text-sm text-rose-600 dark:text-rose-400">Couldn't backfill. Retry.</span>
+      </div>
       <p class="text-xs text-gray-500 dark:text-gray-400 hidden sm:block lg:hidden">Scroll horizontally to see the full graph →</p>
     </div>
   </div>
