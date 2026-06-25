@@ -331,6 +331,16 @@ jobs:
       - name: "🔀 Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
+      # download-models.sh runs `uv run python -m phaze.scripts.download_models`,
+      # so this job needs uv + Python on the runner (mirrors parity-guard).
+      - name: "📦 Install uv"
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: "🐍 Set up Python"
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: "🔧 Setup Just"
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
         with:
@@ -362,7 +372,9 @@ jobs:
           key: essentia-models-${{ hashFiles('src/phaze/scripts/download_models.py') }}
 
       - name: "📥 Provision essentia models"
-        if: steps.models-cache.outputs.cache-hit != 'true'
+        # Golden is only produced/uploaded on non-PR events (below), so skip the
+        # ~3GB model download on PRs — mirrors the parity-guard provision gate.
+        if: github.event_name != 'pull_request' && steps.models-cache.outputs.cache-hit != 'true'
         run: bash scripts/download-models.sh models
 
       - name: "🔒 Log in to the GitHub Container Registry"
