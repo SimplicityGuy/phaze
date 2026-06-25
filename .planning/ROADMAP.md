@@ -550,10 +550,18 @@ Plans:
   4. Operator can backfill the existing 144 `analysis_failed` long files to the cloud, scoped through the Phase 45 scheduling ledger so only previously-scheduled work is re-driven (no whole-backlog over-enqueue).
 
 **Plans**: 4 plans (3 waves)
+**Wave 1**
+
 - [ ] 49-01-PLAN.md — Routing foundation: cloud_route_threshold_sec config, FileState.AWAITING_CLOUD, kind-filtered select_active_agent, duration/awaiting/backfill service helpers (Wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 49-02-PLAN.md — Per-file duration router fork + split-count response + "Awaiting cloud" count card (Wave 2)
-- [ ] 49-03-PLAN.md — Backfill endpoint + "Backfill to cloud" button + ledger-scoped re-drive (Wave 3)
 - [ ] 49-04-PLAN.md — State-driven release_awaiting_cloud cron + controller registration + D-04 pending regression (Wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 49-03-PLAN.md — Backfill endpoint + "Backfill to cloud" button + ledger-scoped re-drive (Wave 3)
 
 ### Phase 50: Push pipeline
 
