@@ -33,6 +33,21 @@ import pytest
 def test_agent_worker_does_not_import_phaze_database() -> None:
     """Banned modules: phaze.database, phaze.tasks.session, sqlalchemy.ext.asyncio.
 
+    Phase 48 CLOUDAGENT-02 compute-agent invariant (reaffirmed here): a compute agent
+    runs this EXACT module (``phaze.tasks.agent_worker``) on the SAME ``phaze-agent-<id>``
+    queue and PUTs results to the SAME ``/api/internal/agent/analysis/{file_id}`` HTTP
+    endpoint as a file-server agent — there is ZERO compute-specific worker code. Its
+    security guarantee is therefore the import boundary this test already enforces: a
+    compute agent reaches ONLY the SAQ Postgres broker (``saq.queue.postgres``, asserted
+    present below) + cache Redis + the HTTP API, and NEVER the app ORM / async DB engine
+    (``phaze.database`` / ``phaze.tasks.session`` / ``sqlalchemy.ext.asyncio``, asserted
+    absent below). This proves a compute agent cannot reach the app's Postgres tables.
+
+    The complementary "no media filesystem" half of CLOUDAGENT-02 is NOT import-enforced
+    (the worker legitimately reads the scratch audio path it is handed) — it is a RUNTIME
+    guarantee delivered by empty scan roots + no media mount on the cloud host, a Phase 51
+    compose concern. Do NOT add an essentia/file-read ban here (48-RESEARCH §Pitfall 4).
+
     The subprocess sets the minimum env required for `phaze.config.get_settings()`
     to return AgentSettings without raising (Plan 01 validator):
     - PHAZE_ROLE=agent

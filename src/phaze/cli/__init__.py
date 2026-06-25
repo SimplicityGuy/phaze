@@ -72,27 +72,32 @@ def derive_queue_name(agent_id: str) -> str:
     return f"phaze-agent-{agent_id}"
 
 
-async def add_agent(session: AsyncSession, agent_id: str, name: str, scan_roots: list[str]) -> str:
+async def add_agent(session: AsyncSession, agent_id: str, name: str, scan_roots: list[str], kind: str = "fileserver") -> str:
     """Insert an :class:`Agent` row and return the cleartext bearer token.
 
     The token is minted with :func:`secrets.token_urlsafe` (CSPRNG) and only its
     sha256 hash (via :func:`hash_token`) is persisted. Callers MUST surface the
     returned cleartext to the operator exactly once -- it cannot be recovered.
 
+    ``kind`` is the agent capability marker (Phase 48): ``"fileserver"`` (the
+    default) owns scan roots; ``"compute"`` is a media-less cloud agent with no
+    scan roots. The value is constrained at the CLI (argparse ``choices=``) and
+    the DB (``ck_agents_kind_enum`` CHECK from Plan 01).
+
     Does NOT catch :class:`~sqlalchemy.exc.IntegrityError` (e.g. duplicate id);
     that is left to propagate so the caller can map it to a friendly message.
     """
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
-    agent = Agent(id=agent_id, name=name, token_hash=hash_token(token), scan_roots=scan_roots)
+    agent = Agent(id=agent_id, name=name, token_hash=hash_token(token), scan_roots=scan_roots, kind=kind)
     session.add(agent)
     await session.commit()
     return token
 
 
-async def _run_add(agent_id: str, name: str, scan_roots: list[str]) -> str:
+async def _run_add(agent_id: str, name: str, scan_roots: list[str], kind: str = "fileserver") -> str:
     """Open a session and delegate to :func:`add_agent`; return the cleartext token."""
     async with async_session() as session:
-        return await add_agent(session, agent_id, name, scan_roots)
+        return await add_agent(session, agent_id, name, scan_roots, kind=kind)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -106,11 +111,22 @@ def _build_parser() -> argparse.ArgumentParser:
     add = agents_sub.add_parser("add", help="Register an agent and mint a bearer token.")
     add.add_argument("--id", dest="agent_id", required=True, help="Agent id (kebab-case: ^[a-z0-9]+(-[a-z0-9]+)*$).")
     add.add_argument("--name", dest="name", default=None, help="Human-readable name (defaults to the titleized id).")
+    # Outer layer of the 3-layer kind defense (Phase 48): argparse `choices=`
+    # rejects any value other than fileserver/compute before a session opens.
+    # Middle layer is AgentSettings.kind (Literal); inner is ck_agents_kind_enum.
+    add.add_argument(
+        "--kind",
+        dest="kind",
+        choices=("fileserver", "compute"),
+        default="fileserver",
+        help="Agent kind. 'compute' = media-less cloud agent with no scan roots.",
+    )
     add.add_argument(
         "--scan-roots",
         dest="scan_roots",
-        required=True,
-        help="Comma-separated absolute paths the agent may read/write (e.g. /data/music,/data/concerts).",
+        required=False,
+        default="",
+        help="Comma-separated absolute paths the agent may read/write (e.g. /data/music,/data/concerts). Required for --kind fileserver; omitted for --kind compute.",
     )
     return parser
 
@@ -126,18 +142,26 @@ def main(argv: list[str] | None = None) -> int:
 
     agent_id: str = args.agent_id
     name: str = args.name if args.name is not None else agent_id.replace("-", " ").title()
+    kind: str = args.kind
     scan_roots: list[str] = [part.strip() for part in args.scan_roots.split(",") if part.strip()]
 
     # Validate BEFORE any DB access so an invalid id never opens a session.
+    # A compute agent owns no media and no scan roots, so the absolute-path
+    # requirement is enforced ONLY for fileserver agents (Phase 48); a fileserver
+    # with no roots still fails (validate_scan_roots rejects the empty list path).
     try:
         validate_agent_id(agent_id)
-        validate_scan_roots(scan_roots)
+        if kind == "fileserver":
+            if not scan_roots:
+                msg = "--scan-roots is required for --kind fileserver (at least one absolute path)"
+                raise ValueError(msg)
+            validate_scan_roots(scan_roots)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     try:
-        token = asyncio.run(_run_add(agent_id, name, scan_roots))
+        token = asyncio.run(_run_add(agent_id, name, scan_roots, kind=kind))
     except IntegrityError:
         print(
             f"error: agent id {agent_id!r} already exists (no row was created)",
