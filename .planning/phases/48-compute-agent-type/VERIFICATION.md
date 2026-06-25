@@ -1,13 +1,15 @@
 ---
 phase: 48-compute-agent-type
 verified: 2026-06-25T19:00:00Z
-status: human_needed
+status: passed
 score: 3/3 must-haves verified (all automated checks pass)
 overrides_applied: 0
-human_verification:
+deferred_manual_verification:
   - test: "Register a compute agent via `phaze agents add --kind compute --id oci-a1 --name 'OCI A1'`, start its container using the Phase 47 arm64 image, and load /admin/agents in a browser."
     expected: "The Agents admin page shows the compute agent row with an indigo COMPUTE kind badge, a green liveness pill, and a queue depth number."
-    why_human: "End-to-end requires a real registered agent draining a real SAQ queue against a live deployment. Template-render tests (test_kind_badge_* suite) pass against the mock DB; live capacity visibility is the only remaining leg."
+    why_human: "End-to-end requires a real registered agent draining a real SAQ queue against a live deployment. Routing work to drive a compute agent lands in Phase 49; the deploy lands in Phase 51 — not exercisable in Phase 48."
+    status: deferred-to-phase-51
+    partially_closed_by: "UAT 2026-06-25 — Tests 1-4 ran live against an ephemeral DB (migrations 010→024, real CLI registration, and the real admin router rendering the indigo COMPUTE / slate FILE SERVER badges with aria-labels on BOTH the full page and the /_table poll partial, 18/18 checks). Only the live liveness+queue-depth-while-draining observation remains, environmentally gated on a deployed compute agent."
 ---
 
 # Phase 48: Compute-Agent Type — Verification Report
