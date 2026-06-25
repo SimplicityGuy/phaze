@@ -24,6 +24,7 @@ class TestAgent:
             "revoked_at",
             "created_at",
             "updated_at",
+            "kind",
         }
         assert required.issubset(columns)
 
@@ -47,3 +48,17 @@ class TestAgent:
     def test_token_hash_max_length(self) -> None:
         type_str = str(Agent.__table__.c.token_hash.type)
         assert "VARCHAR(128)" in type_str or "String(128)" in type_str
+
+    def test_kind_defaults_fileserver(self) -> None:
+        server_default = Agent.__table__.c.kind.server_default
+        assert server_default is not None
+        assert "fileserver" in str(server_default.arg)
+
+    def test_kind_column_not_null_string16(self) -> None:
+        assert Agent.__table__.c.kind.nullable is False
+        type_str = str(Agent.__table__.c.kind.type)
+        assert "VARCHAR(16)" in type_str or "String(16)" in type_str
+
+    def test_kind_charset_constraint_declared(self) -> None:
+        constraint_names = {c.name for c in Agent.__table__.constraints}
+        assert "ck_agents_kind_enum" in constraint_names
