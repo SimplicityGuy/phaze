@@ -38,6 +38,7 @@ from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
+from phaze.tasks.release_awaiting_cloud import release_awaiting_cloud
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
@@ -208,6 +209,7 @@ settings = {
         scrape_and_store_tracklist,
         reap_stalled_scans,
         recover_orphaned_work,
+        release_awaiting_cloud,
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
@@ -220,6 +222,14 @@ settings = {
         # re-enqueue loop would only churn the DB and risk re-doubling work. Recovery is now a SINGLE
         # gated boot pass (see ``startup`` -> ``recover_orphaned_work``) plus the manual DAG "Recover"
         # button -- NO periodic auto-advance. DO NOT re-add a ``recover_orphaned_work`` CronJob here.
+        #
+        # Phase 49 (D-03, CLOUDROUTE-02): a NARROW recovery-only cron scoped ONLY to the
+        # ``AWAITING_CLOUD -> compute`` transition. This is NOT the deleted general pipeline
+        # auto-advance and NOT a ledger replay -- it drains the duration-routing held set (files Plan
+        # 02 parked because no compute agent was online) once a compute agent comes online, within
+        # ~5 min. It advances no other stage, so it respects the Phase-42 "automation only in
+        # recovery" principle. Keep this distinct from the deleted reenqueue cron above.
+        CronJob(release_awaiting_cloud, cron="*/5 * * * *"),  # type: ignore[type-var]
     ],
     "startup": startup,
     "shutdown": shutdown,

@@ -218,13 +218,25 @@ def test_release_registered_in_controller_functions_and_cron() -> None:
 
 
 def test_release_module_is_fastapi_free() -> None:
-    """The release module must stay control-only: no fastapi / phaze.routers import (import boundary)."""
+    """The release module must stay control-only: no fastapi / phaze.routers import (import boundary).
+
+    Parse the actual ``import`` / ``from`` statements via AST (so a mention in the docstring/prose
+    does not count) and assert none reference the web layer.
+    """
+    import ast
+    import pathlib
+
     import phaze.tasks.release_awaiting_cloud as mod
 
     src = mod.__file__
     assert src is not None
-    import pathlib
+    tree = ast.parse(pathlib.Path(src).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported.add(node.module)
 
-    text = pathlib.Path(src).read_text(encoding="utf-8")
-    assert "import fastapi" not in text and "from fastapi" not in text, "release module must not import fastapi"
-    assert "phaze.routers" not in text, "release module must not import phaze.routers"
+    assert not any(name == "fastapi" or name.startswith("fastapi.") for name in imported), "release module must not import fastapi"
+    assert not any(name.startswith("phaze.routers") for name in imported), "release module must not import phaze.routers"
