@@ -553,13 +553,44 @@ async def test_analyze_ui_reports_skipped_when_no_local_agent(client: AsyncClien
 
 @pytest.mark.asyncio
 async def test_analyze_ui_no_agents_renders_no_active_agent_fragment(client: AsyncClient, session: AsyncSession) -> None:
-    """The HTMX path surfaces the no-active-agent fragment ONLY when both kinds are absent."""
+    """The HTMX path surfaces the no-active-agent fragment ONLY when both kinds are absent.
+
+    A SHORT file with no fileserver is merely skipped (no state change), so the awaiting==0 case
+    keeps the original "No active agent available" copy (WR-01 only surfaces the HELD count).
+    """
     await _persist_files_with_duration(session, [_SHORT])
     capture = wire_fakes(client)  # no agents at all
 
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
     assert "No active agent available" in response.text
+
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_analyze_ui_no_agents_surfaces_held_count(client: AsyncClient, session: AsyncSession) -> None:
+    """WR-01: with NO agent online, a LONG file is held in AWAITING_CLOUD and the HTMX response
+    surfaces the held count instead of a bare "0 files enqueued".
+
+    A held file is a real state change (committed to AWAITING_CLOUD); the operator must see it
+    rather than be told nothing happened. The held set is drained by the */5 release cron, but the
+    immediate response should already report the count (the Awaiting-cloud card also re-polls in 5s).
+    """
+    await _persist_files_with_duration(session, [_LONG])
+    capture = wire_fakes(client)  # no agents at all
+
+    response = await client.post("/pipeline/analyze")
+    assert response.status_code == 200
+    text = response.text.lower()
+    # The held long file is reported, not hidden behind a no-op message.
+    assert "1 held awaiting cloud" in text
+    assert "0 files enqueued" not in text
+
+    # The file really is held in AWAITING_CLOUD.
+    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
+    assert len(held) == 1
 
     await _drain_background()
     assert capture == []
