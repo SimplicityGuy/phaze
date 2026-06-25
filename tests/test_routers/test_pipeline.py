@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from phaze.config import settings
 from phaze.models.agent import LEGACY_AGENT_ID
@@ -16,6 +17,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload, ScanLiveSetPayload
 from tests._queue_fakes import (
@@ -558,6 +560,177 @@ async def test_analyze_ui_no_agents_renders_no_active_agent_fragment(client: Asy
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
     assert "No active agent available" in response.text
+
+    await _drain_background()
+    assert capture == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 49 Plan 03: POST /pipeline/backfill-cloud — "Backfill to cloud" action
+# (D-08/D-09/D-10). Selects EXACTLY the timed-out long files
+# (ANALYSIS_FAILED ∧ duration >= cloud_route_threshold_sec), resets them to
+# DISCOVERED (committed), and routes each through the SAME per-file duration
+# router as "Run Analysis": compute if a compute agent is online, else held in
+# AWAITING_CLOUD with an explicit scheduling-ledger row. Never a whole-backlog
+# sweep; a double-click is a no-op (the candidates have already left the
+# ANALYSIS_FAILED state), and short/never-failed files are never touched.
+# ---------------------------------------------------------------------------
+
+
+async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None]) -> list[FileRecord]:
+    """Persist one ANALYSIS_FAILED file per duration spec (+ metadata) and return the records.
+
+    A ``None`` duration is modeled as the absence of a metadata row — such a file is
+    structurally excluded from the backfill candidate set (the INNER JOIN drops it).
+    """
+    files: list[FileRecord] = []
+    mds: list[FileMetadata] = []
+    for dur in specs:
+        uid = uuid.uuid4()
+        files.append(
+            FileRecord(
+                id=uid,
+                sha256_hash=uid.hex,
+                original_path=f"/music/{uid.hex}.mp3",
+                original_filename=f"{uid.hex}.mp3",
+                current_path=f"/music/{uid.hex}.mp3",
+                file_type="mp3",
+                file_size=1000,
+                state=FileState.ANALYSIS_FAILED,
+            )
+        )
+        if dur is not None:
+            mds.append(FileMetadata(file_id=uid, duration=dur))
+    session.add_all(files)
+    await session.flush()
+    if mds:
+        session.add_all(mds)
+    await session.commit()
+    return files
+
+
+@pytest.mark.asyncio
+async def test_backfill_selects_long_failed_resets_and_routes_to_compute(client: AsyncClient, session: AsyncSession) -> None:
+    """Backfill selects EXACTLY the long ANALYSIS_FAILED set, resets to DISCOVERED, routes to compute (D-09).
+
+    A SHORT ANALYSIS_FAILED file and a never-failed DISCOVERED file are untouched (D-10): the
+    candidate set is the explicit ANALYSIS_FAILED ∧ duration>=threshold query, NOT a backlog sweep.
+    """
+    long_failed, short_failed = await _persist_failed_with_duration(session, [_LONG, _SHORT])
+    (untouched_discovered,) = await _persist_files_with_duration(session, [None])  # never failed
+    # Seed compute FIRST then fileserver so a recency rule would pick the fileserver — proving the
+    # route is kind-driven (compute), not recency-driven.
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    await _drain_background()
+    # ONLY the long failed file is enqueued, onto the compute queue (never the fileserver).
+    assert len(capture) == 1
+    queue_name, task_name, payload = capture[0]
+    assert (queue_name, task_name) == ("phaze-agent-cloud", "process_file")
+    assert payload["file_id"] == str(long_failed.id)
+
+    # The short failed file stays ANALYSIS_FAILED; the never-failed DISCOVERED file is untouched.
+    await session.refresh(short_failed)
+    assert short_failed.state == FileState.ANALYSIS_FAILED
+    await session.refresh(untouched_discovered)
+    assert untouched_discovered.state == FileState.DISCOVERED
+    # The long failed file was reset to DISCOVERED (committed) and routed to the cloud branch
+    # (the cloud branch leaves the row DISCOVERED — only the held branch writes AWAITING_CLOUD).
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.DISCOVERED
+
+
+@pytest.mark.asyncio
+async def test_backfill_response_reports_count_and_split(client: AsyncClient, session: AsyncSession) -> None:
+    """The backfill response reports the candidate count and the cloud/awaiting split (D-08)."""
+    await _persist_failed_with_duration(session, [_LONG, _LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    text = response.text
+    assert "Backfilled 2" in text
+    assert "2 cloud" in text
+
+
+@pytest.mark.asyncio
+async def test_backfill_no_compute_holds_awaiting_cloud_with_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
+    """With no compute agent online, a backfilled long file is HELD in AWAITING_CLOUD with an explicit ledger row (D-09)."""
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")  # fileserver only, no compute
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    await _drain_background()
+    # The held file is NEVER enqueued (the load-bearing CLOUDROUTE-02 safety invariant).
+    assert capture == []
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.AWAITING_CLOUD
+
+    # The held branch fires no before_enqueue hook, so the endpoint seeds the ledger row explicitly.
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].function == "process_file"
+    assert rows[0].routing == "agent"
+
+
+@pytest.mark.asyncio
+async def test_backfill_enqueued_branch_has_no_explicit_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
+    """The enqueued (cloud) branch is NOT double-written: its ledger row is owned by the before_enqueue hook (D-09).
+
+    The fake queue does not fire the real before_enqueue hook, so a correctly-implemented endpoint
+    (which writes a row ONLY for the held branch) leaves NO ledger row for an enqueued file.
+    """
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    await _drain_background()
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_backfill_double_click_enqueues_nothing_new(client: AsyncClient, session: AsyncSession) -> None:
+    """A second backfill click produces zero new enqueues — never a whole-backlog over-enqueue (D-10)."""
+    await _persist_failed_with_duration(session, [_LONG, _LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    capture = wire_fakes(client)
+
+    r1 = await client.post("/pipeline/backfill-cloud")
+    assert r1.status_code == 200
+    await _drain_background()
+    assert len(capture) == 2  # both long failed files enqueued once
+
+    # After the first backfill the candidates are DISCOVERED (no longer ANALYSIS_FAILED), so the
+    # explicit filter selects nothing on the second click -> zero new enqueues.
+    r2 = await client.post("/pipeline/backfill-cloud")
+    assert r2.status_code == 200
+    await _drain_background()
+    assert len(capture) == 2  # unchanged — no over-enqueue
+    assert "No timed-out long files" in r2.text
+
+
+@pytest.mark.asyncio
+async def test_backfill_zero_candidates_returns_empty_fragment(client: AsyncClient, session: AsyncSession) -> None:
+    """With no timed-out long files, backfill returns the empty-count fragment and enqueues nothing."""
+    await seed_active_agent(session, "cloud", kind="compute")
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    assert "No timed-out long files" in response.text
 
     await _drain_background()
     assert capture == []
