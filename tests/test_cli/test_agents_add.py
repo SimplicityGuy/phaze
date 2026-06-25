@@ -64,6 +64,21 @@ async def test_add_agent_happy_path(session: AsyncSession) -> None:
     assert derive_queue_name("x-y") == "phaze-agent-x-y"
 
 
+async def test_add_agent_compute_empty_roots(session: AsyncSession) -> None:
+    token = await add_agent(session, "oci-a1", "OCI A1", [], kind="compute")
+    assert token.startswith("phaze_agent_")
+
+    row = (await session.execute(select(Agent).where(Agent.id == "oci-a1"))).scalar_one()
+    assert row.kind == "compute"
+    assert row.scan_roots == []
+
+
+async def test_add_agent_defaults_fileserver(session: AsyncSession) -> None:
+    await add_agent(session, "fs1", "FS1", ["/data/music"])
+    row = (await session.execute(select(Agent).where(Agent.id == "fs1"))).scalar_one()
+    assert row.kind == "fileserver"
+
+
 async def test_add_agent_duplicate_id_raises(session: AsyncSession) -> None:
     await add_agent(session, "dup", "Dup", ["/data/music"])
     with pytest.raises(IntegrityError):
@@ -108,6 +123,53 @@ def test_main_success_inserts_and_prints(
     out = capsys.readouterr().out
     assert "phaze_agent_" in out
     assert "phaze-agent-cli-ok" in out
+
+
+def test_main_compute_no_scan_roots_succeeds(
+    async_engine,  # type: ignore[no-untyped-def] — ensures schema exists in the test DB
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    factory_engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    factory = async_sessionmaker(factory_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(cli, "async_session", factory)
+    try:
+        rc = cli.main(["agents", "add", "--kind", "compute", "--id", "oci-a1", "--name", "OCI A1"])
+    finally:
+        asyncio.run(factory_engine.dispose())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "phaze_agent_" in out
+    assert "phaze-agent-oci-a1" in out
+
+
+def test_main_fileserver_without_scan_roots_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = cli.main(["agents", "add", "--kind", "fileserver", "--id", "fs1", "--name", "FS1"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip()  # scan roots still required for fileserver
+    assert "phaze_agent_" not in captured.out  # no token minted
+
+
+def test_main_compute_token_not_logged(
+    async_engine,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """D-13: the minted token reaches stdout (print) but never a logger."""
+    factory_engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    factory = async_sessionmaker(factory_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(cli, "async_session", factory)
+    with caplog.at_level(0):
+        try:
+            rc = cli.main(["agents", "add", "--kind", "compute", "--id", "oci-tok", "--name", "OCI Tok"])
+        finally:
+            asyncio.run(factory_engine.dispose())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "phaze_agent_" in out  # token printed
+    assert "phaze_agent_" not in caplog.text  # token NOT in any log record
 
 
 def test_main_duplicate_id_exits_nonzero(

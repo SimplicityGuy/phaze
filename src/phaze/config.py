@@ -392,6 +392,16 @@ class AgentSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_AGENT_ENV", "agent_env"),
         description="Deployment mode. Production refuses passwordless Redis URLs (Phase 29 D-06).",
     )
+    # Phase 48: agent capability marker. The Literal is the config-layer (middle)
+    # enum of the 3-layer kind defense — CLI argparse `choices=` (outer) and the
+    # `ck_agents_kind_enum` DB CHECK (inner, Plan 01) bracket it. A `compute`
+    # (cloud) agent owns no media and no scan roots; this relaxes the
+    # empty-scan-roots gate in `_enforce_required_agent_fields` below.
+    kind: Literal["fileserver", "compute"] = Field(
+        default="fileserver",
+        validation_alias=AliasChoices("PHAZE_AGENT_KIND", "kind"),
+        description="Agent kind. 'compute' (cloud) agents own no scan roots; relaxes the empty-scan-roots gate (Phase 48).",
+    )
     scan_roots: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         validation_alias=AliasChoices("PHAZE_AGENT_SCAN_ROOTS", "scan_roots"),
@@ -509,7 +519,11 @@ class AgentSettings(BaseSettings):
             raise ValueError("PHAZE_AGENT_API_URL is required when PHAZE_ROLE=agent")
         if not self.agent_token.get_secret_value():
             raise ValueError("PHAZE_AGENT_TOKEN is required when PHAZE_ROLE=agent")
-        if not self.scan_roots:
+        # Phase 48: a compute (cloud) agent owns no media, so the scan-roots
+        # requirement is relaxed ONLY for kind == "compute". api_url/token stay
+        # required for every kind — a compute agent still authenticates with a
+        # bearer over HTTP.
+        if self.kind != "compute" and not self.scan_roots:
             raise ValueError("AgentSettings.scan_roots is required when PHAZE_ROLE=agent (set PHAZE_AGENT_SCAN_ROOTS=/path1,/path2)")
         return self
 
