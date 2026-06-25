@@ -41,8 +41,8 @@ from tests.test_migrations.conftest import (
 async def test_agents_table_columns(migrated_engine) -> None:  # type: ignore[no-untyped-def]
     """DATA-01: agents table has the expected column set after head upgrade.
 
-    ``last_status`` was added by migration 014 (phase 25); the head-upgrade column
-    inventory now includes it.
+    ``last_status`` was added by migration 014 (phase 25); ``kind`` was added by
+    migration 024 (phase 48); the head-upgrade column inventory now includes them.
     """
     expected = {
         "id",
@@ -52,6 +52,7 @@ async def test_agents_table_columns(migrated_engine) -> None:  # type: ignore[no
         "last_seen_at",
         "revoked_at",
         "last_status",
+        "kind",
         "created_at",
         "updated_at",
     }
