@@ -71,4 +71,9 @@
    (#straggler-failed-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob.
    straggler_count / analysis_failed_count ride this poll context (degrade-safe, never 500). #}
 {% with oob = True %}{% include "pipeline/partials/straggler_failed_card.html" %}{% endwith %}
+{# Phase 49 (49-02, D-05): re-render the "Awaiting cloud" held-file count card OUT-OF-BAND on the
+   same 5s tick (it lives outside #pipeline-stats, so the innerHTML swap never reaches it). Same id
+   (#awaiting-cloud-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob.
+   awaiting_cloud_count rides this poll context (degrade-safe, never 500). #}
+{% with oob = True %}{% include "pipeline/partials/awaiting_cloud_card.html" %}{% endwith %}
 {% endif %}

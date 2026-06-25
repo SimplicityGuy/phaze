@@ -1,0 +1,27 @@
+{# Phase 49 (49-02, D-05): "Awaiting cloud" held-file count card.
+
+   awaiting_cloud_count = files in FileState.AWAITING_CLOUD: long (>= cloud_route_threshold_sec)
+   files that were held back because NO compute agent was online when "Run Analysis" routed them.
+   They are NEVER silently analyzed locally (the load-bearing CLOUDROUTE-02 safety invariant) --
+   this card is the operator's window onto the waiting backlog.
+
+   The count arrives in the context from the Plan-01 degrade-safe service read
+   (get_awaiting_cloud_count); a degraded read surfaces as 0, so the card always renders a
+   (possibly zero) number and NEVER raises. The value is a plain int rendered through Jinja
+   autoescape -- no operator free-text is interpolated.
+
+   Rendered inline in dashboard.html on first load (#awaiting-cloud-card lives OUTSIDE the
+   #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
+   every 5s poll (oob=True) so the count stays live without re-rendering the DAG buttons. Same id
+   on both renders is the OOB contract (mirrors straggler_failed_card.html). #}
+<section id="awaiting-cloud-card"
+         aria-labelledby="awaiting-cloud-heading"
+         {% if oob %}hx-swap-oob="true"{% endif %}
+         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
+    <h2 id="awaiting-cloud-heading" class="text-lg font-semibold">Cloud Routing</h2>
+    <div class="bg-sky-50 dark:bg-sky-950 rounded-lg p-4 text-center">
+        <p class="text-2xl font-bold text-sky-700 dark:text-sky-400">{{ awaiting_cloud_count }}</p>
+        <p class="text-sm text-sky-600 dark:text-sky-400">Awaiting cloud</p>
+        <p class="text-xs text-sky-500 dark:text-sky-500 mt-1">held — no compute agent online</p>
+    </div>
+</section>

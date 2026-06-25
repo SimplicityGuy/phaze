@@ -25,6 +25,7 @@ from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
     get_analysis_failed_count,
+    get_awaiting_cloud_count,
     get_discovered_files_with_duration,
     get_fingerprint_pending_files,
     get_global_reconciliation,
@@ -473,6 +474,12 @@ async def dashboard(
     straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
     analysis_failed_count = await get_analysis_failed_count(session)
 
+    # Phase 49 (49-02, D-05): the "Awaiting cloud" held-file count -- long files held back
+    # because no compute agent was online when analysis routed them. get_awaiting_cloud_count
+    # owns the never-500 _safe_count degrade (returns 0 on any DB error), so NO try/except is
+    # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
+    awaiting_cloud_count = await get_awaiting_cloud_count(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -489,6 +496,7 @@ async def dashboard(
         "recent_scans": recent_scans_rows,
         "straggler_count": straggler_count,
         "analysis_failed_count": analysis_failed_count,
+        "awaiting_cloud_count": awaiting_cloud_count,
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         **activity,
@@ -521,6 +529,10 @@ async def pipeline_stats_partial(
     # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
     straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
     analysis_failed_count = await get_analysis_failed_count(session)
+    # Phase 49 (49-02, D-05): the same AWAITING_CLOUD held count the dashboard seeds, re-pushed
+    # on every 5s poll so the awaiting_cloud_card stays live via its OOB swap. Degrade-safe at the
+    # service layer (Plan 01), so NO router try/except -- mirrors the straggler/failed wiring.
+    awaiting_cloud_count = await get_awaiting_cloud_count(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -535,6 +547,7 @@ async def pipeline_stats_partial(
             "oob_counts": True,
             "straggler_count": straggler_count,
             "analysis_failed_count": analysis_failed_count,
+            "awaiting_cloud_count": awaiting_cloud_count,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,

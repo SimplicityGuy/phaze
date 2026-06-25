@@ -1180,6 +1180,43 @@ async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession
 
 
 @pytest.mark.asyncio
+async def test_dashboard_renders_awaiting_cloud_card(client: AsyncClient, session: AsyncSession) -> None:
+    """The dashboard renders the AWAITING_CLOUD count in the #awaiting-cloud-card (D-05)."""
+    session.add_all([_make_file(state=FileState.AWAITING_CLOUD) for _ in range(3)])
+    session.add(_make_file(state=FileState.DISCOVERED))
+    await session.commit()
+
+    response = await client.get("/pipeline/")
+    assert response.status_code == 200
+    text = response.text
+    assert 'id="awaiting-cloud-card"' in text
+    assert "Awaiting cloud" in text
+    # The held count (3) renders inside the card.
+    assert ">3<" in text
+    # Inline (full-page) render is NOT an OOB swap.
+    card_start = text.index('id="awaiting-cloud-card"')
+    card_open = text.rfind("<section", 0, card_start)
+    assert 'hx-swap-oob="true"' not in text[card_open:card_start]
+
+
+@pytest.mark.asyncio
+async def test_stats_partial_emits_awaiting_cloud_card_oob(client: AsyncClient, session: AsyncSession) -> None:
+    """The 5s /pipeline/stats poll re-pushes the awaiting-cloud card OUT-OF-BAND (hx-swap-oob)."""
+    session.add_all([_make_file(state=FileState.AWAITING_CLOUD) for _ in range(2)])
+    await session.commit()
+
+    response = await client.get("/pipeline/stats")
+    assert response.status_code == 200
+    text = response.text
+    assert 'id="awaiting-cloud-card"' in text
+    # On the poll the card is an OOB fragment so htmx swaps it in place.
+    card_start = text.index('id="awaiting-cloud-card"')
+    card_open = text.rfind("<section", 0, card_start)
+    assert 'hx-swap-oob="true"' in text[card_open : card_start + 200]
+    assert ">2<" in text
+
+
+@pytest.mark.asyncio
 async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
     """POST /pipeline/analyze enqueues process_file onto phaze-agent-nox + renders the fragment."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
