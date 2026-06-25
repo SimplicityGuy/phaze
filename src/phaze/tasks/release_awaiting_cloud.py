@@ -10,9 +10,13 @@ THIS IS NOT THE DELETED reenqueue AUTO-ADVANCE CRON. Phase 42 (PR #132) removed 
 ``reenqueue_discovered`` general pipeline auto-advance, and ``controller.py`` carries a "DO NOT
 re-add a recover cron" comment for THAT general-advance behavior. This cron is scoped ONLY to the
 ``AWAITING_CLOUD -> compute`` transition -- it advances no other stage, so it respects the Phase-42
-"automation only in recovery" principle. It is ALSO NOT a ledger replay: held files were never
-enqueued (D-02), so they carry NO scheduling-ledger row and ``recover_orphaned_work``'s
-ledger-driven replay structurally cannot see them. Release MUST therefore be a STATE-driven scan.
+"automation only in recovery" principle. It is ALSO NOT a ledger replay: a "Run analysis"-held file
+was never enqueued (D-02) and carries NO scheduling-ledger row, while a BACKFILL-held file DOES carry
+an agent-routed ``process_file`` ledger row (D-09) that ``recover_orphaned_work`` can see. Recovery
+routes such held rows to a COMPUTE agent ONLY (Phase 49 CR-01), so it never analyzes a held long file
+locally; with no compute agent online it skips them and leaves the drain to THIS cron. Release is the
+COMPLETE drain of the held state-set -- it covers BOTH producers -- so it MUST be a STATE-driven scan
+(``SELECT ... WHERE state = AWAITING_CLOUD``), not a ledger replay.
 
 CONTROL-ONLY: needs both PostgreSQL (``ctx["async_session"]``) and the per-agent enqueuer
 (``ctx["task_router"]``), exactly like ``recover_orphaned_work``. Register ONLY in

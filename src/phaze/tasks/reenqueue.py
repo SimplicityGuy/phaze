@@ -167,6 +167,18 @@ def _select_done_analyze_ids() -> Any:
     return select(FileRecord.id).where(FileRecord.state.in_([FileState.ANALYZED, FileState.ANALYSIS_FAILED]))
 
 
+async def _get_awaiting_cloud_ids(session: AsyncSession) -> set[str]:
+    """File-id strings for files currently held in AWAITING_CLOUD (Phase 49, CR-01).
+
+    A backfill-held long file carries an agent-routed ``process_file`` ledger row (D-09) and is NOT
+    analyze-done, so recovery treats it as orphaned. It must route to a COMPUTE agent ONLY -- routing
+    it to the most-recently-seen agent (typically a fileserver, the exact condition that held it)
+    would analyze the long file locally and violate CLOUDROUTE-02. The set is small and bounded (held
+    files only), read ONCE per recovery run alongside the done-sets.
+    """
+    return {str(fid) for fid in (await session.scalars(select(FileRecord.id).where(FileRecord.state == FileState.AWAITING_CLOUD))).all()}
+
+
 def _natural_id(row: SchedulingLedger) -> str | None:
     """Return the file-id natural id from a predicate-covered row's stored payload, or None.
 
@@ -289,22 +301,48 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         controller_rows = [r for r in orphaned if r.routing == "controller"]
         agent_rows = [r for r in orphaned if r.routing == "agent"]
 
+        # Phase 49 (CR-01): a ``process_file`` row whose file is HELD in AWAITING_CLOUD is a LONG file
+        # that must NEVER be analyzed locally (CLOUDROUTE-02). Backfill (D-09) gives such held files an
+        # agent-routed ledger row, and they are NOT analyze-done, so they reach here as orphaned. The
+        # kind-agnostic ``select_active_agent`` below would route them to the most-recently-seen agent --
+        # typically a fileserver, since "no compute agent online" is the exact condition that held the
+        # file -- so partition them out and route them to a COMPUTE agent ONLY. With no compute agent
+        # online they are skipped (the */5 ``release_awaiting_cloud`` cron drains the AWAITING_CLOUD
+        # state-set, so the file is not lost). Non-held process_file rows stay on the kind-agnostic path.
+        held_ids = await _get_awaiting_cloud_ids(session)
+        held_agent_rows = [r for r in agent_rows if r.function == "process_file" and _natural_id(r) in held_ids]
+        other_agent_rows = [r for r in agent_rows if not (r.function == "process_file" and _natural_id(r) in held_ids)]
+
         # Controller rows replay regardless of agent presence (D-05).
         for row in controller_rows:
             await _replay_row(ctx["queue"], row, stages[row.function])
 
-        # Agent rows need an online agent (cold boot may have none -> skip, never raise).
-        if agent_rows:
+        # Held (AWAITING_CLOUD) rows need an online COMPUTE agent; with none, skip for the release cron.
+        if held_agent_rows:
+            try:
+                compute_agent = await select_active_agent(session, kind="compute")
+            except NoActiveAgentError:
+                logger.warning(
+                    "recover_orphaned_work: no compute agent -- AWAITING_CLOUD rows left for release cron (CLOUDROUTE-02)",
+                    held_agent_rows=len(held_agent_rows),
+                )
+            else:
+                compute_queue = ctx["task_router"].queue_for(compute_agent.id)
+                for row in held_agent_rows:
+                    await _replay_row(compute_queue, row, stages[row.function])
+
+        # Remaining agent rows need any online agent (cold boot may have none -> skip, never raise).
+        if other_agent_rows:
             try:
                 agent = await select_active_agent(session)
             except NoActiveAgentError:
                 logger.warning(
                     "recover_orphaned_work: no active agent -- agent-routed ledger rows skipped (cold boot)",
-                    agent_rows=len(agent_rows),
+                    agent_rows=len(other_agent_rows),
                 )
             else:
                 agent_queue = ctx["task_router"].queue_for(agent.id)
-                for row in agent_rows:
+                for row in other_agent_rows:
                     await _replay_row(agent_queue, row, stages[row.function])
 
     logger.info("recover_orphaned_work complete", detected_loss=detected_loss, forced=force, stages=stages)

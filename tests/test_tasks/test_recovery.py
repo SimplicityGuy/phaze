@@ -592,6 +592,111 @@ async def test_awaiting_cloud_file_stays_pending_in_recovery(
     assert is_domain_completed(row, done_sets) is False
 
 
+# --- Phase 49 CR-01: held (AWAITING_CLOUD) process_file rows are compute-only in recovery --------
+#
+# Backfill (D-09) seeds a process_file ledger row for a long file it HELD in AWAITING_CLOUD (no
+# compute agent was online). That row is agent-routed and NOT analyze-done, so recovery sees it as
+# orphaned. The kind-agnostic ``select_active_agent`` would route it to the most-recently-seen agent
+# of ANY kind -- typically a fileserver, since "no compute agent online" is the exact condition that
+# held the file -- and the fileserver would then analyze the long file LOCALLY, violating CLOUDROUTE-02
+# (the 4h-timeout incident this milestone exists to fix). Recovery MUST route a held process_file row
+# to a COMPUTE agent only; with none online it skips the row (the */5 release_awaiting_cloud cron
+# drains the AWAITING_CLOUD state-set, so the file is not lost). Non-held process_file rows (a normal
+# lost analyze of a short file) must STILL recover to any online agent -- the fix must not over-restrict.
+
+
+@pytest.mark.asyncio
+async def test_held_process_file_row_skips_when_only_fileserver_online(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-01: a held (AWAITING_CLOUD) process_file row is NOT routed to a fileserver in recovery.
+
+    The held file's condition is "no compute agent online", so the only agent is a fileserver.
+    Routing the long file there would analyze it locally (CLOUDROUTE-02 violation). Recovery must
+    skip the row, leaving it for the release cron -- never enqueue it onto the fileserver queue.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)  # genuine queue-loss
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")  # only a fileserver online
+    held = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(held)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=held.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # The held long file must NOT land on the fileserver queue -- it is left for the release cron.
+    assert "nox" not in router.queues
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_held_process_file_row_routes_to_compute_when_online(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-01: a held (AWAITING_CLOUD) process_file row recovers to the COMPUTE queue, not fileserver.
+
+    With both a fileserver and a compute agent online, the held long file must route to the compute
+    agent's per-agent queue (kind-aware selection), never the fileserver's.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    held = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(held)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=held.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # Routed to the compute agent's queue; the fileserver queue never saw the held file.
+    assert "cloud" in router.queues
+    assert [str(held.id)] == [payload["file_id"] for _name, payload in router.queues["cloud"].captured]
+    assert "nox" not in router.queues
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_non_held_process_file_row_still_routes_to_any_agent(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-01 guard: a NON-held process_file row still recovers to any online agent (no over-restrict).
+
+    A normal lost analyze of a short (not-AWAITING_CLOUD) file must keep recovering through the
+    kind-agnostic path -- the compute-only restriction applies ONLY to held files.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")  # only a fileserver online
+    normal = _make_file(state=FileState.DISCOVERED)  # not AWAITING_CLOUD, not analyze-done
+    session.add(normal)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=normal.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # The short file recovers normally onto the only online agent (the fileserver).
+    assert "nox" in router.queues
+    assert [str(normal.id)] == [payload["file_id"] for _name, payload in router.queues["nox"].captured]
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+
+
 # --- Predicate totality ----------------------------------------------------------------
 
 
