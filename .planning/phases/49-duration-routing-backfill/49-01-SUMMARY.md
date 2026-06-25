@@ -113,6 +113,10 @@ None - plan executed exactly as written.
 - All primitives Plans 02 (per-file router), 03 (backfill), and 04 (release cron) compose against now exist with passing unit tests.
 - No blockers.
 
+## Self-Check: PASSED
+
+All 9 plan files exist on disk and all 7 commits are present in git history.
+
 ---
 *Phase: 49-duration-routing-backfill*
 *Completed: 2026-06-25*
