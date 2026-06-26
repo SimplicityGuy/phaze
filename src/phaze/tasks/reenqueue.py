@@ -45,8 +45,10 @@ exclusion is therefore EXPLICIT and TOTAL per stage (asserted in test_recovery.p
 
 - predicate-covered (:data:`_DOMAIN_COMPLETED_STAGES`): ``process_file`` (analyze; done when
   state in {ANALYZED, ANALYSIS_FAILED}), ``extract_file_metadata`` (done when NOT in the metadata
-  pending set), ``fingerprint_file`` (done when NOT in the fingerprint pending set). Metadata and
-  fingerprint have NO ``/failed`` callback (Plan 02 residual gap), so this is their PRIMARY net.
+  pending set), ``fingerprint_file`` (done when NOT in the fingerprint pending set), and
+  ``push_file`` (Phase 50; done when state in {PUSHED, ANALYZED, ANALYSIS_FAILED}). Metadata and
+  fingerprint have NO ``/failed`` callback (Plan 02 residual gap), so this is their PRIMARY net;
+  push has no terminal clear before its callback, so FileState is its reliable done signal.
 - live-keys-only (everything else): ``scan_live_set`` (Plan 02's terminal ack clears its ledger row
   on EVERY outcome, so any surviving row is genuinely orphaned -- no domain predicate) plus the four
   controller stages (``generate_proposals`` / ``search_tracklist`` / ``scrape_and_store_tracklist``
@@ -109,6 +111,7 @@ _DOMAIN_COMPLETED_STAGES: frozenset[str] = frozenset(
         "process_file",  # analyze: done when state in {ANALYZED, ANALYSIS_FAILED}
         "extract_file_metadata",  # done when NOT in get_metadata_pending_files
         "fingerprint_file",  # done when NOT in get_fingerprint_pending_files
+        "push_file",  # Phase 50 (D-10): done when state in {PUSHED, ANALYZED, ANALYSIS_FAILED}
     }
 )
 """Keyed functions that carry a per-stage domain-completed predicate (the SECONDARY exclusion).
@@ -116,6 +119,9 @@ _DOMAIN_COMPLETED_STAGES: frozenset[str] = frozenset(
 EVERY other keyed function (``scan_live_set`` + the four controller stages) is live-keys-only --
 its ledger row is reliably cleared on every terminal outcome (scan via Plan 02's ack; controllers
 via Plan 01's after_process), so any surviving row IS genuinely orphaned and needs no domain net.
+``push_file`` (Phase 50) joins the predicate-covered set: a crash between the staging cron and the
+push callback leaves a PUSHING file with no terminal clear, so its FileState (advanced to PUSHED on
+a successful land, or onward to ANALYZED) is the reliable done signal.
 Kept in sync with ``deterministic_key._KEY_BUILDERS`` by a totality test in test_recovery.py.
 """
 
@@ -153,6 +159,9 @@ async def _build_done_sets(session: AsyncSession) -> dict[str, set[str]]:
         # metadata/fingerprint: the PENDING membership; is_domain_completed treats "absent" as done.
         _METADATA_PENDING: {str(f.id) for f in await get_metadata_pending_files(session)},
         _FINGERPRINT_PENDING: {str(f.id) for f in await get_fingerprint_pending_files(session)},
+        # push_file (Phase 50): an EXPLICIT done set (file ids that have LANDED on compute scratch
+        # or advanced past it). A still-PUSHING file is absent -> orphaned -> re-driven.
+        _PUSH_DONE: {str(fid) for fid in (await session.scalars(_select_done_push_ids())).all()},
     }
 
 
@@ -160,11 +169,22 @@ async def _build_done_sets(session: AsyncSession) -> dict[str, set[str]]:
 _ANALYZE_DONE = "analyze_done"
 _METADATA_PENDING = "metadata_pending"
 _FINGERPRINT_PENDING = "fingerprint_pending"
+_PUSH_DONE = "push_done"
 
 
 def _select_done_analyze_ids() -> Any:
     """Build the SELECT for file ids whose analyze stage is terminal (ANALYZED / ANALYSIS_FAILED)."""
     return select(FileRecord.id).where(FileRecord.state.in_([FileState.ANALYZED, FileState.ANALYSIS_FAILED]))
+
+
+def _select_done_push_ids() -> Any:
+    """Build the SELECT for file ids whose push stage is done (PUSHED, or advanced to a terminal analyze state).
+
+    Phase 50 (D-10): a file is push-done once it has landed on compute scratch (PUSHED) -- or moved
+    onward to ANALYZED / ANALYSIS_FAILED, which can only happen after a successful push. A file still
+    in PUSHING / AWAITING_CLOUD / DISCOVERED is NOT push-done, so its push_file row re-drives.
+    """
+    return select(FileRecord.id).where(FileRecord.state.in_([FileState.PUSHED, FileState.ANALYZED, FileState.ANALYSIS_FAILED]))
 
 
 async def _get_awaiting_cloud_ids(session: AsyncSession) -> set[str]:
@@ -196,10 +216,11 @@ def is_domain_completed(row: SchedulingLedger, done_sets: dict[str, set[str]]) -
 
     ALWAYS False for the five live-keys-only functions (scan_live_set + the four controller
     stages): their ledger clear is reliable on every terminal outcome, so the live-key filter is
-    the sole exclusion and any surviving row is genuinely orphaned. For the three predicate-covered
+    the sole exclusion and any surviving row is genuinely orphaned. For the four predicate-covered
     agent stages, "done" is:
 
     - ``process_file``: file id in the analyze-done set (ANALYZED / ANALYSIS_FAILED).
+    - ``push_file``: file id in the push-done set (PUSHED / ANALYZED / ANALYSIS_FAILED).
     - ``extract_file_metadata`` / ``fingerprint_file``: file id ABSENT from the stage's pending set
       (the complement-of-pending == done boundary).
     """
@@ -211,6 +232,8 @@ def is_domain_completed(row: SchedulingLedger, done_sets: dict[str, set[str]]) -
         return False
     if function == "process_file":
         return fid in done_sets[_ANALYZE_DONE]
+    if function == "push_file":
+        return fid in done_sets[_PUSH_DONE]
     if function == "extract_file_metadata":
         return fid not in done_sets[_METADATA_PENDING]
     # fingerprint_file
@@ -311,7 +334,10 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # state-set, so the file is not lost). Non-held process_file rows stay on the kind-agnostic path.
         held_ids = await _get_awaiting_cloud_ids(session)
         held_agent_rows = [r for r in agent_rows if r.function == "process_file" and _natural_id(r) in held_ids]
-        other_agent_rows = [r for r in agent_rows if not (r.function == "process_file" and _natural_id(r) in held_ids)]
+        # Phase 50 (D-10): a re-driven push_file reads the media mount, so it MUST route to a FILESERVER
+        # agent (the rsync initiator), never the compute agent -- partition push rows onto their own path.
+        push_rows = [r for r in agent_rows if r.function == "push_file"]
+        other_agent_rows = [r for r in agent_rows if r.function != "push_file" and not (r.function == "process_file" and _natural_id(r) in held_ids)]
 
         # Controller rows replay regardless of agent presence (D-05).
         for row in controller_rows:
@@ -330,6 +356,22 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
                 compute_queue = ctx["task_router"].queue_for(compute_agent.id)
                 for row in held_agent_rows:
                     await _replay_row(compute_queue, row, stages[row.function])
+
+        # Phase 50 (D-10): push_file re-drives route to a FILESERVER (the media-mount owner that runs
+        # the rsync); with no fileserver online, skip with a WARNING (the next staging-cron tick / a
+        # later recovery re-drives the still-PUSHING file -- never enqueue it onto a compute agent).
+        if push_rows:
+            try:
+                fileserver_agent = await select_active_agent(session, kind="fileserver")
+            except NoActiveAgentError:
+                logger.warning(
+                    "recover_orphaned_work: no fileserver agent -- push_file rows skipped for the staging cron (D-10)",
+                    push_rows=len(push_rows),
+                )
+            else:
+                fileserver_queue = ctx["task_router"].queue_for(fileserver_agent.id)
+                for row in push_rows:
+                    await _replay_row(fileserver_queue, row, stages[row.function])
 
         # Remaining agent rows need any online agent (cold boot may have none -> skip, never raise).
         if other_agent_rows:
