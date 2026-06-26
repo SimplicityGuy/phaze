@@ -67,7 +67,7 @@ def _hash_ids(file_ids: Any) -> str:
     return hashlib.sha256(joined.encode()).hexdigest()
 
 
-# Exactly 8 entries. Each builder maps a job's kwargs (the task payload) to the natural
+# Exactly 9 entries. Each builder maps a job's kwargs (the task payload) to the natural
 # id that makes a re-enqueue of the same logical work dedup. Natural ids VERIFIED present
 # in each payload (35-RESEARCH Q1 table). MUST stay in sync with
 # ``pipeline_counters.PIPELINE_FUNCTIONS`` and the drift-guard test's routable universe.
@@ -80,6 +80,9 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "scrape_and_store_tracklist": lambda k: str(k["tracklist_id"]),
     "match_tracklist_to_discogs": lambda k: str(k["tracklist_id"]),
     "generate_proposals": lambda k: _hash_ids(k["file_ids"]),
+    # Phase 50 (CLOUDPIPE-05): push_file:<file_id> dedup collapses a double-tick of the
+    # bounded cloud-window staging cron to a no-op (T-50-double-enqueue).
+    "push_file": lambda k: str(k["file_id"]),
 }
 
 

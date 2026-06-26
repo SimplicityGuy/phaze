@@ -65,6 +65,7 @@ AGENT_TASKS: frozenset[str] = frozenset(
         "scan_live_set",
         "scan_directory",
         "execute_approved_batch",
+        "push_file",
     }
 )
 """File-touching tasks a file-server agent worker consumes.
