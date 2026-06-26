@@ -32,12 +32,15 @@ The secret-bearing fields and their `_FILE` siblings:
 | `redis_url`         | all     | `PHAZE_REDIS_URL_FILE`, `REDIS_URL_FILE` |
 | `queue_url`         | all     | `PHAZE_QUEUE_URL_FILE` |
 | `agent_token`       | agent   | `PHAZE_AGENT_TOKEN_FILE`, `AGENT_TOKEN_FILE` |
+| `push_ssh_key`      | agent   | `PHAZE_PUSH_SSH_KEY_FILE` (whitespace **preserved**) |
+| `push_known_hosts`  | agent   | `PHAZE_PUSH_KNOWN_HOSTS_FILE` (whitespace **preserved**) |
 
 Semantics (implemented by the shared `_resolve_secret_files` validator in `config.py`, which derives the `_FILE` names from each field's existing aliases):
 
 - **One `_FILE` per accepted env name.** A field bound to both `PHAZE_DATABASE_URL` and `DATABASE_URL` honors `PHAZE_DATABASE_URL_FILE` **and** `DATABASE_URL_FILE`.
 - **Precedence:** an explicitly-set direct env var always wins over its `_FILE` sibling. The file is read only when the direct var is unset.
 - **Newline stripping:** surrounding whitespace and trailing newlines are stripped (`.strip()`). This is critical for `PHAZE_AGENT_TOKEN` — the *entire* wire string (prefix included) is hashed by `phaze.routers.agent_auth.hash_token`, so a stray `\n` from a heredoc/`echo`-created secret file would otherwise make the hash never match (a permanent 401).
+- **Whitespace-preserved exceptions:** `push_ssh_key` and `push_known_hosts` are the **only** `_FILE` secrets kept **verbatim** (NOT stripped), because OpenSSH requires the trailing newline on key material / known_hosts lines — stripping it makes `ssh` reject the key (`invalid format` / `error in libcrypto`). They are members of `SECRET_FILE_PRESERVE_WHITESPACE` in `config.py`.
 - **Fail-fast:** if a `_FILE` var is set but the path is missing or unreadable, startup raises a `ValidationError` naming the variable and path — it never silently falls back to an empty secret.
 - Resolution runs **before** the required-field and production guards (`_enforce_required_agent_fields`, the HTTPS/Redis-password validators), so a `_FILE`-sourced `PHAZE_AGENT_TOKEN` satisfies the required-field guard. `SecretStr` fields stay `SecretStr` (masked in logs/reprs) after resolution.
 
@@ -74,6 +77,42 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 | `WORKER_HEALTH_CHECK_INTERVAL`| No       | `60`    | SAQ health-check interval in seconds.                |
 | `WORKER_KEEP_RESULT`          | No       | `3600`  | Seconds SAQ retains a finished job's result.         |
 | `PHAZE_SCAN_STALL_SECONDS` (or `SCAN_STALL_SECONDS`) | No | `600` | Seconds with no progress before a RUNNING scan is reaped as stalled by the control worker's every-minute cron. Lives on `BaseSettings`, so both roles parse it, but only the control worker runs the reaper. The admin UI flips a RUNNING scan to an amber "stalled?" indicator at **half** this threshold, before the hard reap. |
+
+## Cloud-burst settings
+
+Cloud burst (Phase 49/50/51, v5.0) offloads **long** audio sets (duration ≥ the route threshold) to a free OCI A1 arm64 **compute agent** over Tailscale via an rsync push — instead of letting them time out on the local file server. The full feature walkthrough, runbook, and smoke test live in [cloud-burst.md](cloud-burst.md); this section is the canonical knob reference.
+
+Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](../src/phaze/config.py). The `Class` column is the role the field lives on (`ControlSettings` = the application server that owns routing; `AgentSettings` = the compute agent). All knobs use the `PHAZE_*` (or bare-name) dual form described above unless noted.
+
+| Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
+|------|-----------------|-------|---------|----------|-------------|
+| `cloud_burst_enabled` | `PHAZE_CLOUD_BURST_ENABLED` (or `cloud_burst_enabled`) | Control | `False` | no | **Master switch for the whole feature.** `False` (default) reverts to all-local analysis with no other change — see *Master toggle* below. |
+| `cloud_route_threshold_sec` | `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` (or `cloud_route_threshold_sec`) | Control | `5400` | no | Duration threshold (seconds) at/above which a file is routed to a cloud compute agent. Default 5400 (90 min); bounded `gt=0, lt=86400` (out-of-range fails fast at startup). |
+| `cloud_max_in_flight` | `PHAZE_CLOUD_MAX_IN_FLIGHT` (or `cloud_max_in_flight`) | Control | `2` | no | Max cloud files staged-or-in-flight (`PUSHING`+`PUSHED`); the load-bearing ≤N window — the only backpressure keeping an unbounded backlog off the single compute agent. Bounded `gt=0, lt=100`. |
+| `push_max_attempts` | `PHAZE_PUSH_MAX_ATTEMPTS` (or `push_max_attempts`) | Control | `3` | no | Max push attempts before a sha256-mismatched file is marked `ANALYSIS_FAILED`. Bounded `gt=0, lt=20`. |
+| `compute_scratch_dir` | `PHAZE_COMPUTE_SCRATCH_DIR` (or `compute_scratch_dir`) | Control | `None` | no | Control-side mirror of the compute agent's scratch directory; the push callback builds the `process_file` scratch path from it. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
+| `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match `compute_scratch_dir`** on the control plane; it is also the cloud-agent compose's named-volume mount path. |
+| `push_ssh_host` | `PHAZE_PUSH_SSH_HOST` (or `push_ssh_host`) | Agent | `None` | no | Hostname/IP of the rsync-over-SSH push target (the compute agent). Operator-provisioned in Phase 51. |
+| `push_ssh_user` | `PHAZE_PUSH_SSH_USER` (or `push_ssh_user`) | Agent | `None` | no | SSH username for the rsync push target. |
+| `push_timeout_sec` | `PHAZE_PUSH_TIMEOUT_SEC` (or `push_timeout_sec`) | Agent | `600` | no | rsync I/O-stall timeout (seconds) for a single `push_file` transfer; MUST stay below the SAQ `push_file` job timeout so the kill is deterministic. Bounded `gt=0, lt=86400`. |
+| `push_connect_timeout_sec` | `PHAZE_PUSH_CONNECT_TIMEOUT_SEC` (or `push_connect_timeout_sec`) | Agent | `30` | no | SSH connect-handshake timeout (seconds) for the rsync push. Bounded `gt=0, lt=3600`. |
+| `push_ssh_key` | `PHAZE_PUSH_SSH_KEY` (or `push_ssh_key`) | Agent | `None` | **YES** (whitespace **preserved**) | SSH identity private key for the rsync push, file-mounted via `PHAZE_PUSH_SSH_KEY_FILE`. Never logged. |
+| `push_known_hosts` | `PHAZE_PUSH_KNOWN_HOSTS` (or `push_known_hosts`) | Agent | `None` | **YES** (whitespace **preserved**) | Pinned `known_hosts` for strict SSH host-key checking of the push target, file-mounted via `PHAZE_PUSH_KNOWN_HOSTS_FILE`. Must be re-provisioned with the compute agent's host key after it comes up. Never logged. |
+| `agent_token` | `PHAZE_AGENT_TOKEN` (or `AGENT_TOKEN`) | Agent | required | **YES** | Bearer token the compute agent authenticates with (same field as any agent). File-mount via `PHAZE_AGENT_TOKEN_FILE`. |
+| `worker_max_jobs` | `WORKER_MAX_JOBS` | all | `8` | no | **Agent concurrency** — concurrent SAQ jobs per worker. On the 12 GB Always-Free A1, set this to **`1`**: a single concurrent analysis is RAM-bound on that shape. |
+| *n/a (raw env var)* | `PHAZE_AGENT_QUEUE` (or `AGENT_QUEUE`) | Agent | required | no | **Cloud queue name** the compute agent consumes (`phaze-agent-<agent_id>`). ⚠️ This is the single structural exception below — it is **not** a pydantic-settings field. |
+
+### ⚠️ `PHAZE_AGENT_QUEUE` is the one knob NOT configurable via pydantic-settings
+
+Every cloud-burst parameter above is a [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) field **except `PHAZE_AGENT_QUEUE`**. The agent worker (`phaze.tasks.agent_worker`) must hand SAQ a `Queue` object at **module import time**, which is **before** `get_settings()` constructs the settings instance (Phase 26 D-16). So the queue name is read as a **raw `os.environ` lookup at SAQ import time**, not through a settings field — it therefore cannot honor `_FILE` resolution or a settings alias, and it remains a **required operator env var**. This is intentional and structural (moving it into the settings class would fight the import-time ordering), not an omission. By convention it MUST equal `phaze-agent-<PHAZE_AGENT_ID>`; the worker asserts this against the agent_id resolved from its token at startup and exits non-zero on mismatch. Use the exact value `phaze agents add` prints (see [deployment.md](deployment.md) Step 3).
+
+### Master toggle (`PHAZE_CLOUD_BURST_ENABLED`)
+
+`cloud_burst_enabled` is the **single switch** that turns the entire cloud-burst feature on or off (CLOUDDEPLOY-04):
+
+- **OFF (`False`, the default) = all-local, no other change.** Every file — short and long alike — routes to the local file-server queue exactly as it did before cloud burst existed. No file is held `AWAITING_CLOUD`, the staging cron no-ops, and backfill-to-cloud is rejected. (Long files may then time out locally and fail cleanly as `ANALYSIS_FAILED`.) A fresh v5.0 deploy ships **dormant** this way until the operator provisions the A1 and opts in.
+- **Flipping it requires a control-plane restart.** The value is read from the import-time settings singleton, so setting the env var on a running controller does nothing until the controller worker + api are restarted (it is a startup-read, like every other knob).
+- **In-flight work drains.** Turning it OFF only stops *new* cloud work; files already `PUSHING`/`PUSHED` finish, and any held `AWAITING_CLOUD` rows release once it is turned back on.
 
 ## Logging / observability (all roles)
 

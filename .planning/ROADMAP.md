@@ -79,7 +79,7 @@ Analyze long-duration audio (≥90 min) on a free OCI Ampere A1 (arm64) "compute
 - [x] **Phase 48: Compute-agent type** — register a media-less `kind="compute"` agent that drains its queue + PUTs results, surfaced on the Agents page (completed 2026-06-25)
 - [x] **Phase 49: Duration routing & backfill** — route ≥90min files to an online compute agent (else "awaiting cloud"), backfill the 144 timed-out long files via the Phase 45 ledger (completed 2026-06-25)
 - [x] **Phase 50: Push pipeline** — rsync-over-Tailscale "stay one ahead" push to the compute agent's scratch dir, sha256-verify, ephemeral cleanup, idempotent re-drive (completed 2026-06-26)
-- [ ] **Phase 51: Deployment, config & docs** — cloud-agent compose + Tailscale, all config knobs (`_FILE` secrets), OCI A1 / Tailscale-ACL runbook, master enable toggle
+- [x] **Phase 51: Deployment, config & docs** — cloud-agent compose + Tailscale, all config knobs (`_FILE` secrets), OCI A1 / Tailscale-ACL runbook, master enable toggle (completed 2026-06-26)
 
 Detail sections under "## Phase Details (v5.0)" below.
 
@@ -137,7 +137,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 48. Compute-agent type | v5.0 | 3/3 | Complete   | 2026-06-25 |
 | 49. Duration routing & backfill | v5.0 | 4/4 | Complete    | 2026-06-25 |
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
-| 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
+| 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -610,7 +610,17 @@ Plans:
   3. Operator can follow a runbook to provision an OCI Always-Free A1 and a Tailscale ACL scoping the A1 to exactly `lux:{5432,6379,8000}` + `nox→A1:22`, plus a least-privilege Postgres role for the queue broker.
   4. Operator can disable the entire cloud-burst feature with a single config toggle, reverting to all-local analysis with no other change.
 
-**Plans**: TBD
+**Plans**: 4 plans (2 waves)
+Plans:
+**Wave 1**
+
+- [x] 51-01-PLAN.md — Master toggle: cloud_burst_enabled field + 3 gate sites (routing seam, staging cron, backfill) + unit tests (CLOUDDEPLOY-04, CLOUDDEPLOY-02)
+- [x] 51-02-PLAN.md — docker-compose.cloud-agent.yml (worker-only, arm64, named scratch, host Tailscale) + invariant test (CLOUDDEPLOY-01)
+- [x] 51-04-PLAN.md — Homelab change prompt: OCI A1 OpenTofu spec + Tailscale ACL JSON + least-privilege broker role SQL (CLOUDDEPLOY-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 51-03-PLAN.md — Docs: configuration.md knob table + new cloud-burst.md runbook + deployment.md pointer + README index (CLOUDDEPLOY-02/03/04 docs)
 
 ## Backlog (unscheduled — no phase number yet)
 

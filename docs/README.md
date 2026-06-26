@@ -26,6 +26,7 @@ This is the documentation index for the `docs/` directory. For the project overv
 | Document | Purpose |
 | -------- | ------- |
 | **[Deployment Guide](deployment.md)** | 🐳 Docker Compose deploy, image pipeline, and remote agents |
+| **[Cloud Burst](cloud-burst.md)** | ☁️ OCI A1 compute-agent deploy, Tailscale ACL, broker role, master toggle |
 
 ______________________________________________________________________
 
