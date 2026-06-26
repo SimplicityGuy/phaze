@@ -68,7 +68,7 @@ async def test_long_file_routes_to_awaiting_cloud_not_compute(session: AsyncSess
 
     router = FakeTaskRouter()
     app_state = SimpleNamespace(task_router=router)
-    result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, "/models")
+    result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, True, "/models")
 
     assert result["awaiting"] == 1
     assert result["cloud"] == 0
@@ -97,7 +97,7 @@ async def test_no_direct_to_compute_enqueue_path(session: AsyncSession) -> None:
 
     router = FakeTaskRouter()
     app_state = SimpleNamespace(task_router=router)
-    result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, "/models")
+    result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, True, "/models")
 
     assert result["awaiting"] == 1
     assert result["cloud"] == 0

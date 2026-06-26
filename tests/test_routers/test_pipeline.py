@@ -57,6 +57,20 @@ async def _drain_background() -> None:
         await asyncio.sleep(0)
 
 
+@pytest.fixture(autouse=True)
+def _cloud_burst_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the Phase-49/50 cloud-routing tests to cloud_burst_enabled=True.
+
+    The Phase-51 master toggle (``cloud_burst_enabled``) defaults False, which flips the duration
+    router and the backfill trigger to all-local. These regression tests assert the ON behavior
+    (long files held in AWAITING_CLOUD, backfill resets+routes), so pin the singleton attribute ON
+    here. The Phase-51 OFF tests below override it back to False inside their own bodies.
+    """
+    from phaze.config import settings
+
+    monkeypatch.setattr(settings, "cloud_burst_enabled", True)
+
+
 def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
     """Create a FileRecord with the given state."""
     uid = uuid.uuid4()
