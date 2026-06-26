@@ -24,6 +24,7 @@ from phaze.routers import (
     agent_identity,
     agent_metadata,
     agent_proposals,
+    agent_push,
     agent_scan_batches,
     agent_tracklists,
     companion,
@@ -205,6 +206,7 @@ def create_app() -> FastAPI:
     # Phase 26 internal-agent routers (D-15, D-26, D-27, D-28)
     app.include_router(agent_identity.router)
     app.include_router(agent_analysis.router)
+    app.include_router(agent_push.router)
     app.include_router(agent_tracklists.router)
     app.include_router(agent_proposals.router)
     # Phase 27 internal-agent router (D-10).
