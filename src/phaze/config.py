@@ -381,6 +381,20 @@ class ControlSettings(BaseSettings):
         description="Duration threshold (seconds) at/above which a file is routed to a cloud compute agent for analysis (Phase 49). Default 5400 (90 min); lt=86400 caps it at one day.",
     )
 
+    # Phase 51 D-01: master switch for the entire cloud-burst feature (CLOUDDEPLOY-04). Default
+    # False so a fresh v5.0 deploy behaves all-local with ZERO cloud activity until the operator
+    # provisions the A1 and explicitly opts in. False gates ALL THREE cloud entry points -- the
+    # routing seam (D-02), the staging cron (D-03), and the backfill trigger (D-03) -- so OFF
+    # reverts to pure local analysis with no other change. D-04: in-flight cloud work drains; OFF
+    # only stops NEW cloud work. Plain bool, NO gt=/lt= bounds (unlike the int knobs). Not
+    # secret-bearing, so it is absent from SECRET_FILE_FIELDS. Lives on ControlSettings because the
+    # control plane owns routing.
+    cloud_burst_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PHAZE_CLOUD_BURST_ENABLED", "cloud_burst_enabled"),
+        description="Master switch for the cloud-burst feature. False (default) reverts to all-local analysis with no other change (Phase 51, CLOUDDEPLOY-04).",
+    )
+
     # Phase 50 D-03: the load-bearing ≤N cloud window. The staging cron tops up so that the
     # count of files in {PUSHING, PUSHED} never exceeds this; it is the only backpressure that
     # keeps an unbounded backlog off the single compute agent. Bounded (gt=0, lt=100) like
