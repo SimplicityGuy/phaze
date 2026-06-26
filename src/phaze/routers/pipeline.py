@@ -662,6 +662,17 @@ async def trigger_backfill_cloud(
     over-enqueue class (D-10): a double-click is a no-op (the candidates have already left the
     ANALYSIS_FAILED state), and short / never-failed files are never touched.
     """
+    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit master-toggle guard BEFORE the candidate query.
+    # Gating only the routing seam is insufficient -- backfill would still reset the 144
+    # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
+    # feature is off this is a clean no-op that mutates ZERO file.state rows.
+    if not settings.cloud_burst_enabled:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/backfill_response.html",
+            context={"request": request, "count": 0, "disabled": True},
+        )
+
     threshold = settings.cloud_route_threshold_sec
     count = await count_backfill_candidates(session, threshold)
     if count == 0:
