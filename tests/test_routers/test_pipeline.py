@@ -171,9 +171,20 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     assert (queue_name, task_name) == ("phaze-agent-nox", "process_file")
 
     # All five required fields present -- not just file_id (the pre-fix bug). Phase 44-01
-    # added the optional fine_cap/coarse_cap overrides, which serialize as None on the bulk
-    # path (the AgentSettings 60/30 defaults still apply in the worker).
-    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
+    # added the optional fine_cap/coarse_cap overrides; Phase 50 added expected_sha256/scratch_path
+    # for the cloud push pipeline. All four serialize as None on the bulk local path (the
+    # AgentSettings 60/30 defaults still apply, and a local file is read in place).
+    assert set(kwargs) == {
+        "file_id",
+        "original_path",
+        "file_type",
+        "agent_id",
+        "models_path",
+        "fine_cap",
+        "coarse_cap",
+        "expected_sha256",
+        "scratch_path",
+    }
     assert kwargs["file_id"] == expected_id
     assert kwargs["original_path"] == expected_path
     assert kwargs["file_type"] == expected_type
@@ -262,7 +273,17 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     # Phase 44-01 added the optional fine_cap/coarse_cap (None on the bulk path).
     task_name, payload = queue.captured[0]
     assert task_name == "process_file"
-    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
+    assert set(payload) == {
+        "file_id",
+        "original_path",
+        "file_type",
+        "agent_id",
+        "models_path",
+        "fine_cap",
+        "coarse_cap",
+        "expected_sha256",
+        "scratch_path",
+    }
 
 
 @pytest.mark.asyncio
@@ -830,7 +851,17 @@ async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient
     assert len(queue.captured) == 1
     _, payload = queue.captured[0]
     # All five required fields present (not just file_id) plus the cap overrides.
-    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
+    assert set(payload) == {
+        "file_id",
+        "original_path",
+        "file_type",
+        "agent_id",
+        "models_path",
+        "fine_cap",
+        "coarse_cap",
+        "expected_sha256",
+        "scratch_path",
+    }
     assert payload["file_id"] == expected_id
     assert payload["original_path"] == expected_path
     assert payload["file_type"] == expected_type
@@ -1517,7 +1548,17 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     assert task_name == "process_file"
     # Complete payload -- all five ProcessFilePayload fields, not just file_id. Phase 44-01
     # added the optional fine_cap/coarse_cap overrides (None on the bulk path).
-    assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
+    assert set(kwargs) == {
+        "file_id",
+        "original_path",
+        "file_type",
+        "agent_id",
+        "models_path",
+        "fine_cap",
+        "coarse_cap",
+        "expected_sha256",
+        "scratch_path",
+    }
     ProcessFilePayload.model_validate(kwargs)
 
 
