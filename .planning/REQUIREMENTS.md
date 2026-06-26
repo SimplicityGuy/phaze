@@ -28,11 +28,11 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Push pipeline (CLOUDPIPE)
 
-- [ ] **CLOUDPIPE-01**: The control plane keeps at most a configurable number of cloud files staged-or-in-flight ("stay one ahead"; default 2 = one analyzing + one staged), driven by the scheduling ledger.
-- [ ] **CLOUDPIPE-02**: A file-server agent pushes a cloud-routed file to the compute agent's scratch directory over the network (rsync/SSH over Tailscale) when the control plane schedules it; the file-server initiates and the compute agent only receives into scratch.
-- [ ] **CLOUDPIPE-03**: The compute agent verifies file integrity (sha256, already on `FileRecord`) after transfer before analyzing; a mismatch fails the job cleanly and triggers re-push.
-- [ ] **CLOUDPIPE-04**: The compute agent deletes its scratch copy after analysis completes (success or terminal failure), bounding local disk to the in-flight set.
-- [ ] **CLOUDPIPE-05**: A failed or interrupted push/analysis is re-driven without orphaned scratch files or double-enqueues (idempotent, ledger-tracked).
+- [x] **CLOUDPIPE-01**: The control plane keeps at most a configurable number of cloud files staged-or-in-flight ("stay one ahead"; default 2 = one analyzing + one staged), driven by the scheduling ledger.
+- [x] **CLOUDPIPE-02**: A file-server agent pushes a cloud-routed file to the compute agent's scratch directory over the network (rsync/SSH over Tailscale) when the control plane schedules it; the file-server initiates and the compute agent only receives into scratch.
+- [x] **CLOUDPIPE-03**: The compute agent verifies file integrity (sha256, already on `FileRecord`) after transfer before analyzing; a mismatch fails the job cleanly and triggers re-push.
+- [x] **CLOUDPIPE-04**: The compute agent deletes its scratch copy after analysis completes (success or terminal failure), bounding local disk to the in-flight set.
+- [x] **CLOUDPIPE-05**: A failed or interrupted push/analysis is re-driven without orphaned scratch files or double-enqueues (idempotent, ledger-tracked).
 
 ### Deployment, config & docs (CLOUDDEPLOY)
 
