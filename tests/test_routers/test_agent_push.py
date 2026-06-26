@@ -137,6 +137,7 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id)
     compute = await seed_active_agent(session, agent_id="compute-01", kind="compute")
+    compute_id = compute.id  # capture before any expire_all() detaches the attribute
 
     task_router = FakeTaskRouter()
     async with _make_client(session, task_router, raw_token) as ac:
@@ -150,14 +151,15 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     # State advanced + ledger cleared in one transaction.
     file_row = await _file_row(session, file_id)
     assert file_row.state == FileState.PUSHED
+    sha = file_row.sha256_hash  # read before the next expire_all() to avoid a lazy reload
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "push_file ledger row must be cleared"
 
     # Exactly one process_file enqueued on the COMPUTE queue with the pinned payload.
-    compute_queue = task_router.queues[compute.id]
+    compute_queue = task_router.queues[compute_id]
     assert len(compute_queue.captured) == 1
     task_name, payload = compute_queue.captured[0]
     assert task_name == "process_file"
-    assert payload["expected_sha256"] == file_row.sha256_hash == "a" * 64
+    assert payload["expected_sha256"] == sha == "a" * 64
     assert payload["scratch_path"] == f"{_SCRATCH_DIR}/{file_id}.flac"
 
 
