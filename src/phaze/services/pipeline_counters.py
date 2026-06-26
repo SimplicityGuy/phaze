@@ -14,7 +14,7 @@ Unlike :func:`phaze.services.proposal.check_rate_limit` (a rolling 60s window th
 sets ``EXPIRE``), these are **durable** caches: plain ``INCR`` with no TTL. They are
 a fast cache for the per-job-type progress UI, NOT the rendering authority -- the DB
 reconcile (``get_stage_progress``, 35-03) owns every rendered ``done`` value (D-03:
-DB is truth, counters are a cache). The counter cardinality is bounded to the 8 fixed
+DB is truth, counters are a cache). The counter cardinality is bounded to the 9 fixed
 function names below -- no user-controlled key component, so no unbounded growth
 (threat T-35-02, accepted).
 """
@@ -26,7 +26,7 @@ from typing import Any
 
 _NAMESPACE = "phaze:pipeline"
 
-# The 8 pipeline functions that carry a deterministic key + maintained counters.
+# The 9 pipeline functions that carry a deterministic key + maintained counters.
 # MUST stay in sync with ``deterministic_key._KEY_BUILDERS`` -- the drift-guard test
 # (tests/test_deterministic_key.py) enforces the routable-task universe; this tuple
 # is the read-side enumeration ``read_counters`` reports over.
@@ -39,6 +39,7 @@ PIPELINE_FUNCTIONS: tuple[str, ...] = (
     "scrape_and_store_tracklist",
     "match_tracklist_to_discogs",
     "generate_proposals",
+    "push_file",
 )
 
 
@@ -76,7 +77,7 @@ async def incr_completed(redis: Any, function: str) -> None:
 
 
 async def read_counters(redis: Any) -> dict[str, dict[str, int]]:
-    """Return ``{function: {"enqueued": N, "completed": M}}`` for the 8 known functions.
+    """Return ``{function: {"enqueued": N, "completed": M}}`` for the 9 known functions.
 
     Reads both namespaces with two pipelined ``MGET`` calls (one round-trip each).
     Missing keys read back ``0``. The result is a fast cache reconciled against

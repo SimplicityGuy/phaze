@@ -1,7 +1,7 @@
 """Unit tests for the maintained Redis pipeline counters (Phase 35 Plan 01).
 
 Covers ``incr_enqueued`` / ``incr_completed`` (durable INCR, correct namespaced key)
-and ``read_counters`` (merged ``{function: {enqueued, completed}}`` over the 8 known
+and ``read_counters`` (merged ``{function: {enqueued, completed}}`` over the 9 known
 functions, with misses reading back 0). Uses the in-memory :class:`FakeRedis` double.
 """
 
@@ -58,9 +58,9 @@ async def test_read_counters_returns_merged_dict_for_all_functions() -> None:
     assert counters["generate_proposals"] == {"enqueued": 0, "completed": 0}
 
 
-async def test_read_counters_covers_eight_functions() -> None:
+async def test_read_counters_covers_all_functions() -> None:
     redis = FakeRedis()
     counters = await read_counters(redis)
-    assert len(counters) == 8
+    assert len(counters) == len(PIPELINE_FUNCTIONS) == 9
     for fn in PIPELINE_FUNCTIONS:
         assert counters[fn] == {"enqueued": 0, "completed": 0}

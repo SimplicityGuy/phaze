@@ -12,9 +12,9 @@ cannot recur. It must still:
 
   - be a NO-OP on a durable Phase-36 restart (saq_jobs has live rows) -- D-02 gate kept,
   - exclude a row whose key is a live saq_jobs key (still in flight),
-  - exclude the THREE predicate-covered agent stages when the file is domain-completed
-    (analyze: state in {ANALYZED, ANALYSIS_FAILED}; metadata/fingerprint: NOT in the
-    stage's pending set),
+  - exclude the predicate-covered agent stages when the file is domain-completed
+    (analyze: state in {ANALYZED, ANALYSIS_FAILED}; push: state in {PUSHED, ANALYZED,
+    ANALYSIS_FAILED}; metadata/fingerprint: NOT in the stage's pending set),
   - leave the FIVE live-keys-only stages (scan_live_set + 4 controller stages) to the
     live-key filter alone,
   - dedup an in-flight deterministic key to a ``skipped`` no-op (idempotency backstop),
@@ -702,19 +702,20 @@ async def test_non_held_process_file_row_still_routes_to_any_agent(
 
 @pytest.mark.parametrize("function", sorted(_KEY_BUILDERS))
 def test_every_keyed_function_is_predicate_covered_xor_live_keys_only(function: str) -> None:
-    """Each of the 8 keyed functions is EITHER domain-predicate-covered XOR live-keys-only.
+    """Each keyed function is EITHER domain-predicate-covered XOR live-keys-only.
 
-    No function may be both (double-classified) or neither (silently undefined). The three
-    predicate-covered functions are exactly process_file/extract_file_metadata/fingerprint_file.
+    No function may be both (double-classified) or neither (silently undefined). The
+    predicate-covered functions are process_file/extract_file_metadata/fingerprint_file plus
+    the Phase-50 push_file stage.
     """
     covered = function in _DOMAIN_COMPLETED_STAGES
     live_keys_only = function not in _DOMAIN_COMPLETED_STAGES
     assert covered != live_keys_only  # exclusive-or: exactly one is true
 
 
-def test_domain_completed_stages_are_exactly_the_three_agent_stages() -> None:
-    """The predicate-covered set is exactly process_file/extract_file_metadata/fingerprint_file."""
-    assert {"process_file", "extract_file_metadata", "fingerprint_file"} == _DOMAIN_COMPLETED_STAGES
+def test_domain_completed_stages_are_exactly_the_four_agent_stages() -> None:
+    """The predicate-covered set is exactly process_file/extract_file_metadata/fingerprint_file/push_file."""
+    assert {"process_file", "extract_file_metadata", "fingerprint_file", "push_file"} == _DOMAIN_COMPLETED_STAGES
     # And every covered stage is a real keyed function (no typos / drift from _KEY_BUILDERS).
     assert set(_KEY_BUILDERS) >= _DOMAIN_COMPLETED_STAGES
 
