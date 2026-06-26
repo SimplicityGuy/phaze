@@ -476,18 +476,21 @@ async with ctx["async_session"]() as session:
 | A5 | Attempt counter in the ledger payload JSONB (vs a FileRecord column). | Pitfall 4 | If the team prefers an explicit column, that's a migration; the ledger-payload approach is migration-free and recommended but not locked. |
 | A6 | The push-success follow-on goes through a control-side callback rather than an agent-side enqueue (refinement of D-01). | Critical Finding 1 | If a reviewer insists on the literal agent-side enqueue, it's blocked by the Postgres-free boundary (cannot read `sha256_hash` / resolve compute queue). Needs explicit sign-off that the callback IS the implementation of D-01. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does the push-mismatch re-drive go via `AWAITING_CLOUD` (re-enter staging, gives up the window slot) or a direct `push_file` re-enqueue (keeps the slot)?**
    - What we know: D-12 says "control plane re-drives the push up to max attempts."
    - What's unclear: whether the re-push reuses the in-flight slot or re-queues through the window.
    - Recommendation: **direct `push_file` re-enqueue keeping the PUSHING slot** (the file already occupies a window slot; sending it back to AWAITING_CLOUD would free the slot and let an unrelated file in, then this one re-competes — churns window accounting). Increment `push_attempt` in the ledger payload; on cap, transition `ANALYSIS_FAILED`.
+   - **(RESOLVED):** Direct `push_file` re-enqueue keeping the PUSHING slot — implemented in plan 50-05 Task 2 (mismatch callback increments `push_attempt` in ledger payload; caps → `ANALYSIS_FAILED`).
 
 2. **One callback endpoint or two?** A "pushed" success callback (transition + clear + enqueue `process_file`) and a "push-mismatch" callback (re-drive/cap) could be one `PATCH .../push/{file_id}` with a status body or two endpoints.
    - Recommendation: one endpoint, `{"status": "pushed" | "mismatch"}`, mirroring how `put_analysis` vs `report_analysis_failed` split — actually the existing code uses two endpoints (`put_analysis`, `report_analysis_failed`), so two endpoints is the more consistent choice. Planner's call.
+   - **(RESOLVED):** Two endpoints (mirrors the existing `put_analysis` / `report_analysis_failed` split) — implemented in plan 50-05.
 
 3. **Master enable toggle** (CLOUDDEPLOY-04) is Phase 51, but the staging cron will run `*/5` as soon as it's registered. Should Phase 50 gate the cron on a config flag now (no-op when no compute agent online already makes it inert)?
    - Recommendation: the `select_active_agent(kind="compute")` gate already makes the cron a clean no-op with no compute agent, so Phase 50 needs no extra toggle; the explicit master toggle is correctly Phase 51's. No action needed in 50.
+   - **(RESOLVED):** No Phase-50 toggle — the `select_active_agent(kind="compute")` gate makes the cron inert with no compute agent; the master toggle stays Phase 51 (CLOUDDEPLOY-04). Correctly absent from the plans.
 
 ## Environment Availability
 

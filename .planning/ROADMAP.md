@@ -577,15 +577,25 @@ Plans:
   5. A failed or interrupted push/analysis is re-driven with no orphaned scratch files and no double-enqueue (idempotent, ledger-tracked).
 
 **Plans**: 8 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 50-00-PLAN.md — Nyquist test stubs (push pipeline / staging cron / routing seam)
 - [ ] 50-01-PLAN.md — Contracts: PUSHING/PUSHED states, payload fields, push schemas, config knobs + _FILE secrets
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 50-02-PLAN.md — Totality guards (key/counter/router) + recovery classification of PUSHING/PUSHED
 - [ ] 50-03-PLAN.md — push_file rsync-over-SSH task + compute-only scratch janitor + agent-client callbacks
 - [ ] 50-04-PLAN.md — process_file scratch read + off-loop sha256 verify + finally cleanup; producer kwargs
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 50-05-PLAN.md — Internal-API push callbacks (pushed → enqueue process_file; mismatch → capped re-drive)
 - [ ] 50-06-PLAN.md — Routing seam → AWAITING_CLOUD hold + stage_cloud_window ≤N bounded cron
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 50-07-PLAN.md — Dashboard "Staged (pushing)" + "Analyzing (cloud)" count cards
 
 ### Phase 51: Deployment, config & docs
