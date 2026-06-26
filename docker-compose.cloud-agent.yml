@@ -43,7 +43,12 @@
 services:
   worker:
     image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64
-    command: uv run saq phaze.tasks.agent_worker.settings
+    # Invoke the system interpreter directly — NEVER `uv run`. This arm64 image is built on
+    # Python 3.13 with --system installs (no .venv); `uv run` re-validates requires-python
+    # >=3.14 and would fail to boot. Mirrors the Dockerfile.agent-arm64 CMD exactly. The x86
+    # docker-compose.agent.yml uses `uv run saq …` because that image is 3.14 with a .venv —
+    # do NOT copy that command here (D-47-PY).
+    command: python3 -m saq phaze.tasks.agent_worker.settings
     network_mode: host
     env_file: .env
     environment:

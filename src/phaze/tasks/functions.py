@@ -189,6 +189,18 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                 # CR-01 defense-in-depth: the scratch copy is gone (a prior attempt raced cleanup,
                 # or the push never landed). Route to a re-pushable mismatch rather than let the
                 # FileNotFoundError escape uncaught and strand the file in PUSHED with no callback.
+                # T-50-scratch-skew diagnostic: a persistent miss here most often means the
+                # control plane's PHAZE_COMPUTE_SCRATCH_DIR (which built this path) does not match
+                # the fileserver/agent PHAZE_CLOUD_SCRATCH_DIR (where push_file rsync'd the file),
+                # which otherwise only surfaces as an endless silent re-push loop. Name the path so
+                # the operator can diagnose a scratch-dir skew instead of guessing.
+                logger.warning(
+                    "process_file: pushed scratch copy not found at the expected path — routing to "
+                    "push-mismatch for re-push. If this repeats for every cloud file, the control "
+                    "plane PHAZE_COMPUTE_SCRATCH_DIR does not match the agent PHAZE_CLOUD_SCRATCH_DIR.",
+                    file_id=str(payload.file_id),
+                    scratch_path=payload.scratch_path,
+                )
                 await ctx["api_client"].report_push_mismatch(payload.file_id)
                 return {"file_id": str(payload.file_id), "status": "push_mismatch"}
             if actual_sha256 != payload.expected_sha256:

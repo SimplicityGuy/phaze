@@ -118,6 +118,35 @@ def test_worker_image_is_arm64_ghcr_pinned() -> None:
     assert image.endswith("-arm64"), f"worker image MUST end with -arm64 (D-08; no multi-arch manifest exists); got {image!r}"
 
 
+def test_worker_command_invokes_system_python_not_uv() -> None:
+    """D-47-PY: the arm64 worker command must invoke python3 directly, never ``uv run``.
+
+    The ``-arm64`` image is built on Python 3.13 with ``--system`` installs (no
+    ``.venv``). A docker-compose ``command:`` override unconditionally replaces the
+    Dockerfile ``CMD``; if it uses the ``uv`` launcher, uv re-validates
+    ``requires-python >=3.14`` against the 3.13 interpreter and the container exits
+    before SAQ starts. The x86 ``docker-compose.agent.yml`` legitimately uses
+    ``uv run saq …`` (3.14 + .venv image) — this test guards against that pattern
+    being copied here. Either omit ``command:`` (inherit the Dockerfile CMD) or set
+    it to the ``python3 -m saq …`` form; both are accepted, ``uv`` is not.
+    """
+    data = _load_cloud_agent_compose()
+    worker = data["services"]["worker"]
+    command = worker.get("command")
+    if command is None:
+        # No override → the Dockerfile.agent-arm64 CMD (python3 -m saq …) applies. Fine.
+        return
+    tokens = command.split() if isinstance(command, str) else [str(t) for t in command]
+    assert "uv" not in tokens, (
+        "cloud-agent worker command must NOT use the uv launcher on the arm64 (py3.13/--system) "
+        f"image — uv re-validates requires-python >=3.14 and the container fails to boot; got {command!r}"
+    )
+    assert tokens[:3] == ["python3", "-m", "saq"], (
+        f"cloud-agent worker command must invoke the system interpreter as 'python3 -m saq …' to match Dockerfile.agent-arm64 CMD; got {command!r}"
+    )
+    assert "phaze.tasks.agent_worker.settings" in tokens, f"cloud-agent worker command must run the agent_worker settings module; got {command!r}"
+
+
 def test_worker_uses_named_scratch_volume() -> None:
     """D-07: the scratch mount source is a named docker volume declared under top-level volumes:.
 
