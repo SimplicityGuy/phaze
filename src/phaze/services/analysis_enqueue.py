@@ -48,12 +48,15 @@ async def enqueue_process_file(
     *,
     fine_cap: int | None = None,
     coarse_cap: int | None = None,
+    expected_sha256: str | None = None,
+    scratch_path: str | None = None,
 ) -> Any:
     """Enqueue ONE ``process_file`` job with the deterministic key + full payload + policy.
 
     Builds a COMPLETE ``ProcessFilePayload`` (the five required fields: the FileRecord's
     ``id`` / ``original_path`` / ``file_type`` plus the resolved ``agent_id`` and
-    ``models_path``, plus the optional Phase-44 ``fine_cap`` / ``coarse_cap`` overrides
+    ``models_path``, plus the optional Phase-44 ``fine_cap`` / ``coarse_cap`` overrides and
+    the optional Phase-50 ``expected_sha256`` / ``scratch_path`` cloud-push fields, all of
     which default ``None``) and serializes it via ``model_dump(mode="json")`` so the UUID
     round-trips as a string and the agent worker's ``ProcessFilePayload.model_validate``
     (``extra="forbid"``) accepts it. Mirrors the working ``agent_files.py`` pattern --
@@ -74,6 +77,12 @@ async def enqueue_process_file(
         # unchanged; default None preserves the legacy 60/30 AgentSettings behavior in the worker.
         fine_cap=fine_cap,
         coarse_cap=coarse_cap,
+        # Phase 50 (D-11): pin the pushed scratch copy + control-side expected sha256 for a cloud
+        # file. Keyword-only + trailing + default None so the bulk local producer (_enqueue_analysis_jobs)
+        # that passes neither stays byte-identical under extra="forbid"; when set, the worker reads/
+        # verifies/cleans up the ephemeral scratch copy instead of original_path.
+        expected_sha256=expected_sha256,
+        scratch_path=scratch_path,
     )
     # Phase 36: the PostgresQueue broker pool is built ``open=False`` and, unlike the old
     # redis-backed Queue, does NOT auto-connect on first enqueue. ``connect()`` is idempotent
