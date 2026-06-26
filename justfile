@@ -25,6 +25,16 @@ up:
 up-agent:
     docker compose -f docker-compose.agent.yml up -d
 
+[doc('Start the OCI A1 cloud compute-agent stack (standalone docker-compose.cloud-agent.yml)')]
+[group('dev')]
+cloud-agent-up:
+    docker compose -f docker-compose.cloud-agent.yml up -d
+
+[doc('Stop the OCI A1 cloud compute-agent stack')]
+[group('dev')]
+cloud-agent-down:
+    docker compose -f docker-compose.cloud-agent.yml down
+
 [doc('Start both stacks on one host (developer convenience)')]
 [group('dev')]
 up-all:
