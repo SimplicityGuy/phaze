@@ -137,7 +137,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 48. Compute-agent type | v5.0 | 3/3 | Complete   | 2026-06-25 |
 | 49. Duration routing & backfill | v5.0 | 4/4 | Complete    | 2026-06-25 |
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
-| 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
+| 51. Deployment, config & docs | v5.0 | 3/4 | In Progress|  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -614,9 +614,9 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 51-01-PLAN.md — Master toggle: cloud_burst_enabled field + 3 gate sites (routing seam, staging cron, backfill) + unit tests (CLOUDDEPLOY-04, CLOUDDEPLOY-02)
-- [ ] 51-02-PLAN.md — docker-compose.cloud-agent.yml (worker-only, arm64, named scratch, host Tailscale) + invariant test (CLOUDDEPLOY-01)
-- [ ] 51-04-PLAN.md — Homelab change prompt: OCI A1 OpenTofu spec + Tailscale ACL JSON + least-privilege broker role SQL (CLOUDDEPLOY-03)
+- [x] 51-01-PLAN.md — Master toggle: cloud_burst_enabled field + 3 gate sites (routing seam, staging cron, backfill) + unit tests (CLOUDDEPLOY-04, CLOUDDEPLOY-02)
+- [x] 51-02-PLAN.md — docker-compose.cloud-agent.yml (worker-only, arm64, named scratch, host Tailscale) + invariant test (CLOUDDEPLOY-01)
+- [x] 51-04-PLAN.md — Homelab change prompt: OCI A1 OpenTofu spec + Tailscale ACL JSON + least-privilege broker role SQL (CLOUDDEPLOY-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
