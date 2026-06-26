@@ -36,6 +36,8 @@ from phaze.services.pipeline import (
     get_metadata_pending_files,
     get_pipeline_stats,
     get_proposal_pending_batches,
+    get_pushed_count,
+    get_pushing_count,
     get_queue_activity,
     get_scan_busy_count,
     get_scrape_busy_count,
@@ -477,6 +479,13 @@ async def dashboard(
     # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
 
+    # Phase 50 (50-07, D-09): the two bounded cloud-window count cards -- "Staged (pushing)"
+    # (FileState.PUSHING, mid-rsync) and "Analyzing (cloud)" (FileState.PUSHED, landed/within
+    # analysis). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
+    # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
+    pushing_count = await get_pushing_count(session)
+    analyzing_cloud_count = await get_pushed_count(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -494,6 +503,8 @@ async def dashboard(
         "straggler_count": straggler_count,
         "analysis_failed_count": analysis_failed_count,
         "awaiting_cloud_count": awaiting_cloud_count,
+        "pushing_count": pushing_count,
+        "analyzing_cloud_count": analyzing_cloud_count,
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         **activity,
@@ -530,6 +541,11 @@ async def pipeline_stats_partial(
     # on every 5s poll so the awaiting_cloud_card stays live via its OOB swap. Degrade-safe at the
     # service layer (Plan 01), so NO router try/except -- mirrors the straggler/failed wiring.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
+    # Phase 50 (50-07, D-09): the same PUSHING/PUSHED window counts the dashboard seeds, re-pushed
+    # on every 5s poll so the staged_pushing_card / analyzing_cloud_card stay live via their OOB
+    # swaps. Degrade-safe at the service layer, so NO router try/except -- mirrors the awaiting wiring.
+    pushing_count = await get_pushing_count(session)
+    analyzing_cloud_count = await get_pushed_count(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -545,6 +561,8 @@ async def pipeline_stats_partial(
             "straggler_count": straggler_count,
             "analysis_failed_count": analysis_failed_count,
             "awaiting_cloud_count": awaiting_cloud_count,
+            "pushing_count": pushing_count,
+            "analyzing_cloud_count": analyzing_cloud_count,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
