@@ -30,6 +30,8 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 **Phase 47 (v5.0, complete 2026-06-24):** Official arm64 essentia agent image — `Dockerfile.agent-arm64` builds essentia from source (the essentia-tensorflow wheel is x86-only) on `python:3.13-slim-bookworm` against TF 2.20.0 with all four spike fixes baked in; CI builds it on a native `ubuntu-24.04-arm` runner and publishes `-arm64`-tagged images to GHCR *only* after a numeric-parity guard compares arm64 `analyze_file` output against an x86 golden. Validated requirements: CLOUDIMG-01/02/03. Unlocks the OCI Ampere A1 free-tier compute agent for Phases 48-51.
 
+**Phase 50 (v5.0, complete 2026-06-26):** Cloud push pipeline — a file-server agent rsyncs a cloud-routed long file to the compute agent's scratch dir over SSH-over-Tailscale (`push_file` task, shell-free argv with `--` terminator + pinned host keys + 0600 secret temp files); the compute agent sha256-verifies the scratch copy against `FileRecord` before analyzing and unlinks it in a `finally` (kept on retryable failure so the SAQ retry can re-verify). New `PUSHING`/`PUSHED` states; a `stage_cloud_window` cron keeps ≤N files staged-or-in-flight ("stay one ahead", default 2) under a pg advisory lock; control-side `pushed`/`mismatch` internal-API callbacks drive the handoff (idempotent, ledger-tracked) with two D-09 dashboard count cards. Validated requirements: CLOUDPIPE-01..05. Live rsync-over-Tailscale transfer to a real compute agent is Phase 51 (deploy/provisioning).
+
 - ~14,300 lines of Python source + ~28,000 lines of tests across 29 phases, 94+ plans total (v1.0–v4.0)
 - Tech stack: FastAPI, SQLAlchemy (async), SAQ + Redis (per-agent queues), litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, watchdog, cryptography (self-signed CA), tenacity, respx, HTMX + Tailwind + Alpine.js
 - Two Docker Compose stacks: `docker-compose.yml` (app-server: api with TLS via internal CA, controller worker, postgres, redis with `requirepass` + LAN bind, no file mounts) and `docker-compose.agent.yml` (file-server: agent worker, watcher, audfprint + panako sidecars)
@@ -233,4 +235,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-24 — started milestone v5.0 Cloud Burst Analysis*
+*Last updated: 2026-06-26 — Phase 50 (cloud push pipeline) complete*
