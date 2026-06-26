@@ -41,6 +41,13 @@ class FileState(enum.StrEnum):
     # on-prem file-server. Code-only -- "awaiting_cloud" is 14 chars and fits the existing
     # String(30) state column, so no enum migration is needed (ANALYSIS_FAILED precedent).
     AWAITING_CLOUD = "awaiting_cloud"
+    # Phase 50 D-08: cloud push pipeline states. A long file held in AWAITING_CLOUD is
+    # staged by the bounded cloud-window cron: PUSHING == rsync in progress to the compute
+    # agent's scratch dir; PUSHED == landed on compute scratch, awaiting/within analysis.
+    # Code-only StrEnum over the existing String(30) state column ("pushing"/"pushed" are 7/6
+    # chars) → no enum migration is needed (ANALYSIS_FAILED / AWAITING_CLOUD precedent).
+    PUSHING = "pushing"
+    PUSHED = "pushed"
     PROPOSAL_GENERATED = "proposal_generated"
     APPROVED = "approved"
     REJECTED = "rejected"

@@ -44,6 +44,7 @@ import asyncio
 import contextlib
 import os
 from pathlib import Path
+import shutil
 from typing import Any
 
 import redis.asyncio as redis_async
@@ -66,10 +67,40 @@ from phaze.tasks.functions import process_file
 from phaze.tasks.heartbeat import _heartbeat_loop
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
+from phaze.tasks.push import push_file
 from phaze.tasks.scan import scan_directory, scan_live_set
 
 
 logger = structlog.get_logger(__name__)
+
+
+def _sweep_scratch(scratch_dir: Path) -> None:
+    """Remove every file (and the ``.rsync-partial`` dir) under the compute scratch dir (D-14).
+
+    The compute-only startup janitor's worker. Bounds scratch disk to the in-flight set: a
+    hard-killed worker can leave a half-pushed file or a ``.rsync-partial`` directory behind, and
+    any file still genuinely needed is re-pushed by the staging cron (the deterministic
+    ``push_file:<file_id>`` key + FileState window make this safe). Tolerates a missing dir so a
+    fresh compute host (scratch volume not yet created) starts cleanly. stdlib-only -- keeps the
+    module Postgres-free (tests/test_task_split.py)."""
+    if not scratch_dir.exists():
+        return
+    for entry in scratch_dir.iterdir():
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+
+
+async def _maybe_sweep_scratch(cfg: AgentSettings) -> None:
+    """Compute-only startup janitor gate (D-14).
+
+    Sweeps ONLY when ``cfg.kind == "compute"`` AND a ``cloud_scratch_dir`` is configured. The
+    file-server agent runs this SAME module (zero compute-specific worker code) and owns no scratch
+    dir, so it must NOT sweep. Runs off the event loop via ``asyncio.to_thread`` (parity with the
+    ``ensure_models_present`` startup step)."""
+    if cfg.kind == "compute" and cfg.cloud_scratch_dir:
+        await asyncio.to_thread(_sweep_scratch, Path(cfg.cloud_scratch_dir))
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -118,6 +149,13 @@ async def startup(ctx: dict[str, Any]) -> None:
     # starvation/timeout that motivated this change (260608-u8g). to_thread accepts
     # a sync callable and propagates its return value and exceptions unchanged.
     await asyncio.to_thread(ensure_models_present, Path(cfg.models_path))
+
+    # Step 3b (Phase 50 D-14): compute-only scratch janitor. Sweep orphaned push scratch off the
+    # event loop BEFORE the worker starts dispatching jobs, so a hard-killed prior worker cannot
+    # leak disk. Gated on kind == "compute" + cloud_scratch_dir (the fileserver runs the same
+    # module and owns no scratch dir). This is the agent-side analog of the controller's startup
+    # reconciliation. Placed after the models check (also off-loop) and before the dispatch loop.
+    await _maybe_sweep_scratch(cfg)
 
     # Step 4: Queue-name mismatch guard (Pitfall 1).
     expected_queue = f"phaze-agent-{identity.agent_id}"
@@ -236,6 +274,7 @@ settings = {
         scan_live_set,
         scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
         execute_approved_batch,
+        push_file,  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
     ],
     # Phase 46: NO heartbeat CronJob. The liveness heartbeat runs as an asyncio
     # background task launched in startup (ctx["heartbeat_task"]) so it cannot be

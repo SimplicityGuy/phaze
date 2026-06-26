@@ -36,6 +36,8 @@ from phaze.services.pipeline import (
     get_metadata_pending_files,
     get_pipeline_stats,
     get_proposal_pending_batches,
+    get_pushed_count,
+    get_pushing_count,
     get_queue_activity,
     get_scan_busy_count,
     get_scrape_busy_count,
@@ -256,61 +258,59 @@ async def _route_discovered_by_duration(
     threshold_sec: int,
     models_path: str,
 ) -> dict[str, int]:
-    """Route each DISCOVERED file to a queue by its duration (Phase 49, D-06/D-11/D-02).
+    """Route each DISCOVERED file to a queue by its duration (Phase 49 seam, reshaped in Phase 50).
 
     The single per-file routing decision shared by the "Run Analysis" trigger (this module)
-    and the Plan-03 backfill producer, so the two paths cannot drift. The two kind-scoped
-    active agents are resolved INDEPENDENTLY -- each in its OWN ``try/except
-    NoActiveAgentError`` -- exactly ONCE before the loop (never per file: that was the
-    RESEARCH anti-pattern). Each queue is obtained via ``app_state.task_router.queue_for``
-    (the Phase-30 invariant -- never the consumer-less default queue).
+    and the Plan-03 backfill producer, so the two paths cannot drift. Only the FILESERVER
+    agent is resolved here (in its OWN ``try/except NoActiveAgentError``, exactly ONCE before
+    the loop); its queue is obtained via ``app_state.task_router.queue_for`` (the Phase-30
+    invariant -- never the consumer-less default queue).
 
     Per file, on the captured ``(file, duration)`` tuples:
 
     - ``duration is None`` or ``< threshold_sec`` AND a fileserver agent is online -> enqueue
-      ``process_file`` onto the fileserver queue (``local``), unchanged from today.
+      ``process_file`` onto the fileserver queue (``local``), unchanged.
     - ``duration is None`` or ``< threshold_sec`` AND NO fileserver agent online -> count as
       ``skipped`` (cannot route locally) -- NO enqueue, NO state change, the run continues.
-    - ``duration >= threshold_sec`` AND a compute agent is online -> enqueue ``process_file``
-      onto the compute queue (``cloud``), INDEPENDENT of fileserver availability.
-    - ``duration >= threshold_sec`` AND NO compute agent online -> set the row's state to
-      ``AWAITING_CLOUD`` (``awaiting``); it is NEVER silently analyzed locally (the
-      load-bearing CLOUDROUTE-02 safety invariant, T-49-03).
+    - ``duration >= threshold_sec`` -> ALWAYS set the row's state to ``AWAITING_CLOUD``
+      (``awaiting``), regardless of whether a compute agent is online (Phase 50 CLOUDPIPE-01).
+
+    Phase 50 reshape (T-50-bypass): there is NO direct-to-compute enqueue here any more. A long
+    file is ALWAYS HELD in AWAITING_CLOUD; the bounded ``stage_cloud_window`` controller cron is
+    the SINGLE entry to the compute pipeline (it tops the ≤N window up to ``cloud_max_in_flight``
+    by staging ``push_file`` for the oldest held files). Holding in exactly one place is what
+    makes the window unbypassable -- a 144-file backlog can never blow up the compute scratch
+    disk. A held long file is NEVER silently analyzed locally (the load-bearing CLOUDROUTE-02
+    safety invariant, T-49-03).
 
     The held AWAITING_CLOUD UPDATEs are committed with an explicit ``await session.commit()``
     BEFORE the enqueues are backgrounded (``get_session`` does NOT auto-commit -- RESEARCH
-    Pitfall 3). ``enqueue_process_file`` is reused verbatim for BOTH local and cloud so the
-    identical deterministic key (``process_file:<id>``) drives cross-path dedup (D-10).
+    Pitfall 3).
 
-    Returns ``{"local": N, "cloud": M, "awaiting": K, "skipped": S, "no_active_agent": 0|1}``;
-    ``no_active_agent`` is 1 only when BOTH agent kinds are absent (nothing routable at all),
-    the sole condition under which the caller surfaces the no-active-agent response.
+    Returns ``{"local": N, "cloud": 0, "awaiting": K, "skipped": S, "no_active_agent": 0|1}``;
+    ``cloud`` is always 0 (no direct compute enqueue remains). ``no_active_agent`` is 1 when NO
+    fileserver agent is online (nothing can route locally): the caller then surfaces the
+    no-active-agent response, whose template still reports any HELD long files (WR-01) via the
+    ``awaiting`` count -- a held long file is real, durable work the staging cron will drain.
     """
     try:
         fileserver_agent: Agent | None = await enqueue_router.select_active_agent(session, kind="fileserver")
     except enqueue_router.NoActiveAgentError:
         fileserver_agent = None
-    try:
-        compute_agent: Agent | None = await enqueue_router.select_active_agent(session, kind="compute")
-    except enqueue_router.NoActiveAgentError:
-        compute_agent = None
 
     fileserver_q = app_state.task_router.queue_for(fileserver_agent.id) if fileserver_agent is not None else None
-    compute_q = app_state.task_router.queue_for(compute_agent.id) if compute_agent is not None else None
 
     local_files: list[FileRecord] = []
-    cloud_files: list[FileRecord] = []
     skipped = 0
     held = 0
 
     for file, duration in files_with_duration:
         is_long = duration is not None and duration >= threshold_sec
         if is_long:
-            if compute_agent is not None:
-                cloud_files.append(file)
-            else:
-                file.state = FileState.AWAITING_CLOUD
-                held += 1
+            # Phase 50 (CLOUDPIPE-01): ALWAYS hold -- no direct-to-compute path. The bounded
+            # stage_cloud_window cron is the single, unbypassable entry to the compute pipeline.
+            file.state = FileState.AWAITING_CLOUD
+            held += 1
         elif fileserver_agent is not None:
             local_files.append(file)
         else:
@@ -325,17 +325,13 @@ async def _route_discovered_by_duration(
         local_task = asyncio.create_task(_enqueue_analysis_jobs(fileserver_q, local_files, fileserver_agent.id, models_path))
         _background_tasks.add(local_task)
         local_task.add_done_callback(_background_tasks.discard)
-    if cloud_files and compute_q is not None and compute_agent is not None:
-        cloud_task = asyncio.create_task(_enqueue_analysis_jobs(compute_q, cloud_files, compute_agent.id, models_path))
-        _background_tasks.add(cloud_task)
-        cloud_task.add_done_callback(_background_tasks.discard)
 
     return {
         "local": len(local_files),
-        "cloud": len(cloud_files),
+        "cloud": 0,
         "awaiting": held,
         "skipped": skipped,
-        "no_active_agent": int(fileserver_agent is None and compute_agent is None),
+        "no_active_agent": int(fileserver_agent is None),
     }
 
 
@@ -483,6 +479,13 @@ async def dashboard(
     # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
 
+    # Phase 50 (50-07, D-09): the two bounded cloud-window count cards -- "Staged (pushing)"
+    # (FileState.PUSHING, mid-rsync) and "Analyzing (cloud)" (FileState.PUSHED, landed/within
+    # analysis). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
+    # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
+    pushing_count = await get_pushing_count(session)
+    analyzing_cloud_count = await get_pushed_count(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -500,6 +503,8 @@ async def dashboard(
         "straggler_count": straggler_count,
         "analysis_failed_count": analysis_failed_count,
         "awaiting_cloud_count": awaiting_cloud_count,
+        "pushing_count": pushing_count,
+        "analyzing_cloud_count": analyzing_cloud_count,
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         **activity,
@@ -536,6 +541,11 @@ async def pipeline_stats_partial(
     # on every 5s poll so the awaiting_cloud_card stays live via its OOB swap. Degrade-safe at the
     # service layer (Plan 01), so NO router try/except -- mirrors the straggler/failed wiring.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
+    # Phase 50 (50-07, D-09): the same PUSHING/PUSHED window counts the dashboard seeds, re-pushed
+    # on every 5s poll so the staged_pushing_card / analyzing_cloud_card stay live via their OOB
+    # swaps. Degrade-safe at the service layer, so NO router try/except -- mirrors the awaiting wiring.
+    pushing_count = await get_pushing_count(session)
+    analyzing_cloud_count = await get_pushed_count(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -551,6 +561,8 @@ async def pipeline_stats_partial(
             "straggler_count": straggler_count,
             "analysis_failed_count": analysis_failed_count,
             "awaiting_cloud_count": awaiting_cloud_count,
+            "pushing_count": pushing_count,
+            "analyzing_cloud_count": analyzing_cloud_count,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,

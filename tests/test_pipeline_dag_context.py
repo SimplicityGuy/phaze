@@ -359,3 +359,92 @@ async def test_dashboard_full_page_renders_200_with_dag_context(client: AsyncCli
     response = await client.get("/pipeline/")
     assert response.status_code == 200
     assert "Pipeline Dashboard" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 50 (50-07, D-09): the bounded cloud-window count cards — PUSHING ("Staged
+# pushing") + PUSHED ("Analyzing cloud") — must ride BOTH the dashboard full-page
+# context and the 5s stats-poll context, degrade-safe (never 500 the poll).
+# ---------------------------------------------------------------------------
+
+
+def _window_file(i: int, state: FileState) -> FileRecord:
+    """A FileRecord seed in the given state (unique hash/path per ``i``)."""
+    uid = uuid.uuid4()
+    return FileRecord(
+        id=uid,
+        sha256_hash=f"w{i:063d}"[:64],
+        original_path=f"/music/win{i}.mp3",
+        original_filename=f"win{i}.mp3",
+        current_path=f"/music/win{i}.mp3",
+        file_type="mp3",
+        file_size=1000,
+        state=state,
+    )
+
+
+async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch, path: str) -> dict[str, object]:
+    """GET ``path`` while capturing the TemplateResponse context the router builds.
+
+    Patches the router's ``templates.TemplateResponse`` to record the ``context`` dict and
+    return a trivial 200 — decoupling the context-wiring assertion from template rendering
+    (the partials may not yet be included). Mirrors the OOB-contract id-on-both-renders test.
+    """
+    from starlette.responses import HTMLResponse
+
+    from phaze.routers import pipeline as pipeline_router
+
+    captured: dict[str, object] = {}
+
+    def _spy(**kwargs: object) -> HTMLResponse:
+        captured.update(kwargs.get("context", {}))  # type: ignore[arg-type]
+        return HTMLResponse("ok")
+
+    monkeypatch.setattr(pipeline_router.templates, "TemplateResponse", _spy)
+    response = await client.get(path)
+    assert response.status_code == 200
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_dashboard_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /pipeline/ context carries pushing_count (PUSHING) + analyzing_cloud_count (PUSHED)."""
+    session.add_all(
+        [
+            _window_file(1, FileState.PUSHING),
+            _window_file(2, FileState.PUSHING),
+            _window_file(3, FileState.PUSHED),
+        ]
+    )
+    await session.commit()
+
+    ctx = await _capture_context(client, monkeypatch, "/pipeline/")
+    assert ctx["pushing_count"] == 2
+    assert ctx["analyzing_cloud_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stats_poll_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /pipeline/stats context re-pushes pushing_count + analyzing_cloud_count on the 5s poll."""
+    session.add_all(
+        [
+            _window_file(4, FileState.PUSHING),
+            _window_file(5, FileState.PUSHED),
+            _window_file(6, FileState.PUSHED),
+        ]
+    )
+    await session.commit()
+
+    ctx = await _capture_context(client, monkeypatch, "/pipeline/stats")
+    assert ctx["pushing_count"] == 1
+    assert ctx["analyzing_cloud_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_window_counts_present_in_both_contexts_when_empty(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both keys are ALWAYS present (default 0) on the dashboard AND the poll — never missing."""
+    dash = await _capture_context(client, monkeypatch, "/pipeline/")
+    poll = await _capture_context(client, monkeypatch, "/pipeline/stats")
+    for ctx in (dash, poll):
+        assert ctx["pushing_count"] == 0
+        assert ctx["analyzing_cloud_count"] == 0

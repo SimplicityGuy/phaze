@@ -78,7 +78,7 @@ Analyze long-duration audio (≥90 min) on a free OCI Ampere A1 (arm64) "compute
 - [x] **Phase 47: Official arm64 essentia agent image** — build essentia from source on a native arm64 CI runner, publish to GHCR with a parity guard (completed 2026-06-24)
 - [x] **Phase 48: Compute-agent type** — register a media-less `kind="compute"` agent that drains its queue + PUTs results, surfaced on the Agents page (completed 2026-06-25)
 - [x] **Phase 49: Duration routing & backfill** — route ≥90min files to an online compute agent (else "awaiting cloud"), backfill the 144 timed-out long files via the Phase 45 ledger (completed 2026-06-25)
-- [ ] **Phase 50: Push pipeline** — rsync-over-Tailscale "stay one ahead" push to the compute agent's scratch dir, sha256-verify, ephemeral cleanup, idempotent re-drive
+- [x] **Phase 50: Push pipeline** — rsync-over-Tailscale "stay one ahead" push to the compute agent's scratch dir, sha256-verify, ephemeral cleanup, idempotent re-drive (completed 2026-06-26)
 - [ ] **Phase 51: Deployment, config & docs** — cloud-agent compose + Tailscale, all config knobs (`_FILE` secrets), OCI A1 / Tailscale-ACL runbook, master enable toggle
 
 Detail sections under "## Phase Details (v5.0)" below.
@@ -136,7 +136,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete    | 2026-06-24 |
 | 48. Compute-agent type | v5.0 | 3/3 | Complete   | 2026-06-25 |
 | 49. Duration routing & backfill | v5.0 | 4/4 | Complete    | 2026-06-25 |
-| 50. Push pipeline | v5.0 | 0/0 | Not started | - |
+| 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
 | 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -576,7 +576,27 @@ Plans:
   4. The control plane keeps at most the configured number of cloud files staged-or-in-flight ("stay one ahead", default 2 = one analyzing + one staged), driven by the scheduling ledger.
   5. A failed or interrupted push/analysis is re-driven with no orphaned scratch files and no double-enqueue (idempotent, ledger-tracked).
 
-**Plans**: TBD
+**Plans**: 8 plans
+Plans:
+**Wave 1**
+
+- [x] 50-00-PLAN.md — Nyquist test stubs (push pipeline / staging cron / routing seam)
+- [x] 50-01-PLAN.md — Contracts: PUSHING/PUSHED states, payload fields, push schemas, config knobs + _FILE secrets
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 50-02-PLAN.md — Totality guards (key/counter/router) + recovery classification of PUSHING/PUSHED
+- [x] 50-03-PLAN.md — push_file rsync-over-SSH task + compute-only scratch janitor + agent-client callbacks
+- [x] 50-04-PLAN.md — process_file scratch read + off-loop sha256 verify + finally cleanup; producer kwargs
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 50-05-PLAN.md — Internal-API push callbacks (pushed → enqueue process_file; mismatch → capped re-drive)
+- [x] 50-06-PLAN.md — Routing seam → AWAITING_CLOUD hold + stage_cloud_window ≤N bounded cron
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 50-07-PLAN.md — Dashboard "Staged (pushing)" + "Analyzing (cloud)" count cards
 
 ### Phase 51: Deployment, config & docs
 

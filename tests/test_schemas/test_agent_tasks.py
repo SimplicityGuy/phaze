@@ -17,6 +17,7 @@ from phaze.schemas.agent_tasks import (
     ExtractMetadataPayload,
     FingerprintFilePayload,
     ProcessFilePayload,
+    PushFilePayload,
     ScanDirectoryPayload,
     ScanLiveSetPayload,
 )
@@ -116,6 +117,94 @@ def test_process_file_payload_explicit_caps_round_trip() -> None:
     assert rt == p
     assert rt.fine_cap == 0
     assert rt.coarse_cap == 0
+
+
+def test_process_file_payload_scratch_fields_default_none() -> None:
+    """Phase 50 D-11: the five-field local producer leaves expected_sha256/scratch_path None.
+
+    Absence preserves byte-identical local-file analysis under extra='forbid'.
+    """
+    p = ProcessFilePayload(
+        file_id=uuid.uuid4(),
+        original_path="/music/a.mp3",
+        file_type="mp3",
+        agent_id="agent-a",
+        models_path="/opt/essentia/models",
+    )
+    assert p.expected_sha256 is None
+    assert p.scratch_path is None
+
+
+def test_process_file_payload_accepts_scratch_fields() -> None:
+    """Phase 50: expected_sha256 + scratch_path are accepted and round-trip as strings."""
+    p = ProcessFilePayload(
+        file_id=uuid.uuid4(),
+        original_path="/music/a.mp3",
+        file_type="mp3",
+        agent_id="agent-a",
+        models_path="/opt/essentia/models",
+        expected_sha256="a" * 64,
+        scratch_path="/scratch/abc.mp3",
+    )
+    assert p.expected_sha256 == "a" * 64
+    assert p.scratch_path == "/scratch/abc.mp3"
+    rt = ProcessFilePayload.model_validate_json(p.model_dump_json())
+    assert rt == p
+
+
+# -----------------------
+# PushFilePayload (Phase 50)
+# -----------------------
+
+
+def test_push_file_payload_minimal_valid() -> None:
+    """PushFilePayload carries exactly the four push-initiation fields."""
+    p = PushFilePayload(
+        file_id=uuid.uuid4(),
+        original_path="/media/a.mp3",
+        file_type="mp3",
+        agent_id="fileserver-a",
+    )
+    assert p.file_type == "mp3"
+    assert p.agent_id == "fileserver-a"
+
+
+def test_push_file_payload_field_set() -> None:
+    """Exactly four fields — file_id, original_path, file_type, agent_id."""
+    fields = PushFilePayload.model_fields
+    assert set(fields.keys()) == {"file_id", "original_path", "file_type", "agent_id"}
+
+
+def test_push_file_payload_requires_file_id() -> None:
+    """file_id is required (the deterministic-key builder reads k['file_id'])."""
+    with pytest.raises(pydantic.ValidationError):
+        PushFilePayload.model_validate(
+            {"original_path": "/x", "file_type": "mp3", "agent_id": "a"},
+        )
+
+
+def test_push_file_payload_rejects_non_uuid_file_id() -> None:
+    """file_id must be a UUID."""
+    with pytest.raises(pydantic.ValidationError):
+        PushFilePayload.model_validate(
+            {"file_id": "not-uuid", "original_path": "/x", "file_type": "mp3", "agent_id": "a"},
+        )
+
+
+def test_push_file_payload_rejects_unknown_field() -> None:
+    """extra='forbid' on every SAQ payload."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        PushFilePayload.model_validate(
+            {
+                "file_id": str(uuid.uuid4()),
+                "original_path": "/x",
+                "file_type": "mp3",
+                "agent_id": "a",
+                "rogue": "x",
+            },
+        )
+
+    assert any(e.get("type") == "extra_forbidden" for e in exc_info.value.errors())
 
 
 # -----------------------

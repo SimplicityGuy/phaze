@@ -1,0 +1,26 @@
+{# Phase 50 (50-07, D-09): "Analyzing (cloud)" cloud-window count card.
+
+   analyzing_cloud_count = files in FileState.PUSHED: the right half of the bounded ≤N cloud
+   window -- files that finished rsync and have landed on the compute agent's scratch dir,
+   awaiting or within remote analysis. Paired with the "Staged (pushing)" card (PUSHING) it
+   makes the "one ahead" window visible at a glance (CLOUDPIPE-01 observability).
+
+   The count arrives in the context from the Plan-07 degrade-safe service read (get_pushed_count);
+   a degraded read surfaces as 0, so the card always renders a (possibly zero) number and NEVER
+   raises into the 5s poll. The value is a plain int rendered through Jinja autoescape.
+
+   Rendered inline in dashboard.html on first load (#analyzing-cloud-card lives OUTSIDE the
+   #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
+   every 5s poll (oob=True) so the count stays live. Same id on both renders is the OOB contract
+   (mirrors awaiting_cloud_card.html). #}
+<section id="analyzing-cloud-card"
+         aria-labelledby="analyzing-cloud-heading"
+         {% if oob %}hx-swap-oob="true"{% endif %}
+         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
+    <h2 id="analyzing-cloud-heading" class="text-lg font-semibold">Cloud · Analyzing</h2>
+    <div class="bg-violet-50 dark:bg-violet-950 rounded-lg p-4 text-center">
+        <p class="text-2xl font-bold text-violet-700 dark:text-violet-400">{{ analyzing_cloud_count }}</p>
+        <p class="text-sm text-violet-600 dark:text-violet-400">Analyzing (cloud)</p>
+        <p class="text-xs text-violet-500 dark:text-violet-500 mt-1">landed on compute — in analysis</p>
+    </div>
+</section>

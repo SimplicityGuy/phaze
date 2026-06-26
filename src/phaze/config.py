@@ -78,6 +78,15 @@ class BaseSettings(PydanticBaseSettings):
     # `redis_url` live here because both carry credentials and exist on both roles.
     SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = frozenset({"database_url", "redis_url", "queue_url"})
 
+    # WR-01: secret fields whose file contents must be preserved VERBATIM (NOT ``.strip()``-ed).
+    # Every other `<VAR>_FILE` secret is stripped so a heredoc/echo trailing newline hashes/parses
+    # identically to an operator-typed env var -- but key material (an OpenSSH private key, a
+    # known_hosts file) REQUIRES its trailing newline: OpenSSH's parser rejects a key without a
+    # final newline ("invalid format" / "error in libcrypto"), so stripping it broke every push that
+    # provisioned its key via PHAZE_PUSH_SSH_KEY_FILE. Subclasses extend this set; the shared
+    # `_resolve_secret_files` validator consults it to decide strip-vs-verbatim per field.
+    SECRET_FILE_PRESERVE_WHITESPACE: ClassVar[frozenset[str]] = frozenset()
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_secret_files(cls, data: Any) -> Any:
@@ -130,8 +139,10 @@ class BaseSettings(PydanticBaseSettings):
                     raise ValueError(msg) from exc
                 # Inject under the field name; every in-scope field is matched
                 # either by name (no alias) or by an AliasChoices that includes
-                # the bare field name, so this key always resolves.
-                data[field_name] = contents.strip()
+                # the bare field name, so this key always resolves. Key material
+                # (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its required
+                # trailing newline survives (WR-01); everything else is stripped.
+                data[field_name] = contents if field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE else contents.strip()
                 break
 
         return data
@@ -370,6 +381,40 @@ class ControlSettings(BaseSettings):
         description="Duration threshold (seconds) at/above which a file is routed to a cloud compute agent for analysis (Phase 49). Default 5400 (90 min); lt=86400 caps it at one day.",
     )
 
+    # Phase 50 D-03: the load-bearing ≤N cloud window. The staging cron tops up so that the
+    # count of files in {PUSHING, PUSHED} never exceeds this; it is the only backpressure that
+    # keeps an unbounded backlog off the single compute agent. Bounded (gt=0, lt=100) like
+    # cloud_route_threshold_sec so an out-of-range operator value fails fast at startup
+    # (T-50-config-oob). Lives on ControlSettings because the control plane owns the window.
+    cloud_max_in_flight: int = Field(
+        default=2,
+        gt=0,
+        lt=100,
+        validation_alias=AliasChoices("PHAZE_CLOUD_MAX_IN_FLIGHT", "cloud_max_in_flight"),
+        description="Max cloud files staged-or-in-flight (PUSHING+PUSHED); the load-bearing ≤N window (Phase 50, D-03). Default 2; bounded gt=0, lt=100.",
+    )
+    # Phase 50 D-12: how many times control re-drives a push that failed sha256 verification
+    # before giving up and marking the file ANALYSIS_FAILED. Bounded (gt=0, lt=20) so a misconfig
+    # cannot create an unbounded retry storm (T-50-config-oob).
+    push_max_attempts: int = Field(
+        default=3,
+        gt=0,
+        lt=20,
+        validation_alias=AliasChoices("PHAZE_PUSH_MAX_ATTEMPTS", "push_max_attempts"),
+        description="Max push attempts before a sha256-mismatched file is marked ANALYSIS_FAILED (Phase 50, D-12). Default 3; bounded gt=0, lt=20.",
+    )
+    # Phase 50: control-side mirror of the compute agent's AgentSettings.cloud_scratch_dir.
+    # The push-success callback (routers/agent_push.py, 50-05) builds the process_file
+    # scratch_path from this base (`<compute_scratch_dir>/<file_id>.<ext>`). Its value MUST
+    # match the compute agent's cloud_scratch_dir; a drift surfaces as a sha256/transfer failure
+    # (50-04/50-05), never silent corruption (T-50-scratch-skew). Lives on ControlSettings
+    # because the control plane builds the payload.
+    compute_scratch_dir: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_COMPUTE_SCRATCH_DIR", "compute_scratch_dir"),
+        description="Control-side copy of the compute agent's scratch directory; used to build process_file scratch_path in the push callback (Phase 50, 50-05). MUST match the compute agent's cloud_scratch_dir.",
+    )
+
 
 class AgentSettings(BaseSettings):
     """File-server role: HTTP client to the application server, file-bound SAQ tasks.
@@ -386,7 +431,17 @@ class AgentSettings(BaseSettings):
     """
 
     # v4.0.1: add the bearer token to the inherited database_url/redis_url set.
-    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {"agent_token"}
+    # Phase 50 D-05/D-07: the rsync-over-SSH push identity key and pinned known_hosts are
+    # file-mounted secrets; adding them here lets the shared `_resolve_secret_files` validator
+    # auto-resolve their `<VAR>_FILE` siblings with NO new resolution code. Never log their
+    # values (D-13 token-preview discipline).
+    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {"agent_token", "push_ssh_key", "push_known_hosts"}
+
+    # WR-01: the SSH key + known_hosts are consumed verbatim by ssh (key material), so their
+    # file-mounted contents must keep the trailing newline OpenSSH requires -- do NOT strip them.
+    # ``agent_token`` is deliberately NOT here: its entire wire string is hashed, so the strip that
+    # normalizes a heredoc newline is correct for it.
+    SECRET_FILE_PRESERVE_WHITESPACE: ClassVar[frozenset[str]] = frozenset({"push_ssh_key", "push_known_hosts"})
 
     agent_api_url: str = Field(
         default="",
@@ -512,6 +567,54 @@ class AgentSettings(BaseSettings):
         default="/certs/phaze-ca.crt",
         validation_alias=AliasChoices("PHAZE_AGENT_CA_FILE", "agent_ca_file"),
         description="Path to the operator-distributed CA cert for verifying the app-server TLS endpoint (Phase 29 D-03).",
+    )
+
+    # Phase 50 D-05/D-07: rsync-over-SSH push target (the fileserver agent pushes long files to
+    # the compute agent's scratch dir). The SSH host/user identify the static push target;
+    # cloud_scratch_dir is the remote landing directory whose path MUST match
+    # ControlSettings.compute_scratch_dir. The two timeouts bracket the transport: push_timeout_sec
+    # is the rsync I/O-stall timeout (must stay below the SAQ push_file job net), and
+    # push_connect_timeout_sec caps the SSH connect handshake. Operator-provisioned in Phase 51;
+    # Phase 50 only declares the fields.
+    push_ssh_host: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_PUSH_SSH_HOST", "push_ssh_host"),
+        description="Hostname/IP of the rsync-over-SSH push target (the compute agent). Operator-provisioned in Phase 51 (Phase 50, D-05).",
+    )
+    push_ssh_user: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_PUSH_SSH_USER", "push_ssh_user"),
+        description="SSH username for the rsync push target (Phase 50, D-05).",
+    )
+    cloud_scratch_dir: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_CLOUD_SCRATCH_DIR", "cloud_scratch_dir"),
+        description="Remote scratch directory on the compute agent where pushed files land and are later read by process_file. MUST match ControlSettings.compute_scratch_dir (Phase 50, D-07).",
+    )
+    push_timeout_sec: int = Field(
+        default=600,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_PUSH_TIMEOUT_SEC", "push_timeout_sec"),
+        description="rsync I/O-stall timeout (seconds) for a single push_file transfer; MUST stay below the SAQ push_file job timeout so the kill is deterministic (Phase 50). Default 600; bounded gt=0, lt=86400.",
+    )
+    push_connect_timeout_sec: int = Field(
+        default=30,
+        gt=0,
+        lt=3600,
+        validation_alias=AliasChoices("PHAZE_PUSH_CONNECT_TIMEOUT_SEC", "push_connect_timeout_sec"),
+        description="SSH connect-handshake timeout (seconds) for the rsync push (Phase 50). Default 30; bounded gt=0, lt=3600.",
+    )
+    # D-05/D-07 file-mounted secrets — resolved via SECRET_FILE_FIELDS above. NEVER log (D-13).
+    push_ssh_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_PUSH_SSH_KEY", "push_ssh_key"),
+        description="SSH identity private key for the rsync push, file-mounted via PHAZE_PUSH_SSH_KEY_FILE (Phase 50, D-05). Never logged.",
+    )
+    push_known_hosts: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_PUSH_KNOWN_HOSTS", "push_known_hosts"),
+        description="Pinned known_hosts for strict SSH host-key checking of the push target, file-mounted via PHAZE_PUSH_KNOWN_HOSTS_FILE (Phase 50, D-07). Never logged.",
     )
 
     @field_validator("scan_roots", mode="before")

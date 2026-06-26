@@ -2,6 +2,22 @@
 
 from phaze.models import AnalysisResult, ExecutionLog, FileMetadata, FileRecord, RenameProposal
 from phaze.models.base import Base
+from phaze.models.file import FileState
+
+
+def test_pushing_state_member() -> None:
+    """Phase 50 D-08: PUSHING is a code-only StrEnum member ('pushing')."""
+    assert FileState.PUSHING == "pushing"
+    assert FileState("pushing") is FileState.PUSHING
+    # 'pushing' is 7 chars — fits String(30), so it is code-only (no migration).
+    assert len(FileState.PUSHING.value) <= 30
+
+
+def test_pushed_state_member() -> None:
+    """Phase 50 D-08: PUSHED is a code-only StrEnum member ('pushed')."""
+    assert FileState.PUSHED == "pushed"
+    assert FileState("pushed") is FileState.PUSHED
+    assert len(FileState.PUSHED.value) <= 30
 
 
 def test_all_tables_defined() -> None:
