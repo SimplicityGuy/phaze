@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pebble import ProcessExpired
+import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisWindowPayload, AnalysisWritePayload
@@ -33,6 +34,9 @@ from phaze.tasks.pool import run_in_process_pool
 
 if TYPE_CHECKING:
     from phaze.services.agent_client import PhazeAgentClient
+
+
+logger = structlog.get_logger(__name__)
 
 
 # Phase 43 (T-43-09): cap the worker-side exception text before it crosses the HTTP
@@ -165,6 +169,13 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # pure read-path swap. ``scratch_path is not None`` is ITSELF the compute-read signal. The
     # outer ``finally`` guarantees the scratch copy never outlives the job (CLOUDPIPE-04).
     read_path = payload.scratch_path or payload.original_path
+    # CLOUDPIPE-04 / CR-01: the scratch copy is deleted in the ``finally`` ONLY on a TERMINAL
+    # outcome (success, sha256 mismatch, inner-timeout/crash, or a non-retryable failure). On a
+    # RETRYABLE re-raise this flips to False so the copy SURVIVES for the in-place SAQ retry to
+    # re-verify and analyze -- otherwise the retry hits a missing scratch file, raises an uncaught
+    # FileNotFoundError, and strands the file in PUSHED forever (permanently jamming the bounded
+    # cloud window). Default True: every terminal path cleans up.
+    cleanup_scratch = True
     try:
         # CLOUDPIPE-03: integrity-verify the pushed bytes BEFORE trusting them. sha256 is computed
         # OFF the event loop (chunked stdlib hash; the scan.py pattern). A mismatch means a
@@ -172,13 +183,29 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # attempts), and DO NOT analyze (T-50-corrupt). Gated on both fields being present so the
         # bulk local producer (neither set) takes none of this branch.
         if payload.scratch_path and payload.expected_sha256:
-            actual_sha256 = await asyncio.to_thread(compute_sha256, Path(payload.scratch_path))
+            try:
+                actual_sha256 = await asyncio.to_thread(compute_sha256, Path(payload.scratch_path))
+            except FileNotFoundError:
+                # CR-01 defense-in-depth: the scratch copy is gone (a prior attempt raced cleanup,
+                # or the push never landed). Route to a re-pushable mismatch rather than let the
+                # FileNotFoundError escape uncaught and strand the file in PUSHED with no callback.
+                await ctx["api_client"].report_push_mismatch(payload.file_id)
+                return {"file_id": str(payload.file_id), "status": "push_mismatch"}
             if actual_sha256 != payload.expected_sha256:
                 Path(payload.scratch_path).unlink(missing_ok=True)
                 # ``report_push_mismatch`` is added to the agent client by Plan 50-03 (same wave);
                 # reach it via the Any-typed ctx so this module need not import that parallel change.
                 await ctx["api_client"].report_push_mismatch(payload.file_id)
                 return {"file_id": str(payload.file_id), "status": "push_mismatch"}
+        elif payload.scratch_path:
+            # IN-01: scratch copy present but the control plane did not pin an expected sha256.
+            # The control plane ALWAYS pins both (report_pushed reads the non-null sha256_hash), so
+            # this is only reachable via a malformed payload. Analyze anyway (the documented skip
+            # behavior) but WARN -- an unverified pushed copy is a defense-in-depth gap.
+            logger.warning(
+                "process_file: analyzing an unverified scratch copy (no expected_sha256 pinned)",
+                file_id=str(payload.file_id),
+            )
 
         try:
             analysis = await run_in_process_pool(
@@ -200,17 +227,6 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             # essentia OOM/segfault crashed the child. Also deterministic -> TERMINAL the same way.
             await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed"))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-        except Exception as exc:
-            # Generic / possibly-transient error. Report ONLY on the terminal attempt (so SAQ has
-            # already exhausted retries), then re-raise so SAQ records the failed attempt. A
-            # retryable attempt re-raises silently so the one real retry (retries=2) can run.
-            job = ctx.get("job")
-            if job is not None and not job.retryable:
-                await api.report_analysis_failed(
-                    payload.file_id,
-                    AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]),
-                )
-            raise
 
         features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
         mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
@@ -242,9 +258,28 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             ),
         )
         return {"file_id": str(payload.file_id), "status": "analyzed"}
+    except Exception as exc:
+        # Generic / possibly-transient error from the analysis pool OR the put_analysis callback
+        # (the latter sits OUTSIDE the inner pool try, so it MUST be handled here too -- a put_analysis
+        # 5xx was the second CR-01 trap). Report ONLY on the terminal attempt (so SAQ has already
+        # exhausted retries). On a retryable attempt KEEP the scratch copy so the one real retry
+        # (retries=2) can re-verify and analyze it, then re-raise so SAQ records the failed attempt.
+        job = ctx.get("job")
+        if job is not None and not job.retryable:
+            await api.report_analysis_failed(
+                payload.file_id,
+                AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]),
+            )
+        else:
+            # Retryable: do NOT delete the pushed scratch copy -- the in-place SAQ retry needs it
+            # (CR-01). The push_file task is NOT re-run, so a deleted copy can never be recovered.
+            cleanup_scratch = False
+        raise
     finally:
-        # CLOUDPIPE-04: bound scratch-dir disk to the in-flight set -- delete on EVERY exit path
-        # (success, timeout, crash, generic error, mismatch early-return). ``missing_ok`` absorbs
-        # the mismatch branch's explicit unlink and any local-file (no-scratch) job (T-50-scratch-dos).
-        if payload.scratch_path:
+        # CLOUDPIPE-04: bound scratch-dir disk to the in-flight set -- delete on every TERMINAL exit
+        # path (success, timeout, crash, mismatch early-return, non-retryable failure). ``missing_ok``
+        # absorbs the mismatch branch's explicit unlink and any local-file (no-scratch) job. A
+        # retryable failure leaves ``cleanup_scratch`` False so the copy survives for the retry
+        # (T-50-scratch-dos still holds: a terminal failure always reclaims the disk).
+        if payload.scratch_path and cleanup_scratch:
             Path(payload.scratch_path).unlink(missing_ok=True)

@@ -275,6 +275,113 @@ async def test_scratch_cleanup_on_mismatch_return(
 
 
 # ---------------------------------------------------------------------------
+# CR-01 -- a RETRYABLE failure must KEEP the scratch copy for the in-place SAQ retry
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_scratch_survives_retryable_failure(
+    mock_pool: AsyncMock,
+    _mock_loader: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """CR-01: a retryable analysis error must NOT delete the scratch copy.
+
+    SAQ retries process_file IN PLACE (it does not re-run push_file), so the pushed copy has to
+    survive for the retry to re-verify + analyze. The prior blanket ``finally`` unlink stranded the
+    file in PUSHED forever and permanently consumed a bounded cloud-window slot.
+    """
+    scratch = _write_scratch(tmp_path)
+    good = compute_sha256(scratch)
+    mock_pool.side_effect = RuntimeError("transient pool error")
+    api = _api()
+    ctx = _ctx(api, job=MagicMock(retryable=True))
+
+    with pytest.raises(RuntimeError, match="transient pool error"):
+        await process_file(ctx, **_kwargs(scratch_path=str(scratch), expected_sha256=good))
+
+    # The scratch copy SURVIVES so the in-place SAQ retry can re-verify and analyze it.
+    assert scratch.exists()
+    # No terminal report on a retryable attempt -- SAQ still has its retry budget.
+    api.report_analysis_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_scratch_survives_retryable_put_analysis_failure(
+    mock_pool: AsyncMock,
+    _mock_loader: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """CR-01: a retryable failure in the put_analysis callback (OUTSIDE the pool try) also keeps the copy.
+
+    The put_analysis 5xx was the second stranding trap -- it sits outside the inner pool ``try`` so
+    the generic handler had to move to an OUTER ``except`` to cover it.
+    """
+    scratch = _write_scratch(tmp_path)
+    good = compute_sha256(scratch)
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = _api()
+    api.put_analysis = AsyncMock(side_effect=RuntimeError("put_analysis 5xx after retries"))
+    ctx = _ctx(api, job=MagicMock(retryable=True))
+
+    with pytest.raises(RuntimeError, match="put_analysis 5xx"):
+        await process_file(ctx, **_kwargs(scratch_path=str(scratch), expected_sha256=good))
+
+    assert scratch.exists()  # kept for the retry
+    api.report_analysis_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_scratch_cleaned_up_on_terminal_non_retryable_failure(
+    mock_pool: AsyncMock,
+    _mock_loader: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """CR-01: once the attempt is TERMINAL (not retryable) the copy is reclaimed and the failure reported.
+
+    This is the counterpart to ``test_scratch_survives_retryable_failure`` -- the disk-bound
+    cleanup guarantee (T-50-scratch-dos) still holds on the final attempt.
+    """
+    scratch = _write_scratch(tmp_path)
+    good = compute_sha256(scratch)
+    mock_pool.side_effect = RuntimeError("boom")
+    api = _api()
+    ctx = _ctx(api, job=MagicMock(retryable=False))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await process_file(ctx, **_kwargs(scratch_path=str(scratch), expected_sha256=good))
+
+    assert not scratch.exists()  # terminal -> disk reclaimed
+    api.report_analysis_failed.assert_awaited_once()
+
+
+@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
+@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+async def test_missing_scratch_at_sha_gate_routes_to_mismatch(
+    mock_pool: AsyncMock,
+    _mock_loader: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """CR-01 defense: a missing scratch file at the sha256 gate reports a re-pushable mismatch.
+
+    It must NEVER escape as an uncaught FileNotFoundError (which would strand the file in PUSHED
+    with no callback).
+    """
+    missing = tmp_path / "never-written.mp3"
+    file_id = uuid.uuid4()
+    api = _api()
+
+    result = await process_file(_ctx(api), **_kwargs(file_id=file_id, scratch_path=str(missing), expected_sha256="a" * 64))
+
+    assert result == {"file_id": str(file_id), "status": "push_mismatch"}
+    api.report_push_mismatch.assert_awaited_once_with(file_id)
+    mock_pool.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # Local path is byte-identical when neither scratch field is set
 # ---------------------------------------------------------------------------
 
