@@ -106,6 +106,45 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
     assert result.returncode == 0, f"agent_worker import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
+def test_push_task_stays_postgres_free() -> None:
+    """Phase 50 (50-03) extension of D-25: phaze.tasks.push is Postgres-free.
+
+    ``push_file`` runs on the fileserver agent worker (registered in agent_worker.settings)
+    and must NOT drag the app ORM / async DB engine into the agent import graph. It imports
+    only stdlib (asyncio/subprocess/pathlib/tempfile), phaze.config (no DB), phaze.schemas
+    (Pydantic), and references PhazeAgentClient via ctx at runtime. Verified by subprocess so
+    a contaminated import in the test process cannot poison downstream tests via sys.modules.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.tasks.push  # noqa: F401
+
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"push task import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
 def test_agent_worker_module_import_fails_when_phaze_agent_queue_unset() -> None:
     """Module-import-time guard: missing PHAZE_AGENT_QUEUE raises RuntimeError before SAQ event loop starts.
 
