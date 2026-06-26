@@ -136,7 +136,7 @@ Detail sections under "## Phase Details (v5.0)" below.
 | 47. Official arm64 essentia agent image | v5.0 | 4/4 | Complete    | 2026-06-24 |
 | 48. Compute-agent type | v5.0 | 3/3 | Complete   | 2026-06-25 |
 | 49. Duration routing & backfill | v5.0 | 4/4 | Complete    | 2026-06-25 |
-| 50. Push pipeline | v5.0 | 5/8 | In Progress|  |
+| 50. Push pipeline | v5.0 | 7/8 | In Progress|  |
 | 51. Deployment, config & docs | v5.0 | 0/0 | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -591,8 +591,8 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 50-05-PLAN.md — Internal-API push callbacks (pushed → enqueue process_file; mismatch → capped re-drive)
-- [ ] 50-06-PLAN.md — Routing seam → AWAITING_CLOUD hold + stage_cloud_window ≤N bounded cron
+- [x] 50-05-PLAN.md — Internal-API push callbacks (pushed → enqueue process_file; mismatch → capped re-drive)
+- [x] 50-06-PLAN.md — Routing seam → AWAITING_CLOUD hold + stage_cloud_window ≤N bounded cron
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
