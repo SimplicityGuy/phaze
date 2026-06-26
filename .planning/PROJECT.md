@@ -24,7 +24,11 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 ## Current State
 
-**v4.0 Distributed Agents shipped 2026-05-17.** Phaze now runs across two hosts: a control-plane application server and one or more file-server agents. **v5.0 Cloud Burst Analysis in planning** (2026-06-24).
+**v5.0 Cloud Burst Analysis shipped 2026-06-26.** Phaze can now offload long-duration audio (≥ a configurable threshold) that times out locally to a free OCI Ampere A1 (arm64) "compute agent" reached over Tailscale — duration-routed, rsync-pushed, sha256-verified, and analyzed unattended, all behind a single `cloud_burst_enabled` master toggle that defaults to all-local. 5 phases (47-51), 23 plans; all requirements (CLOUDIMG/CLOUDAGENT/CLOUDROUTE/CLOUDPIPE/CLOUDDEPLOY) validated. Live end-to-end verification is deployment-gated on the homelab OCI A1 rollout (see milestones/v5.0-MILESTONE-AUDIT.md + STATE.md Deferred Items).
+
+**v4.0 Distributed Agents shipped 2026-05-17.** Phaze runs across two hosts: a control-plane application server and one or more file-server agents.
+
+**Phase 51 (v5.0, complete 2026-06-26):** Deployment, config & docs — `docker-compose.cloud-agent.yml` (arm64, host-Tailscale, no media, named scratch volume), the `cloud_burst_enabled` master toggle gating all three cloud entry points (routing seam, staging cron, backfill), the homelab OCI A1 + Tailscale-ACL + least-privilege Postgres broker provisioning runbook, and the full config/docs surface. Validated requirements: CLOUDDEPLOY-01..04. Post-audit fixes (#161/#162): cloud-agent compose `python3 -m saq` start command, `compute_scratch_dir` fail-fast guard, scratch-dir-skew diagnostic, and the WR-03 push-timeout-coupling guard.
 
 **Phase 30 (post-v4.0 fix, complete 2026-06-10):** Resolved systemic control-plane SAQ queue misrouting — every manually-triggered UI/API enqueue previously targeted a consumer-less unnamed `default` queue (stranded 11,428 jobs in the v4.0.6 incident). All enqueue sites (pipeline, tracklists, scan/ingestion) now route through a shared `enqueue_router.resolve_queue_for_task` helper: controller-bound tasks → named `controller` queue, per-agent tasks → `phaze-agent-<id>` via active-agent selection (0-agent surfaces a 503/empty-state). A static AST guard test prevents recurrence.
 
@@ -235,4 +239,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-26 — Phase 50 (cloud push pipeline) complete*
+*Last updated: 2026-06-26 — after v5.0 Cloud Burst Analysis milestone*
