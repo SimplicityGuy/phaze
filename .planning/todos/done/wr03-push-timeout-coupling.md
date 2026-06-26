@@ -1,8 +1,10 @@
 ---
-status: pending
+status: done
 created: 2026-06-26
+resolved: 2026-06-26
 source: 50-REVIEW.md (WR-03) + Phase 50 verification
 resolves_phase: 51
+resolution: "Fail-fast guard (preferred option) implemented in src/phaze/tasks/push.py _require_push_config — asserts push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC < PUSH_FILE_SAQ_TIMEOUT_SEC and raises a clear RuntimeError on an inverted layering. Tests: test_require_push_config_rejects_inverted_timeout_layering + _rejects_exact_boundary + _passes_at_default_timeout."
 tags: [config, deploy, footgun]
 ---
 
@@ -35,9 +37,9 @@ Phase 51 (e.g. for very large transfers) without bumping the control-side consta
 
 Pick at least one; the fail-fast guard is preferred:
 
-- [ ] **Fail-fast guard (preferred):** at agent startup, assert
-      `push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC < PUSH_FILE_SAQ_TIMEOUT_SEC`; raise a clear boot
-      error otherwise. Turns the silent footgun into a loud, immediate failure.
+- [x] **Fail-fast guard (preferred):** `_require_push_config` (called at the agent's first push)
+      asserts `push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC < PUSH_FILE_SAQ_TIMEOUT_SEC` and raises a
+      clear RuntimeError otherwise. Turns the silent footgun into a loud, immediate failure. ✅ DONE.
 - [ ] **Make it a knob:** expose the control-side SAQ timeout as its own env var
       (e.g. `PHAZE_PUSH_FILE_SAQ_TIMEOUT_SEC`) so both timeouts can be raised together.
 - [ ] **Document the coupling** in the Phase 51 deploy/config docs: "If you raise
