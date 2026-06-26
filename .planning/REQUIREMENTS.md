@@ -64,7 +64,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 | CLOUDIMG-01..03 | Phase 47 | Pending |
 | CLOUDAGENT-01..03 | Phase 48 | Complete (live admin-page check deferred to manual per 48-VALIDATION) |
 | CLOUDROUTE-01..04 | Phase 49 | Pending |
-| CLOUDPIPE-01..05 | Phase 50 | Pending |
+| CLOUDPIPE-01..05 | Phase 50 | Complete |
 | CLOUDDEPLOY-01..04 | Phase 51 | Pending |
 
 _Phase numbers 47-51 continue from v4.0's last phase (46). Finalized by the roadmapper 2026-06-24; 18 requirements, 100% coverage, one phase each. See ROADMAP.md §"Phase Details (v5.0)"._
