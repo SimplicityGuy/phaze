@@ -1,9 +1,10 @@
 ---
 slug: agent-image-missing-system-libs
-status: open
+status: resolved
 trigger: After v4.0.8 payload fix, process_file jobs reach analysis code but fail at `import essentia` with `ImportError: libatomic.so.1: cannot open shared object file`. Agent image lacks all audio system libs.
 created: 2026-06-10
-updated: 2026-06-10
+updated: 2026-06-26
+resolution: "Fixed in v4.0.9 — the agent Dockerfile gained the audio system deps (libatomic/ffmpeg/fpcalc/libsndfile) so essentia imports. Subsequent v4.0.10 windowed analysis and the v5.0 arm64 agent image (Phase 47, built-from-source) further hardened the analysis path. Session closed retroactively during the v5.0 milestone audit."
 ---
 
 # Debug Session: agent-image-missing-system-libs

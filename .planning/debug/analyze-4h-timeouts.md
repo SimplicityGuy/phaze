@@ -1,5 +1,5 @@
 ---
-status: root_caused
+status: resolved
 trigger: |
   Analyze (process_file) jobs on the phaze pipeline time out at the 4h limit en masse.
   Over ~57h on nox: 60 completions vs 72 timeouts. essentia windowed analysis of long
@@ -7,8 +7,9 @@ trigger: |
   (4h) timeout, are killed, and retried. User wants a diagnosis + plan (NOT fixes applied
   yet) covering four questions (see Scope).
 created: 2026-06-17
-updated: 2026-06-17
+updated: 2026-06-26
 mode: diagnose_and_plan_only
+resolution: "Root cause (long-set analysis exceeds local capacity/timeout) is addressed by the v5.0 Cloud Burst milestone — long files (≥ threshold) are offloaded to a free OCI A1 arm64 compute agent over Tailscale instead of timing out locally (phases 47-51). Diagnosis spawned the throughput/UI/cloud phases (43-45) and the v5.0 cloud-burst design. Session closed during the v5.0 milestone audit; live verification of the offload is deployment-gated (homelab OCI A1 rollout)."
 ---
 
 # Debug Session: analyze-4h-timeouts
