@@ -322,11 +322,19 @@ parity-golden-regen TAG="latest":
     #    This writes scripts/parity/golden-x86.json for offline inspection.
     #    NOTE: CI (plan 47-04) is the AUTHORITATIVE golden producer; this is the operator regen path.
     echo "🐳 Generating golden-x86.json via ${IMAGE} ..."
+    # The image runs as a non-root user that cannot write into the host-owned
+    # bind-mounted scripts/parity dir; write into a world-writable output dir and
+    # copy the result out host-side (same fix as the parity-dump recipe).
+    OUT_DIR=$(mktemp -d)
+    chmod 777 "${OUT_DIR}"
     docker run --rm \
-        -v "$(pwd)/scripts/parity:/parity" \
+        -v "$(pwd)/scripts/parity:/parity:ro" \
         -v "$(pwd)/models:/models:ro" \
+        -v "${OUT_DIR}:/out" \
         "${IMAGE}" \
-        uv run python /parity/dump_analysis.py /parity/reference.wav /models --out /parity/golden-x86.json
+        uv run python /parity/dump_analysis.py /parity/reference.wav /models --out /out/golden-x86.json
+    cp "${OUT_DIR}/golden-x86.json" scripts/parity/golden-x86.json
+    rm -rf "${OUT_DIR}"
     echo "✅ wrote scripts/parity/golden-x86.json"
 
 [doc('Run the shared analyze_file dump inside an image; INTERP picks "uv run python" (x86 uv image) vs python3 (arm64 --system 3.13 agent image)')]
@@ -340,16 +348,21 @@ parity-dump IMAGE MODELS="./models" OUT="scripts/parity/actual.json" INTERP="uv 
     # installs --system on 3.13 and MUST run python3 directly (uv run would
     # re-validate requires-python >=3.14 and miss the --system packages).
     OUT_BASE=$(basename "{{OUT}}")
+    # The image runs as a NON-ROOT user that cannot write into the host-owned
+    # bind-mounted scripts/ dir (PermissionError on /scripts/parity/<out>.json).
+    # Mount scripts read-only and give the container a dedicated world-writable
+    # output dir to write --out into, then copy the result to {{OUT}} host-side.
+    OUT_DIR=$(mktemp -d)
+    chmod 777 "${OUT_DIR}"
     echo "🐳 Dumping analyze_file from {{IMAGE}} (interp: {{INTERP}}) → {{OUT}} ..."
     docker run --rm \
-        -v "$(pwd)/scripts:/scripts" \
+        -v "$(pwd)/scripts:/scripts:ro" \
         -v "$(pwd)/{{MODELS}}:/models:ro" \
+        -v "${OUT_DIR}:/out" \
         "{{IMAGE}}" \
-        {{INTERP}} /scripts/parity/dump_analysis.py /scripts/parity/reference.wav /models --out "/scripts/parity/${OUT_BASE}"
-    PRODUCED="scripts/parity/${OUT_BASE}"
-    if [ "${PRODUCED}" != "{{OUT}}" ]; then
-        cp "${PRODUCED}" "{{OUT}}"
-    fi
+        {{INTERP}} /scripts/parity/dump_analysis.py /scripts/parity/reference.wav /models --out "/out/${OUT_BASE}"
+    cp "${OUT_DIR}/${OUT_BASE}" "{{OUT}}"
+    rm -rf "${OUT_DIR}"
     echo "✅ wrote {{OUT}}"
 
 [doc('Run the arm64↔x86 numeric parity check locally (operator mirror of the CI parity-guard)')]
