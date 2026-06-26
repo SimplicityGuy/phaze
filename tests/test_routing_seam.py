@@ -107,3 +107,56 @@ async def test_no_direct_to_compute_enqueue_path(session: AsyncSession) -> None:
     assert router.queue_for_calls == []
     await session.refresh(long_file)
     assert long_file.state == FileState.AWAITING_CLOUD
+
+
+# --- Phase 51 (D-02): the cloud_burst_enabled gate on the routing seam --------------------
+
+
+@pytest.mark.asyncio
+async def test_cloud_burst_disabled_routes_long_file_local(session: AsyncSession) -> None:
+    """OFF (cloud_enabled=False): a long file routes LOCAL and is NEVER set to AWAITING_CLOUD (D-02).
+
+    With the master toggle off, NOTHING is "long" -- the >=threshold file falls to the local
+    branch, is enqueued onto the fileserver queue like any short file, and its state stays
+    DISCOVERED. No row ever reaches AWAITING_CLOUD, so the cloud pipeline stays completely dormant.
+    """
+    await seed_active_agent(session, "nox", kind="fileserver")
+    long_file = _make_long_file()
+    session.add(long_file)
+    await session.commit()
+
+    router = FakeTaskRouter()
+    app_state = SimpleNamespace(task_router=router)
+    result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, False, "/models")
+
+    assert result["local"] == 1
+    assert result["awaiting"] == 0
+    assert result["cloud"] == 0
+    await _drain_background()
+    # The long file routed local -- it stays DISCOVERED, never AWAITING_CLOUD.
+    await session.refresh(long_file)
+    assert long_file.state == FileState.DISCOVERED
+    # It was enqueued onto the fileserver queue (the local path), not held.
+    assert router.queue_for_calls == ["nox"]
+    assert [t for t, _ in router.queues["nox"].captured] == ["process_file"]
+
+
+@pytest.mark.asyncio
+async def test_cloud_burst_enabled_holds_long_file(session: AsyncSession) -> None:
+    """ON (cloud_enabled=True): a long file is HELD in AWAITING_CLOUD (Phase 49/50 regression)."""
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    long_file = _make_long_file()
+    session.add(long_file)
+    await session.commit()
+
+    router = FakeTaskRouter()
+    app_state = SimpleNamespace(task_router=router)
+    result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, True, "/models")
+
+    assert result["awaiting"] == 1
+    assert result["local"] == 0
+    await _drain_background()
+    await session.refresh(long_file)
+    assert long_file.state == FileState.AWAITING_CLOUD
+    assert router.captures == []
