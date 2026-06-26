@@ -36,10 +36,10 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Deployment, config & docs (CLOUDDEPLOY)
 
-- [ ] **CLOUDDEPLOY-01**: A cloud-agent deployment (compose) brings up the compute agent with Tailscale connectivity, no media mount, a scratch volume, and the arm64 image.
-- [ ] **CLOUDDEPLOY-02**: All cloud-burst parameters — threshold, max in-flight, agent concurrency, scratch dir, push SSH target, cloud queue name, and a master enable toggle — are configurable via pydantic-settings with `_FILE`-secret support.
-- [ ] **CLOUDDEPLOY-03**: A runbook documents OCI Always-Free A1 provisioning and a Tailscale ACL that scopes the A1 to exactly `lux:{5432,6379,8000}` + `nox→A1:22`, plus a least-privilege Postgres role for the queue broker.
-- [ ] **CLOUDDEPLOY-04**: The entire cloud-burst feature can be disabled by a single config toggle, reverting to all-local analysis with no other change.
+- [x] **CLOUDDEPLOY-01**: A cloud-agent deployment (compose) brings up the compute agent with Tailscale connectivity, no media mount, a scratch volume, and the arm64 image.
+- [x] **CLOUDDEPLOY-02**: All cloud-burst parameters — threshold, max in-flight, agent concurrency, scratch dir, push SSH target, cloud queue name, and a master enable toggle — are configurable via pydantic-settings with `_FILE`-secret support.
+- [x] **CLOUDDEPLOY-03**: A runbook documents OCI Always-Free A1 provisioning and a Tailscale ACL that scopes the A1 to exactly `lux:{5432,6379,8000}` + `nox→A1:22`, plus a least-privilege Postgres role for the queue broker.
+- [x] **CLOUDDEPLOY-04**: The entire cloud-burst feature can be disabled by a single config toggle, reverting to all-local analysis with no other change.
 
 ## Future Requirements (deferred)
 
@@ -61,10 +61,10 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLOUDIMG-01..03 | Phase 47 | Pending |
-| CLOUDAGENT-01..03 | Phase 48 | Complete (live admin-page check deferred to manual per 48-VALIDATION) |
-| CLOUDROUTE-01..04 | Phase 49 | Pending |
-| CLOUDPIPE-01..05 | Phase 50 | Complete |
-| CLOUDDEPLOY-01..04 | Phase 51 | Pending |
+| CLOUDIMG-01..03 | Phase 47 | Complete (verified — 47-VERIFICATION passed) |
+| CLOUDAGENT-01..03 | Phase 48 | Complete (live admin-page badge check deferred to manual per 48-VERIFICATION/VALIDATION) |
+| CLOUDROUTE-01..04 | Phase 49 | Complete (verified — 49-VERIFICATION passed) |
+| CLOUDPIPE-01..05 | Phase 50 | Complete (verified — 50-VERIFICATION passed) |
+| CLOUDDEPLOY-01..04 | Phase 51 | Complete (verified — 51-VERIFICATION passed; cloud-agent compose blocker fixed in #161) |
 
 _Phase numbers 47-51 continue from v4.0's last phase (46). Finalized by the roadmapper 2026-06-24; 18 requirements, 100% coverage, one phase each. See ROADMAP.md §"Phase Details (v5.0)"._
