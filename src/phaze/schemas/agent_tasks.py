@@ -22,7 +22,7 @@ file copy + verify + delete without DB access.
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProcessFilePayload(BaseModel):
@@ -65,6 +65,23 @@ class PushFilePayload(BaseModel):
     original_path: str
     file_type: str
     agent_id: str
+
+    # Phase 50 #sec argv-injection defense-in-depth: push_file hands original_path + file_type to
+    # rsync as operands. A `--` terminator in the argv already blocks flag-smuggling, but reject
+    # the dangerous shapes at the schema layer too (validated as strictly as an HTTP body).
+    @field_validator("original_path")
+    @classmethod
+    def _original_path_absolute(cls, v: str) -> str:
+        if not v.startswith("/"):
+            raise ValueError("original_path must be an absolute path")
+        return v
+
+    @field_validator("file_type")
+    @classmethod
+    def _file_type_alnum(cls, v: str) -> str:
+        if not v.isalnum():
+            raise ValueError("file_type must be alphanumeric ([A-Za-z0-9]+)")
+        return v
 
 
 class ExtractMetadataPayload(BaseModel):

@@ -91,6 +91,7 @@ def _build_rsync_argv(
         f"--timeout={cfg.push_timeout_sec}",  # I/O-stall timeout -> rsync exit 30
         "-e",
         ssh_cmd,
+        "--",  # argv terminator: no operand below can smuggle an rsync flag (#sec argv-injection)
         payload.original_path,  # media-mount source (read by the fileserver)
         remote_dest,
     ]
