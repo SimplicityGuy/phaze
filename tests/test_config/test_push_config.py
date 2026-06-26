@@ -151,8 +151,14 @@ def test_push_ssh_key_and_known_hosts_in_secret_file_fields() -> None:
     assert "push_known_hosts" in AgentSettings.SECRET_FILE_FIELDS
 
 
-def test_push_ssh_key_read_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """PHAZE_PUSH_SSH_KEY_FILE supplies the secret when the direct var is unset."""
+def test_push_ssh_key_read_from_file_preserves_trailing_newline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """WR-01: PHAZE_PUSH_SSH_KEY_FILE keeps the key VERBATIM, including the trailing newline.
+
+    OpenSSH's private-key parser rejects a key without a final newline ("invalid format" /
+    "error in libcrypto"), so the shared ``.strip()`` applied to other ``_FILE`` secrets must NOT
+    touch the SSH key -- otherwise every PHAZE_PUSH_SSH_KEY_FILE-provisioned push fails at the ssh
+    layer (the documented Docker/SOPS path).
+    """
     _agent_env(monkeypatch)
     secret = tmp_path / "id_ed25519"
     secret.write_text("-----BEGIN KEY-----\nabc\n", encoding="utf-8")
@@ -160,11 +166,12 @@ def test_push_ssh_key_read_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setenv("PHAZE_PUSH_SSH_KEY_FILE", str(secret))
     s = AgentSettings()
     assert isinstance(s.push_ssh_key, SecretStr)
-    assert s.push_ssh_key.get_secret_value() == "-----BEGIN KEY-----\nabc"
+    # Verbatim: the trailing newline is preserved (NOT stripped).
+    assert s.push_ssh_key.get_secret_value() == "-----BEGIN KEY-----\nabc\n"
 
 
-def test_push_known_hosts_read_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """PHAZE_PUSH_KNOWN_HOSTS_FILE supplies the pinned host keys."""
+def test_push_known_hosts_read_from_file_preserves_trailing_newline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """WR-01: PHAZE_PUSH_KNOWN_HOSTS_FILE keeps the pinned host keys verbatim (trailing newline kept)."""
     _agent_env(monkeypatch)
     secret = tmp_path / "known_hosts"
     secret.write_text("compute.internal ssh-ed25519 AAAA\n", encoding="utf-8")
@@ -172,4 +179,18 @@ def test_push_known_hosts_read_from_file(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setenv("PHAZE_PUSH_KNOWN_HOSTS_FILE", str(secret))
     s = AgentSettings()
     assert isinstance(s.push_known_hosts, SecretStr)
-    assert s.push_known_hosts.get_secret_value() == "compute.internal ssh-ed25519 AAAA"
+    assert s.push_known_hosts.get_secret_value() == "compute.internal ssh-ed25519 AAAA\n"
+
+
+def test_agent_token_file_still_stripped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """WR-01 guard: the verbatim exemption is key-material-only -- agent_token (hashed) stays stripped."""
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    token_file = tmp_path / "token"
+    token_file.write_text(f"{_VALID_TOKEN}\n", encoding="utf-8")
+    monkeypatch.delenv("PHAZE_AGENT_TOKEN", raising=False)
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN_FILE", str(token_file))
+    s = AgentSettings()
+    # The trailing newline is stripped so the hashed wire string matches an operator-typed env var.
+    assert s.agent_token.get_secret_value() == _VALID_TOKEN

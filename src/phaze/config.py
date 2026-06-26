@@ -78,6 +78,15 @@ class BaseSettings(PydanticBaseSettings):
     # `redis_url` live here because both carry credentials and exist on both roles.
     SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = frozenset({"database_url", "redis_url", "queue_url"})
 
+    # WR-01: secret fields whose file contents must be preserved VERBATIM (NOT ``.strip()``-ed).
+    # Every other `<VAR>_FILE` secret is stripped so a heredoc/echo trailing newline hashes/parses
+    # identically to an operator-typed env var -- but key material (an OpenSSH private key, a
+    # known_hosts file) REQUIRES its trailing newline: OpenSSH's parser rejects a key without a
+    # final newline ("invalid format" / "error in libcrypto"), so stripping it broke every push that
+    # provisioned its key via PHAZE_PUSH_SSH_KEY_FILE. Subclasses extend this set; the shared
+    # `_resolve_secret_files` validator consults it to decide strip-vs-verbatim per field.
+    SECRET_FILE_PRESERVE_WHITESPACE: ClassVar[frozenset[str]] = frozenset()
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_secret_files(cls, data: Any) -> Any:
@@ -130,8 +139,10 @@ class BaseSettings(PydanticBaseSettings):
                     raise ValueError(msg) from exc
                 # Inject under the field name; every in-scope field is matched
                 # either by name (no alias) or by an AliasChoices that includes
-                # the bare field name, so this key always resolves.
-                data[field_name] = contents.strip()
+                # the bare field name, so this key always resolves. Key material
+                # (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its required
+                # trailing newline survives (WR-01); everything else is stripped.
+                data[field_name] = contents if field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE else contents.strip()
                 break
 
         return data
@@ -425,6 +436,12 @@ class AgentSettings(BaseSettings):
     # auto-resolve their `<VAR>_FILE` siblings with NO new resolution code. Never log their
     # values (D-13 token-preview discipline).
     SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {"agent_token", "push_ssh_key", "push_known_hosts"}
+
+    # WR-01: the SSH key + known_hosts are consumed verbatim by ssh (key material), so their
+    # file-mounted contents must keep the trailing newline OpenSSH requires -- do NOT strip them.
+    # ``agent_token`` is deliberately NOT here: its entire wire string is hashed, so the strip that
+    # normalizes a heredoc newline is correct for it.
+    SECRET_FILE_PRESERVE_WHITESPACE: ClassVar[frozenset[str]] = frozenset({"push_ssh_key", "push_known_hosts"})
 
     agent_api_url: str = Field(
         default="",
