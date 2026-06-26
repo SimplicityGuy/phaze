@@ -202,3 +202,122 @@ async def test_pushed_missing_auth_returns_401(
         r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
 
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /mismatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mismatch_under_cap_redrives_and_increments_counter(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the cap: push_attempt++ in the ledger payload + push_file re-enqueued, state stays PUSHING."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, push_max_attempts=3)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id, push_attempt=0)
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id  # capture before any expire_all()
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["file_id"] == str(file_id)
+    assert body["status"] == "mismatch"
+    assert body["cleared"] is False, "under the cap the push is re-driven, not cleared"
+
+    # The file keeps its PUSHING slot (Open-Q1).
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.PUSHING
+
+    # push_attempt incremented in the ledger payload (Pitfall 4 -- counter rides the JSONB).
+    row = await _ledger_row(session, f"push_file:{file_id}")
+    assert row is not None, "the ledger row must be retained on a re-drive"
+    assert row.payload.get("push_attempt") == 1
+
+    # push_file re-enqueued on the FILESERVER queue with the deterministic key.
+    fileserver_queue = task_router.queues[fileserver_id]
+    assert len(fileserver_queue.captured) == 1
+    task_name, payload = fileserver_queue.captured[0]
+    assert task_name == "push_file"
+    assert payload["file_id"] == str(file_id)
+    assert payload["agent_id"] == fileserver_id
+    assert fileserver_queue.captured_policy[0]["key"] == f"push_file:{file_id}"
+
+
+@pytest.mark.asyncio
+async def test_mismatch_over_cap_fails_terminally_and_clears_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At/over the cap: state -> ANALYSIS_FAILED + ledger cleared, in one transaction (no re-drive)."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, push_max_attempts=3)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    # Already at the cap: the next attempt (4) exceeds push_max_attempts=3.
+    await _seed_push_ledger(session, file_id, push_attempt=3)
+    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cleared"] is True, "over the cap the file is terminally failed and the ledger cleared"
+
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.ANALYSIS_FAILED
+    assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row must be cleared on terminal failure"
+    # No re-drive enqueue happened.
+    assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_mismatch_holds_when_no_fileserver_agent(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the cap but no fileserver online -> 200 hold, file stays PUSHING, ledger retained."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, push_max_attempts=3)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id, push_attempt=0)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.PUSHING
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None
+    assert task_router.queues == {}, "nothing enqueued when no fileserver agent is online"
+
+
+@pytest.mark.asyncio
+async def test_mismatch_missing_auth_returns_401(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Authorization header -> 401 (HTTPBearer auto_error)."""
+    agent, _ = seed_test_agent
+    _patch_settings(monkeypatch)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, token=None) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 401
