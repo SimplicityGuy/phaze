@@ -601,20 +601,23 @@ max_in_flight = cfg.cloud_max_in_flight   # type: ignore[attr-defined]
 | A6 | lux Postgres is v15+ (so `CREATE ON SCHEMA` grant is meaningful) | PG role | If <15, the grant is redundant (role already had CREATE); confirm major version in runbook. |
 | A7 | The compute agent's `queue.connect()` runs SAQ `init_db()` (the broker role hits the CREATE-on-schema requirement) | PG role | VERIFIED in code (`connect()`→`init_db()`); low risk. The empirical PG behavior is VERIFIED, not assumed. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Backfill behavior when cloud is OFF.**
    - Known: `trigger_backfill_cloud` resets `ANALYSIS_FAILED` long files to `DISCOVERED` and routes via the (now-gated) seam → they'd go local and re-time-out.
    - Unclear: should backfill no-op (recommended) or be allowed to proceed local?
    - Recommendation: explicit early-return when OFF (Pitfall 2). Confirm with operator in discuss.
+   - **RESOLVED:** explicit early-return when OFF — locked by CONTEXT D-02/D-03 and implemented as a dedicated task (Plan 51-01, Task 3) with an acceptance criterion asserting zero `file.state` mutations on the disabled path.
 
 2. **`PHAZE_AGENT_QUEUE` as criterion-named "cloud queue name."**
    - Known: it is a raw import-time env read, not a pydantic field (structural).
    - Recommendation: document it as the knob (A2). Confirm whether that satisfies CLOUDDEPLOY-02 or a settings field is required.
+   - **RESOLVED:** document-not-refactor (A2) — implemented in Plan 51-03, Task 1. The carve-out is made explicit in both the configuration.md table and the task acceptance criteria: `PHAZE_AGENT_QUEUE` is the one structural exception to pydantic-settings coverage (SAQ needs the Queue object at module import, before `get_settings()` constructs), documented with rationale rather than refactored.
 
 3. **Held `AWAITING_CLOUD` rows across a toggle flip.**
    - Known: D-04 = OFF stops NEW cloud work; in-flight drains. Pre-existing `AWAITING_CLOUD` rows are neither in-flight nor newly produced.
    - Recommendation: leave them held; they release when cloud is re-enabled (the staging cron resumes). Document this so the "Awaiting cloud" card isn't mistaken for a bug while OFF.
+   - **RESOLVED:** leave held; release on re-enable — locked by CONTEXT D-04 and documented in Plan 51-03, Task 2 (cloud-burst.md operator note).
 
 ## Sources
 
