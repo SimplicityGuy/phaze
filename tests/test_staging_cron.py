@@ -20,7 +20,7 @@ engine), ``queue`` (a controller-queue stand-in, unused) and ``task_router`` (a
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -190,7 +190,8 @@ async def test_fifo_oldest_awaiting_cloud_first(async_engine: AsyncEngine, sessi
     _patch_settings(monkeypatch, max_in_flight=1)
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    base = datetime.now(UTC) - timedelta(hours=3)
+    # ``files.created_at`` is TIMESTAMP WITHOUT TIME ZONE -> seed naive datetimes.
+    base = datetime.now() - timedelta(hours=3)
     oldest = _make_file(created_at=base)
     middle = _make_file(created_at=base + timedelta(hours=1))
     newest = _make_file(created_at=base + timedelta(hours=2))
@@ -258,3 +259,51 @@ async def test_double_tick_dedups_via_deterministic_key(async_engine: AsyncEngin
     # The state still flips to PUSHING (the file left the AWAITING_CLOUD scan set; the live push job
     # will land it). The window count stays honest on the next tick.
     assert (await _states_for(session, [fid]))[fid] == FileState.PUSHING
+
+
+# --- Controller registration: function + single narrow */5 cron (replaces the drain) -----
+
+
+def test_stage_cloud_window_registered_in_controller_functions_and_cron() -> None:
+    """stage_cloud_window is in controller settings['functions'] AND exactly one CronJob('*/5 ...').
+
+    It REPLACES the deprecated release_awaiting_cloud drain cron, so the old symbol is gone from the
+    controller registration entirely.
+    """
+    from phaze.tasks import controller
+    from phaze.tasks.release_awaiting_cloud import stage_cloud_window as scw
+
+    assert scw in controller.settings["functions"], "stage_cloud_window not registered in settings['functions']"
+
+    stage_crons = [cj for cj in controller.settings["cron_jobs"] if cj.function is scw]
+    assert len(stage_crons) == 1, "stage_cloud_window must be registered as exactly one CronJob"
+    assert stage_crons[0].cron == "*/5 * * * *", "staging cron must run every 5 minutes"
+
+    # The deprecated drain cron is gone -- no controller function is named release_awaiting_cloud.
+    fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
+    assert "release_awaiting_cloud" not in fn_names, "the deprecated release_awaiting_cloud drain cron must be removed"
+
+
+def test_staging_module_is_fastapi_free() -> None:
+    """The staging module must stay control-only: no fastapi / phaze.routers import (import boundary).
+
+    Parse the actual ``import`` / ``from`` statements via AST (so a mention in the docstring/prose
+    does not count) and assert none reference the web layer.
+    """
+    import ast
+    import pathlib
+
+    import phaze.tasks.release_awaiting_cloud as mod
+
+    src = mod.__file__
+    assert src is not None
+    tree = ast.parse(pathlib.Path(src).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported.add(node.module)
+
+    assert not any(name == "fastapi" or name.startswith("fastapi.") for name in imported), "staging module must not import fastapi"
+    assert not any(name.startswith("phaze.routers") for name in imported), "staging module must not import phaze.routers"
