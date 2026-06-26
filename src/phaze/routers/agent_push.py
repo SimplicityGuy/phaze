@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid
 
 from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -92,7 +92,28 @@ async def report_pushed(
         return PushedResponse(file_id=file_id)
 
     # One transaction: PUSHING -> PUSHED, clear the push ledger row, enqueue compute analysis.
-    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.PUSHED))
+    # WR-02: guard the transition on the CURRENT state being PUSHING so a duplicate/late callback
+    # (e.g. a push_file SAQ retry after its first callback already committed) is an idempotent no-op
+    # instead of clobbering an already-advanced file (ANALYZED/...) back to PUSHED and re-enqueuing
+    # process_file against a scratch copy the first run already deleted (which would re-trigger the
+    # CR-01 stranding). Only when the row actually transitioned do we clear the ledger + enqueue.
+    # An UPDATE returns a CursorResult at runtime (exposing rowcount); the async stubs type it as
+    # the base Result, so cast to read the affected-row count (mirrors services/scan_deletion.py).
+    res = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            update(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.PUSHING).values(state=FileState.PUSHED)
+        ),
+    )
+    if res.rowcount == 0:
+        # Already advanced past PUSHING: a clean idempotent 200, no ledger clear, no re-enqueue.
+        await session.commit()
+        logger.info(
+            "report_pushed: idempotent no-op (file no longer PUSHING)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+        return PushedResponse(file_id=file_id)
     await clear_ledger_entry(session, f"push_file:{file_id}")
 
     compute_queue = request.app.state.task_router.queue_for(compute_agent.id)

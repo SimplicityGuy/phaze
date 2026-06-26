@@ -187,6 +187,36 @@ async def test_pushed_holds_cleanly_when_no_compute_agent(
 
 
 @pytest.mark.asyncio
+async def test_pushed_duplicate_callback_is_idempotent_noop(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-02: a duplicate/late /pushed callback must NOT clobber an already-ANALYZED file.
+
+    A push_file SAQ retry can post /pushed twice; if the first committed and process_file has since
+    finished (file now ANALYZED), the second callback must be an idempotent no-op -- it must not
+    reset the row to PUSHED nor re-enqueue process_file (which would re-trigger CR-01 stranding).
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch)
+    # The file has already advanced all the way to ANALYZED (the first callback + analysis ran).
+    file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
+    await seed_active_agent(session, agent_id="compute-01", kind="compute")
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    assert r.status_code == 200, r.text
+    # State is untouched (NOT reset to PUSHED).
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.ANALYZED
+    # Nothing re-enqueued -- the finished file is not re-analyzed.
+    assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
 async def test_pushed_missing_auth_returns_401(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
