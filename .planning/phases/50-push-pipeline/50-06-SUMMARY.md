@@ -97,3 +97,8 @@ No new external surface. All mitigations in the plan's threat register are reali
 ## Known Stubs
 
 None — the held→stage→push path is fully wired. The downstream `report_pushed`/`process_file` against the scratch copy and sha256 verify land in later Phase-50 plans (50-04), as designed.
+
+## Self-Check: PASSED
+
+- Files verified present: 50-06-SUMMARY.md, release_awaiting_cloud.py (stage_cloud_window), test_staging_cron.py, test_routing_seam.py; test_release_awaiting_cloud.py confirmed deleted.
+- Commits verified: 6a45ac5, ba0b35e, 610f066, 4031c6d, 895ca74.
