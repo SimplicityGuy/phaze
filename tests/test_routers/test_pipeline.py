@@ -830,6 +830,55 @@ async def test_backfill_zero_candidates_returns_empty_fragment(client: AsyncClie
     assert capture == []
 
 
+# --- Phase 51 (D-03): the cloud_burst_enabled gate on the backfill trigger ----------------
+
+
+@pytest.mark.asyncio
+async def test_backfill_disabled_when_cloud_burst_off(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OFF: with cloud_burst_enabled False the backfill trigger is a no-op -- ZERO file.state mutations.
+
+    Pitfall 2 / T-51-02: gating ONLY the routing seam would still let backfill reset the 144
+    ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. The explicit
+    early-return guard prevents any state mutation when the feature is off.
+    """
+    from phaze.config import settings
+
+    monkeypatch.setattr(settings, "cloud_burst_enabled", False)
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    await _drain_background()
+    # Nothing enqueued anywhere -- the disabled path never routes.
+    assert capture == []
+    # The ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out, Pitfall 2).
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.ANALYSIS_FAILED
+    # No scheduling-ledger row is seeded on the disabled path either.
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: AsyncSession) -> None:
+    """ON: with cloud_burst_enabled True the backfill resets the long file and holds it (regression)."""
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    await _drain_background()
+    assert capture == []  # held, never directly enqueued
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.AWAITING_CLOUD
+
+
 # ---------------------------------------------------------------------------
 # Phase 44 Plan 03: POST /pipeline/files/{file_id}/deepen — re-analyze ONE
 # sampled file at the full window budget (fine_cap=0 / coarse_cap=0 -> the
