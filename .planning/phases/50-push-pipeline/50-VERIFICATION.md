@@ -1,8 +1,9 @@
 ---
 phase: 50-push-pipeline
 verified: 2026-06-26T16:10:00Z
-status: human_needed
+status: passed
 score: 5/5 must-haves verified
+human_verification_resolved: "Cloud-window dashboard cards driven live against the real app + templates (2 PUSHING + 1 PUSHED seeded): both cards render with distinct headings, /pipeline/stats re-emits them OOB with correct counts, degrade-safety confirmed (200 on sibling-query failure). User approved 2026-06-26. See 50-HUMAN-UAT.md (status: resolved)."
 overrides_applied: 0
 re_verification: null
 deferred:
