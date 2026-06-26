@@ -15,6 +15,7 @@ manual verification (50-VALIDATION.md Manual-Only).
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 import uuid
@@ -229,7 +230,63 @@ async def test_rsync_exit_code_stderr_truncated_no_key_leak(monkeypatch: pytest.
 # ----------------------------------------------------------------------
 
 
-def test_startup_janitor_compute_only_sweep() -> None:
-    # CLOUDPIPE-04: on compute-worker start, orphaned scratch files are swept while the
-    # fileserver agent (same module) does NOT sweep. Real assertions land in Task 2.
-    pytest.skip("janitor — implemented in 50-03 Task 2")
+def _import_agent_worker(monkeypatch: pytest.MonkeyPatch) -> Any:
+    # The module builds a Queue at import time, which needs the agent env present.
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+    monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-id")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/var/empty")
+    monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+    import phaze.tasks.agent_worker as aw
+
+    return aw
+
+
+def test_startup_janitor_sweep_removes_files_and_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # CLOUDPIPE-04: _sweep_scratch unlinks every file AND the .rsync-partial dir under the scratch
+    # dir, and tolerates a missing dir (no raise).
+    aw = _import_agent_worker(monkeypatch)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (scratch / "orphan-1.flac").write_bytes(b"a")
+    (scratch / "orphan-2.mp3").write_bytes(b"b")
+    partial = scratch / ".rsync-partial"
+    partial.mkdir()
+    (partial / "in-flight.flac.tmp").write_bytes(b"c")
+
+    aw._sweep_scratch(scratch)
+
+    assert list(scratch.iterdir()) == []
+    assert not partial.exists()
+
+    # Missing dir is tolerated.
+    aw._sweep_scratch(tmp_path / "does-not-exist")
+
+
+async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # CLOUDPIPE-04 / D-14: the gate sweeps ONLY when kind == "compute" AND a scratch dir is set.
+    # The fileserver agent runs the SAME module and must NOT sweep (it has no scratch dir).
+    aw = _import_agent_worker(monkeypatch)
+
+    calls: list[Path] = []
+    monkeypatch.setattr(aw, "_sweep_scratch", calls.append)
+
+    scratch = str(tmp_path / "scratch")
+    await aw._maybe_sweep_scratch(SimpleNamespace(kind="compute", cloud_scratch_dir=scratch))
+    assert calls == [Path(scratch)]
+
+    calls.clear()
+    await aw._maybe_sweep_scratch(SimpleNamespace(kind="fileserver", cloud_scratch_dir=scratch))
+    assert calls == []
+
+    # compute but no scratch dir configured → no-op.
+    await aw._maybe_sweep_scratch(SimpleNamespace(kind="compute", cloud_scratch_dir=None))
+    assert calls == []
+
+
+def test_push_file_registered_on_agent_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    # push_file must be present in the worker functions[] list so the fileserver agent can run it.
+    aw = _import_agent_worker(monkeypatch)
+    assert aw.push_file in aw.settings["functions"]
