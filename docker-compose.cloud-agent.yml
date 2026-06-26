@@ -1,0 +1,59 @@
+---
+# docker-compose.cloud-agent.yml — OCI A1 cloud compute-agent compose (Phase 51 D-05..D-08).
+#
+# Standalone file. The operator runs:
+#   docker compose -f docker-compose.cloud-agent.yml up -d
+# on the free OCI Ampere A1 (arm64) host (no other compose file needed).
+#
+# Service split — ONLY the agent-side analysis worker lives here. Unlike
+# docker-compose.agent.yml (file-server), this stack has NO media-bound
+# sidecars (no watcher/audfprint/panako) and NO local media mount: a compute
+# agent owns no scan roots and receives each long file pushed to an ephemeral
+# scratch volume over rsync-SSH-over-Tailscale (Phase 50), analyzes it, and
+# deletes it.
+#   worker — agent-side SAQ worker (PHAZE_ROLE=agent, PHAZE_AGENT_KIND=compute).
+#            Pulls the native-arm64 image from GHCR (-arm64 suffix; Phase 47).
+#
+# Networking (D-05): network_mode: host attaches the worker to the A1 host's
+# network namespace so it reaches lux Postgres:5432 / Redis:6379 / phaze-api:8000
+# through the host-installed tailscaled + MagicDNS. There is no bridge network
+# and no published port — the agent is a pure outbound consumer over the tailnet.
+#
+# Invariants (asserted by tests/test_deployment/test_cloud_agent_compose.py):
+#   - Exactly one service: worker (no watcher/audfprint/panako).
+#   - No DATABASE_URL / POSTGRES_* on any service and no postgres/redis service
+#     (DIST-04: the compute agent reaches Postgres ONLY via PHAZE_QUEUE_URL for
+#     saq_jobs + the application server's HTTP API — never the app ORM).
+#   - No SCAN_PATH / /data/music media mount (a compute agent owns no media).
+#   - The worker image ends with -arm64 (D-08: no multi-arch manifest exists;
+#     an x86 image would not run on the Ampere A1 — Pitfall 3).
+#   - cloud_scratch is a NAMED docker volume (not a host bind); MODELS mount is
+#     rw (D-07 model auto-download), CA mount is ro (operator-distributed cert).
+#   - network_mode: host is present on the worker (D-05 host tailscaled).
+#
+# Image tag pinning (D-08/D-16): default `latest-arm64` is convenient for first
+# bring-up. Production should pin a specific version via `PHAZE_IMAGE_TAG=v5.0.0`
+# in .env; the docker-publish.yml build-arm64 job tags both `:latest-arm64` and
+# `:v<version>-arm64` (verified by test_docker_publish_arm64_job_tags_latest_and_version).
+#
+# Secrets (D-06): no plaintext secrets are inlined here. The worker reads the
+# existing `*_FILE` machinery (PHAZE_QUEUE_URL_FILE, PHAZE_AGENT_TOKEN_FILE,
+# PHAZE_PUSH_*_FILE) via env_file: .env — see docs/cloud-burst.md.
+
+services:
+  worker:
+    image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64
+    command: uv run saq phaze.tasks.agent_worker.settings
+    network_mode: host
+    env_file: .env
+    environment:
+      - PHAZE_ROLE=agent
+      - PHAZE_AGENT_KIND=compute
+    volumes:
+      - "cloud_scratch:${PHAZE_CLOUD_SCRATCH_DIR:?PHAZE_CLOUD_SCRATCH_DIR required}:rw"
+      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${CA_PATH:-./certs}:/certs:ro"
+    restart: unless-stopped
+
+volumes:
+  cloud_scratch:
