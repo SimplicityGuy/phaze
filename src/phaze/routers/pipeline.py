@@ -256,6 +256,7 @@ async def _route_discovered_by_duration(
     session: AsyncSession,
     files_with_duration: list[tuple[FileRecord, float | None]],
     threshold_sec: int,
+    cloud_enabled: bool,
     models_path: str,
 ) -> dict[str, int]:
     """Route each DISCOVERED file to a queue by its duration (Phase 49 seam, reshaped in Phase 50).
@@ -305,7 +306,9 @@ async def _route_discovered_by_duration(
     held = 0
 
     for file, duration in files_with_duration:
-        is_long = duration is not None and duration >= threshold_sec
+        # Phase 51 (D-02): when cloud-burst is OFF nothing is "long" -- every file falls to the
+        # local branch, so no row is ever held in AWAITING_CLOUD and the cloud pipeline stays dormant.
+        is_long = cloud_enabled and duration is not None and duration >= threshold_sec
         if is_long:
             # Phase 50 (CLOUDPIPE-01): ALWAYS hold -- no direct-to-compute path. The bounded
             # stage_cloud_window cron is the single, unbypassable entry to the compute pipeline.
@@ -366,6 +369,7 @@ async def trigger_analysis(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
+        settings.cloud_burst_enabled,
         settings.models_path,
     )
 
@@ -598,6 +602,7 @@ async def trigger_analysis_ui(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
+        settings.cloud_burst_enabled,
         settings.models_path,
     )
 
@@ -657,6 +662,17 @@ async def trigger_backfill_cloud(
     over-enqueue class (D-10): a double-click is a no-op (the candidates have already left the
     ANALYSIS_FAILED state), and short / never-failed files are never touched.
     """
+    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit master-toggle guard BEFORE the candidate query.
+    # Gating only the routing seam is insufficient -- backfill would still reset the 144
+    # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
+    # feature is off this is a clean no-op that mutates ZERO file.state rows.
+    if not settings.cloud_burst_enabled:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/backfill_response.html",
+            context={"request": request, "count": 0, "disabled": True},
+        )
+
     threshold = settings.cloud_route_threshold_sec
     count = await count_backfill_candidates(session, threshold)
     if count == 0:
@@ -678,6 +694,7 @@ async def trigger_backfill_cloud(
         session,
         candidates,
         threshold,
+        settings.cloud_burst_enabled,
         settings.models_path,
     )
 

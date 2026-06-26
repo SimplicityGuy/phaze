@@ -39,15 +39,23 @@ if TYPE_CHECKING:
 
 
 class _StubCfg:
-    """Minimal stand-in for the control settings stage_cloud_window reads (cloud_max_in_flight)."""
+    """Minimal stand-in for the control settings stage_cloud_window reads (cloud_max_in_flight + toggle).
 
-    def __init__(self, *, cloud_max_in_flight: int = 2) -> None:
+    ``cloud_burst_enabled`` defaults True here so the existing Phase-50 staging tests keep exercising
+    the ON behavior; the Phase-51 disabled case constructs the stub with the toggle off.
+    """
+
+    def __init__(self, *, cloud_max_in_flight: int = 2, cloud_burst_enabled: bool = True) -> None:
         self.cloud_max_in_flight = cloud_max_in_flight
+        self.cloud_burst_enabled = cloud_burst_enabled
 
 
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2) -> None:
-    """Pin stage_cloud_window's get_settings() deterministically (cloud_max_in_flight)."""
-    monkeypatch.setattr("phaze.tasks.release_awaiting_cloud.get_settings", lambda: _StubCfg(cloud_max_in_flight=max_in_flight))
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_burst_enabled: bool = True) -> None:
+    """Pin stage_cloud_window's get_settings() deterministically (cloud_max_in_flight + cloud_burst_enabled)."""
+    monkeypatch.setattr(
+        "phaze.tasks.release_awaiting_cloud.get_settings",
+        lambda: _StubCfg(cloud_max_in_flight=max_in_flight, cloud_burst_enabled=cloud_burst_enabled),
+    )
 
 
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
@@ -185,6 +193,52 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     assert result == {"staged": 0, "skipped": 2}
     assert router.queues == {}
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+
+
+# --- Phase 51 (D-03): cloud_burst_enabled gate on the staging cron -----------------------
+
+
+@pytest.mark.asyncio
+async def test_cloud_burst_disabled_stages_nothing(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OFF: with cloud_burst_enabled False the cron is a clean no-op BEFORE the window logic (D-03).
+
+    Both agents are online and the window is wide open (3 held, N=2), so the cron WOULD stage if the
+    toggle were on. With it off it returns {"staged": 0, "skipped": 0}, takes no advisory lock, stages
+    no push_file, and leaves every held file AWAITING_CLOUD.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_burst_enabled=False)
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(3)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 0, "skipped": 0}
+    assert router.queues == {}
+    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+
+
+@pytest.mark.asyncio
+async def test_cloud_burst_enabled_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ON: with cloud_burst_enabled True the cron stages as before (Phase 50 regression)."""
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_burst_enabled=True)
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(3)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 2, "skipped": 0}
+    states = await _states_for(session, ids)
+    assert sum(1 for st in states.values() if st == FileState.PUSHING) == 2
 
 
 # --- FIFO: oldest AWAITING_CLOUD first ---------------------------------------------------
