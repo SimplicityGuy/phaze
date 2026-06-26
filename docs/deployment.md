@@ -10,12 +10,13 @@ This guide walks through bringing up a fresh two-host deployment from a clean ch
 
 ## Deployment Targets
 
-The repo ships three compose files plus a dev override:
+The repo ships three deployment compose files plus a dev override:
 
 | File | Host | Services | Notes |
 |------|------|----------|-------|
 | `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api` (DIST-01). |
 | `docker-compose.agent.yml` | File server (one per host) | `worker` (agent role), `watcher`, `audfprint`, `panako` | All four services pull from GHCR via `PHAZE_IMAGE_TAG`: `worker`/`watcher` from `ghcr.io/simplicityguy/phaze`, `audfprint`/`panako` from the `/audfprint` + `/panako` sub-paths. Each sidecar keeps a commented dev-only `build:` fallback. |
+| `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, named scratch. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
 | `docker-compose.override.yml` | Application server (dev only) | overlays `api` + `worker` | Auto-merged by `docker compose` in dev. Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`. Do **not** rely on it in production (the override skips the cert-bootstrap entrypoint). |
 
 ### Application-server services (`docker-compose.yml`)
@@ -39,6 +40,20 @@ The repo ships three compose files plus a dev override:
 | `panako` | `ghcr.io/simplicityguy/phaze/panako:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
 
 All four services mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis (cache) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker** directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service; the agent's only Postgres connection is the SAQ broker pool.
+
+## Cloud-burst compute agent
+
+`docker-compose.cloud-agent.yml` is a fourth, optional deployment target (v5.0): a **worker-only**
+compute agent that runs on a free OCI Ampere A1 (arm64) over Tailscale and analyzes **long** audio
+sets that would otherwise time out on a file server. It owns no media, mounts a named scratch
+volume, and reaches lux only via the SAQ Postgres broker + the HTTP API (DIST-04). The feature
+ships **off by default** (`PHAZE_CLOUD_BURST_ENABLED=false`).
+
+The full compose walkthrough, the homelab provisioning runbook (OCI A1 OpenTofu spec, Tailscale
+grants ACL, and the least-privilege `phaze_broker` Postgres role), the deploy ordering, and the
+smoke test live in **[cloud-burst.md](cloud-burst.md)** — they are intentionally kept out of this
+guide. See also [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings)
+for the per-knob reference.
 
 ## Controller vs Agent roles
 
@@ -464,6 +479,8 @@ Before shipping a file-server host to production:
 - `.env.example.agent` — file-server agent environment template
 - `docker-compose.yml` — app-server compose
 - `docker-compose.agent.yml` — file-server agent compose
+- `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (cloud burst)
 - `docker-compose.override.yml` — dev-only overlay (live reload)
+- [docs/cloud-burst.md](cloud-burst.md) — cloud-burst compute-agent deploy, runbook, and toggle
 - [docs/configuration.md](configuration.md) — full environment-variable reference
 - [docs/architecture.md](architecture.md) — system architecture overview
