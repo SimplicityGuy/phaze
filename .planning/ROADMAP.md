@@ -611,12 +611,16 @@ Plans:
   4. Operator can disable the entire cloud-burst feature with a single config toggle, reverting to all-local analysis with no other change.
 
 **Plans**: 4 plans (2 waves)
-
 Plans:
+**Wave 1**
+
 - [ ] 51-01-PLAN.md — Master toggle: cloud_burst_enabled field + 3 gate sites (routing seam, staging cron, backfill) + unit tests (CLOUDDEPLOY-04, CLOUDDEPLOY-02)
 - [ ] 51-02-PLAN.md — docker-compose.cloud-agent.yml (worker-only, arm64, named scratch, host Tailscale) + invariant test (CLOUDDEPLOY-01)
-- [ ] 51-03-PLAN.md — Docs: configuration.md knob table + new cloud-burst.md runbook + deployment.md pointer + README index (CLOUDDEPLOY-02/03/04 docs)
 - [ ] 51-04-PLAN.md — Homelab change prompt: OCI A1 OpenTofu spec + Tailscale ACL JSON + least-privilege broker role SQL (CLOUDDEPLOY-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 51-03-PLAN.md — Docs: configuration.md knob table + new cloud-burst.md runbook + deployment.md pointer + README index (CLOUDDEPLOY-02/03/04 docs)
 
 ## Backlog (unscheduled — no phase number yet)
 
