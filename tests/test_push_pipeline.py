@@ -268,6 +268,29 @@ def test_push_file_saq_timeout_above_asyncio_outer_guard() -> None:
     assert asyncio_outer < push.PUSH_FILE_SAQ_TIMEOUT_SEC
 
 
+def test_require_push_config_passes_at_default_timeout() -> None:
+    # WR-03 guard: the documented default (push_timeout_sec=600) keeps the layering valid, so the
+    # fail-fast guard stays silent on a correctly-configured agent.
+    push._require_push_config(_fake_cfg())  # must NOT raise
+
+
+def test_require_push_config_rejects_inverted_timeout_layering() -> None:
+    # WR-03 guard: raising PHAZE_PUSH_TIMEOUT_SEC on the agent without bumping the control-side SAQ
+    # net inverts the layering (outer guard >= SAQ net). The agent must fail fast at its first push
+    # with a clear error instead of silently letting SAQ cancel healthy long transfers.
+    too_high = push.PUSH_FILE_SAQ_TIMEOUT_SEC  # outer = too_high + buffer >> SAQ net
+    with pytest.raises(RuntimeError, match="timeout layering inverted"):
+        push._require_push_config(_fake_cfg(push_timeout_sec=too_high))
+
+
+def test_require_push_config_rejects_exact_boundary() -> None:
+    # The constraint is STRICT (<). push_timeout_sec + buffer == SAQ net must also be rejected, since
+    # equal timeouts race nondeterministically.
+    boundary = push.PUSH_FILE_SAQ_TIMEOUT_SEC - push._OUTER_TIMEOUT_BUFFER_SEC
+    with pytest.raises(RuntimeError, match="timeout layering inverted"):
+        push._require_push_config(_fake_cfg(push_timeout_sec=boundary))
+
+
 # ----------------------------------------------------------------------
 # compute-only startup janitor (Task 2 — converted from the Wave 0 stub there)
 # ----------------------------------------------------------------------
