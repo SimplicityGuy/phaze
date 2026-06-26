@@ -64,6 +64,9 @@ if TYPE_CHECKING:
         ProposalStatePatch,
         ProposalStateResponse,
     )
+
+    # Phase 50 push-pipeline callbacks (50-01 schemas).
+    from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
     from phaze.schemas.agent_tracklists import (
         ScanTerminalAckResponse,
@@ -292,6 +295,41 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return AnalysisFailureResponse.model_validate(response.json())
+
+    async def report_pushed(self, file_id: uuid.UUID) -> PushedResponse:
+        """POST /api/internal/agent/push/{file_id}/pushed -- rsync push success (Phase 50, 50-03).
+
+        The fileserver agent calls this when ``push_file`` completes with rsync exit 0, so the
+        control plane flips the file to ``FileState.PUSHED`` and enqueues ``process_file`` against
+        the compute scratch copy (the push -> process_file two-stage handoff; RESEARCH §Critical
+        Finding 1). Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12) via the
+        ``_request`` funnel -- 5xx retries, 4xx surface immediately. ``file_id`` rides the path only
+        (AUTH-01); no body. httpx-only -- NO database import, keeping the agent worker Postgres-free
+        (tests/test_task_split.py)."""
+        from phaze.schemas.agent_push import PushedResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/push/{file_id}/pushed",
+        )
+        return PushedResponse.model_validate(response.json())
+
+    async def report_push_mismatch(self, file_id: uuid.UUID) -> PushMismatchResponse:
+        """POST /api/internal/agent/push/{file_id}/mismatch -- post-transfer sha256 mismatch (Phase 50, 50-03).
+
+        The compute agent calls this when the rsync'd scratch copy fails sha256 verification before
+        analysis. Control either re-drives the push (keeps the PUSHING slot, D-12) or caps it to a
+        terminal failure once ``push_max_attempts`` is reached. Inherits the tenacity retry policy
+        (D-11) + exception hierarchy (D-12) via the ``_request`` funnel. ``file_id`` rides the path
+        only (AUTH-01); no body. httpx-only -- NO database import, keeping the agent worker
+        Postgres-free (tests/test_task_split.py)."""
+        from phaze.schemas.agent_push import PushMismatchResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/push/{file_id}/mismatch",
+        )
+        return PushMismatchResponse.model_validate(response.json())
 
     async def report_metadata_failed(self, file_id: uuid.UUID) -> MetadataFailureResponse:
         """POST /api/internal/agent/metadata/{file_id}/failed -- metadata terminal-ack (Phase 45 L-02 / CR-02).
