@@ -35,6 +35,8 @@ from phaze.services.pipeline import (
     get_metadata_pending_files,
     get_pipeline_stats,
     get_proposal_pending_batches,
+    get_pushed_count,
+    get_pushing_count,
     get_queue_activity,
     get_scan_busy_count,
     get_scanned_total,
@@ -1451,6 +1453,66 @@ async def test_get_awaiting_cloud_count_degrades_to_zero_on_db_error() -> None:
             return None
 
     assert await get_awaiting_cloud_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_pushing_count_happy_path(session: AsyncSession) -> None:
+    """Counts exactly the files in PUSHING; other states (incl. PUSHED) are excluded (D-09)."""
+    session.add_all(
+        [
+            _file(40, FileState.PUSHING),
+            _file(41, FileState.PUSHING),
+            _file(42, FileState.PUSHED),
+            _file(43, FileState.AWAITING_CLOUD),
+        ]
+    )
+    await session.commit()
+
+    assert await get_pushing_count(session) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_pushed_count_happy_path(session: AsyncSession) -> None:
+    """Counts exactly the files in PUSHED; other states (incl. PUSHING) are excluded (D-09)."""
+    session.add_all(
+        [
+            _file(44, FileState.PUSHED),
+            _file(45, FileState.PUSHED),
+            _file(46, FileState.PUSHED),
+            _file(47, FileState.PUSHING),
+        ]
+    )
+    await session.commit()
+
+    assert await get_pushed_count(session) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_pushing_count_degrades_to_zero_on_db_error() -> None:
+    """A forced read error degrades the PUSHING count to 0 (poll-safe via _safe_count)."""
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("files table unavailable")
+
+        async def rollback(self) -> None:
+            return None
+
+    assert await get_pushing_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_pushed_count_degrades_to_zero_on_db_error() -> None:
+    """A forced read error degrades the PUSHED count to 0 (poll-safe via _safe_count)."""
+
+    class _ExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("files table unavailable")
+
+        async def rollback(self) -> None:
+            return None
+
+    assert await get_pushed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

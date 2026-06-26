@@ -1,0 +1,26 @@
+{# Phase 50 (50-07, D-09): "Staged (pushing)" cloud-window count card.
+
+   pushing_count = files in FileState.PUSHING: the left half of the bounded ≤N cloud window --
+   long files whose payload is mid-rsync to the single compute agent's scratch dir. Paired with
+   the "Analyzing (cloud)" card (PUSHED) it makes the "one ahead" window visible at a glance,
+   alongside the "Awaiting cloud" backlog card (CLOUDPIPE-01 observability).
+
+   The count arrives in the context from the Plan-07 degrade-safe service read (get_pushing_count);
+   a degraded read surfaces as 0, so the card always renders a (possibly zero) number and NEVER
+   raises into the 5s poll. The value is a plain int rendered through Jinja autoescape.
+
+   Rendered inline in dashboard.html on first load (#staged-pushing-card lives OUTSIDE the
+   #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
+   every 5s poll (oob=True) so the count stays live. Same id on both renders is the OOB contract
+   (mirrors awaiting_cloud_card.html). #}
+<section id="staged-pushing-card"
+         aria-labelledby="staged-pushing-heading"
+         {% if oob %}hx-swap-oob="true"{% endif %}
+         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
+    <h2 id="staged-pushing-heading" class="text-lg font-semibold">Cloud Window</h2>
+    <div class="bg-amber-50 dark:bg-amber-950 rounded-lg p-4 text-center">
+        <p class="text-2xl font-bold text-amber-700 dark:text-amber-400">{{ pushing_count }}</p>
+        <p class="text-sm text-amber-600 dark:text-amber-400">Staged (pushing)</p>
+        <p class="text-xs text-amber-500 dark:text-amber-500 mt-1">rsync to compute in progress</p>
+    </div>
+</section>

@@ -76,4 +76,10 @@
    (#awaiting-cloud-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob.
    awaiting_cloud_count rides this poll context (degrade-safe, never 500). #}
 {% with oob = True %}{% include "pipeline/partials/awaiting_cloud_card.html" %}{% endwith %}
+{# Phase 50 (50-07, D-09): re-render the bounded cloud-window cards OUT-OF-BAND on the same 5s tick
+   (they live outside #pipeline-stats, so the innerHTML swap never reaches them). Same ids
+   (#staged-pushing-card / #analyzing-cloud-card) are the OOB contract; oob=True flips each partial
+   to emit hx-swap-oob. pushing_count / analyzing_cloud_count ride this poll context (degrade-safe). #}
+{% with oob = True %}{% include "pipeline/partials/staged_pushing_card.html" %}{% endwith %}
+{% with oob = True %}{% include "pipeline/partials/analyzing_cloud_card.html" %}{% endwith %}
 {% endif %}

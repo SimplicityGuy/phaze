@@ -24,6 +24,11 @@
          re-pushed OOB by stats_bar.html on each 5s poll. -->
     {% include "pipeline/partials/awaiting_cloud_card.html" %}
 
+    <!-- Phase 50 (D-09): bounded cloud-window cards — "Staged (pushing)" (PUSHING) and
+         "Analyzing (cloud)" (PUSHED). Live OUTSIDE #pipeline-stats; re-pushed OOB on each 5s poll. -->
+    {% include "pipeline/partials/staged_pushing_card.html" %}
+    {% include "pipeline/partials/analyzing_cloud_card.html" %}
+
     <!-- Stats bar (polled via HTMX every 5s). Still carries the per-node OOB seeds
          (35-04) that drive the DAG canvas bindings on each tick. -->
     <div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">

@@ -816,6 +816,38 @@ async def get_awaiting_cloud_count(session: AsyncSession) -> int:
     )
 
 
+async def get_pushing_count(session: AsyncSession) -> int:
+    """Return COUNT of files in ``FileState.PUSHING`` (staged, rsync in progress), degrading to 0 (D-09).
+
+    Drives the dashboard "Staged (pushing)" card -- the left half of the bounded cloud window
+    (files mid-rsync to the compute agent's scratch dir). Poll-safe via :func:`_safe_count`
+    (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node to 0 and rolls back
+    the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll. This is the
+    OBSERVATIONAL per-card count -- the load-bearing ≤N backpressure is :func:`get_cloud_window_count`,
+    which is intentionally NOT degrade-safe so the cron never over-stages on a transient error.
+    """
+    return await _safe_count(
+        session,
+        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.PUSHING),
+        node="pushing",
+    )
+
+
+async def get_pushed_count(session: AsyncSession) -> int:
+    """Return COUNT of files in ``FileState.PUSHED`` (landed on compute, within analysis), degrading to 0 (D-09).
+
+    Drives the dashboard "Analyzing (cloud)" card -- the right half of the bounded cloud window
+    (files that finished rsync and are awaiting/within remote analysis). Poll-safe via
+    :func:`_safe_count`, exactly like :func:`get_pushing_count`. Observational only; the window
+    cap itself is enforced by :func:`get_cloud_window_count` from committed FileState.
+    """
+    return await _safe_count(
+        session,
+        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.PUSHED),
+        node="analyzing_cloud",
+    )
+
+
 # --- Phase 50 bounded cloud-window helpers (D-03/D-08, CLOUDPIPE-01) ---------------------
 #
 # The window is the load-bearing ≤N backpressure: the count of files staged-or-in-flight to the
