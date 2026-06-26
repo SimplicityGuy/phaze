@@ -15,6 +15,7 @@ manual verification (50-VALIDATION.md Manual-Only).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -223,6 +224,48 @@ async def test_rsync_exit_code_stderr_truncated_no_key_leak(monkeypatch: pytest.
     msg = str(exc_info.value)
     assert len(msg) < 2000
     assert "PRIVATE-KEY-DATA" not in msg
+
+
+# ----------------------------------------------------------------------
+# WR-03 — SAQ cancellation reaps the rsync child before shredding the key
+# ----------------------------------------------------------------------
+
+
+async def test_saq_cancellation_reaps_child_before_secret_shred(monkeypatch: pytest.MonkeyPatch) -> None:
+    # WR-03: a SAQ job-net timeout cancels the coroutine via CancelledError (NOT TimeoutError). The
+    # task must still kill the rsync child so no live ``ssh -i`` reads the key/known_hosts the
+    # finally is about to shred, and no rsync child is orphaned.
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    proc = _FakeProc(returncode=0)
+
+    async def _cancelled_communicate() -> tuple[bytes, bytes]:
+        raise asyncio.CancelledError
+
+    proc.communicate = _cancelled_communicate  # type: ignore[method-assign]
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    api = _FakeApi()
+
+    with pytest.raises(asyncio.CancelledError):
+        await push.push_file({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert proc.killed is True, "the rsync child must be reaped on a SAQ cancellation"
+    assert api.pushed == [], "no success callback fires on a cancelled push"
+
+
+def test_push_file_saq_timeout_above_asyncio_outer_guard() -> None:
+    # WR-03: the SAQ job-net timeout MUST sit strictly above the asyncio outer guard
+    # (push_timeout_sec + buffer) for the documented default so a job-net cancellation never
+    # pre-empts the guard that reaps the child. Layering: rsync(600) < asyncio outer(630) < SAQ net.
+    default_push_timeout = 600
+    asyncio_outer = default_push_timeout + push._OUTER_TIMEOUT_BUFFER_SEC
+    assert asyncio_outer < push.PUSH_FILE_SAQ_TIMEOUT_SEC
 
 
 # ----------------------------------------------------------------------

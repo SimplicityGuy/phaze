@@ -46,6 +46,7 @@ from phaze.models.file import FileState
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import get_cloud_staging_candidates, get_cloud_window_count
+from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 
 
 if TYPE_CHECKING:
@@ -84,7 +85,15 @@ async def _enqueue_push_file(queue: Any, file: FileRecord, agent_id: str) -> Any
     )
     # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
     await queue.connect()
-    return await queue.enqueue("push_file", key=push_file_job_key(file.id), **payload.model_dump(mode="json"))
+    # WR-03: stamp an explicit SAQ job-net timeout strictly above the agent's asyncio outer guard so
+    # a job-net cancellation can never fire before the guard reaps the rsync child. Without this the
+    # role default (worker_job_timeout=600) equalled push_timeout_sec and sat BELOW the 630s guard.
+    return await queue.enqueue(
+        "push_file",
+        key=push_file_job_key(file.id),
+        timeout=PUSH_FILE_SAQ_TIMEOUT_SEC,
+        **payload.model_dump(mode="json"),
+    )
 
 
 async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:

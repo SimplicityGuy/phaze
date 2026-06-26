@@ -280,6 +280,11 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
     assert payload["file_id"] == str(file_id)
     assert payload["agent_id"] == fileserver_id
     assert fileserver_queue.captured_policy[0]["key"] == f"push_file:{file_id}"
+    # WR-03: the re-driven push carries the explicit SAQ job-net timeout (above the asyncio outer
+    # guard), matching the staged-path enqueue so the inner<outer<net kill ordering is deterministic.
+    from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
+
+    assert fileserver_queue.captured_policy[0]["timeout"] == PUSH_FILE_SAQ_TIMEOUT_SEC
 
 
 @pytest.mark.asyncio

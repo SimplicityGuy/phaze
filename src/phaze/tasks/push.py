@@ -49,6 +49,18 @@ _STDERR_SNIPPET_MAX = 500
 # case rsync itself wedges without honoring --timeout (mirrors the process_file inner<outer pattern).
 _OUTER_TIMEOUT_BUFFER_SEC = 30
 
+# WR-03: the SAQ job-net timeout a producer MUST stamp on a push_file enqueue. It has to sit
+# strictly ABOVE the asyncio outer guard (push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC) so SAQ never
+# cancels the coroutine before that guard fires -- a SAQ timeout cancels via CancelledError (NOT
+# TimeoutError), and only the asyncio guard reaps the rsync child. With the default push_timeout_sec
+# of 600 the layering is rsync --timeout=600 < asyncio outer=630 < SAQ net=690, so the kill is
+# deterministic and the child is always reaped before the secret-shredding finally. Producers live
+# on the CONTROL plane (which does not see the agent's AgentSettings.push_timeout_sec), so this is
+# derived from the documented default + a 30s margin above the outer guard. An operator who raises
+# PHAZE_PUSH_TIMEOUT_SEC on the agent must raise this margin too (both live in the same deployment).
+_SAQ_JOB_TIMEOUT_MARGIN_SEC = 30
+PUSH_FILE_SAQ_TIMEOUT_SEC = 600 + _OUTER_TIMEOUT_BUFFER_SEC + _SAQ_JOB_TIMEOUT_MARGIN_SEC
+
 
 def _agent_settings() -> AgentSettings:
     """Return the AgentSettings for this worker process (mirrors functions._agent_settings).
@@ -153,9 +165,11 @@ async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
         try:
             _out, err = await asyncio.wait_for(proc.communicate(), timeout=cfg.push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC)
-        except TimeoutError:
-            # Outer-layer kill: rsync wedged past its own --timeout. Reap the child and re-raise so
-            # SAQ records a failed attempt (--partial resumes on retry).
+        except (TimeoutError, asyncio.CancelledError):
+            # Outer-layer kill (rsync wedged past its own --timeout) OR a SAQ job-net cancellation
+            # (CancelledError, NOT TimeoutError -- WR-03). Either way reap the child BEFORE the
+            # ``finally`` shreds id_key/known_hosts, so no live ``ssh -i`` keeps reading secret files
+            # we are about to delete and no rsync child is orphaned. ``--partial`` resumes on retry.
             proc.kill()
             await proc.wait()
             raise

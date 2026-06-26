@@ -128,6 +128,11 @@ async def test_one_free_slot_stages_one(async_engine: AsyncEngine, session: Asyn
     # Exactly one push_file enqueued onto the FILESERVER agent's per-agent queue.
     push_queue = router.queues["nox"]
     assert [t for t, _ in push_queue.captured] == ["push_file"]
+    # WR-03: the push_file job carries an explicit SAQ job-net timeout (above the asyncio outer
+    # guard), NOT the inherited 600s role default that equalled push_timeout_sec.
+    from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
+
+    assert push_queue.captured_policy[0]["timeout"] == PUSH_FILE_SAQ_TIMEOUT_SEC
     # Exactly one held file flipped to PUSHING; the rest stay AWAITING_CLOUD.
     states = await _states_for(session, ids)
     assert sorted(states.values()) == sorted([FileState.PUSHING, FileState.AWAITING_CLOUD, FileState.AWAITING_CLOUD])
