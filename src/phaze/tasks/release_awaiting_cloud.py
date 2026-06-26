@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import text
 import structlog
 
 from phaze.config import get_settings
@@ -56,6 +57,15 @@ if TYPE_CHECKING:
 
 
 logger = structlog.get_logger(__name__)
+
+# WR-04: a fixed transaction-scoped advisory-lock key that serializes overlapping staging ticks so
+# the load-bearing ≤N window cannot be overshot. SAQ does not guarantee non-overlapping cron runs,
+# and the window COUNT reads COMMITTED truth -- so two ticks could each read window=0, SKIP LOCKED
+# past each other's uncommitted PUSHING flips, and stage up to 2x cloud_max_in_flight. Holding this
+# lock across the count+claim makes the second tick block until the first commits, after which it
+# sees the committed window. Arbitrary stable constant (phase 50, plan 04); never collides because
+# no other code path takes an advisory lock.
+_STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY = 5_000_504
 
 
 def push_file_job_key(file_id: uuid.UUID) -> str:
@@ -111,6 +121,12 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     max_in_flight = get_settings().cloud_max_in_flight  # type: ignore[attr-defined]
 
     async with ctx["async_session"]() as session:
+        # WR-04: serialize overlapping cron ticks. A transaction-scoped advisory lock makes the
+        # window count + candidate claim below atomic with respect to a concurrent tick: the second
+        # tick blocks here until the first commits, then its get_cloud_window_count sees the
+        # committed PUSHING flips and cannot overshoot cloud_max_in_flight. Auto-released at txn end.
+        await session.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
+
         # GATE 1: a compute agent (the analysis consumer) must be online. Absent -> clean hold no-op.
         try:
             await select_active_agent(session, kind="compute")

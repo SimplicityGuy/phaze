@@ -20,6 +20,7 @@ engine), ``queue`` (a controller-queue stand-in, unused) and ``task_router`` (a
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -236,6 +237,42 @@ async def test_backlog_of_144_stages_at_most_n(async_engine: AsyncEngine, sessio
     pushing = [fid for fid, st in states.items() if st == FileState.PUSHING]
     assert len(pushing) == 2  # never the whole backlog
     assert sum(1 for st in states.values() if st == FileState.AWAITING_CLOUD) == 142
+
+
+# --- WR-04: overlapping ticks never overshoot the ≤N window ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_overlapping_ticks_never_exceed_window(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-04: two concurrent staging ticks must not each see window=0 and stage 2x the cap.
+
+    The window COUNT reads committed truth, so without serialization two overlapping ticks could
+    SKIP LOCKED past each other's uncommitted PUSHING flips and stage up to 2 * cloud_max_in_flight.
+    A transaction-scoped advisory lock makes the count+claim atomic so the committed PUSHING set
+    never exceeds the cap, even under concurrency.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2)
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backlog = [_make_file() for _ in range(20)]
+    session.add_all(backlog)
+    await session.commit()
+    ids = [f.id for f in backlog]
+
+    router = DedupFakeTaskRouter()
+    ctx = _make_ctx(async_engine, router, DedupFakeQueue("controller"))
+    # Two overlapping ticks driven concurrently on the same event loop (each opens its own session
+    # from the sessionmaker, so they race exactly like two SAQ cron runs).
+    results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
+
+    states = await _states_for(session, ids)
+    pushing = [fid for fid, st in states.items() if st == FileState.PUSHING]
+    assert len(pushing) <= 2, f"window overshot: {len(pushing)} files PUSHING (cap is 2)"
+    assert sum(r["staged"] for r in results) <= 2, "concurrent ticks staged more than the cap"
 
 
 # --- Double-tick collapses via the deterministic push_file:<id> key ----------------------
