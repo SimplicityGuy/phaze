@@ -1,5 +1,26 @@
 # Milestones
 
+## v5.0 Cloud Burst Analysis (Shipped: 2026-06-26)
+
+**Phases completed:** 5 phases, 23 plans, 39 tasks
+**Requirements:** 19/19 satisfied (CLOUDIMG, CLOUDAGENT, CLOUDROUTE, CLOUDPIPE, CLOUDDEPLOY)
+
+**Delivered:** Long-duration audio that times out locally is now analyzed unattended on a free OCI Ampere A1 (arm64) compute agent over Tailscale — duration-routed, rsync-pushed, sha256-verified, and reverted to all-local by a single master toggle.
+
+**Key accomplishments:**
+
+- **Phase 47 — Official arm64 essentia image:** `Dockerfile.agent-arm64` builds essentia from source (the wheel is x86-only) on Python 3.13 + TF 2.20.0, built on a native `ubuntu-24.04-arm` CI runner (no QEMU) and published to GHCR only after a numeric-parity guard compares arm64 `analyze_file` output against an x86 golden (BPM/key exact, model scores within epsilon).
+- **Phase 48 — Compute-agent type:** a media-less `kind="compute"` agent (empty scan roots, no app-ORM access, DIST-04) that drains its per-agent SAQ queue and PUTs results over HTTP, surfaced on the Agents admin page with a kind badge.
+- **Phase 49 — Duration routing & backfill:** a per-file duration router holds long files in `AWAITING_CLOUD` (never silently analyzed locally) and a ledger-scoped backfill re-drives the timed-out long files — no whole-backlog over-enqueue.
+- **Phase 50 — Push pipeline:** a `stage_cloud_window` cron keeps ≤N files staged-or-in-flight; `push_file` rsyncs over SSH-over-Tailscale (shell-free argv, pinned host keys, 0600 secret temps); the compute agent sha256-verifies the scratch copy before analyzing and cleans it up; idempotent, ledger-tracked re-drive.
+- **Phase 51 — Deployment, config & docs:** `docker-compose.cloud-agent.yml` (arm64, host-Tailscale, no media, named scratch), the `cloud_burst_enabled` master toggle gating all three cloud entry points, the homelab OCI A1 + Tailscale-ACL + least-privilege Postgres broker runbook, and the full config/docs surface.
+
+**Post-audit hardening (PRs #161/#162):** cloud-agent compose `python3 -m saq` start command (the `uv run` override would have prevented the arm64 container from starting), `compute_scratch_dir` fail-fast guard, scratch-dir-skew diagnostic, and the WR-03 push-timeout-coupling guard.
+
+**Deferred (deployment-gated, unblock on the live OCI A1 rollout):** 48 live admin-badge render, 50-UAT tests 4-7 (real rsync transfer / mismatch / recovery). See STATE.md Deferred Items.
+
+---
+
 ## v4.0 Distributed Agents (Shipped: 2026-05-17)
 
 **Phases completed:** 6 phases, 47 plans

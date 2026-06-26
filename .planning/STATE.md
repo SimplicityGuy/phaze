@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v5.0
 milestone_name: Cloud Burst Analysis
-status: "Phase 51 shipped — PR #159"
-last_updated: "2026-06-26T19:45:09.210Z"
-last_activity: 2026-06-26
+status: Awaiting next milestone
+last_updated: "2026-06-26T22:31:24.929Z"
+last_activity: 2026-06-26 — Milestone v5.0 completed and archived
 progress:
   total_phases: 22
   completed_phases: 5
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 ## Current Position
 
-Phase: 51 — COMPLETE
-Plan: 1 of 4
-Status: Phase 51 shipped — PR #159
-Last activity: 2026-06-26
+Phase: Milestone v5.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-26 — Milestone v5.0 completed and archived
 
 ## Performance Metrics
 
@@ -143,8 +143,26 @@ None.
 | Phase 45 P06 | ~25 min | 2 tasks | 12 files |
 | Phase 46 P01 | ~20min | 3 tasks | 8 files |
 
+## Deferred Items
+
+Items acknowledged and deferred at the v5.0 milestone close on 2026-06-26. All three are
+**deployment-gated** — they unblock on the live OCI A1 + Tailscale rollout (see
+`.planning/phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md`).
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| verification | 48-VERIFICATION | human_needed | Live Agents-page compute **badge render**; automated coverage MET — only the visual live check pends a running compute agent |
+| uat | 48-UAT | partial | Same live compute-agent badge check |
+| uat | 50-UAT | partial | Tests 4-7 (real rsync transfer, sha256 mismatch, recovery re-drive, bounded-window staging) need a live compute agent; logic is green |
+
+These are tracked for the v5.0 deploy; they are NOT blockers for the milestone record.
+
 ## Session Continuity
 
 Last session: 2026-06-26T17:27:28.280Z
 Stopped at: Phase 51 context gathered
 Resume file: .planning/phases/51-deployment-config-docs/51-CONTEXT.md
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone
