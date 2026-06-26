@@ -328,16 +328,21 @@ def stub_app_state() -> SimpleNamespace:
     return SimpleNamespace(controller_queue=controller_queue, task_router=_StubRouter())
 
 
-async def seed_active_agent(session: AsyncSession, agent_id: str = "nox") -> Agent:
+async def seed_active_agent(session: AsyncSession, agent_id: str = "nox", *, kind: str = "fileserver") -> Agent:
     """Insert one non-revoked, recently-seen agent so per-agent routing resolves it.
 
     Commits (and refreshes) the row — a committed agent is the canonical fixture per
     the WR-03 review note, over the flush-only variant.
+
+    Phase 49 (RESEARCH A3 / Wave 0): ``kind`` lets a test seed a ``"compute"`` (cloud)
+    agent so the kind-filtered ``select_active_agent`` can be exercised. Defaults to
+    ``"fileserver"`` so every existing caller is unchanged.
     """
     agent = Agent(
         id=agent_id,
         name=agent_id,
         token_hash=None,
+        kind=kind,
         scan_roots=[],
         last_seen_at=datetime.now(UTC),
         revoked_at=None,

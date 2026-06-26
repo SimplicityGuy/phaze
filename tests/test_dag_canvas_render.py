@@ -470,11 +470,19 @@ def test_gating_triggers_post_only_to_existing_endpoints() -> None:
     recover_targets = sorted(t for t in targets if t == "/pipeline/recover")
     assert recover_targets == ["/pipeline/recover"], recover_targets
 
+    # Phase 49 (D-08): the GLOBAL "Backfill to cloud" button is a pipeline-level header action (like
+    # Recover), NOT a per-stage enqueue trigger — pinned separately so it cannot creep into the
+    # per-stage surface or the per-stage node count.
+    backfill_targets = sorted(t for t in targets if t == "/pipeline/backfill-cloud")
+    assert backfill_targets == ["/pipeline/backfill-cloud"], backfill_targets
+
     # The 8 per-stage enqueue triggers POST only to existing endpoints — the 4 Phase-34 triggers, the
     # Phase-39 bulk Search trigger (REQ-39-1), the Phase-40 bulk Fingerprint-Scan trigger (REQ-40-1),
     # and the Phase-41 bulk Scrape + Match triggers (REQ-41-1/REQ-41-2). No other net-new per-stage
     # trigger surface (T-35-10).
-    enqueue_targets = sorted(t for t in targets if not t.startswith("/pipeline/stages/") and t != "/pipeline/recover")
+    enqueue_targets = sorted(
+        t for t in targets if not t.startswith("/pipeline/stages/") and t not in ("/pipeline/recover", "/pipeline/backfill-cloud")
+    )
     assert enqueue_targets == [
         "/pipeline/analyze",
         "/pipeline/extract-metadata",
@@ -492,8 +500,43 @@ def test_gating_triggers_post_only_to_existing_endpoints() -> None:
     expected_stage = sorted(f"/pipeline/stages/{stage}/{action}" for stage in _AGENT_STAGES for action in ("pause", "resume", "priority", "priority"))
     assert stage_targets == expected_stage, stage_targets
 
-    # No POST target outside the enqueue + stage-control + global-recover surfaces.
-    assert html.count('hx-post="/pipeline/') == len(enqueue_targets) + len(stage_targets) + len(recover_targets)
+    # No POST target outside the enqueue + stage-control + global-recover + global-backfill surfaces.
+    assert html.count('hx-post="/pipeline/') == len(enqueue_targets) + len(stage_targets) + len(recover_targets) + len(backfill_targets)
+
+
+def test_backfill_button_is_global_header_action_not_a_node() -> None:
+    """The "Backfill to cloud" button POSTs to /pipeline/backfill-cloud as a header action (D-08).
+
+    It mirrors the Recover button: a distinct aria-label, an hx-target sibling response slot, and an
+    hx-indicator spinner — and crucially it is NOT a per-stage DAG node, so the node count is unchanged.
+    """
+    html = _render_canvas()
+    assert 'hx-post="/pipeline/backfill-cloud"' in html
+    assert 'aria-label="Backfill timed-out long files to the cloud"' in html
+    assert 'hx-target="#backfill-response"' in html
+    # The header action does NOT add a per-stage node: all 10 (and only 10) node ids still render.
+    for node_id in _NODE_IDS:
+        assert f'id="{node_id}"' in html
+    assert sum(html.count(f'id="{n}"') for n in _NODE_IDS) == len(_NODE_IDS)
+
+
+def test_backfill_response_partial_renders_count_copy() -> None:
+    """backfill_response.html renders the count-confirmed copy for a non-zero run and the empty copy otherwise."""
+    non_zero = _templates.TemplateResponse(
+        request=_fake_request(),
+        name="pipeline/partials/backfill_response.html",
+        context={"count": 3, "cloud": 2, "awaiting": 1},
+    ).body.decode()
+    assert "Backfilled 3 long files" in non_zero
+    assert "2 cloud" in non_zero
+    assert "1 awaiting cloud" in non_zero
+
+    empty = _templates.TemplateResponse(
+        request=_fake_request(),
+        name="pipeline/partials/backfill_response.html",
+        context={"count": 0},
+    ).body.decode()
+    assert "No timed-out long files to backfill." in empty
 
 
 def test_gating_fingerprint_gates_on_discovered_not_metadata_extracted() -> None:

@@ -774,6 +774,87 @@ async def get_analysis_failed_count(session: AsyncSession) -> int:
     )
 
 
+# --- Phase 49 duration-routing read helpers (D-05, D-09/D-10) ---------------------------
+#
+# The primitives the per-file router (Plan 02), backfill (Plan 03), and release cron
+# (Plan 04) compose against. All three JOIN files -> metadata on FileMetadata.duration:
+# FileRecord.file_metadata is lazy="noload" (models/file.py), so duration MUST be captured
+# in-memory via an explicit SELECT before any background task reads it (a later lazy access
+# off-session would raise). The backfill predicate filters ANALYSIS_FAILED *AND*
+# duration >= threshold -- it deliberately does NOT reuse get_analysis_failed_count, which
+# over-counts short/null-duration failures and would re-trigger the over-enqueue class.
+
+
+async def get_discovered_files_with_duration(session: AsyncSession) -> list[tuple[FileRecord, float | None]]:
+    """Return ``(FileRecord, duration)`` for every DISCOVERED file (LEFT OUTER JOIN metadata).
+
+    The duration is the joined ``FileMetadata.duration`` (or ``None`` when no metadata row
+    exists yet). Captured into the in-memory list here because ``FileRecord.file_metadata`` is
+    ``lazy="noload"`` -- a later access in a background task would NOT lazy-load it, so the
+    duration the per-file router (Plan 02) routes on must be read in this query.
+    """
+    stmt = (
+        select(FileRecord, FileMetadata.duration)
+        .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
+        .where(FileRecord.state == FileState.DISCOVERED)
+    )
+    result = await session.execute(stmt)
+    return [(record, duration) for record, duration in result.all()]
+
+
+async def get_awaiting_cloud_count(session: AsyncSession) -> int:
+    """Return COUNT of files in ``FileState.AWAITING_CLOUD``, degrading to 0 on any DB error.
+
+    Drives the dashboard "Awaiting cloud" card (D-05). Poll-safe via :func:`_safe_count`
+    (mirrors :func:`get_analysis_failed_count`): a DB hiccup degrades this node to 0 and rolls
+    back the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll.
+    """
+    return await _safe_count(
+        session,
+        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.AWAITING_CLOUD),
+        node="awaiting_cloud",
+    )
+
+
+def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
+    """Build the ANALYSIS_FAILED + ``duration >= threshold_sec`` candidate predicate.
+
+    INNER JOIN ``FileMetadata`` so a null-duration ANALYSIS_FAILED file is structurally
+    excluded; the ``duration >= threshold_sec`` filter then drops short failures. ``threshold_sec``
+    is a bound int parameter (T-49-02) -- never interpolated SQL.
+    """
+    return (
+        select(FileRecord, FileMetadata.duration)
+        .join(FileMetadata, FileMetadata.file_id == FileRecord.id)
+        .where(FileRecord.state == FileState.ANALYSIS_FAILED, FileMetadata.duration >= threshold_sec)
+    )
+
+
+async def count_backfill_candidates(session: AsyncSession, threshold_sec: int) -> int:
+    """Return COUNT of ANALYSIS_FAILED files whose joined duration >= ``threshold_sec``.
+
+    This is the explicit filter that closes the over-enqueue class (D-09/D-10): it is NOT
+    :func:`get_analysis_failed_count` (which counts ALL ANALYSIS_FAILED, including short and
+    null-duration failures that must never be cloud-routed). Poll-safe via :func:`_safe_count`.
+    """
+    return await _safe_count(
+        session,
+        select(func.count()).select_from(_backfill_candidates_stmt(threshold_sec).subquery()),
+        node="backfill_candidates",
+    )
+
+
+async def get_backfill_candidates(session: AsyncSession, threshold_sec: int) -> list[tuple[FileRecord, float | None]]:
+    """Return ``(FileRecord, duration)`` for the same ANALYSIS_FAILED + duration>=threshold set.
+
+    The list form the backfill producer (Plan 03) iterates to re-route long failed files to a
+    cloud compute agent. duration is captured in-memory (FileRecord.file_metadata is
+    ``lazy="noload"``) so a downstream background task never triggers a lazy load.
+    """
+    result = await session.execute(_backfill_candidates_stmt(threshold_sec))
+    return [(record, duration) for record, duration in result.all()]
+
+
 # --- Shared pending-set helpers (Phase 42, D-03 anti-drift) -----------------------------
 #
 # ONE definition of "pending" per stage, consumed by BOTH the Phase 39-41 manual DAG

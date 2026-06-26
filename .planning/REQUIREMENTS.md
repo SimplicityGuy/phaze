@@ -21,10 +21,10 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Duration routing & backfill (CLOUDROUTE)
 
-- [ ] **CLOUDROUTE-01**: Files whose `metadata.duration` ≥ a configurable threshold (default 90 min) are routed to an available compute agent's queue instead of the local agent.
-- [ ] **CLOUDROUTE-02**: When no compute agent is online, ≥threshold files are held in an "awaiting cloud" state and are **never** silently analyzed locally (where they would time out).
-- [ ] **CLOUDROUTE-03**: Files below the threshold continue to analyze on the local file-server agent with unchanged behavior.
-- [ ] **CLOUDROUTE-04**: The operator can backfill the existing timed-out long files (`analysis_failed`, duration ≥ threshold) to the cloud, scoped through the Phase 45 scheduling ledger so only previously-scheduled work is re-driven (no whole-backlog over-enqueue).
+- [x] **CLOUDROUTE-01**: Files whose `metadata.duration` ≥ a configurable threshold (default 90 min) are routed to an available compute agent's queue instead of the local agent.
+- [x] **CLOUDROUTE-02**: When no compute agent is online, ≥threshold files are held in an "awaiting cloud" state and are **never** silently analyzed locally (where they would time out).
+- [x] **CLOUDROUTE-03**: Files below the threshold continue to analyze on the local file-server agent with unchanged behavior.
+- [x] **CLOUDROUTE-04**: The operator can backfill the existing timed-out long files (`analysis_failed`, duration ≥ threshold) to the cloud, scoped through the Phase 45 scheduling ledger so only previously-scheduled work is re-driven (no whole-backlog over-enqueue).
 
 ### Push pipeline (CLOUDPIPE)
 

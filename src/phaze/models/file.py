@@ -37,6 +37,10 @@ class FileState(enum.StrEnum):
     # Phase 43: terminal failure of windowed analysis (timeout / crash / error).
     # Code-only -- FileRecord.state is String(30), so no enum migration is needed.
     ANALYSIS_FAILED = "analysis_failed"
+    # Phase 49 D-01: a long file held for cloud (compute-agent) analysis instead of the
+    # on-prem file-server. Code-only -- "awaiting_cloud" is 14 chars and fits the existing
+    # String(30) state column, so no enum migration is needed (ANALYSIS_FAILED precedent).
+    AWAITING_CLOUD = "awaiting_cloud"
     PROPOSAL_GENERATED = "proposal_generated"
     APPROVED = "approved"
     REJECTED = "rejected"

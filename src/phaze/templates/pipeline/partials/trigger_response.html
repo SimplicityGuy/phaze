@@ -1,6 +1,20 @@
 {% if no_active_agent %}
+{# Phase 49 (WR-01): with NO agent online a long file is still HELD in AWAITING_CLOUD (a real state
+   change), so surface the held count instead of a bare "0 enqueued". Short/null files with no
+   fileserver are merely skipped (no state change), so the awaiting==0 case keeps the original copy. #}
 <span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
+    {%- if awaiting %}
+    No compute agent online — {{ awaiting }} held awaiting cloud{% if skipped %}, {{ skipped }} skipped (no local agent){% endif %}. Held files release automatically when a compute agent connects.
+    {%- else %}
     No active agent available — start an agent worker and retry. 0 files enqueued for {{ action }}.
+    {%- endif %}
+</span>
+{% elif split_counts %}
+{# Phase 49 (D-12): per-file duration routing reports split counts. long -> cloud,
+   short/null -> local, long-with-no-compute -> held (awaiting cloud), short/null-with-no-
+   fileserver -> skipped. All values are server-computed ints (no operator free-text). #}
+<span class="text-sm text-green-600 dark:text-green-400 font-medium">
+    Enqueued {{ local }} local, {{ cloud }} cloud, {{ awaiting }} awaiting cloud for {{ action }}{% if skipped %} — {{ skipped }} skipped (no local agent){% endif %}.
 </span>
 {% elif count > 0 %}
 <span class="text-sm text-green-600 dark:text-green-400 font-medium">
