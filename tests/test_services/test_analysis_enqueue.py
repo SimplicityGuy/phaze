@@ -59,11 +59,24 @@ async def test_enqueue_process_file_complete_payload_and_policy() -> None:
 
     task_name, payload = queue.captured[0]
     assert task_name == "process_file"
-    # The five required ProcessFilePayload fields plus the two Phase-44 optional cap fields
-    # (serialized as None when not overridden), nothing else (extra="forbid" contract).
-    assert set(payload) == {"file_id", "original_path", "file_type", "agent_id", "models_path", "fine_cap", "coarse_cap"}
+    # The five required ProcessFilePayload fields plus the two Phase-44 optional cap fields and the
+    # two Phase-50 optional cloud-push fields (all serialized as None when not overridden), nothing
+    # else (extra="forbid" contract).
+    assert set(payload) == {
+        "file_id",
+        "original_path",
+        "file_type",
+        "agent_id",
+        "models_path",
+        "fine_cap",
+        "coarse_cap",
+        "expected_sha256",
+        "scratch_path",
+    }
     assert payload["fine_cap"] is None
     assert payload["coarse_cap"] is None
+    assert payload["expected_sha256"] is None
+    assert payload["scratch_path"] is None
     assert payload["file_id"] == str(fid)
     assert payload["original_path"] == file.original_path
     assert payload["file_type"] == "mp3"

@@ -18,6 +18,8 @@ Wire-format conversion (D-26):
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pebble import ProcessExpired
@@ -25,6 +27,7 @@ from pebble import ProcessExpired
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisWindowPayload, AnalysisWritePayload
 from phaze.schemas.agent_tasks import ProcessFilePayload
+from phaze.services.hashing import compute_sha256
 from phaze.tasks.pool import run_in_process_pool
 
 
@@ -156,65 +159,92 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # cap of 0 reaches analysis.py::_stride_to_cap as the analyze-ALL-windows no-op (not special-cased here).
     fine_cap = payload.fine_cap if payload.fine_cap is not None else cfg.analysis_fine_cap
     coarse_cap = payload.coarse_cap if payload.coarse_cap is not None else cfg.analysis_coarse_cap
+
+    # Phase 50 (D-11): when the control plane pinned a scratch_path, the agent reads/cleans that
+    # ephemeral pushed copy instead of original_path -- the analyzer is path-agnostic so this is a
+    # pure read-path swap. ``scratch_path is not None`` is ITSELF the compute-read signal. The
+    # outer ``finally`` guarantees the scratch copy never outlives the job (CLOUDPIPE-04).
+    read_path = payload.scratch_path or payload.original_path
     try:
-        analysis = await run_in_process_pool(
-            ctx,
-            _load_analyze_file(),
-            payload.original_path,
-            payload.models_path,
-            timeout=cfg.analysis_inner_timeout_sec,
-            fine_cap=fine_cap,
-            coarse_cap=coarse_cap,
-        )
-    except TimeoutError:
-        # Inner pebble kill: the file is deterministically too long. TERMINAL -- report and
-        # return NORMALLY so SAQ marks the job COMPLETE (no blind re-run of a >timeout file;
-        # T-43-08). RESEARCH §Q5.
-        await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="timeout"))
-        return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-    except ProcessExpired:
-        # essentia OOM/segfault crashed the child. Also deterministic -> TERMINAL the same way.
-        await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed"))
-        return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-    except Exception as exc:
-        # Generic / possibly-transient error. Report ONLY on the terminal attempt (so SAQ has
-        # already exhausted retries), then re-raise so SAQ records the failed attempt. A
-        # retryable attempt re-raises silently so the one real retry (retries=2) can run.
-        job = ctx.get("job")
-        if job is not None and not job.retryable:
-            await api.report_analysis_failed(
-                payload.file_id,
-                AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]),
+        # CLOUDPIPE-03: integrity-verify the pushed bytes BEFORE trusting them. sha256 is computed
+        # OFF the event loop (chunked stdlib hash; the scan.py pattern). A mismatch means a
+        # corrupt/partial transfer -> delete it, report so the control plane re-pushes (50-05 caps
+        # attempts), and DO NOT analyze (T-50-corrupt). Gated on both fields being present so the
+        # bulk local producer (neither set) takes none of this branch.
+        if payload.scratch_path and payload.expected_sha256:
+            actual_sha256 = await asyncio.to_thread(compute_sha256, Path(payload.scratch_path))
+            if actual_sha256 != payload.expected_sha256:
+                Path(payload.scratch_path).unlink(missing_ok=True)
+                # ``report_push_mismatch`` is added to the agent client by Plan 50-03 (same wave);
+                # reach it via the Any-typed ctx so this module need not import that parallel change.
+                await ctx["api_client"].report_push_mismatch(payload.file_id)
+                return {"file_id": str(payload.file_id), "status": "push_mismatch"}
+
+        try:
+            analysis = await run_in_process_pool(
+                ctx,
+                _load_analyze_file(),
+                read_path,
+                payload.models_path,
+                timeout=cfg.analysis_inner_timeout_sec,
+                fine_cap=fine_cap,
+                coarse_cap=coarse_cap,
             )
-        raise
+        except TimeoutError:
+            # Inner pebble kill: the file is deterministically too long. TERMINAL -- report and
+            # return NORMALLY so SAQ marks the job COMPLETE (no blind re-run of a >timeout file;
+            # T-43-08). RESEARCH §Q5.
+            await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="timeout"))
+            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
+        except ProcessExpired:
+            # essentia OOM/segfault crashed the child. Also deterministic -> TERMINAL the same way.
+            await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed"))
+            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
+        except Exception as exc:
+            # Generic / possibly-transient error. Report ONLY on the terminal attempt (so SAQ has
+            # already exhausted retries), then re-raise so SAQ records the failed attempt. A
+            # retryable attempt re-raises silently so the one real retry (retries=2) can run.
+            job = ctx.get("job")
+            if job is not None and not job.retryable:
+                await api.report_analysis_failed(
+                    payload.file_id,
+                    AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]),
+                )
+            raise
 
-    features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
-    mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
-    style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None
+        features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
+        mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
+        style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None
 
-    # Phase 31 ANL-01: forward the per-window time-series. ``analyze_file`` returns
-    # ``windows`` as plain dicts (Plan 04), so we build AnalysisWindowPayload from each
-    # dict directly -- NO ORM/database import (D-25 import boundary; tests/test_task_split.py).
-    windows = [AnalysisWindowPayload(**w) for w in analysis.get("windows", [])] if isinstance(analysis, dict) else []
+        # Phase 31 ANL-01: forward the per-window time-series. ``analyze_file`` returns
+        # ``windows`` as plain dicts (Plan 04), so we build AnalysisWindowPayload from each
+        # dict directly -- NO ORM/database import (D-25 import boundary; tests/test_task_split.py).
+        windows = [AnalysisWindowPayload(**w) for w in analysis.get("windows", [])] if isinstance(analysis, dict) else []
 
-    # PUT result via HTTP (D-26 idempotent upsert; CR-01 partial-PUT semantics preserved by exclude_unset)
-    await api.put_analysis(
-        payload.file_id,
-        AnalysisWritePayload(
-            bpm=analysis.get("bpm"),
-            musical_key=analysis.get("musical_key"),
-            mood=mood_dict,
-            style=style_dict,
-            danceability=analysis.get("danceability"),
-            energy=analysis.get("energy"),
-            # Phase 43 windowed-analysis coverage (the five-field contract analyze_file emits).
-            # Absent keys stay None so the partial-PUT contract preserves unset coverage.
-            fine_windows_analyzed=analysis.get("fine_windows_analyzed"),
-            fine_windows_total=analysis.get("fine_windows_total"),
-            coarse_windows_analyzed=analysis.get("coarse_windows_analyzed"),
-            coarse_windows_total=analysis.get("coarse_windows_total"),
-            sampled=analysis.get("sampled"),
-            windows=windows,
-        ),
-    )
-    return {"file_id": str(payload.file_id), "status": "analyzed"}
+        # PUT result via HTTP (D-26 idempotent upsert; CR-01 partial-PUT semantics preserved by exclude_unset)
+        await api.put_analysis(
+            payload.file_id,
+            AnalysisWritePayload(
+                bpm=analysis.get("bpm"),
+                musical_key=analysis.get("musical_key"),
+                mood=mood_dict,
+                style=style_dict,
+                danceability=analysis.get("danceability"),
+                energy=analysis.get("energy"),
+                # Phase 43 windowed-analysis coverage (the five-field contract analyze_file emits).
+                # Absent keys stay None so the partial-PUT contract preserves unset coverage.
+                fine_windows_analyzed=analysis.get("fine_windows_analyzed"),
+                fine_windows_total=analysis.get("fine_windows_total"),
+                coarse_windows_analyzed=analysis.get("coarse_windows_analyzed"),
+                coarse_windows_total=analysis.get("coarse_windows_total"),
+                sampled=analysis.get("sampled"),
+                windows=windows,
+            ),
+        )
+        return {"file_id": str(payload.file_id), "status": "analyzed"}
+    finally:
+        # CLOUDPIPE-04: bound scratch-dir disk to the in-flight set -- delete on EVERY exit path
+        # (success, timeout, crash, generic error, mismatch early-return). ``missing_ok`` absorbs
+        # the mismatch branch's explicit unlink and any local-file (no-scratch) job (T-50-scratch-dos).
+        if payload.scratch_path:
+            Path(payload.scratch_path).unlink(missing_ok=True)
