@@ -175,11 +175,16 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   4. The entrypoint returns a non-zero exit code on any download, integrity, analysis, or callback failure and never reports success on a failed analysis.
   5. The pod's HTTPS callback trusts the control plane's internal CA baked into the image, with **no** `verify=False` TLS bypass anywhere.
 
-**Plans**: 3 plans
-Plans:
+**Plans**: 3 plansPlans:
+**Wave 1**
+
 - [ ] 52-01-PLAN.md — Shared analysis_wire converters + request_download_url client method + presign response schema (KJOB-02)
-- [ ] 52-02-PLAN.md — job_runner one-shot orchestrator + distinct exit-code contract + import-boundary/CA/windowed tests (KJOB-02/03/04/05)
 - [ ] 52-03-PLAN.md — Dockerfile.job (FROM api base, baked CA, zero new deps) + needs-gated docker-publish job + deployment guards (KJOB-01/05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 52-02-PLAN.md — job_runner one-shot orchestrator + distinct exit-code contract + import-boundary/CA/windowed tests (KJOB-02/03/04/05)
+
 **Research**: Skip — directly parallels v5.0 Phase 47.
 
 ### Phase 53: S3 object-staging leg

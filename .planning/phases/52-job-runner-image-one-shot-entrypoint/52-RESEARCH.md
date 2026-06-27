@@ -380,9 +380,9 @@ idea (but baked, not mounted).
 
 All other claims are `[VERIFIED: repo]` against the cited source file.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Where do essentia models come from in the Job pod?** (HIGH priority — blocks Dockerfile + entrypoint design)
+1. **[RESOLVED — CONTEXT.md D-05]** **Where do essentia models come from in the Job pod?** Resolved: the entrypoint **parameterizes `models_dir`** (env `PHAZE_MODELS_DIR`, default `/models`) and unit-tests against a fixture dir; the Job image stays small (no bake, no upf.edu download). Cluster provisioning — a single pre-populated `ReadOnlyMany` PVC mounted read-only at `/models` plus its one-time populate Job — is **deferred to Phase 54**. (HIGH priority — blocked Dockerfile + entrypoint design; now unblocked.)
    - What we know: api image does NOT bake models; v5.0 uses a `/models` volume + `ensure_models_present` upf.edu download; the pod has no compose volume.
    - What's unclear: bake (i) vs runtime-download (ii) vs cluster PVC/initContainer (iii).
    - Recommendation: **bake models into `Dockerfile.job`** for a self-contained, egress-independent
@@ -394,7 +394,7 @@ All other claims are `[VERIFIED: repo]` against the cited source file.
    - Recommendation: separate `needs: build-and-push` job with `ARG BASE_IMAGE`, not a parallel
      matrix row. Satisfies D-04's "same workflow" intent.
 
-3. **Presign-request endpoint shape** (coordination with Phase 53)
+3. **[RESOLVED — Phase 52 design; server side → Phase 53]** **Presign-request endpoint shape** (coordination with Phase 53)
    - What we know: pod calls it at startup with `file_id`; expects `{url, expected_sha256}`.
    - What's unclear: exact path/verb/auth (likely `POST /api/internal/agent/.../presign` with the
      same bearer). Phase 52 should add a `PhazeAgentClient` method + mock it; Phase 53 implements it.
