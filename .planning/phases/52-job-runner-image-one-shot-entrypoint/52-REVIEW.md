@@ -22,20 +22,26 @@ findings:
   warning_resolved: 5
   warning_open: 0
   info: 2
-  info_open: 2
+  info_resolved: 2
+  info_open: 0
   total: 7
-status: warnings_resolved
+status: resolved
 resolved:
   - WR-01
   - WR-02
   - WR-03
   - WR-04
   - WR-05
+  - IN-01
+  - IN-02
 resolved_at: 2026-06-27T00:00:00Z
 notes: >-
   All 5 warnings fixed in commits 616ed42 (WR-01), 3050f54 (WR-02),
-  ea3d5ed (WR-04), 6af1704 (WR-03), ebf2b3c (WR-05). IN-01/IN-02 deferred
-  (out of scope for this fix run).
+  ea3d5ed (WR-04), 6af1704 (WR-03), ebf2b3c (WR-05). IN-01 fixed in
+  commit 8c66585 (docstrings reworded to match converter behavior, no
+  runtime change). IN-02 fixed in commit f904e01 (expected_sha256 pinned
+  to ^[0-9a-f]{64}$ + .strip().lower() integrity compare, schema rejection
+  test added).
 ---
 
 # Phase 52: Code Review Report
@@ -195,6 +201,8 @@ freshly-pushed `:latest`.
 
 ### IN-01: `functions.py` docstring claims "top-10 genre predictions" but the converter slices nothing
 
+**Status:** RESOLVED (commit 8c66585) — reworded the module docstrings in both `tasks/functions.py` and `services/analysis_wire.py` to "the genre predictions returned by the discogs effnet model"; chose the docstring fix over adding a `[:10]` slice so `job_runner` wire output does not diverge from the verbatim-relocated `process_file` converters. No runtime change.
+
 **File:** `src/phaze/tasks/functions.py:14-16` (also `analysis_wire.py:17-18`)
 **Issue:** The module docstring says `style` "takes the top-10 genre predictions", but
 `_features_to_style_dict` iterates **all** `features["genre"]["predictions"]` entries
@@ -206,6 +214,8 @@ verbatim), surfaced because both files are in scope this phase.
 genre predictions returned by the model" to match behavior.
 
 ### IN-02: `PresignDownloadResponse.expected_sha256` has no format validation and the integrity compare is case/whitespace sensitive
+
+**Status:** RESOLVED (commit f904e01) — constrained the field to `Field(pattern=r"^[0-9a-f]{64}$")` (kept required, `extra="forbid"`) so format skew fails at the wire boundary, and normalized both sides with `.strip().lower()` before the integrity compare in `job_runner.py` (defensive; `compute_sha256` already returns lowercase). Added a parametrized schema test rejecting malformed digests (wrong length / uppercase / non-hex / empty / leading whitespace) plus a valid-digest case. Existing fixtures already used 64-char lowercase hex, so no stubs changed; exit-11 mismatch and exit-0 happy-path tests still pass.
 
 **File:** `src/phaze/schemas/agent_analysis.py:123-124`, `src/phaze/job_runner.py:191`
 **Issue:** `expected_sha256: str` accepts any string (including `""`), and the check is
