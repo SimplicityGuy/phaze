@@ -629,10 +629,18 @@ jobs:
         run: |
           # The operator supplies the internal CA via the PHAZE_INTERNAL_CA_CERT
           # repo secret; Dockerfile.job COPYs phaze-ca.crt from the build context
-          # and bakes it to /etc/phaze/phaze-ca.crt (KJOB-05). construct_agent_client
-          # raises at runtime if the baked cert is empty, so a misconfigured secret
-          # surfaces fast rather than silently disabling TLS verification.
+          # and bakes it to /etc/phaze/phaze-ca.crt (KJOB-05). Fail the build NOW
+          # if the secret is unset/empty: `printf '%s\n' ""` would write a 1-byte
+          # newline that passes construct_agent_client's `st_size == 0` guard and
+          # ship a junk CA that only fails at the first live TLS handshake (WR-03).
+          if [ -z "${CA_CERT}" ]; then
+            echo "::error::PHAZE_INTERNAL_CA_CERT is empty or unset — cannot bake the internal CA into the Job image."
+            exit 1
+          fi
           printf '%s\n' "${CA_CERT}" > phaze-ca.crt
+          # Verify the materialized cert is a parseable PEM before the build so a
+          # malformed secret fails at build time, not at runtime in a live pod.
+          openssl x509 -in phaze-ca.crt -noout
 
       - name: "🚀 Build and push the Job-runner image — phaze/job"
         if: github.event_name != 'pull_request'
