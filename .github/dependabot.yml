@@ -9,6 +9,12 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Los_Angeles"
+    # Supply-chain cooldown: defer updates until a release is 7 days old, matching
+    # the `[tool.uv] exclude-newer = "7 days"` window in every pyproject.toml. Stops
+    # Dependabot from opening PRs that pin a brand-new release (the 1.82.7/1.82.8
+    # malicious-release risk class) before it has been in the wild long enough.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "ci"
       include: "scope"
@@ -30,6 +36,8 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "docker"
       include: "scope"
@@ -51,6 +59,8 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "deps"
       prefix-development: "deps-dev"

@@ -30,7 +30,7 @@ prefix), D-06 (request schema), D-07 (counter math), D-15 (Stripe-style
 request-id idempotency), D-17 (4-stage cross-tenant guard).
 """
 
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -42,11 +42,6 @@ from phaze.schemas.agent_exec_batches import ExecBatchProgressPayload
 
 
 if TYPE_CHECKING:
-    # `Awaitable` is referenced only inside string-quoted ``cast(...)`` calls
-    # below to satisfy mypy on the redis-py `Awaitable[T] | T` overloaded
-    # async return types; it is never used at runtime.
-    from collections.abc import Awaitable
-
     from redis.commands.core import AsyncScript
 
 
@@ -184,10 +179,7 @@ async def post_exec_batch_progress(
 
     # ---- Stage 2: 404 if the batch hash doesn't exist. Single opaque detail
     # (D-17 step 3) -- unknown and expired batches look the same.
-    # `redis_async.Redis.hexists` is typed `Awaitable[bool] | bool` because the
-    # redis-py stubs share between sync and async APIs; cast to the awaitable
-    # variant for mypy in this async handler.
-    if not await cast("Awaitable[bool]", redis_client.hexists(key, "total")):
+    if not await redis_client.hexists(key, "total"):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="batch not found",
@@ -197,7 +189,7 @@ async def post_exec_batch_progress(
     # dispatch (D-09 step 5) so its absence is structural proof this agent
     # wasn't part of the dispatch. Reject 403 BEFORE any HINCRBY so we
     # never silently create an unauthorized rollup field.
-    if not await cast("Awaitable[bool]", redis_client.hexists(key, f"agent:{body.agent_id}:total")):
+    if not await redis_client.hexists(key, f"agent:{body.agent_id}:total"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="agent was not part of this dispatch",
@@ -215,14 +207,14 @@ async def post_exec_batch_progress(
     # increments + the optional sub_batch_terminal increment hit Redis in
     # one round-trip (transaction=False -- HINCRBY on disjoint fields is
     # commutative; no MULTI/EXEC needed). The `pipe.hincrby` chained calls
-    # return the pipeline itself (Awaitable in async mode); await is a
-    # noop-friendly wrapper that the redis-py stubs require.
+    # return the pipeline itself in async mode; await is a noop-friendly
+    # wrapper that the redis-py stubs require.
     increments = _compute_increments(body)
     async with redis_client.pipeline(transaction=False) as pipe:
         for field, by in increments.items():
-            await cast("Awaitable[int]", pipe.hincrby(key, field, by))
+            await pipe.hincrby(key, field, by)
         if body.sub_batch_terminal:
-            await cast("Awaitable[int]", pipe.hincrby(key, "subjobs_completed", 1))
+            await pipe.hincrby(key, "subjobs_completed", 1)
         await pipe.execute()
 
     # ---- Stage 6: terminal-status detection + promotion (D-07 final clause).

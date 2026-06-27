@@ -7,3 +7,9 @@ dependencies = [
     "fastapi>=0.135.2",
     "uvicorn>=0.34.0",
 ]
+
+[tool.uv]
+# Supply-chain cooldown: refuse to resolve packages published in the last 7 days.
+# Kept identical to the root pyproject.toml window so every package manifest in the
+# repo applies the same cooldown; `scripts/update-project.sh` keeps them in sync.
+exclude-newer = "7 days"

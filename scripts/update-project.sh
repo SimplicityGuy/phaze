@@ -47,6 +47,13 @@ MAJOR_UPGRADES=false
 SKIP_TESTS=false
 UPDATE_PYTHON=false
 PYTHON_VERSION=""
+
+# Supply-chain cooldown window (days). semgrep's uv-missing-dependency-cooldown
+# rule wants a `[tool.uv] exclude-newer` cooldown; ensure_cooldown_window() keeps the
+# relative `"COOLDOWN_DAYS days"` window present and uniform across every
+# pyproject.toml, paired with Dependabot's matching cooldown.default-days so fresh
+# floors are never pinned. See ensure_cooldown_window() for the full rationale.
+COOLDOWN_DAYS=7
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 CHANGES_MADE=false
 
@@ -443,6 +450,117 @@ update_precommit_hooks() {
   fi
 }
 
+# === Supply-Chain Cooldown Window ===
+
+# Keep the relative `exclude-newer` cooldown uniform across every pyproject.toml.
+#
+# semgrep's uv-missing-dependency-cooldown rule wants a `[tool.uv] exclude-newer`
+# cooldown. We use the relative `"<COOLDOWN_DAYS> days"` form so the window rolls
+# forward on its own and `uv lock` only ever resolves releases at least that old. A
+# relative window stays satisfiable only while every dependency floor is already
+# older than the window, so it is paired with Dependabot's matching
+# `cooldown.default-days` (.github/dependabot.yml): Dependabot never opens a PR that
+# would pin a floor younger than the window, so the two never fight.
+#
+# This function just re-asserts `exclude-newer = "<COOLDOWN_DAYS> days"` in the root
+# and every service pyproject.toml (adding a [tool.uv] table when absent) and then
+# refreshes the lockfiles. If a manifest drifts (value removed or changed), it is
+# restored — keeping the cooldown present and uniform.
+ensure_cooldown_window() {
+  print_section "$EMOJI_VERIFY" "Ensuring Supply-Chain Cooldown Window"
+
+  # Newline-delimited service dirs for the embedded Python helper.
+  local services_nl
+  services_nl=$(printf '%s\n' "${SERVICE_DIRS[@]}")
+
+  local apply_val=1
+  [[ "$DRY_RUN" == true ]] && apply_val=0
+
+  local output
+  output=$(
+    APPLY="$apply_val" COOLDOWN_DAYS="$COOLDOWN_DAYS" SERVICE_DIRS_NL="$services_nl" \
+      uv run python - <<'PY'
+import os
+import re
+from pathlib import Path
+
+apply = os.environ.get("APPLY") == "1"
+cooldown_days = int(os.environ.get("COOLDOWN_DAYS", "7"))
+service_dirs = [s.strip() for s in os.environ.get("SERVICE_DIRS_NL", "").splitlines() if s.strip()]
+pyproject_paths = [Path("pyproject.toml")] + [Path(s) / "pyproject.toml" for s in service_dirs]
+
+want = f'exclude-newer = "{cooldown_days} days"\n'
+excl_re = re.compile(r'^\s*exclude-newer\s*=\s*"[^"]*"\s*$')
+header_re = re.compile(r"^\[tool\.uv\]\s*$")
+changed = 0
+for pp in pyproject_paths:
+    if not pp.exists():
+        continue
+    original = pp.read_text()
+    new_lines = []
+    replaced = False
+    for line in original.splitlines(keepends=True):
+        if not replaced and excl_re.match(line):
+            new_lines.append(want)
+            replaced = True
+            continue
+        new_lines.append(line)
+    if not replaced:
+        # No exclude-newer yet: insert after [tool.uv], or append a fresh table.
+        inserted = False
+        rebuilt = []
+        for line in new_lines:
+            rebuilt.append(line)
+            if not inserted and header_re.match(line):
+                rebuilt.append(want)
+                inserted = True
+        if not inserted:
+            if rebuilt and not rebuilt[-1].endswith("\n"):
+                rebuilt[-1] += "\n"
+            rebuilt.append(f"\n[tool.uv]\n{want}")
+        new_lines = rebuilt
+
+    joined = "".join(new_lines)
+    if joined != original:
+        changed += 1
+        print(f"WROTE {pp}")
+        if apply:
+            pp.write_text(joined)
+
+print(f"PYPROJECTS_CHANGED={changed}")
+PY
+  )
+
+  local changed
+  changed=$(echo "$output" | sed -n 's/^PYPROJECTS_CHANGED=//p')
+  changed=${changed:-0}
+
+  print_info "Cooldown window: exclude-newer = \"${COOLDOWN_DAYS} days\" (relative, rolls forward)"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    if [[ "$changed" -gt 0 ]]; then
+      print_info "[DRY RUN] Would set the cooldown window in $changed pyproject.toml file(s) and re-lock"
+    else
+      print_success "[DRY RUN] All pyproject.toml already carry the cooldown window"
+    fi
+    return
+  fi
+
+  if [[ "$changed" -gt 0 ]]; then
+    # Refresh every lockfile so its recorded cooldown matches the manifests.
+    uv lock >/dev/null 2>&1 || uv lock
+    for svc_dir in "${SERVICE_DIRS[@]}"; do
+      [[ -f "$svc_dir/uv.lock" ]] || continue
+      (cd "$svc_dir" && { uv lock >/dev/null 2>&1 || uv lock; })
+    done
+    CHANGES_MADE=true
+    FILE_CHANGES+=("pyproject.toml (root + services): set cooldown window to ${COOLDOWN_DAYS} days")
+    print_success "Set cooldown window (\"${COOLDOWN_DAYS} days\") across $changed pyproject.toml file(s)"
+  else
+    print_success "Cooldown window already set (\"${COOLDOWN_DAYS} days\") in all manifests"
+  fi
+}
+
 # === Python Package Updates ===
 
 update_python_packages() {
@@ -477,6 +595,9 @@ update_python_packages() {
       echo ""
       print_info "Review versions above and update pyproject.toml constraints manually for major upgrades"
       print_info "Then re-run: just lock-upgrade && just sync"
+      print_info "Note: 'uv pip list --outdated' queries PyPI directly and ignores the"
+      print_info "$EMOJI_VERIFY [tool.uv] exclude-newer cooldown — a release listed here that is newer"
+      print_info "than the cooldown cutoff is held back by the window, not by a version cap."
     else
       print_success "All packages are at latest compatible versions"
     fi
@@ -1091,6 +1212,7 @@ main() {
   update_uv_version
   update_docker_images
   update_precommit_hooks
+  ensure_cooldown_window
   update_python_packages
   sync_dependency_floors
   flag_capped_dependencies
