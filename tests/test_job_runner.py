@@ -175,6 +175,34 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
     assert exc.value.code != 0
 
 
+@pytest.mark.parametrize(
+    ("scenario", "env_value"),
+    [
+        ("missing_file_id", None),
+        ("invalid_file_id", "not-a-uuid"),
+    ],
+)
+async def test_precondition_failures_exit_config(job_env, monkeypatch, scenario, env_value):  # type: ignore[no-untyped-def]
+    """Startup/precondition failures map to EXIT_CONFIG (20), not EXIT_DOWNLOAD (10) (WR-02).
+
+    A missing PHAZE_JOB_FILE_ID or a malformed UUID is a PERMANENT
+    misconfiguration; it must be distinct from the transient download code so a
+    Kueue controller never re-drives a Job that can never succeed.
+    """
+    import phaze.job_runner as jr
+
+    if env_value is None:
+        monkeypatch.delenv("PHAZE_JOB_FILE_ID", raising=False)
+    else:
+        monkeypatch.setenv("PHAZE_JOB_FILE_ID", env_value)
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_CONFIG == 20
+    assert exc.value.code != jr.EXIT_DOWNLOAD
+
+
 @respx.mock
 async def test_ca_verify_threads_baked_ca(job_env, monkeypatch):  # type: ignore[no-untyped-def]
     """The client is built with ``verify=<baked CA path>``; never ``verify=False`` (KJOB-05, T-52-01)."""

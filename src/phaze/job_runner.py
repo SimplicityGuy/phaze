@@ -14,8 +14,14 @@ Exit-code contract (D-01):
     0   success
     10  presign request OR download failure (fail-fast, no retry — D-02)
     11  sha256(downloaded) != expected_sha256 (corrupt/partial transfer)
-    12  windowed analysis raised / OOM / inner timeout (fail-fast — D-02)
+    12  windowed analysis raised / OOM (fail-fast — D-02). Wall-clock bounding
+        is NOT done in-process; it is delegated to the Kueue/Job deadline
+        (activeDeadlineSeconds -> SIGTERM -> 143), which is honestly non-zero.
     13  callback PUT failed after the shared bounded retry (D-02)
+    20  startup/precondition failure: wrong PHAZE_ROLE, missing PHAZE_JOB_FILE_ID,
+        or a malformed file_id UUID. This is a PERMANENT misconfiguration, not a
+        transient download failure — kept distinct from 10 so a controller never
+        re-drives a Job whose env/role can never change between attempts.
 
 IMPORT-BOUNDARY INVARIANT (inherited from ``phaze.tasks.functions`` / D-25):
     MUST NOT import phaze.database, phaze.tasks.session, or sqlalchemy.ext.asyncio.
@@ -63,6 +69,11 @@ EXIT_DOWNLOAD = 10
 EXIT_INTEGRITY = 11
 EXIT_ANALYSIS = 12
 EXIT_CALLBACK = 13
+# Startup/precondition failures (wrong role, missing/malformed file_id) are a
+# PERMANENT misconfiguration, not a transient download failure. Kept distinct
+# from EXIT_DOWNLOAD (10) so a Kueue/Job controller does not treat them as
+# retry-worthy and re-drive a Job that can never succeed (WR-02).
+EXIT_CONFIG = 20
 
 _FILE_ID_ENV = "PHAZE_JOB_FILE_ID"
 _MODELS_DIR_ENV = "PHAZE_MODELS_DIR"
@@ -142,17 +153,17 @@ async def run() -> None:
     cfg = get_settings()
     if not isinstance(cfg, AgentSettings):  # pragma: no cover - pod always runs PHAZE_ROLE=agent
         log.error("job_runner_requires_agent_role", got=type(cfg).__name__)
-        sys.exit(EXIT_DOWNLOAD)
+        sys.exit(EXIT_CONFIG)
 
     raw_file_id = os.environ.get(_FILE_ID_ENV)
     if not raw_file_id:
         log.error("job_runner_missing_file_id", env=_FILE_ID_ENV)
-        sys.exit(EXIT_DOWNLOAD)
+        sys.exit(EXIT_CONFIG)
     try:
         file_id = uuid.UUID(raw_file_id)
     except ValueError:
         log.error("job_runner_invalid_file_id", value=raw_file_id)
-        sys.exit(EXIT_DOWNLOAD)
+        sys.exit(EXIT_CONFIG)
 
     models_dir = os.environ.get(_MODELS_DIR_ENV) or cfg.models_path
     fid = str(file_id)
