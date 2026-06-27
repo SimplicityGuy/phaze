@@ -1,200 +1,543 @@
 # Pitfalls Research
 
-**Domain:** Cross-service intelligence and file enrichment (Discogs linking, tag writing, CUE sheets, search) for existing music collection organizer
-**Researched:** 2026-04-02
-**Confidence:** HIGH
+**Domain:** Adding remote Kueue-Job submission + S3 staging to an existing async Python control plane (phaze v6.0 Kubernetes Burst Analysis)
+**Researched:** 2026-06-26
+**Confidence:** HIGH (Kueue lifecycle + kr8s/aioboto3 verified by sibling FEATURES.md/STACK.md against Context7; S3 presigned-URL credential-expiry constraint verified via AWS docs/re:Post; phaze-specific integration mistakes derived from PROJECT.md decisions + v4.0/v5.0 incident memory)
+
+> Scope: these are mistakes specific to **bolting a remote, ephemeral, quota-scheduled execution
+> unit onto phaze's existing async control plane** — not generic Kubernetes advice. The v5.0
+> cloud-burst machinery (duration routing, compute-agent callback to `/api/internal/agent/*`,
+> reconcile-by-`file_id`, ledger scoping, `cloud_burst_enabled` toggle) already exists and is the
+> safety net that several of these pitfalls lean on. Suggested phase numbers assume the v6.0
+> roadmap starts at **Phase 52**; the likely phase shape (from FEATURES MVP) is:
+> **52** Job-runner image + one-shot entrypoint · **53** S3 staging seam · **54** Kube-API
+> submit/watch/reconcile · **55** router/ledger/active-target · **56** deploy/runbook/secrets/docs.
+
+---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Tag Writing Corrupts Audio Files or Produces Unreadable Tags
+### Pitfall 1: Treating the kube watch as the result channel (a dropped watch loses a result)
 
 **What goes wrong:**
-Calling `mutagen.save()` on a file modifies it in-place with no built-in backup or rollback. If the write is interrupted (process kill, disk full, power loss), the file is corrupted. Additionally, mutagen defaults to ID3v2.4 for MP3 files, which some players cannot read. Each format family (ID3 for mp3, Vorbis Comments for ogg/opus/flac, MP4 atoms for m4a) has different encoding rules and gotchas. The existing `metadata.py` only reads tags -- writing is fundamentally different because it modifies irreplaceable files on disk.
+A developer writes `await job.wait(["condition=Complete"])`, reads the analysis result out of the
+Job/pod, and updates `FileRecord` from there. Over an operator VPN (Tailscale or WireGuard), the
+watch connection drops after minutes-to-hours, the `resourceVersion` the watch was holding ages out
+of etcd's compaction window, and the re-list/re-watch either 410-Gones or silently misses the
+terminal transition. The file is stranded as "in progress" forever even though the pod ran perfectly
+and the analysis succeeded.
 
 **Why it happens:**
-Developers treat tag writing as "set field, call save()." They forget: (1) `save()` rewrites the file in-place with no transaction or backup, (2) mutagen writes ID3v2.4 by default but many players only read ID3v2.3, (3) ID3v1 tags are encoded in Latin-1 which cannot represent all Unicode characters, (4) MP4/M4A, Vorbis Comment, and ID3 have different APIs for the same logical operation. The existing tag extraction code uses `mutagen.File()` generic interface for reads, but the generic interface lacks fine-grained control over write parameters (ID3 version, encoding).
+Kube watches *feel* like a reliable real-time stream, so people make them authoritative. But Kueue
+carries **no result payload** — it is purely an admission/quota gate (FEATURES.md) — and a kube watch
+is a best-effort lifecycle signal, not a durable queue. The VPN makes drops frequent; long-set
+analysis (hours) makes `resourceVersion` expiry likely.
 
 **How to avoid:**
-- Write ONLY to destination copies, never to originals. The project already uses copy-verify-delete, so enforce that tag writes happen post-copy. Originals remain untouched.
-- Create format-specific writer functions dispatched by file type: `_write_id3()` for MP3, `_write_vorbis()` for OGG/OPUS/FLAC, `_write_mp4()` for M4A. Do not rely on the generic `mutagen.File()` interface for writes.
-- For ID3 files, explicitly set `save(v2_version=3)` for maximum player compatibility. If the user needs v2.4, make it configurable.
-- Implement verify-after-write: after `save()`, re-open the file with `mutagen.File()` and confirm the written values match what was intended.
-- Gate all tag writes behind human-in-the-loop approval: show a diff of "current tags vs proposed tags" in the UI before writing.
-- Log the operation in the audit log with before/after snapshots.
+Keep phaze's existing invariant absolute: **the pod POSTing to `/api/internal/agent/*`, reconciled by
+`file_id`, is the ONLY source of truth for the result.** The kube watch is lifecycle/observability
+ONLY — it tells phaze *whether/when* the Job ran, never *what the answer was*. The `FileRecord` must be
+able to reach its terminal analyzed state purely from the out-of-band callback even if the watch never
+returns a single event. Pair the watch (fast path) with a **periodic reconcile loop** that re-reads
+Workload/Job status for in-flight `file_id`s (FEATURES.md "orphan/timeout reconcile"). Use bookmarked
+watches (`allowWatchBookmarks`) where kr8s supports it, and on any watch error, fall back to a fresh
+list+reconcile rather than resuming a stale `resourceVersion`.
 
 **Warning signs:**
-- Tag write tests only cover one format (usually MP3). OGG, OPUS, FLAC, M4A are untested.
-- No error handling around `save()` calls.
-- Writing tags to files in the original source directory instead of destination copies.
-- No UI preview of what will change before writing.
-- Tests use `mutagen.File()` generic interface for writes instead of format-specific classes.
+Files sit in `AWAITING_CLOUD`/submitted long after the pod's callback already landed; the callback
+log shows a result POST for a `file_id` whose `FileRecord` never advanced; watch handlers throw
+`410 Gone` / "resourceVersion too old."
 
-**Phase to address:**
-Tag writing phase. Must include format-specific round-trip tests for all 5 formats (mp3, m4a, ogg, opus, flac).
+**Phase to address:** Phase 54 (submit/watch/reconcile) — make the callback authoritative and the
+reconcile loop mandatory from day one, not a later hardening pass.
 
 ---
 
-### Pitfall 2: Discogs Matching Links to Wrong Release (False Positive Linking)
+### Pitfall 2: Holding a SAQ worker slot for hours blocking on `job.wait(...)`
 
 **What goes wrong:**
-Fuzzy matching artist+title against Discogs returns plausible but incorrect results. The same track appears on hundreds of Discogs releases -- original single, compilation albums, DJ mix CDs, bootlegs, different regional pressings. "Tiesto - Adagio for Strings" has dozens of Discogs entries across different labels, remixes, and compilations. Artist names vary ("Tiesto" vs "DJ Tiesto" vs "Tiesto" with diacritics). If the system auto-links to the wrong release, bad metadata propagates into tags and CUE sheets and is hard to undo.
+The submit-and-watch logic runs inside a single SAQ task that calls `await job.wait(...)` with no
+timeout (or a multi-hour one). A long-set Job can sit **suspended behind Kueue quota for hours** before
+it even starts, then run for hours more. One worker slot is pinned the whole time. With a conservative
+long-files workload, a handful of these starve the `controller` queue and stall everything else
+(tracklist crons, pipeline triggers).
 
 **Why it happens:**
-Discogs has enormous duplication by design -- it catalogs every pressing and variant. Discogs search relevancy is unreliable: the first result is often not the best match. Developers pick the highest-confidence fuzzy match without understanding that Discogs field-specific searches (`artist=X&release_title=Y`) behave differently from free-text `q=` searches. Tests use exact-match data that does not exercise ambiguous cases.
+`await job.wait()` reads like cheap async I/O, so it looks free to hold. But "queued behind quota" is
+an indefinite, *normal* state in Kueue (FEATURES.md: tolerate pending-on-quota), not a transient blip —
+so the wait genuinely lasts hours. phaze already learned this exact lesson in v5.0 ("stay one ahead"
+push pipeline) and the v4.0.10 windowed-analysis timeout incident: don't let one long unit own a worker.
 
 **How to avoid:**
-- Never auto-link without human review. Store top 3-5 candidate matches with confidence scores rather than committing to one.
-- Use Discogs field-specific search parameters (`artist=`, `track=`, `release_title=`) rather than free-text `q=` queries.
-- Implement multi-signal scoring: exact artist match (high weight), title match including remix info (medium), label match (medium), year proximity (low).
-- Since Discogsography is a separate service with its own local database, query its local data first. Only fall through to the Discogs API for cache misses.
-- Store `discogs_release_id` and `discogs_master_id` separately. Master IDs group all pressings of the same release.
-- Display match candidates in the UI with enough context (label, year, format, track listing) for the user to select the correct one.
-- Distinguish "not yet searched" from "searched, no match found" from "searched, matched" in the data model.
+Submit-then-return. The submit task creates the Job and records `submitted` state, then **exits**. A
+short, **bounded** `wait(..., timeout=...)` is acceptable to catch fast failures, but on timeout the
+task returns and a separate periodic reconcile task re-reads status on its next run (Stack integration
+note: "re-poll on the next task run rather than holding a worker slot for hours"). State lives on
+`FileRecord` (submitted → admitted → result-reconciled), not in a held coroutine. This also makes the
+whole flow restart-safe: a control-plane reboot mid-analysis just reconciles on the next cron tick.
 
 **Warning signs:**
-- Tests only use exact-match test data with no ambiguous cases.
-- No concept of "candidate matches" -- code picks one result and stores it immediately.
-- Matching logic ignores remix suffixes, featured artists, and label variations.
-- No way for the user to manually enter a Discogs URL to correct a bad auto-link.
+`controller` queue depth climbs while only a few cloud files are in flight; SAQ worker utilization
+shows long-lived tasks; unrelated controller work (crons) lags whenever cloud burst is active.
 
-**Phase to address:**
-Discogs linking phase. Must include candidate storage, confidence scoring, and manual override UI.
+**Phase to address:** Phase 54 — design the submit and the reconcile as separate tasks from the start.
 
 ---
 
-### Pitfall 3: Discogs API Rate Limiting Breaks Batch Operations
+### Pitfall 3: `ttlSecondsAfterFinished` deletes the Job/Workload before phaze reads terminal status (TTL-vs-read race)
 
 **What goes wrong:**
-Discogs API allows 60 authenticated requests/minute (25 unauthenticated), enforced per IP address. With 200K files, even 10% needing Discogs lookups means 20,000 requests -- 5.5+ hours at max rate. Bursting above the limit returns 429 errors. Because rate limiting is per-IP (not per-token), Discogsography running on the same server consumes shared quota. Generic User-Agent strings trigger stricter undocumented throttling that is not reflected in response headers.
+The Job is created with a tidy short `ttlSecondsAfterFinished` (say 30–60s) so the cluster stays clean.
+The Kubernetes TTL-after-finished controller deletes the finished Job **and its owned Workload** shortly
+after completion. phaze's periodic reconcile runs on a longer interval (minutes) — by the time it looks,
+the Job and Workload are gone. The reconcile can't distinguish "succeeded and GC'd" from "never
+existed / failed," and may wrongly re-route or re-submit the file.
 
 **Why it happens:**
-Developers test with 10-50 files and never hit rate limits. They add naive retry logic (retry immediately on 429) which worsens the problem. They forget that Discogsography on the same IP is also making Discogs API calls, consuming shared quota.
+TTL and the reconcile interval are set independently by different people thinking about different goals
+(cluster hygiene vs. control-plane polling cost). FEATURES.md flags this as "the single most important
+ordering decision in the watch loop."
 
 **How to avoid:**
-- Route ALL Discogs queries through the Discogsography service. Do not call the Discogs API directly from phaze. Discogsography should own rate limiting centrally.
-- Implement batch matching at the database level: query Discogsography's local database first, only hit the Discogs API for cache misses.
-- Use the `X-Discogs-Ratelimit-Remaining` header to throttle proactively, not reactively.
-- Process Discogs linking as a background job with a global rate limiter (Redis-based token bucket shared across all workers).
-- Set a custom, unique User-Agent string. Generic user agents get more aggressive throttling not reflected in headers.
-- Prioritize: link tracks in approved tracklists first, defer orphan files.
+Make the result callback the durable record (Pitfall 1) so a GC'd Job is *not* catastrophic — but still
+prevent the race: set `ttlSecondsAfterFinished` **comfortably longer than the reconcile period** (e.g.
+TTL = several × reconcile interval, minutes not seconds), OR have phaze **delete the Job explicitly
+after it has recorded the outcome** (delete-on-reconcile) and set a long TTL only as a backstop for
+control-plane-down scenarios. Treat "Job not found + no callback received + ledger says it was
+scheduled" as "needs re-route," never as success.
 
 **Warning signs:**
-- No rate limiting logic in the Discogs client code.
-- phaze calls the Discogs API directly instead of through Discogsography.
-- Batch operations spawn concurrent Discogs requests without coordination.
-- No exponential backoff -- just fixed-delay retry.
+Reconcile logs `Job/Workload not found` for files that did complete; occasional duplicate Jobs for the
+same `file_id`; flaky success/failure attribution that correlates with cluster load (slower reconcile).
 
-**Phase to address:**
-Discogs linking phase. Rate limiting must be built into the client from day one.
+**Phase to address:** Phase 54 — fix TTL/reconcile ordering as an explicit, tested invariant.
 
 ---
 
-### Pitfall 4: CUE Sheet Timestamps Use Wrong Frame Rate (Centiseconds Instead of 75fps)
+### Pitfall 4: Presigned GET URL expires before the suspended Job is admitted and fetches
 
 **What goes wrong:**
-CUE sheet INDEX timestamps use `MM:SS:FF` format where FF is frames at 75 frames per second (CD Red Book standard). Developers convert from seconds using `int(frac * 100)` (centiseconds) instead of `int(frac * 75)` (frames), producing invalid frame values (76-99) and incorrect playback positions. Additionally, fingerprint timestamps have variable sub-second accuracy, and 1001tracklists timestamps are often rounded to the nearest minute with no sub-second precision at all.
+The control plane uploads the long file to S3, mints a presigned GET URL with a "reasonable" 15-minute
+or 1-hour expiry, bakes it into the Job spec, and submits the suspended Job. Kueue holds the Job behind
+quota for **3 hours**. When the pod finally runs, the presigned URL is already expired — `httpx` GET
+returns 403, the pod fails, and the file looks like an analysis failure when it was really a staging
+timing bug.
 
 **Why it happens:**
-The 75fps frame rate is unintuitive -- it comes from CD-DA's 2352-byte sector format, not from any modern convention. Most developers assume frames are centiseconds. Fingerprint services return timestamps in seconds (float) and the conversion is easy to get wrong. 1001tracklists positions are just "MM:SS" with no sub-second data.
+Two facts collide: (a) Kueue admission is intentionally indefinite under a conservative quota, and (b)
+presigned URLs are short-lived by nature. Worse, **SigV4 caps presigned URLs at 7 days (604800s) — but
+only if minted from long-lived IAM-user keys; if minted from STS/role temporary credentials the URL
+dies when those creds expire (often 1–12h) regardless of the requested expiry** (verified, AWS docs).
+A developer who tests with an admitted-immediately Job never sees the failure.
 
 **How to avoid:**
-- Create a dedicated `CueTimestamp` value object or utility function that converts from seconds (float) to `MM:SS:FF` with explicit `frames = int(fractional_seconds * 75)`.
-- Add validation that rejects FF values >= 75. This catches the centiseconds bug immediately.
-- Document the precision source for each track timestamp: "fingerprint" (sub-second), "1001tracklists" (minute-level), "manual" (user-entered). Store this alongside the timestamp.
-- When using 1001tracklists timestamps (no sub-second precision), always set FF to 00.
-- Ensure INDEX 01 of TRACK 01 in each file starts at 00:00:00 (CUE spec requirement for the first track).
-- Test with actual CUE-aware players (foobar2000, VLC, Kodi), not just syntax validation.
-- Handle the case where some tracks have no timestamp at all -- estimate from position order or skip with a REM comment.
+Mint the presigned GET with an expiry that **exceeds the worst-case queue-wait + analysis time** —
+hours, with margin — using **long-lived bucket credentials**, not STS/role temp creds (else the URL
+silently expires early). Better yet, **stage the file just-in-time on admission**: have the reconcile
+loop generate the presigned URL only once the Workload flips `Admitted=True`, so the URL's clock starts
+when the pod is about to run, not when the Job is queued. If the spec must carry the URL at submit time,
+size the expiry to the operator's quota-wait SLA and surface "presigned URL near expiry" as a re-mint
+trigger. Distinguish a 403-on-fetch (staging/expiry) from an analysis error in the pod's exit semantics
+so the control plane re-stages rather than abandoning the file.
 
 **Warning signs:**
-- Frame values >= 75 in generated CUE sheets.
-- No distinction between timestamp precision sources.
-- Tests only validate string format, not that timestamps are correct.
-- No handling for tracks with missing timestamps.
+Pod logs show `403 Forbidden` / `Request has expired` on the GET; failures correlate with high cluster
+queue depth (long waits) and never happen when quota is free; STS-based creds make even short waits fail.
 
-**Phase to address:**
-CUE sheet generation phase. Timestamp conversion must be a tested utility with frame-rate validation.
+**Phase to address:** Phase 53 (S3 staging seam) for the expiry/credential decision; Phase 54 for
+just-in-time minting on admission.
 
 ---
 
-### Pitfall 5: CUE Sheet Encoding Breaks Non-ASCII Artist and Track Names
+### Pitfall 5: OOM on long files — MonoLoader decodes the whole set into RAM in a pod with a tight memory limit
 
 **What goes wrong:**
-CUE sheets have no official encoding standard. The format predates Unicode adoption. Many players expect Latin-1 or Windows-1252. Writing UTF-8 CUE files with non-ASCII characters (accented names common in electronic music: Royksopp, Amelie Lens, Bonobo feat. various artists with diacritics) produces garbled text in players that assume Latin-1. Adding a UTF-8 BOM helps some players but breaks others.
+The Job pod requests, say, 2Gi of memory. essentia's `MonoLoader` decodes the **entire** audio file
+into a single in-RAM float array before analysis. A multi-hour Coachella set is exactly the workload
+v6.0 exists to handle — and exactly the case that blows past 2Gi. The kubelet OOM-kills the pod
+(exit 137). Kueue/Job sees a pod failure; with `backoffLimit: 0` the Job fails immediately, and the
+file is stranded or bounced to fallback for the wrong reason.
 
 **Why it happens:**
-CUE sheets originated in the CD burning era when Latin-1 was the de facto standard. The specification does not mandate an encoding. Modern players vary wildly: foobar2000 handles UTF-8 well, VLC handles it reasonably, but many other players (DeaDBeeF, older hardware players) do not detect encoding automatically and default to Latin-1.
+This is a **known phaze issue**: the v4.0.10 windowed-analysis incident was `RhythmExtractor2013`
+crashing on long files, and full-file decode is memory-proportional to duration. On a persistent host
+(local / OCI A1) there's lots of RAM and swap; an **ephemeral pod with a hard cgroup memory limit has
+neither**, so the same file that "worked locally" OOM-kills in the cluster. Resource requests get
+copied from a short-track example and never sized for the long-set tail.
 
 **How to avoid:**
-- Default to UTF-8 with BOM (`\xEF\xBB\xBF` prefix). This is the best compromise for modern player compatibility.
-- Add a `REM ENCODING UTF-8` comment at the top (non-standard but recognized by some tools like CUETools).
-- Validate that all track/artist strings can be encoded in the target encoding before writing. Catch `UnicodeEncodeError` and transliterate with `unidecode` as fallback.
-- Open files with explicit encoding: `open(path, 'w', encoding='utf-8-sig')` (Python handles BOM automatically with `utf-8-sig`).
-- Test with non-ASCII artist names and non-Latin scripts in the test suite.
+Size the Job's `resources.requests`/`limits.memory` from the **measured peak RSS of the longest real
+sets**, not a guess — and add headroom (full-file float decode ≈ samplerate × channels × 4 bytes ×
+duration, plus model + framework overhead; a 3-hour 44.1k stereo set is multiple GB just for the raw
+buffer). Reuse the v4.0.10 windowed/streaming analysis path in the one-shot entrypoint so memory is
+bounded by window size, not file length — this is the real fix; large memory limits only delay the
+cliff. Set the Kueue ClusterQueue memory quota and the per-Job request consistently so admission
+reflects real footprint. Treat OOM (exit 137) distinctly from analysis failure so the control plane can
+escalate memory or re-route rather than marking the file permanently failed.
 
 **Warning signs:**
-- CUE generation tests only use ASCII artist/track names.
-- No encoding parameter in the CUE generation function.
-- File opened with bare `open(path, 'w')` relying on platform default encoding.
-- No test with accented characters.
+Pods exit 137 / `OOMKilled` on the longest files while short files pass; failures scale with file
+duration; node memory pressure / evictions appear under cloud burst load.
 
-**Phase to address:**
-CUE sheet generation phase. Encoding must be explicitly handled.
+**Phase to address:** Phase 52 (one-shot entrypoint — reuse windowed analysis, set realistic
+requests); revisit memory quota in Phase 56 (deploy/runbook).
 
 ---
 
-### Pitfall 6: Search Across Multiple Tables is Slow Without Pre-Computed Index
+### Pitfall 6: Suspended Job never admitted (quota exhausted / `Inadmissible`) looks identical to a hang
 
 **What goes wrong:**
-Searching across FileRecord + FileMetadata + Tracklist + TracklistTrack requires JOINing 4+ tables with text matching on multiple columns. At 200K files with potentially hundreds of thousands of tracklist tracks, naive `ILIKE '%term%'` queries take seconds. PostgreSQL full-text search (tsvector/tsquery) is fast on single tables with GIN indexes, but you cannot create composite GIN indexes across JOINed tables. This forces either multiple separate searches stitched together in Python, or a pre-computed search index.
+A submitted Job sits forever. The operator stares at "in progress." Two very different causes look
+identical: (a) **quota exhausted** — Workload `QuotaReserved=False, reason=Pending`, a *normal* queued
+state that resolves when quota frees; (b) **misconfiguration** — Workload `QuotaReserved=False,
+reason=Inadmissible` because the `queue-name` points at a LocalQueue/ClusterQueue that doesn't exist (or
+flavor mismatch), which will **never** resolve. phaze either times out the legitimate queued file as a
+failure, or waits forever on a permanently-broken misconfig.
 
 **Why it happens:**
-Developers add search by putting `WHERE artist ILIKE '%query%' OR title ILIKE '%query%'` on existing queries. This works with 100 rows in development. At 200K rows with JOINs, it degrades to multi-second responses. Adding GIN indexes on individual columns helps per-table queries but does not solve the cross-table search problem.
+Both states present as "Job suspended, no pod." Without reading the Workload's *reason*, they're
+indistinguishable. Conservative long-file workloads spend real time in `Pending`, so a naive timeout
+punishes the healthy case; meanwhile a fat-fingered LocalQueue name in config silently black-holes every
+file.
 
 **How to avoid:**
-- Create a materialized view or dedicated `search_index` table with a pre-computed `tsvector` column that combines text from all relevant tables (artist, title, album, event, genre from files, tracklists, and metadata).
-- Use `to_tsvector('simple', ...)` rather than `to_tsvector('english', ...)`. Music metadata is not natural language -- the `'english'` config stems words (e.g., "Remixes" becomes "remix") and may mangle artist names.
-- Create a GIN index on the tsvector column.
-- For faceted filtering (BPM range, year, genre), use regular B-tree indexes on those columns. Do not encode numeric filters into tsvectors.
-- Use `REFRESH MATERIALIZED VIEW CONCURRENTLY` (requires a unique index on the view) on a schedule or after batch operations, not per-row triggers.
-- For partial/fuzzy matching (user types "tiest" expecting "Tiesto"), combine tsvector with `pg_trgm` trigram extension and a GiST or GIN trigram index.
-- Profile with realistic data volume before finalizing the approach.
+Read the **Workload condition reason**, not just presence/absence of a pod (FEATURES.md Kueue Behavior
+Reference). `reason=Pending` → display "queued behind quota," do NOT time out as failure. `reason=
+Inadmissible` → surface to the operator immediately as a config error (bad/missing LocalQueue), don't
+wait. **Validate the configured LocalQueue exists at startup / first submit** (`kubectl get localqueue`
+equivalent via kr8s) and fail fast with a clear message rather than discovering it per-file. Confirm the
+served Kueue apiVersion (`v1beta2` vs deprecated `v1beta1`) at deploy time as a config constant.
 
 **Warning signs:**
-- Search uses `ILIKE` instead of `tsvector/tsquery`.
-- No GIN index on any text search column.
-- Search query JOINs 4+ tables without LIMIT.
-- No `EXPLAIN ANALYZE` in tests or development workflow.
-- Search returns all matching rows without pagination.
+Every cloud file hangs from the first deploy (→ Inadmissible/misconfig); files hang only under load and
+clear later (→ healthy Pending); operator can't tell which from the UI.
 
-**Phase to address:**
-Search phase. Must include index creation migration, materialized view or search table, and load testing.
+**Phase to address:** Phase 54 (read Workload reason; classify Pending vs Inadmissible); Phase 56
+(startup LocalQueue validation in the runbook/config surface).
 
 ---
 
-### Pitfall 7: Tag Writing Creates Inconsistent State Between Database and Files
+### Pitfall 7: Job `backoffLimit` / Kueue requeue fighting the control plane's own retry & fallback
 
 **What goes wrong:**
-Tags are written to the file but the database metadata record is not updated, or vice versa. The UI shows "corrected" tags but the file still has old tags. Or the database has new values but the file write actually failed silently. Subsequent scans re-extract old tags because the write never completed, overwriting the "corrected" database values.
+The Job is created with a generous `backoffLimit` (default is 6) and/or the operator enables Kueue
+PodsReady requeue. A failing analysis now retries *inside the cluster* up to 6 times — each attempt
+re-fetching the (possibly expired) presigned URL and re-running a multi-hour analysis — while phaze's
+own duration-routing fallback (re-route to A1/local) *also* fires. The same expensive file runs many
+times across two competing retry systems, multiplying cost and producing duplicate result callbacks.
 
 **Why it happens:**
-Tag writing and database updates are separate operations with no transactional guarantee across the file system and database. Developers update the database optimistically before writing to the file, or write to the file but forget to update the database. Without re-reading tags after writing, there is no verification that the write succeeded.
+Two independent retry owners (Kubernetes Job backoff + Kueue requeue + phaze's control-plane fallback)
+are easy to leave both "on" because each has sensible defaults. FEATURES.md anti-feature: "Rely on
+Kueue/Job requeue + backoff as the retry mechanism" conflates infra retry with app retry.
 
 **How to avoid:**
-- Implement a strict write sequence: (1) write tags to file, (2) re-read tags from file with mutagen to verify, (3) update database metadata with the re-read values, (4) record in audit log with before/after snapshots.
-- Never update database metadata based on "what we intended to write." Always re-read from the file after write.
-- Add a tag-write state: `TAGS_PENDING` -> `TAGS_WRITTEN` -> `TAGS_VERIFIED`. Only advance state after re-read confirms correctness.
-- If the file write fails, do not update the database. Leave the record in `TAGS_PENDING` with the error recorded.
-- Use the existing audit log pattern to record tag writes.
+**The control plane owns retry/fallback by `file_id`, full stop.** Set `backoffLimit: 0` (or 1) and
+`restartPolicy: Never` so the pod runs once; a failure surfaces immediately to phaze, which decides
+re-submit vs. re-route vs. mark-failed using the v5.0 routing seam. Keep Kueue PodsReady requeue/
+preemption off in the runbook (conservative single-CQ, no priority — FEATURES anti-feature). A
+`podFailurePolicy` can be added to classify pod-level failures (e.g. don't count an OOM/infra exit
+against `backoffLimit`), but the authoritative retry decision stays with the control plane. Make
+idempotent submission + idempotent callback (reconcile-by-`file_id` + ledger) absorb any double-fire
+that slips through.
 
 **Warning signs:**
-- Database update happens before file write or without verification.
-- No re-read step after tag writing.
-- Tag write operation has no audit log entry.
-- No rollback path when file write fails after database was already updated.
+The same `file_id` produces multiple result callbacks; cluster shows repeated pod attempts per Job;
+cloud-compute cost/wall-clock far exceeds files-analyzed count.
 
-**Phase to address:**
-Tag writing phase. Must follow the project's verify-after-write philosophy (same as copy-verify-delete).
+**Phase to address:** Phase 54 (Job spec: backoffLimit 0/1, restartPolicy Never, optional
+podFailurePolicy; idempotent submit); Phase 56 (runbook: requeue/preemption off).
+
+---
+
+### Pitfall 8: Orphaned S3 objects when a Job fails, evicts, or never fetches (cleanup leak)
+
+**What goes wrong:**
+The staged long file is supposed to be deleted "after analysis." Cleanup is wired only into the **happy
+path** (pod POSTs success → control plane deletes the object). When the Job fails, is evicted, OOM-kills,
+or the file is re-routed to A1/local instead, nobody deletes the staged object. Over a 200K-file archive
+with many long sets, orphaned multi-GB objects accumulate and rack up storage cost on the operator's
+bucket — the exact thing PROJECT.md's "ephemeral staging, not a data home" decision is meant to avoid.
+
+**Why it happens:**
+Cleanup is modeled as a step in the success flow rather than a guaranteed lifecycle event. Failure and
+re-route paths are added later and forget to unstage. The bucket is "someone else's problem"
+(operator-provided), so leaks aren't visible to phaze.
+
+**How to avoid:**
+Make cleanup **unconditional on terminal outcome**: the reconcile loop deletes the staged object on
+success, failure, eviction, AND re-route — driven off the ledger entry, not the callback. Belt-and-
+suspenders: set an **S3 lifecycle/TTL rule on the bucket** (operator runbook) so any object older than
+N days is auto-expired regardless of phaze — this catches control-plane-crash leaks. Tie the object key
+to the `file_id`/ledger so an orphan is always traceable and a sweep can reconcile bucket contents
+against in-flight files.
+
+**Warning signs:**
+Bucket object count grows monotonically and doesn't drop after analyses complete; storage bill climbs;
+objects exist for `file_id`s already in a terminal state.
+
+**Phase to address:** Phase 53 (cleanup as a lifecycle event, not a success step); Phase 56 (bucket
+lifecycle rule in the runbook).
+
+---
+
+## Moderate Pitfalls
+
+### Pitfall 9: SigV4 / `endpoint_url` misconfig for a non-AWS S3 backend
+
+**What goes wrong:**
+The operator's bucket is MinIO / Ceph RGW / B2 / Wasabi, but the client defaults to AWS endpoints, or
+uses path-style vs virtual-host addressing wrong, or signs with the wrong region. Uploads or presigned
+URLs 403 / `SignatureDoesNotMatch` against the non-AWS backend.
+
+**Why it happens:**
+boto3/aioboto3 assume AWS unless told otherwise; non-AWS backends need `endpoint_url=`, often
+`addressing_style="path"`, and a region the backend accepts. The bucket type is operator-provided and
+transport-agnostic, so it's unknown at code time.
+
+**How to avoid:**
+Drive `endpoint_url`, region, and addressing style from pydantic-settings (no hard-coded AWS). Verify a
+round-trip (put → presign → GET → delete) against the operator's actual endpoint in the deploy runbook
+before any real file. Keep the pod credential-free: it only ever receives a presigned URL, so a backend
+quirk surfaces on the control plane (where it's debuggable), not in an opaque pod.
+
+**Warning signs:** `SignatureDoesNotMatch` / 403 on first upload; presigned URLs work against AWS in a
+test but fail against the operator bucket.
+
+**Phase to address:** Phase 53; runbook round-trip check in Phase 56.
+
+---
+
+### Pitfall 10: The result-callback bearer token leaking through the pod spec
+
+**What goes wrong:**
+To let the pod authenticate back to `/api/internal/agent/*`, the compute-agent bearer token is passed
+as a plain Job container `env` value or, worse, a command-line `arg`. The token is then visible in the
+Job/pod manifest to anyone with `get pod`/`get job` RBAC, in `kubectl describe`, in audit logs, and in
+the Workload copy — a long-lived credential to phaze's internal API exposed cluster-wide.
+
+**Why it happens:**
+Env/arg is the path of least resistance for getting a value into a pod, and the cluster is "trusted."
+But the token reaches phaze's internal write API over the VPN — it's not low-value.
+
+**How to avoid:**
+Inject the token via a **Kubernetes Secret** mounted as env-from-secret or a file, not an inline env
+literal and never an arg (args leak in process listings and manifests). Scope the token to the
+compute-agent role (it already is, v5.0). Prefer **short-lived, per-Job tokens** if feasible so a leaked
+manifest ages out. Same treatment for the presigned URL (it grants object read) — pass via Secret/env-
+from-secret, not arg. Keep kubeconfig/SA-token on the control plane via the `_FILE` convention; never
+ship cluster creds into the pod.
+
+**Warning signs:** Token visible in `kubectl get job -o yaml` / `describe pod`; one token reused across
+all Jobs indefinitely; secrets appearing in pod args.
+
+**Phase to address:** Phase 54 (pod-spec secret injection); Phase 56 (token rotation/scoping in runbook).
+
+---
+
+### Pitfall 11: RBAC over- or under-scoped for the control plane's kube identity
+
+**What goes wrong:**
+The kubeconfig/SA phaze uses is either cluster-admin ("just make it work") — a huge blast radius if the
+control plane or VPN is compromised — or too narrow (can create Jobs but can't read Workloads / can't
+delete Jobs), so watch/reconcile/cleanup silently fail with 403s that look like hangs.
+
+**Why it happens:**
+RBAC is fiddly; people grant broad to unblock, or copy a minimal example that omits the Workload-read or
+Job-delete verbs phaze actually needs.
+
+**How to avoid:**
+Least-privilege Role in the single target namespace: `create/get/list/watch/delete` on
+`batch/jobs`, `get/list/watch` on `kueue.x-k8s.io/workloads`, and `get` on the configured `localqueue`.
+No cluster-scoped grants (phaze never touches ResourceFlavor/ClusterQueue — those are admin). Document
+the exact RBAC in the runbook and test it with the real SA before go-live.
+
+**Warning signs:** 403s in submit/watch/delete paths; cleanup never runs (missing delete verb);
+conversely, the SA can read secrets/other namespaces it has no reason to.
+
+**Phase to address:** Phase 56 (runbook RBAC manifest); exercised in Phase 54.
+
+---
+
+### Pitfall 12: Pod can't reach `/api/internal/agent/*` over the VPN — internal CA not trusted in the pod
+
+**What goes wrong:**
+phaze's internal API is HTTPS via a **self-signed internal CA** (v4.0 invariant). The Job pod's `httpx`
+callback hits the API over the operator VPN and fails TLS verification because the pod's image doesn't
+trust `phaze-ca.crt`. Either the callback fails (file stranded) or someone "fixes" it with
+`verify=False` — disabling TLS verification on the internal write API over a VPN.
+
+**Why it happens:**
+The CA-distribution step (operator scp's `phaze-ca.crt` to file servers in v4.0) has no equivalent for
+ephemeral pods that don't exist yet at provisioning time. The reachable API endpoint over the VPN is
+operator-provided, so the URL is configured but the trust anchor is forgotten.
+
+**How to avoid:**
+Bake or mount the internal CA cert into the Job image / pod (via ConfigMap or the image's trust store)
+and point `httpx` at it (`verify=/path/to/phaze-ca.crt`) — **never `verify=False`**. Make the API
+callback URL a config value (operator-provided VPN-reachable endpoint), transport-agnostic. Confirm the
+pod→API TLS round-trip in the deploy runbook.
+
+**Warning signs:** Pod callback fails with `SSLCertVerificationError`; a `verify=False` creeps into the
+pod's httpx client; callbacks work on LAN but fail from the cluster.
+
+**Phase to address:** Phase 52 (CA into the image) + Phase 54 (callback config); runbook verify in 56.
+
+---
+
+### Pitfall 13: One-shot entrypoint exit-code semantics swallow failures or hide partial work
+
+**What goes wrong:**
+The one-shot entrypoint (pull → analyze → POST → exit) catches its own exceptions and `exit 0`
+regardless, or POSTs a "success" callback before confirming the analysis actually produced valid output.
+The Job shows `Complete`, the control plane marks the file analyzed, but the result is empty/garbage — or
+a real failure (download 403, OOM-survived-but-wrong) is masked as success.
+
+**Why it happens:**
+Entrypoints often wrap everything in a try/except to "be robust," inverting exit semantics. The Job's
+`Complete` vs `Failed` condition is only meaningful if the process exits non-zero on failure.
+
+**How to avoid:**
+Make exit codes honest and **distinct**: 0 only after a validated result POST returns 2xx; non-zero on
+download failure (distinguish 403/expiry from network), on analysis failure, on callback failure. Don't
+POST success before the analysis is validated. Let the process crash/exit-non-zero so the Job goes
+`Failed` and the control plane re-routes. Reconcile-by-`file_id` + idempotent callback means a
+re-submit after a non-zero exit is safe.
+
+**Warning signs:** Jobs always `Complete` even when files didn't analyze; `FileRecord`s marked analyzed
+with empty/implausible BPM/key; no `Failed` Jobs ever despite known bad inputs.
+
+**Phase to address:** Phase 52 (entrypoint exit-code contract).
+
+---
+
+### Pitfall 14: Pod eviction mid-analysis treated as analysis failure (or not handled at all)
+
+**What goes wrong:**
+A node drains, a higher-QoS pod preempts, or Kueue's `maximumExecutionTimeSeconds` deactivates a
+runaway Workload — the pod dies hours into a long analysis. phaze either marks the file permanently
+failed (losing the file from the pipeline) or doesn't notice (stranded), instead of re-routing.
+
+**Why it happens:**
+Eviction (`Evicted`, reason `WorkloadInactive`/`Deactivated`) is a distinct Kueue signal from analysis
+failure (Job `Failed`) (FEATURES.md), and it's easy to lump all non-success into "failed."
+
+**How to avoid:**
+Detect the `Evicted`/deactivated Workload condition and route it back through the v5.0 fallback (re-
+submit, or re-route to A1/local) rather than terminal-failing. Set Job pods `restartPolicy: Never` and
+let the control plane own re-attempt. Conservative single-CQ no-preemption setup makes this rare, but
+detecting it is cheap and prevents stranded long files. A bounded `maximumExecutionTimeSeconds` is a
+useful server-side runaway guard (mirrors v4.0.10) — but its eviction must route to fallback, not death.
+
+**Warning signs:** Long files intermittently land in FAILED with no analysis error; failures coincide
+with cluster node maintenance / capacity changes; Workloads show `Evicted` but `FileRecord` is terminal.
+
+**Phase to address:** Phase 54 (eviction detection → fallback); FEATURES marks this P2 (add after happy
+path proven) — acceptable to defer detection-to-reroute to a v6.x follow-up, but don't terminal-fail
+evictions in the meantime.
+
+---
+
+### Pitfall 15: Driving the whole backlog instead of ledger-scoped long files (over-enqueue)
+
+**What goes wrong:**
+The K8s router target, when enabled, sweeps every eligible file (or the whole backlog) into cluster
+Jobs instead of only the **timed-out long files the ledger says should burst**. phaze has hit this
+exact class of bug repeatedly: the v4.0.6 default-queue incident stranded 11,428 jobs; the v5.0 "Recover
+orphaned work `force=True`" swept 44.5k jobs. At cluster scale this also instantly exhausts Kueue quota
+and floods S3 with staged objects.
+
+**Why it happens:**
+A new routing target is wired to "all eligible" rather than reusing v5.0's **scheduling-ledger scope**
+(only previously-scheduled long files). The active-target toggle flipping to K8s re-routes more than
+intended.
+
+**How to avoid:**
+Reuse v5.0's ledger-scoped backfill verbatim — K8s is a third *target* of the same duration-routing +
+ledger seam, not a new "analyze everything" path. Only files at/above the duration threshold that timed
+out locally and are ledger-tracked are eligible. Add the same AST/guard test phaze uses elsewhere to
+prevent an enqueue site from bypassing the router. Cap concurrent in-flight Jobs ("stay one ahead"
+analog) so even a correct scope can't flood quota/S3.
+
+**Warning signs:** Sudden spike of submitted Jobs / staged objects far exceeding the long-file count;
+Kueue quota instantly saturated; short files appearing as cluster Jobs.
+
+**Phase to address:** Phase 55 (router/ledger scoping) — the guard test is the verification.
+
+---
+
+### Pitfall 16: Active-cloud-target toggle misrouting (local / A1 / K8s)
+
+**What goes wrong:**
+The single config setting that selects the active cloud target (local / A1 / K8s) is read
+inconsistently across the three cloud entry points (routing seam, staging cron, backfill), so a file is
+staged for K8s but routed to A1, or `cloud_burst_enabled` is off yet a K8s submit still fires. phaze's
+v5.0 toggle gates three entry points; adding a third *target* multiplies the misroute surface.
+
+**Why it happens:**
+A boolean `cloud_burst_enabled` plus a new tri-state target is easy to check in some places and not
+others; the staging step and the submit step can disagree about the target.
+
+**How to avoid:**
+Resolve the active target **once** through a single helper (analogous to v5.0's
+`enqueue_router.resolve_queue_for_task`) that every cloud entry point consults — staging, submission,
+and reconcile all key off the same resolved target. The master `cloud_burst_enabled` toggle short-
+circuits all three. Test all three entry points honor both the master toggle and the target selector.
+
+**Warning signs:** A file staged to S3 but analyzed on A1 (or vice versa); K8s Jobs created while
+`cloud_burst_enabled=false`; staging and submit logs disagree on target.
+
+**Phase to address:** Phase 55 (single target-resolution helper + toggle gating).
+
+---
+
+### Pitfall 17: Transport-specific (Tailscale/WireGuard) assumptions leaking into code
+
+**What goes wrong:**
+Code hard-codes a Tailscale hostname/MagicDNS name, a `100.x` CGNAT address, or shells out to
+`tailscale` — breaking the PROJECT.md mandate that v6.0 is **transport-agnostic** (Tailscale OR
+WireGuard). v5.0's pipeline was deliberately Tailscale-specific; copying that pattern regresses the
+generalization.
+
+**Why it happens:**
+v5.0 code and runbooks reference Tailscale concretely; reuse drags those assumptions forward. The
+operator VPN "just is Tailscale on my box," so it's tempting to special-case it.
+
+**How to avoid:**
+phaze consumes only **operator-provided reachable endpoint URLs** (kube API, S3 endpoint, callback URL)
+from pydantic-settings — no mesh SDK, no hostname assumptions, no `tailscale`/`wg` shell calls (STACK.md
+"What NOT to Use"). The same config works whether the operator runs Tailscale or WireGuard. Grep guard
+against `tailscale`/`100.` literals in v6.0 code paths.
+
+**Warning signs:** `tailscale`/`wg`/`100.64.` strings in v6.0 modules; config that only accepts a
+MagicDNS name; deploy docs that assume one mesh.
+
+**Phase to address:** Phase 56 (config/docs); enforced as a convention across 52–55.
+
+---
+
+### Pitfall 18: Object-key collisions and non-idempotent multi-attempt staging
+
+**What goes wrong:**
+Staged objects are keyed by filename or a non-unique field, so two files (or a re-stage of the same
+`file_id` after a failed attempt) collide — one overwrites the other, or a stale object is fetched by
+the wrong Job. Large sets also exceed single-PUT limits, needing multipart, which a naive `put_object`
+doesn't do.
+
+**Why it happens:**
+Filenames in a 200K archive collide (many "set1.mp3"); re-stage-on-retry reuses the same key; multi-GB
+uploads silently need multipart.
+
+**How to avoid:**
+Key objects by a collision-proof identity tied to the ledger — e.g. `{file_id}/{sha256-or-attempt}` —
+so re-stage is idempotent/traceable and two files never collide. Use the SDK's managed `upload_file`/
+multipart for large sets (aioboto3 handles multipart transparently above the threshold). The
+`file_id`-scoped key also makes orphan cleanup (Pitfall 8) and reconcile trivially correlatable.
+
+**Warning signs:** A Job analyzes the wrong audio (key collision); large-file uploads truncate/fail;
+re-staged objects pile up under colliding keys.
+
+**Phase to address:** Phase 53 (key scheme + multipart upload).
 
 ---
 
@@ -202,113 +545,110 @@ Tag writing phase. Must follow the project's verify-after-write philosophy (same
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Using `mutagen.File()` generic interface for writes | Less code, single code path | Cannot control ID3 version, encoding, or format-specific write options; silent failures on unsupported formats | Never for writes -- use format-specific classes (ID3, VorbisComment, MP4Tags) |
-| Storing Discogs link as a single `release_id` column | Simple schema, fast to implement | Cannot distinguish release vs master, loses candidate alternatives, no way to record "not yet searched" vs "searched, no match" | Never -- add `master_id`, `match_status` enum, `candidates` JSONB from the start |
-| CUE sheet as string concatenation | Quick to build | No validation, encoding bugs surface late, impossible to test individual components, hard to handle edge cases | Never -- use a CUE builder class with typed fields and validation |
-| Search via ILIKE on raw columns | Works immediately, no migration needed | O(n) scan on every query, unusable at 200K rows, no ranking | Development/testing only -- must add tsvector/GIN index before real data |
-| Skipping tag write verification (no re-read) | Faster writes, simpler code | Silent corruption, database/file divergence goes undetected indefinitely | Never -- verification is mandatory for irreplaceable files |
+| Block a worker on unbounded `job.wait()` | Simplest happy-path code | Worker-slot starvation under real (hours-long) queue waits; not restart-safe | Never — submit-then-reconcile from the start |
+| Short presigned-URL expiry (15m/1h) | Tighter security window | 403s whenever Kueue queues the Job for hours | Only with just-in-time minting on admission |
+| Presigned URL minted from STS/role temp creds | No long-lived keys | URL silently dies in 1–12h regardless of requested expiry | Only if every Job is admitted well within the cred lifetime (not guaranteed) |
+| Cleanup wired only into the success callback | Less code | Orphaned multi-GB objects on failure/re-route → storage cost | Never — cleanup must be terminal-outcome-driven + bucket lifecycle backstop |
+| `verify=False` for the pod→API callback | Skips CA distribution to pods | Unauthenticated-TLS on the internal write API over a VPN | Never — mount the internal CA into the image |
+| Default `backoffLimit` (6) on the Job | Fewer transient failures bubble up | Multi-hour analysis runs ≤6× and fights phaze's own fallback; cost blowup | Never for this workload — backoffLimit 0/1, control plane owns retry |
+| Tailscale hostname hard-coded (copied from v5.0) | Works on the dev box today | Breaks WireGuard operators; regresses transport-agnostic mandate | Never in v6.0 code — endpoints are config |
+| Big memory limit instead of windowed analysis | Pod stops OOM-ing today | Cliff just moves to the next longer set; quota waste | Only as interim while wiring windowed analysis |
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Discogsography HTTP API | Assuming it mirrors the Discogs API exactly (same endpoints, same response shapes) | Verify actual endpoints, response shapes, and what Discogsography caches locally vs proxies to Discogs. Document the API contract before writing client code |
-| Discogsography HTTP API | Not handling service unavailability (it is a separate container on the same server) | Use circuit breaker pattern with graceful degradation. If Discogsography is down, mark files as "linking pending" and retry later. Do not block the UI |
-| mutagen tag writing | Writing ID3v2.4 and assuming all players can read it | Default to ID3v2.3 with `save(v2_version=3)` for maximum compatibility, or make the version configurable per-user preference |
-| mutagen tag writing | Not handling read-only files, permission denied, or file locked by another process | Check write permissions before attempting. Return a clear error message. The worker may be trying to write while the fingerprint service has the file open |
-| PostgreSQL full-text search | Using `'english'` text search config for music metadata | Use `'simple'` config (no stemming). Artist names, track titles, and event names are not natural language. Stemming "Remixes" to "remix" or mangling "Bass" loses precision |
-| PostgreSQL full-text search | Not handling partial matches (user types "tiest" expecting "Tiesto") | `tsquery` requires full lexeme matches. Add prefix matching with `:*` operator or combine with `pg_trgm` for fuzzy search. `websearch_to_tsquery()` supports prefix syntax |
-| CUE sheet generation | Using `FILE` directive with absolute paths | Exposes internal directory structure. Use relative paths in CUE FILE directives, relative to the CUE file's own location |
-| CUE sheet generation | Ignoring tracks with no timestamp data | Some tracklist tracks have no timestamp (1001tracklists data may be incomplete). Decide explicitly: skip the track, estimate from position order, or error. Document the choice |
+| Kueue Workload | Hard-coding the Workload name (`<job>-<hash>`) | Resolve via Job owner-ref / `kueue.x-k8s.io/job-uid` label selector (FEATURES.md) |
+| Kueue apiVersion | Assuming `v1beta1` (deprecated) or `v1beta2` blindly | Make apiVersion a config constant; confirm served version via `/apis/kueue.x-k8s.io` at deploy (STACK.md) |
+| Kube watch over VPN | Resuming a stale `resourceVersion` after a drop → 410 Gone, missed events | Bookmarked watch + on-error fall back to list+reconcile; callback is source of truth |
+| S3 (non-AWS backend) | Defaulting to AWS endpoints / wrong addressing style | `endpoint_url` + addressing style + region from settings; runbook round-trip test |
+| S3 presigned URL | Expiry shorter than queue-wait; minted from temp creds | Long expiry from long-lived keys, or just-in-time mint on admission |
+| Internal API callback | Pod doesn't trust the self-signed internal CA | Mount `phaze-ca.crt` into the image; `httpx verify=<ca>`, never `verify=False` |
+| Bearer token / presigned URL → pod | Passed as inline env literal or CLI arg (leaks in manifest) | Inject via Kubernetes Secret (env-from-secret/file); never an arg |
+| kr8s in a SAQ task | Holding the event loop on a long wait | Bounded `wait(timeout=)`, re-poll next task run; state on `FileRecord` |
+| Job retry | Leaving Job backoff + Kueue requeue + phaze fallback all on | `backoffLimit 0/1`, `restartPolicy Never`, requeue/preemption off; control plane owns retry |
 
-## Performance Traps
+## Performance / Cost Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Sequential Discogs lookups for all 200K files | Batch linking takes 5+ hours, blocks workers | Query Discogsography's local DB first; only API-call for cache misses; prioritize tracks in approved tracklists | >1,000 lookups (~17 min at rate limit) |
-| Full-table scan on search without tsvector index | Search page takes 3-10 seconds | GIN index on tsvector column, B-tree indexes on facet columns (year, bpm, genre) | >50K rows without index |
-| Loading full tracklist version history for CUE generation | Memory spike when tracklist has many versions | Only load the latest approved version; use `.options(selectinload())` to avoid N+1 | >100 tracks per tracklist with many versions |
-| Tag writing one file at a time in sync loop | 200K files at 50ms each = 2.8 hours | Batch via SAQ jobs; write concurrently (tag writing is IO-bound, safe to parallelize across different files) | >1,000 files needing tag updates |
-| Refreshing materialized search view on every insert/update | View refresh blocks reads during rebuild at scale | Use `REFRESH MATERIALIZED VIEW CONCURRENTLY` with a unique index; schedule refreshes after batch operations, not per-row | >10K rows in view |
-| Loading all Discogs candidates into memory for scoring | Memory growth proportional to unique tracks times candidates per track | Stream candidates, score on retrieval, store only top-N per track. Use database-side ranking where possible | >10K tracks with 5+ candidates each |
+| OOM on long files (full-file MonoLoader decode) | Exit 137 on the longest sets only | Windowed analysis + memory requests sized from measured peak RSS | First multi-hour set in a tight-memory pod |
+| Whole-backlog over-enqueue into the cluster | Job/object spike ≫ long-file count; quota saturated | Ledger-scoped routing + concurrency cap + AST guard | The moment K8s target is enabled without scope |
+| Orphaned S3 objects accumulating | Bucket object count never drops; bill climbs | Terminal-outcome cleanup + bucket lifecycle TTL | After the first wave of failed/re-routed Jobs |
+| Worker-slot starvation on long waits | `controller` queue backs up; crons lag | Submit-then-reconcile, never hold the slot | A few concurrent hours-long queue waits |
+| Re-running the same expensive analysis | Cost/wall-clock ≫ files analyzed | Single attempt + idempotent reconcile-by-`file_id` | Any failure path with default backoff on |
 
 ## Security Mistakes
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Passing user search input directly to `to_tsquery()` | SQL injection or query parse errors from special characters (`&`, `!`, `:`, `*`) | Use `plainto_tsquery()` or `websearch_to_tsquery()` which sanitize input. Never construct tsquery strings manually |
-| Storing Discogs/Discogsography API credentials in code or unencrypted config | Token exposure in git history or container inspection | Use `pydantic-settings` `SecretStr` type, load from Docker secret or env var, never log token values |
-| Tag writing to files outside the designated destination directory | Path traversal if proposed paths contain `../` or symlinks | Validate all write targets with `Path.resolve()` and `is_relative_to(destination_root)` before any write |
-| CUE sheet FILE paths using absolute paths | Exposes internal server directory structure if CUE sheets are ever shared or viewed | Always use relative paths in CUE FILE directives |
-
-## UX Pitfalls
-
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|-----------------|
-| Tag write with no preview | User cannot verify what will change before committing to irreversible file modification | Show side-by-side diff of current vs proposed tags, require explicit "Write Tags" button per file or batch |
-| Discogs link with no context | User sees "Linked to Discogs #12345" -- meaningless without context | Show release title, label, year, format inline. Link to Discogs page for verification |
-| Search with no results explanation | Empty results page with no guidance on what to try | Show "No results for X. Try: broader terms, different spelling. Or filter by BPM/year/genre instead" |
-| CUE generation with no quality indicator | User does not know if timestamps are accurate or approximate | Badge each CUE: "Fingerprint timestamps (high accuracy)" vs "1001tracklists positions (approximate)" |
-| Batch tag write with no progress | User clicks "Write All Tags" and sees nothing for minutes | SSE-based progress (already used in pipeline dashboard). Show count of written/failed/remaining |
-| Search returning mixed entity types without grouping | User sees files, tracklists, and tracks mixed together in one flat list | Group results by type: "Files (42)", "Tracklists (7)", "Tracks (128)". Or use tabs |
+| Bearer token / presigned URL as pod env literal or arg | Long-lived internal-API credential / object-read URL exposed cluster-wide in manifests, describe, audit logs | Kubernetes Secret injection; short-lived per-Job tokens where feasible |
+| `verify=False` on the pod→internal-API callback | Unauthenticated TLS to phaze's internal write API over a VPN | Mount internal CA into the image; verify against it |
+| Cluster-admin kubeconfig for the control plane | Huge blast radius if control plane / VPN compromised | Least-privilege namespaced Role (jobs CRUD + workloads read + localqueue get) |
+| Long-lived S3 keys shipped into the pod | Cluster compromise = bucket compromise | Pod is credential-free: presigned GET URL only; keys stay on control plane via `_FILE` |
+| kubeconfig/SA token in env not `_FILE` secret | Cluster creds in process env / image layers | `_FILE` convention (existing); Docker/K8s secret mount |
+| Bucket left as a data home | Long files persist off-host indefinitely | Ephemeral only: delete after analysis + lifecycle TTL; never canonical |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Tag writing:** Often missing format-specific tests -- verify writes work for mp3 (ID3), m4a (MP4), ogg (Vorbis), opus (OggOpus), and flac (VorbisComment in FLAC container)
-- [ ] **Tag writing:** Often missing re-read verification -- verify that after `save()`, re-opening the file with `mutagen.File()` returns the written values
-- [ ] **Tag writing:** Often missing state management -- verify database reflects actual file state, not intended state
-- [ ] **Discogs linking:** Often missing "no match" state -- verify the system distinguishes "not yet searched" from "searched, no match found" from "linked"
-- [ ] **Discogs linking:** Often missing manual override -- verify the user can manually enter a Discogs URL/ID to link or correct a bad auto-link
-- [ ] **CUE generation:** Often missing first-track-at-zero rule -- verify INDEX 01 of TRACK 01 is always 00:00:00
-- [ ] **CUE generation:** Often missing tracks-without-timestamps -- verify behavior when some tracks have no timestamp (skip? estimate? error?)
-- [ ] **CUE generation:** Often missing non-ASCII test -- verify CUE files with accented artist names render correctly in at least one reference player
-- [ ] **Search:** Often missing NULL-field handling -- verify search works when metadata fields are NULL (200K files will have many NULL artists/titles)
-- [ ] **Search:** Often missing pagination -- verify search returns paginated results, not all matching rows
-- [ ] **Search:** Often missing index migration -- verify the Alembic migration creates GIN indexes, not just the SQLAlchemy model definition
-- [ ] **Search:** Often missing `'simple'` tsconfig -- verify the text search config is `'simple'`, not `'english'`
+- [ ] **Result reconciliation:** Works in the demo via the watch — verify the `FileRecord` still reaches terminal state from the **callback alone** with the watch killed mid-run.
+- [ ] **TTL vs read:** Job cleans up nicely — verify phaze still attributes success/failure correctly when the Job is GC'd **before** the next reconcile tick.
+- [ ] **Presigned URL:** Fetch works in a fast test — verify it still works when the Job sits suspended **for hours** before fetching (and isn't minted from temp creds).
+- [ ] **OOM:** Short tracks pass — verify the **longest real Coachella set** doesn't exit 137 under the pod's memory limit.
+- [ ] **Cleanup:** Object deleted on success — verify it's **also** deleted on Job failure, eviction, and re-route-to-A1/local.
+- [ ] **Quota hang:** "In progress" shown — verify phaze distinguishes `Pending` (queued) from `Inadmissible` (misconfig) and surfaces the latter.
+- [ ] **Toggle:** K8s path works — verify `cloud_burst_enabled=false` blocks staging **and** submission **and** reconcile.
+- [ ] **Scope:** Long file bursts — verify a full pipeline run does **not** sweep the whole backlog or short files into the cluster.
+- [ ] **Transport-agnostic:** Works on Tailscale — verify no `tailscale`/`100.x` literals; same config runs on WireGuard.
+- [ ] **CA trust:** Callback succeeds — verify it's via the mounted internal CA, not `verify=False`.
+- [ ] **Exit codes:** Job shows Complete — verify a download-403 or analysis failure exits **non-zero** and shows Job `Failed`.
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Corrupted file from bad tag write | LOW (writes only target copies) | Delete corrupted copy, re-copy from original, re-attempt with fixed writer. Originals are never touched |
-| Wrong Discogs link propagated to tags | MEDIUM | Query files linked to the wrong release ID, revert tags from audit log snapshots, re-link to correct release |
-| CUE sheets with wrong frame format (centiseconds instead of 75fps) | LOW | Regenerate all CUE sheets with corrected conversion. CUE files are generated artifacts, not source data |
-| Search index out of sync with data | LOW | `REFRESH MATERIALIZED VIEW CONCURRENTLY search_index;` -- one command, seconds at 200K rows |
-| Database/file tag divergence | MEDIUM | Run a "tag audit" job: re-read tags from all destination files, compare with database, report discrepancies. Trust the file, update the DB |
-| Discogs rate limit exceeded and IP throttled | LOW | Stop all requests, wait 60 seconds for window reset. Implement proper rate limiter to prevent recurrence |
+| Lost watch / stranded in-flight files | LOW | Reconcile loop re-reads Workload/Job by `file_id`; callback already durable — file advances on next tick |
+| Job GC'd before status read | LOW | Treat "no Job + no callback + ledger-scheduled" as re-route; idempotent re-submit |
+| Presigned URL expired before fetch | LOW | Re-mint URL (long expiry / on-admission) and re-submit the same `file_id` (idempotent) |
+| OOM on long files | MEDIUM | Switch entrypoint to windowed analysis; raise memory request/quota; re-route stranded files |
+| Orphaned S3 objects | LOW-MEDIUM | Sweep bucket vs in-flight `file_id`s; delete orphans; enable bucket lifecycle TTL going forward |
+| Over-enqueued backlog into cluster | MEDIUM-HIGH | Purge/suspend extra Jobs; delete staged objects; re-scope to ledger; add AST guard (cf. v4.0.6/v5.0 recovery playbooks) |
+| Inadmissible misconfig (bad LocalQueue) | LOW | Fix config; startup validation prevents recurrence; suspended Jobs re-submit cleanly |
+| Token/URL leaked in pod manifest | MEDIUM | Rotate the compute-agent token; move to Secret injection; shorten token lifetime |
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Tag writing corrupts files | Tag writing phase | Format-specific round-trip tests for all 5 formats; SHA256 of audio payload unchanged after tag write |
-| Wrong Discogs match | Discogs linking phase | Tests with ambiguous input data; candidate storage verified; manual override UI functional |
-| Discogs rate limiting | Discogs linking phase | Rate limiter test with mock 429 responses; backoff verified; Discogsography client respects shared rate state |
-| CUE timestamp frame rate | CUE generation phase | Unit test: `seconds_to_cue_timestamp(61.5)` returns `"01:01:37"` (37 = 0.5 * 75), not `"01:01:50"`; frame values always 0-74 |
-| CUE encoding | CUE generation phase | Test with non-ASCII artist names; output file has UTF-8 BOM; decode round-trip succeeds |
-| Search performance | Search phase | `EXPLAIN ANALYZE` on search with 200K+ rows shows index scan, not seq scan; GIN index in migration; response < 500ms |
-| Tag/DB inconsistency | Tag writing phase | Integration test: write tag -> re-read -> compare with DB; audit log entry present with before/after |
+| Watch as result channel (lost watch loses result) | 54 | Kill watch mid-run; `FileRecord` still reaches terminal from callback |
+| Worker-slot starvation on `job.wait` | 54 | Submit task returns fast; reconcile advances state on next tick |
+| TTL-vs-read race | 54 | Status attributed correctly when Job GC'd before reconcile |
+| Presigned URL expiry vs queue wait | 53 (+54 on-admission mint) | Hours-suspended Job still fetches; not from temp creds |
+| OOM on long files | 52 | Longest real set analyzes without exit 137 |
+| Inadmissible vs Pending hang | 54 (+56 startup validation) | UI shows misconfig vs queued; bad LocalQueue fails fast |
+| Job backoff / requeue vs control-plane retry | 54 (+56 runbook) | One pod attempt per Job; no duplicate callbacks |
+| Orphaned S3 objects | 53 (+56 lifecycle TTL) | Object deleted on failure/eviction/re-route, not just success |
+| SigV4/`endpoint_url` misconfig | 53 (+56 round-trip test) | Put→presign→GET→delete passes against operator bucket |
+| Token/URL leak in pod spec | 54 (+56 rotation) | No secret in `job -o yaml`/args; Secret injection only |
+| RBAC over/under-scoped | 56 (exercised 54) | Least-priv Role passes submit/watch/delete; no cluster grants |
+| Pod can't trust internal CA | 52 (+54 config, 56 verify) | Callback succeeds via mounted CA, never `verify=False` |
+| Exit-code semantics | 52 | Download-403/analysis-fail → non-zero → Job Failed |
+| Pod eviction mid-analysis | 54 (detection P2/v6.x) | Evicted Workload re-routes, not terminal-failed |
+| Whole-backlog over-enqueue | 55 | Pipeline run bursts only ledger-scoped long files; AST guard green |
+| Active-target toggle misrouting | 55 | All 3 entry points honor toggle + single target resolver |
+| Transport-specific leakage | 56 (convention 52–55) | No `tailscale`/`100.x` literals; same config on WireGuard |
+| Object-key collision / multipart | 53 | `file_id`-scoped keys; large set uploads via multipart |
 
 ## Sources
 
-- [Discogs API Documentation](https://www.discogs.com/developers) -- rate limits: 60 req/min authenticated, 25 unauthenticated, IP-based
-- [Discogs Forum: Rate Limiting](https://www.discogs.com/forum/thread/392153) -- rate limit per-IP, generic user agents get stricter limits
-- [Discogs Forum: Search Relevancy](https://www.discogs.com/forum/thread/323339) -- field-specific search vs free-text, relevancy unreliable
-- [10 Tips for Better Discogs Searching](http://www.onemusicapi.com/blog/2013/06/12/better-discogs-searching/) -- scoring strategies, handling ambiguity
-- [mutagen ID3 Documentation](https://mutagen.readthedocs.io/en/latest/user/id3.html) -- v2.4 default, v2.3 compatibility, encoding behavior
-- [mutagen Issue #354: ID3v1 Latin-1 Encoding](https://github.com/quodlibet/mutagen/issues/354) -- ID3v1 uses Latin-1, lossy for Unicode
-- [mutagen Vorbis Comment Documentation](https://mutagen.readthedocs.io/en/latest/user/vcomment.html) -- shared tag format for OGG/FLAC/OPUS
-- [CUE Sheet Format Specification](https://wyday.com/cuesharp/specification.php) -- INDEX MM:SS:FF, 75 frames/second
-- [Hydrogenaudio CUE Sheet Wiki](https://wiki.hydrogenaudio.org/index.php?title=Cue_sheet) -- encoding issues, compatibility
-- [XLD CUE Encoding Issue](https://github.com/DanielPhoton/xld/issues/17) -- UTF-8 vs Latin-1 player compatibility
-- [DeaDBeeF CUE Encoding Issue](https://github.com/DeaDBeeF-Player/deadbeef/issues/1962) -- GBK/UTF-8 encoding detection failures
-- [PostgreSQL Full-Text Search Limitations](https://www.postgresql.org/docs/current/textsearch-limitations.html) -- official limitations
-- [PostgreSQL FTS for 200M Rows](https://medium.com/@yogeshsherawat/using-full-text-search-fts-in-postgresql-for-over-200-million-rows-a-case-study-e0a347df14d0) -- tsvector + GIN optimization patterns
-- [Meilisearch: When Postgres FTS Stops Being Good Enough](https://www.meilisearch.com/blog/postgres-full-text-search-limitations) -- composite index limitations
-- [python3-discogs-client Rate Limiting](https://python3-discogs-client.readthedocs.io/en/v2.3.12/requests_rate_limit.html) -- header-based rate limit tracking
-- Existing codebase analysis: `services/metadata.py` (read-only tag extraction), `models/metadata.py` (FileMetadata schema), `models/tracklist.py` (TracklistTrack with timestamp field), `models/file.py` (FileState enum)
+- phaze sibling research — `.planning/research/FEATURES.md` (Kueue lifecycle, Workload conditions, TTL-vs-read ordering hazard, anti-features) and `.planning/research/STACK.md` (kr8s/aioboto3, presigned-URL-in-pod, `_FILE` secrets, v1beta2 apiVersion, integration-with-async-stack notes) — HIGH, both verified against Context7 `/kubernetes-sigs/kueue` + `/kr8s-org/kr8s` 2026-06-26
+- phaze `.planning/PROJECT.md` v6.0 milestone + Key Decisions (CPU-only nodes, ephemeral object staging, ledger scoping, transport-agnostic, reuse of v5.0 compute-agent callback) — HIGH
+- phaze project memory — v4.0.6 default-queue 11,428-job over-enqueue incident; v5.0 `force=True` 44.5k-job over-enqueue; v4.0.10 windowed-analysis OOM/crash on long sets; v4.0 self-signed internal CA + `_FILE` secrets invariants — HIGH (lived incidents)
+- AWS S3 presigned-URL expiration limits (SigV4 max 7 days = 604800s; URLs minted from STS/role temporary credentials expire when the credential expires, typically 1–12h, regardless of requested expiry) — HIGH:
+  - https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html
+  - https://repost.aws/questions/QUnrDfUE8QRgCLBaV-guPalg/s3-presigned-url-is-valid-for-7-days-but-the-role-it-s-associated-with-is-only-12-hours-is-it-possible-to-make-it-last-the-actual-stated-7days
+  - https://elasticscale.com/blog/why-do-s3-pre-signed-urls-expire-after-12-hours-despite-setting-a-longer-duration/
 
 ---
-*Pitfalls research for: Phaze v3.0 -- Cross-Service Intelligence & File Enrichment*
-*Researched: 2026-04-02*
+*Pitfalls research for: adding remote Kueue-Job submission + S3 staging to phaze's async control plane (v6.0)*
+*Researched: 2026-06-26*

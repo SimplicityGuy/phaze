@@ -1,285 +1,137 @@
-# Stack Research: v3.0 Cross-Service Intelligence & File Enrichment
+# Stack Research
 
-**Domain:** Discogs cross-service linking, audio tag writing, CUE sheet generation, unified search
-**Researched:** 2026-04-02
-**Confidence:** HIGH (all four areas use proven, well-documented approaches)
+**Domain:** v6.0 Kubernetes Burst Analysis — offloading long-audio essentia analysis to a remote x64 Kubernetes cluster running Kueue
+**Researched:** 2026-06-26
+**Confidence:** HIGH (kube client, S3, Kueue CRD versions verified via PyPI + Context7 + Kueue release/docs; published same-day)
 
-**Scope:** This research covers ONLY new stack additions for v3.0. The existing validated stack (FastAPI, SQLAlchemy/asyncpg, arq/SAQ, Redis, mutagen read, librosa, essentia-tensorflow, pyacoustid, audfprint, Panako, rapidfuzz, litellm, HTMX/Jinja2/Tailwind/Alpine.js, Alembic, Docker Compose, httpx, beautifulsoup4, lxml) is not re-researched.
+## Scope Note
 
----
+This is a SUBSEQUENT-milestone stack delta. The existing validated stack (Python 3.13, uv, FastAPI, async SQLAlchemy + asyncpg, **SAQ on a PostgresQueue broker**, pydantic-settings with `_FILE` secrets, httpx, tenacity, respx, cryptography, essentia-tensorflow x86 wheel, mutagen) is unchanged. Only NEW dependencies for the Kube/Kueue offload path are researched here.
 
-## New Dependencies
+**Two new external dependencies vs. v5.0**, plus zero-new-dep image work:
+1. A Python **Kubernetes API client** (control plane submits suspended Kueue Jobs, watches Workload/Job status).
+2. An **S3-compatible object-storage client** (control plane stages one long file per Job; pod fetches + deletes).
+3. A new **x86 one-shot Job-runner image** to GHCR — reuses existing essentia base layers, no new pip deps.
 
-### 1. Discogs Cross-Service Linking
+## Recommended Stack
 
-**No new dependencies required.** httpx (>=0.28.1, already in pyproject.toml) is the only library needed.
+### Core Technologies (NEW)
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| httpx | >=0.28.1 (existing) | Async HTTP client to call discogsography's `/api/search` endpoint | Already a production dependency. Native async, timeout/retry support. Used in fingerprint.py for audfprint/Panako HTTP calls -- same pattern applies to discogsography. |
-| rapidfuzz | >=3.14.3 (existing) | Fuzzy match tracklist tracks against Discogs search results | Already used in tracklist_matcher.py for 1001tracklists matching. Same `token_set_ratio` approach works for artist+title matching against Discogs releases. |
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| **kr8s** | 0.20.15 (latest, PyPI 2026-01-16; `requires-python >=3.9`) | Async Kubernetes client — submit suspended batch Job, watch Job conditions, read Kueue `Workload` CRD | **Async-native AND reuses the existing HTTP stack.** kr8s is built on `httpx` + `anyio` (both already direct/transitive deps of phaze) — it does NOT pull a second HTTP stack the way `kubernetes-asyncio` (aiohttp) does. Tiny, kubectl-familiar API: `await Job(...).create()` then `await job.wait(["condition=Complete","condition=Failed"], timeout=...)`. Dynamic CRD access (`kr8s.asyncio.get("workloads.kueue.x-k8s.io", ...)`) reads the Kueue Workload with no codegen/stubs. Handles kubeconfig, in-cluster service-account token, and explicit token/CA auth. Context7 benchmark score 97. |
+| **aioboto3** | 15.5.0 (latest, PyPI; pins `aiobotocore[boto3]==2.25.1`) | Async S3-compatible client on the **control plane** — upload one long file, generate a presigned GET URL, delete object after analysis | Async-native (asyncio) so S3 staging composes with the async FastAPI/SAQ control plane without thread-pool gymnastics. Wraps `botocore`, the reference S3 implementation, so any S3-compatible endpoint (MinIO, Ceph RGW, Backblaze B2, Wasabi, AWS) works via `endpoint_url=`. First-class `generate_presigned_url("get_object", ...)` — the key primitive that lets the Job pod fetch with a short-lived URL and **no long-lived credentials in the cluster**. Credentials inject cleanly from `_FILE` secrets (read file → pass `aws_access_key_id` / `aws_secret_access_key` to the session). |
 
-**How it works:**
-- Discogsography exposes `GET /api/search?q={query}&types=artist,release` returning relevance-ranked results with PostgreSQL full-text search.
-- Phaze calls this endpoint via httpx with artist+title from TracklistTrack records.
-- rapidfuzz scores the returned results against phaze's local track data.
-- No Discogs API key or OAuth needed -- discogsography is on the same private Docker network, no rate limiting required (or at most a courtesy delay).
+### Supporting Libraries / Decisions
 
-**Integration pattern (same as fingerprint service):**
-```python
-# Existing pattern from fingerprint.py:
-async with httpx.AsyncClient(base_url=settings.panako_url, timeout=30.0) as client:
-    response = await client.post("/query", ...)
+| Item | Version | Purpose | When to Use |
+|------|---------|---------|-------------|
+| **httpx** (existing) | already in stack | Job pod downloads the staged file via the presigned GET URL; pod POSTs results to `/api/internal/agent/*` | **No S3 SDK in the Job image.** The pod receives a presigned GET URL (env/arg from the control plane) and does a plain `httpx` GET. It already uses httpx to call back the internal agent API (v5.0 compute-agent machinery). Keeps the Job image lean and credential-free. |
+| **Kueue** (cluster-side, not a pip dep) | **v0.18.2** (released 2026-06-26) | Job queueing / quota admission controller on the remote cluster | Admin-installed on the cluster. phaze does NOT depend on a Kueue Python binding — see §"Do we need Kueue bindings?" below. Reference only: documented as cluster-admin setup (ResourceFlavor / ClusterQueue / LocalQueue). |
+| pydantic-settings `_FILE` convention (existing) | already in stack | kubeconfig/SA-token, S3 credentials, bucket name, LocalQueue name, kube API endpoint, active-cloud-target selector | Reuse the established `<VAR>_FILE` secret pattern. kubeconfig and S3 creds are files mounted as Docker secrets; settings read them. No new config library. |
+| tenacity (existing) | already in stack | Retry transient kube-API / S3 / network errors over the operator VPN | Reuse — the VPN (Tailscale or WireGuard) link can blip; wrap submit/watch/upload in the existing retry helpers. |
 
-# Discogsography follows the same pattern:
-async with httpx.AsyncClient(base_url=settings.discogsography_url, timeout=10.0) as client:
-    response = await client.get("/api/search", params={"q": query, "types": "release"})
-```
+### Development / Build (NEW image, zero new pip deps)
 
-**Configuration addition to pydantic-settings:**
-- `DISCOGSOGRAPHY_URL` environment variable (e.g., `http://discogsography-api:8000`)
-- No API key needed -- private network, same Docker Compose stack or reachable via host network.
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| Docker buildx (existing CI) | Build the x86 one-shot Job-runner image | **Reuse existing x86 essentia base layers.** The v4.0/v5.0 x86 agent image already bakes `essentia-tensorflow` + ffmpeg + `fpcalc` + the analysis code. Build the Job image `FROM` that published x86 base and swap only the entrypoint to the one-shot runner (pull presigned URL → analyze → POST result → exit). The cluster is x64, so **no arm64 source build** (unlike Phase 47's `Dockerfile.agent-arm64`). |
+| GHCR publish (existing CI) | Publish `*-k8sjob` (or similar) tag | Reuse the existing GHCR publish workflow + `just` delegation. Tag-triggered. The numeric-parity guard from Phase 47 is unnecessary here — same x86 wheel as the production analysis path, already parity-validated. |
 
-### 2. Tag Writing to Audio Files
+## Do We Need Kueue-Specific Python Bindings?
 
-**No new dependencies required.** mutagen (>=1.47.0, already in pyproject.toml) supports both read and write.
+**No.** Submit a normal `batch/v1` `Job` and read the Kueue `Workload` as a generic custom object. Specifics:
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| mutagen | >=1.47.0 (existing) | Write corrected tags (artist, title, album, genre, year, track number) to destination copies | Already used for tag extraction in `services/metadata.py`. Mutagen's write API is symmetric to its read API. Supports ID3v2.4, Vorbis Comments, MP4 atoms, FLAC tags. |
-
-**Write API patterns by format (all mutagen, no new imports):**
-
-| Format | Tag Container | Write Method |
-|--------|--------------|--------------|
-| MP3 | `mutagen.id3.ID3` | `audio.tags.add(TIT2(text=["Title"]))` then `audio.save()` |
-| M4A/MP4 | `mutagen.mp4.MP4` | `audio["\xa9nam"] = ["Title"]` then `audio.save()` |
-| OGG/OPUS | `mutagen.oggvorbis.OggVorbis` / `mutagen.oggopus.OggOpus` | `audio["title"] = ["Title"]` then `audio.save()` |
-| FLAC | `mutagen.flac.FLAC` | `audio["title"] = ["Title"]` then `audio.save()` |
-
-**Critical safety considerations:**
-- Write ONLY to destination copies (files in `proposed_path`), NEVER to originals. The existing copy-verify-delete protocol guarantees originals are preserved.
-- Use `mutagen.File(path)` auto-detection (same as read path) to determine format.
-- The existing `_ID3_MAP`, `_VORBIS_MAP`, `_MP4_MAP` dictionaries in `services/metadata.py` can be reversed for writing.
-- Tag write is CPU-light -- use `asyncio.to_thread()` like the existing extraction path, no ProcessPoolExecutor needed.
-- SHA256 re-verification after tag write to confirm file integrity (tags change the hash, so record the new hash).
-
-### 3. CUE Sheet Generation
-
-**Recommendation: Write CUE sheets directly -- no library needed.**
-
-| Approach | Recommendation | Why |
-|----------|---------------|-----|
-| Custom CUE writer (string formatting) | **YES** | CUE format is trivial plain text. A 50-line function handles it. No library dependency for generating 10 lines of structured text. |
-| cuetools (PyPI) | NO | Pydantic-based, actively maintained (v1.1.0, Jan 2026), but adds a dependency for something that is literally string concatenation. |
-| CueParser (PyPI) | NO | v1.3.3 (Jan 2026), supports generation, but its `cuegen.py` tool is designed for different input formats (Audacity labels). More complexity than benefit. |
-
-**CUE sheet format for phaze live sets:**
-
-The CUE format is a simple text specification. A live set CUE sheet maps tracklist timestamps to positions in a single audio file:
-
-```
-PERFORMER "Artist Name"
-TITLE "Live @ Coachella 2025.04.12"
-FILE "Artist Name - Live @ Coachella 2025.04.12.mp3" MP3
-  TRACK 01 AUDIO
-    TITLE "Track One (Original Mix)"
-    PERFORMER "Producer A"
-    INDEX 01 00:00:00
-  TRACK 02 AUDIO
-    TITLE "Track Two (Remix)"
-    PERFORMER "Producer B"
-    INDEX 01 05:23:00
-```
-
-**Timestamp format:** `MM:SS:FF` where FF = frames (1/75th second). Phaze tracklist timestamps are in `HH:MM:SS` or seconds -- conversion is: `frames = 0` (we don't have sub-second precision), `minutes = total_minutes`, `seconds = remaining_seconds`.
-
-**Data sources for timestamps (preference order):**
-1. **Fingerprint timestamps** from `FingerprintResult` -- most accurate, derived from actual audio matching via audfprint/Panako. The `QueryMatch.timestamp` field already exists.
-2. **1001Tracklists timestamps** from `TracklistTrack.timestamp` -- user-submitted, variable accuracy.
-3. **Position-based estimation** -- fallback: divide total duration by track count for evenly-spaced positions.
-
-**Why no library:**
-- The CUE spec has ~10 keywords. Phaze uses exactly 5: `PERFORMER`, `TITLE`, `FILE`, `TRACK`, `INDEX`.
-- No need to parse CUE sheets, only generate them.
-- No CD-specific features needed (CATALOG, ISRC, PREGAP, POSTGAP, FLAGS).
-- A simple `generate_cue_sheet(tracklist, file_record) -> str` function is cleaner than adapting a library's data model.
-
-### 4. Search / Query Capabilities
-
-**Use PostgreSQL built-in features -- no new dependencies.**
-
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| PostgreSQL `pg_trgm` extension | (bundled with PG 16) | Trigram-based fuzzy text search | Handles typos and partial matches. `similarity()` and `%` operator. GIN index on `gin_trgm_ops` for fast lookups. No external service (Elasticsearch, Meilisearch) needed for 200K records. |
-| PostgreSQL `to_tsvector` / `to_tsquery` | (built-in) | Full-text search with ranking | Stemming, language-aware search, `ts_rank` for relevance scoring. Combined with pg_trgm for typo tolerance. |
-| SQLAlchemy `func` | (existing) | Call PG functions from Python | `func.similarity()`, `func.to_tsvector()`, `func.to_tsquery()`, `func.ts_rank()` -- all available via SQLAlchemy's `func` namespace. No ORM extensions needed. |
-
-**Why PostgreSQL native search over alternatives:**
-
-| Alternative | Why NOT |
-|-------------|---------|
-| Elasticsearch / OpenSearch | Separate service, Java/JVM, 1GB+ RAM overhead. Overkill for 200K records on a home server. PostgreSQL handles this scale trivially. |
-| Meilisearch / Typesense | Additional Docker container, data sync complexity, another service to maintain. Adds operational burden for marginal benefit at this scale. |
-| pgvector (semantic search) | Requires embedding generation (LLM calls for every record). Interesting for v4+ NLQ feature, not needed for structured field search. |
-| SQLAlchemy-Searchable | Abandoned (last release 2021). Just use `func.to_tsvector()` directly -- it's 3 lines of SQLAlchemy. |
-
-**Implementation approach:**
-
-1. **Alembic migration:** Enable `pg_trgm` extension, add GIN indexes on searchable text columns.
-
-```sql
--- In Alembic migration
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
--- GIN index for full-text search on metadata
-CREATE INDEX ix_metadata_search ON metadata
-  USING GIN (to_tsvector('english', coalesce(artist, '') || ' ' || coalesce(title, '') || ' ' || coalesce(album, '')));
-
--- GIN trigram indexes for fuzzy matching
-CREATE INDEX ix_metadata_artist_trgm ON metadata USING GIN (artist gin_trgm_ops);
-CREATE INDEX ix_metadata_title_trgm ON metadata USING GIN (title gin_trgm_ops);
-
--- Tracklist search indexes
-CREATE INDEX ix_tracklists_artist_trgm ON tracklists USING GIN (artist gin_trgm_ops);
-CREATE INDEX ix_tracklists_event_trgm ON tracklists USING GIN (event gin_trgm_ops);
-CREATE INDEX ix_tracklist_tracks_artist_trgm ON tracklist_tracks USING GIN (artist gin_trgm_ops);
-CREATE INDEX ix_tracklist_tracks_title_trgm ON tracklist_tracks USING GIN (title gin_trgm_ops);
-```
-
-2. **SQLAlchemy query patterns:**
-
-```python
-from sqlalchemy import func, or_
-
-# Full-text search with ranking
-query = (
-    select(FileMetadata)
-    .where(func.to_tsvector("english", FileMetadata.artist + " " + FileMetadata.title)
-           .match(search_term))
-    .order_by(func.ts_rank(
-        func.to_tsvector("english", FileMetadata.artist + " " + FileMetadata.title),
-        func.to_tsquery("english", search_term)
-    ).desc())
-)
-
-# Fuzzy trigram search (handles typos)
-query = (
-    select(FileMetadata)
-    .where(func.similarity(FileMetadata.artist, search_term) > 0.3)
-    .order_by(func.similarity(FileMetadata.artist, search_term).desc())
-)
-```
-
-3. **Search spans multiple tables:**
-
-| Table | Searchable Fields | Index Type |
-|-------|------------------|------------|
-| `metadata` | artist, title, album, genre | tsvector + trgm |
-| `tracklists` | artist, event | trgm |
-| `tracklist_tracks` | artist, title | trgm |
-| `analysis` | style, mood | exact match (low cardinality) |
-| `analysis` | bpm | range query (no text index needed) |
-| `files` | original_filename | trgm |
-
-**Filterable (non-text) fields:** BPM range, year range, date range, file_type, state.
-
----
-
-## Existing Dependencies -- No Changes Needed
-
-| Dependency | Current Version | v3.0 Usage | Notes |
-|------------|----------------|------------|-------|
-| httpx | >=0.28.1 | Discogs service HTTP calls | Same pattern as fingerprint service |
-| mutagen | >=1.47.0 | Tag writing (new) + tag reading (existing) | Write API is part of mutagen core, no extras |
-| rapidfuzz | >=3.14.3 | Fuzzy matching Discogs results | Same `token_set_ratio` as tracklist matcher |
-| SQLAlchemy | >=2.0.48 | `func.to_tsvector`, `func.similarity` | Native PG function support, no extensions |
-| Alembic | >=1.18.4 | Migration for `pg_trgm` extension + indexes | Standard `op.execute()` for CREATE EXTENSION |
-| pydantic-settings | >=2.13.1 | `DISCOGSOGRAPHY_URL` config | One new env var |
-
----
+- **Submission:** a standard `batch/v1` Job with two additions:
+  - `metadata.labels["kueue.x-k8s.io/queue-name"] = "<LocalQueue name>"` (phaze references an operator-configured LocalQueue).
+  - `spec.suspend: true` — Kueue requires Jobs start suspended; the controller un-suspends on admission. (Submitting un-suspended bypasses quota; Kueue webhooks re-suspend, but submit it suspended explicitly.)
+- **Workload CRD apiVersion:** **`kueue.x-k8s.io/v1beta2`** is the current served + storage version as of **Kueue v0.18** (graduated from v1beta1). **`kueue.x-k8s.io/v1beta1` is now DEPRECATED but still served** (emits a deprecation warning) for backward compatibility — long-lived objects auto-convert only on a write. **Target v1beta2**, and make the apiVersion a config constant so a cluster pinned to an older Kueue (still v1beta1) is a one-line change. Confirm the cluster's served version with `kubectl get --raw /apis/kueue.x-k8s.io` at deploy time.
+- **Watching status — two signals, both via kr8s, no bindings:**
+  - **Completion:** watch the Job's own conditions — `await job.wait(["condition=Complete","condition=Failed"], timeout=...)`. Simplest, most reliable terminal signal.
+  - **Admission / quota visibility (optional but recommended for observability):** read the `Workload`. Find it via the Job UID: `workloads.kueue.x-k8s.io` labeled `kueue.x-k8s.io/job-uid=<job.metadata.uid>`. Its `status.conditions` carry `QuotaReserved` (reason `Pending` vs `Admitted`) and terminal `Finished` (reason `JobFinished`). Surfacing "Pending — insufficient quota" vs "Admitted" makes the AWAITING_CLOUD UI honest about why a long file is still queued.
+- **Result reconciliation stays unchanged:** the Job pod POSTs the analysis back to `/api/internal/agent/*` as a registered compute agent (v5.0 machinery), reconciled by `file_id`. The kube watch is a liveness/lifecycle signal, NOT the result channel — the authoritative result arrives over the existing internal HTTP API. This decoupling means a missed watch event never loses a result.
 
 ## Installation
 
 ```bash
-# No new pip/uv dependencies for v3.0.
-# All required libraries are already in pyproject.toml.
+# Control plane (app-server) — NEW deps
+uv add kr8s aioboto3
 
-# Docker Compose: add network connectivity to discogsography
-# (either same compose stack or external_links / shared network)
+# Job-runner image: NO new pip deps — reuses the existing x86 essentia agent layers.
+#   FROM <existing x86 agent base image>; swap ENTRYPOINT to the one-shot runner.
+#   Pod downloads via presigned URL using httpx (already present), POSTs via httpx.
 
-# Alembic migration: enable pg_trgm extension in PostgreSQL
-# CREATE EXTENSION IF NOT EXISTS pg_trgm;
+# Cluster-side (operator, not a phaze dependency):
+#   Install Kueue v0.18.x; create ResourceFlavor / ClusterQueue / LocalQueue (CPU+memory quota only).
 ```
-
----
 
 ## Alternatives Considered
 
-| Category | Recommended | Alternative | Why Not |
-|----------|-------------|-------------|---------|
-| CUE generation | Custom writer (50 lines) | cuetools (PyPI) | Adding a dependency for string formatting is over-engineering. CUE format uses 5 keywords. |
-| CUE generation | Custom writer | CueParser (PyPI) | CueParser's generation API is designed for Audacity label import, not programmatic generation from structured data. |
-| Search | PostgreSQL pg_trgm + tsvector | Elasticsearch | Separate JVM service, 1GB+ RAM, sync complexity. 200K records is trivial for PostgreSQL. |
-| Search | PostgreSQL pg_trgm + tsvector | Meilisearch | Extra container, data sync, operational overhead. Benefits (typo-tolerance, facets) already provided by pg_trgm. |
-| Search | PostgreSQL pg_trgm + tsvector | SQLAlchemy-Searchable | Last release 2021, abandoned. Raw `func.to_tsvector()` is equally simple and always current. |
-| Discogs client | httpx to discogsography | python3-discogs-client (PyPI) | Direct Discogs API calls would bypass discogsography's enriched data (Neo4j graph, cross-references, MusicBrainz links). Discogsography already has the data indexed and searchable. |
-| Tag writing | mutagen (existing) | eyeD3 | ID3-only. Mutagen handles all formats (ID3, Vorbis, MP4, FLAC, OPUS). Already in the project. |
-| Tag writing | mutagen (existing) | mediafile | Wrapper around mutagen. Adds abstraction layer over what we already use directly. |
-
----
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| **kr8s** (async, httpx-based) | **kubernetes-asyncio** 36.1.0 | If you need a 1:1 faithful port of the official client's generated API surface (every `*Api` class, full model stubs). Downside for phaze: it is **aiohttp**-based — a second async HTTP stack alongside the project's httpx, doubling TLS/connection-pool config and dependency weight. CRD access is verbose via `CustomObjectsApi`. Choose only if a team already standardizes on the official client's models. |
+| **kr8s** | **official `kubernetes`** 36.0.2 | If the code path were synchronous. It is **sync-only** (urllib3/requests) — every call would need `asyncio.to_thread` wrapping to avoid blocking the FastAPI/SAQ event loop, and it has the heaviest dep tree (generated models). Not suitable for an async control plane. |
+| **aioboto3** (async, control plane) | **boto3** 1.43.36 in `asyncio.to_thread` | If you want to avoid the `aiobotocore` layer and prefer the most battle-tested sync SDK. S3 staging is low-frequency (one upload per long file), so thread-pool offload is acceptable. Pick this if `aiobotocore`'s exact-pin of botocore causes a resolver conflict. |
+| **aioboto3** | **minio** 7.2.20 (MinIO SDK) | If the bucket is specifically MinIO and you want the lightest dependency (urllib3-based, no botocore). It supports `presigned_get_object` / `fput_object` / `remove_object`. Downside: **sync-only** (needs thread-pool offload) and ties the mental model to MinIO even though it speaks generic S3. boto3/aioboto3's `endpoint_url=` is more portable across S3 backends (operator-provided bucket type is unknown/transport-agnostic). |
+| presigned GET URL + httpx in the pod | S3 SDK inside the Job image | If the object is too large for a single presigned GET or you need multipart resumable download in the pod. For one-file-per-Job ephemeral staging, presigned URL + httpx GET is simpler and keeps the pod credential-free and SDK-free. |
 
 ## What NOT to Use
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| python3-discogs-client | Bypasses discogsography service which has enriched, pre-indexed data. Would require Discogs API key, rate limiting (60 req/min), OAuth. Discogsography is on the same network with no rate limits. | httpx calls to discogsography `/api/search` |
-| Elasticsearch / OpenSearch | Massive operational overhead for 200K records. PostgreSQL's pg_trgm + tsvector handles this scale with zero additional infrastructure. | PostgreSQL native search |
-| eyeD3 | ID3-only (MP3). Does not support Vorbis (OGG/OPUS), MP4 (M4A), or FLAC. | mutagen (already handles all formats) |
-| cuetools / CueParser | Adding a PyPI dependency for 50 lines of string formatting. CUE generation is trivial. | Custom `generate_cue_sheet()` function |
-| pgvector | Requires generating embeddings for every record via LLM. Interesting for semantic/NLQ search in v4+, not for structured field search in v3.0. | pg_trgm for fuzzy text, tsvector for full-text |
-| SQLAlchemy-Searchable | Abandoned since 2021. Wraps the same `func.to_tsvector()` calls you'd write directly. Dead dependency adds risk for zero benefit. | Direct `func.to_tsvector()` / `func.similarity()` calls |
-| mediafile (PyPI) | Thin wrapper over mutagen. Adds an abstraction layer and another dependency for no benefit when you already use mutagen directly. | mutagen directly |
+| **A Kueue-specific Python binding / generated client** | Kueue ships no first-party Python client; third-party generated stubs lag the CRD and add maintenance. The Workload is just a custom object. | Generic dynamic-object access via kr8s; pin the `kueue.x-k8s.io/v1beta2` apiVersion as a config constant. |
+| **official `kubernetes` (sync) in the async control plane** | Sync/urllib3 blocks the event loop; heaviest generated dep tree. | kr8s (async, httpx). |
+| **`kubernetes-asyncio` purely for async** | Pulls **aiohttp** — a parallel HTTP stack to the project's httpx, doubling config surface and deps for no functional gain here. | kr8s reuses the existing httpx stack. |
+| **An S3 SDK inside the Job pod image** | Forces long-lived cluster credentials and bloats the image. | Control plane mints a short-lived presigned GET URL; pod fetches with httpx (already present). |
+| **Mesh-/transport-specific libraries (Tailscale/WireGuard SDKs)** | Connectivity is intentionally transport-agnostic — phaze consumes operator-provided reachable endpoints (kube API, S3, callback) only. | Plain endpoint URLs in pydantic-settings; no networking code. |
+| **Arm64 build tooling for the Job image** | The cluster is x64; the existing essentia x86 wheel runs directly. The Phase 47 from-source arm64 build is not needed. | Reuse the published x86 essentia agent base layers. |
+| **Object storage as a data home** | Out-of-scope per PROJECT.md — staging is ephemeral analysis-only (upload → download → delete). | Lifecycle/TTL on the bucket + explicit delete after the result callback; never treat the bucket as canonical. |
 
----
+## Stack Patterns by Variant
+
+**If the operator's cluster runs Kueue < v0.18 (still v1beta1 storage):**
+- Set the Workload apiVersion config constant to `kueue.x-k8s.io/v1beta1`.
+- Because phaze reads the Workload dynamically (no compiled stubs), this is a single config change — kr8s adapts to the served version returned by the API.
+
+**If the bucket is MinIO specifically and dependency minimalism dominates:**
+- `minio` 7.2.20 in `asyncio.to_thread` is a lighter alternative to aioboto3 (no botocore).
+- Still emit a presigned GET URL for the pod; the control-plane SDK choice doesn't change the credential-free pod design.
+
+**If `aiobotocore`'s pinned botocore conflicts with another dep at resolve time:**
+- Drop to `boto3` (sync) wrapped in `asyncio.to_thread`. S3 staging frequency (one upload per long file) makes the thread-pool cost negligible.
 
 ## Version Compatibility
 
-| Technology | Compatible With | Notes |
-|------------|-----------------|-------|
-| pg_trgm extension | PostgreSQL 16+ | Bundled with PostgreSQL, just needs `CREATE EXTENSION`. No version conflicts. |
-| `to_tsvector` / `ts_rank` | PostgreSQL 16+, SQLAlchemy >=2.0 | Native PG functions, called via `func.*` in SQLAlchemy. Well-tested pattern. |
-| mutagen write API | Python 3.13, mutagen >=1.47.0 | Write API stable since mutagen 1.x. Same `mutagen.File()` auto-detection used for reading. |
-| httpx | Python 3.13, asyncio | Already validated across fingerprint service and test suite. |
-| Discogsography API | FastAPI service on private network | Endpoint: `GET /api/search?q=...&types=release`. Returns JSON with `results[]`, `total`, `facets`. Rate limited at 30/min on discogsography side but configurable. |
+| Package A | Compatible With | Notes |
+|-----------|-----------------|-------|
+| kr8s 0.20.15 | Python 3.13 | `requires-python >=3.9`; pure-async path via `kr8s.asyncio`. Deps (`httpx`, `anyio`, `cryptography`, `pyyaml`) already in phaze — only adds `cachetools`, `httpx-ws`, `python-box`, `python-jsonpath`, `packaging`. Light, no second HTTP stack. |
+| kr8s 0.20.15 | Kueue v0.18 (`v1beta2`) | Reads `workloads.kueue.x-k8s.io` dynamically; no codegen. Target v1beta2; v1beta1 still served (deprecated). |
+| aioboto3 15.5.0 | Python 3.13 | Pins `aiobotocore[boto3]==2.25.1` (which pins exact botocore/boto3). Self-contained; verify no other dep needs a different botocore. |
+| aioboto3 / boto3 | S3-compatible endpoints | Use `endpoint_url=` for non-AWS backends (MinIO, Ceph RGW, B2, Wasabi). `generate_presigned_url` works against all. |
+| Kueue v0.18.2 | batch/v1 Job | Job must be submitted with `spec.suspend: true` + `metadata.labels["kueue.x-k8s.io/queue-name"]`. Kueue un-suspends on admission. |
+| New x86 Job image | existing x86 essentia base | Same wheel as the production analysis path — already numeric-parity-validated; reuse layers, swap entrypoint only. |
 
----
+## Integration Points with the Existing Async Stack
 
-## Confidence Assessment
-
-| Area | Confidence | Reasoning |
-|------|------------|-----------|
-| Discogs linking (httpx to discogsography) | HIGH | Same pattern as existing fingerprint service HTTP calls. Discogsography API verified (routers/search.py inspected). httpx already battle-tested in project. |
-| Tag writing (mutagen) | HIGH | Mutagen's write API is symmetric to its read API which is already in production. Well-documented, zero new dependencies. Format-specific write patterns are standard. |
-| CUE sheet generation (custom) | HIGH | CUE format is a trivial text spec with 5 keywords. No library needed. Data sources (fingerprint timestamps, tracklist positions) already exist in the database. |
-| Search (pg_trgm + tsvector) | HIGH | PostgreSQL native features, well-documented SQLAlchemy integration. Discogsography project already uses the same approach successfully. 200K records is well within PG's comfort zone. |
-
----
+- **Submitter is the async control plane** (FastAPI/SAQ on the PostgresQueue broker). A SAQ task on the `controller` queue (routed via the existing `enqueue_router.resolve_queue_for_task`) performs: stage file to S3 → submit suspended Job → watch Job/Workload → mark routed. kr8s `await job.wait(...)` is `anyio`-based and cooperates with the SAQ worker's event loop. Use a bounded `wait(..., timeout=...)`; on timeout, re-poll the Workload status on the next task run rather than holding a worker slot for hours (mirrors v5.0's "stay one ahead" pattern and the windowed-analysis timeout learnings).
+- **No Redis dependency added** — broker is Postgres; kube watch state lives on `FileRecord` (AWAITING_CLOUD → submitted/admitted → result-reconciled), not in Redis.
+- **Result channel unchanged** — the Job pod POSTs to `/api/internal/agent/*` (bearer token, `agent_id` from token) and reconciles by `file_id`. The kube watch is lifecycle/observability only; a dropped watch never loses a result.
+- **Secrets via `_FILE`** — kubeconfig/SA-token, S3 access key/secret, bucket, LocalQueue name, kube API endpoint, and the active-cloud-target selector (local / A1 / K8s) all flow through pydantic-settings, gated by the existing `cloud_burst_enabled` master toggle.
+- **Retries via tenacity** — wrap kube submit/watch and S3 upload/delete in existing retry helpers for VPN blips.
+- **respx** already in the test stack covers the pod's httpx callback; kr8s and aioboto3 both expose mockable async surfaces (kr8s against a fake API server / recorded responses; aioboto3 via the `botocore` stubber or `moto`) for control-plane unit tests, keeping the 85% coverage gate reachable without a live cluster.
 
 ## Sources
 
-- [PostgreSQL pg_trgm documentation](https://www.postgresql.org/docs/current/pgtrgm.html) -- trigram similarity, GIN index operators
-- [PostgreSQL Full Text Search](https://www.postgresql.org/docs/current/textsearch.html) -- tsvector, tsquery, ts_rank
-- [SQLAlchemy PostgreSQL FTS patterns](https://amitosh.medium.com/full-text-search-fts-with-postgresql-and-sqlalchemy-edc436330a0c) -- func.to_tsvector integration
-- [SQLAlchemy pg_trgm discussion](https://github.com/sqlalchemy/sqlalchemy/discussions/7641) -- similarity() function usage
-- [CUE Sheet Format Specification](https://wyday.com/cuesharp/specification.php) -- complete CUE keyword reference
-- [CUE sheet Wikipedia](https://en.wikipedia.org/wiki/Cue_sheet_(computing)) -- format overview, MSF timestamp format
-- [cuetools on PyPI](https://pypi.org/project/cuetools/) -- v1.1.0 (Jan 2026), Pydantic-based, evaluated and rejected
-- [CueParser on PyPI](https://pypi.org/project/CueParser/) -- v1.3.3 (Jan 2026), evaluated and rejected
-- [mutagen documentation](https://mutagen.readthedocs.io/) -- tag write API, format-specific containers
-- [mutagen on PyPI](https://pypi.org/project/mutagen/) -- v1.47.0 verified
-- Discogsography source code inspected: `api/routers/search.py` (search endpoint), `CLAUDE.md` (architecture)
+- PyPI JSON API — verified latest versions 2026-06-26: `kr8s` 0.20.15, `aioboto3` 15.5.0, `boto3` 1.43.36, `minio` 7.2.20, `kubernetes` 36.0.2, `kubernetes-asyncio` 36.1.0 (HIGH)
+- PyPI `requires-dist` — kr8s deps (httpx/anyio/cryptography/pyyaml already in stack); aioboto3 pins `aiobotocore[boto3]==2.25.1` (HIGH)
+- Context7 `/kr8s-org/kr8s` — async Job create + `wait(["condition=Complete","condition=Failed"])`, dynamic custom-object get (benchmark 97) (HIGH)
+- Context7 `/websites/kueue_sigs_k8s_io` — Workload status conditions (QuotaReserved/Admitted/Finished), `queue-name` label, suspend semantics, job-uid→workload lookup; examples show `apiVersion: kueue.x-k8s.io/v1beta2` (HIGH)
+- GitHub `kubernetes-sigs/kueue` releases — latest **v0.18.2**, published 2026-06-26 (HIGH)
+- WebSearch (kueue.sigs.k8s.io docs + Red Hat build of Kueue) — v1beta2 is current served+storage version as of v0.18; v1beta1 deprecated but still served, auto-converts on write (MEDIUM-HIGH, multiple sources agree):
+  - https://kueue.sigs.k8s.io/docs/reference/kueue.v1beta1/
+  - https://github.com/kubernetes-sigs/kueue/releases/tag/v0.18.0
+  - https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/ai_workloads/red-hat-build-of-kueue
 
 ---
-*Stack research for: Phaze v3.0 Cross-Service Intelligence & File Enrichment*
-*Researched: 2026-04-02*
+*Stack research for: v6.0 Kubernetes Burst Analysis (Kube/Kueue offload delta)*
+*Researched: 2026-06-26*
