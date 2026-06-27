@@ -218,7 +218,34 @@ async def authenticated_client(
 # never touches the DB-backed fixtures above. They set the minimal AgentSettings
 # env (PHAZE_ROLE=agent + the agent URL/token/CA/models) and clear the
 # ``get_settings`` lru_cache so each test gets a fresh ``AgentSettings`` dispatch.
+#
+# ``construct_agent_client`` passes the CA path to ``httpx.AsyncClient(verify=...)``,
+# which eagerly builds an SSLContext from the file — so the baked CA must be a
+# PARSEABLE PEM cert (respx intercepts below TLS, so it is never used in a real
+# handshake; it only has to load). This is a static self-signed test CA.
 # ---------------------------------------------------------------------------
+
+_TEST_CA_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIDETCCAfmgAwIBAgIUNtMbPaofTIJdy9NQ3DYaj21GqSIwDQYJKoZIhvcNAQEL
+BQAwGDEWMBQGA1UEAwwNcGhhemUtdGVzdC1jYTAeFw0yNjA2MjcxODQ4MjZaFw0z
+NjA2MjQxODQ4MjZaMBgxFjAUBgNVBAMMDXBoYXplLXRlc3QtY2EwggEiMA0GCSqG
+SIb3DQEBAQUAA4IBDwAwggEKAoIBAQCiaszaVlmBuSK6XNSPIImqljRnng2JuYER
+hfpSZUMMkANAGFacOmTegNlmLZELJ9aq0CqrQbv4tjQ9qfF/cCsJK+jxquNsU1MT
+HCb4fG88pMDt4hoOs3yRJ+4lAs4lv/STP4soVNpf9lohtg4Fdd1FPsptQtWS3ueD
+OhYYHaW3Qv8LkfllLdkUTfqBeFNJtNX0q0hFspXnZTEVnw1Vyk2s5n06LyNU2bkC
+JftKLY+DwAquctOUcTCyU3rJiHKujO66jmjWMnJF/SIe4zVIw9PNLhYVQn3jDo7b
+YHcl7eYsbglEN/FQOO+mKhGNR1rGZPODyaWRizbfd7pd/aSzWxgrAgMBAAGjUzBR
+MB0GA1UdDgQWBBSXbKGkSkpaPreFj9PhkD0N2OFWMTAfBgNVHSMEGDAWgBSXbKGk
+SkpaPreFj9PhkD0N2OFWMTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUA
+A4IBAQBgjGFfbTr6mikB2BYgU+ushgwcjMsUGsq9GRi4YwqQ1MGRcqzAAXaIITWw
+YPut7xDz+Ly8w4QsEvEJNNUashpyfrarbhS5m0O2ifZPZd9E+zk73YYsTPAXhJAy
+F/IHc31D/sgbgORIfKdK4QXO4wTWe4I+YUwBeV28VOj72V/8RICEJYrdx1DfBh9R
+E0opkznSBx52nk4eFI8IEjsLTxs3zL7GvSKCHICWdPHqP9Pb71QJdeT+PcoWINnf
+sQ+jfRtVfnQ0LzU/94K1Su4p2yF/n3nHZtBSOjulqm4F5uL6kDrn68I3Z9G/gaBU
+jzO99XLCVGQKtzlazzxEILFIF8Ih
+-----END CERTIFICATE-----
+"""
 
 
 @pytest.fixture
@@ -234,10 +261,7 @@ def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path):  # type: ignore[no-untyp
     from phaze.config import get_settings
 
     ca_file = tmp_path / "phaze-ca.crt"
-    ca_file.write_text(
-        "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALfakeCAforTestsOnly==\n-----END CERTIFICATE-----\n",
-        encoding="utf-8",
-    )
+    ca_file.write_text(_TEST_CA_PEM, encoding="utf-8")
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     file_id = uuid.uuid4()

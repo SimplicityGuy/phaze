@@ -94,7 +94,7 @@ async def test_happy_path_exits_zero(job_env, monkeypatch):  # type: ignore[no-u
     assert "authorization" not in dl_headers
 
 
-@respx.mock(assert_all_called=False)
+@respx.mock
 @pytest.mark.parametrize(
     ("scenario", "expected_code"),
     [
@@ -153,7 +153,7 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
     assert exc.value.code != 0
 
 
-@respx.mock(assert_all_called=False)
+@respx.mock
 async def test_ca_verify_threads_baked_ca(job_env, monkeypatch):  # type: ignore[no-untyped-def]
     """The client is built with ``verify=<baked CA path>``; never ``verify=False`` (KJOB-05, T-52-01)."""
     import phaze.job_runner as jr
