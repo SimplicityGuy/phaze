@@ -152,7 +152,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 49. Duration routing & backfill | v5.0 | 4/4 | Complete    | 2026-06-25 |
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
-| 52. Job-runner image & one-shot entrypoint | v6.0 | 2/3 | In Progress|  |
+| 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete   | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 0/? | Not started | - |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
@@ -183,7 +183,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 52-02-PLAN.md — job_runner one-shot orchestrator + distinct exit-code contract + import-boundary/CA/windowed tests (KJOB-02/03/04/05)
+- [x] 52-02-PLAN.md — job_runner one-shot orchestrator + distinct exit-code contract + import-boundary/CA/windowed tests (KJOB-02/03/04/05)
 
 **Research**: Skip — directly parallels v5.0 Phase 47.
 
