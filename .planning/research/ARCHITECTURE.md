@@ -1,529 +1,341 @@
-# Architecture Patterns
+# Architecture Research
 
-**Domain:** Music collection organizer -- v3.0 cross-service intelligence & file enrichment
-**Researched:** 2026-04-02
-**Focus:** How Discogs linking, tag writing, CUE sheets, and search integrate with existing architecture
+**Domain:** Integrating a Kueue/K8s burst-analysis target into phaze's existing control-plane → cloud-window → result-reconciliation design (v6.0)
+**Researched:** 2026-06-26
+**Confidence:** HIGH (every integration seam read directly from `src/phaze`: `enqueue_router.py`, `scheduling_ledger.py`, `release_awaiting_cloud.py` (`stage_cloud_window`), `routers/pipeline.py` (duration router), `routers/agent_analysis.py` + `routers/agent_push.py` (callbacks), `tasks/reenqueue.py` (recovery), `models/file.py` (state machine), `config.py` (settings + `_FILE`))
 
-## Existing Architecture (v2.0 Baseline)
+> Scope: this file answers ONLY "how do the v6.0 K8s features bolt onto what already
+> exists." The Kueue Job→Workload lifecycle (FEATURES.md) and the kr8s/aioboto3/presigned-URL
+> stack (STACK.md) are treated as settled inputs and not re-derived here. The thesis: **v6.0 is
+> a third branch at exactly ONE existing seam (the `stage_cloud_window` staging step), reusing
+> the AWAITING_CLOUD→window→out-of-band-callback spine wholesale.** The execution unit changes
+> from "persistent compute agent draining a SAQ queue" to "ephemeral Kueue Job," but the
+> control-plane choreography is the same shape as v5.0's rsync push pipeline.
 
-```
-Containers:  api (FastAPI), worker (SAQ), postgres (PG18), redis (Redis 8), audfprint, panako
-Models:      FileRecord, FileMetadata, AnalysisResult, RenameProposal, ExecutionLog,
-             FileCompanion, ScanBatch, FingerprintResult, Tracklist, TracklistVersion, TracklistTrack
-State machine: DISCOVERED -> METADATA_EXTRACTED -> FINGERPRINTED -> ANALYZED ->
-               PROPOSAL_GENERATED -> APPROVED -> DUPLICATE_RESOLVED -> EXECUTED
-Routers:     health, scan, companion, proposals, execution, preview, duplicates, tracklists, pipeline
-Services:    pipeline, dedup, collision, companion, metadata (read), analysis, execution,
-             fingerprint (Protocol adapters), tracklist_scraper, tracklist_matcher,
-             proposal, proposal_queries, execution_queries, ingestion
-Tasks:       process_file, generate_proposals, execute_approved_batch, extract_file_metadata,
-             fingerprint_file, search_tracklist, scrape_and_store_tracklist, scan_live_set
-             + refresh_tracklists cron (monthly)
-Volumes:     /data/music (ro), /data/output (rw), /models (ro), audfprint_data, panako_data
-```
+---
 
-Key architectural properties v3.0 must preserve:
-- Single Python codebase, two runtime modes (API via uvicorn + worker via SAQ)
-- SAQ tasks are thin wrappers calling service-layer functions
-- Protocol-based adapters for external HTTP services (FingerprintEngine)
-- httpx.AsyncClient for inter-service communication
-- Write-ahead audit logging for destructive file operations
-- HTMX partials for dynamic UI (check HX-Request header)
-- Worker context pattern: startup/shutdown hooks initialize shared resources
-- FileState machine guards idempotent pipeline progression
+## The v5.0 spine v6.0 must reuse (verified in code)
 
-## v3.0 System Diagram
+This is the existing cloud-burst data flow, traced through the real modules. v6.0 mirrors it.
 
 ```
-+--------------------------------------------------------------------------------+
-|                       Admin Web UI (HTMX + Jinja2)                             |
-|  +------------+ +----------+ +----------+ +-----------+ +--------+ +--------+  |
-|  | Proposals  | | Dupes    | | Track-   | | Pipeline  | | Search | | Discogs|  |
-|  | (existing) | | (exists) | | lists    | | (exists)  | | (NEW)  | | (NEW)  |  |
-|  +-----+------+ +----+-----+ | (exists) | +-----+-----+ +---+----+ +---+----+  |
-+--------+-------------+-------+----+------+-------+-----------+---------+-------+
-|                       API Layer (FastAPI) -- 11 routers                         |
-|  +----------+ +----------+ +---------+ +--------+ +----------+ +----------+    |
-|  | existing | | existing | | track-  | | pipe-  | | search   | | discogs  |    |
-|  | 7 rtrs   | | tracklst | | lists   | | line   | | (NEW)    | | (NEW)    |    |
-|  +----+-----+ +----+-----+ +----+----+ +---+----+ +----+-----+ +----+-----+    |
-+-------+-----------+--------------+----------+-----------+-----------+-----------+
-|                      Service Layer                                              |
-|  +---------------+ +--------------+ +---------------+ +---------------------+   |
-|  | existing      | | discogs      | | tag_writer    | | cue_generator       |   |
-|  | 14 services   | | (NEW)        | | (NEW)         | | (NEW)               |   |
-|  +-------+-------+ +------+-------+ +------+--------+ +----------+----------+   |
-|          |                |                |                      |              |
-|  +-------+-------+ +-----+--------+ +-----+--------+                           |
-|  | search         | | (existing   | | (existing    |                           |
-|  | (NEW)          | | services)   | | services)    |                           |
-|  +----------------+ +-------------+ +--------------+                           |
-+-----+-------------------+-------------------+----------------------------------+
-|                      Task Queue (SAQ + Redis)                                   |
-|  +------------------------------------------------------------------------+     |
-|  |  NEW tasks: link_discogs_batch | write_tags_batch | generate_cue       |     |
-|  |  existing: process_file | generate_proposals | execute_approved_batch  |     |
-|  |            extract_file_metadata | fingerprint_file | scan_live_set    |     |
-|  |            search_tracklist | scrape_and_store_tracklist               |     |
-|  |  cron: refresh_tracklists (monthly, existing)                         |     |
-|  +------------------------------------------------------------------------+     |
-+-----+-------------------+-------------------+----------------------------------+
-|                      Data Layer                                                 |
-|  +--------------+  +-----------+  +-----------+                                |
-|  | PostgreSQL   |  |   Redis   |  | Filesystem |                                |
-|  | +2 NEW tbls  |  | (broker)  |  | (dest rw)  |                                |
-|  +--------------+  +-----------+  +-----------+                                |
-+-------+---------------------------+--------------------------------------------+
-        |                           |
-+-------+------+   +---------------+---------------+
-| discogsography|   | audfprint    |    panako     |
-| (EXTERNAL    |   | (existing)   |  (existing)   |
-|  HTTP API)   |   +--------------+---------------+
-+--------------+
+ routers/pipeline.py :: _route_discovered_by_duration   (the duration ROUTING SEAM)
+   long file (duration >= cloud_route_threshold_sec, cloud_burst_enabled)
+        │  set FileState.AWAITING_CLOUD  (HELD; enqueues nothing — committed)
+        ▼
+ tasks/release_awaiting_cloud.py :: stage_cloud_window   (controller cron */5, THE single staging entry)
+   advisory-xact-lock → window = COUNT(PUSHING+PUSHED) → slots = cloud_max_in_flight - window
+   GATE 1 compute agent online?  GATE 2 fileserver agent online?
+   per slot:  AWAITING_CLOUD → PUSHING ; enqueue push_file on the FILESERVER per-agent queue
+        ▼
+ tasks/push.py :: push_file   (FILESERVER agent — owns the media mount)
+   rsync-over-SSH/Tailscale to compute scratch ; sha256-verify ; POST .../push/{file_id}/pushed
+        ▼
+ routers/agent_push.py :: report_pushed   (control callback)
+   guarded PUSHING → PUSHED ; clear_ledger_entry("push_file:<id>") ; enqueue process_file on COMPUTE queue
+        ▼
+ tasks (compute agent) :: process_file   (essentia analysis on the persistent A1 host)
+   PUT .../analysis/{file_id}
+        ▼
+ routers/agent_analysis.py :: put_analysis   (control callback — THE result channel)
+   idempotent ON CONFLICT(file_id) upsert ; FileRecord → ANALYZED ; clear_ledger_entry("process_file:<id>")
 ```
 
-## New Component Map
+Load-bearing properties v6.0 inherits unchanged:
 
-| Component | Type | New/Modified | Integrates With |
-|-----------|------|--------------|-----------------|
-| `services/discogs.py` | Service | **NEW** | Discogsography HTTP API, TracklistTrack, FileMetadata |
-| `models/discogs_link.py` | Model | **NEW** | TracklistTrack, FileMetadata |
-| `services/tag_writer.py` | Service | **NEW** | mutagen, FileRecord, FileMetadata, RenameProposal, DiscogsLink |
-| `models/tag_write_log.py` | Model | **NEW** | FileRecord (audit trail) |
-| `services/cue_generator.py` | Service | **NEW** | Tracklist, TracklistTrack, FileRecord |
-| `services/search.py` | Service | **NEW** | FileRecord, FileMetadata, AnalysisResult, Tracklist, DiscogsLink |
-| `routers/search.py` | Router | **NEW** | SearchService, HTMX templates |
-| `routers/discogs.py` | Router | **NEW** | DiscogsService, TagWriterService, HTMX templates |
-| `tasks/discogs.py` | Tasks | **NEW** | DiscogsService (batch linking) |
-| `tasks/tag_write.py` | Tasks | **NEW** | TagWriterService |
-| `tasks/cue.py` | Tasks | **NEW** | CueGeneratorService |
-| `templates/search/` | Templates | **NEW** | Search page + partials |
-| `templates/discogs/` | Templates | **NEW** | Discogs linking UI + partials |
-| `config.py` | Config | MODIFIED | Add discogsography_url, tag write settings |
-| `main.py` | App | MODIFIED | Register search + discogs routers |
-| `tasks/worker.py` | Worker | MODIFIED | Register new tasks, init discogs client in startup |
-| `models/__init__.py` | Models | MODIFIED | Export DiscogsLink, TagWriteLog |
-| `templates/base.html` | Template | MODIFIED | Add Search nav tab |
-| `routers/tracklists.py` | Router | MODIFIED | Add "Generate CUE" + "Link to Discogs" buttons |
+- **The duration router is target-agnostic.** `_route_discovered_by_duration` only decides "long → AWAITING_CLOUD vs short → local fileserver." It names no cloud target. v6.0 touches it **zero**.
+- **`stage_cloud_window` is the single, unbypassable entry to any cloud pipeline** and the only place that introduces new in-flight work, bounded by `cloud_max_in_flight` via the `PUSHING+PUSHED` window count under a pg advisory lock.
+- **The result arrives out-of-band** at `put_analysis` (reconciled by `file_id`, idempotent). The lifecycle signal (rsync done / Job finished) is decoupled from the result. A dropped signal never loses a result.
+- **`PUSHED` is "push-done" to recovery.** `tasks/reenqueue.py::_select_done_push_ids` treats `PUSHED/ANALYZED/ANALYSIS_FAILED` as done — so a file parked in `PUSHED` is NOT re-driven by `recover_orphaned_work`.
 
-### Component Boundaries
+---
 
-| Component | Responsibility | Communicates With |
-|-----------|---------------|-------------------|
-| DiscogsService | HTTP client to discogsography API; fuzzy match track artist+title to Discogs releases | Discogsography external API (HTTP), PostgreSQL (DiscogsLink model) |
-| TagWriterService | Write corrected tags to DESTINATION copies using mutagen; preview diffs | Filesystem (destination files only, never originals), PostgreSQL (TagWriteLog, FileMetadata) |
-| CueGeneratorService | Generate .cue files from tracklist data with resolved timestamps | Filesystem (write .cue next to destination), PostgreSQL (Tracklist, TracklistTrack, FileRecord) |
-| SearchService | Query layer across FileRecord, FileMetadata, AnalysisResult, Tracklist, DiscogsLink | PostgreSQL only (read-only queries) |
+## Q1 — Where the submit→watch loop lives
 
-## Data Flow: Feature by Feature
+### Do NOT pin a worker on `job.wait()`
 
-### 1. Discogs Linking Flow
+The submit→watch must NOT be one SAQ task that blocks on `await job.wait(timeout=hours)`. That recreates the exact failure class v4.0.10/Phase 43 fixed (a worker slot held for a multi-hour essentia run). It is also unnecessary: **the result does not come from the watch** — it comes out-of-band at `put_analysis`. The Kueue watch is purely lifecycle (admission visibility + cleanup + eviction detection).
 
-```
-TracklistTrack (artist + title)
-        |
-        v
-DiscogsService.match_track(artist, title)
-        |
-        v
-HTTP GET discogsography/api/search?artist=X&title=Y
-        |
-        v
-DiscogsLink record created (track_id -> discogs_release_id, discogs_master_id)
-        |
-        v
-UI shows Discogs release info on tracklist detail page
-        |
-        v
-Cross-query enabled: "find all sets containing track X" via DiscogsLink JOIN TracklistTrack
-```
+### Recommended split: a fast submit task + a periodic reconcile cron
 
-**Key decision: Store links in phaze's DB.** DiscogsLink is a join table in phaze's PostgreSQL, NOT in discogsography's DB. Phaze owns the relationship. Discogsography is a read-only lookup service -- phaze sends search queries, gets release data back, stores the link locally.
+Mirror v5.0's `report_pushed → process_file` handoff, but both halves run control-side:
 
-**Key decision: Batch linking via SAQ tasks.** A tracklist has 10-30 tracks. Linking all tracks means 10-30 HTTP calls to discogsography. Do not block the request path. Enqueue a `link_discogs_batch` SAQ task, show progress via HTMX polling (same pattern as fingerprint scan progress in `tracklists.py`).
+| Piece | Where | What it does | Returns |
+|-------|-------|--------------|---------|
+| `submit_k8s_job` | NEW controller task on the **`controller`** queue | presign GET (aioboto3) → build & submit the **suspended** labeled Job (kr8s) → record `job_name/uid` + S3 key on the FileRecord → flip `PUSHING → PUSHED` | fast (seconds), never waits for analysis |
+| `reconcile_k8s_jobs` | NEW controller **cron** (`*/2 * * * *`) | for every K8s-in-flight file (`PUSHED` + has job ref), read Job/Workload status via kr8s; on terminal/finished → delete Job + delete S3 object; on evicted/timed-out → re-route; on pending/running → leave | idempotent sweep |
 
-**Key decision: Use rapidfuzz for client-side confidence scoring.** Discogsography may return multiple candidate releases. Compute a confidence score using rapidfuzz token_set_ratio on artist+title, store the best match. Allow manual override via UI.
+This is the watch-as-fast-path-but-poll-as-safety-net pattern FEATURES.md mandates, realized with the existing cron machinery. `submit_k8s_job` returns in seconds; the hours of analysis happen in the cluster pod; the cron re-reads status on a cheap schedule. No worker is ever pinned.
 
-### 2. Tag Writing Flow
+### Coexistence with `stage_cloud_window` and the ledger
 
-```
-FileRecord (state=EXECUTED, current_path = destination copy)
-        |
-        v
-User clicks "Write Tags" on file detail / bulk action in UI
-        |
-        v
-TagWriterService.preview_tags(file_id)
-  -> Returns diff: current tags vs proposed tags
-  -> Proposed tags aggregated from: FileMetadata + RenameProposal + DiscogsLink
-        |
-        v
-User reviews diff, confirms write
-        |
-        v
-SAQ task: write_tags enqueued
-        |
-        v
-TagWriterService.write_tags(file_id)
-  1. Snapshot current tags -> tags_before (TagWriteLog, write-ahead)
-  2. Build corrected tag dict:
-     - artist, title from RenameProposal.proposed_filename (parsed)
-     - album, year, genre, label from DiscogsLink (if linked)
-     - track_number from FileMetadata (if present)
-  3. Write tags to destination file via mutagen (current_path)
-  4. Snapshot written tags -> tags_after
-  5. Update TagWriteLog status to "completed"
-  6. Update FileMetadata.raw_tags with new values
-```
+- **`stage_cloud_window` stays the single staging entry — it just branches by target.** Today it always enqueues `push_file`. v6.0 adds: *if* `cloud_target == "k8s"`, enqueue **`upload_file_s3`** on the fileserver queue instead (the S3 analogue of `push_file`; see Q3). The window math (`COUNT(PUSHING+PUSHED)`, `cloud_max_in_flight`, advisory lock, FIFO `SKIP LOCKED`) is **reused verbatim** — it is target-agnostic backpressure.
+- **GATE 1 changes meaning per target.** For A1, GATE 1 is "a compute agent is online" (`select_active_agent(kind="compute")`). For K8s there is no persistent compute agent, so GATE 1 becomes "K8s target is configured/reachable" (LocalQueue name set, kube endpoint present). GATE 2 (fileserver agent online — the byte mover) is unchanged: the fileserver still owns the media and performs the upload.
+- **Reuse the scheduling ledger by STATE, not by a synthetic SAQ row.** The Phase-45 ledger exists so backfill/recovery only re-drive *previously-scheduled* work. K8s gets that property **for free** because a K8s-in-flight file sits in `PUSHED`, which the backfill predicates (`ANALYSIS_FAILED`, `AWAITING_CLOUD`) already exclude and which `recover_orphaned_work` already treats as push-done. **Do not seed a `process_file:<id>` ledger row for a K8s file** — there is no SAQ `process_file` job, and a seeded row would make `recover_orphaned_work` wrongly re-enqueue `process_file` onto an agent queue when it finds no live SAQ job. The K8s re-drive owner is `reconcile_k8s_jobs`, keyed on FileRecord state. `put_analysis`'s existing `clear_ledger_entry("process_file:<id>")` is then a harmless no-op for K8s files (DELETE matches nothing) — **`put_analysis` needs no change.**
+- **Ledger DOES cover the upload leg.** `upload_file_s3` is an agent task, so add it to `AGENT_TASKS`; its `before_enqueue` hook seeds `upload_file_s3:<id>` (parallel to `push_file:<id>`), and its `uploaded` callback clears it — giving the upload step the same recover-only semantics rsync push has today.
 
-**Key decision: Tag writing does NOT change FileRecord.state.** It is an enrichment action on already-executed files, not a pipeline stage. The FileState machine represents the core pipeline (DISCOVERED through EXECUTED). Tag writing can happen multiple times on the same file. Track it via TagWriteLog instead.
+> Net: only previously-scheduled long files reach K8s, because the only path in is `AWAITING_CLOUD → stage_cloud_window`, which is fed only by the duration router + the ledger-scoped backfill — both untouched.
 
-**Key decision: NEVER modify original files.** Tag writing operates ONLY on destination copies (files at `current_path` after EXECUTED state). This preserves the copy-verify-delete safety model. If tag writing corrupts a file, the original at `original_path` is still intact.
+---
 
-**Key decision: Write-ahead audit logging.** Follow the existing ExecutionLog pattern from `services/execution.py`: log the operation with `tags_before` snapshot BEFORE executing the write, then update status after. This enables rollback if needed.
+## Q2 — Slotting the active-target selector into the routing seam
 
-### 3. CUE Sheet Generation Flow
+### One new setting, consulted at exactly one place
 
-```
-Tracklist (file_id linked, status=approved)
-  with TracklistVersion -> TracklistTracks (with timestamps)
-        |
-        v
-User clicks "Generate CUE" on tracklist detail page
-        |
-        v
-CueGeneratorService.generate(tracklist_id)
-  1. Load latest TracklistVersion with tracks
-  2. Resolve timestamps:
-     Priority: fingerprint tracklist timestamps (TracklistTrack.confidence > 0)
-       -> fall back to 1001tracklists timestamps (TracklistTrack.timestamp field)
-       -> fall back to position-based even spacing
-  3. Look up FileRecord.current_path for the linked file
-  4. Format CUE sheet:
-     - PERFORMER from Tracklist.artist
-     - TITLE from Tracklist event + date
-     - FILE from destination filename
-     - TRACK entries with INDEX 01 timestamps (MM:SS:FF format)
-  5. Write .cue file adjacent to destination file (same base name)
-  6. Return path for UI confirmation
-```
-
-**Key decision: CUE files placed next to destination files.** For `Artist - Live @ Event 2024.01.01.mp3`, the CUE is `Artist - Live @ Event 2024.01.01.cue`. This follows standard CUE sheet conventions and media player expectations.
-
-**Key decision: Timestamp resolution priority.** Fingerprint-sourced timestamps are more accurate than 1001tracklists timestamps (which are often approximate). If a file has both a fingerprint-sourced tracklist and a 1001tracklists tracklist, prefer the fingerprint one's timestamps.
-
-**Key decision: CUE generation is non-destructive.** It only creates new files, never modifies existing ones. No audit log needed (unlike tag writing). If the .cue already exists, prompt the user before overwriting.
-
-### 4. Search Flow
-
-```
-User navigates to /search page
-        |
-        v
-HTMX form with filter fields:
-  artist, title, event, date_from, date_to, bpm_min, bpm_max,
-  genre, file_type, state, has_tracklist, has_discogs_link
-        |
-        v
-HTMX POST /search -> SearchService.search(filters)
-  - Dynamic SQLAlchemy query:
-    SELECT files.* FROM files
-    JOIN metadata ON metadata.file_id = files.id
-    LEFT JOIN analysis ON analysis.file_id = files.id
-    LEFT JOIN tracklists ON tracklists.file_id = files.id
-    LEFT JOIN discogs_links ON discogs_links.file_metadata_id = metadata.id
-    WHERE [dynamic filter clauses]
-    ORDER BY [sortable columns]
-    LIMIT page_size OFFSET offset
-  - Returns paginated SearchResult objects
-        |
-        v
-HTMX partial renders result cards with file info, metadata, analysis data
-```
-
-**Key decision: PostgreSQL only, no search engine.** At 200K records with proper indexes, PostgreSQL handles ILIKE and filtered queries in milliseconds. Adding Elasticsearch or Meilisearch would mean another Docker container, index synchronization, and consistency concerns for zero benefit at this scale. If text search becomes slow later, add `pg_trgm` extension with GIN indexes.
-
-**Key decision: Search is read-only.** No mutations. The SearchService is a pure query layer. This means it can use the API session directly (no task queue needed).
-
-## New Models
-
-### DiscogsLink
+Add `cloud_target` to `ControlSettings`. The cleanest model keeps the existing master toggle as-is and adds a target enum consulted only when bursting:
 
 ```python
-class DiscogsLink(TimestampMixin, Base):
-    """Links a tracklist track or file to a Discogs release."""
-
-    __tablename__ = "discogs_links"
-
-    id: Mapped[uuid.UUID]             # PK
-    track_id: Mapped[uuid.UUID | None]       # FK -> tracklist_tracks.id
-    file_metadata_id: Mapped[uuid.UUID | None]  # FK -> metadata.id (for standalone file matches)
-    discogs_release_id: Mapped[int]   # Discogs release ID (integer from their API)
-    discogs_master_id: Mapped[int | None]  # Discogs master release ID
-    artist: Mapped[str]               # Matched artist name (from Discogs)
-    title: Mapped[str]                # Matched track title (from Discogs)
-    label: Mapped[str | None]         # Record label from Discogs
-    year: Mapped[int | None]          # Release year from Discogs
-    genre: Mapped[str | None]         # Genre from Discogs
-    match_confidence: Mapped[float]   # Fuzzy match score (0-100)
-    match_method: Mapped[str]         # "fuzzy", "exact", "manual"
+# ControlSettings (config.py) — NEW
+cloud_target: Literal["a1", "k8s"] = Field(default="a1",
+    validation_alias=AliasChoices("PHAZE_CLOUD_TARGET", "cloud_target"),
+    description="Active cloud burst target when cloud_burst_enabled. 'a1' = v5.0 rsync→compute agent; 'k8s' = Kueue Job. 'local' of the three-way == cloud_burst_enabled=False.")
 ```
 
-Indexes: `(track_id, discogs_release_id)` unique composite for dedup, `discogs_release_id` for reverse lookups ("find all tracks from this release"), `file_metadata_id` for standalone file lookups.
+The milestone's "local / A1 / K8s" three-way maps to: `cloud_burst_enabled=False` ⇒ local (no bursting, the existing dormant path); `cloud_burst_enabled=True` + `cloud_target` ⇒ A1 or K8s. (A redundant `cloud_target="local"` member is avoidable; if the roadmap prefers a literal three-way enum, make it `Literal["local","a1","k8s"]` and treat `local` identically to the toggle being off.)
 
-### TagWriteLog
+**The selector is read in ONE branch — inside `stage_cloud_window`** — choosing which staging task to enqueue (`push_file` vs `upload_file_s3 → submit_k8s_job`). The duration router (`_route_discovered_by_duration`), the AWAITING_CLOUD hold, the window count, and the backfill are **all untouched**. This is what "doesn't re-architect v5.0's routing seam" means concretely: the seam splits one level *below* where the long/short decision is made.
 
-```python
-class TagWriteLog(TimestampMixin, Base):
-    """Append-only audit log for tag write operations."""
+### FileRecord states: REUSE `PUSHING`/`PUSHED`, do not add `SUBMITTED_K8S`
 
-    __tablename__ = "tag_write_log"
+Reuse the existing pair as **generic "staged-or-in-flight" window states**, reinterpreted per target:
 
-    id: Mapped[uuid.UUID]             # PK
-    file_id: Mapped[uuid.UUID]        # FK -> files.id
-    tags_before: Mapped[dict]         # JSONB snapshot before write
-    tags_after: Mapped[dict]          # JSONB snapshot after write
-    status: Mapped[str]               # "completed", "failed"
-    error_message: Mapped[str | None]
-    file_path: Mapped[str]            # Path where tags were written (audit)
-```
+| State | A1 meaning (v5.0) | K8s meaning (v6.0) |
+|-------|-------------------|--------------------|
+| `AWAITING_CLOUD` | held, awaiting a slot | held, awaiting a slot (identical) |
+| `PUSHING` | rsync in progress to compute scratch | uploading bytes to S3 **and** submitting the Job |
+| `PUSHED` | landed on compute scratch, within analysis | Job submitted (queued/admitted/running) — within analysis |
+| `ANALYZED` | result POSTed | result POSTed (identical) |
 
-Follows the ExecutionLog pattern -- append-only, write-ahead, enables tag restoration from `tags_before` snapshot.
+Why reuse rather than add `SUBMITTED_K8S`:
 
-## Patterns to Follow
+- `get_cloud_window_count` = `COUNT(PUSHING+PUSHED)`, `cloud_max_in_flight`, the staging candidate query, the D-09 dashboard cards, and `recover_orphaned_work`'s push-done set **all key on this exact pair**. Reuse means every one of those keeps working with zero edits. A new state would require touching all of them.
+- The state column is `String(30)`, so adding a state is "code-only, no migration" — but the *cost* is the downstream fan-out, not the migration. Reuse avoids the fan-out.
 
-### Pattern 1: Protocol-Based External Service Adapter
+**Kueue admission phase (Pending-behind-quota vs Admitted vs Running) is observability, not a core state.** Surface it as a nullable `cloud_phase` string the reconcile cron writes from the Workload `status.conditions` (`QuotaReserved`/`Admitted`/`Finished`), feeding the P2 dashboard cards. It rides alongside `PUSHED`; it does not fork the state machine. This keeps the MVP state-machine delta at **zero new states** while still letting the UI say "5 long files queued behind cluster quota."
 
-Follow the existing `FingerprintEngine` Protocol pattern for the Discogs HTTP client.
+### Schema delta
 
-```python
-@runtime_checkable
-class DiscogsSearchProvider(Protocol):
-    async def search_release(self, artist: str, title: str) -> list[DiscogsSearchResult]: ...
-    async def get_release(self, release_id: int) -> DiscogsRelease | None: ...
-    async def health(self) -> bool: ...
+One Alembic migration adding K8s bookkeeping. Two viable shapes:
 
-class DiscogsographyAdapter:
-    """HTTP client adapter for the discogsography service."""
+- **Columns on `files`** (simplest): `cloud_job_name`, `cloud_job_uid`, `cloud_object_key`, `cloud_phase`, `cloud_submitted_at`. Nullable; only K8s-in-flight rows populate them.
+- **Sidecar `cloud_job` table** (cleaner separation, FK to `files.id`): preferable if you want the `files` table to stay lean and to keep a per-attempt history. Given ~200K files and only `≤cloud_max_in_flight` ever in flight, either is cheap; **recommend the sidecar** to avoid widening the hot `files` row and to mirror the existing audit/sidecar style (TagWriteLog, ExecutionLog).
 
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+---
 
-    async def search_release(self, artist: str, title: str) -> list[DiscogsSearchResult]:
-        resp = await self._client.get("/api/search", params={"artist": artist, "title": title})
-        ...
-```
+## Q3 — Object-storage staging flow
 
-Testable via Protocol mock, consistent with existing adapter pattern, swappable if discogsography API changes.
+### CRITICAL integration constraint: the control plane cannot read media bytes (DIST-01)
 
-### Pattern 2: Write-Ahead Audit Logging for Destructive Operations
+`docker-compose.yml` mounts no media on the application server — "the app-server has no way to read or write music/video file content (DIST-01)," CI-enforced. **Therefore the control plane physically cannot upload the file bytes to S3.** STACK.md's "aioboto3 on the control plane" is correct *for the S3 client/credentials/presigning/delete*, but the **byte transfer must originate on the file-server agent**, exactly as the v5.0 rsync push did. Resolve the apparent conflict this way (and lock it as a decision):
 
-Tag writing modifies file contents. Follow the `execution.py` pattern exactly:
+| Actor | Holds S3 creds? | Touches bytes? | Mechanism |
+|-------|-----------------|----------------|-----------|
+| **Control plane** | YES (aioboto3, `_FILE` secrets) | NO | `generate_presigned_url("put_object")`, `("get_object")`, `delete_object` |
+| **File-server agent** | NO | YES (owns media mount) | `httpx` **PUT** bytes to the presigned PUT URL — credential-free, mirrors `push_file` |
+| **Job pod** | NO | YES (downloads) | `httpx` **GET** bytes from the presigned GET URL — credential-free (STACK.md) |
 
-```python
-# 1. Log BEFORE executing
-log_entry = TagWriteLog(file_id=file_id, tags_before=current_tags, status="in_progress")
-session.add(log_entry)
-await session.commit()
+This extends STACK.md's "no S3 SDK in the pod" to "no S3 SDK on the agent either" — both move bytes with the `httpx` they already have, against short-lived presigned URLs. aioboto3 lives **only** on the control plane. DIST-01 is preserved (only the agent and the ephemeral pod ever see media bytes; the control plane only ever sees presigned URLs).
 
-# 2. Execute the write
-write_tags_to_file(file_path, new_tags)
+### Who uploads, and when
 
-# 3. Update log entry
-log_entry.tags_after = read_tags_from_file(file_path)
-log_entry.status = "completed"
-await session.commit()
-```
-
-### Pattern 3: SAQ Task for Batch External Calls
-
-Discogs linking for a tracklist (10-30 HTTP calls) must not block the request path. Follow the scan_live_set pattern:
-
-```python
-# Router: enqueue task, return progress partial
-job = await queue.enqueue("link_discogs_batch", tracklist_id=str(tracklist_id))
-return TemplateResponse("discogs/partials/link_progress.html", ...)
-
-# Task: iterate tracks, call service
-async def link_discogs_batch(ctx, tracklist_id: str):
-    discogs_service = ctx["discogs_service"]
-    session_factory = ctx["async_session"]
-    async with session_factory() as session:
-        tracks = await get_tracks_for_tracklist(session, tracklist_id)
-        for track in tracks:
-            result = await discogs_service.search_release(track.artist, track.title)
-            # store DiscogsLink...
-```
-
-### Pattern 4: HTMX Partial Responses
-
-Check `HX-Request` header, return full page or partial. Every existing router does this.
-
-```python
-if request.headers.get("HX-Request") == "true":
-    return templates.TemplateResponse(request=request, name="search/partials/results.html", context=ctx)
-return templates.TemplateResponse(request=request, name="search/page.html", context=ctx)
-```
-
-### Pattern 5: Service Layer Session Injection
-
-Services receive AsyncSession, perform queries, return domain objects. Routers handle HTTP/HTMX concerns. No ORM model leaks into templates -- convert to dicts or Pydantic schemas.
-
-## Anti-Patterns to Avoid
-
-### Anti-Pattern 1: Modifying Original Files
-
-**What:** Writing tags to files at `original_path` before or instead of destination copies.
-**Why bad:** Violates copy-verify-delete safety model. Original files are the source of truth for the irreplaceable collection.
-**Instead:** Only write tags to files at `current_path` after FileRecord reaches EXECUTED state. Guard with state check.
-
-### Anti-Pattern 2: Adding FileState for Non-Pipeline Actions
-
-**What:** Adding TAG_WRITTEN, CUE_GENERATED, or DISCOGS_LINKED to the FileState enum.
-**Why bad:** The FileState machine represents the linear pipeline (DISCOVERED through EXECUTED). Tag writing, CUE generation, and Discogs linking are enrichment actions that can happen multiple times, in any order, after execution. Adding states would break the pipeline dashboard stage counts, the state transition guards, and the processing progression logic.
-**Instead:** Track via separate audit/log tables (TagWriteLog, DiscogsLink). Use computed properties or boolean flags if the UI needs status indicators.
-
-### Anti-Pattern 3: Calling Discogsography Synchronously in Request Path
-
-**What:** Making HTTP calls to discogsography in the API router while the user waits.
-**Why bad:** Linking an entire tracklist (10-30 tracks) means 10-30 sequential HTTP calls. Network failures would cause 500 errors. User sees a spinner for 30+ seconds.
-**Instead:** Enqueue batch linking as SAQ task. Show progress via HTMX polling (same pattern as fingerprint scan progress in `routers/tracklists.py`).
-
-### Anti-Pattern 4: Deploying a Search Engine for 200K Records
-
-**What:** Adding Elasticsearch, Meilisearch, or Typesense to the Docker Compose stack.
-**Why bad:** PostgreSQL handles 200K records with indexed queries trivially (sub-millisecond for B-tree, low milliseconds for ILIKE with pg_trgm). A search engine adds container overhead, index sync complexity, and consistency concerns for zero benefit.
-**Instead:** PostgreSQL with proper indexes. Add `pg_trgm` GIN indexes later if ILIKE performance degrades.
-
-### Anti-Pattern 5: Shared Mutable State Between Tag Writer and Execution Service
-
-**What:** Tag writer reading `original_path` to determine what tags to write, or modifying FileRecord.state.
-**Why bad:** Creates coupling between the execution pipeline and the enrichment layer. Race conditions if a file is being re-executed while tags are being written.
-**Instead:** Tag writer reads `current_path` (post-execution destination), never touches FileRecord.state. Completely decoupled from pipeline progression.
-
-## Integration Points: New vs Modified Files
-
-### New Files (~1,100 lines estimated)
-
-| File | Est. Lines | Depends On |
-|------|-----------|------------|
-| `models/discogs_link.py` | ~40 | Base, TimestampMixin |
-| `models/tag_write_log.py` | ~30 | Base, TimestampMixin |
-| `services/discogs.py` | ~150 | httpx, DiscogsLink model, rapidfuzz |
-| `services/tag_writer.py` | ~130 | mutagen, FileRecord, FileMetadata, TagWriteLog, DiscogsLink |
-| `services/cue_generator.py` | ~100 | Tracklist, TracklistTrack, FileRecord |
-| `services/search.py` | ~120 | FileRecord, FileMetadata, AnalysisResult, Tracklist, DiscogsLink |
-| `routers/search.py` | ~90 | SearchService, Jinja2Templates |
-| `routers/discogs.py` | ~130 | DiscogsService, TagWriterService, Jinja2Templates |
-| `tasks/discogs.py` | ~50 | DiscogsService, async_session |
-| `tasks/tag_write.py` | ~50 | TagWriterService, async_session |
-| `tasks/cue.py` | ~40 | CueGeneratorService, async_session |
-| `templates/search/` | ~150 | HTMX partials (page, results, filters) |
-| `templates/discogs/` | ~120 | HTMX partials (link progress, release card, tag preview) |
-| Alembic migration (discogs_links) | ~40 | DiscogsLink model |
-| Alembic migration (tag_write_log) | ~30 | TagWriteLog model |
-
-### Modified Files (low risk, additive changes)
-
-| File | Change | Risk |
-|------|--------|------|
-| `config.py` | Add `discogsography_url: str`, `tag_write_enabled: bool` | Low |
-| `main.py` | Register search + discogs routers (2 lines) | Low |
-| `tasks/worker.py` | Add discogs adapter to startup, register 3 new task functions | Low |
-| `models/__init__.py` | Export DiscogsLink, TagWriteLog (2 imports + 2 __all__ entries) | Low |
-| `templates/base.html` | Add "Search" nav tab + "Discogs" nav tab | Low |
-| `routers/tracklists.py` | Add "Generate CUE" and "Link to Discogs" action buttons on tracklist detail | Medium |
-| `templates/tracklists/` | Add CUE/Discogs buttons to existing tracklist card partials | Medium |
-
-## Suggested Build Order
-
-Order based on dependency analysis, risk assessment, and value delivery:
-
-### Phase 18: Search
-
-**Why first:** Zero new models, zero new infrastructure, zero external dependencies. Queries existing tables only. Provides immediate value by making the 200K-file dataset queryable. Establishes the search router + service pattern. The search page is the foundation for "find all sets containing track X" which later uses DiscogsLink data.
-
-**Scope:** New router, service, templates. One Alembic migration for any new indexes (pg_trgm if needed). No model changes.
-
-**Risk:** Low. Read-only queries over existing data.
-
-### Phase 19: Discogs Linking
-
-**Why second:** Requires DiscogsLink model + Alembic migration + external HTTP dependency (discogsography). Should be built after search because "find all sets containing track X" is a search feature enriched by DiscogsLink data. Discogs data also enriches tag writing (genre, label, year from Discogs releases).
-
-**Scope:** New model, service, router, tasks, templates. Alembic migration. DiscogsographyAdapter following Protocol pattern. Batch linking via SAQ.
-
-**Risk:** Medium. External HTTP dependency on discogsography. Needs discogsography API contract to be stable. Fuzzy matching confidence thresholds need tuning.
-
-### Phase 20: Tag Writing
-
-**Why third:** Highest-risk feature (modifies file contents). Benefits from Discogs data being available (enriched tags with label, genre, year from DiscogsLink). Requires TagWriteLog model for audit trail.
-
-**Scope:** New model, service, tasks, templates added to discogs router. Alembic migration. mutagen write operations (library already imported for read). Write-ahead audit logging.
-
-**Risk:** High. File content mutation. Requires thorough testing with all tag formats (ID3, Vorbis, MP4, FLAC, OPUS). Must verify tag writes do not corrupt files.
-
-### Phase 21: CUE Sheet Generation
-
-**Why last:** Simplest feature in isolation. Only creates new files, never modifies existing ones. Depends on approved tracklists with timestamps (already exist). Building last means Discogs-enriched track metadata (from Phase 19) can be included in CUE sheet comments (PERFORMER, SONGWRITER fields).
-
-**Scope:** New service, task, templates added to tracklists router. CUE format string generation + file write. No model changes needed.
-
-**Risk:** Low. Non-destructive (creates files, never modifies). CUE format is a simple text standard.
-
-### Phase Ordering Rationale
+**The file-server agent uploads, at staging time** (when `stage_cloud_window` allocates a slot — "stay one ahead"), **not at route time.** Route time only sets `AWAITING_CLOUD`. This is byte-for-byte the v5.0 timing, with `upload_file_s3` substituted for `push_file`:
 
 ```
-Phase 18 (Search)    -- no dependencies, immediate value, establishes patterns
-    |
-Phase 19 (Discogs)   -- new model, enriches search + tag writing
-    |
-Phase 20 (Tag Write) -- benefits from Discogs data, highest risk = needs most context
-    |
-Phase 21 (CUE)       -- simplest, benefits from all prior enrichments
+stage_cloud_window (k8s target)
+  → AWAITING_CLOUD → PUSHING ; enqueue upload_file_s3 on fileserver queue
+upload_file_s3 (agent)
+  → control issues a presigned PUT URL (new internal endpoint, or carried in the task payload)
+  → httpx PUT bytes ; (optional) re-read + report sha256
+  → POST .../s3/{file_id}/uploaded
+report_s3_uploaded (control callback — the report_pushed analogue)
+  → presign GET ; enqueue submit_k8s_job on the controller queue   (PUSHING stays; flip to PUSHED at submit)
+submit_k8s_job (controller)
+  → submit suspended labeled Job referencing the presigned GET + callback secret ; PUSHING → PUSHED
 ```
 
-Dependencies:
-- Search has no data dependencies on other v3.0 features
-- Discogs linking enriches search results (show Discogs info on search cards)
-- Tag writing aggregates data from FileMetadata + RenameProposal + DiscogsLink
-- CUE generation benefits from Discogs-enriched track metadata
+(If you prefer fewer hops, `upload_file_s3`'s callback can hand straight to submit; keeping a distinct `report_s3_uploaded` callback maximises symmetry with `report_pushed` and keeps presign-GET on the control side where the creds live.)
 
-## Scalability Considerations
+### How the presigned URL + callback token reach the pod
 
-| Concern | At 200K files | At 500K files | Notes |
-|---------|---------------|---------------|-------|
-| Search query speed | Milliseconds with B-tree indexes | Add pg_trgm GIN index if ILIKE slows | Monitor EXPLAIN ANALYZE |
-| Discogs API rate | ~30 tracks/tracklist, rate limited by discogsography | Same | Phaze does not call Discogs directly |
-| Tag write throughput | Sequential per-file, I/O bound | Batch with SAQ concurrency (worker_max_jobs=8) | Already parallelized via task queue |
-| CUE generation | Instant (string formatting + file write) | Same | Zero scaling concerns |
-| DiscogsLink table size | ~50K rows (5K tracklists x 10 tracks avg) | ~125K rows | Standard B-tree indexes sufficient |
+Via the Job's pod spec, with a deliberate split by secret lifetime:
 
-## Configuration Additions
+| Item | Lifetime | Delivery | Why |
+|------|----------|----------|-----|
+| Presigned GET URL | short (minutes–hours) | **Job pod `env`** (or a per-Job Secret) | ephemeral; not a durable secret; fine as env |
+| `file_id`, callback base URL, queue/Workload names | non-secret | Job pod `env`/`args` | plain config |
+| **Compute-agent bearer token** | long-lived | **cluster `Secret` via `secretKeyRef`** (operator pre-creates) | a durable credential — never inline in Job env; reused by every Job |
 
-```python
-class Settings(BaseSettings):
-    # ... existing settings ...
+So `submit_k8s_job` templates a Job whose container env has the presigned GET URL + file_id + callback URL inline, and a `secretKeyRef` to the operator-provisioned compute-agent-token Secret. The pod: `httpx GET` → analyze (existing x86 essentia one-shot) → `httpx PUT /api/internal/agent/analysis/{file_id}` with the bearer token → exit.
 
-    # Discogsography service
-    discogsography_url: str = "http://discogsography:8000"
-    discogsography_timeout: float = 30.0
+### How/when the object is deleted
 
-    # Tag writing
-    tag_write_enabled: bool = True  # Safety toggle
+**After reconcile, by the control plane, belt-and-suspenders with a bucket TTL:**
+
+1. Primary: `reconcile_k8s_jobs`, on seeing the file is `ANALYZED` (result landed) and the Job is `Finished`, calls `delete_object(cloud_object_key)` then deletes the Job. The pod never deletes (it is credential-free and may die).
+2. Backstop: a **bucket lifecycle TTL** (operator-configured, e.g. 24h) expires any object the reconcile loop missed (controller down through the whole window). Documented in the runbook; "ephemeral staging only, never a data home" (PROJECT Out-of-Scope).
+
+**The TTL-vs-read race FEATURES.md flags is benign in phaze's design**, because the *result* never comes from the object or the Job — it comes from `put_analysis`. If the Job (and via `ttlSecondsAfterFinished`, its Workload) is GC'd before the reconcile cron reads it, the cron simply finds `PUSHED + ANALYZED + no Job` and treats that as "done — delete the S3 object, clear the job ref." Correctness is decoupled from GC timing. Set a generous `ttlSecondsAfterFinished` as courtesy, but do not depend on it for the read.
+
+---
+
+## Q4 — Job-pod identity, idempotency, orphans, races
+
+### One shared cluster compute-agent identity — NOT per-job tokens
+
+Register **a single `Agent` of `kind="compute"`** representing the whole cluster (mirrors v5.0, where the A1 host is one registered compute agent). Every Job references the same bearer token via the cluster `Secret`. Rationale:
+
+- Per-job tokens would mint + insert + later revoke an `Agent` row (and churn the `ix_agents_token_hash_active` partial index) **per file** — heavy and pointless for a single-user tool.
+- Identity is already token-derived on the control side (AUTH-01: `agent_id` from the token hash, never from the body), and the result is reconciled by `file_id`, so a shared identity loses nothing — the Job carries `file_id` in its env/callback path.
+- Revocation stays instant and cluster-wide (revoke the one agent → every in-flight Job's callback 403s).
+
+GATE 1 in `stage_cloud_window` for K8s should therefore check "K8s target configured" rather than "a compute agent has heartbeated recently" — the cluster compute agent never heartbeats (it has no long-running worker; the Jobs are ephemeral). The compute `Agent` row exists purely to anchor the token; its liveness columns are not meaningful for K8s. (Worth an explicit note so the v4.0 heartbeat/liveness UI doesn't show the cluster agent as perpetually DEAD — either suppress liveness for a `kind="compute"` cluster identity or document it.)
+
+### Idempotency
+
+| Vector | Guard (mostly already present) |
+|--------|-------------------------------|
+| Duplicate **result POST** (Job backoff retry, or reconcile races a late pod) | `put_analysis` is `ON CONFLICT(file_id)` idempotent — verified. Second POST is a harmless upsert; the WR-02-style guard advances state only from the expected predecessor. |
+| Duplicate **submission** (controller restart mid-stage) | Derive the Job name deterministically from `file_id` (e.g. `phaze-analyze-<short-uuid>`), mirroring the `process_file:<id>` / `push_file:<id>` key pattern. A re-submit hits kube `AlreadyExists` → tolerate as success (don't double-create). |
+| Duplicate **upload** | `upload_file_s3` PUT to the deterministic object key `cloud_object_key=<file_id>.<ext>` is idempotent (overwrite); the `upload_file_s3:<id>` SAQ key dedups the enqueue. |
+| Double **staging tick** | Existing advisory `pg_advisory_xact_lock` + `PUSHING` flip + deterministic SAQ key — reused unchanged. |
+
+### Orphans, timeouts, evictions
+
+The reconcile cron is the safety net; every branch is keyed on durable FileRecord state, never on a live watch:
+
+| Situation | Detection (reconcile cron) | Action |
+|-----------|----------------------------|--------|
+| Job **succeeded**, result landed | `PUSHED` + `ANALYZED` (or Job `Complete`) | delete Job + S3 object; clear job ref (state already ANALYZED) |
+| Job **succeeded** but result POST lost | Job `Complete`/Workload `Finished` but file still `PUSHED` | re-route for another attempt (back to `AWAITING_CLOUD`) or mark `ANALYSIS_FAILED` for ledger-scoped backfill; clean up S3/Job |
+| Job **failed** (`status.failed` past `backoffLimit`) | Job `Failed` / Workload `Finished` non-success | `ANALYSIS_FAILED` (feeds existing backfill) **or** re-route to A1/local per policy; clean up |
+| **Evicted/Deactivated** (preemption, `maximumExecutionTimeSeconds`, PodsReady backoff) | Workload `Evicted`, reason `WorkloadInactive` | back to `AWAITING_CLOUD` (re-stage on a later slot) or fall back — reuses the v5.0 routing seam |
+| **Queued behind quota** (normal) | Workload `QuotaReserved=False, reason=Pending` | **leave** — not a failure; FEATURES.md P1. Only a long staleness ceiling (a control-side `k8s_inflight_timeout_sec`) converts a truly-stuck submission to a re-route |
+| **Stuck `PUSHING`** (controller died mid-submit, no job ref) | `PUSHING` + no `cloud_job_uid` past a short grace | revert to `AWAITING_CLOUD` (frees the slot). `recover_orphaned_work` won't touch it — there is no `push_file` ledger row for K8s — so the cron must own this. |
+| **TTL GC'd the Job before read** | `PUSHED` + `ANALYZED` + Job not found | benign — treat as done, delete S3 object, clear ref (see Q3) |
+
+Misconfiguration surfacing (FEATURES.md): a Job whose `queue-name` points at a missing LocalQueue yields `QuotaReserved=False, reason=Inadmissible`. The reconcile cron should distinguish `Inadmissible` (operator error → surface loudly, do not silently retry forever) from `Pending` (normal quota wait).
+
+---
+
+## Q5 — New vs modified components + build order
+
+### NEW components
+
+| Component | Kind | Responsibility |
+|-----------|------|----------------|
+| `services/object_staging.py` | control service | aioboto3 wrapper: presign PUT, presign GET, `delete_object`; reads S3 creds/endpoint/bucket from `_FILE` settings. Mockable via `moto`/botocore stubber. |
+| `services/k8s_client.py` | control service | kr8s wrapper: build the suspended labeled Job manifest, `create()`, find Workload by `kueue.x-k8s.io/job-uid`, read Job+Workload status, delete Job. Workload apiVersion as a config constant (`v1beta2`, fallback `v1beta1`). |
+| `tasks/submit_k8s_job.py` | controller task | presign GET → submit Job → record job ref + object key → `PUSHING → PUSHED`. Fast, never waits. |
+| `tasks/reconcile_k8s_jobs.py` | controller cron (`*/2`) | poll K8s-in-flight files; cleanup, re-route, evict/stuck handling, `cloud_phase` updates (Q4 table). |
+| `tasks/upload_file_s3.py` | **agent** task | `httpx` PUT media bytes to presigned PUT URL (the `push_file` analogue); POST `uploaded` callback. Stays Postgres-free (import-boundary test). |
+| `routers/agent_s3.py` | control callback router | `report_s3_uploaded` / `report_s3_mismatch` (the `agent_push.py` analogue) → presign GET → enqueue `submit_k8s_job`. Plus, if presign-on-demand, a small endpoint to mint the PUT URL for the agent task. |
+| Job-runner image | Docker/CI | `Dockerfile.k8sjob` `FROM` the published x86 essentia agent base; entrypoint `phaze/cli/k8s_runner.py` (httpx GET → essentia one-shot → httpx PUT `/analysis/{file_id}` → exit). Zero new pip deps (STACK.md). |
+| Alembic migration | schema | sidecar `cloud_job` table (or nullable `files` columns): `cloud_job_name/uid`, `cloud_object_key`, `cloud_phase`, `cloud_submitted_at`. No state-enum change (String(30)). |
+| Config additions | `config.py` | `cloud_target`; kube endpoint + kubeconfig/SA-token `_FILE`; LocalQueue name; Workload apiVersion; S3 endpoint/bucket/access-key/secret `_FILE`; `k8s_inflight_timeout_sec`. Extend `SECRET_FILE_FIELDS`. |
+
+### MODIFIED components
+
+| Component | Change | Risk |
+|-----------|--------|------|
+| `tasks/release_awaiting_cloud.py` (`stage_cloud_window`) | branch by `cloud_target`: A1 → `push_file` (today); K8s → `upload_file_s3`. GATE 1 becomes "target reachable" for K8s. Window math/lock/FIFO **unchanged**. | LOW — additive branch at the one seam |
+| `services/enqueue_router.py` | add `submit_k8s_job` to `CONTROLLER_TASKS`, `upload_file_s3` to `AGENT_TASKS` (keeps routing + ledger classifier in sync) | LOW — the frozensets are the designed extension point |
+| `tasks/controller.py` | register `submit_k8s_job` + `reconcile_k8s_jobs` in `functions`; add the reconcile `CronJob` | LOW |
+| `tasks/agent_worker.py` | register `upload_file_s3` | LOW |
+| `config.py` | new settings + `_FILE` fields + a "cloud_burst_enabled+k8s requires target config" model-validator (mirrors the existing `_enforce_compute_scratch_dir_when_cloud_enabled`) | LOW |
+| `routers/pipeline.py` + templates | P2: admission-state cards from `cloud_phase` | LOW (deferrable) |
+
+### UNCHANGED (deliberately — the proof the seam is right)
+
+- `routers/pipeline.py::_route_discovered_by_duration` — target-agnostic hold.
+- `routers/agent_analysis.py::put_analysis` — already idempotent; its `process_file:<id>` ledger-clear is a benign no-op for K8s files.
+- `scheduling_ledger.py`, the backfill, `recover_orphaned_work` — K8s integrates by FileRecord **state**, not a synthetic SAQ row (Q1).
+- `cloud_burst_enabled`, `cloud_max_in_flight`, `cloud_route_threshold_sec`, the window count, the advisory lock — all reused.
+
+### Build order (phases from 52, dependency-ordered)
+
+```
+52  Job-runner image + one-shot entrypoint
+      FROM x86 essentia base; httpx GET → analyze → httpx PUT /analysis/{id} → exit.
+      No cluster needed: test the analyze→POST loop against a respx mock.   (parallels Phase 47)
+        │
+53  Object-storage staging leg
+      services/object_staging.py (aioboto3 presign/delete) + agent upload_file_s3
+      + report_s3_uploaded callback + cloud_object_key.  Test with moto/stubber.
+      No cluster needed.                                                    (depends: nothing cluster-side)
+        │
+54  Kube submit/watch leg
+      services/k8s_client.py (kr8s) + submit_k8s_job + reconcile_k8s_jobs cron
+      + cloud_job sidecar migration + cloud_phase.  Test against a fake API / recorded responses.
+                                                                            (depends: 52 image to run, 53 presigned GET to embed)
+        │
+55  Routing integration (THE seam)
+      cloud_target selector; stage_cloud_window branch; enqueue_router additions;
+      controller/agent_worker registration; config + validators; GATE-1 semantics.
+                                                                            (depends: 53, 54)
+        │
+56  Deploy + runbook + docs (+ P2 dashboard cards)
+      Kueue admin objects (RF/CQ/LQ) as cluster-admin setup; cluster Secret for the
+      compute-agent token; bucket lifecycle TTL; _FILE wiring; master-toggle gating;
+      transport-agnostic endpoint config (Tailscale OR WireGuard).
+                                                                            (depends: all)
 ```
 
-No new Docker containers needed. Discogsography is already running as a separate service on the home network. Phaze just needs its URL configured.
+Rationale: 52–54 are each independently buildable and unit-testable **without a live cluster or bucket** (respx / moto / fake kube API), keeping the 85% coverage gate reachable. 55 is the only phase that edits the live v5.0 seam, and it does so additively after both legs exist. 56 is pure ops/docs. This mirrors v5.0's own ordering (image → agent → routing → pipeline → deploy: Phases 47–51).
+
+---
+
+## Anti-Patterns (phaze-specific, for v6.0)
+
+### Pinning a worker on `await job.wait()` for the analysis duration
+**Wrong:** one SAQ task submits then blocks hours on Job completion. **Why:** recreates the v4.0.10/Phase-43 worker-starvation class; needless since the result is out-of-band. **Instead:** fast `submit_k8s_job` + periodic `reconcile_k8s_jobs` cron.
+
+### Uploading media bytes from the control plane
+**Wrong:** `aioboto3.upload_file` on the app server. **Why:** the app server has no media mount (DIST-01, CI-enforced) — it physically can't. **Instead:** control plane presigns (aioboto3); the **file-server agent** PUTs bytes via httpx (credential-free), exactly as it rsync-pushed in v5.0.
+
+### Seeding a `process_file:<id>` ledger row for a K8s file
+**Wrong:** mint a ledger row so "recovery knows it's scheduled." **Why:** there is no live SAQ `process_file` job for a K8s file, so `recover_orphaned_work` would re-enqueue it onto an **agent** queue — analyzing a long file locally (the CLOUDROUTE-02 violation v5.0 fought). **Instead:** rely on FileRecord state (`PUSHED`) for recover-scoping; let `reconcile_k8s_jobs` own K8s re-drive.
+
+### Adding `SUBMITTED_K8S` as a core FileState
+**Wrong:** new state for "Job submitted." **Why:** forks the window count, dashboard cards, candidate query, and recover push-done set — every consumer of `PUSHING/PUSHED` needs an edit. **Instead:** reuse `PUSHING/PUSHED` as generic in-flight states; carry Kueue admission phase in a non-state `cloud_phase` field.
+
+### Treating the Kueue watch as the result channel
+**Wrong:** parse the result from Job logs / wait for `Finished` to read output. **Why:** Kueue carries no payload; watches drop; pod GC races the read. **Instead:** pod POSTs to `/api/internal/agent/analysis/{file_id}`; watch is lifecycle/cleanup only.
+
+### Per-job compute-agent tokens
+**Wrong:** mint+revoke an `Agent` row per file. **Why:** churns the agents table + token-hash index for a single-user tool; no security gain (identity is token-derived, result reconciled by file_id). **Instead:** one cluster-wide `kind="compute"` agent token in a k8s Secret.
+
+### phaze creating Kueue admin objects (RF/CQ/LQ)
+**Wrong:** manage ClusterQueue/ResourceFlavor from the app for a "self-contained deploy." **Why:** cluster-scoped, needs elevated RBAC, couples phaze to cluster policy (PROJECT scopes them as runbook setup; FEATURES anti-feature). **Instead:** reference a configured LocalQueue name; admin provisions RF/CQ/LQ.
+
+---
+
+## Integration Points
+
+### External services
+
+| Service | Integration pattern | Notes / gotchas |
+|---------|---------------------|-----------------|
+| Kube API (Kueue cluster) | kr8s (async, httpx) from control plane; kubeconfig/SA token via `_FILE` | submit suspended `batch/v1` Job + `queue-name` label; read Workload dynamically (no bindings). Pin apiVersion constant. Over the operator VPN — wrap in tenacity. |
+| S3-compatible bucket | aioboto3 on control (presign + delete only); httpx PUT/GET for bytes (agent + pod) | `endpoint_url=` for non-AWS. No S3 SDK on agent or pod. Bucket lifecycle TTL as cleanup backstop. |
+| Job pod → control | reuse `/api/internal/agent/analysis/{file_id}` (bearer token, AUTH-01, idempotent) | unchanged; the existing result channel. |
+| Transport (Tailscale/WireGuard) | none — operator-provided reachable endpoints only | no mesh-specific code; just URLs in pydantic-settings. |
+
+### Internal boundaries
+
+| Boundary | Communication | Notes |
+|----------|---------------|-------|
+| Duration router ↔ staging | FileState `AWAITING_CLOUD` (committed) | unchanged; target-agnostic |
+| `stage_cloud_window` ↔ agent | per-agent SAQ queue (`upload_file_s3`) | the one branched seam; window/lock/FIFO reused |
+| agent ↔ control | `/api/internal/agent/s3/*` callbacks | new, modeled on `agent_push.py` |
+| control ↔ cluster | kr8s submit + `reconcile_k8s_jobs` cron | new; lifecycle only |
+| pod ↔ control | `/api/internal/agent/analysis/*` | reused; the authoritative result |
 
 ## Sources
 
-- Existing codebase analysis: 11 models, 9 routers, 14+ service files, 8 task functions, 9 Alembic migrations
-- Established patterns: FingerprintEngine Protocol (services/fingerprint.py), write-ahead ExecutionLog (services/execution.py), HTMX partial rendering (routers/tracklists.py), SAQ task enqueue + poll (routers/tracklists.py scan endpoints)
-- mutagen tag writing: same library already used for read (services/metadata.py), write API is symmetric (mutagen.File.save())
-- CUE sheet format: standard text format (PERFORMER, TITLE, FILE, TRACK, INDEX directives), no external dependencies
-- PostgreSQL performance: well within single-node capacity for 200K-record indexed queries
-- rapidfuzz: already in use (services/tracklist_matcher.py) for fuzzy matching
+- phaze source (HIGH — read directly): `services/enqueue_router.py`, `services/scheduling_ledger.py`, `services/pipeline.py` (cloud helpers), `tasks/release_awaiting_cloud.py`, `tasks/push.py`, `tasks/reenqueue.py`, `tasks/controller.py`, `routers/pipeline.py` (`_route_discovered_by_duration`), `routers/agent_analysis.py`, `routers/agent_push.py`, `models/file.py` (FileState), `config.py` (ControlSettings/AgentSettings, `_FILE`)
+- `.planning/PROJECT.md` v6.0 milestone, DIST-01 boundary, CPU-only decision, Out-of-Scope reversals (HIGH)
+- `.planning/research/STACK.md` (kr8s/aioboto3/presigned-URL, credential-free pod) and `FEATURES.md` (Kueue Job→Workload lifecycle, admission/eviction signals, TTL-vs-read hazard) — sibling research, treated as settled inputs (HIGH)
 
 ---
-*Architecture patterns for: Phaze v3.0 -- Cross-Service Intelligence & File Enrichment*
-*Researched: 2026-04-02*
+*Architecture research for: v6.0 Kubernetes Burst Analysis — K8s offload integration with the existing control-plane spine*
+*Researched: 2026-06-26*

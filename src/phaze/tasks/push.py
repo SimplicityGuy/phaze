@@ -117,6 +117,23 @@ def _require_push_config(cfg: AgentSettings) -> None:
     if missing:
         msg = f"push_file missing required push config: {', '.join(missing)} (operator-provisioned in Phase 51)"
         raise RuntimeError(msg)
+    # WR-03: the timeout layering MUST stay inner(rsync) < outer(asyncio) < SAQ-net, otherwise a SAQ
+    # CancelledError reaps the rsync child before the asyncio guard's secret-shredding finally runs.
+    # PUSH_FILE_SAQ_TIMEOUT_SEC is a control-side module constant derived from the DEFAULT
+    # push_timeout_sec; the control plane cannot see this agent's AgentSettings.push_timeout_sec. So
+    # an operator who raises PHAZE_PUSH_TIMEOUT_SEC on the agent without bumping the control-side net
+    # would silently invert the layering (SAQ cancels healthy long transfers minutes early). Turn that
+    # silent footgun into a loud fail-fast at the agent's first push.
+    outer_guard = cfg.push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC
+    if outer_guard >= PUSH_FILE_SAQ_TIMEOUT_SEC:
+        msg = (
+            f"push_file timeout layering inverted: rsync+asyncio outer guard ({cfg.push_timeout_sec}+"
+            f"{_OUTER_TIMEOUT_BUFFER_SEC}={outer_guard}s) must be STRICTLY BELOW the control-side SAQ "
+            f"net timeout PUSH_FILE_SAQ_TIMEOUT_SEC ({PUSH_FILE_SAQ_TIMEOUT_SEC}s). You raised "
+            f"PHAZE_PUSH_TIMEOUT_SEC on the agent without raising the control-side margin — SAQ would "
+            f"cancel healthy long transfers before the rsync child is reaped (WR-03)."
+        )
+        raise RuntimeError(msg)
 
 
 async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:

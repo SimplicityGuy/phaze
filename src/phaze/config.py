@@ -429,6 +429,27 @@ class ControlSettings(BaseSettings):
         description="Control-side copy of the compute agent's scratch directory; used to build process_file scratch_path in the push callback (Phase 50, 50-05). MUST match the compute agent's cloud_scratch_dir.",
     )
 
+    @model_validator(mode="after")
+    def _enforce_compute_scratch_dir_when_cloud_enabled(self) -> "ControlSettings":
+        """Phase 51 audit follow-up: cloud burst ON requires a compute scratch dir.
+
+        The push-success callback (routers/agent_push.py) builds the process_file
+        ``scratch_path`` as ``<compute_scratch_dir>/<file_id>.<ext>``. If
+        ``cloud_burst_enabled`` is True but ``compute_scratch_dir`` is unset, that path
+        becomes the literal ``"None/<file_id>.<ext>"``: every pushed file fails to read,
+        routes to push-mismatch, and silently lands in ANALYSIS_FAILED after
+        ``push_max_attempts`` — with no startup signal. Fail fast instead, mirroring the
+        agent-side ``_require_push_config`` guard for ``cloud_scratch_dir`` (push.py). OFF
+        (the default) keeps ``compute_scratch_dir`` optional so all-local deploys need no
+        cloud config.
+        """
+        if self.cloud_burst_enabled and not self.compute_scratch_dir:
+            raise ValueError(
+                "PHAZE_COMPUTE_SCRATCH_DIR is required when PHAZE_CLOUD_BURST_ENABLED is true "
+                "(it builds the process_file scratch_path; must match the compute agent's PHAZE_CLOUD_SCRATCH_DIR)"
+            )
+        return self
+
 
 class AgentSettings(BaseSettings):
     """File-server role: HTTP client to the application server, file-bound SAQ tasks.

@@ -1,0 +1,40 @@
+# Phaze x86 Job-runner image (Phase 52 — KJOB-01, KJOB-05).
+#
+# x86-only. FROM the freshly-published api base image — it already carries
+# Python 3.14 + essentia + every native lib (libatomic1, ffmpeg, libsndfile1,
+# libchromaprint-tools, libpq5) + the `phaze` package + uv. This image adds
+# ZERO new pip dependencies (KJOB-01): the only additions are the baked internal
+# CA cert and the one-shot CMD. The internal CA is BAKED (COPY), not mounted, so
+# the pod trusts the control-plane HTTPS callback without a volume (KJOB-05).
+# Essentia ML weights are NOT baked here — they are provisioned externally at
+# runtime (Phase 54, D-05); this image never downloads them.
+#
+# Build ordering: BASE_IMAGE is the resolved freshly-pushed x86 api tag passed
+# by CI (the exact release tag, never a stale shared moving tag — Tampering
+# T-52-06). The build-job-runner workflow job is `needs: build-and-push`-gated
+# so the api tag exists before this FROM resolves.
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# The base image ends on USER phaze (uid/gid 1000). Switch to root only to bake
+# the operator-provided internal CA cert into a fixed path, then drop back to the
+# non-root user so the one-shot runs unprivileged (matching the api base).
+USER root
+
+# Bake the operator-distributed internal CA cert (supplied to the CI build
+# context). PHAZE_AGENT_CA_FILE points construct_agent_client at this baked path
+# so the callback client verifies the control-plane TLS endpoint (never
+# verify=False — KJOB-05). Baked, not mounted: the cloud-agent compose mounts
+# ${CA_PATH}:/certs:ro, but the Job pod has no such volume.
+RUN mkdir -p /etc/phaze
+COPY phaze-ca.crt /etc/phaze/phaze-ca.crt
+ENV PHAZE_AGENT_CA_FILE=/etc/phaze/phaze-ca.crt
+
+USER phaze
+
+# One-shot entrypoint. Use `uv run` (NOT a bare `python3 -m`) — the api base is a
+# uv-managed Python 3.14 venv (UV_NO_SYNC=1 prevents a runtime re-sync). `uv run`
+# propagates the child process exit code unchanged through the container boundary
+# so Kubernetes Job success/failure reflects the entrypoint's sys.exit code.
+CMD ["uv", "run", "python", "-m", "phaze.job_runner"]

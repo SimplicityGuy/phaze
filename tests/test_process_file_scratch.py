@@ -364,21 +364,25 @@ async def test_missing_scratch_at_sha_gate_routes_to_mismatch(
     mock_pool: AsyncMock,
     _mock_loader: MagicMock,
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """CR-01 defense: a missing scratch file at the sha256 gate reports a re-pushable mismatch.
 
     It must NEVER escape as an uncaught FileNotFoundError (which would strand the file in PUSHED
-    with no callback).
+    with no callback), and it emits a scratch-dir-skew diagnostic (T-50-scratch-skew) naming the
+    path so a persistent miss is diagnosable instead of an endless silent re-push.
     """
     missing = tmp_path / "never-written.mp3"
     file_id = uuid.uuid4()
     api = _api()
 
-    result = await process_file(_ctx(api), **_kwargs(file_id=file_id, scratch_path=str(missing), expected_sha256="a" * 64))
+    with caplog.at_level("WARNING"):
+        result = await process_file(_ctx(api), **_kwargs(file_id=file_id, scratch_path=str(missing), expected_sha256="a" * 64))
 
     assert result == {"file_id": str(file_id), "status": "push_mismatch"}
     api.report_push_mismatch.assert_awaited_once_with(file_id)
     mock_pool.assert_not_awaited()
+    assert "PHAZE_CLOUD_SCRATCH_DIR" in caplog.text and str(missing) in caplog.text
 
 
 # ---------------------------------------------------------------------------
