@@ -13,6 +13,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWindowPayload,
     AnalysisWritePayload,
     AnalysisWriteResponse,
+    PresignDownloadResponse,
 )
 
 
@@ -259,3 +260,28 @@ def test_analysis_failure_response_shape() -> None:
 
     assert resp.agent_id == "agent-a"
     assert resp.file_id == file_id
+
+
+def test_presign_download_response_accepts_valid_sha256() -> None:
+    """A 64-char lowercase-hex digest validates (IN-02)."""
+    resp = PresignDownloadResponse(download_url="https://s3.example/obj?sig=xyz", expected_sha256="a" * 64)
+
+    assert resp.download_url == "https://s3.example/obj?sig=xyz"
+    assert resp.expected_sha256 == "a" * 64
+
+
+@pytest.mark.parametrize(
+    "bad_sha",
+    [
+        "a" * 63,  # too short
+        "a" * 65,  # too long
+        "A" * 64,  # uppercase hex rejected (storage is lowercase)
+        "g" * 64,  # non-hex character
+        "",  # empty string no longer accepted
+        " " + "a" * 63,  # leading whitespace
+    ],
+)
+def test_presign_download_response_rejects_malformed_sha256(bad_sha: str) -> None:
+    """expected_sha256 is pinned to ^[0-9a-f]{64}$ so format skew fails fast (IN-02)."""
+    with pytest.raises(pydantic.ValidationError):
+        PresignDownloadResponse.model_validate({"download_url": "https://s3.example/obj", "expected_sha256": bad_sha})

@@ -100,3 +100,30 @@ class AnalysisFailureResponse(BaseModel):
 
     agent_id: str
     file_id: uuid.UUID
+
+
+class PresignDownloadResponse(BaseModel):
+    """Presign-download response consumed by the DB-less one-shot pod (Phase 52, KJOB-02).
+
+    The control plane mints a short-TTL presigned GET URL for a file's bytes and
+    returns it alongside ``expected_sha256`` -- the ONLY hash a Postgres-free pod
+    can integrity-verify the download against (Pitfall 3). ``expected_sha256`` is
+    sourced server-side from ``FileRecord.sha256_hash``, exactly as
+    ``ProcessFilePayload.expected_sha256`` is pinned in v5.0. The field is required
+    (``extra='forbid'``) so a response missing the integrity hash fails validation
+    rather than silently disabling the verify step.
+
+    NOTE: the SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)
+    ships in Phase 53 (KSTAGE-03). Phase 52 defines and unit-tests the CLIENT-consumed
+    shape only.
+    """
+
+    model_config = ConfigDict(extra="forbid")  # strict body parsing
+
+    download_url: str
+    # Constrain to a 64-char lowercase-hex sha256 digest. ``compute_sha256``
+    # returns lowercase hex and ``FileRecord.sha256_hash`` is stored lowercase,
+    # so a server-side format skew (uppercase/prefixed/short) fails validation
+    # at the wire boundary rather than silently tripping every download as an
+    # integrity mismatch (exit 11) with no diagnostic (IN-02).
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

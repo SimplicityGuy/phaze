@@ -8,19 +8,20 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
-## Current Milestone: v5.0 Cloud Burst Analysis
+## Current Milestone: v6.0 Kubernetes Burst Analysis
 
-**Goal:** Analyze long-duration audio (≥90 min) on a free OCI Ampere A1 (arm64) "compute agent" reached over Tailscale, instead of locally — clearing the long-set backlog that exceeds the local analysis timeout (cost scales with seek-depth/duration; the 144 `analysis_failed` long files are the backfill work-list).
+**Goal:** Offload long-duration audio analysis to a remote **x64 Kubernetes cluster running Kueue** as a third routing target alongside local and the v5.0 OCI A1 — following the v5.0 cloud-burst pattern (duration routing, compute-agent result callback, master toggle), but with the execution unit changed from "persistent host draining a SAQ queue" to "ephemeral, quota-scheduled Kueue batch Job submitted per file."
 
 **Target features:**
-- Official arm64 agent image (essentia built from source — the wheel is x86-only) published to GHCR via a native arm64 CI runner
-- A "compute agent" type: a registered Agent with no scan roots / no media, pure extra compute
-- Duration-based, capability-aware routing: <90 min → local agent; ≥90 min → cloud agent (else queued "awaiting cloud", never silently run locally and time out)
-- An rsync-over-Tailscale "stay one ahead" push pipeline orchestrated by the control plane (nox pushes a file to the A1 scratch dir; A1 analyzes from local disk and deletes after); no object storage
-- Cloud-agent deployment (compose + Tailscale) and an OCI A1 + Tailscale-ACL provisioning runbook
-- All parameters configurable (threshold, in-flight depth, concurrency, scratch dir, push target, enable toggle)
+- x86 Kueue Job-runner image published to GHCR — reuses the existing x86 essentia stack (the cluster is x64, so no arm64 source build); a one-shot entrypoint: pull file from object storage → analyze → POST result → exit
+- Kube-API submission seam: the control plane submits a *suspended* batch `Job` labeled `kueue.x-k8s.io/queue-name`, then watches the `Workload` for admission→completion and reconciles results by `file_id`; Kueue owns quota/admission
+- Object-storage staging: the long file is uploaded to an **operator-provided S3-compatible bucket** (reuse existing), the Job downloads it, and the object is cleaned up after analysis (ephemeral). Secrets via the `_FILE` convention. **(Reverses v5.0's "no object storage" decision — see Out of Scope.)**
+- Router extension: "K8s" becomes a third cloud target; a single config setting selects the **active cloud target** (local / A1 / K8s). Same long-set routing seam as v5.0 (≥ duration threshold) — long files only, conservative scope
+- Result callback reuses v5.0's compute-agent machinery: the Job pod authenticates back to `/api/internal/agent/*` as a registered compute agent
+- Transport-agnostic connectivity: Tailscale *or* WireGuard — phaze only consumes operator-provided reachable endpoints (kube API, S3, callback), no mesh-specific code
+- Deployment + runbook + config/docs: Kueue admin objects (ResourceFlavor / ClusterQueue / LocalQueue) documented as cluster-admin setup; phaze references a configured LocalQueue name; kubeconfig/service-account token via `_FILE` secret; all behind the existing `cloud_burst_enabled` master toggle with per-target config
 
-**Key context:** arm64 essentia-tensorflow is proven this session (Docker spike, branch `spike/arm64-essentia-analysis`) — production `analyze_file` on arm64 reproduced x86 results window-for-window (BPM bit-identical, mood/style labels exact). Post-Phase-36 the SAQ broker is PostgresQueue (Redis is only the cache handle), so the cloud agent reaches lux Postgres:5432 + Redis:6379 + phaze-api:8000 over Tailscale.
+**Key context:** Mirrors v5.0's duration-routing + compute-agent + result-reconciliation design, but the execution unit changes from a persistent SAQ-draining host to an ephemeral Kueue Job. x64 hardware removes the arm64-image burden — the existing x86 essentia stack is reused. Two new external dependencies vs. v5.0: object storage (S3-compatible client) and a Kubernetes API client. Connectivity is intentionally transport-agnostic (Tailscale or WireGuard), unlike v5.0's Tailscale-specific pipeline.
 
 ## Current State
 
@@ -126,15 +127,22 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ Same Docker image for both roles via `PHAZE_ROLE={control,agent}` env; new `docker-compose.agent.yml` for file servers — v4.0 Phase 26, 29
 - ✓ 30s heartbeat + Agents admin page with liveness, queue depth, last-seen — v4.0 Phase 29
 
+- ✓ Official arm64 essentia agent image published to GHCR via native arm64 CI build with numeric-parity guard — v5.0 Phase 47
+- ✓ Compute-agent type (no scan roots / no media) with duration-based, capability-aware analysis routing — v5.0 Phase 48-49
+- ✓ Ledger-scoped backfill of timed-out long files to the cloud agent (no whole-backlog over-enqueue) — v5.0 Phase 49
+- ✓ rsync-over-Tailscale "stay one ahead" push pipeline (control-plane orchestrated, ephemeral scratch + sha256 verify) — v5.0 Phase 50
+- ✓ Cloud-agent deployment + OCI A1 / Tailscale-ACL runbook; `cloud_burst_enabled` master toggle; `_FILE`-secret-capable config — v5.0 Phase 51
+
 ### Active
 
-_v5.0 Cloud Burst Analysis (detailed REQ-IDs in `REQUIREMENTS.md`):_
-- Official arm64 essentia agent image published to GHCR (native arm64 CI build)
-- Compute-agent type (no scan roots) with capability-aware, duration-based analysis routing
-- Backfill of the 144 timed-out long files to the cloud agent via the Phase 45 scheduling ledger
-- rsync-over-Tailscale "stay one ahead" push pipeline (control-plane orchestrated, ephemeral scratch + sha256 verify)
-- Cloud-agent deployment + OCI A1 / Tailscale-ACL runbook
-- All cloud parameters configurable via pydantic-settings (`_FILE`-secret-capable)
+_v6.0 Kubernetes Burst Analysis (detailed REQ-IDs in `REQUIREMENTS.md`):_
+- x86 Kueue Job-runner image published to GHCR (one-shot: pull from object storage → analyze → POST result → exit)
+- Kube-API submission seam: control plane submits a suspended Kueue `Job`, watches the `Workload`, reconciles by `file_id`
+- Object-storage staging to an operator-provided S3-compatible bucket (ephemeral upload + cleanup; `_FILE` secrets)
+- K8s as a third routing target; single config setting selects the active cloud target (local / A1 / K8s)
+- Job-pod result callback reuses the v5.0 compute-agent `/api/internal/agent/*` surface
+- Transport-agnostic connectivity (Tailscale or WireGuard) — operator-provided reachable endpoints only
+- Cluster/Kueue deployment + runbook; all parameters configurable via pydantic-settings under the `cloud_burst_enabled` toggle
 
 ### Out of Scope
 
@@ -149,9 +157,11 @@ _v5.0 Cloud Burst Analysis (detailed REQ-IDs in `REQUIREMENTS.md`):_
 - Acoustic near-duplicate detection via fingerprint similarity — deferred
 - Public network access — private LAN only
 - Offline mode — real-time server tool, not a desktop app
-- Files transferred between application server and file server — v4.0 keeps files local to file servers; transfer would defeat the boundary. **(Narrowed in v5.0: still no app↔file-server transfer, but a file-server agent may push a long file to an ephemeral *cloud compute agent* for analysis-only, then delete it — extra compute, not a data home.)**
+- Files transferred between application server and file server — v4.0 keeps files local to file servers; transfer would defeat the boundary. **(Narrowed in v5.0: still no app↔file-server transfer, but a file-server agent may push a long file to an ephemeral *cloud compute agent* for analysis-only, then delete it — extra compute, not a data home. v6.0 keeps this: the long file is staged to ephemeral object storage for the Kueue Job, downloaded, analyzed, deleted — analysis-only, not a data home.)**
 - Postgres replication / read-replica on file server — agents stay HTTP-only (Option II in v4.0 grilling was rejected)
-- ~~Tailscale / mesh networking — plain private LAN chosen in v4.0 (Q10b)~~ **(Reversed in v5.0: Tailscale is the transport for the off-LAN cloud compute agent — nox→A1 rsync + A1→lux queue/cache/API, locked by ACL.)**
+- ~~Tailscale / mesh networking — plain private LAN chosen in v4.0 (Q10b)~~ **(Reversed in v5.0: Tailscale is the transport for the off-LAN cloud compute agent. Generalized in v6.0: connectivity is transport-agnostic — Tailscale or WireGuard — phaze consumes operator-provided reachable endpoints only.)**
+- ~~No object storage — v5.0's cloud agent analyzed from local rsync'd scratch, never a bucket~~ **(Reversed in v6.0: ephemeral Kueue Job pods have no persistent local disk, so the long file is staged to an operator-provided S3-compatible bucket, downloaded by the Job, and deleted after analysis. Ephemeral staging only — not a data home.)**
+- GPU / Coral TPU acceleration for the cluster nodes — essentia-tensorflow analysis is CPU-bound on this workload; cluster nodes and Kueue resource requests target CPU, not accelerators (see Key Decisions)
 
 ## Context
 
@@ -220,6 +230,7 @@ Deferred to a future ops phase: mTLS for the agent boundary, agent self-registra
 | Group-by-agent execution dispatch (v4.0) | In-Python `defaultdict(list)` over SQL `GROUP BY` — at 1-5 agents × ≤10K proposals, type-safe path is cheaper than DB aggregation | ✓ Good — preserves write-ahead `ExecutionLog` audit over HTTP boundary via per-operation PATCH |
 | Pre-uvicorn entrypoint shim (v4.0) | Cert bootstrap then `execvp uvicorn` so signals + PID-1 propagate cleanly | ✓ Good — clean Docker stop semantics, no double-process tree |
 | Two-step Alembic migration (v4.0) | 012 adds + backfills, 013 enforces NOT NULL + swaps UQ — preserves v3.0 data via `legacy-application-server` seed | ✓ Good — round-trip downgrade smoke gate caught the boundary; zero data loss in production migration |
+| CPU-only cluster nodes for v6.0 (no GPU / no Coral) | essentia analysis is CPU-bound: wall-clock is dominated by `MonoLoader` decode + native DSP (rhythm/onset/spectral) on long sets; the TF classifier step is a tiny slice. Coral needs int8 TFLite (essentia ships full float TF) and GPU only speeds the negligible inference. Throughput lever is horizontal CPU parallelism across files — Kueue quota delivers exactly that. | ▶ Planned — Kueue resource requests target `cpu`/`memory` only; generic x64 CPU node pool; consistent with v1.0 ProcessPoolExecutor decision |
 
 ## Evolution
 
