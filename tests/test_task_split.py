@@ -353,6 +353,49 @@ def test_model_bootstrap_stays_postgres_free() -> None:
     assert result.returncode == 0, f"model_bootstrap import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
+def test_job_runner_does_not_import_phaze_database() -> None:
+    """Phase 52 (52-02) extension of D-25: phaze.job_runner is Postgres-free (T-52-02).
+
+    The one-shot Kueue Job entrypoint runs in a DB-less pod that reaches ONLY the
+    object store (presigned GET) + the control-plane HTTPS callback. It must NOT
+    import the app ORM / async DB engine: phaze.database, phaze.tasks.session, or
+    sqlalchemy.ext.asyncio. Verified by subprocess so a contaminated import in the
+    test process cannot poison downstream tests via sys.modules caching.
+
+    The subprocess sets the minimal agent env required for ``get_settings()`` to
+    return AgentSettings without raising (the module imports phaze.config at load
+    time, but the essentia-bound analyze import is deferred so module load stays
+    Postgres-free AND essentia-free).
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.job_runner  # noqa: F401
+
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"job_runner import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
 def test_stage_control_stays_postgres_free() -> None:
     """Phase 37 T-37-04 invariant: phaze.tasks._shared.stage_control is Postgres-free.
 
