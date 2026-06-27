@@ -279,6 +279,33 @@ class PhazeAgentClient:
         )
         return AnalysisWriteResponse.model_validate(response.json())
 
+    async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str]:
+        """POST /api/internal/agent/files/{file_id}/presign-download -- mint a fresh presigned GET URL (Phase 52, KJOB-02).
+
+        Returns ``(download_url, expected_sha256)``: the short-TTL presigned URL the
+        DB-less one-shot pod (Plan 02) downloads the file bytes from, and the
+        ``expected_sha256`` (server-sourced from ``FileRecord.sha256_hash``) it
+        integrity-verifies those bytes against -- the only hash a Postgres-free pod
+        can check (Pitfall 3). A FRESH presign is requested per call at pod start, so
+        replay-after-expiry defense is the server's short-TTL minting concern (T-52-05).
+
+        Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12) via the
+        ``_request`` funnel -- 5xx retries up to the cap, 4xx surfaces immediately; no
+        bespoke retry loop (D-02). The bearer token rides the default Authorization
+        header only and is never logged (D-13; T-52-04). ``file_id`` rides the path only
+        (AUTH-01); no body.
+
+        NOTE: the SERVER side ships in Phase 53 (KSTAGE-03); this defines the client.
+        """
+        from phaze.schemas.agent_analysis import PresignDownloadResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/files/{file_id}/presign-download",
+        )
+        resp = PresignDownloadResponse.model_validate(response.json())
+        return resp.download_url, resp.expected_sha256
+
     async def report_analysis_failed(self, file_id: uuid.UUID, payload: AnalysisFailurePayload) -> AnalysisFailureResponse:
         """POST /api/internal/agent/analysis/{file_id}/failed -- terminal-failure report (Phase 43).
 
