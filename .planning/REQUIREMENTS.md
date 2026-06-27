@@ -78,4 +78,33 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ## Traceability
 
-_Filled by the roadmapper — each requirement maps to exactly one phase (52–56)._
+Each v6.0 requirement maps to exactly one phase. **Coverage: 26/26 — no orphans, no duplicates.**
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| KJOB-01 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
+| KJOB-02 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
+| KJOB-03 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
+| KJOB-04 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
+| KJOB-05 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
+| KSTAGE-01 | Phase 53 — S3 object-staging leg | Pending |
+| KSTAGE-02 | Phase 53 — S3 object-staging leg | Pending |
+| KSTAGE-03 | Phase 53 — S3 object-staging leg | Pending |
+| KSTAGE-04 | Phase 53 — S3 object-staging leg | Pending |
+| KSTAGE-05 | Phase 53 — S3 object-staging leg | Pending |
+| KSUBMIT-01 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
+| KSUBMIT-02 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
+| KSUBMIT-03 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
+| KSUBMIT-04 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
+| KSUBMIT-05 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
+| KSUBMIT-06 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
+| KROUTE-01 | Phase 55 — Routing, state & ledger integration | Pending |
+| KROUTE-02 | Phase 55 — Routing, state & ledger integration | Pending |
+| KROUTE-03 | Phase 55 — Routing, state & ledger integration | Pending |
+| KROUTE-04 | Phase 55 — Routing, state & ledger integration | Pending |
+| KROUTE-05 | Phase 55 — Routing, state & ledger integration | Pending |
+| KDEPLOY-01 | Phase 56 — Deployment, runbook, config & docs | Pending |
+| KDEPLOY-02 | Phase 56 — Deployment, runbook, config & docs | Pending |
+| KDEPLOY-03 | Phase 56 — Deployment, runbook, config & docs | Pending |
+| KDEPLOY-04 | Phase 56 — Deployment, runbook, config & docs | Pending |
+| KDEPLOY-05 | Phase 56 — Deployment, runbook, config & docs | Pending |
