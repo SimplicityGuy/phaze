@@ -15,7 +15,7 @@
 
 > K8s becomes a **third** analysis-routing target alongside local and the v5.0 OCI A1: long sets that can't finish locally run as ephemeral, quota-scheduled **Kueue batch Jobs** on a remote x64 cluster. Mirrors the v5.0 spine (image → legs → pipeline → routing seam → deploy); the single live-seam edit (Phase 55) is deliberately last, and Phases 52-54 are each independently unit-testable without a live cluster (respx / moto / fake kube API) so the 85% coverage gate holds at every phase boundary. **No phase needs a research-phase** — every external API surface (kr8s, aioboto3, Kueue v1beta2) was verified same-day against Context7 / official docs and each phase has a direct v5.0 precedent.
 
-- [ ] **Phase 52: Job-runner image & one-shot entrypoint** — x86 GHCR image FROM the existing essentia base; one-shot pull → windowed analyze → POST result → exit; honest exit codes; internal CA baked in (KJOB-01..05)
+- [x] **Phase 52: Job-runner image & one-shot entrypoint** — x86 GHCR image FROM the existing essentia base; one-shot pull → windowed analyze → POST result → exit; honest exit codes; internal CA baked in (KJOB-01..05) (completed 2026-06-27)
 - [ ] **Phase 53: S3 object-staging leg** — control-plane presign (aioboto3) + file-server agent httpx-PUT upload + pod presigned GET; `file_id`-scoped keys; cleanup on every outcome; `cloud_job` sidecar migration (KSTAGE-01..05)
 - [ ] **Phase 54: Kube submit/watch + reconcile cron** — suspended per-file Kueue Job (kr8s); fast submit + reconcile cron; out-of-band callback authoritative; no ledger-seed; Inadmissible-vs-Pending (KSUBMIT-01..06)
 - [ ] **Phase 55: Routing, state & ledger integration** — `cloud_target` selector + `stage_cloud_window` K8s branch + `enqueue_router` additions + AST guard (the one live-seam edit) (KROUTE-01..05)
@@ -152,7 +152,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 49. Duration routing & backfill | v5.0 | 4/4 | Complete    | 2026-06-25 |
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
-| 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete   | 2026-06-27 |
+| 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 0/? | Not started | - |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |

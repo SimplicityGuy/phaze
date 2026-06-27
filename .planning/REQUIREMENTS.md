@@ -18,11 +18,11 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Job-runner image & one-shot entrypoint (KJOB)
 
-- [ ] **KJOB-01**: An x86 Kueue Job-runner image is published to GHCR, built `FROM` the existing x86 essentia base image (the cluster is x64 — no arm64 source build) with **zero new pip dependencies** and a one-shot entrypoint.
-- [ ] **KJOB-02**: The entrypoint runs as a one-shot: request a fresh presigned download URL from the control plane → download the file → sha256-verify against `FileRecord` → analyze → POST the result to `/api/internal/agent/*` (reconciled by `file_id`) → exit.
-- [ ] **KJOB-03**: Analysis in the pod uses the windowed/streaming path so a multi-hour set never OOMs under a hard pod memory limit (no whole-file `MonoLoader` decode); memory requests are sized from measured peak RSS on the longest real sets.
-- [ ] **KJOB-04**: The entrypoint has an honest exit-code contract — non-zero on download, integrity, analysis, or callback failure; it never reports success on a failed analysis.
-- [ ] **KJOB-05**: The pod trusts the control plane's internal CA (baked into the image) for the HTTPS callback; no TLS bypass (`verify=False`) anywhere.
+- [x] **KJOB-01**: An x86 Kueue Job-runner image is published to GHCR, built `FROM` the existing x86 essentia base image (the cluster is x64 — no arm64 source build) with **zero new pip dependencies** and a one-shot entrypoint.
+- [x] **KJOB-02**: The entrypoint runs as a one-shot: request a fresh presigned download URL from the control plane → download the file → sha256-verify against `FileRecord` → analyze → POST the result to `/api/internal/agent/*` (reconciled by `file_id`) → exit.
+- [x] **KJOB-03**: Analysis in the pod uses the windowed/streaming path so a multi-hour set never OOMs under a hard pod memory limit (no whole-file `MonoLoader` decode); memory requests are sized from measured peak RSS on the longest real sets.
+- [x] **KJOB-04**: The entrypoint has an honest exit-code contract — non-zero on download, integrity, analysis, or callback failure; it never reports success on a failed analysis.
+- [x] **KJOB-05**: The pod trusts the control plane's internal CA (baked into the image) for the HTTPS callback; no TLS bypass (`verify=False`) anywhere.
 
 ### S3 object-staging leg (KSTAGE)
 
@@ -82,11 +82,11 @@ Each v6.0 requirement maps to exactly one phase. **Coverage: 26/26 — no orphan
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| KJOB-01 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
-| KJOB-02 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
-| KJOB-03 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
-| KJOB-04 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
-| KJOB-05 | Phase 52 — Job-runner image & one-shot entrypoint | Pending |
+| KJOB-01 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
+| KJOB-02 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
+| KJOB-03 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
+| KJOB-04 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
+| KJOB-05 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
 | KSTAGE-01 | Phase 53 — S3 object-staging leg | Pending |
 | KSTAGE-02 | Phase 53 — S3 object-staging leg | Pending |
 | KSTAGE-03 | Phase 53 — S3 object-staging leg | Pending |
