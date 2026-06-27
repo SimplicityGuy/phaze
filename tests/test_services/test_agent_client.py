@@ -284,3 +284,80 @@ async def test_put_fingerprint_includes_engine_in_url_and_parses_response(client
     assert resp.agent_id == "a1"
     assert resp.engine == engine
     assert route.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# request_download_url -- presign-download client method (Phase 52, KJOB-02).
+# The SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)
+# ships in Phase 53; here we test the CLIENT contract against a respx mock.
+# ---------------------------------------------------------------------------
+
+_PRESIGN_SHA = "a" * 64
+
+
+@respx.mock
+async def test_request_download_url_returns_tuple_and_injects_auth_header(client):  # type: ignore[no-untyped-def]
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(
+            200,
+            json={"download_url": "https://s3.example/obj?sig=xyz", "expected_sha256": _PRESIGN_SHA},
+        ),
+    )
+    url, sha = await client.request_download_url(file_id)
+    assert url == "https://s3.example/obj?sig=xyz"
+    assert sha == _PRESIGN_SHA
+    assert route.call_count == 1
+    sent = route.calls.last.request
+    assert sent.headers["Authorization"] == f"Bearer {_TOKEN}"
+    assert sent.url.path == f"/api/internal/agent/files/{file_id}/presign-download"
+
+
+@respx.mock
+async def test_request_download_url_4xx_surfaces_without_retry(client):  # type: ignore[no-untyped-def]
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(404, json={"detail": "no such file"}),
+    )
+    with pytest.raises(AgentApiClientError):
+        await client.request_download_url(file_id)
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_request_download_url_401_surfaces_as_auth_error_without_retry(client):  # type: ignore[no-untyped-def]
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(401, json={"detail": "Forbidden"}),
+    )
+    with pytest.raises(AgentApiAuthError):
+        await client.request_download_url(file_id)
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_request_download_url_5xx_retries_then_raises_server_error(client):  # type: ignore[no-untyped-def]
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(500),
+    )
+    with pytest.raises(AgentApiServerError):
+        await client.request_download_url(file_id)
+    assert route.call_count == 3
+
+
+@respx.mock
+async def test_request_download_url_token_absent_from_warning_logs_on_500(client, caplog):  # type: ignore[no-untyped-def]
+    """D-13: the bearer token must never appear in WARNING logs emitted by the presign call."""
+    import logging
+
+    file_id = uuid.uuid4()
+    respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(500),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="phaze.services.agent_client"), pytest.raises(AgentApiServerError):
+        await client.request_download_url(file_id)
+
+    warning_text = "\n".join(rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING)
+    assert _TOKEN not in warning_text, f"D-13 violation: bearer token appeared in WARNING log output: {warning_text!r}"
