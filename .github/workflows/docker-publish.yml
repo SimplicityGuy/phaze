@@ -543,3 +543,110 @@ jobs:
           cache-from: type=gha,scope=arm64
           build-args: |
             TF_VERSION=2.20.0
+
+  # ============================================================================
+  # JOB-RUNNER IMAGE (x86) — one-shot Kubernetes Job image (Phase 52 / KJOB-01/05, D-04)
+  # ----------------------------------------------------------------------------
+  # Builds Dockerfile.job FROM the freshly-pushed x86 api image. This MUST be a
+  # `needs: build-and-push`-gated job, NOT a sibling matrix row: Dockerfile.job's
+  # `FROM ${BASE_IMAGE}` resolves the just-pushed api tag, and matrix entries have
+  # no ordering — a parallel row could build before the api image is pushed
+  # (Pitfall 1 / Tampering T-52-06). The Job image ships off the SAME annotated
+  # v-tag set as the api image so it stays in release lockstep (D-04). Zero new
+  # deps (KJOB-01); the internal CA is baked from a repo secret (KJOB-05).
+  build-job-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-and-push
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: "🏷️ Set lowercase image name"
+        id: image
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "IMAGE_NAME=$(echo "$REPO" | tr "[:upper:]" "[:lower:]")" >> "$GITHUB_ENV"
+
+      - name: "🔀 Checkout repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: "📊 Resolve the x86 api base image tag"
+        id: base-meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          # Bare-repo URL (Phase 29 D-15): the api image is published at
+          # ghcr.io/<owner>/phaze with no sub-path. Mirror the api job's tag set
+          # so the first resolved tag is the freshly-built image to build FROM
+          # (passed below as ARG BASE_IMAGE — never a stale moving tag, T-52-06).
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: "📊 Extract metadata (tags, labels) for the Job image"
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          # `/job` sub-path: ghcr.io/<owner>/phaze/job. Same annotated v-tag set
+          # as the api image so the Job image moves in release lockstep (D-04).
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/job
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: "🔒 Log in to the GitHub Container Registry"
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "🔧 Set up Docker Buildx"
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+        with:
+          platforms: linux/amd64
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: "🔐 Materialize the internal CA cert into the build context"
+        if: github.event_name != 'pull_request'
+        env:
+          CA_CERT: ${{ secrets.PHAZE_INTERNAL_CA_CERT }}
+        run: |
+          # The operator supplies the internal CA via the PHAZE_INTERNAL_CA_CERT
+          # repo secret; Dockerfile.job COPYs phaze-ca.crt from the build context
+          # and bakes it to /etc/phaze/phaze-ca.crt (KJOB-05). construct_agent_client
+          # raises at runtime if the baked cert is empty, so a misconfigured secret
+          # surfaces fast rather than silently disabling TLS verification.
+          printf '%s\n' "${CA_CERT}" > phaze-ca.crt
+
+      - name: "🚀 Build and push the Job-runner image — phaze/job"
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.job
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          # Pass the resolved freshly-pushed x86 api tag as the FROM base. The
+          # `needs: build-and-push` gate guarantees this tag exists before pull.
+          build-args: |
+            BASE_IMAGE=${{ fromJSON(steps.base-meta.outputs.json).tags[0] }}
