@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v6.0
 milestone_name: Kubernetes Burst Analysis
-status: roadmapped
-last_updated: "2026-06-27T06:30:00.000Z"
-last_activity: 2026-06-27
+status: planning
+last_updated: "2026-06-27T17:41:24.950Z"
+last_activity: 2026-06-27 — v6.0 roadmap created (5 phases, 52-56; 26/26 requirements mapped)
 progress:
-  total_phases: 5
+  total_phases: 27
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -160,9 +160,9 @@ These are tracked for the v5.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-06-27 — v6.0 roadmap created
-Stopped at: ROADMAP.md + REQUIREMENTS.md traceability + STATE.md written for v6.0 (phases 52-56)
-Resume file: .planning/ROADMAP.md (Phase Details — v6.0 Kubernetes Burst Analysis)
+Last session: 2026-06-27T17:41:24.944Z
+Stopped at: Phase 52 context gathered
+Resume file: .planning/phases/52-job-runner-image-one-shot-entrypoint/52-CONTEXT.md
 
 ## Operator Next Steps
 
