@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 import hashlib
 import os
 import secrets
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -208,3 +209,52 @@ async def authenticated_client(
         headers=headers,
     ) as ac:
         yield ac
+
+
+# ---------------------------------------------------------------------------
+# Phase 52 (Plan 02): one-shot job_runner fixtures.
+#
+# These are Postgres-free on purpose — the DB-less one-shot pod they exercise
+# never touches the DB-backed fixtures above. They set the minimal AgentSettings
+# env (PHAZE_ROLE=agent + the agent URL/token/CA/models) and clear the
+# ``get_settings`` lru_cache so each test gets a fresh ``AgentSettings`` dispatch.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path):  # type: ignore[no-untyped-def]
+    """Env + on-disk artifacts the one-shot job_runner reads at startup.
+
+    Writes a non-empty baked-CA file (so ``construct_agent_client`` passes its
+    existence/size guard) and a models dir, sets the agent env vars, and yields
+    the resolved values. The ``get_settings`` lru_cache is cleared before AND
+    after so the autouse env-isolation fixture cannot leak a cached settings
+    object across tests.
+    """
+    from phaze.config import get_settings
+
+    ca_file = tmp_path / "phaze-ca.crt"
+    ca_file.write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALfakeCAforTestsOnly==\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    file_id = uuid.uuid4()
+
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://app.test")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
+    monkeypatch.setenv("PHAZE_AGENT_CA_FILE", str(ca_file))
+    monkeypatch.setenv("PHAZE_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("PHAZE_JOB_FILE_ID", str(file_id))
+
+    get_settings.cache_clear()
+    yield {
+        "file_id": file_id,
+        "base_url": "http://app.test",
+        "ca_file": str(ca_file),
+        "models_dir": str(models_dir),
+    }
+    get_settings.cache_clear()
