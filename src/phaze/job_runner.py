@@ -206,6 +206,10 @@ async def run() -> None:
 
         # (4) analyze — windowed/streaming analyze_file DIRECTLY (no pebble pool,
         # no retry loop — fail-fast, D-02 / KJOB-03). models_dir from env (D-05).
+        # There is NO in-process timeout here: a hung analysis is bounded by the
+        # Kueue/Job wall-clock deadline (activeDeadlineSeconds -> SIGTERM -> 143),
+        # not by an asyncio.wait_for. Only a raised exception maps to EXIT_ANALYSIS
+        # (12); the contract docstring above documents this delegation (WR-04).
         analyze_file = _load_analyze_file()
         t_analyze = time.monotonic()
         try:
