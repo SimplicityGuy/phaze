@@ -41,7 +41,7 @@ dependencies = [
     # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
     # but `redis.asyncio` is imported directly across the codebase (cache_redis handle,
     # pipeline counters). Declared explicitly so the import is not a transitive accident.
-    "redis>=7.4.1,<8.0",
+    "redis>=8.0.1,<9.0",
     # Phase 36: postgres extra pulls psycopg[pool]>=3.2.0 for the PostgresQueue broker.
     "saq[postgres]>=0.26.4",
     "sqlalchemy>=2.0.51",
