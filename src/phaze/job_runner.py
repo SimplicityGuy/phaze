@@ -199,7 +199,10 @@ async def run() -> None:
         # sha256 runs OFF the event loop (chunked stdlib hash).
         t_verify = time.monotonic()
         actual_sha256 = await asyncio.to_thread(compute_sha256, tmp_path)
-        if actual_sha256 != expected_sha256:
+        # Normalize both sides before comparing. compute_sha256 already returns
+        # lowercase hex and the schema pins expected_sha256 to lowercase-hex, so
+        # this is defensive against any future case/whitespace skew (IN-02).
+        if actual_sha256.strip().lower() != expected_sha256.strip().lower():
             log.error("job_runner_integrity_mismatch", file_id=fid, step="verify")
             sys.exit(EXIT_INTEGRITY)
         log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify))

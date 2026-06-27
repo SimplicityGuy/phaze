@@ -121,4 +121,9 @@ class PresignDownloadResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")  # strict body parsing
 
     download_url: str
-    expected_sha256: str
+    # Constrain to a 64-char lowercase-hex sha256 digest. ``compute_sha256``
+    # returns lowercase hex and ``FileRecord.sha256_hash`` is stored lowercase,
+    # so a server-side format skew (uppercase/prefixed/short) fails validation
+    # at the wire boundary rather than silently tripping every download as an
+    # integrity mismatch (exit 11) with no diagnostic (IN-02).
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
