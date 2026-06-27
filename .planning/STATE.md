@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v5.0
-milestone_name: Cloud Burst Analysis
-status: Awaiting next milestone
-last_updated: "2026-06-26T22:31:24.929Z"
-last_activity: 2026-06-26 — Milestone v5.0 completed and archived
+milestone: v6.0
+milestone_name: Kubernetes Burst Analysis
+status: planning
+last_updated: "2026-06-27T05:37:38.426Z"
+last_activity: 2026-06-27
 progress:
-  total_phases: 22
-  completed_phases: 5
-  total_plans: 23
-  completed_plans: 23
-  percent: 23
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 ## Current Position
 
-Phase: Milestone v5.0 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-06-26 — Milestone v5.0 completed and archived
+Status: Defining requirements
+Last activity: 2026-06-27 — Milestone v6.0 started
 
 ## Performance Metrics
 
@@ -147,7 +147,7 @@ None.
 
 Items acknowledged and deferred at the v5.0 milestone close on 2026-06-26. All three are
 **deployment-gated** — they unblock on the live OCI A1 + Tailscale rollout (see
-`.planning/phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md`).
+`.planning/milestones/v5.0-phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md`).
 
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
@@ -161,7 +161,7 @@ These are tracked for the v5.0 deploy; they are NOT blockers for the milestone r
 
 Last session: 2026-06-26T17:27:28.280Z
 Stopped at: Phase 51 context gathered
-Resume file: .planning/phases/51-deployment-config-docs/51-CONTEXT.md
+Resume file: .planning/milestones/v5.0-phases/51-deployment-config-docs/51-CONTEXT.md
 
 ## Operator Next Steps
 
