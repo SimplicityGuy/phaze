@@ -152,7 +152,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 49. Duration routing & backfill | v5.0 | 4/4 | Complete    | 2026-06-25 |
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
-| 52. Job-runner image & one-shot entrypoint | v6.0 | 0/? | Not started | - |
+| 52. Job-runner image & one-shot entrypoint | v6.0 | 2/3 | In Progress|  |
 | 53. S3 object-staging leg | v6.0 | 0/? | Not started | - |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
@@ -178,8 +178,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 **Plans**: 3 plansPlans:
 **Wave 1**
 
-- [ ] 52-01-PLAN.md — Shared analysis_wire converters + request_download_url client method + presign response schema (KJOB-02)
-- [ ] 52-03-PLAN.md — Dockerfile.job (FROM api base, baked CA, zero new deps) + needs-gated docker-publish job + deployment guards (KJOB-01/05)
+- [x] 52-01-PLAN.md — Shared analysis_wire converters + request_download_url client method + presign response schema (KJOB-02)
+- [x] 52-03-PLAN.md — Dockerfile.job (FROM api base, baked CA, zero new deps) + needs-gated docker-publish job + deployment guards (KJOB-01/05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
