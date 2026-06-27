@@ -14,8 +14,8 @@ Wire-format conversion (D-26):
 - ``AnalysisWritePayload`` requires ``mood``/``style`` as ``dict[str, float]``.
 - These converters rebuild the dicts from ``analysis["features"]`` so the wire
   contract is honored end-to-end: ``mood`` averages each ``mood_*`` set's
-  positive-class prediction across the 3 variants; ``style`` takes the top genre
-  predictions from the discogs effnet model.
+  positive-class prediction across the 3 variants; ``style`` takes the genre
+  predictions returned by the discogs effnet model.
 """
 
 from __future__ import annotations
