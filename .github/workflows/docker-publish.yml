@@ -642,6 +642,30 @@ jobs:
           # malformed secret fails at build time, not at runtime in a live pod.
           openssl x509 -in phaze-ca.crt -noout
 
+      - name: "🧭 Resolve the immutable x86 api base tag for FROM"
+        if: github.event_name != 'pull_request'
+        env:
+          BASE_TAGS: ${{ steps.base-meta.outputs.tags }}
+        run: |
+          # base-meta emits a newline-separated tag list. tags[0] is `:latest` on
+          # default-branch builds (the raw tag is listed first), so indexing [0]
+          # would pin the FROM base to a mutable moving tag (WR-05 / T-52-06).
+          # Deterministically prefer the FIRST non-`:latest` (immutable semver/ref)
+          # tag when one is present; fall back to the freshly-pushed first tag on
+          # default-branch builds where only `:latest` exists (do NOT break them —
+          # `:latest` was just pushed by build-and-push in THIS run). Mirrors the
+          # parity-golden-x86 shell-resolution pattern.
+          BASE_IMAGE=$(printf '%s\n' "${BASE_TAGS}" | grep -v ':latest$' | head -n1 || true)
+          if [ -z "${BASE_IMAGE}" ]; then
+            BASE_IMAGE=$(printf '%s\n' "${BASE_TAGS}" | head -n1)
+          fi
+          if [ -z "${BASE_IMAGE}" ]; then
+            echo "::error::could not resolve a base api image tag from base-meta output."
+            exit 1
+          fi
+          echo "Resolved FROM base image: ${BASE_IMAGE}"
+          echo "BASE_IMAGE=${BASE_IMAGE}" >> "${GITHUB_ENV}"
+
       - name: "🚀 Build and push the Job-runner image — phaze/job"
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
@@ -656,5 +680,8 @@ jobs:
           sbom: true
           # Pass the resolved freshly-pushed x86 api tag as the FROM base. The
           # `needs: build-and-push` gate guarantees this tag exists before pull.
+          # BASE_IMAGE is resolved above to prefer an immutable (non-`:latest`)
+          # tag, falling back to the freshly-pushed `:latest` on default-branch
+          # builds where no version tag exists (WR-05 / T-52-06).
           build-args: |
-            BASE_IMAGE=${{ fromJSON(steps.base-meta.outputs.json).tags[0] }}
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
