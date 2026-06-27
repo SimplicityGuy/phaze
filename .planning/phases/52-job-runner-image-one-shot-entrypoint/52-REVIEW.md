@@ -19,9 +19,23 @@ files_reviewed_list:
 findings:
   critical: 0
   warning: 5
+  warning_resolved: 5
+  warning_open: 0
   info: 2
+  info_open: 2
   total: 7
-status: issues_found
+status: warnings_resolved
+resolved:
+  - WR-01
+  - WR-02
+  - WR-03
+  - WR-04
+  - WR-05
+resolved_at: 2026-06-27T00:00:00Z
+notes: >-
+  All 5 warnings fixed in commits 616ed42 (WR-01), 3050f54 (WR-02),
+  ea3d5ed (WR-04), 6af1704 (WR-03), ebf2b3c (WR-05). IN-01/IN-02 deferred
+  (out of scope for this fix run).
 ---
 
 # Phase 52: Code Review Report
@@ -56,6 +70,8 @@ mutable base tag on default-branch builds.
 ## Warnings
 
 ### WR-01: `_build_payload(result)` runs inside the callback try-block — analysis-output errors are mis-coded as EXIT_CALLBACK (13)
+
+**Status:** RESOLVED (commit 616ed42) — payload build hoisted into the analyze step with an `isinstance(result, dict)` guard; `_build_payload` now iterates `(result.get("windows") or [])`; matrix test extended with non-dict-result and bad-window-key scenarios asserting exit 12.
 
 **File:** `src/phaze/job_runner.py:215-220` (and `107-133`)
 **Issue:** Payload construction is evaluated as the argument *inside* the callback
@@ -98,6 +114,8 @@ And in `_build_payload`, guard the iterable: `for w in (result.get("windows") or
 
 ### WR-02: EXIT_DOWNLOAD (10) is overloaded for configuration/precondition failures
 
+**Status:** RESOLVED (commit 3050f54) — added distinct `EXIT_CONFIG = 20`; wrong-role, missing `PHAZE_JOB_FILE_ID`, and invalid-UUID now exit 20; contract docstring updated; parametrized precondition test added.
+
 **File:** `src/phaze/job_runner.py:143-155`
 **Issue:** Wrong-role, missing `PHAZE_JOB_FILE_ID`, and an invalid-UUID `file_id` all
 `sys.exit(EXIT_DOWNLOAD)`. The documented contract (job_runner.py:13-18) defines `10`
@@ -112,6 +130,8 @@ a bare non-zero (uncaught) so they are visibly not a download failure. At minimu
 document in the exit-code contract that `10` doubles as the startup/precondition code.
 
 ### WR-03: CI CA materialization writes a 1-byte file for an empty secret, passing the `st_size == 0` guard
+
+**Status:** RESOLVED (commit 6af1704) — CA-materialization step now errors out (`exit 1`) when `PHAZE_INTERNAL_CA_CERT` is empty/unset and validates the PEM parses via `openssl x509 -noout` before the build.
 
 **File:** `.github/workflows/docker-publish.yml:625-635`
 **Issue:** The step runs `printf '%s\n' "${CA_CERT}" > phaze-ca.crt`. If
@@ -133,6 +153,8 @@ Optionally validate it parses (`openssl x509 -in phaze-ca.crt -noout`) before th
 
 ### WR-04: Exit-code contract documents `12 = ... inner timeout`, but no timeout is implemented
 
+**Status:** RESOLVED (contract docstring corrected alongside commit 3050f54; analyze-step clarification in commit ea3d5ed) — chose the safe documentation fix (no behavior change): removed "inner timeout" language and documented that wall-clock bounding is delegated to the Kueue/Job deadline (SIGTERM → 143). No asyncio timeout wrapper added (avoided scope creep).
+
 **File:** `src/phaze/job_runner.py:13-18` and `196-204`
 **Issue:** The module docstring maps exit `12` to "windowed analysis raised / OOM /
 **inner timeout** (fail-fast — D-02)". The implementation calls `analyze_file(...)`
@@ -150,6 +172,8 @@ contract and document that wall-clock bounding is delegated to the Kueue/Job dea
 single-file one-shot, but `to_thread` would also restore SIGTERM responsiveness.
 
 ### WR-05: `BASE_IMAGE` resolves to the mutable `:latest` tag on default-branch builds
+
+**Status:** RESOLVED (commit ebf2b3c) — added a shell resolution step that deterministically prefers the first non-`:latest` (semver/ref) tag and falls back to the freshly-pushed `:latest` only on default-branch builds where no version tag exists (keeps those builds working). Mirrors the parity-golden-x86 pattern.
 
 **File:** `.github/workflows/docker-publish.yml:651-652`
 **Issue:** `BASE_IMAGE=${{ fromJSON(steps.base-meta.outputs.json).tags[0] }}` takes the
