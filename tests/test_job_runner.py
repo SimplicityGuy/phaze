@@ -102,6 +102,8 @@ async def test_happy_path_exits_zero(job_env, monkeypatch):  # type: ignore[no-u
         ("download_fail", 10),
         ("integrity_mismatch", 11),
         ("analyze_raises", 12),
+        ("analyze_non_dict_result", 12),
+        ("analyze_bad_window_key", 12),
         ("callback_fail", 13),
     ],
 )
@@ -140,6 +142,26 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
             raise RuntimeError("essentia crashed")
 
         monkeypatch.setattr(jr, "_load_analyze_file", lambda: _boom)
+    elif scenario == "analyze_non_dict_result":
+        # A malformed (non-dict) analyze result is a bad-analysis-output failure
+        # and must map to EXIT_ANALYSIS (12), NOT EXIT_CALLBACK (13) (WR-01).
+        _ok_presign()
+        _ok_download()
+        monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: ["not", "a", "dict"])
+    elif scenario == "analyze_bad_window_key":
+        # A window dict carrying an unexpected key fails AnalysisWindowPayload
+        # (extra="forbid") during payload build — this is an analysis-output
+        # error and must exit 12, not 13 (WR-01: payload build is part of the
+        # analyze step).
+        _ok_presign()
+        _ok_download()
+
+        def _bad_window_result() -> dict:
+            result = _fake_result()
+            result["windows"] = [{"tier": "fine", "window_index": 0, "unexpected_key": "boom"}]
+            return result
+
+        monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _bad_window_result())
     elif scenario == "callback_fail":
         _ok_presign()
         _ok_download()

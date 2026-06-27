@@ -116,7 +116,7 @@ def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
         features = {}
     mood_dict = _features_to_mood_dict(features)
     style_dict = _features_to_style_dict(features)
-    windows = [AnalysisWindowPayload(**w) for w in result.get("windows", [])]
+    windows = [AnalysisWindowPayload(**w) for w in (result.get("windows") or [])]
     return AnalysisWritePayload(
         bpm=result.get("bpm"),
         musical_key=result.get("musical_key"),
@@ -199,6 +199,15 @@ async def run() -> None:
         t_analyze = time.monotonic()
         try:
             result = analyze_file(str(tmp_path), models_dir, fine_cap=cfg.analysis_fine_cap, coarse_cap=cfg.analysis_coarse_cap)
+            # Payload construction is part of the analyze step (NOT the callback
+            # step): a malformed analyze result (non-dict, windows present-but-
+            # None, or an unexpected window key) is a bad-analysis-output failure
+            # and MUST map to EXIT_ANALYSIS, not EXIT_CALLBACK (KJOB-04 distinct-
+            # exit-code contract). Mirrors the process_file dict-guard.
+            if not isinstance(result, dict):
+                log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
+                sys.exit(EXIT_ANALYSIS)
+            payload = _build_payload(result)
         except Exception:
             log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
             sys.exit(EXIT_ANALYSIS)
@@ -211,10 +220,11 @@ async def run() -> None:
         )
 
         # (5) callback — the shared _request funnel supplies the bounded ~3x
-        # retry (D-02); on final failure exit 13.
+        # retry (D-02); on final failure exit 13. The payload was already built
+        # in the analyze step so build errors never mis-code as EXIT_CALLBACK.
         t_callback = time.monotonic()
         try:
-            await client.put_analysis(file_id, _build_payload(result))
+            await client.put_analysis(file_id, payload)
         except Exception:
             log.exception("job_runner_callback_failed", file_id=fid, step="callback")
             sys.exit(EXIT_CALLBACK)
