@@ -69,6 +69,22 @@ Phase 54). Discussion below clarifies HOW to implement the locked flow.
   lockstep with the rest of phaze. (Consistent with the project's release procedure:
   annotated v-tag push triggers GHCR publish.)
 
+### Essentia model provisioning (KJOB-01/KJOB-03)
+- **D-05:** **Parameterize `models_dir`; defer cluster provisioning to Phase 54.** The api
+  base image does NOT bake the 34 essentia TF `.pb` models, and a bare Kueue pod has neither
+  v5.0's `/models` compose volume nor reliable `essentia.upf.edu` egress. Resolution: the
+  Phase 52 entrypoint reads the models directory from an env var (e.g. `PHAZE_MODELS_DIR`,
+  default `/models`) and passes it straight into `analyze_file(path, models_dir, …)`. The
+  Job image stays **small** (no baked models, preserving KJOB-01's "zero new pip deps" spirit
+  and a lean image) and is unit-tested against a small **fixture** models dir. The actual
+  runtime provisioning — a single pre-populated, `ReadOnlyMany` PVC mounted read-only at
+  `/models` into every burst pod, plus its one-time populate Job — is **declared in Phase 54**
+  (kube submit/watch), NOT here. This honors the Phase 52 fence ("no kube API; unit-testable
+  without a live cluster"): the entrypoint is provisioning-agnostic, so the same code works
+  against a PVC mount in prod and a fixture dir in tests. The model-populate manifest/script
+  is explicitly **out of scope for Phase 52** (front-loading it was considered and rejected —
+  it can't be cluster-tested until Phase 54).
+
 ### Claude's Discretion
 - Exact entrypoint module structure / file layout (new module vs. thin shim), and how
   much v5.0 analysis-agent code to factor into a shared helper vs. inline — planner +
