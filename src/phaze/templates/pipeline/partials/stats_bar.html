@@ -82,4 +82,10 @@
    to emit hx-swap-oob. pushing_count / analyzing_cloud_count ride this poll context (degrade-safe). #}
 {% with oob = True %}{% include "pipeline/partials/staged_pushing_card.html" %}{% endwith %}
 {% with oob = True %}{% include "pipeline/partials/analyzing_cloud_card.html" %}{% endwith %}
+{# Phase 54 (54-04, D-06): re-render the Inadmissible operator alert OUT-OF-BAND on the same 5s tick
+   (it lives outside #pipeline-stats, so the innerHTML swap never reaches it). Same id
+   (#inadmissible-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob.
+   inadmissible_count rides this poll context (degrade-safe, never 500). The empty <section>
+   carrier is re-pushed too so a previously-shown banner clears once the count returns to 0. #}
+{% with oob = True %}{% include "pipeline/partials/inadmissible_card.html" %}{% endwith %}
 {% endif %}

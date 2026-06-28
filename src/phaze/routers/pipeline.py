@@ -31,6 +31,7 @@ from phaze.services.pipeline import (
     get_discovered_files_with_duration,
     get_fingerprint_pending_files,
     get_global_reconciliation,
+    get_inadmissible_count,
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
@@ -490,6 +491,12 @@ async def dashboard(
     pushing_count = await get_pushing_count(session)
     analyzing_cloud_count = await get_pushed_count(session)
 
+    # Phase 54 (54-04, D-06): the Inadmissible operator alert count -- cloud_job rows the reconcile
+    # cron flagged as Inadmissible (a misconfigured LocalQueue/ClusterQueue, NOT a healthy quota
+    # wait). get_inadmissible_count owns the never-500 _safe_count degrade (returns 0 on any DB
+    # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
+    inadmissible_count = await get_inadmissible_count(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -509,6 +516,7 @@ async def dashboard(
         "awaiting_cloud_count": awaiting_cloud_count,
         "pushing_count": pushing_count,
         "analyzing_cloud_count": analyzing_cloud_count,
+        "inadmissible_count": inadmissible_count,
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         **activity,
@@ -550,6 +558,10 @@ async def pipeline_stats_partial(
     # swaps. Degrade-safe at the service layer, so NO router try/except -- mirrors the awaiting wiring.
     pushing_count = await get_pushing_count(session)
     analyzing_cloud_count = await get_pushed_count(session)
+    # Phase 54 (54-04, D-06): the same Inadmissible count the dashboard seeds, re-pushed on every 5s
+    # poll so the inadmissible_card stays live via its OOB swap. Degrade-safe at the service layer,
+    # so NO router try/except -- mirrors the awaiting_cloud_count wiring.
+    inadmissible_count = await get_inadmissible_count(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -567,6 +579,7 @@ async def pipeline_stats_partial(
             "awaiting_cloud_count": awaiting_cloud_count,
             "pushing_count": pushing_count,
             "analyzing_cloud_count": analyzing_cloud_count,
+            "inadmissible_count": inadmissible_count,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,

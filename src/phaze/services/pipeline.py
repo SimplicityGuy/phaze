@@ -12,6 +12,7 @@ import structlog
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
@@ -813,6 +814,24 @@ async def get_awaiting_cloud_count(session: AsyncSession) -> int:
         session,
         select(func.count(FileRecord.id)).where(FileRecord.state == FileState.AWAITING_CLOUD),
         node="awaiting_cloud",
+    )
+
+
+async def get_inadmissible_count(session: AsyncSession) -> int:
+    """Return COUNT of ``cloud_job`` rows flagged ``inadmissible``, degrading to 0 on any DB error.
+
+    Drives the dashboard Inadmissible operator alert (D-06, KSUBMIT-04): a non-zero count means
+    one or more Kueue Workloads are Inadmissible (a misconfigured LocalQueue/ClusterQueue), which
+    the reconcile cron (Plan 06) stamps onto the row. A healthy quota wait (``Pending``) never
+    sets the flag, so this count stays 0 and the alert stays silent. Poll-safe via
+    :func:`_safe_count` (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node
+    to 0 and rolls back the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll
+    (T-54-10).
+    """
+    return await _safe_count(
+        session,
+        select(func.count(CloudJob.id)).where(CloudJob.inadmissible.is_(True)),
+        node="inadmissible",
     )
 
 
