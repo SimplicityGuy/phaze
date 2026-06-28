@@ -109,6 +109,11 @@ None - no external service configuration required. (cloud_phase is NULL for a1/l
 - The `cloud_phase` column + writers are in place; Plan 05 (KROUTE-06 dashboard cards) can now read the column via `get_cloud_phase_counts`.
 - Migration 027 is the new head (chains 026 → 027).
 
+## Self-Check: PASSED
+
+- Created files verified on disk: migration 027, migration test, SUMMARY.
+- Commits verified in git log: c37a55e, de1f39e, 3c10391, 107b589, ca2e924.
+
 ---
 *Phase: 55-routing-state-ledger-integration-the-live-seam*
 *Completed: 2026-06-28*
