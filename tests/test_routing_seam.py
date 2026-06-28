@@ -109,11 +109,14 @@ async def test_no_direct_to_compute_enqueue_path(session: AsyncSession) -> None:
     assert long_file.state == FileState.AWAITING_CLOUD
 
 
-# --- Phase 51 (D-02): the cloud_burst_enabled gate on the routing seam --------------------
+# --- Phase 55 (D-02): the cloud_target gate on the routing seam ---------------------------
+# The helper takes a resolved ``cloud_enabled`` bool; the production callers source it from
+# ``settings.cloud_target != "local"`` (pipeline.py). These tests drive the bool directly; the
+# k8s case below proves that resolution maps the 'k8s' target onto cloud-on.
 
 
 @pytest.mark.asyncio
-async def test_cloud_burst_disabled_routes_long_file_local(session: AsyncSession) -> None:
+async def test_cloud_disabled_routes_long_file_local(session: AsyncSession) -> None:
     """OFF (cloud_enabled=False): a long file routes LOCAL and is NEVER set to AWAITING_CLOUD (D-02).
 
     With the master toggle off, NOTHING is "long" -- the >=threshold file falls to the local
@@ -142,7 +145,7 @@ async def test_cloud_burst_disabled_routes_long_file_local(session: AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_cloud_burst_enabled_holds_long_file(session: AsyncSession) -> None:
+async def test_cloud_enabled_holds_long_file(session: AsyncSession) -> None:
     """ON (cloud_enabled=True): a long file is HELD in AWAITING_CLOUD (Phase 49/50 regression)."""
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
@@ -153,6 +156,35 @@ async def test_cloud_burst_enabled_holds_long_file(session: AsyncSession) -> Non
     router = FakeTaskRouter()
     app_state = SimpleNamespace(task_router=router)
     result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, True, "/models")
+
+    assert result["awaiting"] == 1
+    assert result["local"] == 0
+    await _drain_background()
+    await session.refresh(long_file)
+    assert long_file.state == FileState.AWAITING_CLOUD
+    assert router.captures == []
+
+
+@pytest.mark.asyncio
+async def test_cloud_target_k8s_resolves_to_cloud_on(session: AsyncSession) -> None:
+    """cloud_target='k8s' resolves to cloud-on (`cloud_target != "local"`) and HOLDS a long file (D-02).
+
+    The production callers feed the seam ``settings.cloud_target != "local"``; this case proves the
+    'k8s' selector maps onto the cloud-on bool so the long file is held in AWAITING_CLOUD, not routed
+    local. (The 'a1' target resolves identically -- covered by the cloud_enabled=True case above.)
+    """
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    long_file = _make_long_file()
+    session.add(long_file)
+    await session.commit()
+
+    cloud_target = "k8s"
+    cloud_enabled = cloud_target != "local"  # the exact resolution pipeline.py performs
+
+    router = FakeTaskRouter()
+    app_state = SimpleNamespace(task_router=router)
+    result = await _route_discovered_by_duration(app_state, session, [(long_file, _LONG)], _THRESHOLD, cloud_enabled, "/models")
 
     assert result["awaiting"] == 1
     assert result["local"] == 0

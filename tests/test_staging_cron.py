@@ -39,22 +39,23 @@ if TYPE_CHECKING:
 
 
 class _StubCfg:
-    """Minimal stand-in for the control settings stage_cloud_window reads (cloud_max_in_flight + toggle).
+    """Minimal stand-in for the control settings stage_cloud_window reads (cloud_max_in_flight + selector).
 
-    ``cloud_burst_enabled`` defaults True here so the existing Phase-50 staging tests keep exercising
-    the ON behavior; the Phase-51 disabled case constructs the stub with the toggle off.
+    ``cloud_target`` defaults ``"a1"`` here so the existing Phase-50 staging tests keep exercising the
+    ON (rsync-push) behavior; the cloud-off case constructs the stub with ``cloud_target="local"``.
+    The k8s S3-branch of this cron is Plan 03 scope -- not stubbed here.
     """
 
-    def __init__(self, *, cloud_max_in_flight: int = 2, cloud_burst_enabled: bool = True) -> None:
+    def __init__(self, *, cloud_max_in_flight: int = 2, cloud_target: str = "a1") -> None:
         self.cloud_max_in_flight = cloud_max_in_flight
-        self.cloud_burst_enabled = cloud_burst_enabled
+        self.cloud_target = cloud_target
 
 
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_burst_enabled: bool = True) -> None:
-    """Pin stage_cloud_window's get_settings() deterministically (cloud_max_in_flight + cloud_burst_enabled)."""
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_target: str = "a1") -> None:
+    """Pin stage_cloud_window's get_settings() deterministically (cloud_max_in_flight + cloud_target)."""
     monkeypatch.setattr(
         "phaze.tasks.release_awaiting_cloud.get_settings",
-        lambda: _StubCfg(cloud_max_in_flight=max_in_flight, cloud_burst_enabled=cloud_burst_enabled),
+        lambda: _StubCfg(cloud_max_in_flight=max_in_flight, cloud_target=cloud_target),
     )
 
 
@@ -195,18 +196,18 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
 
 
-# --- Phase 51 (D-03): cloud_burst_enabled gate on the staging cron -----------------------
+# --- Phase 55 (D-02): cloud_target gate on the staging cron -------------------------------
 
 
 @pytest.mark.asyncio
-async def test_cloud_burst_disabled_stages_nothing(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """OFF: with cloud_burst_enabled False the cron is a clean no-op BEFORE the window logic (D-03).
+async def test_cloud_local_stages_nothing(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OFF: with cloud_target='local' the cron is a clean no-op BEFORE the window logic (D-02).
 
     Both agents are online and the window is wide open (3 held, N=2), so the cron WOULD stage if the
-    toggle were on. With it off it returns {"staged": 0, "skipped": 0}, takes no advisory lock, stages
-    no push_file, and leaves every held file AWAITING_CLOUD.
+    target were a cloud one. With 'local' it returns {"staged": 0, "skipped": 0}, takes no advisory lock,
+    stages no push_file, and leaves every held file AWAITING_CLOUD.
     """
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_burst_enabled=False)
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="local")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = [_make_file() for _ in range(3)]
@@ -223,9 +224,9 @@ async def test_cloud_burst_disabled_stages_nothing(async_engine: AsyncEngine, se
 
 
 @pytest.mark.asyncio
-async def test_cloud_burst_enabled_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """ON: with cloud_burst_enabled True the cron stages as before (Phase 50 regression)."""
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_burst_enabled=True)
+async def test_cloud_a1_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ON: with cloud_target='a1' the cron stages as before (Phase 50 a1 rsync-push regression)."""
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="a1")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = [_make_file() for _ in range(3)]
