@@ -53,10 +53,12 @@ class TestCloudJobSchema:
         columns = {c.name for c in CloudJob.__table__.columns}
         assert {"kueue_workload", "attempts", "inadmissible"}.issubset(columns)
 
-    def test_cloud_phase_still_absent(self) -> None:
-        # D-09: cloud_phase stays reserved for Phase 55 -- untouched here.
-        columns = {c.name for c in CloudJob.__table__.columns}
-        assert "cloud_phase" not in columns
+    def test_cloud_phase_nullable_string(self) -> None:
+        # Phase 55 (D-04): cloud_phase is the k8s-only Kueue admission progression --
+        # nullable String(20), NULL for a1/local rows. Supersedes the Phase 54 deferral guard.
+        col = CloudJob.__table__.columns["cloud_phase"]
+        assert col.nullable is True
+        assert col.type.length == 20
 
     def test_kueue_workload_nullable_string(self) -> None:
         col = CloudJob.__table__.columns["kueue_workload"]
