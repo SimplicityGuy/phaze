@@ -21,7 +21,7 @@ created: 2026-06-28
 |----------|-------|
 | **Framework** | pytest 8.x (pytest-asyncio, `asyncio_mode = "auto"`) |
 | **Config file** | pyproject.toml `[tool.pytest.ini_options]` (`testpaths = ["tests"]`) |
-| **Quick run command** | `uv run pytest tests/test_tasks/test_release_awaiting_cloud.py tests/test_routers/test_agent_s3.py tests/test_routing_seam.py -x` |
+| **Quick run command** | `uv run pytest tests/test_staging_cron.py tests/test_routers/test_agent_s3.py tests/test_routing_seam.py -x` |
 | **Full suite command** | `uv run pytest --cov --cov-report=term-missing` |
 | **Estimated runtime** | ~60 seconds (quick) / ~5 min (full) |
 | **DB-backed tests** | ephemeral Postgres on host port 5433 + Redis 6380 via `just test-db`; export `TEST_DATABASE_URL`/`MIGRATIONS_TEST_DATABASE_URL` to `localhost:5433` and `PHAZE_REDIS_URL` to `localhost:6380` (conftest defaults to the CI port 5432). Kube fakes via `tests/kube_fakes.py` + the `kube_respx` fixture. |
@@ -57,7 +57,7 @@ created: 2026-06-28
 > Test scaffolds each tdd/test-bearing plan creates first (RED before GREEN). Real paths per research's 7 Wave-0 gaps — planner reconciles exact names:
 
 - [ ] `tests/test_config/test_cloud_target.py` — `cloud_target` selector + per-target fail-fast validators (cloud_burst_enabled removed) — D-02
-- [ ] `tests/test_tasks/test_release_awaiting_cloud.py` — k8s branch in `stage_cloud_window` (S3 path, GATE-1 skip, advisory-lock held, no ledger seed) — D-01a, L1, L2, L3
+- [ ] `tests/test_staging_cron.py` — k8s branch in `stage_cloud_window` (S3 path, GATE-1 skip, advisory-lock held, no ledger seed) — D-01a, L1, L2, L3
 - [ ] `tests/test_routers/test_agent_s3.py` — `report_uploaded` flips PUSHING→PUSHED + routed `submit_cloud_job` enqueue — D-01b
 - [ ] `tests/test_migrations/test_migration_027_cloud_phase.py` — migration 027 additive/reversible, cloud_job-only — D-04
 - [ ] `tests/test_tasks/test_reconcile_cloud_jobs.py` (extend) + `tests/test_tasks/test_submit_cloud_job.py` (extend) — cloud_phase writes/seed — D-04
