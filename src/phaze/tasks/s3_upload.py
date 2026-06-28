@@ -2,8 +2,8 @@
 
 The file-server agent (which owns the media mount) uploads a cloud-routed file by PUTting each
 multipart part to a presigned URL the control plane minted (control initiates the multipart upload,
-presigns the part URLs, and completes it -- KSTAGE-02 / D-01). The agent holds NO S3 SDK, botocore,
-or bucket credentials: the byte transfer is httpx-only. It collects each part's ETag from the PUT
+presigns the part URLs, and completes it -- KSTAGE-02 / D-01). The agent holds NO S3 client SDK
+and NO bucket credentials: the byte transfer is httpx-only. It collects each part's ETag from the PUT
 response header and reports the ordered ``(part_number, etag)`` list through a control-side callback
 (D-04); there are NO S3-side per-part checksums -- the pod's end-to-end sha256 is the single
 integrity gate.
