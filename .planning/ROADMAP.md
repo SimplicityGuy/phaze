@@ -19,7 +19,7 @@
 - [x] **Phase 52: Job-runner image & one-shot entrypoint** — x86 GHCR image FROM the existing essentia base; one-shot pull → windowed analyze → POST result → exit; honest exit codes; internal CA baked in (KJOB-01..05) (completed 2026-06-27)
 - [x] **Phase 53: S3 object-staging leg** — control-plane presign (aioboto3) + file-server agent httpx-PUT upload + pod presigned GET; `file_id`-scoped keys; cleanup on every outcome; `cloud_job` sidecar migration (KSTAGE-01..05) (completed 2026-06-28)
 - [x] **Phase 54: Kube submit/watch + reconcile cron** — suspended per-file Kueue Job (kr8s); fast submit + reconcile cron; out-of-band callback authoritative; no ledger-seed; Inadmissible-vs-Pending (KSUBMIT-01..06) (completed 2026-06-28)
-- [ ] **Phase 55: Routing, state & ledger integration** — `cloud_target` selector + `stage_cloud_window` K8s branch + `enqueue_router` additions + AST guard (the one live-seam edit) (KROUTE-01..05)
+- [x] **Phase 55: Routing, state & ledger integration** — `cloud_target` selector + `stage_cloud_window` K8s branch + `enqueue_router` additions + AST guard (the one live-seam edit) (KROUTE-01..05) (completed 2026-06-28)
 - [ ] **Phase 56: Deployment, runbook, config & docs** — Kueue admin runbook + least-privilege RBAC + `_FILE` secrets + transport-agnostic endpoints + ephemeral-identity Agents-UI note + master toggle (KDEPLOY-01..05)
 
 ### v7.0 UI Redesign — DAG-Centric Hybrid Console (Phases 57-62) — 📋 PLANNED
@@ -173,7 +173,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
-| 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete   | 2026-06-28 |
+| 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
 ## Phase Details (v6.0 Kubernetes Burst Analysis)

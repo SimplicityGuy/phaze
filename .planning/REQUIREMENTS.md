@@ -43,11 +43,11 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Routing, state & ledger integration (KROUTE)
 
-- [ ] **KROUTE-01**: A single `cloud_target` config selector (`Literal["local", "a1", "k8s"]`) chooses the active analysis target — `k8s` routes ≥threshold long files through the Kueue path, `a1` keeps the v5.0 OCI A1 path, `local` disables cloud burst — all under the existing `cloud_burst_enabled` master toggle.
-- [ ] **KROUTE-02**: K8s offload reuses the existing duration router + AWAITING_CLOUD hold + advisory-locked `stage_cloud_window` in-flight window (`cloud_max_in_flight`) as a single new branch; long files only (conservative scope), never a whole-backlog sweep.
-- [ ] **KROUTE-03**: K8s in-flight files reuse the `PUSHING`/`PUSHED` states (no new `FileRecord` state); Kueue admission phase lives in a `cloud_phase` column on a new `cloud_job` sidecar table (Alembic migration), leaving the FileRecord state machine unchanged.
-- [ ] **KROUTE-04**: A static AST guard test asserts every K8s enqueue site routes through `enqueue_router` (no consumer-less default-queue enqueue, no whole-backlog enqueue), preventing recurrence of the v4.0.6 / v5.0 over-enqueue incidents.
-- [ ] **KROUTE-05**: ≥threshold backfill of timed-out long files (`analysis_failed`, duration ≥ threshold) can be driven to the K8s target, ledger-scoped exactly like v5.0 (only previously-scheduled work re-driven).
+- [x] **KROUTE-01**: A single `cloud_target` config selector (`Literal["local", "a1", "k8s"]`) chooses the active analysis target — `k8s` routes ≥threshold long files through the Kueue path, `a1` keeps the v5.0 OCI A1 path, `local` disables cloud burst — all under the existing `cloud_burst_enabled` master toggle.
+- [x] **KROUTE-02**: K8s offload reuses the existing duration router + AWAITING_CLOUD hold + advisory-locked `stage_cloud_window` in-flight window (`cloud_max_in_flight`) as a single new branch; long files only (conservative scope), never a whole-backlog sweep.
+- [x] **KROUTE-03**: K8s in-flight files reuse the `PUSHING`/`PUSHED` states (no new `FileRecord` state); Kueue admission phase lives in a `cloud_phase` column on a new `cloud_job` sidecar table (Alembic migration), leaving the FileRecord state machine unchanged.
+- [x] **KROUTE-04**: A static AST guard test asserts every K8s enqueue site routes through `enqueue_router` (no consumer-less default-queue enqueue, no whole-backlog enqueue), preventing recurrence of the v4.0.6 / v5.0 over-enqueue incidents.
+- [x] **KROUTE-05**: ≥threshold backfill of timed-out long files (`analysis_failed`, duration ≥ threshold) can be driven to the K8s target, ledger-scoped exactly like v5.0 (only previously-scheduled work re-driven).
 
 ### Deployment, runbook, config & docs (KDEPLOY)
 
@@ -98,11 +98,12 @@ Each v6.0 requirement maps to exactly one phase. **Coverage: 26/26 — no orphan
 | KSUBMIT-04 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
 | KSUBMIT-05 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
 | KSUBMIT-06 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
-| KROUTE-01 | Phase 55 — Routing, state & ledger integration | Pending |
-| KROUTE-02 | Phase 55 — Routing, state & ledger integration | Pending |
-| KROUTE-03 | Phase 55 — Routing, state & ledger integration | Pending |
-| KROUTE-04 | Phase 55 — Routing, state & ledger integration | Pending |
-| KROUTE-05 | Phase 55 — Routing, state & ledger integration | Pending |
+| KROUTE-01 | Phase 55 — Routing, state & ledger integration | Complete |
+| KROUTE-02 | Phase 55 — Routing, state & ledger integration | Complete |
+| KROUTE-03 | Phase 55 — Routing, state & ledger integration | Complete |
+| KROUTE-04 | Phase 55 — Routing, state & ledger integration | Complete |
+| KROUTE-05 | Phase 55 — Routing, state & ledger integration | Complete |
+| KROUTE-06 | Phase 55 — Routing, state & ledger integration | Complete |
 | KDEPLOY-01 | Phase 56 — Deployment, runbook, config & docs | Pending |
 | KDEPLOY-02 | Phase 56 — Deployment, runbook, config & docs | Pending |
 | KDEPLOY-03 | Phase 56 — Deployment, runbook, config & docs | Pending |
