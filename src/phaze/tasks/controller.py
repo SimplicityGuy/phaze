@@ -37,9 +37,11 @@ from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
+from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 from phaze.tasks.scan_reaper import reap_stalled_scans
+from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
@@ -210,6 +212,12 @@ settings = {
         reap_stalled_scans,
         recover_orphaned_work,
         stage_cloud_window,
+        # Phase 54 (KSUBMIT-02): the fast kube-submit producer is operator/Phase-55-enqueueable on
+        # the controller queue. NO CronJob here -- Phase 55 owns the live stage_cloud_window trigger.
+        submit_cloud_job,
+        # Phase 54 (KSUBMIT-04): the */5 in-flight K8s reconcile cron. Registered in BOTH functions
+        # and cron_jobs (mirroring reap_stalled_scans); cron-only, NOT in enqueue_router.CONTROLLER_TASKS.
+        reconcile_cloud_jobs,
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
@@ -232,6 +240,15 @@ settings = {
         # respects the Phase-42 "automation only in recovery" principle. Keep this distinct from the
         # deleted reenqueue cron above -- DO NOT re-add a general auto-advance cron here.
         CronJob(stage_cloud_window, cron="*/5 * * * *"),  # type: ignore[type-var]
+        # Phase 54 (D-01/D-03, KSUBMIT-04): the fixed */5 in-flight K8s reconcile cron -- the safety
+        # net that owns the Kueue Job lifecycle. It iterates the cloud_job sidecar (status IN
+        # SUBMITTED/RUNNING, D-02), maps Job + Workload conditions to outcomes, enforces the
+        # delete-after-record ordering + S3 cleanup (D-04/D-05), drives the bounded re-drive to
+        # ANALYSIS_FAILED (D-08), and surfaces Inadmissible without consuming the cap (D-06/D-07). The
+        # out-of-band /api/internal/agent/* callback remains the SOLE result writer (KSUBMIT-03) -- this
+        # cron only drives cleanup, re-drive, and alerting. NARROW: in-flight K8s reconcile ONLY -- DO
+        # NOT re-add a general auto-advance / recover_orphaned_work cron here (same guard as above).
+        CronJob(reconcile_cloud_jobs, cron="*/5 * * * *"),  # type: ignore[type-var]
     ],
     "startup": startup,
     "shutdown": shutdown,

@@ -94,16 +94,24 @@ def test_no_auto_advance_cron() -> None:
     ``release_awaiting_cloud`` drain). It is NOT a general pipeline auto-advance (the deleted
     ``reenqueue_discovered`` premise), so the schedule-string ban is refined to "no */5 cron OTHER
     than the bounded staging cron".
+
+    Phase 54 (KSUBMIT-06): ``reconcile_cloud_jobs`` joins the sanctioned-narrow allow-list -- a */5
+    safety-net that owns the K8s Job lifecycle (in-flight reconcile + bounded re-drive + terminal
+    cleanup). Like ``stage_cloud_window`` it is bounded and idempotent, NOT a general pipeline
+    auto-advance, so the ban stays "no */5 cron OTHER than the sanctioned narrow crons".
     """
     from phaze.tasks import controller
+    from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
     from phaze.tasks.reenqueue import recover_orphaned_work
     from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 
+    sanctioned_narrow_crons = {stage_cloud_window, reconcile_cloud_jobs}
     cron_jobs = controller.settings["cron_jobs"]
-    # Steady-state produces ZERO GENERAL auto-advance enqueues -- the only */5 cron is the bounded
-    # cloud-window top-up; any OTHER */5 cron would be a forbidden general auto-advance.
-    offenders = [cj for cj in cron_jobs if getattr(cj, "cron", "") == "*/5 * * * *" and cj.function is not stage_cloud_window]
-    assert offenders == [], "no general */5 auto-advance cron may survive (only stage_cloud_window is allowed)"
+    # Steady-state produces ZERO GENERAL auto-advance enqueues -- the only */5 crons are the bounded
+    # cloud-window top-up and the K8s reconcile safety-net; any OTHER */5 cron is a forbidden
+    # general auto-advance.
+    offenders = [cj for cj in cron_jobs if getattr(cj, "cron", "") == "*/5 * * * *" and cj.function not in sanctioned_narrow_crons]
+    assert offenders == [], "no general */5 auto-advance cron may survive (only the sanctioned narrow crons are allowed)"
     # recover_orphaned_work is startup/manual-only -- it must NEVER be wired as a cron.
     assert all(cj.function is not recover_orphaned_work for cj in cron_jobs), "recover_orphaned_work must not be a CronJob (startup/manual-only)"
 

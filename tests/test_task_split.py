@@ -187,6 +187,104 @@ def test_upload_task_stays_postgres_free_and_sdk_free() -> None:
     assert result.returncode == 0, f"s3_upload import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
+def test_submit_cloud_job_is_control_only_not_in_agent_worker() -> None:
+    """Phase 54 (54-05): submit_cloud_job is a CONTROL-only function, never registered on the agent.
+
+    It needs ``ctx["async_session"]`` + the kube creds that live on the control plane (DIST-01), so
+    it is registered in ``phaze.tasks.controller.settings['functions']`` ONLY. This asserts the agent
+    worker does NOT carry it: the agent worker is imported in a subprocess with the agent env (its
+    module-level Queue construction requires PHAZE_AGENT_QUEUE), and ``submit_cloud_job`` must be
+    absent from its registered function names. Run as a subprocess so the agent-role import + env do
+    not leak into the in-process control-role test session.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.tasks.agent_worker as aw
+
+        fn_names = {getattr(fn, "__name__", "") for fn in aw.settings["functions"]}
+        if "submit_cloud_job" in fn_names:
+            sys.stderr.write("submit_cloud_job must NOT be registered on the agent worker\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"submit_cloud_job leaked onto the agent worker:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+    # Complementary control-side assertion (in-process under the control-default test env): the task
+    # IS a registered controller function, with no CronJob (Phase 55 owns the trigger).
+    from phaze.tasks import controller
+
+    fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
+    cron_names = {getattr(cj.function, "__name__", "") for cj in controller.settings["cron_jobs"]}
+    assert "submit_cloud_job" in fn_names
+    assert "submit_cloud_job" not in cron_names
+
+
+def test_reconcile_cloud_jobs_is_control_only_not_in_agent_worker() -> None:
+    """Phase 54 (54-06): reconcile_cloud_jobs is a CONTROL-only cron, never registered on the agent.
+
+    The */5 reconcile cron needs ``ctx["async_session"]`` + the kube creds that live on the control
+    plane (DIST-01), so it is registered in ``phaze.tasks.controller.settings`` ONLY -- in BOTH
+    ``functions`` and ``cron_jobs`` (mirroring ``reap_stalled_scans``). This asserts the agent worker
+    does NOT carry it (subprocess with the agent env so the agent-role import does not leak into the
+    in-process control-role test session), AND that it is cron-only on the controller (a CronJob, and
+    intentionally absent from ``enqueue_router.CONTROLLER_TASKS`` -- not operator-routable).
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.tasks.agent_worker as aw
+
+        fn_names = {getattr(fn, "__name__", "") for fn in aw.settings["functions"]}
+        cron_names = {getattr(cj.function, "__name__", "") for cj in aw.settings.get("cron_jobs", [])}
+        if "reconcile_cloud_jobs" in fn_names or "reconcile_cloud_jobs" in cron_names:
+            sys.stderr.write("reconcile_cloud_jobs must NOT be registered on the agent worker\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"reconcile_cloud_jobs leaked onto the agent worker:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+    # Complementary control-side assertions (in-process under the control-default test env): it IS a
+    # registered controller function AND a */5 CronJob, and is NOT in the routable CONTROLLER_TASKS set.
+    from phaze.services.enqueue_router import CONTROLLER_TASKS
+    from phaze.tasks import controller
+
+    fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
+    reconcile_crons = [cj for cj in controller.settings["cron_jobs"] if getattr(cj.function, "__name__", "") == "reconcile_cloud_jobs"]
+    assert "reconcile_cloud_jobs" in fn_names
+    assert len(reconcile_crons) == 1, "reconcile_cloud_jobs must be registered as exactly one CronJob"
+    assert reconcile_crons[0].cron == "*/5 * * * *", "the reconcile cron must run every 5 minutes (D-03)"
+    assert "reconcile_cloud_jobs" not in CONTROLLER_TASKS, "reconcile_cloud_jobs is cron-only -- never operator-routable"
+
+
 def test_agent_worker_module_import_fails_when_phaze_agent_queue_unset() -> None:
     """Module-import-time guard: missing PHAZE_AGENT_QUEUE raises RuntimeError before SAQ event loop starts.
 

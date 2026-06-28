@@ -34,12 +34,12 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Kube submission, watch & reconcile (KSUBMIT)
 
-- [ ] **KSUBMIT-01**: When a long file is staged for K8s, the control plane submits a single **suspended** `batch/v1` Job (labeled `kueue.x-k8s.io/queue-name=<LocalQueue>`, `restartPolicy: Never`, `parallelism: 1`, `cpu`/`memory` requests only) via the kube API; submission is idempotent (deterministic name keyed to `file_id`).
-- [ ] **KSUBMIT-02**: The submit task returns within seconds and never blocks a worker waiting for analysis; a periodic reconcile cron owns Workload status, cleanup, and re-drive.
-- [ ] **KSUBMIT-03**: The result is authoritative **only** via the out-of-band `/api/internal/agent/*` callback reconciled by `file_id`; a dropped or expired kube watch never loses or duplicates a result.
-- [ ] **KSUBMIT-04**: The reconcile loop distinguishes healthy `Pending` (queued behind quota — wait indefinitely) from `Inadmissible` (misconfigured LocalQueue — surface to the operator) and detects success / failure / eviction.
-- [ ] **KSUBMIT-05**: On Job failure or eviction the file is re-driven through the K8s staging window up to a bounded max-attempts cap, then marked `ANALYSIS_FAILED` — **no cross-target fallback** in v6.0. Job `backoffLimit`/Kueue requeue are neutralized so the control plane solely owns retry.
-- [ ] **KSUBMIT-06**: Finished Jobs are cleaned up without a TTL-vs-read race (TTL longer than the reconcile interval, or phaze deletes the Job after recording the outcome); **no `process_file:<id>` ledger row is seeded for K8s files**, so `recover_orphaned_work` never wrongly re-enqueues them onto an agent queue (the CLOUDROUTE-02 hazard).
+- [x] **KSUBMIT-01**: When a long file is staged for K8s, the control plane submits a single **suspended** `batch/v1` Job (labeled `kueue.x-k8s.io/queue-name=<LocalQueue>`, `restartPolicy: Never`, `parallelism: 1`, `cpu`/`memory` requests only) via the kube API; submission is idempotent (deterministic name keyed to `file_id`).
+- [x] **KSUBMIT-02**: The submit task returns within seconds and never blocks a worker waiting for analysis; a periodic reconcile cron owns Workload status, cleanup, and re-drive.
+- [x] **KSUBMIT-03**: The result is authoritative **only** via the out-of-band `/api/internal/agent/*` callback reconciled by `file_id`; a dropped or expired kube watch never loses or duplicates a result.
+- [x] **KSUBMIT-04**: The reconcile loop distinguishes healthy `Pending` (queued behind quota — wait indefinitely) from `Inadmissible` (misconfigured LocalQueue — surface to the operator) and detects success / failure / eviction.
+- [x] **KSUBMIT-05**: On Job failure or eviction the file is re-driven through the K8s staging window up to a bounded max-attempts cap, then marked `ANALYSIS_FAILED` — **no cross-target fallback** in v6.0. Job `backoffLimit`/Kueue requeue are neutralized so the control plane solely owns retry.
+- [x] **KSUBMIT-06**: Finished Jobs are cleaned up without a TTL-vs-read race (TTL longer than the reconcile interval, or phaze deletes the Job after recording the outcome); **no `process_file:<id>` ledger row is seeded for K8s files**, so `recover_orphaned_work` never wrongly re-enqueues them onto an agent queue (the CLOUDROUTE-02 hazard).
 
 ### Routing, state & ledger integration (KROUTE)
 
@@ -92,12 +92,12 @@ Each v6.0 requirement maps to exactly one phase. **Coverage: 26/26 — no orphan
 | KSTAGE-03 | Phase 53 — S3 object-staging leg | Complete |
 | KSTAGE-04 | Phase 53 — S3 object-staging leg | Complete |
 | KSTAGE-05 | Phase 53 — S3 object-staging leg | Complete |
-| KSUBMIT-01 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
-| KSUBMIT-02 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
-| KSUBMIT-03 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
-| KSUBMIT-04 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
-| KSUBMIT-05 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
-| KSUBMIT-06 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
+| KSUBMIT-01 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
+| KSUBMIT-02 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
+| KSUBMIT-03 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
+| KSUBMIT-04 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
+| KSUBMIT-05 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
+| KSUBMIT-06 | Phase 54 — Kube submit/watch + reconcile cron | Complete |
 | KROUTE-01 | Phase 55 — Routing, state & ledger integration | Pending |
 | KROUTE-02 | Phase 55 — Routing, state & ledger integration | Pending |
 | KROUTE-03 | Phase 55 — Routing, state & ledger integration | Pending |

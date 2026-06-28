@@ -89,6 +89,10 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # Phase 53 (KSTAGE-02): s3_upload:<file_id> dedup collapses a re-driven staging upload to a
     # no-op and persists the attempt counter the Plan-04 callback re-drive loop reads.
     "s3_upload": lambda k: str(k["file_id"]),
+    # Phase 54 (KSUBMIT-01): submit_cloud_job:<file_id> dedup collapses a double enqueue of an
+    # already-submitting file to a no-op, mirroring s3_upload; the reconcile re-drive loop relies
+    # on this key so a still-submitting file is never double-submitted.
+    "submit_cloud_job": lambda k: str(k["file_id"]),
 }
 
 

@@ -20,6 +20,11 @@ dependencies = [
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
     "fastapi>=0.138.0",
     "httpx>=0.28.1",
+    # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
+    # via the kube API, watches them to completion, and reconciles their status. Lives on the
+    # control plane ONLY (kube creds never reach the agent/pod, mirroring aioboto3). Verified
+    # legitimate (kr8s-org, BSD-3-Clause, pure-Python) before install (T-54-SC).
+    "kr8s>=0.20.15",
     # Capped on purpose: litellm had a supply-chain attack (malicious 1.82.7/1.82.8,
     # Mar 2026) and ships frequent breaking minors, so CLAUDE.md mandates aggressive
     # pinning. The cap confines uv to the vetted 1.85.x line; raise it deliberately.

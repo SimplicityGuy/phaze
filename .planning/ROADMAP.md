@@ -17,7 +17,7 @@
 
 - [x] **Phase 52: Job-runner image & one-shot entrypoint** — x86 GHCR image FROM the existing essentia base; one-shot pull → windowed analyze → POST result → exit; honest exit codes; internal CA baked in (KJOB-01..05) (completed 2026-06-27)
 - [x] **Phase 53: S3 object-staging leg** — control-plane presign (aioboto3) + file-server agent httpx-PUT upload + pod presigned GET; `file_id`-scoped keys; cleanup on every outcome; `cloud_job` sidecar migration (KSTAGE-01..05) (completed 2026-06-28)
-- [ ] **Phase 54: Kube submit/watch + reconcile cron** — suspended per-file Kueue Job (kr8s); fast submit + reconcile cron; out-of-band callback authoritative; no ledger-seed; Inadmissible-vs-Pending (KSUBMIT-01..06)
+- [x] **Phase 54: Kube submit/watch + reconcile cron** — suspended per-file Kueue Job (kr8s); fast submit + reconcile cron; out-of-band callback authoritative; no ledger-seed; Inadmissible-vs-Pending (KSUBMIT-01..06) (completed 2026-06-28)
 - [ ] **Phase 55: Routing, state & ledger integration** — `cloud_target` selector + `stage_cloud_window` K8s branch + `enqueue_router` additions + AST guard (the one live-seam edit) (KROUTE-01..05)
 - [ ] **Phase 56: Deployment, runbook, config & docs** — Kueue admin runbook + least-privilege RBAC + `_FILE` secrets + transport-agnostic endpoints + ephemeral-identity Agents-UI note + master toggle (KDEPLOY-01..05)
 
@@ -154,7 +154,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
-| 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
+| 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
@@ -230,7 +230,25 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   4. The reconcile loop distinguishes healthy `Pending` (queued behind quota — waits indefinitely) from `Inadmissible` (misconfigured LocalQueue — surfaced to the operator) and detects success / failure / eviction.
   5. On Job failure or eviction the file is re-driven up to a bounded max-attempts cap then marked `ANALYSIS_FAILED` (no cross-target fallback); finished Jobs are cleaned up with no TTL-vs-read race, and **no `process_file:<id>` ledger row is seeded** for K8s files (so `recover_orphaned_work` never wrongly re-enqueues them onto an agent queue).
 
-**Plans**: TBD
+**Plans**: 6 plans in 4 waves
+**Wave 1**
+
+- [x] 54-01-PLAN.md — kr8s dependency (legitimacy-gated) + kube config surface on ControlSettings (D-08) [Wave 1]
+- [x] 54-02-PLAN.md — cloud_job model extension + migration 026 (CloudJobStatus + kueue_workload/attempts/inadmissible, D-09) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 54-03-PLAN.md — pure kr8s seam (suspended-Job manifest + submit/list/get/delete) + fake-kube test substrate (KSUBMIT-01/05/06) [Wave 2]
+- [x] 54-04-PLAN.md — Inadmissible pipeline-UI alert off cloud_job.inadmissible (D-06, KSUBMIT-04) [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 54-05-PLAN.md — fast submit_cloud_job task + enqueue_router/controller registration, no ledger seed (KSUBMIT-01/02/06) [Wave 3]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 54-06-PLAN.md — reconcile cron (status mapping, delete-after-record, S3 cleanup, bounded re-drive, Inadmissible) + */5 registration (KSUBMIT-02/03/04/05/06) [Wave 4]
+
 **Research**: Skip — kr8s/Kueue patterns verified same-day against Context7 + kueue.sigs.k8s.io.
 
 ### Phase 55: Routing, state & ledger integration (the live seam)
