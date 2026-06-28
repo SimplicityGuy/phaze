@@ -26,7 +26,7 @@ findings:
   warning: 4
   info: 1
   total: 7
-status: issues_found
+status: resolved
 ---
 
 # Phase 53: Code Review Report
@@ -268,6 +268,24 @@ if not etag:
 ```
 
 Check the version with `uv pip show aiobotocore` in the project's virtual environment and pin the lower bound to the currently resolved version.
+
+---
+
+## Resolution
+
+**Resolved:** 2026-06-27. All six actionable findings fixed; the one info finding (IN-01) was
+deliberately deferred. Full suite green (2352 passed, 0 failures), `ruff check .` clean, `mypy .`
+clean. Each fix is an atomic `fix(53):` commit with a focused regression test.
+
+| Finding | Disposition | Commit |
+|---------|-------------|--------|
+| CR-01 | **Verified false positive** -- the single-row kwargs form of `pg_insert` DOES fire `CloudJob.id`'s Python default (integration test creates+reads against real Postgres and passes, so no current crash). Defensive explicit `id=uuid.uuid4()` stamp applied anyway for consistency with the `agent_analysis.py` precedent and robustness against a future list/multi-values conversion. | `df8967f` |
+| CR-02 | Fixed -- `abort_multipart_upload` made idempotent (swallow `NoSuchUpload`/`404` via `_ABORT_ABSENT_CODES`, re-raise other `ClientError`). | `02495c1` |
+| WR-01 | Fixed -- `complete_multipart_upload` made idempotent (same swallow). Confirmed the `report_uploaded` status pre-check does NOT fully prevent the double-call (an S3-success/DB-failure retry re-reads `UPLOADING`), so the swallow is the real fix, not merely defensive. | `1a2279d` |
+| WR-02 | Fixed -- re-fetch the ledger row after `redrive_upload` commits its fresh payload and build `merged` on the fresh `part_urls` (READ COMMITTED + `populate_existing`), instead of stamping the attempt onto the stale top-of-handler snapshot. | `1f770de` |
+| WR-03 | Fixed -- `presign_download` now requires a `CloudJob` with `status == UPLOADED`, else 409 (`file_id` path-only, AUTH-01; no per-agent ownership predicate -- single-user, by design). | `8a8ef7e` |
+| WR-04 | Fixed -- `UploadedPart.etag` enforces `min_length=1`. | `5c3e3c2` |
+| IN-01 | **Skipped (info-only).** The direct `from aiobotocore.config import AioConfig` import is a transitive-dependency hygiene nit, not a defect; deferred rather than churn `pyproject.toml` + `uv.lock` in this fix pass. Worth picking up as a standalone dependency-hardening change. | (none) |
 
 ---
 
