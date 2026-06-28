@@ -309,16 +309,22 @@ def kube_respx(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
 
     The router has ``assert_all_called=False`` so the (often-unused) discovery stubs
     never fail a test that only touches one verb; individual tests add the create/get/
-    list/delete routes they assert on.
+    list/delete routes they assert on. kr8s appends a trailing slash to the discovery
+    endpoints (e.g. ``GET /version/``), so these stubs use a trailing-slash-tolerant regex.
     """
+    import re
+
     from httpx import Response
     import respx
 
     monkeypatch.setenv("KUBECONFIG", "/nonexistent/phaze-test-kubeconfig")
 
+    base = re.escape(KUBE_TEST_API_URL)
     with respx.mock(base_url=KUBE_TEST_API_URL, assert_all_called=False) as router:
-        router.get("/version").mock(return_value=Response(200, json={"major": "1", "minor": "30", "gitVersion": "v1.30.0"}))
-        router.get("/api").mock(return_value=Response(200, json={"kind": "APIVersions", "versions": ["v1"]}))
-        router.get("/api/v1").mock(return_value=Response(200, json={"kind": "APIResourceList", "groupVersion": "v1", "resources": []}))
-        router.get("/apis").mock(return_value=Response(200, json={"kind": "APIGroupList", "groups": []}))
+        router.get(url__regex=rf"^{base}/version/?$").mock(return_value=Response(200, json={"major": "1", "minor": "30", "gitVersion": "v1.30.0"}))
+        router.get(url__regex=rf"^{base}/api/?$").mock(return_value=Response(200, json={"kind": "APIVersions", "versions": ["v1"]}))
+        router.get(url__regex=rf"^{base}/api/v1/?$").mock(
+            return_value=Response(200, json={"kind": "APIResourceList", "groupVersion": "v1", "resources": []})
+        )
+        router.get(url__regex=rf"^{base}/apis/?$").mock(return_value=Response(200, json={"kind": "APIGroupList", "groups": []}))
         yield router
