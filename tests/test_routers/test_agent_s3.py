@@ -282,6 +282,6 @@ async def test_failed_unauthenticated_returns_401(session: AsyncSession) -> None
 def test_agent_s3_router_is_mounted_on_the_app() -> None:
     """The agent_s3 routes resolve through the real application (router is mounted in main.py)."""
     app = create_app()
-    paths = {route.path for route in app.routes}  # type: ignore[attr-defined]
+    paths = set(app.openapi()["paths"])
     assert "/api/internal/agent/s3/{file_id}/uploaded" in paths
     assert "/api/internal/agent/s3/{file_id}/failed" in paths
