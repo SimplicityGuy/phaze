@@ -67,13 +67,13 @@ class TestCloudJobSchema:
         col = CloudJob.__table__.columns["attempts"]
         assert col.nullable is False
         assert col.default.arg == 0
-        assert col.server_default.arg.text == "0"
+        assert col.server_default.arg == "0"
 
     def test_inadmissible_non_null_default_false(self) -> None:
         col = CloudJob.__table__.columns["inadmissible"]
         assert col.nullable is False
         assert col.default.arg is False
-        assert col.server_default.arg.text == "false"
+        assert col.server_default.arg == "false"
 
     def test_id_is_primary_key(self) -> None:
         pk_cols = [c.name for c in CloudJob.__table__.primary_key.columns]
