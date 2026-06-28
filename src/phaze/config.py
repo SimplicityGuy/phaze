@@ -342,11 +342,16 @@ class ControlSettings(BaseSettings):
     # Phase 53 (KSTAGE-05): the S3 credentials honor the same `<VAR>_FILE` convention so the
     # control plane reads them from Docker/K8s secret mounts; they live on ControlSettings ONLY
     # (KSTAGE-02 -- the agent and pod never receive bucket credentials; T-53-01).
+    # Phase 54 (KSUBMIT-01): the kube credentials (kubeconfig / SA token) honor the same
+    # `<VAR>_FILE` convention so the control plane reads them from Docker/K8s secret mounts; they
+    # live on ControlSettings ONLY (the agent and pod never receive kube credentials; T-54-01).
     SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {
         "openai_api_key",
         "anthropic_api_key",
         "s3_access_key_id",
         "s3_secret_access_key",
+        "kube_kubeconfig",
+        "kube_sa_token",
     }
 
     # Discogsography
@@ -424,6 +429,19 @@ class ControlSettings(BaseSettings):
         lt=20,
         validation_alias=AliasChoices("PHAZE_PUSH_MAX_ATTEMPTS", "push_max_attempts"),
         description="Max push attempts before a sha256-mismatched file is marked ANALYSIS_FAILED (Phase 50, D-12). Default 3; bounded gt=0, lt=20.",
+    )
+    # Phase 54 D-08: how many times control re-submits a Kueue Job for a file before giving up and
+    # marking it ANALYSIS_FAILED. A DISTINCT budget from push_max_attempts (the rsync push leg) --
+    # the kube submit leg has its own failure modes (admission/scheduling/transient API errors), so
+    # it gets its own retry budget. Bounded (gt=0, lt=20) like push_max_attempts so a misconfig
+    # cannot create an unbounded submit storm (T-54-02). Lives on ControlSettings because the
+    # control plane owns submission.
+    cloud_submit_max_attempts: int = Field(
+        default=3,
+        gt=0,
+        lt=20,
+        validation_alias=AliasChoices("PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS", "cloud_submit_max_attempts"),
+        description="Max kube Job submit attempts before a file is marked ANALYSIS_FAILED (Phase 54, D-08). A distinct budget from push_max_attempts. Default 3; bounded gt=0, lt=20.",
     )
     # Phase 50: control-side mirror of the compute agent's AgentSettings.cloud_scratch_dir.
     # The push-success callback (routers/agent_push.py, 50-05) builds the process_file
@@ -503,6 +521,61 @@ class ControlSettings(BaseSettings):
         lt=5368709120,
         validation_alias=AliasChoices("PHAZE_S3_MULTIPART_PART_SIZE_BYTES", "s3_multipart_part_size_bytes"),
         description="Multipart upload part size (bytes) the agent streams over presigned part URLs (Phase 53, D-01). Default 67108864 (64 MiB); bounded to the S3 [5 MiB, 5 GiB) part-size range.",
+    )
+
+    # Phase 54 (KSUBMIT-01): the kube client surface the submit seam, submit task, and reconcile
+    # cron read. ALL OPTIONAL (default None) in Phase 54 so an existing Phase 53 cloud-on/no-kube
+    # deploy keeps working -- the fail-fast model validator that couples these to
+    # `cloud_burst_enabled` is Phase 55 (KDEPLOY-02), NOT here. Adding that coupling now would
+    # break those deploys. Credentials (`kube_kubeconfig` / `kube_sa_token`) are SecretStr resolved
+    # from `<VAR>_FILE` mounts via SECRET_FILE_FIELDS above; they live on the control plane only
+    # (T-54-01) and are never logged.
+    kube_api_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_API_URL", "kube_api_url"),
+        description="Kubernetes API server URL the control plane submits/watches Jobs against (Phase 54, KSUBMIT-01). Optional in Phase 54; fail-fast coupling to cloud_burst_enabled arrives in Phase 56.",
+    )
+    kube_namespace: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_NAMESPACE", "kube_namespace"),
+        description="Namespace the Kueue Jobs are submitted into (Phase 54, KSUBMIT-01). Optional in Phase 54.",
+    )
+    kube_local_queue: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_LOCAL_QUEUE", "kube_local_queue"),
+        description="Kueue LocalQueue name stamped on submitted Jobs (kueue.x-k8s.io/queue-name label) (Phase 54, KSUBMIT-01). Optional in Phase 54.",
+    )
+    kube_job_image: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_JOB_IMAGE", "kube_job_image"),
+        description="Container image the submitted analysis Job runs (Phase 54, KSUBMIT-01). Optional in Phase 54.",
+    )
+    kube_job_cpu_request: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_JOB_CPU_REQUEST", "kube_job_cpu_request"),
+        description="CPU resource request stamped on the submitted Job's pod spec (e.g. '2') (Phase 54, KSUBMIT-01). Optional in Phase 54.",
+    )
+    kube_job_memory_request: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_JOB_MEMORY_REQUEST", "kube_job_memory_request"),
+        description="Memory resource request stamped on the submitted Job's pod spec (e.g. '4Gi') (Phase 54, KSUBMIT-01). Optional in Phase 54.",
+    )
+    kube_workload_api_version: str = Field(
+        default="kueue.x-k8s.io/v1beta1",
+        validation_alias=AliasChoices("PHAZE_KUBE_WORKLOAD_API_VERSION", "kube_workload_api_version"),
+        description="apiVersion of the Kueue Workload/Job resources the control plane submits and reconciles (Phase 54, KSUBMIT-01). Default 'kueue.x-k8s.io/v1beta1'.",
+    )
+    # Phase 54 (KSUBMIT-01) credentials -- file-mounted SecretStr resolved via SECRET_FILE_FIELDS
+    # above. NEVER log (T-54-01). Control plane only.
+    kube_kubeconfig: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_KUBECONFIG", "kube_kubeconfig"),
+        description="Kubeconfig contents for the control plane's kube client, file-mounted via PHAZE_KUBE_KUBECONFIG_FILE (Phase 54, KSUBMIT-01). Never logged.",
+    )
+    kube_sa_token: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_KUBE_SA_TOKEN", "kube_sa_token"),
+        description="ServiceAccount bearer token for the control plane's kube client, file-mounted via PHAZE_KUBE_SA_TOKEN_FILE (Phase 54, KSUBMIT-01). Never logged.",
     )
 
     @field_validator("s3_endpoint_url")
