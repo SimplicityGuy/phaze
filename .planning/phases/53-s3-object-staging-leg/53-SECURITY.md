@@ -44,3 +44,13 @@ None. No `## Threat Flags` section is present in any of 53-01..05-SUMMARY.md, so
 ## Informational (non-blocking)
 
 - `pyproject.toml:192` uses `exclude-newer = "7 days"` (relative). The cooldown directive required by T-53-04/SC is present and the dep floors are pinned, so the threat is CLOSED. Separately, project memory notes a relative value can break `uv lock` resolution (a build-resolution concern, not a security mitigation gap) — out of scope for this audit, flagged for awareness only.
+
+## Security Audit 2026-06-28 (re-verification)
+
+| Metric | Count |
+|--------|-------|
+| Threats found | 24 |
+| Closed | 24 |
+| Open | 0 |
+
+Re-ran `/gsd:secure-phase 53` (State A). Source under audit is byte-identical to the prior FORCE audit (no `src/`, `alembic/`, or `pyproject.toml` changes since commit `538d3ac`), and the register is plan-authored with `threats_open: 0` — short-circuit rule applied (verified-CLOSED register, auditor re-spawn skipped as redundant). Verdict unchanged: **SECURED**.
