@@ -237,7 +237,7 @@ async def get_workload_for(job_uid, namespace, api):
     )]
     return wls[0] if wls else None
 ```
-`[ASSUMED]` the exact label key `kueue.x-k8s.io/job-uid` — FEATURES.md says "discoverable by Job UID / label selector" and Context7 KEP-973 notes the owner-ref/uid linkage; **verify the precise label key against the live Kueue version in Phase 56**, and fall back to the owner-reference or the `phaze.dev/file-id` label phaze stamps on its own Job→Workload chain. The phaze-stamped `phaze.dev/file-id` label on the Job is NOT auto-propagated to the Workload by Kueue, so prefer the Kueue job-uid label or owner-ref.
+`[ASSUMED]` the exact label key `kueue.x-k8s.io/job-uid` — FEATURES.md says "discoverable by Job UID / label selector" and Context7 KEP-973 notes the owner-ref/uid linkage; **the precise label key is a Phase-56 live-cluster verification item**. Phase 54 `get_workload_for` (Plan 03) does NOT rely on the label alone: it tries the job-uid label selector and, on a miss, falls back to an **owner-reference match** (the Workload whose `ownerReference.uid == job_uid`). Both paths are exercised by the fake-kube tests so a wrong label key degrades to the fallback instead of silently leaving admission state unreadable. (The phaze-stamped `phaze.dev/file-id` label on the Job is NOT auto-propagated to the Workload by Kueue, so it is not a reliable resolver.)
 
 ### The exact tuples a reconcile loop matches
 `[CITED: FEATURES.md §Kueue Behavior Reference — verified against Context7 /kubernetes-sigs/kueue]`
@@ -430,23 +430,25 @@ await job.delete(propagation_policy="Background")  # DELETE — Kueue GCs the ow
 | # | Claim | Section | Risk if Wrong |
 |---|-------|---------|---------------|
 | A1 | kr8s is the right client (vs official `kubernetes_asyncio`) | Standard Stack | LOW — both work; kr8s is lighter + tests cleaner. Confirm before Phase 56 RBAC is written against it. |
-| A2 | The Workload-discovery label is `kueue.x-k8s.io/job-uid` | Status Mapping | MEDIUM — if the key differs, reconcile can't find the Workload (admission state unreadable). Verify against the live Kueue version; owner-ref fallback exists. |
+| A2 | The Workload-discovery label is `kueue.x-k8s.io/job-uid` | Status Mapping | MEDIUM → de-risked: if the key differs, reconcile can't find the Workload (admission state unreadable). Phase 54 `get_workload_for` (Plan 03) implements the owner-reference fallback and tests both paths; the exact live label key is a Phase-56 verification item. |
 | A3 | `ttlSecondsAfterFinished: 900` is comfortably > one reconcile tick | Suspended-Job Spec | LOW — D-04 makes explicit delete primary; TTL only orphan-backstop. |
 | A4 | Resources are "requests only" (KSUBMIT-01) despite KJOB-03's hard memory limit | Suspended-Job Spec | MEDIUM — no OOM ceiling on a multi-hour pod could OOM-kill; see Open Question 1. |
 | A5 | New `CloudJobStatus` members = SUBMITTED/RUNNING/SUCCEEDED (+ existing FAILED) | Data Model | LOW — planner finalizes names; only the CHECK list changes. |
 | A6 | kr8s `ServerError.response.status_code == 409` is the AlreadyExists signal | Submit Task | LOW — verified `ServerError(status, response: httpx.Response)` in `kr8s/_exceptions.py`; `.status.reason == "AlreadyExists"` is the alternative check. |
 | A7 | Phase 52's measured peak-RSS values are available for `kube_job_memory_request` | kr8s Config | MEDIUM — if not measured, request sizing is a guess; confirm against KJOB-03 output. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **KSUBMIT-01 "requests only" vs KJOB-03 "hard pod memory limit".**
-   - What we know: Kueue counts *requests* for quota; KSUBMIT-01 says requests only; KJOB-03 (Phase 52) wants a hard memory limit so a multi-hour set never OOMs.
-   - What's unclear: whether the Job spec should also set `resources.limits.memory`.
-   - Recommendation: honor CONTEXT "requests only" as the locked default; raise the KJOB-03 limit as an explicit planner decision (a memory limit can coexist with the request without violating Kueue accounting). Default to no limit unless Phase 52's measured peak RSS argues otherwise.
+> All open questions are explicitly resolved below before planning proceeds (Dimension 11 gate). Q1 is resolved-and-adopted by Plan 03; Q2 and Q3 are resolved-as-deferred to Phase-56 live-cluster verification, with the Phase-54 fake-kube seam carrying the risk (Q2 via a monkeypatched owner-reference fallback that the fake-kube tests exercise; Q3 via the monkeypatched seam that makes the business logic independent of the exact constructor form).
 
-2. **Exact Workload→Job linkage label.** Resolve `kueue.x-k8s.io/job-uid` (A2) against the deployed Kueue version, or implement an owner-reference walk as the robust fallback. Low effort to support both.
+1. **Q1 — RESOLVED (adopted).** KSUBMIT-01 "requests only" vs KJOB-03 "hard pod memory limit".
+   - Resolution: requests-only is LOCKED. The Job spec sets `resources.requests` (cpu/memory) and **NO** `resources.limits`. Adopted by Plan 03 (`build_job_manifest` asserts requests present + NO limits, and the manifest spec test enforces it). The KJOB-03 OOM-ceiling concern is deferred to a Phase-52/56 operator decision (a memory limit can coexist later without violating Kueue accounting); Phase 54 ships no limit.
 
-3. **kr8s async object construction ergonomics.** Context7 shows both `Job(dict, api=api)` (sync construct, await methods) and an `await Job(...)` form in one example. Recommend the `Job(dict, api=api)` + `await job.create()` form (consistent across the docs); verify the exact constructor signature against 0.20.15 at implementation time (trivial to confirm in a one-line repl/test).
+2. **Q2 — RESOLVED (deferred to Phase 56, de-risked now).** Exact Workload→Job linkage label.
+   - Resolution: the precise label key (`kueue.x-k8s.io/job-uid`, A2 MEDIUM) is verified in Phase 56 against the live Kueue version. Phase 54 de-risks it now: `get_workload_for` (Plan 03) tries the job-uid label selector AND falls back to an **owner-reference match** (the Workload whose `ownerReference.uid == job_uid`) when the label lookup misses. The Phase-54 fake-kube tests exercise BOTH the label-hit path AND the label-miss → owner-ref-fallback path through the monkeypatched seam, so a wrong label key degrades gracefully instead of silently never reading admission state. A live-cluster confirmation of the exact key remains an explicit Phase-56 verification item.
+
+3. **Q3 — RESOLVED (deferred to Phase 56).** kr8s async object construction ergonomics.
+   - Resolution: use the `Job(dict, api=api)` + `await job.create()` form (consistent across the Context7 docs). The exact 0.20.15 constructor signature is verified in Phase 56 against the live cluster; Phase 54 fake-kube tests use the monkeypatched seam, so the reconcile/submit business logic is independent of the exact constructor form.
 
 ## Environment Availability
 

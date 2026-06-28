@@ -231,13 +231,24 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   5. On Job failure or eviction the file is re-driven up to a bounded max-attempts cap then marked `ANALYSIS_FAILED` (no cross-target fallback); finished Jobs are cleaned up with no TTL-vs-read race, and **no `process_file:<id>` ledger row is seeded** for K8s files (so `recover_orphaned_work` never wrongly re-enqueues them onto an agent queue).
 
 **Plans**: 6 plans in 4 waves
+**Wave 1**
 
 - [ ] 54-01-PLAN.md — kr8s dependency (legitimacy-gated) + kube config surface on ControlSettings (D-08) [Wave 1]
 - [ ] 54-02-PLAN.md — cloud_job model extension + migration 026 (CloudJobStatus + kueue_workload/attempts/inadmissible, D-09) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 54-03-PLAN.md — pure kr8s seam (suspended-Job manifest + submit/list/get/delete) + fake-kube test substrate (KSUBMIT-01/05/06) [Wave 2]
 - [ ] 54-04-PLAN.md — Inadmissible pipeline-UI alert off cloud_job.inadmissible (D-06, KSUBMIT-04) [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 54-05-PLAN.md — fast submit_cloud_job task + enqueue_router/controller registration, no ledger seed (KSUBMIT-01/02/06) [Wave 3]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 54-06-PLAN.md — reconcile cron (status mapping, delete-after-record, S3 cleanup, bounded re-drive, Inadmissible) + */5 registration (KSUBMIT-02/03/04/05/06) [Wave 4]
+
 **Research**: Skip — kr8s/Kueue patterns verified same-day against Context7 + kueue.sigs.k8s.io.
 
 ### Phase 55: Routing, state & ledger integration (the live seam)
