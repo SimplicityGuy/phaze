@@ -82,6 +82,12 @@ def test_uploaded_part_part_number_ge_1() -> None:
         UploadedPart(part_number=0, etag="abc")
 
 
+def test_uploaded_part_rejects_empty_etag() -> None:
+    """UploadedPart.etag must be non-empty -- an empty ETag breaks CompleteMultipartUpload (WR-04)."""
+    with pytest.raises(pydantic.ValidationError):
+        UploadedPart(part_number=1, etag="")
+
+
 def test_uploaded_request_carries_ordered_parts_no_identity() -> None:
     """UploadedRequest carries the ordered (part_number, etag) list and NO identity (AUTH-01)."""
     req = UploadedRequest(parts=[UploadedPart(part_number=1, etag="e1"), UploadedPart(part_number=2, etag="e2")])

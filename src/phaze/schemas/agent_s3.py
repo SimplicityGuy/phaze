@@ -76,7 +76,10 @@ class UploadedPart(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     part_number: int = Field(ge=1)
-    etag: str
+    # min_length=1: a missing S3 ETag header strips to "" (s3_upload.py), which would otherwise
+    # pass validation and then fail CompleteMultipartUpload with a 400 (WR-04). S3 always returns
+    # a non-empty ETag, so an empty one is a malformed callback to reject at the wire boundary.
+    etag: str = Field(min_length=1)
 
 
 class UploadedRequest(BaseModel):
