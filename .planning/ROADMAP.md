@@ -154,7 +154,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
-| 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
+| 54. Kube submit/watch + reconcile cron | v6.0 | 2/6 | In Progress|  |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
@@ -233,8 +233,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 **Plans**: 6 plans in 4 waves
 **Wave 1**
 
-- [ ] 54-01-PLAN.md — kr8s dependency (legitimacy-gated) + kube config surface on ControlSettings (D-08) [Wave 1]
-- [ ] 54-02-PLAN.md — cloud_job model extension + migration 026 (CloudJobStatus + kueue_workload/attempts/inadmissible, D-09) [Wave 1]
+- [x] 54-01-PLAN.md — kr8s dependency (legitimacy-gated) + kube config surface on ControlSettings (D-08) [Wave 1]
+- [x] 54-02-PLAN.md — cloud_job model extension + migration 026 (CloudJobStatus + kueue_workload/attempts/inadmissible, D-09) [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
