@@ -27,9 +27,11 @@ def test_cloud_burst_enabled_default_false() -> None:
 def test_cloud_burst_enabled_env_alias(monkeypatch: _pytest.MonkeyPatch) -> None:
     """PHAZE_CLOUD_BURST_ENABLED=true binds to the field and parses as True."""
     monkeypatch.setenv("PHAZE_CLOUD_BURST_ENABLED", "true")
-    # cloud ON requires a compute scratch dir (validator below); set one so this
-    # field-parsing test exercises only the toggle binding.
+    # cloud ON requires a compute scratch dir AND the Phase 53 S3 staging substrate
+    # (validators below); set them so this field-parsing test exercises only the toggle binding.
     monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch")
+    monkeypatch.setenv("PHAZE_S3_BUCKET", "phaze-staging")
+    monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", "https://s3.example.com")
     assert ControlSettings().cloud_burst_enabled is True
 
 
@@ -37,6 +39,8 @@ def test_cloud_burst_enabled_bare_name_alias(monkeypatch: _pytest.MonkeyPatch) -
     """The bare-name form cloud_burst_enabled=true also parses (AliasChoices dual form)."""
     monkeypatch.setenv("cloud_burst_enabled", "true")
     monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch")
+    monkeypatch.setenv("PHAZE_S3_BUCKET", "phaze-staging")
+    monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", "https://s3.example.com")
     assert ControlSettings().cloud_burst_enabled is True
 
 
@@ -49,6 +53,10 @@ def test_cloud_burst_on_requires_compute_scratch_dir(monkeypatch: _pytest.Monkey
     import pytest
 
     monkeypatch.setenv("PHAZE_CLOUD_BURST_ENABLED", "true")
+    # Phase 53: satisfy the S3 staging-config validator so the compute_scratch_dir guard is the
+    # one that fires (both run as mode="after"; the S3 validator is defined first).
+    monkeypatch.setenv("PHAZE_S3_BUCKET", "phaze-staging")
+    monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", "https://s3.example.com")
     monkeypatch.delenv("PHAZE_COMPUTE_SCRATCH_DIR", raising=False)
     monkeypatch.delenv("compute_scratch_dir", raising=False)
     with pytest.raises(ValueError, match="PHAZE_COMPUTE_SCRATCH_DIR is required"):

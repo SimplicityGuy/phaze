@@ -9,6 +9,10 @@ description = "A music alignment tool"
 license = "MIT"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    # Phase 53 (KSTAGE-01..05): async S3 client the control plane uses to presign multipart
+    # PUT + just-in-time GET URLs and to delete/abort staged objects. The control plane never
+    # reads file bytes (DIST-01); it only orchestrates presigned URLs the agent/pod transfer over.
+    "aioboto3>=15.5.0",
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
@@ -196,6 +200,9 @@ dev = [
     "bandit>=1.9.4",
     "greenlet>=3.5.2",
     "httpx>=0.28.1",
+    # Phase 53: in-memory S3 mock so the staging leg (presign/upload/delete) is testable
+    # without a live S3 backend or cluster.
+    "moto>=5.1.0",
     "mypy>=2.1.0",
     "pip-audit>=2.10.1",
     "pre-commit>=4.6.0",

@@ -339,7 +339,15 @@ class ControlSettings(BaseSettings):
     """Application-server role: LLM proposal generation, Discogs matching, fileless tasks."""
 
     # v4.0.1: add the LLM API keys to the inherited database_url/redis_url set.
-    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {"openai_api_key", "anthropic_api_key"}
+    # Phase 53 (KSTAGE-05): the S3 credentials honor the same `<VAR>_FILE` convention so the
+    # control plane reads them from Docker/K8s secret mounts; they live on ControlSettings ONLY
+    # (KSTAGE-02 -- the agent and pod never receive bucket credentials; T-53-01).
+    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {
+        "openai_api_key",
+        "anthropic_api_key",
+        "s3_access_key_id",
+        "s3_secret_access_key",
+    }
 
     # Discogsography
     discogs_match_concurrency: int = 5
@@ -428,6 +436,110 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_COMPUTE_SCRATCH_DIR", "compute_scratch_dir"),
         description="Control-side copy of the compute agent's scratch directory; used to build process_file scratch_path in the push callback (Phase 50, 50-05). MUST match the compute agent's cloud_scratch_dir.",
     )
+
+    # Phase 53 (KSTAGE-05): operator-provided S3 object-staging surface. Works against ANY
+    # S3-compatible backend via an explicit `endpoint_url` (MinIO/Backblaze/AWS/etc.), not just
+    # AWS. The control plane presigns multipart PUT + just-in-time GET and deletes staged objects
+    # (KSTAGE-01..04); the file-server agent and pod transfer bytes over presigned URLs and never
+    # see these fields (KSTAGE-02). All optional by default so an all-local (cloud-off) deploy
+    # needs zero S3 config; the `_enforce_s3_config_when_cloud_enabled` validator fails fast when
+    # cloud burst is ON but the staging substrate is unconfigured.
+    s3_endpoint_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_S3_ENDPOINT_URL", "s3_endpoint_url"),
+        description="S3-compatible endpoint URL (e.g. https://s3.us-west-1.amazonaws.com or a MinIO/Backblaze URL). Must be a well-formed http(s) URL (Phase 53, KSTAGE-05; T-53-02).",
+    )
+    s3_bucket: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_S3_BUCKET", "s3_bucket"),
+        description="Operator-created bucket used for ephemeral file_id-scoped staging objects (Phase 53, KSTAGE-04/05).",
+    )
+    s3_region: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_S3_REGION", "s3_region"),
+        description="S3 region (e.g. us-west-1). Optional for many S3-compatible backends (Phase 53, KSTAGE-05).",
+    )
+    s3_addressing_style: Literal["path", "virtual"] = Field(
+        default="path",
+        validation_alias=AliasChoices("PHAZE_S3_ADDRESSING_STYLE", "s3_addressing_style"),
+        description="S3 addressing style. 'path' (default) maximizes S3-compatible-backend support; 'virtual' for AWS virtual-hosted-style (Phase 53, KSTAGE-05).",
+    )
+    s3_access_key_id: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_S3_ACCESS_KEY_ID", "s3_access_key_id"),
+        description="S3 access key id (control-plane only; resolves from PHAZE_S3_ACCESS_KEY_ID_FILE per the _FILE convention). KSTAGE-02/T-53-01.",
+    )
+    s3_secret_access_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PHAZE_S3_SECRET_ACCESS_KEY", "s3_secret_access_key"),
+        description="S3 secret access key (control-plane only; resolves from PHAZE_S3_SECRET_ACCESS_KEY_FILE per the _FILE convention). KSTAGE-02/T-53-01.",
+    )
+    # Bounded presign/lifecycle/part-size knobs: an out-of-range operator value fails fast at
+    # startup (T-53-03) and never reaches the presign/upload code path.
+    s3_presign_put_ttl_sec: int = Field(
+        default=3600,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_S3_PRESIGN_PUT_TTL_SEC", "s3_presign_put_ttl_sec"),
+        description="TTL (seconds) for presigned multipart PUT/part URLs minted for the upload leg (Phase 53, KSTAGE-02). Default 3600; bounded gt=0, lt=86400.",
+    )
+    s3_presign_get_ttl_sec: int = Field(
+        default=900,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_S3_PRESIGN_GET_TTL_SEC", "s3_presign_get_ttl_sec"),
+        description="TTL (seconds) for the just-in-time presigned GET URL minted at pod startup (Phase 53, KSTAGE-03). Default 900 (short -- minted post-admission so it never expires during a Kueue wait); bounded gt=0, lt=86400.",
+    )
+    s3_lifecycle_ttl_days: int = Field(
+        default=2,
+        gt=0,
+        lt=30,
+        validation_alias=AliasChoices("PHAZE_S3_LIFECYCLE_TTL_DAYS", "s3_lifecycle_ttl_days"),
+        description="Bucket lifecycle TTL (days) -- the backstop that deletes any staged object the inline callback delete missed (Phase 53, KSTAGE-04, D-02). Default 2; bounded gt=0, lt=30.",
+    )
+    s3_multipart_part_size_bytes: int = Field(
+        default=67108864,
+        ge=5242880,
+        lt=5368709120,
+        validation_alias=AliasChoices("PHAZE_S3_MULTIPART_PART_SIZE_BYTES", "s3_multipart_part_size_bytes"),
+        description="Multipart upload part size (bytes) the agent streams over presigned part URLs (Phase 53, D-01). Default 67108864 (64 MiB); bounded to the S3 [5 MiB, 5 GiB) part-size range.",
+    )
+
+    @field_validator("s3_endpoint_url")
+    @classmethod
+    def _validate_s3_endpoint_url(cls, value: str | None) -> str | None:
+        """Require a well-formed http(s) URL with a netloc (T-53-02 SSRF surface).
+
+        ``s3_endpoint_url`` is operator-controlled and feeds the aioboto3 client the control
+        plane uses to presign/delete. A scheme-less value (``s3.example.com``) or a non-http
+        scheme (``file://``) is rejected at construction so an SSRF-shaped endpoint can never
+        reach the S3 client. ``None`` (cloud off / unset) passes through unchanged.
+        """
+        if value is None:
+            return None
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            msg = f"s3_endpoint_url must be a well-formed http(s) URL with a host, got {value!r}"
+            raise ValueError(msg)
+        return value
+
+    @model_validator(mode="after")
+    def _enforce_s3_config_when_cloud_enabled(self) -> "ControlSettings":
+        """Phase 53 (KSTAGE-05): cloud burst ON requires the S3 staging substrate.
+
+        The staging leg presigns objects into ``s3_bucket`` at ``s3_endpoint_url``; with cloud
+        burst enabled but either unset, the upload presign would fail at runtime with no startup
+        signal. Mirror ``_enforce_compute_scratch_dir_when_cloud_enabled`` and fail fast. OFF
+        (the default) keeps both optional so an all-local deploy needs no S3 config.
+        """
+        if self.cloud_burst_enabled:
+            if not self.s3_bucket:
+                raise ValueError("PHAZE_S3_BUCKET is required when PHAZE_CLOUD_BURST_ENABLED is true (it is the cloud-burst staging bucket)")
+            if not self.s3_endpoint_url:
+                raise ValueError(
+                    "PHAZE_S3_ENDPOINT_URL is required when PHAZE_CLOUD_BURST_ENABLED is true (the S3-compatible endpoint the control plane presigns against)"
+                )
+        return self
 
     @model_validator(mode="after")
     def _enforce_compute_scratch_dir_when_cloud_enabled(self) -> "ControlSettings":
