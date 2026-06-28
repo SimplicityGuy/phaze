@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import math
 from typing import TYPE_CHECKING, cast
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -78,12 +79,19 @@ async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router:
     # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
     # in place instead of erroring on the duplicate (mirrors the scheduling_ledger upsert idiom).
     stmt = pg_insert(CloudJob).values(
+        # Stamp the PK explicitly: the single-row kwargs form of pg_insert DOES apply CloudJob.id's
+        # Python-side default=uuid.uuid4 today (verified against real Postgres), but the list/multi-
+        # values form does NOT -- mirror the agent_analysis.py AnalysisResult precedent so a future
+        # conversion to that form cannot regress into a NOT NULL violation (CR-01, defensive).
+        id=uuid.uuid4(),
         file_id=file.id,
         s3_key=s3_staging.staged_object_key(file.id),
         status=CloudJobStatus.UPLOADING.value,
         upload_id=upload_id,
     )
     stmt = stmt.on_conflict_do_update(
+        # id is intentionally OUT of set_: the PK is immutable, so an existing row keeps its id on a
+        # re-stage (only the key/status/upload_id refresh).
         index_elements=["file_id"],
         set_={
             "s3_key": stmt.excluded.s3_key,
