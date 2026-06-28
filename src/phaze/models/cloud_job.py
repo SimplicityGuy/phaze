@@ -6,9 +6,11 @@ DB-checked enum), and the multipart ``upload_id`` so the control plane can compl
 upload. The control plane presigns the PUT/GET and deletes the object (KSTAGE-01..04); this
 row is the durable record of where the bytes live and what stage the burst is in.
 
-D-03 keeps this table staging-only NOW: ``kueue_workload`` (the Kueue Job name, Phase 54) and
-``cloud_phase`` (Phase 55) are added in their OWN migrations so each migration stays scoped to
-its phase. Mirrors the v5.0 ``scheduling_ledger`` per-file sidecar precedent.
+Phase 54 (D-09) extends this with the Kube submit/reconcile lifecycle: the ``kueue_workload``
+(Job name), ``attempts`` (bounded re-drive counter) and ``inadmissible`` (operator-alert flag)
+columns, plus the SUBMITTED/RUNNING/SUCCEEDED status members. ``cloud_phase`` (Phase 55) is the
+only column still deferred to its OWN migration so each migration stays scoped to its phase.
+Mirrors the v5.0 ``scheduling_ledger`` per-file sidecar precedent.
 
 The ``status`` column is a string-backed :class:`CloudJobStatus` StrEnum (FileState precedent):
 new members need no enum migration, only the CHECK-constraint membership list. ``created_at`` /
@@ -18,7 +20,7 @@ new members need no enum migration, only the CHECK-constraint membership list. `
 import enum
 import uuid
 
-from sqlalchemy import CheckConstraint, ForeignKey, String
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,6 +38,12 @@ class CloudJobStatus(enum.StrEnum):
     UPLOADING = "uploading"
     UPLOADED = "uploaded"
     FAILED = "failed"
+    # Phase 54 (D-09): submit/reconcile lifecycle members. The reconcile cron drives a
+    # cloud_job row SUBMITTED -> RUNNING -> SUCCEEDED (or FAILED); only the CHECK membership
+    # list changes (string-backed, no Postgres enum-type migration).
+    SUBMITTED = "submitted"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
 
 
 class CloudJob(TimestampMixin, Base):
@@ -53,10 +61,19 @@ class CloudJob(TimestampMixin, Base):
     # Multipart upload id so the control plane can complete/abort the upload (D-01); NULL until
     # the multipart upload is initiated.
     upload_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Phase 54 (D-09): the Kueue/Job name stamped at submit; the reconcile cron looks the Job up
+    # by this name. NULL until the file is submitted to Kube.
+    kueue_workload: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Bounded re-drive counter (D-08): incremented on each Failed/Evicted re-submit; once it
+    # exceeds cloud_submit_max_attempts the file is marked ANALYSIS_FAILED.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    # Drives the D-06 operator alert: set when the Kueue Workload is Inadmissible (never enters
+    # the re-drive cap path).
+    inadmissible: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('uploading', 'uploaded', 'failed')",
+            "status IN ('uploading', 'uploaded', 'submitted', 'running', 'succeeded', 'failed')",
             name="status_enum",
         ),
     )

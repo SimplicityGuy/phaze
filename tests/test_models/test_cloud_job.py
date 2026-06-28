@@ -48,11 +48,32 @@ class TestCloudJobSchema:
         required = {"id", "file_id", "s3_key", "status", "upload_id", "created_at", "updated_at"}
         assert required.issubset(columns)
 
-    def test_staging_only_columns_absent(self) -> None:
-        # D-03: kueue_workload (Phase 54) and cloud_phase (Phase 55) land in their own migrations.
+    def test_kube_columns_present(self) -> None:
+        # Phase 54 (D-09): kueue_workload / attempts / inadmissible land in migration 026.
         columns = {c.name for c in CloudJob.__table__.columns}
-        assert "kueue_workload" not in columns
+        assert {"kueue_workload", "attempts", "inadmissible"}.issubset(columns)
+
+    def test_cloud_phase_still_absent(self) -> None:
+        # D-09: cloud_phase stays reserved for Phase 55 -- untouched here.
+        columns = {c.name for c in CloudJob.__table__.columns}
         assert "cloud_phase" not in columns
+
+    def test_kueue_workload_nullable_string(self) -> None:
+        col = CloudJob.__table__.columns["kueue_workload"]
+        assert col.nullable is True
+        assert col.type.length == 255
+
+    def test_attempts_non_null_default_zero(self) -> None:
+        col = CloudJob.__table__.columns["attempts"]
+        assert col.nullable is False
+        assert col.default.arg == 0
+        assert col.server_default.arg == "0"
+
+    def test_inadmissible_non_null_default_false(self) -> None:
+        col = CloudJob.__table__.columns["inadmissible"]
+        assert col.nullable is False
+        assert col.default.arg is False
+        assert col.server_default.arg == "false"
 
     def test_id_is_primary_key(self) -> None:
         pk_cols = [c.name for c in CloudJob.__table__.primary_key.columns]
@@ -70,6 +91,12 @@ class TestCloudJobSchema:
         assert CloudJobStatus.UPLOADING == "uploading"
         assert CloudJobStatus.UPLOADED == "uploaded"
         assert CloudJobStatus.FAILED == "failed"
+
+    def test_status_enum_kube_lifecycle_members(self) -> None:
+        # Phase 54 (D-09): submit/reconcile lifecycle members.
+        assert CloudJobStatus.SUBMITTED == "submitted"
+        assert CloudJobStatus.RUNNING == "running"
+        assert CloudJobStatus.SUCCEEDED == "succeeded"
 
 
 class TestCloudJobPersistence:
