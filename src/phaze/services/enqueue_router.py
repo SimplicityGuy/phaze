@@ -48,6 +48,7 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
         "scrape_and_store_tracklist",
         "match_tracklist_to_discogs",
         "refresh_tracklists",
+        "submit_cloud_job",  # Phase 54: fast kube-submit producer (control-plane; kube creds live here)
     }
 )
 """Fileless tasks the application-server controller worker consumes.

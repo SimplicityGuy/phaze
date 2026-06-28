@@ -40,6 +40,7 @@ from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 from phaze.tasks.scan_reaper import reap_stalled_scans
+from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
@@ -210,6 +211,9 @@ settings = {
         reap_stalled_scans,
         recover_orphaned_work,
         stage_cloud_window,
+        # Phase 54 (KSUBMIT-02): the fast kube-submit producer is operator/Phase-55-enqueueable on
+        # the controller queue. NO CronJob here -- Phase 55 owns the live stage_cloud_window trigger.
+        submit_cloud_job,
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [

@@ -245,3 +245,47 @@ async def test_resolve_unknown_task_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="unroutable task"):
         await resolve_queue_for_task("bogus_task", app_state, None)
+
+
+# ---------------------------------------------------------------------------
+# Phase 54: submit_cloud_job is a routable controller task
+# ---------------------------------------------------------------------------
+
+
+def test_submit_cloud_job_is_in_controller_tasks() -> None:
+    """submit_cloud_job is registered in CONTROLLER_TASKS (control-plane: kube creds live there)."""
+    assert "submit_cloud_job" in CONTROLLER_TASKS
+    assert "submit_cloud_job" not in AGENT_TASKS  # never a per-agent task
+
+
+@pytest.mark.asyncio
+async def test_resolve_submit_cloud_job_returns_controller_queue() -> None:
+    """submit_cloud_job resolves to the controller queue with agent_id None (the Phase-30 invariant)."""
+    app_state = stub_app_state()
+
+    routed = await resolve_queue_for_task("submit_cloud_job", app_state, None)
+
+    assert routed.queue is app_state.controller_queue
+    assert routed.agent_id is None
+
+
+def test_controller_tasks_stay_in_sync_with_controller_functions() -> None:
+    """Every CONTROLLER_TASKS name maps to a registered controller function (routability invariant).
+
+    A routable controller task must be dispatchable on the controller worker, else
+    resolve_queue_for_task would route an enqueue to a queue whose worker has no such function.
+    The worker dispatches both ``settings['functions']`` and the ``cron_jobs`` functions (e.g.
+    ``refresh_tracklists`` is cron-only but still operator-routable), so the registered set is the
+    union of the two. (The reverse is intentionally NOT required: cron-only producers like
+    reap_stalled_scans / recover_orphaned_work / stage_cloud_window are registered but never
+    operator-enqueued, so they are absent from CONTROLLER_TASKS.)
+    """
+    from phaze.tasks import controller
+
+    fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
+    cron_names = {getattr(cj.function, "__name__", "") for cj in controller.settings["cron_jobs"]}
+    registered = fn_names | cron_names
+    assert registered >= CONTROLLER_TASKS, f"unroutable: {CONTROLLER_TASKS - registered}"
+    # submit_cloud_job specifically is both routable AND a registered controller function (not a cron).
+    assert "submit_cloud_job" in fn_names
+    assert "submit_cloud_job" not in cron_names  # Phase 55 owns the trigger; no cron here
