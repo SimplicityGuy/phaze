@@ -87,9 +87,9 @@ async def test_upgrade_025_creates_cloud_job_then_downgrade_drops() -> None:
         async with engine.begin() as wconn:
             await wconn.execute(
                 text(
-                    "INSERT INTO files (id, sha256_hash, original_path, original_filename, current_path, "
+                    "INSERT INTO files (id, agent_id, sha256_hash, original_path, original_filename, current_path, "
                     "file_type, file_size, state, created_at, updated_at) "
-                    "VALUES (:id, :h, :p, :n, :p, 'flac', 1000, 'awaiting_cloud', NOW(), NOW())"
+                    "VALUES (:id, 'legacy-application-server', :h, :p, :n, :p, 'flac', 1000, 'awaiting_cloud', NOW(), NOW())"
                 ),
                 {"id": fid, "h": "abc", "p": "/music/x.flac", "n": "x.flac"},
             )
@@ -115,9 +115,9 @@ async def test_upgrade_025_creates_cloud_job_then_downgrade_drops() -> None:
         async with engine.begin() as wconn:
             await wconn.execute(
                 text(
-                    "INSERT INTO files (id, sha256_hash, original_path, original_filename, current_path, "
+                    "INSERT INTO files (id, agent_id, sha256_hash, original_path, original_filename, current_path, "
                     "file_type, file_size, state, created_at, updated_at) "
-                    "VALUES (:id, :h, :p, :n, :p, 'flac', 1000, 'awaiting_cloud', NOW(), NOW())"
+                    "VALUES (:id, 'legacy-application-server', :h, :p, :n, :p, 'flac', 1000, 'awaiting_cloud', NOW(), NOW())"
                 ),
                 {"id": fid2, "h": "def", "p": "/music/y.flac", "n": "y.flac"},
             )

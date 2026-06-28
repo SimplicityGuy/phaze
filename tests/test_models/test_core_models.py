@@ -21,7 +21,7 @@ def test_pushed_state_member() -> None:
 
 
 def test_all_tables_defined() -> None:
-    """All 17 expected tables should be defined in metadata."""
+    """All 18 expected tables should be defined in metadata."""
     table_names = set(Base.metadata.tables.keys())
     expected = {
         "agents",
@@ -41,6 +41,7 @@ def test_all_tables_defined() -> None:
         "tag_write_log",
         "pipeline_stage_control",
         "scheduling_ledger",
+        "cloud_job",
     }
     assert expected == table_names
 
