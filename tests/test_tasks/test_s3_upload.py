@@ -115,7 +115,13 @@ async def test_cancellation_is_reraised_not_swallowed(agent_env, tmp_path):  # t
 
     src = _write_file(tmp_path, b"Y" * 5)
     url1 = "https://s3.test/bucket/key?partNumber=1"
-    respx.put(url1).mock(side_effect=asyncio.CancelledError)
+
+    def _raise_cancel(_request):  # type: ignore[no-untyped-def]
+        # asyncio.CancelledError is a BaseException (not Exception) on 3.14, so respx rejects it as a
+        # bare side_effect type -- raise it from a callable side_effect instead.
+        raise asyncio.CancelledError
+
+    respx.put(url1).mock(side_effect=_raise_cancel)
 
     api = _FakeApiClient()
     with pytest.raises(asyncio.CancelledError):

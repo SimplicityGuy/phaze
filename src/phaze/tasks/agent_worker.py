@@ -68,6 +68,7 @@ from phaze.tasks.heartbeat import _heartbeat_loop
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.pool import create_process_pool
 from phaze.tasks.push import push_file
+from phaze.tasks.s3_upload import upload_file_s3
 from phaze.tasks.scan import scan_directory, scan_live_set
 
 
@@ -275,6 +276,10 @@ settings = {
         scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
         execute_approved_batch,
         push_file,  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
+        # Phase 53: fileserver httpx multipart-PUT upload to presigned S3 URLs. Registered under the
+        # explicit SAQ name "s3_upload" (a (name, func) tuple) so the control-plane producer enqueues
+        # by "s3_upload" (Plan 04) -- this name MUST mirror AGENT_TASKS in enqueue_router.py.
+        ("s3_upload", upload_file_s3),
     ],
     # Phase 46: NO heartbeat CronJob. The liveness heartbeat runs as an asyncio
     # background task launched in startup (ctx["heartbeat_task"]) so it cannot be
