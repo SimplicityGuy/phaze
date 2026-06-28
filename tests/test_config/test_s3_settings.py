@@ -214,14 +214,14 @@ def test_presign_ttl_defaults() -> None:
 def test_presign_put_ttl_rejects_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-positive PUT TTL fails validation (gt=0)."""
     monkeypatch.setenv("PHAZE_S3_PRESIGN_PUT_TTL_SEC", "0")
-    with pytest.raises(ValidationError, match="s3_presign_put_ttl_sec"):
+    with pytest.raises(ValidationError, match="PHAZE_S3_PRESIGN_PUT_TTL_SEC"):
         ControlSettings()
 
 
 def test_presign_get_ttl_rejects_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
     """A GET TTL at/above the one-day cap fails validation (lt=86400)."""
     monkeypatch.setenv("PHAZE_S3_PRESIGN_GET_TTL_SEC", "86400")
-    with pytest.raises(ValidationError, match="s3_presign_get_ttl_sec"):
+    with pytest.raises(ValidationError, match="PHAZE_S3_PRESIGN_GET_TTL_SEC"):
         ControlSettings()
 
 
@@ -229,7 +229,7 @@ def test_lifecycle_ttl_default_and_bounds(monkeypatch: pytest.MonkeyPatch) -> No
     """Lifecycle TTL defaults to 2 days and rejects an out-of-range value."""
     assert ControlSettings().s3_lifecycle_ttl_days == 2
     monkeypatch.setenv("PHAZE_S3_LIFECYCLE_TTL_DAYS", "0")
-    with pytest.raises(ValidationError, match="s3_lifecycle_ttl_days"):
+    with pytest.raises(ValidationError, match="PHAZE_S3_LIFECYCLE_TTL_DAYS"):
         ControlSettings()
 
 
@@ -237,5 +237,5 @@ def test_multipart_part_size_default_and_min(monkeypatch: pytest.MonkeyPatch) ->
     """Multipart part size defaults to 64 MiB and rejects below the S3 5 MiB minimum."""
     assert ControlSettings().s3_multipart_part_size_bytes == 67108864
     monkeypatch.setenv("PHAZE_S3_MULTIPART_PART_SIZE_BYTES", "1048576")  # 1 MiB < 5 MiB min
-    with pytest.raises(ValidationError, match="s3_multipart_part_size_bytes"):
+    with pytest.raises(ValidationError, match="PHAZE_S3_MULTIPART_PART_SIZE_BYTES"):
         ControlSettings()
