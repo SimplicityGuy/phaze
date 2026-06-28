@@ -85,8 +85,10 @@ async def _seed_file(session: AsyncSession, agent_id: str, *, file_size: int) ->
 
 
 async def _cloud_job(session: AsyncSession, file_id: uuid.UUID) -> CloudJob | None:
-    session.expire_all()
-    return (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    # populate_existing forces a fresh load of the row (it is mutated via core UPDATE on a re-stage)
+    # without expiring other instances in the session (e.g. the live ``file`` the producer reads).
+    stmt = select(CloudJob).where(CloudJob.file_id == file_id).execution_options(populate_existing=True)
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def test_stage_file_to_s3_creates_cloud_job_presigns_and_enqueues(
