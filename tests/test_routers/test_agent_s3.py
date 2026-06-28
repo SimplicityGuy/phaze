@@ -34,7 +34,8 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_s3 import router as agent_s3_router
 from phaze.services import cloud_staging, s3_staging
 from phaze.services.scheduling_ledger import upsert_ledger_entry
-from tests._queue_fakes import FakeTaskRouter
+from phaze.tasks.submit_cloud_job import submit_cloud_job_key
+from tests._queue_fakes import FakeQueue, FakeTaskRouter
 
 
 if TYPE_CHECKING:
@@ -45,26 +46,42 @@ if TYPE_CHECKING:
 
 
 class _StubCfg(SimpleNamespace):
-    """A duck-typed ControlSettings stand-in carrying only the field the router reads."""
+    """A duck-typed ControlSettings stand-in carrying only the fields the router reads.
 
-    def __init__(self, *, push_max_attempts: int = 3) -> None:
-        super().__init__(push_max_attempts=push_max_attempts)
+    ``cloud_target`` defaults ``"k8s"`` because the S3 callbacks fire only for the k8s target today
+    (a1 uses rsync); the non-k8s-preservation case constructs the stub with ``cloud_target="a1"``.
+    """
+
+    def __init__(self, *, push_max_attempts: int = 3, cloud_target: str = "k8s") -> None:
+        super().__init__(push_max_attempts=push_max_attempts, cloud_target=cloud_target)
 
 
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, push_max_attempts: int = 3) -> None:
-    monkeypatch.setattr("phaze.routers.agent_s3.get_settings", lambda: _StubCfg(push_max_attempts=push_max_attempts))
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, push_max_attempts: int = 3, cloud_target: str = "k8s") -> None:
+    monkeypatch.setattr(
+        "phaze.routers.agent_s3.get_settings",
+        lambda: _StubCfg(push_max_attempts=push_max_attempts, cloud_target=cloud_target),
+    )
 
 
-def _make_client(session: AsyncSession, task_router: FakeTaskRouter, token: str | None = None) -> AsyncClient:
+def _make_client(
+    session: AsyncSession,
+    task_router: FakeTaskRouter,
+    token: str | None = None,
+    *,
+    controller_queue: FakeQueue | None = None,
+) -> AsyncClient:
     app = FastAPI(title="smoke", version="test")
     app.include_router(agent_s3_router)
     app.dependency_overrides[get_session] = lambda: session
     app.state.task_router = task_router
+    # The k8s report_uploaded path routes submit_cloud_job onto the controller queue via
+    # enqueue_router.resolve_queue_for_task (CONTROLLER_TASKS), which reads app.state.controller_queue.
+    app.state.controller_queue = controller_queue if controller_queue is not None else FakeQueue("controller")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers)
 
 
-async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
+async def _seed_file(session: AsyncSession, agent_id: str, *, state: str = FileState.AWAITING_CLOUD) -> uuid.UUID:
     file_id = uuid.uuid4()
     session.add(
         FileRecord(
@@ -76,11 +93,16 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.flac",
             file_type="flac",
             file_size=4096,
-            state=FileState.AWAITING_CLOUD,
+            state=state,
         )
     )
     await session.commit()
     return file_id
+
+
+async def _file_state(session: AsyncSession, file_id: uuid.UUID) -> str:
+    stmt = select(FileRecord).where(FileRecord.id == file_id).execution_options(populate_existing=True)
+    return (await session.execute(stmt)).scalar_one().state
 
 
 async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, *, status: CloudJobStatus = CloudJobStatus.UPLOADING) -> None:
@@ -198,6 +220,87 @@ async def test_uploaded_unauthenticated_returns_401(session: AsyncSession) -> No
     async with _make_client(session, FakeTaskRouter(), token=None) as ac:
         r = await ac.post(f"/api/internal/agent/s3/{uuid.uuid4()}/uploaded", json={"parts": []})
     assert r.status_code == 401
+
+
+# --- Phase 55 (D-01b): k8s post-staging -- PUSHING->PUSHED flip + routed submit_cloud_job ----
+
+
+async def test_uploaded_k8s_flips_pushed_and_enqueues_submit(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """k8s first /uploaded: FileRecord PUSHING->PUSHED + ONE routed submit_cloud_job (deterministic key)."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, cloud_target="k8s")
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
+
+    controller_queue = FakeQueue("controller")
+    body = {"parts": [{"part_number": 1, "etag": '"e1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token, controller_queue=controller_queue) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text
+    # FileRecord advanced PUSHING -> PUSHED (frees a window slot, RESEARCH Pitfall 1).
+    assert await _file_state(session, file_id) == FileState.PUSHED
+    # Exactly one submit_cloud_job routed onto the CONTROLLER queue with the deterministic key.
+    assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
+    assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
+    # The existing cloud_job UPLOADING -> UPLOADED flip still happened.
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value
+
+
+async def test_uploaded_k8s_duplicate_is_idempotent_no_resubmit(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A duplicate/late k8s /uploaded (file already PUSHED) is an idempotent no-op -- no second submit."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, cloud_target="k8s")
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHED)  # already advanced
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
+
+    controller_queue = FakeQueue("controller")
+    body = {"parts": [{"part_number": 1, "etag": '"e1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token, controller_queue=controller_queue) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text
+    # PUSHED-flip rowcount==0 -> NO re-enqueue.
+    assert controller_queue.captured == []
+    assert await _file_state(session, file_id) == FileState.PUSHED
+
+
+async def test_uploaded_non_k8s_preserves_cloud_job_only_behavior(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-k8s target: the defensive guard preserves today's cloud_job-only flow (no PUSHED, no submit)."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, cloud_target="a1")
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
+
+    controller_queue = FakeQueue("controller")
+    body = {"parts": [{"part_number": 1, "etag": '"e1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token, controller_queue=controller_queue) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text
+    # No FileRecord PUSHED flip, no submit enqueue -- only the cloud_job UPLOADED flip.
+    assert await _file_state(session, file_id) == FileState.PUSHING
+    assert controller_queue.captured == []
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value
 
 
 # ---------------------------------------------------------------------------

@@ -50,7 +50,31 @@ logger = structlog.get_logger(__name__)
 
 
 async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router: AgentTaskRouter) -> None:
-    """Stage ``file`` to S3 and enqueue its upload (the upload-trigger seam, KSTAGE-01/D-01).
+    """Stage ``file`` to S3 and enqueue its upload, COMMITTING (the upload-trigger seam, KSTAGE-01/D-01).
+
+    Thin committing wrapper around :func:`_stage_file_to_s3`: it runs the full staging body then
+    commits once. This is the form ``redrive_upload`` (``cloud_staging.py``) calls -- it owns its own
+    single-file transaction, so the commit belongs here.
+
+    The bounded ``stage_cloud_window`` cron (Phase 55, KROUTE-02) instead calls the no-commit
+    :func:`_stage_file_to_s3` core PER CANDIDATE inside its advisory-locked loop and commits ONCE
+    after the loop -- a per-candidate commit here would release ``pg_advisory_xact_lock`` mid-loop
+    and re-open the over-stage class (Landmine L1). The two callers share the body; only the commit
+    boundary differs.
+
+    Steps (mirroring the ``agent_push`` producer idiom): see :func:`_stage_file_to_s3`.
+    """
+    await _stage_file_to_s3(session, file, task_router)
+    await session.commit()
+
+
+async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router: AgentTaskRouter) -> None:
+    """Run the full S3-staging body WITHOUT committing (Landmine L1: the no-commit core).
+
+    Identical to the public :func:`stage_file_to_s3` minus the terminal ``session.commit()`` so the
+    caller owns the transaction boundary. Used per-candidate by the advisory-locked
+    ``stage_cloud_window`` cron loop, which commits ONCE after the loop -- so the ``pg_advisory_xact_lock``
+    is held across the whole tick and the ≤N window can never be over-staged.
 
     Steps (mirroring the ``agent_push`` producer idiom):
 
@@ -64,7 +88,6 @@ async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router:
     4. Enqueue exactly one ``s3_upload`` job on the agent's queue carrying the presigned part URLs,
        the part size, and the file_id, with the deterministic ``s3_upload:<file_id>`` key and the
        explicit ``UPLOAD_FILE_SAQ_TIMEOUT_SEC`` job-net timeout (WR-03).
-    5. Commit.
     """
     cfg = cast("ControlSettings", get_settings())
 
@@ -116,7 +139,6 @@ async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router:
         timeout=UPLOAD_FILE_SAQ_TIMEOUT_SEC,
         **payload.model_dump(mode="json"),
     )
-    await session.commit()
 
     logger.info(
         "stage_file_to_s3: cloud_job staged + s3_upload enqueued",
