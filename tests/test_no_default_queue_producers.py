@@ -199,3 +199,72 @@ async def test_unknown_task_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="unroutable task"):
         await resolve_queue_for_task("definitely_not_a_task", app_state, None)
+
+
+# ---------------------------------------------------------------------------
+# Phase 55 (KROUTE-04): the k8s enqueue site is routed; the k8s backfill is bounded
+#
+# Two properties lock the no-over-enqueue invariant for the Phase-55 k8s seam:
+# 1. The k8s post-staging enqueue (``submit_cloud_job`` in ``report_uploaded``) is a known
+#    CONTROLLER_TASK routed through ``resolve_queue_for_task`` -- the static scan above already
+#    fails on any raw ``*.state.queue`` enqueue introduced in ``routers/`` (which includes
+#    ``agent_s3.py``), so a raw/default-queue regression there is caught.
+# 2. The "Backfill to K8s" candidate query is the bounded ledger-scoped filter
+#    (ANALYSIS_FAILED ∧ duration ∧ EXISTS scheduling_ledger), NOT a bare ``state ==
+#    ANALYSIS_FAILED`` whole-backlog sweep -- the v4.0.6 / v5.0 over-enqueue incident class.
+# ---------------------------------------------------------------------------
+
+
+_SERVICES_PIPELINE = _REPO_ROOT / "src" / "phaze" / "services" / "pipeline.py"
+
+
+def _backfill_candidates_stmt_source() -> str:
+    """Return the source segment of ``_backfill_candidates_stmt`` in services/pipeline.py.
+
+    Parses the module with :mod:`ast` (so a future rename/move is caught by the lookup failing)
+    and returns the exact function source for the membership assertions below.
+    """
+    source = _SERVICES_PIPELINE.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(_SERVICES_PIPELINE))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_backfill_candidates_stmt":
+            return ast.get_source_segment(source, node) or ""
+    raise AssertionError("_backfill_candidates_stmt not found in src/phaze/services/pipeline.py")
+
+
+def test_submit_cloud_job_is_a_routed_controller_task() -> None:
+    """KROUTE-04: ``submit_cloud_job`` (the k8s post-staging enqueue) is a known CONTROLLER_TASK.
+
+    ``report_uploaded`` enqueues ``submit_cloud_job`` through ``resolve_queue_for_task``; the static
+    scan fails on any raw ``*.state.queue`` enqueue in ``routers/``. This pins the positive side:
+    ``submit_cloud_job`` is routable, so it can never silently fall through to the default queue.
+    """
+    assert "submit_cloud_job" in CONTROLLER_TASKS
+
+
+@pytest.mark.asyncio
+async def test_submit_cloud_job_routes_to_controller_queue() -> None:
+    """KROUTE-04: ``submit_cloud_job`` resolves to the controller queue with agent_id None."""
+    app_state = stub_app_state()
+
+    routed = await resolve_queue_for_task("submit_cloud_job", app_state, None)
+    assert routed.queue is app_state.controller_queue
+    assert routed.agent_id is None
+
+
+def test_k8s_backfill_query_is_ledger_scoped_not_whole_backlog() -> None:
+    """KROUTE-04 / L4: the backfill candidate query is the bounded ledger-scoped filter.
+
+    A static guard over the real ``_backfill_candidates_stmt`` source: it must filter on
+    ``ANALYSIS_FAILED`` AND the duration threshold AND an ``EXISTS`` predicate against
+    ``SchedulingLedger`` -- i.e. it is NOT a bare ``state == ANALYSIS_FAILED`` whole-backlog
+    sweep. A future edit that drops the ledger ``EXISTS`` predicate (re-opening the v4.0.6 / v5.0
+    over-enqueue class) fails here.
+    """
+    src = _backfill_candidates_stmt_source()
+
+    assert "FileState.ANALYSIS_FAILED" in src  # the failure filter
+    assert "FileMetadata.duration" in src  # the duration threshold bound
+    # the ledger-scoped EXISTS predicate -- the property that makes this NOT a whole-backlog sweep
+    assert "exists(" in src
+    assert "SchedulingLedger" in src

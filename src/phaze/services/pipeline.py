@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from saq.utils import now as saq_now
-from sqlalchemy import distinct, exists, func, select, text
+from sqlalchemy import String, cast, distinct, exists, func, select, text
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -21,6 +21,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -915,16 +916,29 @@ async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> lis
 
 
 def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
-    """Build the ANALYSIS_FAILED + ``duration >= threshold_sec`` candidate predicate.
+    """Build the ANALYSIS_FAILED + ``duration >= threshold_sec`` + ledger-scoped candidate predicate.
 
     INNER JOIN ``FileMetadata`` so a null-duration ANALYSIS_FAILED file is structurally
     excluded; the ``duration >= threshold_sec`` filter then drops short failures. ``threshold_sec``
     is a bound int parameter (T-49-02) -- never interpolated SQL.
+
+    Phase 55 (L4 / D-03 / KROUTE-05): an ``EXISTS`` predicate against ``scheduling_ledger`` keyed
+    ``'process_file:' || file.id`` scopes candidates to **previously-scheduled work only**. A SAQ
+    timeout abandons a long ``process_file`` job WITHOUT firing ``report_analysis_failed`` (which
+    clears the row), so the orphaned ledger row persists into ``ANALYSIS_FAILED`` -- exactly the
+    timed-out set this backfill re-drives. A never-scheduled (or cleanly report-failed, row-cleared)
+    failure has NO ledger row and is excluded, preventing the v4.0.6 / v5.0 whole-backlog
+    over-enqueue class. ORM / bound params only -- the key is concatenated via ``cast`` + a bound
+    literal, never f-string SQL (T-49-02 / T-55-BF-04).
     """
     return (
         select(FileRecord, FileMetadata.duration)
         .join(FileMetadata, FileMetadata.file_id == FileRecord.id)
-        .where(FileRecord.state == FileState.ANALYSIS_FAILED, FileMetadata.duration >= threshold_sec)
+        .where(
+            FileRecord.state == FileState.ANALYSIS_FAILED,
+            FileMetadata.duration >= threshold_sec,
+            exists(select(SchedulingLedger.key).where(SchedulingLedger.key == "process_file:" + cast(FileRecord.id, String))),
+        )
     )
 
 

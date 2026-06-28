@@ -659,12 +659,21 @@ async def test_analyze_ui_no_agents_surfaces_held_count(client: AsyncClient, ses
 # ---------------------------------------------------------------------------
 
 
-async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None]) -> list[FileRecord]:
+async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None], *, with_ledger: bool = True) -> list[FileRecord]:
     """Persist one ANALYSIS_FAILED file per duration spec (+ metadata) and return the records.
 
     A ``None`` duration is modeled as the absence of a metadata row — such a file is
     structurally excluded from the backfill candidate set (the INNER JOIN drops it).
+
+    ``with_ledger`` (default ``True``) also seeds a ``process_file:<id>`` scheduling-ledger row
+    per file, modelling **previously-scheduled, then timed-out** work: a SAQ timeout abandons the
+    job WITHOUT firing ``report_analysis_failed`` (which would clear the row), so the orphaned
+    ledger row persists into ``ANALYSIS_FAILED``. Phase 55 (L4) scopes the backfill candidate query
+    to exactly these ledgered files. Pass ``with_ledger=False`` to model a never-scheduled (or
+    cleanly-reported-failed, row-cleared) file that the EXISTS predicate must exclude.
     """
+    from phaze.services.scheduling_ledger import insert_ledger_if_absent
+
     files: list[FileRecord] = []
     mds: list[FileMetadata] = []
     for dur in specs:
@@ -687,8 +696,59 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
     await session.flush()
     if mds:
         session.add_all(mds)
+    if with_ledger:
+        for file in files:
+            await insert_ledger_if_absent(
+                session,
+                key=f"process_file:{file.id}",
+                function="process_file",
+                kwargs={},
+                timeout=7200,
+                retries=2,
+            )
     await session.commit()
     return files
+
+
+# --- Phase 55 Plan 04 Task 1 (L4): ledger-scoped backfill candidate query --------------------
+# The candidate set is now ANALYSIS_FAILED ∧ duration >= threshold ∧ EXISTS a prior
+# process_file:<id> scheduling-ledger row. This excludes never-scheduled (or cleanly
+# report_analysis_failed-cleared) failures so backfill re-drives ONLY previously-scheduled,
+# timed-out work -- mirroring the v5.0 recover-over-enqueue fix (no whole-backlog sweep).
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidate_query_requires_prior_ledger_row(session: AsyncSession) -> None:
+    """L4: only a failed long file WITH a prior process_file ledger row is a backfill candidate.
+
+    A never-scheduled failed long file (no ledger row) is excluded -- this is the bounded
+    "previously-scheduled work only" property that closes the over-enqueue class.
+    """
+    from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates
+
+    (ledgered_long,) = await _persist_failed_with_duration(session, [_LONG])  # has process_file ledger row
+    (never_scheduled_long,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
+    threshold = settings.cloud_route_threshold_sec
+
+    count = await count_backfill_candidates(session, threshold)
+    candidates = await get_backfill_candidates(session, threshold)
+    candidate_ids = {file.id for file, _duration in candidates}
+
+    assert count == 1
+    assert ledgered_long.id in candidate_ids
+    assert never_scheduled_long.id not in candidate_ids  # never-scheduled work is NOT swept in
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidate_query_excludes_short_even_with_ledger(session: AsyncSession) -> None:
+    """A failed SHORT file (duration < threshold) is excluded even though it carries a ledger row."""
+    from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates
+
+    await _persist_failed_with_duration(session, [_SHORT])  # short, WITH ledger row
+    threshold = settings.cloud_route_threshold_sec
+
+    assert await count_backfill_candidates(session, threshold) == 0
+    assert await get_backfill_candidates(session, threshold) == []
 
 
 @pytest.mark.asyncio
@@ -844,7 +904,7 @@ async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: 
     from phaze.config import settings
 
     monkeypatch.setattr(settings, "cloud_target", "local")
-    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
     capture = wire_fakes(client)
@@ -877,6 +937,104 @@ async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: A
     assert capture == []  # held, never directly enqueued
     await session.refresh(long_failed)
     assert long_failed.state == FileState.AWAITING_CLOUD
+
+
+# --- Phase 55 Plan 04 Task 2 (L3 / CLOUDROUTE-02): backfill forks on cloud_target ------------
+# The backfill endpoint resets ledger-scoped failed long files to DISCOVERED and routes them to
+# AWAITING_CLOUD for BOTH cloud targets. The ONLY difference is the held-file ledger seed:
+#   - a1  : seeds a process_file:<id> row (insert_ledger_if_absent) -- the held file's durable
+#           "was scheduled" fact (D-09).
+#   - k8s : seeds NO process_file:<id> row -- a ledger row would let recover_orphaned_work replay
+#           the held file onto a LOCAL agent queue (the cloud_job row, NOT the ledger, is the k8s
+#           in-flight registry). The seed call must NOT fire on the k8s branch.
+# Both forks converge on exactly the prior candidacy row, so the fork is asserted at the
+# insert_ledger_if_absent call boundary (spy), which is the only observable difference.
+
+
+def _spy_on_ledger_seed(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """Patch routers.pipeline.insert_ledger_if_absent to record the keys it is called with."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    seeded_keys: list[str | None] = []
+    original = pipeline_mod.insert_ledger_if_absent
+
+    async def _recording(*args: object, **kwargs: object) -> None:
+        seeded_keys.append(kwargs.get("key"))  # type: ignore[arg-type]
+        await original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_mod, "insert_ledger_if_absent", _recording)
+    return seeded_keys
+
+
+@pytest.mark.asyncio
+async def test_backfill_a1_seeds_process_file_ledger_row(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """a1 fork: the held-file branch calls insert_ledger_if_absent for the process_file:<id> key (D-09)."""
+    # cloud_target='a1' is the autouse default.
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")  # no compute -> held in AWAITING_CLOUD
+    wire_fakes(client)
+    seeded_keys = _spy_on_ledger_seed(monkeypatch)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    # The a1 branch DID seed the held file's process_file ledger row.
+    assert f"process_file:{long_failed.id}" in seeded_keys
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.AWAITING_CLOUD
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert len(rows) == 1  # exactly the one row (idempotent over the prior candidacy row)
+
+
+@pytest.mark.asyncio
+async def test_backfill_k8s_holds_awaiting_cloud_without_ledger_seed(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """k8s fork (L3): the held file is reset->routed to AWAITING_CLOUD but NO ledger seed fires.
+
+    A process_file:<id> ledger seed on the k8s branch would let recover_orphaned_work replay the
+    held file onto a LOCAL agent queue (CLOUDROUTE-02). The k8s branch therefore SKIPS
+    insert_ledger_if_absent entirely; the file still carries exactly its prior candidacy row (no
+    NEW row), and the cloud_job row -- seeded later by the stage_cloud_window k8s branch -- is the
+    in-flight registry.
+    """
+    monkeypatch.setattr(settings, "cloud_target", "k8s")
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")  # k8s has no compute agent -> held
+    wire_fakes(client)
+    seeded_keys = _spy_on_ledger_seed(monkeypatch)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    # L3: the k8s branch never seeded a process_file ledger row.
+    assert seeded_keys == []
+    # The candidate was still reset out of ANALYSIS_FAILED and HELD for the staging cron.
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.AWAITING_CLOUD
+    # No NEW process_file row was added: exactly the one prior candidacy row remains.
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_local_redrives_nothing(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """local fork: the cloud-off gate short-circuits -- no file is reset and no ledger seed fires."""
+    monkeypatch.setattr(settings, "cloud_target", "local")
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+    seeded_keys = _spy_on_ledger_seed(monkeypatch)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    assert seeded_keys == []
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.ANALYSIS_FAILED  # never reset on the local gate
 
 
 # ---------------------------------------------------------------------------
