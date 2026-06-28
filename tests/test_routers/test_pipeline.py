@@ -13,6 +13,7 @@ from sqlalchemy import select
 from phaze.config import settings
 from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
@@ -2217,3 +2218,109 @@ def test_queue_progress_percent_formula() -> None:
     assert queue_progress_percent(30, 10) == 75
     assert queue_progress_percent(0, 0) == 0
     assert queue_progress_percent(11428, 0) == 100
+
+
+# ---------------------------------------------------------------------------
+# Phase 55 (55-05, D-04, KROUTE-06): Cloud admission-state card. Carrier-always /
+# body-conditional: the #admission-state-card <section> ALWAYS renders (stable OOB
+# target), but the heading + four-tile grid render ONLY when any cloud_phase count
+# > 0. a1/local rows have NULL cloud_phase so all-zero leaves a quiet empty carrier.
+# Each tile is gated on its own count and finished uses GREEN (not amber/alert).
+# ---------------------------------------------------------------------------
+
+
+async def _seed_cloud_phase(session: AsyncSession, *, cloud_phase: str | None) -> None:
+    """Seed one file + its cloud_job row in the given cloud_phase (NULL for a1/local) and commit."""
+    file = _make_file(state=FileState.PUSHED)
+    session.add(file)
+    await session.flush()
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"phaze-staging/{file.id}",
+            status=CloudJobStatus.SUBMITTED.value,
+            cloud_phase=cloud_phase,
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_carrier_always_renders(client: AsyncClient) -> None:
+    """With NO cloud_job rows the empty carrier still renders (stable OOB target), no heading/grid."""
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    assert 'id="admission-state-card"' in response.text
+    # All-zero (no k8s activity) → empty carrier: no heading, no tiles.
+    assert "Cloud · Admission" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_renders_matching_tile(client: AsyncClient, session: AsyncSession) -> None:
+    """A seeded ADMITTED row renders the heading + the blue Admitted tile (its own count gate)."""
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.ADMITTED.value)
+
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    assert 'id="admission-state-card"' in response.text
+    assert "Cloud · Admission" in response.text
+    assert "Admitted" in response.text
+    assert "quota granted" in response.text
+    # Phases with 0 files stay invisible — their tiles are not rendered.
+    assert "Queued (quota)" not in response.text
+    assert "Finished" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_finished_is_green_not_alert(client: AsyncClient, session: AsyncSession) -> None:
+    """The finished tile uses GREEN hues; the card carries NO role='alert' and NO amber (healthy progression)."""
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.FINISHED.value)
+
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    import re
+
+    card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
+    assert card is not None
+    card_html = card.group(0)
+    assert "Finished" in card_html
+    assert "result returned" in card_html
+    assert "bg-green-50" in card_html
+    # Healthy progression — alert role + amber stay exclusive to inadmissible_card.
+    assert 'role="alert"' not in card_html
+    assert "amber" not in card_html
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: AsyncClient, session: AsyncSession) -> None:
+    """An a1/local row (NULL cloud_phase) counts toward no phase → empty carrier, no heading."""
+    await _seed_cloud_phase(session, cloud_phase=None)
+
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    assert 'id="admission-state-card"' in response.text
+    assert "Cloud · Admission" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_stats_poll_repushes_admission_card_oob(client: AsyncClient, session: AsyncSession) -> None:
+    """The 5s /pipeline/stats poll re-pushes the admission card OOB (hx-swap-oob + the matching tile)."""
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.RUNNING.value)
+
+    response = await client.get("/pipeline/stats")
+
+    assert response.status_code == 200
+    import re
+
+    card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
+    assert card is not None
+    card_html = card.group(0)
+    assert 'hx-swap-oob="true"' in card_html
+    assert "Running" in card_html
+    assert "pod analyzing" in card_html
+    assert "bg-violet-50" in card_html

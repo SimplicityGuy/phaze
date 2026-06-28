@@ -34,6 +34,12 @@
          inadmissible_count > 0 (healthy Pending stays invisible). -->
     {% include "pipeline/partials/inadmissible_card.html" %}
 
+    <!-- Phase 55 (D-04, KROUTE-06): Cloud admission-state card — per-cloud_phase counts. Lives
+         OUTSIDE #pipeline-stats (and #pipeline-stages); re-pushed OOB by stats_bar.html on each 5s
+         poll. Carrier-always / body-conditional: renders the four-tile grid ONLY when any count > 0
+         (a1/local cloud_phase is NULL so the card stays a quiet empty carrier). -->
+    {% include "pipeline/partials/admission_state_card.html" %}
+
     <!-- Stats bar (polled via HTMX every 5s). Still carries the per-node OOB seeds
          (35-04) that drive the DAG canvas bindings on each tick. -->
     <div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">

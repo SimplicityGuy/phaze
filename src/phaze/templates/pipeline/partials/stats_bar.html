@@ -88,4 +88,11 @@
    inadmissible_count rides this poll context (degrade-safe, never 500). The empty <section>
    carrier is re-pushed too so a previously-shown banner clears once the count returns to 0. #}
 {% with oob = True %}{% include "pipeline/partials/inadmissible_card.html" %}{% endwith %}
+{# Phase 55 (55-05, D-04, KROUTE-06): re-render the Cloud admission-state card OUT-OF-BAND on the same
+   5s tick (it lives outside #pipeline-stats, so the innerHTML swap never reaches it). Same id
+   (#admission-state-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob. The
+   four queued_behind_quota/admitted/running/finished counts ride this poll context (degrade-safe,
+   never 500). The empty <section> carrier is re-pushed too so a previously-shown grid clears once
+   k8s drains (all counts return to 0). #}
+{% with oob = True %}{% include "pipeline/partials/admission_state_card.html" %}{% endwith %}
 {% endif %}
