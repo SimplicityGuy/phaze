@@ -155,7 +155,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
-| 55. Routing, state & ledger integration | v6.0 | 3/6 | In Progress|  |
+| 55. Routing, state & ledger integration | v6.0 | 5/6 | In Progress|  |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
 ## Phase Details (v6.0 Kubernetes Burst Analysis)
@@ -273,8 +273,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 55-03-PLAN.md — the live-seam k8s branch: `stage_cloud_window` fork + no-commit S3 core + `report_uploaded` PUSHED-flip/`submit_cloud_job` enqueue (D-01, L1/L2) [wave 2]
-- [ ] 55-04-PLAN.md — ledger-scoped backfill fork (no `process_file` seed for k8s) + KROUTE-04 AST guard (D-03, L3/L4) [wave 2]
+- [x] 55-03-PLAN.md — the live-seam k8s branch: `stage_cloud_window` fork + no-commit S3 core + `report_uploaded` PUSHED-flip/`submit_cloud_job` enqueue (D-01, L1/L2) [wave 2]
+- [x] 55-04-PLAN.md — ledger-scoped backfill fork (no `process_file` seed for k8s) + KROUTE-04 AST guard (D-03, L3/L4) [wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
