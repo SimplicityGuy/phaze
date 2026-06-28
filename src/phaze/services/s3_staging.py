@@ -40,6 +40,10 @@ _LIFECYCLE_RULE_ID = "phaze-staging-ttl"
 # Error codes a delete may surface for an already-absent object/upload -- swallowed so the
 # inline-delete + reconcile paths are idempotent (a missing object is the desired end state).
 _DELETE_ABSENT_CODES = frozenset({"NoSuchKey", "NoSuchUpload", "404"})
+# Error codes an abort/complete may surface when the multipart upload is already gone (aborted,
+# completed, or expired by the bucket lifecycle rule) -- swallowed so the terminal-cleanup and
+# control-side completion paths are idempotent (a missing upload is the desired end state).
+_ABORT_ABSENT_CODES = frozenset({"NoSuchUpload", "404"})
 
 
 class S3StagingError(RuntimeError):
@@ -135,11 +139,24 @@ async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: l
 
 
 async def abort_multipart_upload(file_id: uuid.UUID, upload_id: str) -> None:
-    """Abort an in-flight multipart upload (control-side cleanup of a failed/abandoned upload)."""
+    """Abort an in-flight multipart upload (control-side cleanup of a failed/abandoned upload).
+
+    Idempotent -- a missing upload is the desired end state, so an already-absent upload error
+    (``NoSuchUpload``: aborted, completed, or expired by the bucket lifecycle rule) is swallowed.
+    This keeps the terminal-cleanup path in ``report_upload_failed`` from entering a permanent
+    500-retry loop when a prior partial run already aborted the multipart (CR-02). Mirrors
+    ``delete_staged_object``; any other ``ClientError`` is re-raised as ``S3StagingError``.
+    """
     cfg = _staging_config()
     key = staged_object_key(file_id)
     async with _client(cfg) as client:
-        await client.abort_multipart_upload(Bucket=cfg.s3_bucket, Key=key, UploadId=upload_id)
+        try:
+            await client.abort_multipart_upload(Bucket=cfg.s3_bucket, Key=key, UploadId=upload_id)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in _ABORT_ABSENT_CODES:
+                return
+            raise S3StagingError(f"failed to abort multipart upload for {file_id}") from exc
 
 
 async def presign_get(file_id: uuid.UUID) -> str:

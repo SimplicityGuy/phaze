@@ -15,7 +15,6 @@ from urllib.parse import parse_qs, urlparse
 import uuid
 
 import boto3
-from botocore.exceptions import ClientError
 import httpx
 from moto.server import ThreadedMotoServer
 import pytest
@@ -102,12 +101,21 @@ async def test_multipart_round_trip_assembles_object(s3_env: str) -> None:
 
 
 async def test_abort_multipart_upload_removes_in_flight(s3_env: str) -> None:
-    """After abort, completing the same upload id fails (the in-flight upload is gone)."""
+    """After abort, the in-flight upload is gone (a re-abort is a swallowed idempotent no-op)."""
     fid = uuid.uuid4()
     upload_id = await s3_staging.create_multipart_upload(fid)
     await s3_staging.abort_multipart_upload(fid, upload_id)
-    with pytest.raises(ClientError):
-        await s3_staging.complete_multipart_upload(fid, upload_id, [(1, '"deadbeef"')])
+    # The upload id is now invalid; a second abort surfaces NoSuchUpload, which is swallowed.
+    await s3_staging.abort_multipart_upload(fid, upload_id)
+
+
+async def test_abort_multipart_upload_absent_is_idempotent_noop(s3_env: str) -> None:
+    """Aborting an absent multipart upload (NoSuchUpload from S3) is an idempotent no-op (CR-02).
+
+    The terminal-cleanup path in ``report_upload_failed`` calls abort unguarded; a missing upload
+    is the desired end state, so it must not raise (else a permanent 500-retry loop -- CR-02).
+    """
+    await s3_staging.abort_multipart_upload(uuid.uuid4(), "nonexistent-upload-id")
 
 
 async def test_presign_get_encodes_short_ttl(s3_env: str) -> None:
