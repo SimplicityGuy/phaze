@@ -34,13 +34,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 import phaze.tasks.reconcile_cloud_jobs as reconcile_mod
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter
-from tests.kube_fakes import ADMITTED, EVICTED, INADMISSIBLE, PENDING, fake_job
+from tests.kube_fakes import ADMITTED, EVICTED, INADMISSIBLE, PENDING, QUOTA_RESERVED, fake_job
 
 
 if TYPE_CHECKING:
@@ -615,3 +615,77 @@ async def test_one_bad_row_does_not_abort_tick(async_engine: AsyncEngine, sessio
     assert name_ok in dj.calls
     assert tally["reconciled"] == 2
     assert tally["succeeded"] == 1
+
+
+# --- D-04: cloud_phase admission progression co-write (orthogonal to inadmissible) -----------------
+
+
+@pytest.mark.asyncio
+async def test_pending_sets_cloud_phase_queued_behind_quota(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A healthy-Pending Workload stamps cloud_phase=queued_behind_quota on a NULL-phase row (D-04)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)  # seeded cloud_phase is NULL (a fresh in-flight row)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(PENDING))
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    assert (await _read_cloud_job(session, fid)).cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value
+
+
+@pytest.mark.asyncio
+async def test_quota_reserved_sets_cloud_phase_admitted(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """QuotaReserved=True (not yet Admitted) advances cloud_phase to admitted (D-04)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(QUOTA_RESERVED))
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.cloud_phase == CloudPhase.ADMITTED.value
+    assert cj.status == CloudJobStatus.RUNNING.value  # status advance unchanged
+
+
+@pytest.mark.asyncio
+async def test_admitted_sets_cloud_phase_running(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An Admitted=True Workload advances cloud_phase to running alongside the SUBMITTED->RUNNING status write (D-04)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.cloud_phase == CloudPhase.RUNNING.value
+    assert cj.status == CloudJobStatus.RUNNING.value
+
+
+@pytest.mark.asyncio
+async def test_success_sets_cloud_phase_finished(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Succeeded Job writes cloud_phase=finished before its commit (D-04)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", DeleteJobSpy([]))
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(succeeded=1, name=name)))
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.SUCCEEDED.value
+    assert cj.cloud_phase == CloudPhase.FINISHED.value
+
+
+@pytest.mark.asyncio
+async def test_inadmissible_does_not_touch_cloud_phase(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Inadmissible branch sets only the fault flag -- cloud_phase stays untouched (orthogonality, D-04)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)  # cloud_phase starts NULL
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(INADMISSIBLE))
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.inadmissible is True
+    assert cj.cloud_phase is None  # the fault flag is orthogonal: it never repurposes the admission phase

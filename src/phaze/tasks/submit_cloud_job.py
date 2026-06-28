@@ -34,7 +34,7 @@ import uuid
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.services import kube_staging, s3_staging
 
 
@@ -84,14 +84,18 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
             s3_key=s3_staging.staged_object_key(fid),
             status=CloudJobStatus.SUBMITTED.value,
             kueue_workload=name,
+            # Seed the Kueue admission progression at the start of the line (D-04). A re-submit resets
+            # it (below) so a re-driven Job starts from queued_behind_quota again.
+            cloud_phase=CloudPhase.QUEUED_BEHIND_QUOTA.value,
         )
         stmt = stmt.on_conflict_do_update(
             # id + s3_key intentionally OUT of set_: both are immutable identity for the file, so an
-            # existing row keeps them on a re-submit (only status/kueue_workload refresh).
+            # existing row keeps them on a re-submit (only status/kueue_workload/cloud_phase refresh).
             index_elements=["file_id"],
             set_={
                 "status": stmt.excluded.status,
                 "kueue_workload": stmt.excluded.kueue_workload,
+                "cloud_phase": stmt.excluded.cloud_phase,
             },
         )
         await session.execute(stmt)
