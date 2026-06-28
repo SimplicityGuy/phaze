@@ -154,7 +154,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
-| 54. Kube submit/watch + reconcile cron | v6.0 | 2/6 | In Progress|  |
+| 54. Kube submit/watch + reconcile cron | v6.0 | 4/6 | In Progress|  |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
@@ -238,8 +238,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 54-03-PLAN.md — pure kr8s seam (suspended-Job manifest + submit/list/get/delete) + fake-kube test substrate (KSUBMIT-01/05/06) [Wave 2]
-- [ ] 54-04-PLAN.md — Inadmissible pipeline-UI alert off cloud_job.inadmissible (D-06, KSUBMIT-04) [Wave 2]
+- [x] 54-03-PLAN.md — pure kr8s seam (suspended-Job manifest + submit/list/get/delete) + fake-kube test substrate (KSUBMIT-01/05/06) [Wave 2]
+- [x] 54-04-PLAN.md — Inadmissible pipeline-UI alert off cloud_job.inadmissible (D-06, KSUBMIT-04) [Wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
