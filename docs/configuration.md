@@ -86,7 +86,7 @@ Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](.
 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
-| `cloud_burst_enabled` | `PHAZE_CLOUD_BURST_ENABLED` (or `cloud_burst_enabled`) | Control | `False` | no | **Master switch for the whole feature.** `False` (default) reverts to all-local analysis with no other change — see *Master toggle* below. |
+| `cloud_target` | `PHAZE_CLOUD_TARGET` (or `cloud_target`) | Control | `local` | no | **Master routing selector for the whole feature** (`local` \| `a1` \| `k8s`). `local` (default) reverts to all-local analysis with no other change; `a1` routes long files to the v5.0 OCI A1 compute agent (rsync push); `k8s` stages to S3 and submits a Kueue Job. See *Cloud target* below. **Renamed in v6.0** — replaces the old cloud-burst on/off boolean. |
 | `cloud_route_threshold_sec` | `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` (or `cloud_route_threshold_sec`) | Control | `5400` | no | Duration threshold (seconds) at/above which a file is routed to a cloud compute agent. Default 5400 (90 min); bounded `gt=0, lt=86400` (out-of-range fails fast at startup). |
 | `cloud_max_in_flight` | `PHAZE_CLOUD_MAX_IN_FLIGHT` (or `cloud_max_in_flight`) | Control | `2` | no | Max cloud files staged-or-in-flight (`PUSHING`+`PUSHED`); the load-bearing ≤N window — the only backpressure keeping an unbounded backlog off the single compute agent. Bounded `gt=0, lt=100`. |
 | `push_max_attempts` | `PHAZE_PUSH_MAX_ATTEMPTS` (or `push_max_attempts`) | Control | `3` | no | Max push attempts before a sha256-mismatched file is marked `ANALYSIS_FAILED`. Bounded `gt=0, lt=20`. |
@@ -104,14 +104,14 @@ Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](.
 
 ### Kube submit/reconcile settings (Phase 54, v6.0)
 
-Phase 54 (v6.0 Kubernetes Burst) adds a third routing target: instead of an rsync push to a single A1, the control plane submits **suspended Kueue Jobs** via the kube API, watches them to completion, and reconciles their status. These knobs are the kube client surface the submit seam, submit task, and reconcile cron read. **All kube_* fields are optional in Phase 54** so an existing cloud-on/no-kube deploy keeps working — the fail-fast validation that couples them to `cloud_burst_enabled` arrives in **Phase 56**. Kube credentials live on the **control plane only** (the agent and pod never receive them) and honor the `_FILE` convention.
+Phase 54 (v6.0 Kubernetes Burst) adds a third routing target: instead of an rsync push to a single A1, the control plane submits **suspended Kueue Jobs** via the kube API, watches them to completion, and reconciles their status. These knobs are the kube client surface the submit seam, submit task, and reconcile cron read. They are selected by `PHAZE_CLOUD_TARGET=k8s`: when the target is `k8s`, `kube_api_url`, `kube_namespace`, and `kube_local_queue` are **required** and fail fast at startup if unset (the per-target validator added in v6.0); for any other target they stay optional. Kube credentials live on the **control plane only** (the agent and pod never receive them) and honor the `_FILE` convention.
 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
 | `cloud_submit_max_attempts` | `PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS` (or `cloud_submit_max_attempts`) | Control | `3` | no | Max kube Job **submit** attempts before a file is marked `ANALYSIS_FAILED` (Phase 54, D-08). A **distinct** budget from `push_max_attempts` (the rsync leg). Bounded `gt=0, lt=20`. |
-| `kube_api_url` | `PHAZE_KUBE_API_URL` (or `kube_api_url`) | Control | `None` | no | Kubernetes API server URL the control plane submits/watches Jobs against. Optional in Phase 54; fail-fast coupling to `cloud_burst_enabled` arrives in Phase 56. |
-| `kube_namespace` | `PHAZE_KUBE_NAMESPACE` (or `kube_namespace`) | Control | `None` | no | Namespace the Kueue Jobs are submitted into. Optional in Phase 54. |
-| `kube_local_queue` | `PHAZE_KUBE_LOCAL_QUEUE` (or `kube_local_queue`) | Control | `None` | no | Kueue LocalQueue name stamped on submitted Jobs (`kueue.x-k8s.io/queue-name` label). Optional in Phase 54. |
+| `kube_api_url` | `PHAZE_KUBE_API_URL` (or `kube_api_url`) | Control | `None` | no | Kubernetes API server URL the control plane submits/watches Jobs against. **Required when `cloud_target=k8s`** (fail-fast at startup); optional otherwise. |
+| `kube_namespace` | `PHAZE_KUBE_NAMESPACE` (or `kube_namespace`) | Control | `None` | no | Namespace the Kueue Jobs are submitted into. **Required when `cloud_target=k8s`** (fail-fast at startup); optional otherwise. |
+| `kube_local_queue` | `PHAZE_KUBE_LOCAL_QUEUE` (or `kube_local_queue`) | Control | `None` | no | Kueue LocalQueue name stamped on submitted Jobs (`kueue.x-k8s.io/queue-name` label). **Required when `cloud_target=k8s`** (fail-fast at startup); optional otherwise. |
 | `kube_job_image` | `PHAZE_KUBE_JOB_IMAGE` (or `kube_job_image`) | Control | `None` | no | Container image the submitted analysis Job runs. Optional in Phase 54. |
 | `kube_job_cpu_request` | `PHAZE_KUBE_JOB_CPU_REQUEST` (or `kube_job_cpu_request`) | Control | `None` | no | CPU resource request stamped on the submitted Job's pod spec (e.g. `2`). Optional in Phase 54. |
 | `kube_job_memory_request` | `PHAZE_KUBE_JOB_MEMORY_REQUEST` (or `kube_job_memory_request`) | Control | `None` | no | Memory resource request stamped on the submitted Job's pod spec (e.g. `4Gi`). Optional in Phase 54. |
@@ -123,13 +123,17 @@ Phase 54 (v6.0 Kubernetes Burst) adds a third routing target: instead of an rsyn
 
 Every cloud-burst parameter above is a [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) field **except `PHAZE_AGENT_QUEUE`**. The agent worker (`phaze.tasks.agent_worker`) must hand SAQ a `Queue` object at **module import time**, which is **before** `get_settings()` constructs the settings instance (Phase 26 D-16). So the queue name is read as a **raw `os.environ` lookup at SAQ import time**, not through a settings field — it therefore cannot honor `_FILE` resolution or a settings alias, and it remains a **required operator env var**. This is intentional and structural (moving it into the settings class would fight the import-time ordering), not an omission. By convention it MUST equal `phaze-agent-<PHAZE_AGENT_ID>`; the worker asserts this against the agent_id resolved from its token at startup and exits non-zero on mismatch. Use the exact value `phaze agents add` prints (see [deployment.md](deployment.md) Step 3).
 
-### Master toggle (`PHAZE_CLOUD_BURST_ENABLED`)
+### Cloud target (`PHAZE_CLOUD_TARGET`)
 
-`cloud_burst_enabled` is the **single switch** that turns the entire cloud-burst feature on or off (CLOUDDEPLOY-04):
+> **Renamed in v6.0 (breaking).** The old single on/off cloud-burst boolean is **removed**. It is replaced by the `cloud_target` selector below. If you kept the old enable boolean in your live env it is now **ignored** and cloud silently stays `local` on redeploy — delete it and set `PHAZE_CLOUD_TARGET` instead.
 
-- **OFF (`False`, the default) = all-local, no other change.** Every file — short and long alike — routes to the local file-server queue exactly as it did before cloud burst existed. No file is held `AWAITING_CLOUD`, the staging cron no-ops, and backfill-to-cloud is rejected. (Long files may then time out locally and fail cleanly as `ANALYSIS_FAILED`.) A fresh v5.0 deploy ships **dormant** this way until the operator provisions the A1 and opts in.
-- **Flipping it requires a control-plane restart.** The value is read from the import-time settings singleton, so setting the env var on a running controller does nothing until the controller worker + api are restarted (it is a startup-read, like every other knob).
-- **In-flight work drains.** Turning it OFF only stops *new* cloud work; files already `PUSHING`/`PUSHED` finish, and any held `AWAITING_CLOUD` rows release once it is turned back on.
+`cloud_target` is the **single routing selector** that chooses where long audio sets are analyzed (CLOUDDEPLOY-04). One of `local` / `a1` / `k8s`:
+
+- **`local` (the default) = all-local, no other change.** Every file — short and long alike — routes to the local file-server queue exactly as it did before cloud burst existed. No file is held `AWAITING_CLOUD`, the staging cron no-ops, and backfill-to-cloud is rejected. (Long files may then time out locally and fail cleanly as `ANALYSIS_FAILED`.) A fresh deploy ships **dormant** this way until the operator provisions a cloud target and opts in.
+- **`a1` = OCI A1 compute agent.** Long files (duration ≥ `cloud_route_threshold_sec`) route to the v5.0 OCI Ampere A1 compute agent via an rsync-over-SSH push. Requires `compute_scratch_dir` (fail-fast at startup when unset).
+- **`k8s` = Kubernetes (Kueue).** Long files stage to S3 and the control plane submits a suspended Kueue Job. Requires `kube_api_url`, `kube_namespace`, and `kube_local_queue` (plus the S3 staging knobs `s3_bucket` / `s3_endpoint_url`); all fail fast at startup when unset.
+- **Changing the target requires a control-plane restart.** The value is read from the import-time settings singleton, so setting the env var on a running controller does nothing until the controller worker + api are restarted (it is a startup-read, like every other knob).
+- **In-flight work drains.** Switching back to `local` only stops *new* cloud work; files already `PUSHING`/`PUSHED` finish, and any held `AWAITING_CLOUD` rows release once a cloud target is selected again.
 
 ## Logging / observability (all roles)
 
