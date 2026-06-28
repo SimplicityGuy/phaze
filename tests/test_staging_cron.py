@@ -245,6 +245,100 @@ async def test_cloud_a1_stages_normally(async_engine: AsyncEngine, session: Asyn
     assert sum(1 for st in states.values() if st == FileState.PUSHING) == 2
 
 
+# --- Phase 55 (D-01a): the k8s S3-staging branch -----------------------------------------
+
+
+def _patch_s3(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the S3 SDK calls the k8s branch's ``_stage_file_to_s3`` core makes (no live backend)."""
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+
+
+@pytest.mark.asyncio
+async def test_k8s_branch_skips_compute_gate_and_stages_to_s3(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """k8s: GATE-1 (compute) is SKIPPED (L2) -- with NO compute agent the held files still reach PUSHING.
+
+    The k8s branch stages via ``_stage_file_to_s3`` (enqueues ``s3_upload``, NOT ``push_file``) and a
+    single post-loop commit fires. With max_in_flight=2 and 3 held, exactly 2 stage.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_s3(monkeypatch)
+    # NO compute agent online -- only a fileserver. On a1 this would wedge; on k8s GATE-1 is skipped.
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(3)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 2, "skipped": 0}
+    # The k8s branch enqueues s3_upload (NOT push_file) onto the fileserver's per-agent queue.
+    upload_queue = router.queues["nox"]
+    assert [t for t, _ in upload_queue.captured] == ["s3_upload", "s3_upload"]
+    # Exactly two held files flipped to PUSHING; the third stays AWAITING_CLOUD.
+    states = await _states_for(session, ids)
+    assert sum(1 for st in states.values() if st == FileState.PUSHING) == 2
+    assert sum(1 for st in states.values() if st == FileState.AWAITING_CLOUD) == 1
+
+
+@pytest.mark.asyncio
+async def test_k8s_branch_holds_with_no_fileserver(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """k8s with NO fileserver online: GATE-2 holds -- nothing staged, files stay AWAITING_CLOUD."""
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_s3(monkeypatch)
+    # No agents online at all (compute skipped on k8s; fileserver gate still holds).
+    held = [_make_file() for _ in range(3)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 0, "skipped": 2}  # two slots, two candidates locked, no fileserver
+    assert router.queues == {}
+    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+
+
+@pytest.mark.asyncio
+async def test_k8s_overlapping_ticks_never_exceed_window(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-04 under the k8s branch: two concurrent ticks staging to S3 must not overshoot the ≤N cap.
+
+    The k8s branch calls the NO-COMMIT ``_stage_file_to_s3`` core (L1), so the advisory lock is held
+    across the whole tick and the committed PUSHING set never exceeds cloud_max_in_flight.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_s3(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backlog = [_make_file() for _ in range(20)]
+    session.add_all(backlog)
+    await session.commit()
+    ids = [f.id for f in backlog]
+
+    router = DedupFakeTaskRouter()
+    ctx = _make_ctx(async_engine, router, DedupFakeQueue("controller"))
+    results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
+
+    states = await _states_for(session, ids)
+    pushing = [fid for fid, st in states.items() if st == FileState.PUSHING]
+    assert len(pushing) <= 2, f"k8s window overshot: {len(pushing)} files PUSHING (cap is 2)"
+    assert sum(r["staged"] for r in results) <= 2, "concurrent k8s ticks staged more than the cap"
+
+
 # --- FIFO: oldest AWAITING_CLOUD first ---------------------------------------------------
 
 
