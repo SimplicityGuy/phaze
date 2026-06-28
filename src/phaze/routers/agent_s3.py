@@ -168,9 +168,16 @@ async def report_upload_failed(
         logger.warning("report_upload_failed held: no fileserver agent online", file_id=str(file_id), agent_id=agent.id, attempt=next_attempt)
         return UploadFailedResponse(file_id=file_id, cleared=False)
 
-    # Stamp the incremented attempt back on the ledger payload (redrive's enqueue hook re-upserts the
-    # row with the fresh payload kwargs, so this UPDATE is the source of truth for the counter).
-    base_payload: dict[str, Any] = dict(row.payload) if (row is not None and isinstance(row.payload, dict)) else {}
+    # Stamp the incremented attempt back on the ledger payload. redrive_upload -> stage_file_to_s3
+    # commits a FRESH payload (new presigned part_urls) to THIS same ledger row via its enqueue hook,
+    # so the `row` snapshot read at the top of the handler is now stale. Re-fetch the row (READ
+    # COMMITTED + populate_existing busts the identity map so we see redrive's committed payload) and
+    # build `merged` on top of the FRESH payload -- otherwise the attempt stamp would clobber the
+    # fresh part_urls with the expired ones, making recovery replay re-enqueue dead URLs (WR-02).
+    refreshed = (
+        await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key).execution_options(populate_existing=True))
+    ).scalar_one_or_none()
+    base_payload: dict[str, Any] = dict(refreshed.payload) if (refreshed is not None and isinstance(refreshed.payload, dict)) else {}
     merged: dict[str, Any] = {**base_payload, "s3_upload_attempt": next_attempt}
     await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(payload=merged))
     await session.commit()

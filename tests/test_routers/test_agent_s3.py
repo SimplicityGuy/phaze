@@ -235,6 +235,55 @@ async def test_failed_under_cap_redrives_and_increments_counter(
     assert row.payload.get("s3_upload_attempt") == 1
 
 
+async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a re-drive the ledger retains the FRESH part_urls redrive committed, plus attempt++ (WR-02).
+
+    redrive_upload -> stage_file_to_s3 commits a fresh payload (new presigned part_urls) to the same
+    ledger row. The attempt-stamp UPDATE must be built on top of that FRESH payload, not the stale
+    snapshot read at the top of the handler -- else recovery replay re-enqueues expired URLs.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, push_max_attempts=3)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    # Seed the ledger with the STALE (prior-attempt) part_urls.
+    await upsert_ledger_entry(
+        session,
+        key=f"s3_upload:{file_id}",
+        function="s3_upload",
+        kwargs={"file_id": str(file_id), "s3_upload_attempt": 0, "part_urls": ["https://s3.test/stale?partNumber=1"]},
+    )
+    await session.commit()
+
+    fresh_urls = ["https://s3.test/fresh?partNumber=1"]
+
+    async def _fake_redrive(sess: AsyncSession, _file: FileRecord, _router: FakeTaskRouter) -> None:
+        # Mimic stage_file_to_s3's enqueue hook: commit a FRESH payload to the same ledger row.
+        await upsert_ledger_entry(
+            sess,
+            key=f"s3_upload:{file_id}",
+            function="s3_upload",
+            kwargs={"file_id": str(file_id), "part_urls": fresh_urls},
+        )
+        await sess.commit()
+
+    monkeypatch.setattr(cloud_staging, "redrive_upload", AsyncMock(side_effect=_fake_redrive))
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "transfer error"})
+
+    assert r.status_code == 200, r.text
+    row = await _ledger_row(session, f"s3_upload:{file_id}")
+    assert row is not None
+    # The fresh part_urls survive (NOT clobbered by the stale snapshot) and the counter incremented.
+    assert row.payload.get("part_urls") == fresh_urls
+    assert row.payload.get("s3_upload_attempt") == 1
+
+
 async def test_failed_at_cap_fails_terminally_and_cleans_up(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
