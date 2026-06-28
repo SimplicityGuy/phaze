@@ -78,3 +78,10 @@ No new surface beyond the plan's `<threat_model>`. The mitigations are implement
 ## Known Stubs
 
 None.
+
+## Self-Check: PASSED
+
+- `admission_state_card.html` — FOUND
+- `55-05-SUMMARY.md` — FOUND
+- Commits `c12aa55`, `ce9f67f`, `7ca86bc`, `53288d7` — FOUND
+- `get_cloud_phase_counts` defined once; card id present once; rendered card carries no `role="alert"` / no warning hue.
