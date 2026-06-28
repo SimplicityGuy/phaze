@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phaze — Alt B: File Workbench</title>
+<!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity (throwaway design mockup; Tailwind Play CDN has no SRI hash; never served) --><script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+  .step { width: 22px; height: 22px; border-radius: 9999px; display:grid; place-items:center; font-size: 11px; }
+  .done { background:#064e3b; color:#6ee7b7; }
+  .active { background:#0c4a6e; color:#7dd3fc; box-shadow:0 0 0 2px rgba(56,189,248,.3); }
+  .todo { background:#1e293b; color:#64748b; }
+  .fail { background:#4c0519; color:#fda4af; }
+  .seg { flex:1; height:2px; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
+
+<header class="border-b border-slate-800 bg-slate-900/60 sticky top-0 z-20 backdrop-blur">
+  <div class="max-w-[1500px] mx-auto px-5 h-14 flex items-center gap-4">
+    <div class="flex items-center gap-2 font-semibold tracking-tight">
+      <span class="w-7 h-7 rounded bg-gradient-to-br from-sky-400 to-indigo-500 grid place-items-center text-slate-950 font-bold">P</span>
+      phaze <span class="text-slate-500 font-normal">/ library</span>
+    </div>
+    <!-- collapsible global pipeline summary in the header -->
+    <div class="ml-4 hidden lg:flex items-center gap-1 text-xs bg-slate-800/60 rounded-lg px-3 py-1.5 border border-slate-700">
+      <span class="text-slate-400">Pipeline:</span>
+      <span class="text-emerald-300">182k meta</span><span class="text-slate-600">·</span>
+      <span class="text-sky-300">3.2k analyzing</span><span class="text-slate-600">·</span>
+      <span class="text-amber-300">1.3k to review</span><span class="text-slate-600">·</span>
+      <span class="text-rose-300">37 failed</span>
+      <button class="ml-1 text-slate-500 hover:text-slate-300">▾ DAG</button>
+    </div>
+    <button class="ml-auto flex items-center gap-2 px-3 h-9 rounded-lg bg-slate-800/70 border border-slate-700 text-slate-400 text-sm hover:bg-slate-800 w-72">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/></svg>
+      Search… <span class="ml-auto mono text-xs px-1.5 py-0.5 rounded bg-slate-700/80">⌘K</span>
+    </button>
+    <button class="px-3 h-9 rounded-lg bg-sky-500 text-slate-950 text-sm font-medium hover:bg-sky-400">+ Scan</button>
+  </div>
+</header>
+
+<div class="max-w-[1500px] mx-auto flex">
+  <!-- left: smart filters (saved views, not tabs) -->
+  <aside class="w-56 shrink-0 border-r border-slate-800 min-h-[calc(100vh-3.5rem)] py-5 px-3 hidden md:block">
+    <div class="text-[11px] uppercase tracking-wide text-slate-500 px-2 mb-2">Views</div>
+    <nav class="space-y-0.5 text-sm">
+      <a class="flex items-center justify-between px-2.5 py-1.5 rounded-md bg-slate-800 text-slate-100">All files <span class="mono text-xs text-slate-400">198k</span></a>
+      <a class="flex items-center justify-between px-2.5 py-1.5 rounded-md hover:bg-slate-800/60 text-slate-300">Needs analysis <span class="mono text-xs text-slate-500">12.6k</span></a>
+      <a class="flex items-center justify-between px-2.5 py-1.5 rounded-md hover:bg-slate-800/60 text-slate-300">☁️ Awaiting cloud <span class="mono text-xs text-sky-400">3.2k</span></a>
+      <a class="flex items-center justify-between px-2.5 py-1.5 rounded-md hover:bg-slate-800/60 text-slate-300">Ready to review <span class="mono text-xs text-amber-400">1.3k</span></a>
+      <a class="flex items-center justify-between px-2.5 py-1.5 rounded-md hover:bg-slate-800/60 text-slate-300">Duplicates <span class="mono text-xs text-slate-500">418</span></a>
+      <a class="flex items-center justify-between px-2.5 py-1.5 rounded-md hover:bg-slate-800/60 text-slate-300">Failed <span class="mono text-xs text-rose-400">37</span></a>
+    </nav>
+    <div class="text-[11px] uppercase tracking-wide text-slate-500 px-2 mb-2 mt-6">Compute</div>
+    <div class="space-y-2 px-1 text-xs">
+      <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> Local nox <span class="ml-auto mono text-slate-500">8/8</span></div>
+      <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> A1 arm64 <span class="ml-auto mono text-slate-500">2/4</span></div>
+      <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-sky-400"></span> k8s burst <span class="ml-auto mono text-amber-300">12 pend</span></div>
+    </div>
+  </aside>
+
+  <!-- center: the corpus as rows, each with a per-file pipeline stepper -->
+  <main class="flex-1 min-w-0 py-5 px-4">
+    <div class="flex items-center justify-between mb-3">
+      <h1 class="text-lg font-semibold">All files <span class="text-slate-500 text-sm font-normal">· 198,442</span></h1>
+      <div class="flex gap-2 text-xs">
+        <button class="px-2.5 h-8 rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700">Sort: recent ▾</button>
+        <button class="px-2.5 h-8 rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700">Bulk actions ▾</button>
+      </div>
+    </div>
+
+    <!-- column header -->
+    <div class="grid grid-cols-[1fr_320px] gap-4 px-3 pb-2 text-[11px] uppercase tracking-wide text-slate-500">
+      <span>File</span><span>Pipeline · discover → enrich → identify → propose → apply</span>
+    </div>
+
+    <div class="space-y-1.5">
+      <!-- row: selected -->
+      <div class="grid grid-cols-[1fr_320px] gap-4 items-center px-3 py-2.5 rounded-lg bg-slate-800 ring-1 ring-sky-500/40">
+        <div class="min-w-0">
+          <div class="truncate text-sm">Coachella 2024 · Sat · Main Stage.flac</div>
+          <div class="text-xs text-slate-500 mono">3:41:22 · flac · 412 MB</div>
+        </div>
+        <div class="flex items-center">
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step active">☁</div><div class="seg bg-slate-700"></div>
+          <div class="step todo">3</div><div class="seg bg-slate-700"></div>
+          <div class="step todo">4</div>
+        </div>
+      </div>
+      <!-- ready to review -->
+      <div class="grid grid-cols-[1fr_320px] gap-4 items-center px-3 py-2.5 rounded-lg hover:bg-slate-800/50">
+        <div class="min-w-0">
+          <div class="truncate text-sm">deadmau5 — live @ EDC 2019.mp3</div>
+          <div class="text-xs text-slate-500 mono">1:12:40 · mp3 · 98 MB</div>
+        </div>
+        <div class="flex items-center">
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step done">✓</div><div class="seg bg-amber-600"></div>
+          <div class="step" style="background:#78350f;color:#fcd34d">!</div>
+        </div>
+      </div>
+      <!-- failed -->
+      <div class="grid grid-cols-[1fr_320px] gap-4 items-center px-3 py-2.5 rounded-lg hover:bg-slate-800/50">
+        <div class="min-w-0">
+          <div class="truncate text-sm">Tomorrowland 2022 W2 · Mainstage.m4a</div>
+          <div class="text-xs text-slate-500 mono">3:02:08 · m4a · 388 MB</div>
+        </div>
+        <div class="flex items-center">
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step fail">✕</div><div class="seg bg-slate-700"></div>
+          <div class="step todo">3</div><div class="seg bg-slate-700"></div>
+          <div class="step todo">4</div>
+        </div>
+      </div>
+      <!-- early -->
+      <div class="grid grid-cols-[1fr_320px] gap-4 items-center px-3 py-2.5 rounded-lg hover:bg-slate-800/50">
+        <div class="min-w-0">
+          <div class="truncate text-sm">unknown — 03 untitled.wav</div>
+          <div class="text-xs text-slate-500 mono">0:06:55 · wav · 71 MB</div>
+        </div>
+        <div class="flex items-center">
+          <div class="step done">✓</div><div class="seg bg-emerald-700"></div>
+          <div class="step active">⏳</div><div class="seg bg-slate-700"></div>
+          <div class="step todo">2</div><div class="seg bg-slate-700"></div>
+          <div class="step todo">3</div><div class="seg bg-slate-700"></div>
+          <div class="step todo">4</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- right: the focused per-file workspace (opens when a row is clicked) -->
+  <aside class="w-[380px] shrink-0 border-l border-slate-800 min-h-[calc(100vh-3.5rem)] bg-slate-900/40">
+    <div class="px-4 py-3 border-b border-slate-800">
+      <div class="text-sm font-medium truncate">Coachella 2024 · Sat · Main Stage.flac</div>
+      <div class="text-xs text-slate-500 mono mt-0.5">/incoming/coachella24/sat-main.flac</div>
+    </div>
+    <div class="p-4 space-y-4 text-sm">
+      <!-- per-file DAG, vertical -->
+      <div>
+        <div class="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Pipeline</div>
+        <div class="space-y-1.5">
+          <div class="flex items-center gap-2"><span class="step done">✓</span> Discovered</div>
+          <div class="flex items-center gap-2"><span class="step done">✓</span> Metadata · Fingerprint</div>
+          <div class="flex items-center gap-2"><span class="step active">☁</span> Analyze <span class="text-xs text-sky-300 ml-auto">k8s · admitted, running</span></div>
+          <div class="flex items-center gap-2 opacity-50"><span class="step todo">3</span> Track-ID · Tracklist</div>
+          <div class="flex items-center gap-2 opacity-50"><span class="step todo">4</span> Propose → Review</div>
+        </div>
+      </div>
+      <!-- live analysis -->
+      <div class="rounded-lg bg-slate-800/60 border border-slate-700 p-3">
+        <div class="text-xs text-slate-400 mb-2">Analysis (windowed · live)</div>
+        <svg viewBox="0 0 300 40" class="w-full h-10"><polyline fill="none" stroke="#38bdf8" stroke-width="1.5" points="0,30 20,28 40,22 60,24 80,18 100,20 120,12 140,16 160,10 180,14 200,11 220,9 240,13 260,8 280,12 300,10"/></svg>
+        <div class="flex justify-between text-xs text-slate-400 mt-1"><span>BPM ~126</span><span>key A min</span><span>house</span></div>
+      </div>
+      <!-- known facts -->
+      <div class="space-y-1.5 text-xs">
+        <div class="flex justify-between"><span class="text-slate-500">Track-ID</span><span class="text-slate-500 italic">pending analysis</span></div>
+        <div class="flex justify-between"><span class="text-slate-500">Tracklist (1001)</span><span class="text-slate-500 italic">not searched</span></div>
+        <div class="flex justify-between"><span class="text-slate-500">Proposed name</span><span class="text-slate-500 italic">—</span></div>
+      </div>
+      <button class="w-full h-9 rounded-md bg-slate-800 border border-slate-700 text-sm hover:bg-slate-700">View full record →</button>
+    </div>
+  </aside>
+</div>
+
+<footer class="max-w-[1500px] mx-auto px-5 py-8 text-xs text-slate-600">
+  Alt B — File Workbench · home = the corpus · each row carries its own pipeline stepper · select a file → focused workspace on the right · DAG is a per-file spine + header summary
+</footer>
+</body>
+</html>

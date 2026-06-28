@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phaze — Alt A: Mission Control</title>
+<!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity (throwaway design mockup; Tailwind Play CDN has no SRI hash; never served) --><script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+  .node { transition: all .15s ease; cursor: pointer; }
+  .node:hover { transform: translateY(-2px); }
+  .flow-line { stroke: #334155; stroke-width: 2; fill: none; }
+  .flow-line.active { stroke: #38bdf8; stroke-dasharray: 6 4; animation: dash 1s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -20; } }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
+
+<!-- top status bar: replaces the tab row -->
+<header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-20">
+  <div class="max-w-[1400px] mx-auto px-5 h-14 flex items-center gap-4">
+    <div class="flex items-center gap-2 font-semibold tracking-tight">
+      <span class="w-7 h-7 rounded bg-gradient-to-br from-sky-400 to-indigo-500 grid place-items-center text-slate-950 font-bold">P</span>
+      phaze <span class="text-slate-500 font-normal">/ mission control</span>
+    </div>
+    <!-- global command bar replaces the Search tab -->
+    <button class="ml-4 flex-1 max-w-md flex items-center gap-2 px-3 h-9 rounded-lg bg-slate-800/70 border border-slate-700 text-slate-400 text-sm hover:bg-slate-800">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/></svg>
+      Search files, artists, tracklists…
+      <span class="ml-auto mono text-xs px-1.5 py-0.5 rounded bg-slate-700/80">⌘K</span>
+    </button>
+    <div class="ml-auto flex items-center gap-3 text-xs">
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> nox <span class="text-slate-500">local</span></span>
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> A1 <span class="text-slate-500">arm64</span></span>
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-sky-400"></span> k8s <span class="text-slate-500">burst</span></span>
+      <button class="px-2.5 h-8 rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700">Agents</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-[1400px] mx-auto px-5 py-6">
+
+  <!-- headline corpus stats -->
+  <div class="grid grid-cols-5 gap-3 mb-6">
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-4">
+      <div class="text-3xl font-semibold">198,442</div>
+      <div class="text-xs text-slate-400 mt-1">files in corpus</div>
+    </div>
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-4">
+      <div class="text-3xl font-semibold text-sky-300">3,210</div>
+      <div class="text-xs text-slate-400 mt-1">in flight now</div>
+    </div>
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-4">
+      <div class="text-3xl font-semibold text-amber-300">1,284</div>
+      <div class="text-xs text-slate-400 mt-1">awaiting your review</div>
+    </div>
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-4">
+      <div class="text-3xl font-semibold text-emerald-300">142</div>
+      <div class="text-xs text-slate-400 mt-1">analyzed / hr</div>
+    </div>
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-4">
+      <div class="text-3xl font-semibold text-rose-300">37</div>
+      <div class="text-xs text-slate-400 mt-1">failed · needs attn</div>
+    </div>
+  </div>
+
+  <!-- THE DAG: the whole page is the pipeline -->
+  <div class="rounded-2xl bg-slate-900/50 border border-slate-800 p-6 relative overflow-hidden">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Pipeline · live</h2>
+      <div class="flex gap-2">
+        <button class="px-3 h-8 rounded-md bg-sky-500/90 hover:bg-sky-500 text-slate-950 text-sm font-medium">+ Scan files</button>
+        <button class="px-3 h-8 rounded-md bg-slate-800 border border-slate-700 text-sm hover:bg-slate-700">Recover</button>
+      </div>
+    </div>
+
+    <!-- SVG flow connectors behind nodes -->
+    <svg class="absolute inset-0 w-full h-full pointer-events-none" style="top:120px">
+      <path class="flow-line active" d="M 230 70 H 330" />
+      <path class="flow-line active" d="M 540 40 H 640" />
+      <path class="flow-line active" d="M 540 70 H 640" />
+      <path class="flow-line active" d="M 540 100 H 640" />
+      <path class="flow-line" d="M 850 70 H 950" />
+      <path class="flow-line" d="M 1160 70 H 1230" />
+    </svg>
+
+    <div class="relative grid grid-cols-6 gap-4 items-start">
+      <!-- Discover -->
+      <div class="node rounded-xl bg-slate-800/80 border border-slate-700 p-4">
+        <div class="text-xs uppercase tracking-wide text-slate-400">Discover</div>
+        <div class="text-2xl font-semibold mt-1">198k</div>
+        <div class="mt-2 h-1.5 rounded-full bg-slate-700"><div class="h-full rounded-full bg-emerald-400" style="width:100%"></div></div>
+        <div class="text-[11px] text-slate-500 mt-1">all scanned</div>
+      </div>
+
+      <!-- Enrich: 3 parallel sub-stages -->
+      <div class="space-y-2">
+        <div class="text-[11px] uppercase tracking-wide text-slate-500 px-1 mb-1">Enrich (parallel)</div>
+        <div class="node rounded-lg bg-slate-800/80 border border-slate-700 px-3 py-2 flex items-center justify-between">
+          <span class="text-sm">Metadata</span><span class="mono text-xs text-emerald-300">182k</span>
+        </div>
+        <div class="node rounded-lg bg-slate-800/80 border border-slate-700 px-3 py-2 flex items-center justify-between">
+          <span class="text-sm">Fingerprint</span><span class="mono text-xs text-emerald-300">175k</span>
+        </div>
+        <div class="node rounded-lg bg-slate-800/80 border border-sky-700/60 px-3 py-2 flex items-center justify-between ring-1 ring-sky-500/20">
+          <span class="text-sm">Analyze</span><span class="mono text-xs text-sky-300">3,210 ⏳</span>
+        </div>
+      </div>
+
+      <!-- Analyze execution lanes — the cloud/k8s richness -->
+      <div class="rounded-xl bg-slate-800/40 border border-sky-700/40 p-3">
+        <div class="text-[11px] uppercase tracking-wide text-sky-400/80 mb-2">Analyze · 3 lanes</div>
+        <div class="space-y-2">
+          <div class="rounded-lg bg-slate-900/70 border border-slate-700 px-3 py-2">
+            <div class="flex items-center justify-between text-sm"><span>🖥️ Local · nox</span><span class="mono text-xs text-slate-400">8/8</span></div>
+            <div class="mt-1.5 h-1 rounded-full bg-slate-700"><div class="h-full rounded-full bg-emerald-400" style="width:100%"></div></div>
+            <div class="text-[10px] text-slate-500 mt-1">short sets &lt;90m</div>
+          </div>
+          <div class="rounded-lg bg-slate-900/70 border border-slate-700 px-3 py-2">
+            <div class="flex items-center justify-between text-sm"><span>☁️ A1 · arm64</span><span class="mono text-xs text-slate-400">2/4</span></div>
+            <div class="mt-1.5 h-1 rounded-full bg-slate-700"><div class="h-full rounded-full bg-sky-400" style="width:50%"></div></div>
+            <div class="text-[10px] text-slate-500 mt-1">long sets ≥90m</div>
+          </div>
+          <div class="rounded-lg bg-slate-900/70 border border-slate-700 px-3 py-2">
+            <div class="flex items-center justify-between text-sm"><span>⎈ k8s · burst</span><span class="mono text-xs text-amber-300">12 Pending</span></div>
+            <div class="mt-1.5 h-1 rounded-full bg-slate-700"><div class="h-full rounded-full bg-amber-400" style="width:30%"></div></div>
+            <div class="text-[10px] text-slate-500 mt-1">quota wait · Kueue</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Identify -->
+      <div class="space-y-2">
+        <div class="text-[11px] uppercase tracking-wide text-slate-500 px-1 mb-1">Identify</div>
+        <div class="node rounded-lg bg-slate-800/80 border border-slate-700 px-3 py-2 flex items-center justify-between">
+          <span class="text-sm">Track-ID</span><span class="mono text-xs text-slate-300">71k</span>
+        </div>
+        <div class="node rounded-lg bg-slate-800/80 border border-slate-700 px-3 py-2 flex items-center justify-between">
+          <span class="text-sm">Tracklist</span><span class="mono text-xs text-slate-300">9,402</span>
+        </div>
+      </div>
+
+      <!-- Propose -->
+      <div class="node rounded-xl bg-slate-800/80 border border-slate-700 p-4">
+        <div class="text-xs uppercase tracking-wide text-slate-400">Propose</div>
+        <div class="text-2xl font-semibold mt-1">1,284</div>
+        <div class="text-[11px] text-slate-500 mt-1">AI rename + path</div>
+      </div>
+
+      <!-- Review & Apply — the approval gate -->
+      <div class="node rounded-xl bg-gradient-to-br from-amber-500/15 to-amber-600/5 border border-amber-500/40 p-4 ring-1 ring-amber-500/20">
+        <div class="text-xs uppercase tracking-wide text-amber-300">Review &amp; Apply</div>
+        <div class="text-2xl font-semibold mt-1 text-amber-200">1,284</div>
+        <div class="text-[11px] text-amber-400/70 mt-1">rename · tag · move · dedupe</div>
+        <button class="mt-2 w-full h-7 rounded-md bg-amber-400 text-slate-950 text-xs font-semibold hover:bg-amber-300">Open review queue →</button>
+      </div>
+    </div>
+
+    <p class="text-[11px] text-slate-500 mt-5">Click any node → a slide-over lists its files with bulk actions. Nothing is a separate tab — the DAG <em>is</em> the app.</p>
+  </div>
+
+  <!-- simulated slide-over preview (what clicking a node does) -->
+  <div class="mt-5 rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+    <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/80">
+      <div class="text-sm font-medium">▸ Analyze · k8s lane <span class="text-slate-500">(12 files, quota-waiting)</span></div>
+      <div class="flex gap-2 text-xs">
+        <button class="px-2.5 h-7 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700">Re-route to A1</button>
+        <button class="px-2.5 h-7 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700">Cancel jobs</button>
+      </div>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="text-[11px] uppercase tracking-wide text-slate-500 bg-slate-900/50">
+        <tr><th class="text-left font-medium px-5 py-2">File</th><th class="text-left font-medium py-2">Duration</th><th class="text-left font-medium py-2">Workload</th><th class="text-left font-medium py-2">State</th></tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800/70">
+        <tr class="hover:bg-slate-800/40"><td class="px-5 py-2.5">Coachella 2024 · Sat · Main Stage.flac</td><td class="text-slate-400">3:41:22</td><td class="mono text-xs text-slate-500">phaze-7a3f</td><td><span class="text-amber-300 text-xs">Pending (quota)</span></td></tr>
+        <tr class="hover:bg-slate-800/40"><td class="px-5 py-2.5">Tomorrowland W1 · Mainstage.m4a</td><td class="text-slate-400">2:58:10</td><td class="mono text-xs text-slate-500">phaze-9b2e</td><td><span class="text-amber-300 text-xs">Pending (quota)</span></td></tr>
+        <tr class="hover:bg-slate-800/40"><td class="px-5 py-2.5">EDC LV 2023 · kineticFIELD.ogg</td><td class="text-slate-400">4:02:55</td><td class="mono text-xs text-slate-500">phaze-1c8d</td><td><span class="text-sky-300 text-xs">Admitted · running</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<footer class="max-w-[1400px] mx-auto px-5 py-8 text-xs text-slate-600">
+  Alt A — Mission Control · home = the live corpus-wide DAG · drill into any node · search + agents in the status bar · zero content tabs
+</footer>
+</body>
+</html>

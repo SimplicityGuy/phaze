@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phaze — Redesign Prototype (C3 Evolved · full flow)</title>
+<!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity (throwaway design mockup; Tailwind Play CDN has no SRI hash; never served) --><script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Jura:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body{font-family:'Inter',sans-serif}
+  .jura{font-family:'Jura',sans-serif}
+  .mono{font-family:ui-monospace,'SF Mono',Menlo,monospace}
+  .bg-phaze{background:#0b1220}.bg-pp{background:#111a2e}.bg-ps{background:#0f1727}
+  .bd{border-color:#1e293b}
+  .rail-node{transition:background .12s;cursor:pointer}.rail-node:hover{background:#16213a}
+  .rail-node.sel{background:rgba(59,130,246,.12);box-shadow:inset 3px 0 0 #3b82f6}
+  .tk{font-family:'Jura';text-transform:uppercase;letter-spacing:.2em}
+  .add{background:rgba(16,185,129,.12);color:#6ee7b7;text-decoration:none}
+  .del{background:rgba(244,63,94,.10);color:#fda4af;text-decoration:line-through}
+  ::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#1e293b;border-radius:6px}
+  [x-cloak]{display:none}
+</style></head>
+<body class="bg-phaze text-gray-300 h-screen overflow-hidden flex flex-col">
+
+<!-- ======== HEADER ======== -->
+<header class="h-14 shrink-0 border-b bd bg-pp flex items-center gap-4 px-5 relative z-30">
+  <div class="flex items-center gap-2.5 cursor-pointer" onclick="go('analyze')">
+    <svg width="26" height="26" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="46" stroke="#3b82f6" stroke-width="3" opacity=".35"/><path d="M50 8 C44 25,38 38,38 50 C38 62,44 75,50 92" stroke="#60a5fa" stroke-width="3.5" fill="none" stroke-linecap="round"/><circle cx="50" cy="50" r="3" fill="#60a5fa"/></svg>
+    <span class="jura font-medium text-sm tracking-[0.25em] text-gray-100">PHAZE</span>
+  </div>
+  <button onclick="openCmd()" class="ml-2 flex-1 max-w-md flex items-center gap-2 px-3.5 h-9 rounded-lg bg-ps border bd text-gray-500 text-sm hover:bg-[#16213a]">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/></svg>
+    Search files, artists, tracklists… <span class="ml-auto mono text-xs px-1.5 py-0.5 rounded bg-[#1e293b] text-gray-400">⌘K</span></button>
+  <div class="ml-auto flex items-center gap-2.5 text-xs text-gray-400">
+    <button onclick="go('firstrun')" class="px-2.5 h-8 rounded-lg bg-ps border bd hover:bg-[#16213a] text-gray-400">Empty/Scan state</button>
+    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>nox</span>
+    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>A1</span>
+    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-blue-400"></span>k8s</span>
+    <button onclick="go('agents')" class="jura tracking-wider px-3 h-8 rounded-lg bg-ps border bd hover:bg-[#16213a] text-gray-300">AGENTS · 3</button>
+  </div>
+</header>
+
+<div class="flex-1 flex min-h-0">
+  <!-- ======== DAG RAIL (acts as nav) ======== -->
+  <aside class="w-[280px] shrink-0 border-r bd bg-ps overflow-y-auto py-4">
+    <div class="px-4 pb-2 flex items-center justify-between"><span class="jura text-[11px] uppercase tracking-[0.25em] text-blue-400/80">Pipeline</span><button onclick="go('firstrun')" class="jura tracking-wider text-xs px-2.5 h-6 rounded bg-blue-600 text-white font-medium hover:bg-blue-500">+ SCAN</button></div>
+    <div id="rail"></div>
+    <div class="mx-2 mt-3 px-2 text-[11px] text-gray-600 jura tracking-wider uppercase border-t bd pt-3">
+      <div class="rail-node rounded px-1.5 py-1.5" onclick="go('audit')">Audit log</div>
+      <div class="rail-node rounded px-1.5 py-1.5" onclick="go('agents')">Compute / agents</div>
+    </div>
+  </aside>
+
+  <!-- ======== CENTER WORKSPACE ======== -->
+  <main id="center" class="flex-1 min-w-0 overflow-y-auto"></main>
+
+  <!-- ======== RIGHT FILE PANE ======== -->
+  <aside id="pane" class="w-[350px] shrink-0 border-l bd bg-ps overflow-y-auto"></aside>
+</div>
+
+<footer class="h-7 shrink-0 border-t bd bg-pp flex items-center px-6 jura text-[11px] tracking-[0.2em] uppercase text-gray-600">
+  <span id="crumb">Analyze</span><span class="mx-2 text-gray-700">·</span><span class="text-gray-700 normal-case tracking-normal" style="font-family:Inter">click rail nodes to navigate · this is the whole flow in the C3 aesthetic</span>
+</footer>
+
+<!-- ======== FULL RECORD MODAL ======== -->
+<div id="record" class="fixed inset-0 z-40 hidden">
+  <div class="absolute inset-0 bg-black/60" onclick="closeRecord()"></div>
+  <div class="absolute inset-y-4 right-4 left-auto w-[760px] max-w-[94vw] bg-phaze border bd rounded-2xl shadow-2xl overflow-y-auto">
+    <div id="recordBody"></div>
+  </div>
+</div>
+
+<!-- ======== ⌘K COMMAND PALETTE ======== -->
+<div id="cmd" class="fixed inset-0 z-50 hidden">
+  <div class="absolute inset-0 bg-black/60" onclick="closeCmd()"></div>
+  <div class="absolute left-1/2 top-24 -translate-x-1/2 w-[640px] max-w-[92vw] bg-pp border bd rounded-2xl shadow-2xl overflow-hidden">
+    <div class="flex items-center gap-3 px-4 h-14 border-b bd">
+      <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/></svg>
+      <input autofocus placeholder="Search files, artists, tracklists — or type a command…" class="flex-1 bg-transparent outline-none text-gray-100 placeholder-gray-600">
+      <span class="mono text-xs px-1.5 py-0.5 rounded bg-[#1e293b] text-gray-500">esc</span>
+    </div>
+    <div class="max-h-[50vh] overflow-y-auto p-2 text-sm">
+      <div class="px-2 py-1 tk text-[10px] text-gray-600">Files</div>
+      <div class="rail-node rounded-lg px-3 py-2 flex items-center gap-3" onclick="closeCmd();openRecord()"><span>🎵</span><span class="flex-1">Coachella 2024 · Sat · Main Stage.flac</span><span class="text-xs text-blue-300">analyzing · k8s</span></div>
+      <div class="rail-node rounded-lg px-3 py-2 flex items-center gap-3"><span>🎵</span><span class="flex-1">deadmau5 — live @ EDC 2019.mp3</span><span class="text-xs text-amber-300">ready to review</span></div>
+      <div class="px-2 py-1 tk text-[10px] text-gray-600 mt-1">Tracklists</div>
+      <div class="rail-node rounded-lg px-3 py-2 flex items-center gap-3"><span>📜</span><span class="flex-1">Tomorrowland 2022 — Mainstage W2</span><span class="text-xs text-gray-500">42 tracks</span></div>
+      <div class="px-2 py-1 tk text-[10px] text-gray-600 mt-1">Commands</div>
+      <div class="rail-node rounded-lg px-3 py-2 flex items-center gap-3" onclick="closeCmd();go('firstrun')"><span>⊕</span><span class="flex-1">Scan a directory…</span></div>
+      <div class="rail-node rounded-lg px-3 py-2 flex items-center gap-3" onclick="closeCmd();go('rename')"><span>✓</span><span class="flex-1">Go to Review &amp; Apply → Rename queue</span></div>
+      <div class="rail-node rounded-lg px-3 py-2 flex items-center gap-3" onclick="closeCmd();go('agents')"><span>⎈</span><span class="flex-1">Open compute / agents</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------- pipeline / rail config ----------
+const RAIL = [
+  {type:'node', id:'discover', label:'Discover', dot:'done', count:'198k'},
+  {type:'group', label:'Enrich · parallel', items:[
+    {id:'metadata', label:'Metadata', dot:'done', count:'182k'},
+    {id:'fingerprint', label:'Fingerprint', dot:'done', count:'175k'},
+    {id:'analyze', label:'Analyze', dot:'live', count:'3.2k', lanes:true},
+  ]},
+  {type:'group', label:'Identify', items:[
+    {id:'trackid', label:'Track-ID', dot:'idle', count:'71k'},
+    {id:'tracklist', label:'Tracklist', dot:'idle', count:'9.4k'},
+  ]},
+  {type:'node', id:'propose', label:'Propose', dot:'idle2', count:'1.3k'},
+  {type:'group', label:'Review & Apply', amber:true, items:[
+    {id:'rename', label:'Rename / Path', count:'1.3k', amber:true},
+    {id:'tagwrite', label:'Tag write', count:'880', amber:true},
+    {id:'move', label:'Move files', count:'640', amber:true},
+    {id:'dedupe', label:'Dedupe', count:'418'},
+    {id:'cue', label:'Cue sheets', count:'2.1k'},
+  ]},
+];
+const DOT={done:'bg-emerald-400',live:'bg-blue-400 animate-pulse',idle:'bg-gray-600',idle2:'bg-gray-600'};
+
+function railHTML(){
+  let h='';
+  for(const r of RAIL){
+    if(r.type==='node'){
+      const ic = r.dot==='done'?'<span class="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-400 grid place-items-center text-[10px]">✓</span>'
+        :'<span class="w-5 h-5 rounded-full bg-gray-700/50 text-gray-400 grid place-items-center text-[10px]">∿</span>';
+      h+=`<div class="rail-node mx-2 rounded-lg px-3 py-2.5 flex items-center gap-3" data-id="${r.id}" onclick="go('${r.id}')">${ic}<span class="flex-1 text-gray-200">${r.label}</span><span class="mono text-xs text-gray-500">${r.count}</span></div>`;
+    } else {
+      const box = r.amber?'bg-amber-500/[0.06] border-amber-500/25':'bg-pp bd';
+      const lab = r.amber?'text-amber-400/80':'text-gray-500';
+      h+=`<div class="mx-2 mt-1.5 rounded-lg border ${box} px-2 py-1.5"><div class="jura text-[10px] uppercase tracking-[0.2em] ${lab} px-1.5 mb-1">${r.label}</div>`;
+      for(const it of r.items){
+        const col = it.amber?'text-amber-300':'text-gray-500';
+        const dot = it.dot?`<span class="w-1.5 h-1.5 rounded-full ${DOT[it.dot]}"></span>`:'';
+        h+=`<div class="rail-node rounded-md px-2.5 py-1.5 flex items-center gap-2.5" data-id="${it.id}" onclick="go('${it.id}')">${dot}<span class="flex-1 text-gray-300">${it.label}</span><span class="mono text-xs ${col}">${it.count}</span></div>`;
+        if(it.lanes){
+          h+=`<div class="ml-5 mt-1 space-y-1 border-l bd pl-2.5 text-xs text-gray-500">
+            <div class="flex"><span>🖥️ local</span><span class="ml-auto mono">8/8</span></div>
+            <div class="flex"><span>☁️ A1</span><span class="ml-auto mono">2/4</span></div>
+            <div class="flex"><span>⎈ k8s</span><span class="ml-auto mono text-amber-400">12 pend</span></div></div>`;
+        }
+      }
+      h+=`</div>`;
+    }
+  }
+  return h;
+}
+
+// ---------- generic table ----------
+function table(cols, rows){
+  let h=`<table class="w-full text-sm"><thead class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 bg-ps"><tr>`;
+  h+=cols.map(c=>`<th class="text-left font-medium px-6 py-2.5">${c}</th>`).join('');
+  h+=`</tr></thead><tbody class="divide-y bd">`;
+  for(const r of rows){
+    h+=`<tr class="hover:bg-pp cursor-pointer" onclick="openRecord()">`+r.map((c,i)=>`<td class="px-6 py-3 ${i===0?'text-gray-200':'text-gray-400'}">${c}</td>`).join('')+`</tr>`;
+  }
+  return h+`</tbody></table>`;
+}
+function head(title, sub, actions){
+  return `<div class="px-6 py-4 border-b bd flex items-center justify-between">
+    <div><h1 class="jura text-lg tracking-[0.15em] uppercase text-gray-100">${title}</h1><p class="text-sm text-gray-500 mt-0.5">${sub}</p></div>
+    <div class="flex gap-2 text-sm">${(actions||[]).map(a=>`<button class="jura tracking-wider px-3 h-9 rounded-lg bg-ps border bd hover:bg-[#16213a] text-gray-300">${a}</button>`).join('')}</div></div>`;
+}
+function diffRow(file, before, after){
+  return `<div class="px-6 py-3 border-b bd hover:bg-pp">
+    <div class="flex items-center justify-between"><div class="text-gray-200 text-sm truncate">${file}</div>
+      <div class="flex gap-1.5 shrink-0 ml-4"><button class="px-2.5 h-7 rounded bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs jura tracking-wider">APPROVE</button><button class="px-2.5 h-7 rounded bg-ps border bd hover:bg-[#16213a] text-xs jura tracking-wider text-gray-300">EDIT</button><button class="px-2.5 h-7 rounded bg-ps border bd hover:bg-[#16213a] text-xs jura tracking-wider text-gray-400">SKIP</button></div></div>
+    <div class="mt-2 grid grid-cols-[1fr_auto_1fr] gap-3 items-center text-xs">
+      <code class="del px-2 py-1 rounded block truncate">${before}</code><span class="text-gray-600">→</span><code class="add px-2 py-1 rounded block truncate">${after}</code></div></div>`;
+}
+
+// ---------- screens ----------
+const SCREENS = {
+  discover(){return head('Discover','198,442 files · last scan 4m ago · 12,602 not yet enriched',['SCAN','RECOVER'])
+    + `<div class="p-6"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-2">Recent scans</div></div>`
+    + table(['Path','Found','New','Status','When'],[
+      ['/media/coachella','41,208','312','<span class="text-emerald-300">complete</span>','4m ago'],
+      ['/media/edc','22,860','0','<span class="text-emerald-300">complete</span>','1h ago'],
+      ['/incoming/dump','1,044','1,044','<span class="text-blue-300">scanning…</span>','now'],
+    ]);},
+
+  metadata(){return head('Metadata','182,104 extracted · 16,338 pending · manual stage',['EXTRACT SELECTED','EXTRACT ALL'])
+    + table(['File','Format','Size','Existing tags','State'],[
+      ['Coachella 2024 · Sat · Main Stage.flac','flac','412 MB','3 tags','<span class="text-emerald-300">extracted</span>'],
+      ['unknown — 03 untitled.wav','wav','71 MB','none','<span class="text-gray-500">pending</span>'],
+      ['Tomorrowland W1 · Mainstage.m4a','m4a','388 MB','7 tags','<span class="text-emerald-300">extracted</span>'],
+    ]);},
+
+  fingerprint(){return head('Fingerprint','175,402 fingerprinted · chromaprint / fpcalc',['FINGERPRINT ALL'])
+    + table(['File','Duration','Chromaprint','AcoustID'],[
+      ['deadmau5 — live @ EDC 2019.mp3','1:12:40','<span class="mono text-xs">AQADtMk…</span>','<span class="text-emerald-300">matched</span>'],
+      ['Coachella 2024 · Sat.flac','3:41:22','<span class="mono text-xs">AQADv1p…</span>','<span class="text-gray-500">live set — n/a</span>'],
+    ]);},
+
+  analyze(){return head('Analyze','3,210 files in flight across 3 lanes',['ROUTE RULES','PAUSE'])
+    + `<div class="grid grid-cols-3 gap-4 p-6">
+      ${lane('🖥️ Local · nox','8 / 8','bg-emerald-400','100%','short sets &lt; 90 min · saturated','bd')}
+      ${lane('☁️ A1 · arm64','2 / 4','bg-blue-400','50%','long sets ≥ 90 min · headroom','bd')}
+      ${lane('⎈ k8s · burst','12 pending','bg-amber-400','28%','Kueue quota wait · admitting','border-amber-500/30','text-amber-300')}
+    </div>`
+    + table(['File','Duration','Lane','State'],[
+      ['Coachella 2024 · Sat · Main Stage.flac','3:41:22','<span class="text-amber-300">⎈ k8s</span>','<span class="text-blue-300">running</span>'],
+      ['EDC LV 2023 · kineticFIELD.ogg','4:02:55','<span class="text-blue-300">☁️ A1</span>','<span class="text-blue-300">window 14/41</span>'],
+      ['deadmau5 — live @ EDC 2019.mp3','1:12:40','<span class="text-emerald-300">🖥️ local</span>','<span class="text-blue-300">window 22/24</span>'],
+      ['Tomorrowland W1 · Mainstage.m4a','2:58:10','<span class="text-amber-300">⎈ k8s</span>','<span class="text-amber-300">pending (quota)</span>'],
+    ]);},
+
+  trackid(){return head('Track-ID','71,402 identified · AcoustID → MusicBrainz recording',['IDENTIFY PENDING'])
+    + table(['File','AcoustID','MB recording','Confidence'],[
+      ['deadmau5 — Strobe (radio edit).mp3','<span class="text-emerald-300">match</span>','deadmau5 – Strobe','<span class="text-emerald-300">0.97</span>'],
+      ['unknown — 03 untitled.wav','<span class="text-gray-500">no match</span>','—','—'],
+    ]);},
+
+  tracklist(){return head('Tracklist','9,402 sets matched · 1001Tracklists',['SEARCH','SCRAPE','MATCH'])
+    + `<div class="px-6 pt-4"><div class="flex items-center gap-2 text-xs jura tracking-wider text-gray-500">
+        <span class="px-2 py-1 rounded bg-emerald-500/15 text-emerald-300">1 · SEARCH ✓</span><span>→</span>
+        <span class="px-2 py-1 rounded bg-emerald-500/15 text-emerald-300">2 · SCRAPE ✓</span><span>→</span>
+        <span class="px-2 py-1 rounded bg-blue-500/15 text-blue-300">3 · MATCH ⏳</span></div></div>`
+    + table(['Set','Tracklist','Tracks','Matched to file'],[
+      ['Tomorrowland 2022 · Mainstage W2','<span class="text-emerald-300">found</span>','42','<span class="text-blue-300">38 / 42</span>'],
+      ['Coachella 2024 · Sat · Main Stage','<span class="text-gray-500">searching…</span>','—','—'],
+    ]);},
+
+  propose(){return head('Propose','1,284 proposals ready · litellm',['GENERATE PENDING'])
+    + table(['File','Proposed name','Proposed path','Conf'],[
+      ['…/sat-main.flac','deadmau5 @ Coachella 2024-04-13','/Live/deadmau5/2024-04-13 Coachella','<span class="text-emerald-300">0.91</span>'],
+      ['…/03 untitled.wav','Unknown Artist — Untitled 03','/Unsorted/Unknown','<span class="text-amber-300">0.42</span>'],
+    ]);},
+
+  rename(){return head('Review & Apply · Rename / Path','1,284 awaiting approval · proposed filename + destination',['APPROVE ALL HIGH-CONF','SETTINGS'])
+    + `<div class="pt-2">
+      ${diffRow('Coachella 2024 · Sat · Main Stage.flac','coachella24/sat-main.flac','Live/deadmau5/2024-04-13 Coachella · Main Stage.flac')}
+      ${diffRow('EDC LV 2023 · kineticFIELD.ogg','edc/kineticfield.ogg','Live/Various/2023-05-20 EDC LV · kineticFIELD.ogg')}
+      ${diffRow('unknown — 03 untitled.wav','dump/03 untitled.wav','Unsorted/Unknown/Untitled 03.wav')}
+    </div>`;},
+
+  tagwrite(){return head('Review & Apply · Tag write','880 awaiting approval · mutagen will write these tags',['APPROVE ALL HIGH-CONF'])
+    + `<div class="pt-2">
+      ${diffRow('Coachella 2024 · Sat.flac','artist: «empty»  ·  title: «empty»','artist: deadmau5  ·  title: Live @ Coachella 2024')}
+      ${diffRow('deadmau5 — Strobe.mp3','artist: deamau5 (typo)  ·  year: —','artist: deadmau5  ·  year: 2009')}
+    </div>`;},
+
+  move(){return head('Review & Apply · Move files','640 awaiting approval · physical file moves on the file server',['APPROVE ALL'])
+    + `<div class="pt-2">
+      ${diffRow('sat-main.flac','/incoming/coachella24/sat-main.flac','/library/Live/deadmau5/2024-04-13 Coachella/Main Stage.flac')}
+      ${diffRow('kineticfield.ogg','/incoming/edc/kineticfield.ogg','/library/Live/Various/2023-05-20 EDC LV/kineticFIELD.ogg')}
+    </div>`;},
+
+  dedupe(){return head('Review & Apply · Dedupe','418 duplicate groups · pick the keeper, others archived',['AUTO-KEEP HIGHEST QUALITY'])
+    + `<div class="p-6 space-y-3">
+      ${dupeGroup('deadmau5 — Strobe', [['Strobe (320k mp3).mp3','320 kbps · 22 MB',true],['strobe_v2.mp3','192 kbps · 13 MB',false],['Strobe.flac','lossless · 61 MB',false]])}
+      ${dupeGroup('EDC kineticFIELD 2023', [['kineticfield.ogg','vorbis · 388 MB',true],['kinetic_field_dup.ogg','vorbis · 388 MB',false]])}
+    </div>`;},
+
+  cue(){return head('Review & Apply · Cue sheets','2,104 generated from matched tracklists',['EXPORT APPROVED'])
+    + `<div class="p-6 grid grid-cols-2 gap-4">
+      <div class="rounded-xl bg-pp border bd p-4"><div class="text-gray-200 text-sm mb-2">Tomorrowland 2022 · Mainstage W2.cue</div>
+        <pre class="mono text-[11px] text-gray-400 leading-relaxed bg-ps rounded-lg p-3 overflow-x-auto">TITLE "Mainstage W2"
+FILE "set.flac" WAVE
+  TRACK 01 AUDIO
+    TITLE "Intro"
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    TITLE "Reload"
+    INDEX 01 03:12:40</pre>
+        <div class="flex gap-2 mt-3"><button class="px-2.5 h-7 rounded bg-emerald-600/90 text-white text-xs jura tracking-wider">APPROVE</button><button class="px-2.5 h-7 rounded bg-ps border bd text-gray-300 text-xs jura tracking-wider">EDIT</button></div></div>
+      <div class="rounded-xl bg-pp border bd p-4 opacity-60"><div class="text-gray-300 text-sm mb-2">Coachella 2024 · Sat.cue</div><div class="text-xs text-gray-500">awaiting tracklist match…</div></div>
+    </div>`;},
+
+  audit(){return head('Audit log','every applied change · reversible',['EXPORT'])
+    + table(['When','Action','File','By'],[
+      ['12:04','<span class="text-emerald-300">rename+move</span>','Main Stage.flac','operator'],
+      ['12:03','<span class="text-blue-300">tag write</span>','Strobe.mp3','operator'],
+      ['11:58','<span class="text-amber-300">dedupe archive</span>','strobe_v2.mp3','auto'],
+    ]);},
+
+  agents(){return head('Compute / Agents','3 lanes · local, A1, and ephemeral k8s burst',['ADD AGENT'])
+    + `<div class="p-6 grid grid-cols-3 gap-4">
+      ${agentCard('🖥️ nox','Local agent','emerald','HEALTHY','heartbeat 3s ago','8 / 8 slots · short sets')}
+      ${agentCard('☁️ A1','Cloud agent · arm64 (OCI)','emerald','HEALTHY','heartbeat 5s ago','2 / 4 slots · long sets')}
+      ${agentCardK8s()}
+    </div>
+    <div class="px-6 pb-6"><div class="rounded-xl bg-amber-500/[0.06] border border-amber-500/25 p-4 text-sm text-amber-200/90">
+      <span class="jura tracking-wider text-amber-300">NOTE</span> — the k8s burst lane has <b>no persistent process to heartbeat</b>. It is shown as an <b>ephemeral, Job-based identity</b> (live = derived from in-flight Kueue workloads), never as a perpetually-DEAD agent. <span class="text-amber-300/70">(KDEPLOY-04)</span></div></div>`;},
+
+  firstrun(){return `<div class="h-full grid place-items-center p-6">
+    <div class="w-[560px] max-w-full text-center">
+      <svg width="64" height="64" viewBox="0 0 100 100" fill="none" class="mx-auto mb-5"><circle cx="50" cy="50" r="46" stroke="#3b82f6" stroke-width="3" opacity=".3"/><path d="M50 8 C44 25,38 38,38 50 C38 62,44 75,50 92" stroke="#60a5fa" stroke-width="4" fill="none" stroke-linecap="round"/><circle cx="50" cy="50" r="3.5" fill="#60a5fa"/></svg>
+      <h1 class="jura text-2xl tracking-[0.2em] uppercase text-gray-100">Point phaze at your music</h1>
+      <p class="text-gray-500 mt-2">No files yet. Choose a directory on a file-server agent to scan — discovery unlocks metadata, analysis, and the rest of the pipeline.</p>
+      <div class="mt-6 flex items-center gap-2 bg-pp border bd rounded-xl p-2">
+        <span class="px-3 text-gray-500">📁</span>
+        <input value="/media/coachella" class="flex-1 bg-transparent outline-none text-gray-200 mono text-sm">
+        <select class="bg-ps border bd rounded-lg h-9 px-2 text-sm text-gray-300"><option>nox (local)</option><option>A1 (cloud)</option></select>
+        <button onclick="go('discover')" class="jura tracking-wider px-4 h-9 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-500">START SCAN</button>
+      </div>
+      <div class="mt-5 rounded-xl bg-pp border bd p-4 text-left">
+        <div class="flex items-center justify-between text-sm"><span class="text-gray-300">Scanning /incoming/dump…</span><span class="mono text-xs text-blue-300">1,044 files</span></div>
+        <div class="mt-2 h-1.5 rounded-full bg-[#1e293b]"><div class="h-full rounded-full bg-blue-400" style="width:62%"></div></div>
+        <div class="text-xs text-gray-500 mt-1.5">found 1,044 · 312 new · de-duping against 198k existing…</div>
+      </div>
+    </div></div>`;},
+};
+
+function lane(t,v,bar,w,sub,bd2,vc){return `<div class="rounded-xl bg-pp border ${bd2} p-4"><div class="flex justify-between"><span class="text-gray-200">${t}</span><span class="mono text-sm ${vc||'text-gray-500'}">${v}</span></div><div class="mt-3 h-1.5 rounded-full bg-[#1e293b]"><div class="h-full rounded-full ${bar}" style="width:${w}"></div></div><div class="text-xs text-gray-500 mt-2">${sub}</div></div>`;}
+function dupeGroup(name, files){
+  return `<div class="rounded-xl bg-pp border bd p-4"><div class="text-gray-200 text-sm mb-2 jura tracking-wider uppercase">${name} <span class="text-gray-600 normal-case">· ${files.length} copies</span></div>
+    <div class="space-y-1.5">`+files.map(f=>`<label class="flex items-center gap-3 px-3 py-2 rounded-lg ${f[2]?'bg-emerald-500/10 border border-emerald-500/30':'bg-ps border bd'} cursor-pointer">
+      <input type="radio" name="${name}" ${f[2]?'checked':''}> <span class="flex-1 text-sm ${f[2]?'text-emerald-200':'text-gray-300'}">${f[0]}</span>
+      <span class="text-xs text-gray-500 mono">${f[1]}</span>${f[2]?'<span class="jura text-[10px] tracking-wider text-emerald-300">KEEP</span>':'<span class="jura text-[10px] tracking-wider text-gray-600">archive</span>'}</label>`).join('')+`</div></div>`;
+}
+function agentCard(name,role,clr,status,beat,slots){
+  return `<div class="rounded-xl bg-pp border bd p-4"><div class="flex items-center justify-between"><span class="text-gray-100 font-medium">${name}</span><span class="w-2.5 h-2.5 rounded-full bg-${clr}-400"></span></div>
+    <div class="text-xs text-gray-500 mt-0.5">${role}</div>
+    <div class="mt-3 jura tracking-wider text-${clr}-300 text-xs">${status}</div>
+    <div class="text-xs text-gray-500 mt-1">${beat}</div><div class="text-xs text-gray-400 mt-2">${slots}</div></div>`;
+}
+function agentCardK8s(){
+  return `<div class="rounded-xl bg-pp border border-amber-500/30 p-4"><div class="flex items-center justify-between"><span class="text-gray-100 font-medium">⎈ k8s burst</span><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span></div>
+    <div class="text-xs text-gray-500 mt-0.5">Ephemeral · Kueue Jobs</div>
+    <div class="mt-3 jura tracking-wider text-amber-300 text-xs">EPHEMERAL · 13 ACTIVE WORKLOADS</div>
+    <div class="text-xs text-gray-500 mt-1">no heartbeat — Job-based identity</div><div class="text-xs text-gray-400 mt-2">1 running · 12 quota-pending</div></div>`;
+}
+
+// ---------- right pane ----------
+function paneHTML(stage){
+  // stages that aren't file-centric get a contextual pane
+  if(['agents','firstrun','audit'].includes(stage)) return `<div class="p-5 text-sm text-gray-500"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">Context</div>${stage==='agents'?'Select an agent to see its queue, recent jobs, and config.':stage==='audit'?'Select a log entry to see the full before/after and undo.':'Discovery feeds the whole pipeline. Pick a directory to begin.'}</div>`;
+  return `<div class="px-5 py-4 border-b bd flex items-center justify-between"><span class="text-gray-100 font-medium truncate">Coachella 2024 · Sat.flac</span><button onclick="openRecord()" class="text-gray-500 text-xs jura tracking-wider hover:text-gray-300">FULL ↗</button></div>
+    <div class="p-5 space-y-5">
+      <div class="rounded-xl bg-pp border bd p-4"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-2">Windowed analysis · live</div>
+        <svg viewBox="0 0 300 38" class="w-full h-10"><polyline fill="none" stroke="#60a5fa" stroke-width="2" points="0,30 20,28 40,21 60,23 80,16 100,18 120,11 140,15 160,9 180,13 200,10 220,8 240,12 260,7 280,11 300,9"/></svg>
+        <div class="flex justify-between text-sm text-gray-400 mt-1"><span>~126 BPM</span><span>A min</span><span>house</span></div></div>
+      <div><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">This file's journey</div>
+        <div class="space-y-2.5 text-sm">
+          <div class="flex items-center gap-2.5"><span class="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-400 grid place-items-center text-[10px]">✓</span>Discovered · metadata · fingerprint</div>
+          <div class="flex items-center gap-2.5"><span class="w-5 h-5 rounded-full bg-blue-500/15 text-blue-300 grid place-items-center text-[10px]">☁</span>Analyze — running on k8s</div>
+          <div class="flex items-center gap-2.5 opacity-50"><span class="w-5 h-5 rounded-full bg-gray-700/50 grid place-items-center text-[10px]">·</span>Track-ID · Tracklist</div>
+          <div class="flex items-center gap-2.5 opacity-50"><span class="w-5 h-5 rounded-full bg-gray-700/50 grid place-items-center text-[10px]">·</span>Propose → Review</div></div></div>
+      <button onclick="openRecord()" class="jura tracking-wider w-full h-11 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500">OPEN FULL RECORD →</button>
+    </div>`;
+}
+
+// ---------- full record modal ----------
+function recordHTML(){
+  return `<div class="px-6 py-4 border-b bd flex items-center justify-between sticky top-0 bg-phaze z-10">
+    <div><h2 class="jura text-lg tracking-[0.15em] uppercase text-gray-100">Coachella 2024 · Sat · Main Stage</h2><div class="mono text-xs text-gray-500 mt-0.5">/library/Live/deadmau5/2024-04-13 Coachella/Main Stage.flac</div></div>
+    <button onclick="closeRecord()" class="text-gray-500 hover:text-gray-200">✕</button></div>
+  <div class="p-6 space-y-6">
+    <div class="grid grid-cols-4 gap-3 text-sm">
+      ${kv('Format','flac · 412 MB')}${kv('Duration','3:41:22')}${kv('sha256','a4f9…be21')}${kv('Lane','⎈ k8s burst')}</div>
+    <div class="rounded-xl bg-pp border bd p-4"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">Windowed analysis · multi-lane timeline</div>
+      ${['BPM','Key','Energy'].map((l,i)=>`<div class="flex items-center gap-3 mb-2"><span class="w-10 text-xs text-gray-500">${l}</span><svg viewBox="0 0 600 20" class="flex-1 h-5"><polyline fill="none" stroke="${['#60a5fa','#34d399','#fbbf24'][i]}" stroke-width="1.5" points="${Array.from({length:30},(_,x)=>`${x*20},${10+Math.sin(x/2+i)*6}`).join(' ')}"/></svg></div>`).join('')}
+      <div class="text-xs text-gray-500">median 126 BPM · modal key A min · house · 41 windows</div></div>
+    <div class="grid grid-cols-2 gap-4">
+      <div class="rounded-xl bg-pp border bd p-4"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">Metadata</div>
+        ${kv2('artist','«empty»','deadmau5')}${kv2('title','«empty»','Live @ Coachella 2024')}${kv2('date','—','2024-04-13')}</div>
+      <div class="rounded-xl bg-pp border bd p-4"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">Identity</div>
+        ${kv('Track-ID','live set — n/a')}${kv('Tracklist (1001)','matched · 38/42 tracks')}${kv('Proposed name','deadmau5 @ Coachella 2024-04-13')}</div></div>
+    <div class="rounded-xl bg-amber-500/[0.06] border border-amber-500/25 p-4">
+      <div class="jura text-[11px] uppercase tracking-[0.2em] text-amber-400/80 mb-3">Pending approvals for this file</div>
+      <div class="space-y-2 text-sm">
+        <div class="flex items-center justify-between"><span>Rename + move → <code class="add px-1.5 py-0.5 rounded text-xs">…/Main Stage.flac</code></span><button class="px-2.5 h-7 rounded bg-emerald-600/90 text-white text-xs jura tracking-wider">APPROVE</button></div>
+        <div class="flex items-center justify-between"><span>Tag write → artist=deadmau5, title=…</span><button class="px-2.5 h-7 rounded bg-emerald-600/90 text-white text-xs jura tracking-wider">APPROVE</button></div></div></div>
+    <div><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-2">History</div>
+      <div class="text-xs text-gray-500 space-y-1"><div>11:40 discovered · /incoming/coachella24</div><div>11:42 metadata + fingerprint</div><div>12:01 analyze dispatched → k8s</div></div></div>
+  </div>`;
+}
+function kv(k,v){return `<div class="rounded-lg bg-pp border bd px-3 py-2"><div class="text-[11px] text-gray-500">${k}</div><div class="text-gray-200 mt-0.5 truncate">${v}</div></div>`;}
+function kv2(k,b,a){return `<div class="flex items-center gap-2 text-xs mb-1.5"><span class="w-12 text-gray-500">${k}</span><code class="del px-1.5 py-0.5 rounded">${b}</code><span class="text-gray-600">→</span><code class="add px-1.5 py-0.5 rounded">${a}</code></div>`;}
+
+// ---------- nav ----------
+function labelFor(id){
+  for(const r of RAIL){ if(r.id===id)return r.label; if(r.items){const f=r.items.find(i=>i.id===id); if(f)return f.label;} }
+  return {agents:'Compute / Agents',firstrun:'Scan',audit:'Audit log'}[id]||id;
+}
+function go(id){
+  if(!SCREENS[id]) id='analyze';
+  document.getElementById('center').innerHTML = SCREENS[id]();
+  document.getElementById('center').scrollTop=0;
+  document.getElementById('pane').innerHTML = paneHTML(id);
+  document.getElementById('crumb').textContent = labelFor(id);
+  document.querySelectorAll('#rail .rail-node').forEach(n=>n.classList.toggle('sel', n.dataset.id===id));
+}
+function openRecord(){document.getElementById('recordBody').innerHTML=recordHTML();document.getElementById('record').classList.remove('hidden');}
+function closeRecord(){document.getElementById('record').classList.add('hidden');}
+function openCmd(){document.getElementById('cmd').classList.remove('hidden');}
+function closeCmd(){document.getElementById('cmd').classList.add('hidden');}
+document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();openCmd();}if(e.key==='Escape'){closeCmd();closeRecord();}});
+
+// init
+document.getElementById('rail').innerHTML = railHTML();
+go('analyze');
+</script>
+</body></html>

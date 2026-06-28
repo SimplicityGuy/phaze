@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phaze C3 — Evolved phaze</title>
+<!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity (throwaway design mockup; Tailwind Play CDN has no SRI hash; never served) --><script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Jura:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body{font-family:'Inter',sans-serif}
+  .jura{font-family:'Jura',sans-serif}
+  .mono{font-family:ui-monospace,'SF Mono',Menlo,monospace}
+  /* phaze dark palette */
+  .bg-phaze{background:#0b1220}.bg-phaze-panel{background:#111a2e}.bg-phaze-soft{background:#0f1727}
+  .border-phaze{border-color:#1e293b}
+  .rail-node{transition:background .12s;cursor:pointer}.rail-node:hover{background:#16213a}
+  .rail-node.sel{background:rgba(59,130,246,.12);box-shadow:inset 3px 0 0 #3b82f6}
+</style></head>
+<body class="bg-phaze text-gray-300 h-screen overflow-hidden flex flex-col">
+<header class="h-14 shrink-0 border-b border-phaze bg-phaze-panel flex items-center gap-4 px-5">
+  <div class="flex items-center gap-2.5">
+    <svg width="26" height="26" viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="46" stroke="#3b82f6" stroke-width="3" opacity=".35"/><path d="M50 8 C44 25, 38 38, 38 50 C38 62, 44 75, 50 92" stroke="#60a5fa" stroke-width="3.5" fill="none" stroke-linecap="round"/><circle cx="50" cy="50" r="3" fill="#60a5fa"/></svg>
+    <span class="jura font-medium text-sm tracking-[0.25em] text-gray-100">PHAZE</span>
+  </div>
+  <button class="ml-2 flex-1 max-w-md flex items-center gap-2 px-3.5 h-9 rounded-lg bg-phaze-soft border border-phaze text-gray-500 text-sm hover:bg-[#16213a]">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/></svg>
+    Search files, artists, tracklists… <span class="ml-auto mono text-xs px-1.5 py-0.5 rounded bg-[#1e293b] text-gray-400">⌘K</span></button>
+  <div class="ml-auto flex items-center gap-3 text-xs text-gray-400">
+    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>nox</span>
+    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>A1</span>
+    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-blue-400"></span>k8s</span>
+    <button class="jura tracking-wider px-3 h-8 rounded-lg bg-phaze-soft border border-phaze hover:bg-[#16213a] text-gray-300">AGENTS · 3</button>
+  </div>
+</header>
+<div class="flex-1 flex min-h-0">
+  <aside class="w-[280px] shrink-0 border-r border-phaze bg-phaze-soft overflow-y-auto py-4">
+    <div class="px-4 pb-2 flex items-center justify-between"><span class="jura text-[11px] uppercase tracking-[0.25em] text-blue-400/80">Pipeline</span><button class="jura tracking-wider text-xs px-2.5 h-6 rounded bg-blue-600 text-white font-medium hover:bg-blue-500">+ SCAN</button></div>
+    <div class="rail-node mx-2 rounded-lg px-3 py-2.5 flex items-center gap-3"><span class="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-400 grid place-items-center text-[10px]">✓</span><span class="flex-1 text-gray-200">Discover</span><span class="mono text-xs text-gray-500">198k</span></div>
+    <div class="mx-2 mt-1.5 rounded-lg bg-phaze-panel border border-phaze px-2 py-1.5">
+      <div class="jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1">Enrich</div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex items-center gap-2.5"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span><span class="flex-1 text-gray-300">Metadata</span><span class="mono text-xs text-gray-500">182k</span></div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex items-center gap-2.5"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span><span class="flex-1 text-gray-300">Fingerprint</span><span class="mono text-xs text-gray-500">175k</span></div>
+      <div class="rail-node sel rounded-md px-2.5 py-1.5 flex items-center gap-2.5"><span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span><span class="flex-1 text-blue-300 font-medium">Analyze</span><span class="mono text-xs text-blue-300">3.2k</span></div>
+      <div class="ml-5 mt-1 space-y-1 border-l border-phaze pl-2.5 text-xs text-gray-500">
+        <div class="flex"><span>🖥️ local</span><span class="ml-auto mono">8/8</span></div>
+        <div class="flex"><span>☁️ A1</span><span class="ml-auto mono">2/4</span></div>
+        <div class="flex"><span>⎈ k8s</span><span class="ml-auto mono text-amber-400">12 pend</span></div>
+      </div>
+    </div>
+    <div class="mx-2 mt-1.5 rounded-lg bg-phaze-panel border border-phaze px-2 py-1.5">
+      <div class="jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1">Identify</div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex items-center gap-2.5"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span><span class="flex-1 text-gray-300">Track-ID</span><span class="mono text-xs text-gray-500">71k</span></div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex items-center gap-2.5"><span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span><span class="flex-1 text-gray-300">Tracklist</span><span class="mono text-xs text-gray-500">9.4k</span></div>
+    </div>
+    <div class="rail-node mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3"><span class="w-5 h-5 rounded-full bg-gray-700/50 text-gray-400 grid place-items-center text-[10px]">∿</span><span class="flex-1 text-gray-200">Propose</span><span class="mono text-xs text-gray-500">1.3k</span></div>
+    <div class="mx-2 mt-1.5 rounded-lg bg-amber-500/[0.06] border border-amber-500/25 px-2 py-1.5">
+      <div class="jura text-[10px] uppercase tracking-[0.2em] text-amber-400/80 px-1.5 mb-1">Review &amp; Apply</div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex"><span class="flex-1 text-gray-300">Rename / Path</span><span class="mono text-xs text-amber-300">1.3k</span></div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex"><span class="flex-1 text-gray-300">Tag write</span><span class="mono text-xs text-amber-300">880</span></div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex"><span class="flex-1 text-gray-300">Move files</span><span class="mono text-xs text-amber-300">640</span></div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex"><span class="flex-1 text-gray-300">Dedupe</span><span class="mono text-xs text-gray-500">418</span></div>
+      <div class="rail-node rounded-md px-2.5 py-1.5 flex"><span class="flex-1 text-gray-300">Cue sheets</span><span class="mono text-xs text-gray-500">2.1k</span></div>
+    </div>
+  </aside>
+  <main class="flex-1 min-w-0 overflow-y-auto">
+    <div class="px-6 py-4 border-b border-phaze flex items-center justify-between">
+      <div><h1 class="jura text-lg tracking-[0.15em] uppercase text-gray-100">Analyze</h1><p class="text-sm text-gray-500 mt-0.5">3,210 files in flight across 3 lanes</p></div>
+      <div class="flex gap-2 text-sm"><button class="jura tracking-wider px-3 h-9 rounded-lg bg-phaze-soft border border-phaze hover:bg-[#16213a] text-gray-300">ROUTE RULES</button><button class="jura tracking-wider px-3 h-9 rounded-lg bg-phaze-soft border border-phaze hover:bg-[#16213a] text-gray-300">PAUSE</button></div>
+    </div>
+    <div class="grid grid-cols-3 gap-4 p-6">
+      <div class="rounded-xl bg-phaze-panel border border-phaze p-4"><div class="flex justify-between"><span class="text-gray-200">🖥️ Local · nox</span><span class="mono text-sm text-gray-500">8 / 8</span></div><div class="mt-3 h-1.5 rounded-full bg-[#1e293b]"><div class="h-full rounded-full bg-emerald-400" style="width:100%"></div></div><div class="text-xs text-gray-500 mt-2">short sets &lt; 90 min · saturated</div></div>
+      <div class="rounded-xl bg-phaze-panel border border-phaze p-4"><div class="flex justify-between"><span class="text-gray-200">☁️ A1 · arm64</span><span class="mono text-sm text-gray-500">2 / 4</span></div><div class="mt-3 h-1.5 rounded-full bg-[#1e293b]"><div class="h-full rounded-full bg-blue-400" style="width:50%"></div></div><div class="text-xs text-gray-500 mt-2">long sets ≥ 90 min · headroom</div></div>
+      <div class="rounded-xl bg-phaze-panel border border-amber-500/30 p-4"><div class="flex justify-between"><span class="text-gray-200">⎈ k8s · burst</span><span class="mono text-sm text-amber-300">12 pending</span></div><div class="mt-3 h-1.5 rounded-full bg-[#1e293b]"><div class="h-full rounded-full bg-amber-400" style="width:28%"></div></div><div class="text-xs text-amber-400/80 mt-2">Kueue quota wait · admitting</div></div>
+    </div>
+    <table class="w-full text-sm"><thead class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 bg-phaze-soft"><tr><th class="text-left font-medium px-6 py-2.5">File</th><th class="text-left font-medium py-2.5">Duration</th><th class="text-left font-medium py-2.5">Lane</th><th class="text-left font-medium py-2.5">State</th></tr></thead>
+    <tbody class="divide-y divide-[#1e293b]">
+      <tr class="hover:bg-phaze-panel cursor-pointer"><td class="px-6 py-3 text-gray-200">Coachella 2024 · Sat · Main Stage.flac</td><td class="text-gray-500">3:41:22</td><td class="text-amber-300">⎈ k8s</td><td class="text-blue-300">running</td></tr>
+      <tr class="hover:bg-phaze-panel cursor-pointer"><td class="px-6 py-3 text-gray-200">EDC LV 2023 · kineticFIELD.ogg</td><td class="text-gray-500">4:02:55</td><td class="text-blue-300">☁️ A1</td><td class="text-blue-300">window 14/41</td></tr>
+      <tr class="hover:bg-phaze-panel cursor-pointer"><td class="px-6 py-3 text-gray-200">deadmau5 — live @ EDC 2019.mp3</td><td class="text-gray-500">1:12:40</td><td class="text-emerald-300">🖥️ local</td><td class="text-blue-300">window 22/24</td></tr>
+      <tr class="hover:bg-phaze-panel cursor-pointer"><td class="px-6 py-3 text-gray-200">Tomorrowland W1 · Mainstage.m4a</td><td class="text-gray-500">2:58:10</td><td class="text-amber-300">⎈ k8s</td><td class="text-amber-300">pending (quota)</td></tr>
+    </tbody></table>
+  </main>
+  <aside class="w-[350px] shrink-0 border-l border-phaze bg-phaze-soft overflow-y-auto">
+    <div class="px-5 py-4 border-b border-phaze flex items-center justify-between"><span class="text-gray-100 font-medium truncate">Coachella 2024 · Sat.flac</span><button class="text-gray-500">✕</button></div>
+    <div class="p-5 space-y-5">
+      <div class="rounded-xl bg-phaze-panel border border-phaze p-4"><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-2">Windowed analysis · live (k8s)</div><svg viewBox="0 0 300 38" class="w-full h-10"><polyline fill="none" stroke="#60a5fa" stroke-width="2" points="0,30 20,28 40,21 60,23 80,16 100,18 120,11 140,15 160,9 180,13 200,10 220,8 240,12 260,7 280,11 300,9"/></svg><div class="flex justify-between text-sm text-gray-400 mt-1"><span>~126 BPM</span><span>A min</span><span>house</span></div></div>
+      <div><div class="jura text-[11px] uppercase tracking-[0.2em] text-gray-500 mb-3">This file's journey</div><div class="space-y-2.5 text-sm"><div class="flex items-center gap-2.5"><span class="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-400 grid place-items-center text-[10px]">✓</span>Discovered · metadata · fingerprint</div><div class="flex items-center gap-2.5"><span class="w-5 h-5 rounded-full bg-blue-500/15 text-blue-300 grid place-items-center text-[10px]">☁</span>Analyze — running on k8s</div><div class="flex items-center gap-2.5 opacity-50"><span class="w-5 h-5 rounded-full bg-gray-700/50 grid place-items-center text-[10px]">·</span>Track-ID · Tracklist</div><div class="flex items-center gap-2.5 opacity-50"><span class="w-5 h-5 rounded-full bg-gray-700/50 grid place-items-center text-[10px]">·</span>Propose → Review</div></div></div>
+      <button class="jura tracking-wider w-full h-11 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500">OPEN FULL RECORD →</button>
+    </div>
+  </aside>
+</div>
+<footer class="h-7 shrink-0 border-t border-phaze bg-phaze-panel flex items-center px-6 jura text-[11px] tracking-[0.2em] uppercase text-gray-600">C3 · evolved phaze · jura headings · blue accent · wave logo · dark theme — leveled up, not reskinned</footer>
+</body></html>
