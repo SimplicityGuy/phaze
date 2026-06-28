@@ -26,9 +26,9 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### S3 object-staging leg (KSTAGE)
 
-- [ ] **KSTAGE-01**: The control plane presigns S3 PUT/GET URLs and deletes objects (aioboto3) and **never reads or uploads file bytes itself** — preserving the CI-enforced DIST-01 boundary (no media mount on the application server).
-- [ ] **KSTAGE-02**: The file-server agent uploads the file bytes to the presigned PUT URL over HTTP (httpx), then callbacks the control plane; no S3 SDK or bucket credentials live on the agent or the pod.
-- [ ] **KSTAGE-03**: The presigned GET URL is minted just-in-time when the pod requests it at startup (necessarily post-admission), so it never expires during a long Kueue quota wait.
+- [x] **KSTAGE-01**: The control plane presigns S3 PUT/GET URLs and deletes objects (aioboto3) and **never reads or uploads file bytes itself** — preserving the CI-enforced DIST-01 boundary (no media mount on the application server).
+- [x] **KSTAGE-02**: The file-server agent uploads the file bytes to the presigned PUT URL over HTTP (httpx), then callbacks the control plane; no S3 SDK or bucket credentials live on the agent or the pod.
+- [x] **KSTAGE-03**: The presigned GET URL is minted just-in-time when the pod requests it at startup (necessarily post-admission), so it never expires during a long Kueue quota wait.
 - [x] **KSTAGE-04**: Each staged object uses a `file_id`-scoped key and is deleted on **every** terminal outcome (success, failure, eviction, re-drive), with a bucket lifecycle TTL as a backstop against orphaned-object leaks.
 - [x] **KSTAGE-05**: S3 endpoint, bucket, addressing style, and credentials are operator-provided config via `_FILE` secrets and work against any S3-compatible backend (`endpoint_url`), not just AWS.
 
@@ -87,9 +87,9 @@ Each v6.0 requirement maps to exactly one phase. **Coverage: 26/26 — no orphan
 | KJOB-03 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
 | KJOB-04 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
 | KJOB-05 | Phase 52 — Job-runner image & one-shot entrypoint | Complete |
-| KSTAGE-01 | Phase 53 — S3 object-staging leg | Pending |
-| KSTAGE-02 | Phase 53 — S3 object-staging leg | Pending |
-| KSTAGE-03 | Phase 53 — S3 object-staging leg | Pending |
+| KSTAGE-01 | Phase 53 — S3 object-staging leg | Complete |
+| KSTAGE-02 | Phase 53 — S3 object-staging leg | Complete |
+| KSTAGE-03 | Phase 53 — S3 object-staging leg | Complete |
 | KSTAGE-04 | Phase 53 — S3 object-staging leg | Complete |
 | KSTAGE-05 | Phase 53 — S3 object-staging leg | Complete |
 | KSUBMIT-01 | Phase 54 — Kube submit/watch + reconcile cron | Pending |
