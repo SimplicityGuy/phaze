@@ -98,6 +98,10 @@ module = ["mutagen", "mutagen.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["aioboto3", "aioboto3.*", "aiobotocore", "aiobotocore.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "phaze.services.agent_client"
 check_untyped_defs = true
 disallow_incomplete_defs = true

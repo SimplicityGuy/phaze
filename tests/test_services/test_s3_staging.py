@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 _BUCKET = "phaze-test-staging"
-_CREDS = {"aws_access_key_id": "testing", "aws_secret_access_key": "testing"}  # noqa: S106
+_CREDS = {"aws_access_key_id": "testing", "aws_secret_access_key": "testing"}
 
 
 @pytest.fixture
