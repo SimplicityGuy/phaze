@@ -108,3 +108,7 @@ No new trust boundaries beyond the plan's `<threat_model>`. The mitigations for 
 - Sibling registration regression: `tests/test_staging_cron.py tests/test_tasks/test_submit_cloud_job.py tests/test_services/test_enqueue_router.py` → 36 passed.
 - `uv run mypy src/phaze/tasks/reconcile_cloud_jobs.py src/phaze/tasks/controller.py` → clean.
 - `uv run ruff check` + `ruff format` → clean (all per-commit pre-commit hooks passed, incl. the local mypy hook + bandit).
+
+## Self-Check: PASSED
+- Created files present: `src/phaze/tasks/reconcile_cloud_jobs.py`, `tests/test_tasks/test_reconcile_cloud_jobs.py`, `54-06-SUMMARY.md`.
+- Commits present: `dae5625` (Task 1), `7f71dfb` (Task 2), `03d91ae` (SUMMARY).
