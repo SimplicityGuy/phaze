@@ -153,7 +153,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
-| 53. S3 object-staging leg | v6.0 | 0/? | Not started | - |
+| 53. S3 object-staging leg | v6.0 | 1/5 | In Progress|  |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
@@ -203,7 +203,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 **Plans**: 5 plans (4 waves), includes the `cloud_job` sidecar Alembic migration
 **Wave 1**
 
-- [ ] 53-01-PLAN.md — Foundation: S3 deps + ControlSettings config + cloud_job model/migration (KSTAGE-04, KSTAGE-05)
+- [x] 53-01-PLAN.md — Foundation: S3 deps + ControlSettings config + cloud_job model/migration (KSTAGE-04, KSTAGE-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
