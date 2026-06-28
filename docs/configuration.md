@@ -102,6 +102,23 @@ Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](.
 | `worker_max_jobs` | `WORKER_MAX_JOBS` | all | `8` | no | **Agent concurrency** — concurrent SAQ jobs per worker. On the 12 GB Always-Free A1, set this to **`1`**: a single concurrent analysis is RAM-bound on that shape. |
 | *n/a (raw env var)* | `PHAZE_AGENT_QUEUE` (or `AGENT_QUEUE`) | Agent | required | no | **Cloud queue name** the compute agent consumes (`phaze-agent-<agent_id>`). ⚠️ This is the single structural exception below — it is **not** a pydantic-settings field. |
 
+### Kube submit/reconcile settings (Phase 54, v6.0)
+
+Phase 54 (v6.0 Kubernetes Burst) adds a third routing target: instead of an rsync push to a single A1, the control plane submits **suspended Kueue Jobs** via the kube API, watches them to completion, and reconciles their status. These knobs are the kube client surface the submit seam, submit task, and reconcile cron read. **All kube_* fields are optional in Phase 54** so an existing cloud-on/no-kube deploy keeps working — the fail-fast validation that couples them to `cloud_burst_enabled` arrives in **Phase 56**. Kube credentials live on the **control plane only** (the agent and pod never receive them) and honor the `_FILE` convention.
+
+| Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
+|------|-----------------|-------|---------|----------|-------------|
+| `cloud_submit_max_attempts` | `PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS` (or `cloud_submit_max_attempts`) | Control | `3` | no | Max kube Job **submit** attempts before a file is marked `ANALYSIS_FAILED` (Phase 54, D-08). A **distinct** budget from `push_max_attempts` (the rsync leg). Bounded `gt=0, lt=20`. |
+| `kube_api_url` | `PHAZE_KUBE_API_URL` (or `kube_api_url`) | Control | `None` | no | Kubernetes API server URL the control plane submits/watches Jobs against. Optional in Phase 54; fail-fast coupling to `cloud_burst_enabled` arrives in Phase 56. |
+| `kube_namespace` | `PHAZE_KUBE_NAMESPACE` (or `kube_namespace`) | Control | `None` | no | Namespace the Kueue Jobs are submitted into. Optional in Phase 54. |
+| `kube_local_queue` | `PHAZE_KUBE_LOCAL_QUEUE` (or `kube_local_queue`) | Control | `None` | no | Kueue LocalQueue name stamped on submitted Jobs (`kueue.x-k8s.io/queue-name` label). Optional in Phase 54. |
+| `kube_job_image` | `PHAZE_KUBE_JOB_IMAGE` (or `kube_job_image`) | Control | `None` | no | Container image the submitted analysis Job runs. Optional in Phase 54. |
+| `kube_job_cpu_request` | `PHAZE_KUBE_JOB_CPU_REQUEST` (or `kube_job_cpu_request`) | Control | `None` | no | CPU resource request stamped on the submitted Job's pod spec (e.g. `2`). Optional in Phase 54. |
+| `kube_job_memory_request` | `PHAZE_KUBE_JOB_MEMORY_REQUEST` (or `kube_job_memory_request`) | Control | `None` | no | Memory resource request stamped on the submitted Job's pod spec (e.g. `4Gi`). Optional in Phase 54. |
+| `kube_workload_api_version` | `PHAZE_KUBE_WORKLOAD_API_VERSION` (or `kube_workload_api_version`) | Control | `kueue.x-k8s.io/v1beta1` | no | apiVersion of the Kueue Workload/Job resources the control plane submits and reconciles. |
+| `kube_kubeconfig` | `PHAZE_KUBE_KUBECONFIG` (or `kube_kubeconfig`) | Control | `None` | **YES** | Kubeconfig contents for the control plane's kube client, file-mounted via `PHAZE_KUBE_KUBECONFIG_FILE`. Never logged. |
+| `kube_sa_token` | `PHAZE_KUBE_SA_TOKEN` (or `kube_sa_token`) | Control | `None` | **YES** | ServiceAccount bearer token for the control plane's kube client, file-mounted via `PHAZE_KUBE_SA_TOKEN_FILE`. Never logged. |
+
 ### ⚠️ `PHAZE_AGENT_QUEUE` is the one knob NOT configurable via pydantic-settings
 
 Every cloud-burst parameter above is a [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) field **except `PHAZE_AGENT_QUEUE`**. The agent worker (`phaze.tasks.agent_worker`) must hand SAQ a `Queue` object at **module import time**, which is **before** `get_settings()` constructs the settings instance (Phase 26 D-16). So the queue name is read as a **raw `os.environ` lookup at SAQ import time**, not through a settings field — it therefore cannot honor `_FILE` resolution or a settings alias, and it remains a **required operator env var**. This is intentional and structural (moving it into the settings class would fight the import-time ordering), not an omission. By convention it MUST equal `phaze-agent-<PHAZE_AGENT_ID>`; the worker asserts this against the agent_id resolved from its token at startup and exits non-zero on mismatch. Use the exact value `phaze agents add` prints (see [deployment.md](deployment.md) Step 3).
