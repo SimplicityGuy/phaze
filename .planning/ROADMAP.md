@@ -8,6 +8,7 @@
 - ✅ **v4.0 Distributed Agents** — Phases 24-29 (shipped 2026-05-17)
 - ✅ **v5.0 Cloud Burst Analysis** — Phases 47-51 (shipped 2026-06-26)
 - 🚧 **v6.0 Kubernetes Burst Analysis** — Phases 52-56 (in progress)
+- 📋 **v7.0 UI Redesign (DAG-Centric Hybrid Console)** — Phases 57-62 (PLANNED — scoped, activates after v6.0 ships)
 
 ## Phases
 
@@ -20,6 +21,23 @@
 - [x] **Phase 54: Kube submit/watch + reconcile cron** — suspended per-file Kueue Job (kr8s); fast submit + reconcile cron; out-of-band callback authoritative; no ledger-seed; Inadmissible-vs-Pending (KSUBMIT-01..06) (completed 2026-06-28)
 - [ ] **Phase 55: Routing, state & ledger integration** — `cloud_target` selector + `stage_cloud_window` K8s branch + `enqueue_router` additions + AST guard (the one live-seam edit) (KROUTE-01..05)
 - [ ] **Phase 56: Deployment, runbook, config & docs** — Kueue admin runbook + least-privilege RBAC + `_FILE` secrets + transport-agnostic endpoints + ephemeral-identity Agents-UI note + master toggle (KDEPLOY-01..05)
+
+### v7.0 UI Redesign — DAG-Centric Hybrid Console (Phases 57-62) — 📋 PLANNED
+
+> **Scoped 2026-06-28, activates after v6.0 ships.** Forward-looking roadmap produced via the `/gsd:new-milestone` scope-only path — the active milestone stays v6.0 (STATE.md not switched, v6.0 phase dirs not cleared). Replaces the MVP tab-sprawl UI with a **DAG-centric hybrid console**: the pipeline is the home and the navigation spine (three-column shell — DAG rail · stage workspace · per-file pane), local/A1/k8s are first-class Analyze lanes, and every human approval unifies behind one before→after diff/approve gate. Aesthetic = C3 "Evolved phaze" (keep Jura/blue/wave-logo/dark theme). IA/template rewrite over **existing** routers/services — no backend behavior change; depends on v6.0's local/A1/k8s routing targets. Design: `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype). Requirements: `.planning/REQUIREMENTS-v7.0.md` (25 reqs, 100% mapped). Each phase = own PR.
+
+- [ ] **Phase 57: Shell & rail** — three-column app shell, header + ⌘K bar, DAG rail as HTMX nav, `/` home (Analyze default), brand/theme preserved, old tab routes redirect into the shell (SHELL-01..05)
+  - Success: `/` renders the new home with no `/pipeline` redirect; rail click swaps the workspace without full-page nav; the legacy tab-bar is gone; dark/light + Jura/wave brand intact; old bookmarks resolve.
+- [ ] **Phase 58: Enrich + Analyze workspaces** — Discover/Metadata/Fingerprint/Analyze stage views; three Analyze lane cards (local/A1/k8s) with capacity + Kueue quota/Inadmissible; live stats-poll (WORK-01..05)
+  - Success: each stage shows its queue + manual trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update without reload.
+- [ ] **Phase 59: Identify workspaces** — Track-ID (AcoustID→MusicBrainz) + Tracklist Search→Scrape→Match inline 3-step (IDENT-01..02)
+  - Success: Track-ID shows match + confidence per file; Tracklist shows the 3-step sub-chain and per-set match progress from one surface.
+- [ ] **Phase 60: Review & Apply** — unified before→after diff + per-file Approve/Edit/Skip + bulk approve-high-conf for Rename/Tag/Move; Dedupe keeper-select; Cue preview; audit + reversible (REVIEW-01..05)
+  - Success: rename/tag/move each show diffs with per-file + bulk-high-conf approve; dedupe groups pick a keeper; cue previews + approves gated on a tracklist; applied changes land in the reversible audit log.
+- [ ] **Phase 61: Full record + ⌘K + Agents** — per-file record (multi-lane timeline, metadata diff, inline approvals, history); ⌘K palette; Agents page with ephemeral k8s identity; empty/scan first-run (RECORD-01..04)
+  - Success: a file opens to a full record; ⌘K searches files/tracklists/artists + commands; Agents shows local/A1 heartbeating and k8s as ephemeral Job-based (never DEAD); empty state guides the first scan.
+- [ ] **Phase 62: Polish & cutover** — a11y parity (keyboard rail + ⌘K, focus, skip-link, DAG ARIA); remove dead old-UI templates/routers; update docs + README; narrow-width rail collapse (CUT-01..04)
+  - Success: keyboard-navigable rail + palette with visible focus; no orphaned old-UI code; docs/README describe the new IA; rail collapses to icons at narrow widths.
 
 <details>
 <summary>v1.0 MVP (Phases 1-11) -- SHIPPED 2026-03-30</summary>
