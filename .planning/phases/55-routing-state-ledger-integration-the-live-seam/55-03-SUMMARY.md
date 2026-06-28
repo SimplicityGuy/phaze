@@ -125,3 +125,8 @@ None from this plan's scope. **Observation (out of scope, pre-existing):** the f
 can intermittently collide on `CREATE TABLE agents` (`pg_type_typname_nsp_index` UniqueViolation). This
 affects untouched modules equally and disappears with deterministic ordering — not a regression from
 this plan; flagged for a future test-infra hardening (e.g. session-scoped schema or per-worker DBs).
+
+## Self-Check: PASSED
+- All 5 modified files exist on disk.
+- All per-task commits exist (test/refactor/feat pairs + docs): 50be2b3, ea081fd, a653920, 7b5b982,
+  0fa8de0, c4c4d3b, 2ac8098.
