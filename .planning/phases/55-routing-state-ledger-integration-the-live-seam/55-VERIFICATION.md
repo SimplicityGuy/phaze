@@ -1,9 +1,10 @@
 ---
 phase: 55-routing-state-ledger-integration-the-live-seam
 verified: 2026-06-28T00:00:00Z
-status: human_needed
+status: passed
 score: 5/5 must-haves verified
 overrides_applied: 0
+human_uat_outcome: "2/3 passed via in-app harness (admission card render + ledger-scoped k8s backfill against real Postgres); 1 blocked on a live Kueue cluster, accepted as deferred to Phase 56 deploy. See 55-HUMAN-UAT.md."
 human_verification:
   - test: "Inspect the pipeline dashboard with cloud_target='k8s' and at least one file in each cloud_phase (queued_behind_quota/admitted/running/finished). Confirm the admission_state_card renders the four hue-coded tiles (gray/blue/violet/green), the heading reads 'Cloud · Admission', the per-tile sub-labels match the Copywriting Contract, and no amber or role=alert appears."
     expected: "Carrier section always present; four tiles visible with correct colors and labels; all-zero reverts to a quiet empty section."
@@ -20,8 +21,16 @@ human_verification:
 
 **Phase Goal:** K8s becomes the third cloud target selected by a single config setting (`cloud_target`), wired into the existing duration router / `stage_cloud_window` / scheduling ledger as ONE new branch — the only phase that touches the live v5.0 seam.
 **Verified:** 2026-06-28
-**Status:** human_needed
+**Status:** passed (human UAT resolved — see Acknowledged Gaps)
 **Re-verification:** No — initial verification
+
+## Acknowledged Gaps
+
+Human UAT (`55-HUMAN-UAT.md`) was run 2026-06-28 via an in-app harness (real FastAPI app + ephemeral Postgres):
+
+- **PASS — Admission-state card render:** standalone template render (14/14 assertions: hues, quiet-empty carrier, per-tile gating, OOB attr, no alert/amber) plus full `GET /pipeline` dashboard with seeded `cloud_job` rows.
+- **PASS — Ledger-scoped k8s backfill:** real `POST /pipeline/backfill-cloud` — only the 2 ledgered long files reset to AWAITING_CLOUD; un-ledgered excluded (L4), short excluded, no `process_file` ledger seed (L3).
+- **DEFERRED — Live K8s end-to-end routing:** requires a real Kueue cluster + S3, which is Phase 56 (deployment) infrastructure. All logic is verified against the fake kube API + moto S3 + ephemeral Postgres (full suite: 2474 passed). Accepted as a Phase 56 live-validation item, not a Phase 55 defect.
 
 ## Reconciliation Note (ROADMAP SC1 vs D-02)
 
