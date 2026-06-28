@@ -265,12 +265,21 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   5. Operator can backfill ≥threshold timed-out long files (`analysis_failed`, duration ≥ threshold) to the K8s target, ledger-scoped exactly like v5.0 so only previously-scheduled work is re-driven.
 
 **Plans**: 6 plans in 3 waves
+**Wave 1**
+
 - [ ] 55-01-PLAN.md — `cloud_target` config rename (D-02 hard-replace `cloud_burst_enabled`, per-target validators, call-site + test re-keys) [wave 1]
 - [ ] 55-02-PLAN.md — `cloud_phase` schema: migration 027 + `CloudPhase` enum/column + submit seed + reconcile co-writes (D-04) [wave 1]
 - [ ] 55-06-PLAN.md — operator config/docs migration to `PHAZE_CLOUD_TARGET` (.env.example, control-plane compose, configuration/cloud-burst/deployment docs) [wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 55-03-PLAN.md — the live-seam k8s branch: `stage_cloud_window` fork + no-commit S3 core + `report_uploaded` PUSHED-flip/`submit_cloud_job` enqueue (D-01, L1/L2) [wave 2]
 - [ ] 55-04-PLAN.md — ledger-scoped backfill fork (no `process_file` seed for k8s) + KROUTE-04 AST guard (D-03, L3/L4) [wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 55-05-PLAN.md — KROUTE-06 admission-state cards (`get_cloud_phase_counts` + `admission_state_card.html` + OOB wiring) [wave 3]
+
 **Research**: Skip — extends the existing `enqueue_router` + `stage_cloud_window` patterns.
 
 ### Phase 56: Deployment, runbook, config & docs
