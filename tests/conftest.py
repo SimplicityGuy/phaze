@@ -282,3 +282,43 @@ def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path):  # type: ignore[no-untyp
         "models_dir": str(models_dir),
     }
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Phase 54 (Plan 03): fake-kube seam fixture.
+#
+# kr8s talks to the API server over httpx, so the seam (kube_staging.py) tests
+# stub the kube REST surface with respx -- the same library the S3 upload/agent
+# tests already use. kr8s performs API *discovery* on first use
+# (GET /version, /api, /apis) before any verb; an unstubbed discovery call fails
+# with a confusing connection error (RESEARCH Pitfall 5). This fixture pre-stubs
+# those discovery endpoints with a minimal canned doc and yields the respx router
+# so each seam test registers only the verbs it asserts on.
+#
+# KUBECONFIG is pointed at a nonexistent path so kr8s's KubeAuth never loads the
+# host's real kubeconfig (e.g. a local colima cluster) -- the seam server URL comes
+# solely from the test-supplied kube_api_url.
+# ---------------------------------------------------------------------------
+
+KUBE_TEST_API_URL = "https://kube.test"
+
+
+@pytest.fixture
+def kube_respx(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    """Stub kr8s API-discovery endpoints; yield a respx router for the seam tests.
+
+    The router has ``assert_all_called=False`` so the (often-unused) discovery stubs
+    never fail a test that only touches one verb; individual tests add the create/get/
+    list/delete routes they assert on.
+    """
+    from httpx import Response
+    import respx
+
+    monkeypatch.setenv("KUBECONFIG", "/nonexistent/phaze-test-kubeconfig")
+
+    with respx.mock(base_url=KUBE_TEST_API_URL, assert_all_called=False) as router:
+        router.get("/version").mock(return_value=Response(200, json={"major": "1", "minor": "30", "gitVersion": "v1.30.0"}))
+        router.get("/api").mock(return_value=Response(200, json={"kind": "APIVersions", "versions": ["v1"]}))
+        router.get("/api/v1").mock(return_value=Response(200, json={"kind": "APIResourceList", "groupVersion": "v1", "resources": []}))
+        router.get("/apis").mock(return_value=Response(200, json={"kind": "APIGroupList", "groups": []}))
+        yield router
