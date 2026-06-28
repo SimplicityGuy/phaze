@@ -1387,6 +1387,28 @@ def _metadata_for(file_id: uuid.UUID, duration: float | None) -> FileMetadata:
     return FileMetadata(id=uuid.uuid4(), file_id=file_id, duration=duration)
 
 
+async def _seed_process_file_ledger(session: AsyncSession, *files: FileRecord) -> None:
+    """Seed a ``process_file:<id>`` scheduling-ledger row per file.
+
+    Phase 55 (L4) scopes the backfill candidate query to *previously-scheduled* work: a file
+    is a candidate only if such a ledger row exists (a SAQ timeout abandons the job without
+    clearing the row, so it persists into ANALYSIS_FAILED). These tests assert the state +
+    duration filter, so every failed file is ledgered — exclusions come from state/duration,
+    not a missing ledger row.
+    """
+    from phaze.services.scheduling_ledger import insert_ledger_if_absent
+
+    for f in files:
+        await insert_ledger_if_absent(
+            session,
+            key=f"process_file:{f.id}",
+            function="process_file",
+            kwargs={},
+            timeout=7200,
+            retries=2,
+        )
+
+
 @pytest.mark.asyncio
 async def test_get_discovered_files_with_duration_joins_duration(session: AsyncSession) -> None:
     """Each DISCOVERED file is paired with its joined FileMetadata.duration."""
@@ -1539,6 +1561,7 @@ async def test_backfill_candidates_filters_by_state_and_duration(session: AsyncS
             _metadata_for(long_other.id, 6000.0),
         ]
     )
+    await _seed_process_file_ledger(session, long_failed, short_failed, null_failed)
     await session.commit()
 
     assert await count_backfill_candidates(session, threshold) == 1
@@ -1558,6 +1581,7 @@ async def test_backfill_candidates_boundary_is_inclusive(session: AsyncSession) 
     session.add(at_threshold)
     await session.flush()
     session.add(_metadata_for(at_threshold.id, float(threshold)))
+    await _seed_process_file_ledger(session, at_threshold)
     await session.commit()
 
     assert await count_backfill_candidates(session, threshold) == 1
