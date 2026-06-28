@@ -23,7 +23,11 @@ findings:
   warning: 2
   info: 0
   total: 3
-status: issues_found
+status: resolved
+resolution:
+  CR-01: fixed in b169382 (report_upload_failed terminal -> ANALYSIS_FAILED)
+  WR-01: fixed in b169382 (clear cloud_phase on both terminal paths)
+  WR-02: deferred (S3 multipart orphan; TTL-backstopped, pre-existing robustness tradeoff)
 ---
 
 # Phase 55: Code Review Report
@@ -31,7 +35,7 @@ status: issues_found
 **Reviewed:** 2026-06-28
 **Depth:** standard
 **Files Reviewed:** 14
-**Status:** issues_found
+**Status:** resolved (CR-01 + WR-01 fixed in b169382; WR-02 deferred — see resolution)
 
 ## Summary
 
