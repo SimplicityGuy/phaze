@@ -11,9 +11,10 @@ D-08 introduces ``cloud_submit_max_attempts`` -- a DISTINCT retry budget from
 ``push_max_attempts`` -- bounded ``gt=0, lt=20`` so a misconfig cannot create an unbounded
 submit storm (T-54-02).
 
-All kube_* fields are OPTIONAL in Phase 54 (default None / the apiVersion default) so an
-existing Phase 53 cloud-on/no-kube deploy keeps working; the fail-fast coupling to
-``cloud_burst_enabled`` is Phase 55 (KDEPLOY-02), NOT here.
+All kube_* fields default to None / the apiVersion default. Phase 55 (D-02/KROUTE-01) couples
+the kube surface to the ``cloud_target == "k8s"`` selector via the ``_enforce_kube_config_when_k8s``
+validator: ``kube_api_url`` / ``kube_namespace`` / ``kube_local_queue`` are required when the
+active target is ``k8s``, and stay optional for ``local`` and ``a1`` (a1 uses rsync, not kube).
 
 These are pure pydantic-settings tests -- no DB, no Redis required.
 """
@@ -121,22 +122,34 @@ def test_kube_fields_bind_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.kube_workload_api_version == "kueue.x-k8s.io/v1beta2"
 
 
-def test_kube_fields_do_not_couple_to_cloud_burst(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phase 54: cloud burst ON with NO kube config must still construct.
+def test_k8s_requires_kube_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 55 (D-02): cloud_target='k8s' with NO kube config fails fast at construction.
 
-    The fail-fast validator coupling kube_* to cloud_burst_enabled is Phase 55 (KDEPLOY-02);
-    adding it here would break existing Phase 53 cloud-on/no-kube deploys.
+    The new ``_enforce_kube_config_when_k8s`` validator couples the kube surface to the k8s target.
+    The S3 substrate is supplied so the kube validator (not the S3 validator) is the one that fires.
     """
-    monkeypatch.setenv("PHAZE_CLOUD_BURST_ENABLED", "true")
-    monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch")
+    monkeypatch.setenv("PHAZE_CLOUD_TARGET", "k8s")
     monkeypatch.setenv("PHAZE_S3_BUCKET", "phaze-staging")
     monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", "https://s3.example.com")
     monkeypatch.delenv("PHAZE_KUBE_API_URL", raising=False)
     monkeypatch.delenv("PHAZE_KUBE_NAMESPACE", raising=False)
+    monkeypatch.delenv("PHAZE_KUBE_LOCAL_QUEUE", raising=False)
+
+    with pytest.raises(ValueError, match="PHAZE_KUBE_API_URL is required"):
+        ControlSettings()
+
+
+def test_a1_does_not_require_kube_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 55 (D-02): cloud_target='a1' with NO kube config still constructs (a1 uses rsync, not kube)."""
+    monkeypatch.setenv("PHAZE_CLOUD_TARGET", "a1")
+    monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch")
+    monkeypatch.delenv("PHAZE_KUBE_API_URL", raising=False)
+    monkeypatch.delenv("PHAZE_KUBE_NAMESPACE", raising=False)
+    monkeypatch.delenv("PHAZE_KUBE_LOCAL_QUEUE", raising=False)
 
     cfg = ControlSettings()
 
-    assert cfg.cloud_burst_enabled is True
+    assert cfg.cloud_target == "a1"
     assert cfg.kube_api_url is None
     assert cfg.kube_namespace is None
 

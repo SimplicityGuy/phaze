@@ -1,7 +1,7 @@
 """Unit tests for the Phase 55 ``cloud_target`` selector (D-02, KROUTE-01).
 
 ``cloud_target`` is the single source of truth that selects the active cloud target. It
-HARD-REPLACES the Phase 51 ``cloud_burst_enabled`` bool: it is a pydantic
+HARD-REPLACES the Phase 51 cloud-burst master bool: it is a pydantic
 ``Literal["local", "a1", "k8s"]`` ``Field`` on ``ControlSettings`` (default ``"local"`` == cloud
 off), bound from ``PHAZE_CLOUD_TARGET`` (or the bare ``cloud_target``) via ``AliasChoices``. An
 invalid member is rejected at construction. Three per-target ``model_validator``s fail fast on a

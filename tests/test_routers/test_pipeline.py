@@ -58,17 +58,17 @@ async def _drain_background() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _cloud_burst_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default the Phase-49/50 cloud-routing tests to cloud_burst_enabled=True.
+def _cloud_target_a1(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the Phase-49/50 cloud-routing tests to cloud_target='a1' (cloud ON, rsync path).
 
-    The Phase-51 master toggle (``cloud_burst_enabled``) defaults False, which flips the duration
-    router and the backfill trigger to all-local. These regression tests assert the ON behavior
-    (long files held in AWAITING_CLOUD, backfill resets+routes), so pin the singleton attribute ON
-    here. The Phase-51 OFF tests below override it back to False inside their own bodies.
+    The Phase-55 selector (``cloud_target``) defaults 'local', which flips the duration router and
+    the backfill trigger to all-local. These regression tests assert the ON behavior (long files held
+    in AWAITING_CLOUD, backfill resets+routes) for the live v5.0 a1 path, so pin the singleton selector
+    to 'a1' here. The cloud-off tests below override it to 'local' inside their own bodies.
     """
     from phaze.config import settings
 
-    monkeypatch.setattr(settings, "cloud_burst_enabled", True)
+    monkeypatch.setattr(settings, "cloud_target", "a1")
 
 
 def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
@@ -830,20 +830,20 @@ async def test_backfill_zero_candidates_returns_empty_fragment(client: AsyncClie
     assert capture == []
 
 
-# --- Phase 51 (D-03): the cloud_burst_enabled gate on the backfill trigger ----------------
+# --- Phase 55 (D-02): the cloud_target gate on the backfill trigger -----------------------
 
 
 @pytest.mark.asyncio
-async def test_backfill_disabled_when_cloud_burst_off(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """OFF: with cloud_burst_enabled False the backfill trigger is a no-op -- ZERO file.state mutations.
+async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OFF: with cloud_target='local' the backfill trigger is a no-op -- ZERO file.state mutations.
 
     Pitfall 2 / T-51-02: gating ONLY the routing seam would still let backfill reset the 144
     ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. The explicit
-    early-return guard prevents any state mutation when the feature is off.
+    early-return guard prevents any state mutation when the target is 'local'.
     """
     from phaze.config import settings
 
-    monkeypatch.setattr(settings, "cloud_burst_enabled", False)
+    monkeypatch.setattr(settings, "cloud_target", "local")
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
@@ -865,7 +865,7 @@ async def test_backfill_disabled_when_cloud_burst_off(client: AsyncClient, sessi
 
 @pytest.mark.asyncio
 async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: AsyncSession) -> None:
-    """ON: with cloud_burst_enabled True the backfill resets the long file and holds it (regression)."""
+    """ON: with cloud_target='a1' (autouse fixture) the backfill resets the long file and holds it (regression)."""
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "cloud", kind="compute")
     capture = wire_fakes(client)
