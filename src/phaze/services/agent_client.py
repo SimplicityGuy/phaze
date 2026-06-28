@@ -67,6 +67,9 @@ if TYPE_CHECKING:
 
     # Phase 50 push-pipeline callbacks (50-01 schemas).
     from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
+
+    # Phase 53 S3 upload-leg callbacks (53-03 schemas).
+    from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
     from phaze.schemas.agent_tracklists import (
         ScanTerminalAckResponse,
@@ -357,6 +360,42 @@ class PhazeAgentClient:
             f"/api/internal/agent/push/{file_id}/mismatch",
         )
         return PushMismatchResponse.model_validate(response.json())
+
+    async def report_upload_complete(self, file_id: uuid.UUID, parts: list[UploadedPart]) -> UploadedResponse:
+        """POST /api/internal/agent/s3/{file_id}/uploaded -- multipart upload success (Phase 53, 53-03).
+
+        The file-server agent calls this when ``upload_file_s3`` finishes PUTting every part to its
+        presigned URL, passing the ordered ``(part_number, etag)`` list it collected (D-04). Control
+        completes the multipart upload and flips the file forward. Inherits the tenacity retry policy
+        (D-11) + exception hierarchy (D-12) via the ``_request`` funnel -- 5xx retries, 4xx surface
+        immediately. ``file_id`` rides the path only (AUTH-01); the body carries only the parts list.
+        httpx-only -- NO database/S3-SDK import, keeping the agent worker Postgres-free *and* SDK-free
+        (tests/test_task_split.py)."""
+        from phaze.schemas.agent_s3 import UploadedRequest, UploadedResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/s3/{file_id}/uploaded",
+            json=UploadedRequest(parts=parts).model_dump(mode="json"),
+        )
+        return UploadedResponse.model_validate(response.json())
+
+    async def report_upload_failed(self, file_id: uuid.UUID, detail: str | None = None) -> UploadFailedResponse:
+        """POST /api/internal/agent/s3/{file_id}/failed -- multipart upload failure (Phase 53, 53-03).
+
+        The file-server agent calls this on a terminal/transfer upload failure so control records the
+        failure and tears down (or re-drives) the staging upload. Inherits the tenacity retry policy
+        (D-11) + exception hierarchy (D-12) via the ``_request`` funnel. ``file_id`` rides the path
+        only (AUTH-01); the body carries only an optional bounded ``detail``. httpx-only -- NO
+        database/S3-SDK import (tests/test_task_split.py)."""
+        from phaze.schemas.agent_s3 import UploadFailedRequest, UploadFailedResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/s3/{file_id}/failed",
+            json=UploadFailedRequest(detail=detail).model_dump(mode="json"),
+        )
+        return UploadFailedResponse.model_validate(response.json())
 
     async def report_metadata_failed(self, file_id: uuid.UUID) -> MetadataFailureResponse:
         """POST /api/internal/agent/metadata/{file_id}/failed -- metadata terminal-ack (Phase 45 L-02 / CR-02).
