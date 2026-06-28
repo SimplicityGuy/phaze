@@ -66,6 +66,7 @@ AGENT_TASKS: frozenset[str] = frozenset(
         "scan_directory",
         "execute_approved_batch",
         "push_file",
+        "s3_upload",  # Phase 53: agent httpx multipart-PUT upload to presigned S3 URLs (KSTAGE-02)
     }
 )
 """File-touching tasks a file-server agent worker consumes.

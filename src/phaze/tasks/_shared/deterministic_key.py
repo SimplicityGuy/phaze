@@ -67,10 +67,13 @@ def _hash_ids(file_ids: Any) -> str:
     return hashlib.sha256(joined.encode()).hexdigest()
 
 
-# Exactly 9 entries. Each builder maps a job's kwargs (the task payload) to the natural
-# id that makes a re-enqueue of the same logical work dedup. Natural ids VERIFIED present
-# in each payload (35-RESEARCH Q1 table). MUST stay in sync with
-# ``pipeline_counters.PIPELINE_FUNCTIONS`` and the drift-guard test's routable universe.
+# Each builder maps a job's kwargs (the task payload) to the natural id that makes a re-enqueue
+# of the same logical work dedup. Natural ids VERIFIED present in each payload (35-RESEARCH Q1
+# table). MUST cover the drift-guard test's routable universe (CONTROLLER_TASKS | AGENT_TASKS)
+# minus the documented _UNKEYED_TASKS exemptions. The first nine entries also back
+# ``pipeline_counters.PIPELINE_FUNCTIONS`` (dashboard counters); ``s3_upload`` is keyed here for
+# scheduling-ledger dedup/re-drive (Phase 53, Plan 04) ahead of its dashboard-counter wiring,
+# which lands with the live routing seam (Phase 55).
 _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "process_file": lambda k: str(k["file_id"]),
     "extract_file_metadata": lambda k: str(k["file_id"]),
@@ -83,6 +86,9 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # Phase 50 (CLOUDPIPE-05): push_file:<file_id> dedup collapses a double-tick of the
     # bounded cloud-window staging cron to a no-op (T-50-double-enqueue).
     "push_file": lambda k: str(k["file_id"]),
+    # Phase 53 (KSTAGE-02): s3_upload:<file_id> dedup collapses a re-driven staging upload to a
+    # no-op and persists the attempt counter the Plan-04 callback re-drive loop reads.
+    "s3_upload": lambda k: str(k["file_id"]),
 }
 
 
