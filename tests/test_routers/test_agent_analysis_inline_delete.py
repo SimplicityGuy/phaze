@@ -1,0 +1,207 @@
+"""Inline staged-object delete on the analysis-result callback (Phase 53, Plan 05 -- D-02, KSTAGE-04).
+
+The success (``put_analysis``) and failure (``report_analysis_failed``) result callbacks delete the
+staged S3 object inline -- the moment it is provably no longer needed -- guarded on a ``cloud_job``
+row existing so the all-local path makes ZERO S3 calls (no client build, no S3 config required).
+
+Covers:
+- success path WITH a cloud_job row -> ``delete_staged_object`` called exactly once
+- failure path WITH a cloud_job row -> ``delete_staged_object`` called exactly once
+- the all-local guard (no cloud_job row) on BOTH paths -> zero S3 calls, no S3 config needed
+- a delete error never corrupts the recorded result (record-first discipline, T-53-21)
+
+Mirrors ``test_agent_analysis.py``: smoke-app wiring, seed a FileRecord for FK satisfaction, and
+patch the module-level ``s3_staging`` so no real S3 backend is touched.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
+import uuid
+
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+import pytest
+from sqlalchemy import select
+
+from phaze.database import get_session
+from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.file import FileRecord, FileState
+from phaze.routers import agent_analysis
+from phaze.routers.agent_analysis import router as agent_analysis_router
+from phaze.services import s3_staging
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.models.agent import Agent
+
+
+def _make_client(session: AsyncSession, token: str | None = None) -> AsyncClient:
+    """Build an AsyncClient over a smoke app wiring only the agent_analysis router."""
+    app = FastAPI(title="smoke", version="test")
+    app.include_router(agent_analysis_router)
+    app.dependency_overrides[get_session] = lambda: session
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers)
+
+
+async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
+    """Seed a FileRecord so the analysis/cloud_job FKs (files.id) are satisfied."""
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            id=file_id,
+            agent_id=agent_id,
+            sha256_hash="0" * 64,
+            original_path=f"/test/music/{file_id}.mp3",
+            original_filename=f"{file_id}.mp3",
+            current_path=f"/test/music/{file_id}.mp3",
+            file_type="mp3",
+            file_size=1024,
+            state=FileState.DISCOVERED,
+        )
+    )
+    await session.commit()
+    return file_id
+
+
+async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID) -> None:
+    """Seed a cloud_job row so the inline-delete guard treats the file as staged."""
+    session.add(
+        CloudJob(
+            file_id=file_id,
+            s3_key=s3_staging.staged_object_key(file_id),
+            status=CloudJobStatus.UPLOADED,
+            upload_id="test-upload-id",
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_put_analysis_with_cloud_job_deletes_object(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful put_analysis for a staged file deletes the object exactly once (D-02)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id)
+
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(agent_analysis.s3_staging, "delete_staged_object", delete_mock)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 128.0})
+
+    assert response.status_code == 200, response.text
+    delete_mock.assert_awaited_once_with(file_id)
+
+    # Result is durably recorded and the file advanced to ANALYZED (record-first holds).
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.bpm == 128.0
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.ANALYZED
+
+
+@pytest.mark.asyncio
+async def test_report_failed_with_cloud_job_deletes_object(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A report_analysis_failed for a staged file deletes the object exactly once (D-02)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id)
+
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(agent_analysis.s3_staging, "delete_staged_object", delete_mock)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/failed",
+            json={"reason": "timeout", "error": "windowed analysis exceeded budget"},
+        )
+
+    assert response.status_code == 200, response.text
+    delete_mock.assert_awaited_once_with(file_id)
+
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.ANALYSIS_FAILED
+
+
+@pytest.mark.asyncio
+async def test_put_analysis_all_local_makes_zero_s3_calls(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No cloud_job row -> the success path never calls s3_staging (T-53-22, no S3 config needed)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)  # NO cloud_job row seeded.
+
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(agent_analysis.s3_staging, "delete_staged_object", delete_mock)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 90.0})
+
+    assert response.status_code == 200, response.text
+    # The guard short-circuits before any S3 call -> zero invocations, no S3 backend required.
+    delete_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_report_failed_all_local_makes_zero_s3_calls(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No cloud_job row -> the failure path never calls s3_staging (T-53-22, no S3 config needed)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)  # NO cloud_job row seeded.
+
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(agent_analysis.s3_staging, "delete_staged_object", delete_mock)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "crashed"})
+
+    assert response.status_code == 200, response.text
+    delete_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_error_does_not_corrupt_recorded_result(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup blip is swallowed: the recorded analysis result is preserved (T-53-21)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id)
+
+    delete_mock = AsyncMock(side_effect=s3_staging.S3StagingError("transient S3 blip"))
+    monkeypatch.setattr(agent_analysis.s3_staging, "delete_staged_object", delete_mock)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 140.0})
+
+    # Delete blew up but the request still succeeds and the result is committed.
+    assert response.status_code == 200, response.text
+    delete_mock.assert_awaited_once_with(file_id)
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.bpm == 140.0
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.ANALYZED

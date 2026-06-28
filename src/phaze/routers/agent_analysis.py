@@ -30,7 +30,7 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -38,6 +38,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import (
@@ -46,6 +47,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWritePayload,
     AnalysisWriteResponse,
 )
+from phaze.services import s3_staging
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
@@ -89,6 +91,35 @@ def _summarize_dict_to_string(value: dict[str, float]) -> str:
     items = sorted(value.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
     summary = ",".join(f"{k}={v:.2f}" for k, v in items)
     return summary[:50]
+
+
+async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UUID) -> None:
+    """Delete the staged S3 object inline once the analysis result has landed (D-02, KSTAGE-04).
+
+    Guarded on a ``cloud_job`` row existing for ``file_id``: an all-local file (no staging
+    row) makes ZERO S3 calls -- no aioboto3 client is built and no S3 config is required, so
+    deploys without object storage are completely unaffected (T-53-22). This is CRITICAL: the
+    guard must short-circuit BEFORE any ``s3_staging`` call so the all-local path never raises
+    on an unconfigured backend.
+
+    When a staging row IS present, the staged object is provably no longer needed the moment the
+    result lands, so it is deleted at that point (the inline-delete half of KSTAGE-04). The
+    analysis result was already recorded above (record-first discipline), so a transient cleanup
+    error is logged-and-swallowed -- a delete blip must never lose the recorded result (T-53-21).
+    The bucket-lifecycle TTL (Plan 02) is the backstop for a missed delete; Phase 54's reconcile
+    may invoke the same delete for an evicted Job. ``file_id`` is the PATH value only (AUTH-01).
+    """
+    has_cloud_job = (await session.execute(select(CloudJob.id).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    if has_cloud_job is None:
+        # All-local path: no staged object exists -> no S3 call, no client build (T-53-22).
+        return
+    try:
+        await s3_staging.delete_staged_object(file_id)
+    except Exception:
+        # Record-first: the result is already written; a cleanup blip is logged, never raised,
+        # so the recorded analysis result is preserved (T-53-21). The lifecycle TTL reaps the
+        # object the inline delete missed.
+        logger.warning("inline staged-object delete failed; lifecycle TTL will reap", file_id=str(file_id), exc_info=True)
 
 
 @router.put("/{file_id}", status_code=status.HTTP_200_OK, response_model=AnalysisWriteResponse)
@@ -195,6 +226,10 @@ async def put_analysis(
     # T-45-05: a body field cannot redirect the clear to another file's key).
     await clear_ledger_entry(session, f"process_file:{file_id}")
 
+    # D-02 inline delete: the staged S3 object is provably no longer needed now that the
+    # success result is recorded. No-op (zero S3 calls) when no cloud_job row exists (all-local).
+    await _delete_staged_object_if_cloud(session, file_id)
+
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
 
@@ -223,6 +258,9 @@ async def report_analysis_failed(
     # NOT recovery-re-queue. Clear the process_file:<file_id> ledger row in the SAME transaction
     # as the ANALYSIS_FAILED state write. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
     await clear_ledger_entry(session, f"process_file:{file_id}")
+    # D-02 inline delete: a terminal failure is also a result-callback terminal outcome -- the
+    # staged object is no longer needed. No-op (zero S3 calls) when no cloud_job row exists.
+    await _delete_staged_object_if_cloud(session, file_id)
     await session.commit()
     logger.warning(
         "analysis_failed reported",
