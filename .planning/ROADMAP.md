@@ -154,7 +154,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
-| 54. Kube submit/watch + reconcile cron | v6.0 | 5/6 | In Progress|  |
+| 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete   | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
@@ -247,7 +247,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 54-06-PLAN.md — reconcile cron (status mapping, delete-after-record, S3 cleanup, bounded re-drive, Inadmissible) + */5 registration (KSUBMIT-02/03/04/05/06) [Wave 4]
+- [x] 54-06-PLAN.md — reconcile cron (status mapping, delete-after-record, S3 cleanup, bounded re-drive, Inadmissible) + */5 registration (KSUBMIT-02/03/04/05/06) [Wave 4]
 
 **Research**: Skip — kr8s/Kueue patterns verified same-day against Context7 + kueue.sigs.k8s.io.
 
