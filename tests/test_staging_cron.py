@@ -23,13 +23,16 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
+from phaze.services import cloud_staging, s3_staging
 from phaze.tasks.release_awaiting_cloud import push_file_job_key, stage_cloud_window
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 
@@ -379,6 +382,68 @@ def test_stage_cloud_window_registered_in_controller_functions_and_cron() -> Non
     # The deprecated drain cron is gone -- no controller function is named release_awaiting_cloud.
     fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
     assert "release_awaiting_cloud" not in fn_names, "the deprecated release_awaiting_cloud drain cron must be removed"
+
+
+# --- Landmine L1: the extracted no-commit _stage_file_to_s3 core -------------------------
+
+
+@pytest.mark.asyncio
+async def test_stage_file_to_s3_core_does_not_commit(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_stage_file_to_s3`` does the full staging body but NEVER calls ``session.commit`` (L1).
+
+    The cron's advisory-locked loop calls this no-commit core per candidate and commits ONCE after
+    the loop; a mid-loop commit would release ``pg_advisory_xact_lock`` and re-open the over-stage
+    class. Prove the core (a) does not commit, yet (b) still enqueues ``s3_upload`` and (c) upserts
+    the ``cloud_job`` row.
+    """
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    session.add(file)
+    await session.commit()
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+    commit_spy = AsyncMock()
+    monkeypatch.setattr(session, "commit", commit_spy)
+
+    router = DedupFakeTaskRouter()
+    await cloud_staging._stage_file_to_s3(session, file, router)
+
+    # (a) The core defers the commit -- the caller (the cron loop / the public wrapper) owns it.
+    commit_spy.assert_not_awaited()
+    # (b) Exactly one s3_upload enqueued onto the fileserver's per-agent queue.
+    upload_queue = router.queues["nox"]
+    assert [t for t, _ in upload_queue.captured] == ["s3_upload"]
+    # (c) The cloud_job row was upserted (visible via autoflush within this uncommitted transaction).
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADING.value
+    assert job.upload_id == "upload-xyz"
+
+
+@pytest.mark.asyncio
+async def test_public_stage_file_to_s3_still_commits(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public ``stage_file_to_s3`` wrapper still commits (the redrive_upload caller is unaffected)."""
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    session.add(file)
+    await session.commit()
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+    commit_spy = AsyncMock()
+    monkeypatch.setattr(session, "commit", commit_spy)
+
+    router = DedupFakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, router)
+
+    commit_spy.assert_awaited_once()
 
 
 def test_staging_module_is_fastapi_free() -> None:
