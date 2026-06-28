@@ -201,11 +201,20 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   5. S3 endpoint, bucket, addressing style, and credentials are operator-provided via `_FILE` secrets and work against any S3-compatible backend (`endpoint_url`), not just AWS.
 
 **Plans**: 5 plans (4 waves), includes the `cloud_job` sidecar Alembic migration
+**Wave 1**
+
 - [ ] 53-01-PLAN.md — Foundation: S3 deps + ControlSettings config + cloud_job model/migration (KSTAGE-04, KSTAGE-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 53-02-PLAN.md — s3_staging aioboto3 service + presign-download server route (KSTAGE-01, KSTAGE-03, KSTAGE-04)
 - [ ] 53-03-PLAN.md — Agent upload leg: agent_s3 schemas + httpx upload_file_s3 task + enqueue-seam registration (KSTAGE-02)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 53-04-PLAN.md — Control-side callbacks + cloud_staging producer/re-drive (KSTAGE-01, KSTAGE-04)
 - [ ] 53-05-PLAN.md — Inline staged-object delete on the result callback, D-02 (KSTAGE-04)
+
 **Research**: Skip — aioboto3 well-documented; moto patterns established.
 
 ### Phase 54: Kube submit / watch + reconcile cron
