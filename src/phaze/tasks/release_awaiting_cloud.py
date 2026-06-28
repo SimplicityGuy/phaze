@@ -119,10 +119,10 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     # worker (PHAZE_ROLE=control), so get_settings() returns ControlSettings here (mirrors the
     # controller.startup llm_model/llm_max_rpm access pattern).
     cfg = get_settings()
-    # Phase 51 (D-03): master toggle gate. OFF -> clean no-op BEFORE the advisory lock + window
-    # logic, so the cron introduces NO new cloud push work. NEVER raise (T-50-cron-raise discipline,
-    # matching the GATE 1/2 no-op contract below).
-    if not cfg.cloud_burst_enabled:  # type: ignore[attr-defined]
+    # Phase 55 (D-02): cloud-target gate. 'local' (cloud off) -> clean no-op BEFORE the advisory
+    # lock + window logic, so the cron introduces NO new cloud push work. NEVER raise
+    # (T-50-cron-raise discipline, matching the GATE 1/2 no-op contract below).
+    if cfg.cloud_target == "local":  # type: ignore[attr-defined]
         return {"staged": 0, "skipped": 0}
     max_in_flight = cfg.cloud_max_in_flight  # type: ignore[attr-defined]
 

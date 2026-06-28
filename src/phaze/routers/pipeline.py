@@ -370,7 +370,7 @@ async def trigger_analysis(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_burst_enabled,
+        settings.cloud_target != "local",
         settings.models_path,
     )
 
@@ -615,7 +615,7 @@ async def trigger_analysis_ui(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_burst_enabled,
+        settings.cloud_target != "local",
         settings.models_path,
     )
 
@@ -675,11 +675,11 @@ async def trigger_backfill_cloud(
     over-enqueue class (D-10): a double-click is a no-op (the candidates have already left the
     ANALYSIS_FAILED state), and short / never-failed files are never touched.
     """
-    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit master-toggle guard BEFORE the candidate query.
+    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit cloud-target guard BEFORE the candidate query.
     # Gating only the routing seam is insufficient -- backfill would still reset the 144
     # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
-    # feature is off this is a clean no-op that mutates ZERO file.state rows.
-    if not settings.cloud_burst_enabled:
+    # target is 'local' (cloud off) this is a clean no-op that mutates ZERO file.state rows.
+    if settings.cloud_target == "local":
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/backfill_response.html",
@@ -707,7 +707,10 @@ async def trigger_backfill_cloud(
         session,
         candidates,
         threshold,
-        settings.cloud_burst_enabled,
+        # cloud is enabled here: the `cloud_target == "local"` early-return guard above already
+        # short-circuited the local case, so cloud_target is statically 'a1' or 'k8s' (mypy narrows
+        # it, which is why a literal `!= "local"` here is a redundant comparison). Pass True.
+        True,
         settings.models_path,
     )
 
