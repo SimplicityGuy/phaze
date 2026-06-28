@@ -39,7 +39,7 @@ from sqlalchemy import select, update
 import structlog
 
 from phaze.config import get_settings
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 from phaze.services import kube_staging, s3_staging
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
@@ -131,6 +131,7 @@ async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str,
     """
     cloud_job.status = CloudJobStatus.SUCCEEDED.value
     cloud_job.inadmissible = False  # CR-01: a transiently-Inadmissible row that then succeeds must clear the alert flag.
+    cloud_job.cloud_phase = CloudPhase.FINISHED.value  # D-04: admission progression terminus (orthogonal to the fault flag).
     await session.commit()
     await kube_staging.delete_job(name)
     tally["succeeded"] += 1
@@ -244,18 +245,32 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
 
     # Healthy Pending: silent hold, waits indefinitely -- no cap, no alert (D-07, Pitfall 3).
     if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_PENDING:
+        dirty = False
         if cloud_job.inadmissible:  # CR-01: the misconfig was fixed -- Workload is back to a healthy quota wait.
             cloud_job.inadmissible = False
+            dirty = True
+        if cloud_job.cloud_phase != CloudPhase.QUEUED_BEHIND_QUOTA.value:  # D-04: behind quota, waiting for admission.
+            cloud_job.cloud_phase = CloudPhase.QUEUED_BEHIND_QUOTA.value
+            dirty = True
+        if dirty:
             await session.commit()
         tally["pending"] += 1
         return
 
     # Admitted / QuotaReserved=True -> in-flight running; advance SUBMITTED -> RUNNING.
     admitted = _workload_condition(workload, _TYPE_ADMITTED)
-    if (admitted is not None and admitted.get("status") == "True") or (quota_reserved is not None and quota_reserved.get("status") == "True"):
-        if cloud_job.status != CloudJobStatus.RUNNING.value or cloud_job.inadmissible:
+    admitted_true = admitted is not None and admitted.get("status") == "True"
+    quota_true = quota_reserved is not None and quota_reserved.get("status") == "True"
+    if admitted_true or quota_true:
+        # D-04 admission progression (ORTHOGONAL to the status advance): Admitted=True means the pod
+        # is un-gated and running -> RUNNING; QuotaReserved-only (quota granted, not yet un-suspended)
+        # is the intermediate ADMITTED phase. The cloud_job ``status`` axis still advances to RUNNING
+        # in both cases (unchanged).
+        next_phase = CloudPhase.RUNNING.value if admitted_true else CloudPhase.ADMITTED.value
+        if cloud_job.status != CloudJobStatus.RUNNING.value or cloud_job.inadmissible or cloud_job.cloud_phase != next_phase:
             cloud_job.status = CloudJobStatus.RUNNING.value
             cloud_job.inadmissible = False  # CR-01: an admitted Workload is no longer Inadmissible -- clear the alert.
+            cloud_job.cloud_phase = next_phase
             await session.commit()
         tally["running"] += 1
         return
