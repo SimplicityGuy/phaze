@@ -18,6 +18,11 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     env_file: .env
+    environment:
+      # Cloud routing target (control-plane-only, ControlSettings). Replaces the
+      # removed v5.0 cloud-burst on/off toggle. One of local|a1|k8s; defaults
+      # to `local` (cloud off). NOT set on any agent compose file.
+      - PHAZE_CLOUD_TARGET=${PHAZE_CLOUD_TARGET:-local}
     volumes:
       # ./certs/ is bind-mounted rw so phaze.cert_bootstrap can generate the
       # CA + leaf certificates on first start (idempotent on subsequent starts).
@@ -41,6 +46,10 @@ services:
     env_file: .env
     environment:
       - PHAZE_ROLE=control
+      # Cloud routing target (control-plane-only, ControlSettings). Replaces the
+      # removed v5.0 cloud-burst on/off toggle. One of local|a1|k8s; defaults
+      # to `local` (cloud off). NOT set on any agent compose file.
+      - PHAZE_CLOUD_TARGET=${PHAZE_CLOUD_TARGET:-local}
     depends_on:
       postgres:
         condition: service_healthy

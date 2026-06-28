@@ -47,7 +47,9 @@ All four services mount the music library read-only via `${SCAN_PATH:?SCAN_PATH 
 compute agent that runs on a free OCI Ampere A1 (arm64) over Tailscale and analyzes **long** audio
 sets that would otherwise time out on a file server. It owns no media, mounts a named scratch
 volume, and reaches lux only via the SAQ Postgres broker + the HTTP API (DIST-04). The feature
-ships **off by default** (`PHAZE_CLOUD_BURST_ENABLED=false`).
+ships **off by default** (`PHAZE_CLOUD_TARGET=local`; set `a1` to enable this compute agent, or
+`k8s` for the Kubernetes target). **Renamed in v6.0** — `PHAZE_CLOUD_TARGET` replaces the old
+cloud-burst on/off boolean.
 
 The full compose walkthrough, the homelab provisioning runbook (OCI A1 OpenTofu spec, Tailscale
 grants ACL, and the least-privilege `phaze_broker` Postgres role), the deploy ordering, and the

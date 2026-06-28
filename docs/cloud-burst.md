@@ -14,9 +14,16 @@ the deploy ordering, and the smoke test. For the canonical per-knob config refer
 [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings) — this page does
 not duplicate that table.
 
-> **The feature ships OFF by default.** `PHAZE_CLOUD_BURST_ENABLED=false` (the default) means a
-> fresh v5.0 deploy behaves **all-local** with zero cloud activity. Provision the infrastructure
-> below first, then flip the toggle and restart the control plane (Step 6).
+> **Renamed in v6.0 (breaking).** The old single on/off cloud-burst boolean is **removed** and
+> replaced by the `PHAZE_CLOUD_TARGET` selector (`local` \| `a1` \| `k8s`). If you kept the old
+> enable boolean in your live env it is now **ignored** — cloud silently stays `local` on redeploy.
+> Delete it and set `PHAZE_CLOUD_TARGET` instead. See *Cloud target & runtime-state semantics* below.
+
+> **The feature ships OFF by default.** `PHAZE_CLOUD_TARGET=local` (the default) means a fresh
+> deploy behaves **all-local** with zero cloud activity. Provision the infrastructure below first,
+> then set the target and restart the control plane (Step 6). Use `PHAZE_CLOUD_TARGET=a1` for the
+> OCI A1 compute agent documented on this page, or `PHAZE_CLOUD_TARGET=k8s` for the Kubernetes
+> (Kueue) target (see *Kubernetes burst* below).
 
 ## Architecture at a glance
 
@@ -35,8 +42,8 @@ not duplicate that table.
   │  broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)              │
   └──────────────────────────────────────────────────────────────────────────┘
 
-  PHAZE_CLOUD_BURST_ENABLED=false ⇒ long files route LOCAL, staging cron no-ops,
-                                    backfill rejected, A1 idle. (all-local)
+  PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, staging cron no-ops,
+                             backfill rejected, A1 idle. (all-local)
 ```
 
 Key invariants:
@@ -252,20 +259,22 @@ PHAZE_IMAGE_TAG=v5.0.0                                         # pulls v5.0.0-ar
 (lux control plane) and the named-volume mount path — a drift surfaces as a sha256/transfer
 failure, never silent corruption.
 
-## Step 6 — Flip the master toggle and restart the control plane (lux)
+## Step 6 — Select the cloud target and restart the control plane (lux)
 
-On the **lux control plane**, set the master switch and restart so the new value is read:
+On the **lux control plane**, set the routing selector and restart so the new value is read:
 
 ```bash
-# In the lux .env:
-PHAZE_CLOUD_BURST_ENABLED=true
+# In the lux .env (A1 / rsync target):
+PHAZE_CLOUD_TARGET=a1
 # then restart the controller worker + api
 ```
 
-The toggle is a **startup-read** of the settings singleton — setting the env var on a running
-controller does **nothing** until the controller worker + api restart. Once enabled, long files
-begin routing to the A1, and any pre-existing `AWAITING_CLOUD` rows held from before the flip are
-released by the staging cron. See *Toggle & runtime-state semantics* below.
+`cloud_target` is a **startup-read** of the settings singleton — setting the env var on a running
+controller does **nothing** until the controller worker + api restart. Once set to `a1`, long files
+begin routing to the A1, and any pre-existing `AWAITING_CLOUD` rows held from before the change are
+released by the staging cron. For the Kubernetes target set `PHAZE_CLOUD_TARGET=k8s` instead and
+provide the kube/S3 knobs (see *Kubernetes burst* below). See *Cloud target & runtime-state
+semantics* below.
 
 ## Step 7 — Smoke test
 
@@ -282,26 +291,57 @@ Confirm the end-to-end path with this checklist:
       scratch, analyzes it, and posts results that reconcile by `file_id`.
 - [ ] **Scratch is cleaned.** The pushed file is deleted from the A1 scratch volume after
       analysis (no scratch leak).
-- [ ] **OFF reverts cleanly (optional).** With `PHAZE_CLOUD_BURST_ENABLED=false` + a control-plane
+- [ ] **`local` reverts cleanly (optional).** With `PHAZE_CLOUD_TARGET=local` + a control-plane
       restart, a new long file routes **local** and the staging cron no-ops.
 
-## Toggle & runtime-state semantics
+## Cloud target & runtime-state semantics
 
-`PHAZE_CLOUD_BURST_ENABLED` (`cloud_burst_enabled`, `ControlSettings`) is the **single switch**
-for the whole feature (CLOUDDEPLOY-04):
+> **Renamed in v6.0 (breaking).** The old single on/off cloud-burst boolean is **removed**. The
+> `PHAZE_CLOUD_TARGET` selector (`local` \| `a1` \| `k8s`) replaces it. An operator who kept the old
+> enable boolean set in their live env must **delete it** — it is ignored and cloud silently stays
+> `local` on redeploy.
 
-- **OFF (`false`, default) = all-local, no other change.** Every file — short and long — routes
+`PHAZE_CLOUD_TARGET` (`cloud_target`, `ControlSettings`) is the **single routing selector** for the
+whole feature (CLOUDDEPLOY-04):
+
+- **`local` (default) = all-local, no other change.** Every file — short and long — routes
   to the local file-server queue exactly as before cloud burst existed. The routing seam never
   sets `AWAITING_CLOUD`, the staging cron no-ops, and backfill-to-cloud is rejected. Long files
-  may then time out locally and fail cleanly as `ANALYSIS_FAILED`. A fresh v5.0 deploy ships
-  **dormant** this way until the operator completes Steps 1–6.
-- **Flipping requires a control-plane restart** (startup-read — Pitfall 6). The controller worker
-  + api must restart for a flip to take effect.
-- **In-flight work drains; OFF only stops NEW cloud work.** Files already `PUSHING`/`PUSHED`
-  finish across a restart (state is durable in Postgres); no mid-transfer/mid-analysis abort, no
-  scratch reclaim. Held `AWAITING_CLOUD` rows from before an OFF→ON flip release once enabled.
+  may then time out locally and fail cleanly as `ANALYSIS_FAILED`. A fresh deploy ships
+  **dormant** this way until the operator selects a target and completes Steps 1–6.
+- **`a1` = OCI A1 compute agent (this page).** Long files route to the A1 via rsync-over-SSH.
+  Requires `compute_scratch_dir` (control plane) matched to the A1's `cloud_scratch_dir`.
+- **`k8s` = Kubernetes (Kueue).** Long files stage to S3 and the control plane submits a suspended
+  Kueue Job (see *Kubernetes burst* below). Requires the kube + S3 knobs.
+- **Changing the target requires a control-plane restart** (startup-read — Pitfall 6). The
+  controller worker + api must restart for a change to take effect.
+- **In-flight work drains; switching to `local` only stops NEW cloud work.** Files already
+  `PUSHING`/`PUSHED` finish across a restart (state is durable in Postgres); no mid-transfer/
+  mid-analysis abort, no scratch reclaim. Held `AWAITING_CLOUD` rows from before a `local`→cloud
+  change release once a cloud target is selected.
 - **`nox`'s `PHAZE_PUSH_KNOWN_HOSTS` must be re-provisioned** with the A1's SSH **host key** after
   the A1 is up (Phase 50 strict known_hosts), or the rsync-over-SSH push fails host verification.
+
+### Selecting the `k8s` target — required knobs
+
+When `PHAZE_CLOUD_TARGET=k8s`, set the control-plane kube client + S3 staging knobs (all
+control-plane-only; secrets honor the `_FILE` convention). They fail fast at startup if the
+`cloud_target=k8s` requirements are unset:
+
+```bash
+# In the lux .env (Kubernetes / Kueue target):
+PHAZE_CLOUD_TARGET=k8s
+PHAZE_KUBE_API_URL=https://kube-api.example:6443   # required for k8s
+PHAZE_KUBE_NAMESPACE=phaze                          # required for k8s
+PHAZE_KUBE_LOCAL_QUEUE=phaze-lq                     # required for k8s (kueue.x-k8s.io/queue-name)
+PHAZE_KUBE_KUBECONFIG_FILE=/run/secrets/phaze_kube_kubeconfig   # or PHAZE_KUBE_SA_TOKEN_FILE
+PHAZE_S3_BUCKET=phaze-staging                        # S3 byte-staging bucket
+PHAZE_S3_ENDPOINT_URL=https://s3.example             # any S3-compatible endpoint
+# then restart the controller worker + api
+```
+
+See [configuration.md → Kube submit/reconcile settings](configuration.md#kube-submitreconcile-settings-phase-54-v60)
+for the full per-knob reference (defaults, `_FILE` support).
 
 ## Kubernetes burst — the submit → reconcile lifecycle (v6.0, Phase 54)
 

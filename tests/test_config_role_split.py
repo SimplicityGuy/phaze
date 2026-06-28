@@ -254,6 +254,27 @@ def test_env_example_documents_auto_migrate_and_dev_seed() -> None:
         assert key in text, f".env.example missing migration/seed knob: {key}"
 
 
+def test_env_example_documents_cloud_target() -> None:
+    """``.env.example`` must document PHAZE_CLOUD_TARGET and call out the rename.
+
+    Phase 55 / v6.0: PHAZE_CLOUD_BURST_ENABLED is removed and replaced by the
+    PHAZE_CLOUD_TARGET selector (local/a1/k8s). The rename must be LOUD so an
+    operator redeploying does not keep the dead boolean and silently lose cloud
+    routing. The legacy key must not appear in .env.example as a live setting.
+    """
+    text = _read_env_example()
+    assert "PHAZE_CLOUD_TARGET" in text, ".env.example missing PHAZE_CLOUD_TARGET selector"
+    for value in ("local", "a1", "k8s"):
+        assert value in text, f".env.example must document cloud_target value: {value}"
+    # Loud rename callout: an operator who kept the old toggle must be told to
+    # delete it. The callout names the new var and flags the removal as breaking,
+    # WITHOUT re-introducing the dead `PHAZE_CLOUD_BURST_ENABLED` / `cloud_burst`
+    # tokens that the migration grep-gate forbids.
+    assert "BREAKING RENAME" in text, ".env.example must carry a loud breaking-rename callout"
+    assert "PHAZE_CLOUD_BURST_ENABLED" not in text, "the removed legacy toggle token must not appear in .env.example"
+    assert "cloud_burst" not in text, "the removed legacy `cloud_burst` token must not appear in .env.example"
+
+
 def test_env_example_explains_host_vs_container() -> None:
     """``.env.example`` must call out the docker-service-name vs localhost distinction.
 
