@@ -714,6 +714,25 @@ async def trigger_backfill_cloud(
         settings.models_path,
     )
 
+    # Phase 55 (L3 / CLOUDROUTE-02): the held-file ledger seed forks on the cloud target.
+    #   - k8s: SKIP the seed entirely. A ``process_file:<id>`` ledger row would let
+    #     ``recover_orphaned_work`` replay the held file onto a LOCAL agent queue -- the ``cloud_job``
+    #     row (seeded by the ``stage_cloud_window`` k8s branch), NOT the ledger, is the k8s in-flight
+    #     registry. The k8s held file is advanced purely by the duration router + staging cron.
+    #   - a1 (cloud_target != "k8s"; "local" already returned early above): seed the row (D-09) so the
+    #     held file -- never enqueued, so no ``before_enqueue`` hook fired -- is durable scheduled work.
+    if settings.cloud_target == "k8s":
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/backfill_response.html",
+            context={
+                "request": request,
+                "count": count,
+                "cloud": counts["cloud"],
+                "awaiting": counts["awaiting"],
+            },
+        )
+
     # D-09 / RESEARCH Open-Q3: seed a ledger row ONLY for files the router HELD in AWAITING_CLOUD
     # (every backfill candidate is long, so the router never produces local/skipped here). The router
     # mutates ``file.state`` in place for held files, so the held set is detectable on the in-memory
