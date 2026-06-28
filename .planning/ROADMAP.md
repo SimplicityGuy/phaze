@@ -155,7 +155,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
-| 55. Routing, state & ledger integration | v6.0 | 5/6 | In Progress|  |
+| 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete   | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
 ## Phase Details (v6.0 Kubernetes Burst Analysis)
@@ -278,7 +278,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 55-05-PLAN.md — KROUTE-06 admission-state cards (`get_cloud_phase_counts` + `admission_state_card.html` + OOB wiring) [wave 3]
+- [x] 55-05-PLAN.md — KROUTE-06 admission-state cards (`get_cloud_phase_counts` + `admission_state_card.html` + OOB wiring) [wave 3]
 
 **Research**: Skip — extends the existing `enqueue_router` + `stage_cloud_window` patterns.
 
