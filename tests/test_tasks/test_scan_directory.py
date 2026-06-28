@@ -632,5 +632,7 @@ def test_scan_directory_registered_in_agent_worker_settings() -> None:
 
     from phaze.tasks.agent_worker import settings as agent_settings
 
-    func_names = {f.__name__ for f in agent_settings["functions"]}
+    # Entries are either a bare function (name == __name__) or a (name, func) tuple registered
+    # under an explicit SAQ name (e.g. ("s3_upload", upload_file_s3), Phase 53).
+    func_names = {(f[0] if isinstance(f, tuple) else f.__name__) for f in agent_settings["functions"]}
     assert "scan_directory" in func_names, f"scan_directory not registered: got {func_names}"

@@ -23,10 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
+from phaze.schemas.agent_analysis import PresignDownloadResponse
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
+from phaze.services import s3_staging
 
 
 router = APIRouter(prefix="/api/internal/agent/files", tags=["agent-internal"])
@@ -129,3 +132,48 @@ async def upsert_files(
         inserted=sum(1 for r in rows if r.inserted),
         enqueued=0,
     )
+
+
+@router.post("/{file_id}/presign-download", status_code=status.HTTP_200_OK, response_model=PresignDownloadResponse)
+async def presign_download(
+    file_id: uuid.UUID,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PresignDownloadResponse:
+    """Mint a just-in-time presigned GET URL for a file's staged bytes (Phase 53, KSTAGE-03).
+
+    Completes the SERVER side of the Phase 52 pod client ``request_download_url``: the DB-less
+    one-shot pod POSTs here at startup and downloads the bytes from the returned short-TTL URL,
+    verifying them against ``expected_sha256``.
+
+    AUTH-01: ``file_id`` rides the URL PATH only; the agent identity comes from the token
+    dependency, and no request body is accepted. The presign is minted FRESH per call
+    (KSTAGE-03 -- never at submit time, so it never expires during a Kueue wait). The
+    ``expected_sha256`` is read SERVER-side from ``FileRecord.sha256_hash`` (T-53-06 / the
+    single integrity gate, D-04) -- never echoed from the request -- and the
+    ``Field(pattern=...)`` on the response catches any format skew at the wire boundary.
+
+    An unknown ``file_id`` is a clean 404, never a 500.
+    """
+    # Touch ``agent`` so ARG001 doesn't fire; the binding's real role is auth-gating (AUTH-01).
+    _ = agent.id
+
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    if file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file not found")
+
+    # Readiness guard (WR-03): the presign is purely computational and always succeeds, so without
+    # this check we could hand back a well-formed but DEAD URL for an object that was never staged or
+    # was already evicted (inline cleanup / Phase 54 eviction / lifecycle TTL). Require the cloud_job
+    # to be UPLOADED; otherwise 409 so the pod (or Phase 54 reconcile) sees "not ready" at the control
+    # plane instead of taking an opaque 403/404 from S3 mid-download. Single-user system: NO per-agent
+    # ownership predicate -- cross-agent access is by design (file_id is path-only, AUTH-01), not an IDOR.
+    cloud_job_status = (await session.execute(select(CloudJob.status).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    if cloud_job_status != CloudJobStatus.UPLOADED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"staged object not ready (cloud_job status={cloud_job_status!r})",
+        )
+
+    download_url = await s3_staging.presign_get(file_id)
+    return PresignDownloadResponse(download_url=download_url, expected_sha256=file.sha256_hash)

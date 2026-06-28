@@ -79,8 +79,10 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
 
         # The ORM async engine must NEVER be dragged into the agent import graph. psycopg3
         # (psycopg / psycopg_pool / saq.queue.postgres) is explicitly NOT forbidden — it is
-        # the Phase-36 broker the agent role is allowed to carry.
-        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
+        # the Phase-36 broker the agent role is allowed to carry. Phase 53 (KSTAGE-02): the S3
+        # SDK (aioboto3/botocore) MUST also stay out — the agent transfers bytes httpx-only over
+        # presigned URLs and holds no bucket credentials (T-53-11).
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio", "aioboto3", "botocore")
         present = [m for m in forbidden if m in sys.modules]
         if present:
             # Print full importer chain for debugging which import dragged it in.
@@ -143,6 +145,46 @@ def test_push_task_stays_postgres_free() -> None:
         check=False,
     )
     assert result.returncode == 0, f"push task import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
+def test_upload_task_stays_postgres_free_and_sdk_free() -> None:
+    """Phase 53 (53-03) extension of D-25: phaze.tasks.s3_upload is Postgres-free AND S3-SDK-free.
+
+    ``upload_file_s3`` runs on the file-server agent worker (registered in
+    agent_worker.settings) and transfers bytes httpx-only to presigned part URLs. It must NOT
+    drag the app ORM / async DB engine NOR the S3 SDK (aioboto3/botocore) into the agent import
+    graph (KSTAGE-02 / T-53-11). It imports only stdlib (asyncio/pathlib), phaze.config (no DB),
+    phaze.schemas.agent_s3 (Pydantic), and references PhazeAgentClient via ctx at runtime.
+    Verified by subprocess so a contaminated import cannot poison downstream tests via sys.modules.
+    """
+    script = textwrap.dedent("""
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.tasks.s3_upload  # noqa: F401
+
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio", "aioboto3", "botocore")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"s3_upload import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
 def test_agent_worker_module_import_fails_when_phaze_agent_queue_unset() -> None:

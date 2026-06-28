@@ -16,7 +16,7 @@
 > K8s becomes a **third** analysis-routing target alongside local and the v5.0 OCI A1: long sets that can't finish locally run as ephemeral, quota-scheduled **Kueue batch Jobs** on a remote x64 cluster. Mirrors the v5.0 spine (image → legs → pipeline → routing seam → deploy); the single live-seam edit (Phase 55) is deliberately last, and Phases 52-54 are each independently unit-testable without a live cluster (respx / moto / fake kube API) so the 85% coverage gate holds at every phase boundary. **No phase needs a research-phase** — every external API surface (kr8s, aioboto3, Kueue v1beta2) was verified same-day against Context7 / official docs and each phase has a direct v5.0 precedent.
 
 - [x] **Phase 52: Job-runner image & one-shot entrypoint** — x86 GHCR image FROM the existing essentia base; one-shot pull → windowed analyze → POST result → exit; honest exit codes; internal CA baked in (KJOB-01..05) (completed 2026-06-27)
-- [ ] **Phase 53: S3 object-staging leg** — control-plane presign (aioboto3) + file-server agent httpx-PUT upload + pod presigned GET; `file_id`-scoped keys; cleanup on every outcome; `cloud_job` sidecar migration (KSTAGE-01..05)
+- [x] **Phase 53: S3 object-staging leg** — control-plane presign (aioboto3) + file-server agent httpx-PUT upload + pod presigned GET; `file_id`-scoped keys; cleanup on every outcome; `cloud_job` sidecar migration (KSTAGE-01..05) (completed 2026-06-28)
 - [ ] **Phase 54: Kube submit/watch + reconcile cron** — suspended per-file Kueue Job (kr8s); fast submit + reconcile cron; out-of-band callback authoritative; no ledger-seed; Inadmissible-vs-Pending (KSUBMIT-01..06)
 - [ ] **Phase 55: Routing, state & ledger integration** — `cloud_target` selector + `stage_cloud_window` K8s branch + `enqueue_router` additions + AST guard (the one live-seam edit) (KROUTE-01..05)
 - [ ] **Phase 56: Deployment, runbook, config & docs** — Kueue admin runbook + least-privilege RBAC + `_FILE` secrets + transport-agnostic endpoints + ephemeral-identity Agents-UI note + master toggle (KDEPLOY-01..05)
@@ -153,7 +153,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
-| 53. S3 object-staging leg | v6.0 | 0/? | Not started | - |
+| 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
@@ -200,7 +200,21 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   4. Each staged object uses a `file_id`-scoped key and is deleted on **every** terminal outcome (success, failure, eviction, re-drive), with a bucket lifecycle TTL as a backstop against orphaned-object leaks.
   5. S3 endpoint, bucket, addressing style, and credentials are operator-provided via `_FILE` secrets and work against any S3-compatible backend (`endpoint_url`), not just AWS.
 
-**Plans**: TBD (includes the `cloud_job` sidecar Alembic migration)
+**Plans**: 5 plans (4 waves), includes the `cloud_job` sidecar Alembic migration
+**Wave 1**
+
+- [x] 53-01-PLAN.md — Foundation: S3 deps + ControlSettings config + cloud_job model/migration (KSTAGE-04, KSTAGE-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 53-02-PLAN.md — s3_staging aioboto3 service + presign-download server route (KSTAGE-01, KSTAGE-03, KSTAGE-04)
+- [x] 53-03-PLAN.md — Agent upload leg: agent_s3 schemas + httpx upload_file_s3 task + enqueue-seam registration (KSTAGE-02)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 53-04-PLAN.md — Control-side callbacks + cloud_staging producer/re-drive (KSTAGE-01, KSTAGE-04)
+- [x] 53-05-PLAN.md — Inline staged-object delete on the result callback, D-02 (KSTAGE-04)
+
 **Research**: Skip — aioboto3 well-documented; moto patterns established.
 
 ### Phase 54: Kube submit / watch + reconcile cron
