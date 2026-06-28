@@ -172,7 +172,13 @@ async def report_upload_failed(
     # Over the cap: terminal failure + cleanup (abort + delete) + ledger clear, one transaction.
     if next_attempt > settings.push_max_attempts:
         cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
-        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.FAILED.value))
+        # CR-01: terminal cleanup must also exit the FileRecord from PUSHING -> ANALYSIS_FAILED. Phase 55
+        # (55-03) made the k8s staging path flip AWAITING_CLOUD -> PUSHING; the window math counts
+        # PUSHING toward cloud_max_in_flight, so a file left in PUSHING here permanently consumes a slot
+        # (and is invisible to backfill, which filters ANALYSIS_FAILED). Mirrors reconcile + report_push_mismatch.
+        # WR-01: clear cloud_phase so a terminal row never inflates the admission-state "Running" tile.
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.FAILED.value, cloud_phase=None))
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
         if cloud_job is not None and cloud_job.upload_id:
             await s3_staging.abort_multipart_upload(file_id, cloud_job.upload_id)
         await s3_staging.delete_staged_object(file_id)

@@ -105,7 +105,13 @@ async def _file_state(session: AsyncSession, file_id: uuid.UUID) -> str:
     return (await session.execute(stmt)).scalar_one().state
 
 
-async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, *, status: CloudJobStatus = CloudJobStatus.UPLOADING) -> None:
+async def _seed_cloud_job(
+    session: AsyncSession,
+    file_id: uuid.UUID,
+    *,
+    status: CloudJobStatus = CloudJobStatus.UPLOADING,
+    cloud_phase: str | None = None,
+) -> None:
     session.add(
         CloudJob(
             id=uuid.uuid4(),
@@ -113,6 +119,7 @@ async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, *, status: 
             s3_key=f"phaze-staging/{file_id}",
             status=status.value,
             upload_id="upload-xyz",
+            cloud_phase=cloud_phase,
         )
     )
     await session.commit()
@@ -392,11 +399,16 @@ async def test_failed_at_cap_fails_terminally_and_cleans_up(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """At the cap: cloud_job FAILED + abort multipart + delete staged object + ledger cleared -> cleared=True."""
+    """At the cap: cloud_job FAILED + abort multipart + delete staged object + ledger cleared -> cleared=True.
+
+    CR-01: the terminal branch MUST also exit the FileRecord from PUSHING -> ANALYSIS_FAILED (else the
+    file permanently consumes a window slot and is invisible to backfill). WR-01: it MUST clear
+    cloud_phase so a FAILED row never inflates the admission-state "Running" tile.
+    """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, push_max_attempts=3)
-    file_id = await _seed_file(session, agent.id)
-    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
     await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds the cap
     abort = AsyncMock()
     delete = AsyncMock()
@@ -416,6 +428,8 @@ async def test_failed_at_cap_fails_terminally_and_cleans_up(
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.FAILED.value
+    assert job.cloud_phase is None  # WR-01: terminal row no longer counts toward the "Running" tile
+    assert await _file_state(session, file_id) == FileState.ANALYSIS_FAILED  # CR-01: exits the window
     assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
 
 

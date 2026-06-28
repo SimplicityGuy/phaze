@@ -163,7 +163,8 @@ async def _handle_no_callback_terminal(
 
     if next_attempt > cap:
         cloud_job.status = CloudJobStatus.FAILED.value
-        cloud_job.inadmissible = False  # CR-01: terminal row must not keep the operator alert lit.
+        cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit.
+        cloud_job.cloud_phase = None  # WR-01: terminal row must not inflate the admission-state "Running" tile.
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
         await session.commit()
         await s3_staging.delete_staged_object(file_id)
