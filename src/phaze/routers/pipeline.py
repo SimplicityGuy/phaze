@@ -28,6 +28,7 @@ from phaze.services.pipeline import (
     get_analysis_failed_count,
     get_awaiting_cloud_count,
     get_backfill_candidates,
+    get_cloud_phase_counts,
     get_discovered_files_with_duration,
     get_fingerprint_pending_files,
     get_global_reconciliation,
@@ -370,7 +371,7 @@ async def trigger_analysis(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_burst_enabled,
+        settings.cloud_target != "local",
         settings.models_path,
     )
 
@@ -497,6 +498,12 @@ async def dashboard(
     # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
     inadmissible_count = await get_inadmissible_count(session)
 
+    # Phase 55 (55-05, D-04, KROUTE-06): the four per-cloud_phase admission-state counts driving the
+    # admission_state_card. get_cloud_phase_counts owns the never-500 _safe_count degrade per phase
+    # (returns 0 on any DB error), so NO try/except here -- same service-owns-degrade idiom as
+    # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
+    cloud_phase_counts = await get_cloud_phase_counts(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -517,6 +524,10 @@ async def dashboard(
         "pushing_count": pushing_count,
         "analyzing_cloud_count": analyzing_cloud_count,
         "inadmissible_count": inadmissible_count,
+        "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
+        "admitted_count": cloud_phase_counts["admitted"],
+        "running_count": cloud_phase_counts["running"],
+        "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         **activity,
@@ -562,6 +573,11 @@ async def pipeline_stats_partial(
     # poll so the inadmissible_card stays live via its OOB swap. Degrade-safe at the service layer,
     # so NO router try/except -- mirrors the awaiting_cloud_count wiring.
     inadmissible_count = await get_inadmissible_count(session)
+    # Phase 55 (55-05, D-04, KROUTE-06): the same four per-cloud_phase admission counts the dashboard
+    # seeds, re-pushed on every 5s poll so the admission_state_card stays live via its OOB swap.
+    # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
+    # the inadmissible_count wiring.
+    cloud_phase_counts = await get_cloud_phase_counts(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -580,6 +596,10 @@ async def pipeline_stats_partial(
             "pushing_count": pushing_count,
             "analyzing_cloud_count": analyzing_cloud_count,
             "inadmissible_count": inadmissible_count,
+            "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
+            "admitted_count": cloud_phase_counts["admitted"],
+            "running_count": cloud_phase_counts["running"],
+            "finished_count": cloud_phase_counts["finished"],
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
@@ -615,7 +635,7 @@ async def trigger_analysis_ui(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_burst_enabled,
+        settings.cloud_target != "local",
         settings.models_path,
     )
 
@@ -675,11 +695,11 @@ async def trigger_backfill_cloud(
     over-enqueue class (D-10): a double-click is a no-op (the candidates have already left the
     ANALYSIS_FAILED state), and short / never-failed files are never touched.
     """
-    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit master-toggle guard BEFORE the candidate query.
+    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit cloud-target guard BEFORE the candidate query.
     # Gating only the routing seam is insufficient -- backfill would still reset the 144
     # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
-    # feature is off this is a clean no-op that mutates ZERO file.state rows.
-    if not settings.cloud_burst_enabled:
+    # target is 'local' (cloud off) this is a clean no-op that mutates ZERO file.state rows.
+    if settings.cloud_target == "local":
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/backfill_response.html",
@@ -707,9 +727,31 @@ async def trigger_backfill_cloud(
         session,
         candidates,
         threshold,
-        settings.cloud_burst_enabled,
+        # cloud is enabled here: the `cloud_target == "local"` early-return guard above already
+        # short-circuited the local case, so cloud_target is statically 'a1' or 'k8s' (mypy narrows
+        # it, which is why a literal `!= "local"` here is a redundant comparison). Pass True.
+        True,
         settings.models_path,
     )
+
+    # Phase 55 (L3 / CLOUDROUTE-02): the held-file ledger seed forks on the cloud target.
+    #   - k8s: SKIP the seed entirely. A ``process_file:<id>`` ledger row would let
+    #     ``recover_orphaned_work`` replay the held file onto a LOCAL agent queue -- the ``cloud_job``
+    #     row (seeded by the ``stage_cloud_window`` k8s branch), NOT the ledger, is the k8s in-flight
+    #     registry. The k8s held file is advanced purely by the duration router + staging cron.
+    #   - a1 (cloud_target != "k8s"; "local" already returned early above): seed the row (D-09) so the
+    #     held file -- never enqueued, so no ``before_enqueue`` hook fired -- is durable scheduled work.
+    if settings.cloud_target == "k8s":
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/backfill_response.html",
+            context={
+                "request": request,
+                "count": count,
+                "cloud": counts["cloud"],
+                "awaiting": counts["awaiting"],
+            },
+        )
 
     # D-09 / RESEARCH Open-Q3: seed a ledger row ONLY for files the router HELD in AWAITING_CLOUD
     # (every backfill candidate is long, so the router never produces local/skipped here). The router

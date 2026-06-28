@@ -142,49 +142,59 @@ def test_s3_endpoint_url_accepts_http_and_https(monkeypatch: pytest.MonkeyPatch)
 
 
 # --------------------------------------------------------------------------- #
-# Cloud-enabled fail-fast (mirrors compute_scratch_dir guard)
+# k8s-target fail-fast (S3 is the k8s byte path; Phase 55 D-02/KROUTE-01)
 # --------------------------------------------------------------------------- #
-def test_cloud_enabled_requires_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
-    """cloud_burst_enabled=True with no s3_bucket fails fast at construction."""
-    monkeypatch.setenv("PHAZE_CLOUD_BURST_ENABLED", "true")
-    monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch")
+def test_k8s_requires_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cloud_target='k8s' with no s3_bucket fails fast at construction.
+
+    The kube surface (api url / namespace / local queue) is supplied so the S3 validator is the
+    one that fires, isolating the S3 assertion from the new kube-config validator.
+    """
+    monkeypatch.setenv("PHAZE_CLOUD_TARGET", "k8s")
     monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", "https://s3.example.com")
+    monkeypatch.setenv("PHAZE_KUBE_API_URL", "https://kube.example.com")
+    monkeypatch.setenv("PHAZE_KUBE_NAMESPACE", "phaze")
+    monkeypatch.setenv("PHAZE_KUBE_LOCAL_QUEUE", "phaze-lq")
     monkeypatch.delenv("PHAZE_S3_BUCKET", raising=False)
     with pytest.raises(ValueError, match="PHAZE_S3_BUCKET"):
         ControlSettings()
 
 
-def test_cloud_enabled_requires_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """cloud_burst_enabled=True with no s3_endpoint_url fails fast at construction."""
-    monkeypatch.setenv("PHAZE_CLOUD_BURST_ENABLED", "true")
-    monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch")
+def test_k8s_requires_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cloud_target='k8s' with no s3_endpoint_url fails fast at construction."""
+    monkeypatch.setenv("PHAZE_CLOUD_TARGET", "k8s")
     monkeypatch.setenv("PHAZE_S3_BUCKET", "phaze-staging")
+    monkeypatch.setenv("PHAZE_KUBE_API_URL", "https://kube.example.com")
+    monkeypatch.setenv("PHAZE_KUBE_NAMESPACE", "phaze")
+    monkeypatch.setenv("PHAZE_KUBE_LOCAL_QUEUE", "phaze-lq")
     monkeypatch.delenv("PHAZE_S3_ENDPOINT_URL", raising=False)
     with pytest.raises(ValueError, match="PHAZE_S3_ENDPOINT_URL"):
         ControlSettings()
 
 
-def test_cloud_enabled_with_full_s3_config_constructs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """cloud_burst_enabled=True with bucket + endpoint + scratch dir constructs cleanly."""
-    monkeypatch.setenv("PHAZE_CLOUD_BURST_ENABLED", "true")
-    monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch")
+def test_k8s_with_full_s3_config_constructs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cloud_target='k8s' with bucket + endpoint + the kube surface constructs cleanly."""
+    monkeypatch.setenv("PHAZE_CLOUD_TARGET", "k8s")
     monkeypatch.setenv("PHAZE_S3_BUCKET", "phaze-staging")
     monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", "https://s3.example.com")
+    monkeypatch.setenv("PHAZE_KUBE_API_URL", "https://kube.example.com")
+    monkeypatch.setenv("PHAZE_KUBE_NAMESPACE", "phaze")
+    monkeypatch.setenv("PHAZE_KUBE_LOCAL_QUEUE", "phaze-lq")
 
     cfg = ControlSettings()
 
-    assert cfg.cloud_burst_enabled is True
+    assert cfg.cloud_target == "k8s"
     assert cfg.s3_bucket == "phaze-staging"
     assert cfg.s3_endpoint_url == "https://s3.example.com"
 
 
-def test_cloud_disabled_leaves_s3_optional(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OFF (the default) needs no S3 config -- all-local deploys stay config-free."""
-    monkeypatch.delenv("PHAZE_CLOUD_BURST_ENABLED", raising=False)
+def test_local_leaves_s3_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    """'local' (the default) needs no S3 config -- all-local deploys stay config-free."""
+    monkeypatch.delenv("PHAZE_CLOUD_TARGET", raising=False)
     monkeypatch.delenv("PHAZE_S3_BUCKET", raising=False)
     monkeypatch.delenv("PHAZE_S3_ENDPOINT_URL", raising=False)
     cfg = ControlSettings()
-    assert cfg.cloud_burst_enabled is False
+    assert cfg.cloud_target == "local"
     assert cfg.s3_bucket is None
     assert cfg.s3_endpoint_url is None
 

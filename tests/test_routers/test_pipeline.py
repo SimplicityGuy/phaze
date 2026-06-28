@@ -13,6 +13,7 @@ from sqlalchemy import select
 from phaze.config import settings
 from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
@@ -58,17 +59,17 @@ async def _drain_background() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _cloud_burst_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default the Phase-49/50 cloud-routing tests to cloud_burst_enabled=True.
+def _cloud_target_a1(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the Phase-49/50 cloud-routing tests to cloud_target='a1' (cloud ON, rsync path).
 
-    The Phase-51 master toggle (``cloud_burst_enabled``) defaults False, which flips the duration
-    router and the backfill trigger to all-local. These regression tests assert the ON behavior
-    (long files held in AWAITING_CLOUD, backfill resets+routes), so pin the singleton attribute ON
-    here. The Phase-51 OFF tests below override it back to False inside their own bodies.
+    The Phase-55 selector (``cloud_target``) defaults 'local', which flips the duration router and
+    the backfill trigger to all-local. These regression tests assert the ON behavior (long files held
+    in AWAITING_CLOUD, backfill resets+routes) for the live v5.0 a1 path, so pin the singleton selector
+    to 'a1' here. The cloud-off tests below override it to 'local' inside their own bodies.
     """
     from phaze.config import settings
 
-    monkeypatch.setattr(settings, "cloud_burst_enabled", True)
+    monkeypatch.setattr(settings, "cloud_target", "a1")
 
 
 def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
@@ -659,12 +660,21 @@ async def test_analyze_ui_no_agents_surfaces_held_count(client: AsyncClient, ses
 # ---------------------------------------------------------------------------
 
 
-async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None]) -> list[FileRecord]:
+async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None], *, with_ledger: bool = True) -> list[FileRecord]:
     """Persist one ANALYSIS_FAILED file per duration spec (+ metadata) and return the records.
 
     A ``None`` duration is modeled as the absence of a metadata row — such a file is
     structurally excluded from the backfill candidate set (the INNER JOIN drops it).
+
+    ``with_ledger`` (default ``True``) also seeds a ``process_file:<id>`` scheduling-ledger row
+    per file, modelling **previously-scheduled, then timed-out** work: a SAQ timeout abandons the
+    job WITHOUT firing ``report_analysis_failed`` (which would clear the row), so the orphaned
+    ledger row persists into ``ANALYSIS_FAILED``. Phase 55 (L4) scopes the backfill candidate query
+    to exactly these ledgered files. Pass ``with_ledger=False`` to model a never-scheduled (or
+    cleanly-reported-failed, row-cleared) file that the EXISTS predicate must exclude.
     """
+    from phaze.services.scheduling_ledger import insert_ledger_if_absent
+
     files: list[FileRecord] = []
     mds: list[FileMetadata] = []
     for dur in specs:
@@ -687,8 +697,59 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
     await session.flush()
     if mds:
         session.add_all(mds)
+    if with_ledger:
+        for file in files:
+            await insert_ledger_if_absent(
+                session,
+                key=f"process_file:{file.id}",
+                function="process_file",
+                kwargs={},
+                timeout=7200,
+                retries=2,
+            )
     await session.commit()
     return files
+
+
+# --- Phase 55 Plan 04 Task 1 (L4): ledger-scoped backfill candidate query --------------------
+# The candidate set is now ANALYSIS_FAILED ∧ duration >= threshold ∧ EXISTS a prior
+# process_file:<id> scheduling-ledger row. This excludes never-scheduled (or cleanly
+# report_analysis_failed-cleared) failures so backfill re-drives ONLY previously-scheduled,
+# timed-out work -- mirroring the v5.0 recover-over-enqueue fix (no whole-backlog sweep).
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidate_query_requires_prior_ledger_row(session: AsyncSession) -> None:
+    """L4: only a failed long file WITH a prior process_file ledger row is a backfill candidate.
+
+    A never-scheduled failed long file (no ledger row) is excluded -- this is the bounded
+    "previously-scheduled work only" property that closes the over-enqueue class.
+    """
+    from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates
+
+    (ledgered_long,) = await _persist_failed_with_duration(session, [_LONG])  # has process_file ledger row
+    (never_scheduled_long,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
+    threshold = settings.cloud_route_threshold_sec
+
+    count = await count_backfill_candidates(session, threshold)
+    candidates = await get_backfill_candidates(session, threshold)
+    candidate_ids = {file.id for file, _duration in candidates}
+
+    assert count == 1
+    assert ledgered_long.id in candidate_ids
+    assert never_scheduled_long.id not in candidate_ids  # never-scheduled work is NOT swept in
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidate_query_excludes_short_even_with_ledger(session: AsyncSession) -> None:
+    """A failed SHORT file (duration < threshold) is excluded even though it carries a ledger row."""
+    from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates
+
+    await _persist_failed_with_duration(session, [_SHORT])  # short, WITH ledger row
+    threshold = settings.cloud_route_threshold_sec
+
+    assert await count_backfill_candidates(session, threshold) == 0
+    assert await get_backfill_candidates(session, threshold) == []
 
 
 @pytest.mark.asyncio
@@ -830,21 +891,21 @@ async def test_backfill_zero_candidates_returns_empty_fragment(client: AsyncClie
     assert capture == []
 
 
-# --- Phase 51 (D-03): the cloud_burst_enabled gate on the backfill trigger ----------------
+# --- Phase 55 (D-02): the cloud_target gate on the backfill trigger -----------------------
 
 
 @pytest.mark.asyncio
-async def test_backfill_disabled_when_cloud_burst_off(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """OFF: with cloud_burst_enabled False the backfill trigger is a no-op -- ZERO file.state mutations.
+async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OFF: with cloud_target='local' the backfill trigger is a no-op -- ZERO file.state mutations.
 
     Pitfall 2 / T-51-02: gating ONLY the routing seam would still let backfill reset the 144
     ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. The explicit
-    early-return guard prevents any state mutation when the feature is off.
+    early-return guard prevents any state mutation when the target is 'local'.
     """
     from phaze.config import settings
 
-    monkeypatch.setattr(settings, "cloud_burst_enabled", False)
-    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    monkeypatch.setattr(settings, "cloud_target", "local")
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
     capture = wire_fakes(client)
@@ -865,7 +926,7 @@ async def test_backfill_disabled_when_cloud_burst_off(client: AsyncClient, sessi
 
 @pytest.mark.asyncio
 async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: AsyncSession) -> None:
-    """ON: with cloud_burst_enabled True the backfill resets the long file and holds it (regression)."""
+    """ON: with cloud_target='a1' (autouse fixture) the backfill resets the long file and holds it (regression)."""
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "cloud", kind="compute")
     capture = wire_fakes(client)
@@ -877,6 +938,104 @@ async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: A
     assert capture == []  # held, never directly enqueued
     await session.refresh(long_failed)
     assert long_failed.state == FileState.AWAITING_CLOUD
+
+
+# --- Phase 55 Plan 04 Task 2 (L3 / CLOUDROUTE-02): backfill forks on cloud_target ------------
+# The backfill endpoint resets ledger-scoped failed long files to DISCOVERED and routes them to
+# AWAITING_CLOUD for BOTH cloud targets. The ONLY difference is the held-file ledger seed:
+#   - a1  : seeds a process_file:<id> row (insert_ledger_if_absent) -- the held file's durable
+#           "was scheduled" fact (D-09).
+#   - k8s : seeds NO process_file:<id> row -- a ledger row would let recover_orphaned_work replay
+#           the held file onto a LOCAL agent queue (the cloud_job row, NOT the ledger, is the k8s
+#           in-flight registry). The seed call must NOT fire on the k8s branch.
+# Both forks converge on exactly the prior candidacy row, so the fork is asserted at the
+# insert_ledger_if_absent call boundary (spy), which is the only observable difference.
+
+
+def _spy_on_ledger_seed(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """Patch routers.pipeline.insert_ledger_if_absent to record the keys it is called with."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    seeded_keys: list[str | None] = []
+    original = pipeline_mod.insert_ledger_if_absent
+
+    async def _recording(*args: object, **kwargs: object) -> None:
+        seeded_keys.append(kwargs.get("key"))  # type: ignore[arg-type]
+        await original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_mod, "insert_ledger_if_absent", _recording)
+    return seeded_keys
+
+
+@pytest.mark.asyncio
+async def test_backfill_a1_seeds_process_file_ledger_row(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """a1 fork: the held-file branch calls insert_ledger_if_absent for the process_file:<id> key (D-09)."""
+    # cloud_target='a1' is the autouse default.
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")  # no compute -> held in AWAITING_CLOUD
+    wire_fakes(client)
+    seeded_keys = _spy_on_ledger_seed(monkeypatch)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    # The a1 branch DID seed the held file's process_file ledger row.
+    assert f"process_file:{long_failed.id}" in seeded_keys
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.AWAITING_CLOUD
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert len(rows) == 1  # exactly the one row (idempotent over the prior candidacy row)
+
+
+@pytest.mark.asyncio
+async def test_backfill_k8s_holds_awaiting_cloud_without_ledger_seed(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """k8s fork (L3): the held file is reset->routed to AWAITING_CLOUD but NO ledger seed fires.
+
+    A process_file:<id> ledger seed on the k8s branch would let recover_orphaned_work replay the
+    held file onto a LOCAL agent queue (CLOUDROUTE-02). The k8s branch therefore SKIPS
+    insert_ledger_if_absent entirely; the file still carries exactly its prior candidacy row (no
+    NEW row), and the cloud_job row -- seeded later by the stage_cloud_window k8s branch -- is the
+    in-flight registry.
+    """
+    monkeypatch.setattr(settings, "cloud_target", "k8s")
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")  # k8s has no compute agent -> held
+    wire_fakes(client)
+    seeded_keys = _spy_on_ledger_seed(monkeypatch)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    # L3: the k8s branch never seeded a process_file ledger row.
+    assert seeded_keys == []
+    # The candidate was still reset out of ANALYSIS_FAILED and HELD for the staging cron.
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.AWAITING_CLOUD
+    # No NEW process_file row was added: exactly the one prior candidacy row remains.
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_local_redrives_nothing(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """local fork: the cloud-off gate short-circuits -- no file is reset and no ledger seed fires."""
+    monkeypatch.setattr(settings, "cloud_target", "local")
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+    seeded_keys = _spy_on_ledger_seed(monkeypatch)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    assert seeded_keys == []
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.ANALYSIS_FAILED  # never reset on the local gate
 
 
 # ---------------------------------------------------------------------------
@@ -2059,3 +2218,109 @@ def test_queue_progress_percent_formula() -> None:
     assert queue_progress_percent(30, 10) == 75
     assert queue_progress_percent(0, 0) == 0
     assert queue_progress_percent(11428, 0) == 100
+
+
+# ---------------------------------------------------------------------------
+# Phase 55 (55-05, D-04, KROUTE-06): Cloud admission-state card. Carrier-always /
+# body-conditional: the #admission-state-card <section> ALWAYS renders (stable OOB
+# target), but the heading + four-tile grid render ONLY when any cloud_phase count
+# > 0. a1/local rows have NULL cloud_phase so all-zero leaves a quiet empty carrier.
+# Each tile is gated on its own count and finished uses GREEN (not amber/alert).
+# ---------------------------------------------------------------------------
+
+
+async def _seed_cloud_phase(session: AsyncSession, *, cloud_phase: str | None) -> None:
+    """Seed one file + its cloud_job row in the given cloud_phase (NULL for a1/local) and commit."""
+    file = _make_file(state=FileState.PUSHED)
+    session.add(file)
+    await session.flush()
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"phaze-staging/{file.id}",
+            status=CloudJobStatus.SUBMITTED.value,
+            cloud_phase=cloud_phase,
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_carrier_always_renders(client: AsyncClient) -> None:
+    """With NO cloud_job rows the empty carrier still renders (stable OOB target), no heading/grid."""
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    assert 'id="admission-state-card"' in response.text
+    # All-zero (no k8s activity) → empty carrier: no heading, no tiles.
+    assert "Cloud · Admission" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_renders_matching_tile(client: AsyncClient, session: AsyncSession) -> None:
+    """A seeded ADMITTED row renders the heading + the blue Admitted tile (its own count gate)."""
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.ADMITTED.value)
+
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    assert 'id="admission-state-card"' in response.text
+    assert "Cloud · Admission" in response.text
+    assert "Admitted" in response.text
+    assert "quota granted" in response.text
+    # Phases with 0 files stay invisible — their tiles are not rendered.
+    assert "Queued (quota)" not in response.text
+    assert "Finished" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_finished_is_green_not_alert(client: AsyncClient, session: AsyncSession) -> None:
+    """The finished tile uses GREEN hues; the card carries NO role='alert' and NO amber (healthy progression)."""
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.FINISHED.value)
+
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    import re
+
+    card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
+    assert card is not None
+    card_html = card.group(0)
+    assert "Finished" in card_html
+    assert "result returned" in card_html
+    assert "bg-green-50" in card_html
+    # Healthy progression — alert role + amber stay exclusive to inadmissible_card.
+    assert 'role="alert"' not in card_html
+    assert "amber" not in card_html
+
+
+@pytest.mark.asyncio
+async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: AsyncClient, session: AsyncSession) -> None:
+    """An a1/local row (NULL cloud_phase) counts toward no phase → empty carrier, no heading."""
+    await _seed_cloud_phase(session, cloud_phase=None)
+
+    response = await client.get("/pipeline/")
+
+    assert response.status_code == 200
+    assert 'id="admission-state-card"' in response.text
+    assert "Cloud · Admission" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_stats_poll_repushes_admission_card_oob(client: AsyncClient, session: AsyncSession) -> None:
+    """The 5s /pipeline/stats poll re-pushes the admission card OOB (hx-swap-oob + the matching tile)."""
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.RUNNING.value)
+
+    response = await client.get("/pipeline/stats")
+
+    assert response.status_code == 200
+    import re
+
+    card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
+    assert card is not None
+    card_html = card.group(0)
+    assert 'hx-swap-oob="true"' in card_html
+    assert "Running" in card_html
+    assert "pod analyzing" in card_html
+    assert "bg-violet-50" in card_html

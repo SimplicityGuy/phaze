@@ -23,13 +23,16 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
+from phaze.services import cloud_staging, s3_staging
 from phaze.tasks.release_awaiting_cloud import push_file_job_key, stage_cloud_window
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 
@@ -39,22 +42,23 @@ if TYPE_CHECKING:
 
 
 class _StubCfg:
-    """Minimal stand-in for the control settings stage_cloud_window reads (cloud_max_in_flight + toggle).
+    """Minimal stand-in for the control settings stage_cloud_window reads (cloud_max_in_flight + selector).
 
-    ``cloud_burst_enabled`` defaults True here so the existing Phase-50 staging tests keep exercising
-    the ON behavior; the Phase-51 disabled case constructs the stub with the toggle off.
+    ``cloud_target`` defaults ``"a1"`` here so the existing Phase-50 staging tests keep exercising the
+    ON (rsync-push) behavior; the cloud-off case constructs the stub with ``cloud_target="local"``.
+    The k8s S3-branch of this cron is Plan 03 scope -- not stubbed here.
     """
 
-    def __init__(self, *, cloud_max_in_flight: int = 2, cloud_burst_enabled: bool = True) -> None:
+    def __init__(self, *, cloud_max_in_flight: int = 2, cloud_target: str = "a1") -> None:
         self.cloud_max_in_flight = cloud_max_in_flight
-        self.cloud_burst_enabled = cloud_burst_enabled
+        self.cloud_target = cloud_target
 
 
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_burst_enabled: bool = True) -> None:
-    """Pin stage_cloud_window's get_settings() deterministically (cloud_max_in_flight + cloud_burst_enabled)."""
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_target: str = "a1") -> None:
+    """Pin stage_cloud_window's get_settings() deterministically (cloud_max_in_flight + cloud_target)."""
     monkeypatch.setattr(
         "phaze.tasks.release_awaiting_cloud.get_settings",
-        lambda: _StubCfg(cloud_max_in_flight=max_in_flight, cloud_burst_enabled=cloud_burst_enabled),
+        lambda: _StubCfg(cloud_max_in_flight=max_in_flight, cloud_target=cloud_target),
     )
 
 
@@ -195,18 +199,18 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
 
 
-# --- Phase 51 (D-03): cloud_burst_enabled gate on the staging cron -----------------------
+# --- Phase 55 (D-02): cloud_target gate on the staging cron -------------------------------
 
 
 @pytest.mark.asyncio
-async def test_cloud_burst_disabled_stages_nothing(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """OFF: with cloud_burst_enabled False the cron is a clean no-op BEFORE the window logic (D-03).
+async def test_cloud_local_stages_nothing(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OFF: with cloud_target='local' the cron is a clean no-op BEFORE the window logic (D-02).
 
     Both agents are online and the window is wide open (3 held, N=2), so the cron WOULD stage if the
-    toggle were on. With it off it returns {"staged": 0, "skipped": 0}, takes no advisory lock, stages
-    no push_file, and leaves every held file AWAITING_CLOUD.
+    target were a cloud one. With 'local' it returns {"staged": 0, "skipped": 0}, takes no advisory lock,
+    stages no push_file, and leaves every held file AWAITING_CLOUD.
     """
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_burst_enabled=False)
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="local")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = [_make_file() for _ in range(3)]
@@ -223,9 +227,9 @@ async def test_cloud_burst_disabled_stages_nothing(async_engine: AsyncEngine, se
 
 
 @pytest.mark.asyncio
-async def test_cloud_burst_enabled_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """ON: with cloud_burst_enabled True the cron stages as before (Phase 50 regression)."""
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_burst_enabled=True)
+async def test_cloud_a1_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ON: with cloud_target='a1' the cron stages as before (Phase 50 a1 rsync-push regression)."""
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="a1")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = [_make_file() for _ in range(3)]
@@ -239,6 +243,100 @@ async def test_cloud_burst_enabled_stages_normally(async_engine: AsyncEngine, se
     assert result == {"staged": 2, "skipped": 0}
     states = await _states_for(session, ids)
     assert sum(1 for st in states.values() if st == FileState.PUSHING) == 2
+
+
+# --- Phase 55 (D-01a): the k8s S3-staging branch -----------------------------------------
+
+
+def _patch_s3(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the S3 SDK calls the k8s branch's ``_stage_file_to_s3`` core makes (no live backend)."""
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+
+
+@pytest.mark.asyncio
+async def test_k8s_branch_skips_compute_gate_and_stages_to_s3(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """k8s: GATE-1 (compute) is SKIPPED (L2) -- with NO compute agent the held files still reach PUSHING.
+
+    The k8s branch stages via ``_stage_file_to_s3`` (enqueues ``s3_upload``, NOT ``push_file``) and a
+    single post-loop commit fires. With max_in_flight=2 and 3 held, exactly 2 stage.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_s3(monkeypatch)
+    # NO compute agent online -- only a fileserver. On a1 this would wedge; on k8s GATE-1 is skipped.
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(3)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 2, "skipped": 0}
+    # The k8s branch enqueues s3_upload (NOT push_file) onto the fileserver's per-agent queue.
+    upload_queue = router.queues["nox"]
+    assert [t for t, _ in upload_queue.captured] == ["s3_upload", "s3_upload"]
+    # Exactly two held files flipped to PUSHING; the third stays AWAITING_CLOUD.
+    states = await _states_for(session, ids)
+    assert sum(1 for st in states.values() if st == FileState.PUSHING) == 2
+    assert sum(1 for st in states.values() if st == FileState.AWAITING_CLOUD) == 1
+
+
+@pytest.mark.asyncio
+async def test_k8s_branch_holds_with_no_fileserver(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """k8s with NO fileserver online: GATE-2 holds -- nothing staged, files stay AWAITING_CLOUD."""
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_s3(monkeypatch)
+    # No agents online at all (compute skipped on k8s; fileserver gate still holds).
+    held = [_make_file() for _ in range(3)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 0, "skipped": 2}  # two slots, two candidates locked, no fileserver
+    assert router.queues == {}
+    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+
+
+@pytest.mark.asyncio
+async def test_k8s_overlapping_ticks_never_exceed_window(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-04 under the k8s branch: two concurrent ticks staging to S3 must not overshoot the ≤N cap.
+
+    The k8s branch calls the NO-COMMIT ``_stage_file_to_s3`` core (L1), so the advisory lock is held
+    across the whole tick and the committed PUSHING set never exceeds cloud_max_in_flight.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_s3(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backlog = [_make_file() for _ in range(20)]
+    session.add_all(backlog)
+    await session.commit()
+    ids = [f.id for f in backlog]
+
+    router = DedupFakeTaskRouter()
+    ctx = _make_ctx(async_engine, router, DedupFakeQueue("controller"))
+    results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
+
+    states = await _states_for(session, ids)
+    pushing = [fid for fid, st in states.items() if st == FileState.PUSHING]
+    assert len(pushing) <= 2, f"k8s window overshot: {len(pushing)} files PUSHING (cap is 2)"
+    assert sum(r["staged"] for r in results) <= 2, "concurrent k8s ticks staged more than the cap"
 
 
 # --- FIFO: oldest AWAITING_CLOUD first ---------------------------------------------------
@@ -378,6 +476,68 @@ def test_stage_cloud_window_registered_in_controller_functions_and_cron() -> Non
     # The deprecated drain cron is gone -- no controller function is named release_awaiting_cloud.
     fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
     assert "release_awaiting_cloud" not in fn_names, "the deprecated release_awaiting_cloud drain cron must be removed"
+
+
+# --- Landmine L1: the extracted no-commit _stage_file_to_s3 core -------------------------
+
+
+@pytest.mark.asyncio
+async def test_stage_file_to_s3_core_does_not_commit(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_stage_file_to_s3`` does the full staging body but NEVER calls ``session.commit`` (L1).
+
+    The cron's advisory-locked loop calls this no-commit core per candidate and commits ONCE after
+    the loop; a mid-loop commit would release ``pg_advisory_xact_lock`` and re-open the over-stage
+    class. Prove the core (a) does not commit, yet (b) still enqueues ``s3_upload`` and (c) upserts
+    the ``cloud_job`` row.
+    """
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    session.add(file)
+    await session.commit()
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+    commit_spy = AsyncMock()
+    monkeypatch.setattr(session, "commit", commit_spy)
+
+    router = DedupFakeTaskRouter()
+    await cloud_staging._stage_file_to_s3(session, file, router)
+
+    # (a) The core defers the commit -- the caller (the cron loop / the public wrapper) owns it.
+    commit_spy.assert_not_awaited()
+    # (b) Exactly one s3_upload enqueued onto the fileserver's per-agent queue.
+    upload_queue = router.queues["nox"]
+    assert [t for t, _ in upload_queue.captured] == ["s3_upload"]
+    # (c) The cloud_job row was upserted (visible via autoflush within this uncommitted transaction).
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADING.value
+    assert job.upload_id == "upload-xyz"
+
+
+@pytest.mark.asyncio
+async def test_public_stage_file_to_s3_still_commits(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public ``stage_file_to_s3`` wrapper still commits (the redrive_upload caller is unaffected)."""
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    session.add(file)
+    await session.commit()
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+    commit_spy = AsyncMock()
+    monkeypatch.setattr(session, "commit", commit_spy)
+
+    router = DedupFakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, router)
+
+    commit_spy.assert_awaited_once()
 
 
 def test_staging_module_is_fastapi_free() -> None:

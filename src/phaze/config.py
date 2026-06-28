@@ -394,18 +394,19 @@ class ControlSettings(BaseSettings):
         description="Duration threshold (seconds) at/above which a file is routed to a cloud compute agent for analysis (Phase 49). Default 5400 (90 min); lt=86400 caps it at one day.",
     )
 
-    # Phase 51 D-01: master switch for the entire cloud-burst feature (CLOUDDEPLOY-04). Default
-    # False so a fresh v5.0 deploy behaves all-local with ZERO cloud activity until the operator
-    # provisions the A1 and explicitly opts in. False gates ALL THREE cloud entry points -- the
-    # routing seam (D-02), the staging cron (D-03), and the backfill trigger (D-03) -- so OFF
-    # reverts to pure local analysis with no other change. D-04: in-flight cloud work drains; OFF
-    # only stops NEW cloud work. Plain bool, NO gt=/lt= bounds (unlike the int knobs). Not
-    # secret-bearing, so it is absent from SECRET_FILE_FIELDS. Lives on ControlSettings because the
-    # control plane owns routing.
-    cloud_burst_enabled: bool = Field(
-        default=False,
-        validation_alias=AliasChoices("PHAZE_CLOUD_BURST_ENABLED", "cloud_burst_enabled"),
-        description="Master switch for the cloud-burst feature. False (default) reverts to all-local analysis with no other change (Phase 51, CLOUDDEPLOY-04).",
+    # Phase 55 D-02 (KROUTE-01): the single cloud-target selector that HARD-REPLACES the Phase 51
+    # cloud-burst master bool. ONE setting selects the active target -- 'local' (default) ==
+    # cloud OFF (pure local analysis, no cloud activity); 'a1' = the v5.0 rsync→OCI-A1 compute
+    # agent; 'k8s' = the v6.0 S3→Kueue burst. It is the single source of truth that gates ALL THREE
+    # cloud entry points -- the routing seam (D-02), the staging cron (D-03), and the backfill
+    # trigger (D-03) -- so 'local' reverts to pure local analysis with no other change. A pydantic
+    # `Literal` rejects any off-list member at construction (T-55-CFG-01); there is NO back-compat
+    # alias for PHAZE_CLOUD_BURST_ENABLED (D-02). Not secret-bearing, so it is absent from
+    # SECRET_FILE_FIELDS. Lives on ControlSettings because the control plane owns routing.
+    cloud_target: Literal["local", "a1", "k8s"] = Field(
+        default="local",
+        validation_alias=AliasChoices("PHAZE_CLOUD_TARGET", "cloud_target"),
+        description="Active cloud target: 'local' (default) == cloud off; 'a1' = rsync→OCI A1 compute agent; 'k8s' = S3→Kueue burst. Single source of truth (Phase 55, D-02/KROUTE-01).",
     )
 
     # Phase 50 D-03: the load-bearing ≤N cloud window. The staging cron tops up so that the
@@ -526,14 +527,14 @@ class ControlSettings(BaseSettings):
     # Phase 54 (KSUBMIT-01): the kube client surface the submit seam, submit task, and reconcile
     # cron read. ALL OPTIONAL (default None) in Phase 54 so an existing Phase 53 cloud-on/no-kube
     # deploy keeps working -- the fail-fast model validator that couples these to
-    # `cloud_burst_enabled` is Phase 55 (KDEPLOY-02), NOT here. Adding that coupling now would
-    # break those deploys. Credentials (`kube_kubeconfig` / `kube_sa_token`) are SecretStr resolved
+    # `cloud_target == "k8s"` is Phase 55 (`_enforce_kube_config_when_k8s`, below), pulled forward
+    # from KDEPLOY-02. Credentials (`kube_kubeconfig` / `kube_sa_token`) are SecretStr resolved
     # from `<VAR>_FILE` mounts via SECRET_FILE_FIELDS above; they live on the control plane only
     # (T-54-01) and are never logged.
     kube_api_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("PHAZE_KUBE_API_URL", "kube_api_url"),
-        description="Kubernetes API server URL the control plane submits/watches Jobs against (Phase 54, KSUBMIT-01). Optional in Phase 54; fail-fast coupling to cloud_burst_enabled arrives in Phase 56.",
+        description="Kubernetes API server URL the control plane submits/watches Jobs against (Phase 54, KSUBMIT-01). Required when cloud_target is 'k8s' (Phase 55 fail-fast validator).",
     )
     kube_namespace: str | None = Field(
         default=None,
@@ -597,42 +598,71 @@ class ControlSettings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def _enforce_s3_config_when_cloud_enabled(self) -> "ControlSettings":
-        """Phase 53 (KSTAGE-05): cloud burst ON requires the S3 staging substrate.
+    def _enforce_s3_config_when_k8s(self) -> "ControlSettings":
+        """Phase 55 (D-02, KROUTE-01): the 'k8s' target requires the S3 staging substrate.
 
-        The staging leg presigns objects into ``s3_bucket`` at ``s3_endpoint_url``; with cloud
-        burst enabled but either unset, the upload presign would fail at runtime with no startup
-        signal. Mirror ``_enforce_compute_scratch_dir_when_cloud_enabled`` and fail fast. OFF
-        (the default) keeps both optional so an all-local deploy needs no S3 config.
+        S3 is the **k8s** byte path (the v6.0 S3→Kueue leg) -- NOT a generic "cloud on"
+        concern. The staging leg presigns objects into ``s3_bucket`` at ``s3_endpoint_url``;
+        with ``cloud_target == "k8s"`` but either unset, the upload presign would fail at
+        runtime with no startup signal. Fail fast. This is one of THREE per-target validators
+        kept deliberately separate (RESEARCH Pitfall 3 / T-55-CFG-03): collapsing them into a
+        single ``!= "local"`` gate would silently change a1 fail-fast semantics. 'local' and
+        'a1' keep S3 optional (a1 uses rsync, not S3), so neither needs S3 config.
         """
-        if self.cloud_burst_enabled:
+        if self.cloud_target == "k8s":
             if not self.s3_bucket:
-                raise ValueError("PHAZE_S3_BUCKET is required when PHAZE_CLOUD_BURST_ENABLED is true (it is the cloud-burst staging bucket)")
+                raise ValueError("PHAZE_S3_BUCKET is required when PHAZE_CLOUD_TARGET is 'k8s' (it is the S3→Kueue staging bucket)")
             if not self.s3_endpoint_url:
                 raise ValueError(
-                    "PHAZE_S3_ENDPOINT_URL is required when PHAZE_CLOUD_BURST_ENABLED is true (the S3-compatible endpoint the control plane presigns against)"
+                    "PHAZE_S3_ENDPOINT_URL is required when PHAZE_CLOUD_TARGET is 'k8s' (the S3-compatible endpoint the control plane presigns against)"
                 )
         return self
 
     @model_validator(mode="after")
-    def _enforce_compute_scratch_dir_when_cloud_enabled(self) -> "ControlSettings":
-        """Phase 51 audit follow-up: cloud burst ON requires a compute scratch dir.
+    def _enforce_compute_scratch_dir_when_a1(self) -> "ControlSettings":
+        """Phase 55 (D-02, KROUTE-01): the 'a1' target requires a compute scratch dir.
 
-        The push-success callback (routers/agent_push.py) builds the process_file
+        ``compute_scratch_dir`` is the **a1** rsync-scratch concern -- NOT a generic "cloud on"
+        concern. The push-success callback (routers/agent_push.py) builds the process_file
         ``scratch_path`` as ``<compute_scratch_dir>/<file_id>.<ext>``. If
-        ``cloud_burst_enabled`` is True but ``compute_scratch_dir`` is unset, that path
-        becomes the literal ``"None/<file_id>.<ext>"``: every pushed file fails to read,
-        routes to push-mismatch, and silently lands in ANALYSIS_FAILED after
-        ``push_max_attempts`` — with no startup signal. Fail fast instead, mirroring the
-        agent-side ``_require_push_config`` guard for ``cloud_scratch_dir`` (push.py). OFF
-        (the default) keeps ``compute_scratch_dir`` optional so all-local deploys need no
-        cloud config.
+        ``cloud_target == "a1"`` but ``compute_scratch_dir`` is unset, that path becomes the
+        literal ``"None/<file_id>.<ext>"``: every pushed file fails to read, routes to
+        push-mismatch, and silently lands in ANALYSIS_FAILED after ``push_max_attempts`` — with
+        no startup signal. Fail fast instead, mirroring the agent-side ``_require_push_config``
+        guard for ``cloud_scratch_dir`` (push.py). 'local' and 'k8s' keep ``compute_scratch_dir``
+        optional (k8s uses S3, not rsync scratch).
         """
-        if self.cloud_burst_enabled and not self.compute_scratch_dir:
+        if self.cloud_target == "a1" and not self.compute_scratch_dir:
             raise ValueError(
-                "PHAZE_COMPUTE_SCRATCH_DIR is required when PHAZE_CLOUD_BURST_ENABLED is true "
+                "PHAZE_COMPUTE_SCRATCH_DIR is required when PHAZE_CLOUD_TARGET is 'a1' "
                 "(it builds the process_file scratch_path; must match the compute agent's PHAZE_CLOUD_SCRATCH_DIR)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_kube_config_when_k8s(self) -> "ControlSettings":
+        """Phase 55 (D-02, KROUTE-01; pulls KDEPLOY-02 forward): the 'k8s' target requires the kube surface.
+
+        The submit seam / submit task / reconcile cron read ``kube_api_url`` (where to POST the
+        Job), ``kube_namespace`` (where the Job lands), and ``kube_local_queue`` (the
+        ``kueue.x-k8s.io/queue-name`` label). These exist optional today (Phase 54); with
+        ``cloud_target == "k8s"`` but any unset, submission fails at runtime with no startup
+        signal. Fail fast — the third per-target validator (kept separate per RESEARCH Pitfall 3).
+        'local' and 'a1' keep the kube fields optional (a1 does not touch kube).
+        """
+        if self.cloud_target == "k8s":
+            if not self.kube_api_url:
+                raise ValueError(
+                    "PHAZE_KUBE_API_URL is required when PHAZE_CLOUD_TARGET is 'k8s' (the kube API the control plane submits/watches Jobs against)"
+                )
+            if not self.kube_namespace:
+                raise ValueError(
+                    "PHAZE_KUBE_NAMESPACE is required when PHAZE_CLOUD_TARGET is 'k8s' (the namespace the Kueue Jobs are submitted into)"
+                )
+            if not self.kube_local_queue:
+                raise ValueError(
+                    "PHAZE_KUBE_LOCAL_QUEUE is required when PHAZE_CLOUD_TARGET is 'k8s' (the Kueue LocalQueue name stamped on submitted Jobs)"
+                )
         return self
 
 

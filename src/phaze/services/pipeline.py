@@ -6,13 +6,13 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from saq.utils import now as saq_now
-from sqlalchemy import distinct, exists, func, select, text
+from sqlalchemy import String, cast, distinct, exists, func, select, text
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
@@ -21,6 +21,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -840,6 +841,43 @@ async def get_inadmissible_count(session: AsyncSession) -> int:
     )
 
 
+async def get_cloud_phase_counts(session: AsyncSession) -> dict[str, int]:
+    """Return per-``cloud_phase`` counts for the dashboard admission-state card, each degrading to 0.
+
+    Drives the KROUTE-06 admission-state card (D-04): four COUNT(cloud_job) reads grouped by the
+    Kueue admission progression (``queued_behind_quota`` -> ``admitted`` -> ``running`` ->
+    ``finished``). Each count is an independent :func:`_safe_count`-backed read with a distinct
+    ``node=`` tag, mirroring :func:`get_inadmissible_count`: a DB hiccup degrades THAT phase to 0
+    (and rolls back the aborted transaction) rather than 500ing the hot 5s ``/pipeline/stats`` poll
+    (T-55-CARD-01). The card then renders the quiet empty carrier.
+
+    ``cloud_phase`` is NULL for a1/local rows (admission is a k8s-only concept), so those rows count
+    toward NONE of the four phases — all-zero leaves the card a quiet empty carrier on non-k8s deploys.
+    """
+    return {
+        "queued_behind_quota": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value),
+            node="cloud_phase_queued_behind_quota",
+        ),
+        "admitted": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.ADMITTED.value),
+            node="cloud_phase_admitted",
+        ),
+        "running": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.RUNNING.value),
+            node="cloud_phase_running",
+        ),
+        "finished": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.FINISHED.value),
+            node="cloud_phase_finished",
+        ),
+    }
+
+
 async def get_pushing_count(session: AsyncSession) -> int:
     """Return COUNT of files in ``FileState.PUSHING`` (staged, rsync in progress), degrading to 0 (D-09).
 
@@ -915,16 +953,29 @@ async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> lis
 
 
 def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
-    """Build the ANALYSIS_FAILED + ``duration >= threshold_sec`` candidate predicate.
+    """Build the ANALYSIS_FAILED + ``duration >= threshold_sec`` + ledger-scoped candidate predicate.
 
     INNER JOIN ``FileMetadata`` so a null-duration ANALYSIS_FAILED file is structurally
     excluded; the ``duration >= threshold_sec`` filter then drops short failures. ``threshold_sec``
     is a bound int parameter (T-49-02) -- never interpolated SQL.
+
+    Phase 55 (L4 / D-03 / KROUTE-05): an ``EXISTS`` predicate against ``scheduling_ledger`` keyed
+    ``'process_file:' || file.id`` scopes candidates to **previously-scheduled work only**. A SAQ
+    timeout abandons a long ``process_file`` job WITHOUT firing ``report_analysis_failed`` (which
+    clears the row), so the orphaned ledger row persists into ``ANALYSIS_FAILED`` -- exactly the
+    timed-out set this backfill re-drives. A never-scheduled (or cleanly report-failed, row-cleared)
+    failure has NO ledger row and is excluded, preventing the v4.0.6 / v5.0 whole-backlog
+    over-enqueue class. ORM / bound params only -- the key is concatenated via ``cast`` + a bound
+    literal, never f-string SQL (T-49-02 / T-55-BF-04).
     """
     return (
         select(FileRecord, FileMetadata.duration)
         .join(FileMetadata, FileMetadata.file_id == FileRecord.id)
-        .where(FileRecord.state == FileState.ANALYSIS_FAILED, FileMetadata.duration >= threshold_sec)
+        .where(
+            FileRecord.state == FileState.ANALYSIS_FAILED,
+            FileMetadata.duration >= threshold_sec,
+            exists(select(SchedulingLedger.key).where(SchedulingLedger.key == "process_file:" + cast(FileRecord.id, String))),
+        )
     )
 
 

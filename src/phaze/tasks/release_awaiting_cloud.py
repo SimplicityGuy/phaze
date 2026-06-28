@@ -45,6 +45,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.file import FileState
 from phaze.schemas.agent_tasks import PushFilePayload
+from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import get_cloud_staging_candidates, get_cloud_window_count
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
@@ -119,10 +120,10 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     # worker (PHAZE_ROLE=control), so get_settings() returns ControlSettings here (mirrors the
     # controller.startup llm_model/llm_max_rpm access pattern).
     cfg = get_settings()
-    # Phase 51 (D-03): master toggle gate. OFF -> clean no-op BEFORE the advisory lock + window
-    # logic, so the cron introduces NO new cloud push work. NEVER raise (T-50-cron-raise discipline,
-    # matching the GATE 1/2 no-op contract below).
-    if not cfg.cloud_burst_enabled:  # type: ignore[attr-defined]
+    # Phase 55 (D-02): cloud-target gate. 'local' (cloud off) -> clean no-op BEFORE the advisory
+    # lock + window logic, so the cron introduces NO new cloud push work. NEVER raise
+    # (T-50-cron-raise discipline, matching the GATE 1/2 no-op contract below).
+    if cfg.cloud_target == "local":  # type: ignore[attr-defined]
         return {"staged": 0, "skipped": 0}
     max_in_flight = cfg.cloud_max_in_flight  # type: ignore[attr-defined]
 
@@ -133,12 +134,17 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # committed PUSHING flips and cannot overshoot cloud_max_in_flight. Auto-released at txn end.
         await session.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
 
-        # GATE 1: a compute agent (the analysis consumer) must be online. Absent -> clean hold no-op.
-        try:
-            await select_active_agent(session, kind="compute")
-        except NoActiveAgentError:
-            logger.info("stage_cloud_window no-op: no compute agent online")
-            return {"staged": 0, "skipped": 0}
+        # GATE 1: a compute agent (the analysis consumer) must be online -- but ONLY for the a1
+        # rsync target whose persistent compute agent drains the per-agent queue. k8s uses ephemeral
+        # Kueue pods (no persistent compute agent), so on the k8s branch GATE 1 is SKIPPED -- else
+        # every k8s file would wedge in AWAITING_CLOUD forever (Landmine L2). GATE 2 (fileserver)
+        # below stays for BOTH targets (the fileserver owns the media mount + runs the S3 upload).
+        if cfg.cloud_target == "a1":  # type: ignore[attr-defined]
+            try:
+                await select_active_agent(session, kind="compute")
+            except NoActiveAgentError:
+                logger.info("stage_cloud_window no-op: no compute agent online")
+                return {"staged": 0, "skipped": 0}
 
         # Window counted from COMMITTED FileState truth (D-08); compute the free slots.
         window = await get_cloud_window_count(session)
@@ -159,17 +165,28 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             logger.info("stage_cloud_window hold: no fileserver agent online", candidates=len(candidates))
             return {"staged": 0, "skipped": len(candidates)}
 
-        push_queue = ctx["task_router"].queue_for(fileserver_agent.id)
+        # Phase 55 (D-01a): ONE branch forks on cloud_target inside the SAME window. Both targets
+        # reuse the advisory lock + FIFO claim + window/slots math + the SINGLE post-loop commit.
+        task_router = ctx["task_router"]
+        push_queue = task_router.queue_for(fileserver_agent.id)
         tally = {"staged": 0, "skipped": 0}
         for file in candidates:
             # Flip to PUSHING BEFORE the enqueue dedup outcome is known: a deduped (already-live) push
             # still owns the file, so the window count stays honest on the next tick.
             file.state = FileState.PUSHING
-            job = await _enqueue_push_file(push_queue, file, fileserver_agent.id)
-            if job is None:
-                tally["skipped"] += 1
-            else:
+            if cfg.cloud_target == "k8s":  # type: ignore[attr-defined]
+                # k8s: stage to S3 via the NO-COMMIT core (L1) -- NEVER the committing public
+                # stage_file_to_s3 (a mid-loop commit would release the advisory lock + row locks
+                # and re-open the over-stage class). It enqueues s3_upload (not push_file); the
+                # window honesty comes from the committed PUSHING flip, identical to a1.
+                await _stage_file_to_s3(session, file, task_router)
                 tally["staged"] += 1
+            else:
+                job = await _enqueue_push_file(push_queue, file, fileserver_agent.id)
+                if job is None:
+                    tally["skipped"] += 1
+                else:
+                    tally["staged"] += 1
         await session.commit()
 
     logger.info("stage_cloud_window complete", agent_id=fileserver_agent.id, staged=tally["staged"], skipped=tally["skipped"])

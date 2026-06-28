@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 import phaze.tasks.submit_cloud_job as submit_mod
@@ -191,6 +191,55 @@ def test_module_seeds_no_ledger_and_writes_no_result() -> None:
             imported.add(node.module)
     assert not any(name == "fastapi" or name.startswith("fastapi.") for name in imported)
     assert not any(name.startswith("phaze.routers") for name in imported)
+
+
+@pytest.mark.asyncio
+async def test_submit_seeds_cloud_phase_queued_behind_quota(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The inserted SUBMITTED row carries cloud_phase=queued_behind_quota (the admission seed, D-04)."""
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    fid = file.id
+
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", _SubmitSpy(name=f"phaze-analyze-{fid}"))
+
+    await submit_cloud_job(_make_ctx(async_engine), fid)
+
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    assert row.cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value
+
+
+@pytest.mark.asyncio
+async def test_resubmit_resets_cloud_phase_to_queued_behind_quota(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-submit upsert resets a previously-advanced cloud_phase back to queued_behind_quota (D-04)."""
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    fid = file.id
+
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", _SubmitSpy(name=f"phaze-analyze-{fid}"))
+    ctx = _make_ctx(async_engine)
+
+    await submit_cloud_job(ctx, fid)
+
+    # Simulate reconcile having advanced the admission phase to running.
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    row.cloud_phase = CloudPhase.RUNNING.value
+    await session.commit()
+
+    # A re-submit (on_conflict_do_update) resets the progression back to queued_behind_quota.
+    await submit_cloud_job(ctx, fid)
+    session.expire_all()
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    assert row.cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value
 
 
 def test_submit_cloud_job_key_is_deterministic() -> None:

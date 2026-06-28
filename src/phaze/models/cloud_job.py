@@ -46,6 +46,22 @@ class CloudJobStatus(enum.StrEnum):
     SUCCEEDED = "succeeded"
 
 
+class CloudPhase(enum.StrEnum):
+    """Kueue admission progression for a k8s cloud burst (Phase 55, D-04; string-backed).
+
+    ORTHOGONAL to the ``inadmissible`` fault flag: ``cloud_phase`` tracks how far a Job has
+    progressed through Kueue admission (quota wait -> admitted -> running -> finished), NOT
+    whether the LocalQueue is misconfigured. NULL for a1/local rows (admission is k8s-only).
+    The DB CHECK constraint (``ck_cloud_job_cloud_phase_enum``) is the authoritative membership
+    gate; new members need only the CHECK list updated, not a Postgres enum-type migration.
+    """
+
+    QUEUED_BEHIND_QUOTA = "queued_behind_quota"
+    ADMITTED = "admitted"
+    RUNNING = "running"
+    FINISHED = "finished"
+
+
 class CloudJob(TimestampMixin, Base):
     """One row per file_id tracking its ephemeral S3 staging object (Phase 53, D-03)."""
 
@@ -70,10 +86,17 @@ class CloudJob(TimestampMixin, Base):
     # Drives the D-06 operator alert: set when the Kueue Workload is Inadmissible (never enters
     # the re-drive cap path).
     inadmissible: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
+    # Phase 55 (D-04): the Kueue admission progression (queued_behind_quota -> admitted -> running ->
+    # finished). NULL for a1/local rows (admission is k8s-only); kept ORTHOGONAL to ``inadmissible``.
+    cloud_phase: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
             "status IN ('uploading', 'uploaded', 'submitted', 'running', 'succeeded', 'failed')",
             name="status_enum",
+        ),
+        CheckConstraint(
+            "cloud_phase IN ('queued_behind_quota', 'admitted', 'running', 'finished')",
+            name="cloud_phase_enum",
         ),
     )
