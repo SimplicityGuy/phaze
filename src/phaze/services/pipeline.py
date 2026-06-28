@@ -12,7 +12,7 @@ import structlog
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
@@ -839,6 +839,43 @@ async def get_inadmissible_count(session: AsyncSession) -> int:
         ),
         node="inadmissible",
     )
+
+
+async def get_cloud_phase_counts(session: AsyncSession) -> dict[str, int]:
+    """Return per-``cloud_phase`` counts for the dashboard admission-state card, each degrading to 0.
+
+    Drives the KROUTE-06 admission-state card (D-04): four COUNT(cloud_job) reads grouped by the
+    Kueue admission progression (``queued_behind_quota`` -> ``admitted`` -> ``running`` ->
+    ``finished``). Each count is an independent :func:`_safe_count`-backed read with a distinct
+    ``node=`` tag, mirroring :func:`get_inadmissible_count`: a DB hiccup degrades THAT phase to 0
+    (and rolls back the aborted transaction) rather than 500ing the hot 5s ``/pipeline/stats`` poll
+    (T-55-CARD-01). The card then renders the quiet empty carrier.
+
+    ``cloud_phase`` is NULL for a1/local rows (admission is a k8s-only concept), so those rows count
+    toward NONE of the four phases — all-zero leaves the card a quiet empty carrier on non-k8s deploys.
+    """
+    return {
+        "queued_behind_quota": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value),
+            node="cloud_phase_queued_behind_quota",
+        ),
+        "admitted": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.ADMITTED.value),
+            node="cloud_phase_admitted",
+        ),
+        "running": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.RUNNING.value),
+            node="cloud_phase_running",
+        ),
+        "finished": await _safe_count(
+            session,
+            select(func.count(CloudJob.id)).where(CloudJob.cloud_phase == CloudPhase.FINISHED.value),
+            node="cloud_phase_finished",
+        ),
+    }
 
 
 async def get_pushing_count(session: AsyncSession) -> int:

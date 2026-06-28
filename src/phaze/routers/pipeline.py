@@ -28,6 +28,7 @@ from phaze.services.pipeline import (
     get_analysis_failed_count,
     get_awaiting_cloud_count,
     get_backfill_candidates,
+    get_cloud_phase_counts,
     get_discovered_files_with_duration,
     get_fingerprint_pending_files,
     get_global_reconciliation,
@@ -497,6 +498,12 @@ async def dashboard(
     # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
     inadmissible_count = await get_inadmissible_count(session)
 
+    # Phase 55 (55-05, D-04, KROUTE-06): the four per-cloud_phase admission-state counts driving the
+    # admission_state_card. get_cloud_phase_counts owns the never-500 _safe_count degrade per phase
+    # (returns 0 on any DB error), so NO try/except here -- same service-owns-degrade idiom as
+    # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
+    cloud_phase_counts = await get_cloud_phase_counts(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -517,6 +524,10 @@ async def dashboard(
         "pushing_count": pushing_count,
         "analyzing_cloud_count": analyzing_cloud_count,
         "inadmissible_count": inadmissible_count,
+        "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
+        "admitted_count": cloud_phase_counts["admitted"],
+        "running_count": cloud_phase_counts["running"],
+        "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         **activity,
@@ -562,6 +573,11 @@ async def pipeline_stats_partial(
     # poll so the inadmissible_card stays live via its OOB swap. Degrade-safe at the service layer,
     # so NO router try/except -- mirrors the awaiting_cloud_count wiring.
     inadmissible_count = await get_inadmissible_count(session)
+    # Phase 55 (55-05, D-04, KROUTE-06): the same four per-cloud_phase admission counts the dashboard
+    # seeds, re-pushed on every 5s poll so the admission_state_card stays live via its OOB swap.
+    # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
+    # the inadmissible_count wiring.
+    cloud_phase_counts = await get_cloud_phase_counts(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -580,6 +596,10 @@ async def pipeline_stats_partial(
             "pushing_count": pushing_count,
             "analyzing_cloud_count": analyzing_cloud_count,
             "inadmissible_count": inadmissible_count,
+            "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
+            "admitted_count": cloud_phase_counts["admitted"],
+            "running_count": cloud_phase_counts["running"],
+            "finished_count": cloud_phase_counts["finished"],
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,

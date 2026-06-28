@@ -1,0 +1,62 @@
+{# Phase 55 (55-05, D-04, KROUTE-06): Cloud admission-state card — per-cloud_phase counts.
+
+   Four counts (queued_behind_quota / admitted / running / finished) read from cloud_job.cloud_phase
+   by the degrade-safe service read (get_cloud_phase_counts), surfacing how far the k8s Kueue cloud
+   bursts have progressed through admission. A REUSE/EXTENSION of the Phase 54 inadmissible_card.html
+   pattern (55-UI-SPEC, D-04): same carrier-always / body-conditional split + OOB contract — but this
+   is HEALTHY progression, so the alert role and the warning hue are DELIBERATELY OMITTED (they stay
+   exclusive to the genuine inadmissible fault). finished uses GREEN (the dashboard's done/approved
+   hue), not a second neutral gray, so it reads as terminal success at a glance.
+
+   Each count arrives from a _safe_count-backed read (get_cloud_phase_counts); a degraded read
+   surfaces as 0, so the card renders the quiet empty carrier and NEVER raises into the hot 5s poll
+   (T-55-CARD-01). Every value is a plain int + STATIC autoescaped string — no operator free-text or
+   PII is interpolated (T-55-CARD-02). Each tile carries a text label + sub-label so phase identity
+   never depends on hue alone (WCAG 1.4.1).
+
+   cloud_phase is NULL for a1/local deploys (admission is a k8s-only concept), so all four counts are
+   0 and only the empty <section> carrier renders — no four-always-zero clutter for non-k8s operators.
+
+   Rendered inline in dashboard.html on first load (#admission-state-card lives OUTSIDE the
+   #pipeline-stats poll target and outside #pipeline-stages so the OOB swap never re-renders the DAG
+   trigger buttons — T-55-CARD-03), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
+   every 5s poll (oob=True). Same id on both renders is the OOB contract (mirrors inadmissible_card).
+   The empty carrier is always emitted so a previously-shown grid CLEARS the moment k8s drains. #}
+<section id="admission-state-card"
+         aria-labelledby="admission-state-heading"
+         {% if oob %}hx-swap-oob="true"{% endif %}
+         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
+    {% if queued_behind_quota_count or admitted_count or running_count or finished_count %}
+    <h2 id="admission-state-heading" class="text-lg font-semibold">Cloud · Admission</h2>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {% if queued_behind_quota_count %}
+        <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-4 text-center">
+            <p class="text-2xl font-bold text-gray-700 dark:text-gray-300">{{ queued_behind_quota_count }}</p>
+            <p class="text-sm text-gray-600 dark:text-gray-400">Queued (quota)</p>
+            <p class="text-xs text-gray-500 dark:text-gray-500 mt-1">waiting for cluster quota</p>
+        </div>
+        {% endif %}
+        {% if admitted_count %}
+        <div class="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 text-center">
+            <p class="text-2xl font-bold text-blue-700 dark:text-blue-400">{{ admitted_count }}</p>
+            <p class="text-sm text-blue-600 dark:text-blue-400">Admitted</p>
+            <p class="text-xs text-blue-500 dark:text-blue-500 mt-1">quota granted — starting</p>
+        </div>
+        {% endif %}
+        {% if running_count %}
+        <div class="bg-violet-50 dark:bg-violet-950 rounded-lg p-4 text-center">
+            <p class="text-2xl font-bold text-violet-700 dark:text-violet-400">{{ running_count }}</p>
+            <p class="text-sm text-violet-600 dark:text-violet-400">Running</p>
+            <p class="text-xs text-violet-500 dark:text-violet-500 mt-1">pod analyzing</p>
+        </div>
+        {% endif %}
+        {% if finished_count %}
+        <div class="bg-green-50 dark:bg-green-950 rounded-lg p-4 text-center">
+            <p class="text-2xl font-bold text-green-700 dark:text-green-400">{{ finished_count }}</p>
+            <p class="text-sm text-green-600 dark:text-green-400">Finished</p>
+            <p class="text-xs text-green-500 dark:text-green-500 mt-1">result returned</p>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</section>
