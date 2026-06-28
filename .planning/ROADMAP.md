@@ -155,7 +155,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
-| 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
+| 55. Routing, state & ledger integration | v6.0 | 3/6 | In Progress|  |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
 
 ## Phase Details (v6.0 Kubernetes Burst Analysis)
@@ -267,9 +267,9 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 **Plans**: 6 plans in 3 waves
 **Wave 1**
 
-- [ ] 55-01-PLAN.md — `cloud_target` config rename (D-02 hard-replace `cloud_burst_enabled`, per-target validators, call-site + test re-keys) [wave 1]
-- [ ] 55-02-PLAN.md — `cloud_phase` schema: migration 027 + `CloudPhase` enum/column + submit seed + reconcile co-writes (D-04) [wave 1]
-- [ ] 55-06-PLAN.md — operator config/docs migration to `PHAZE_CLOUD_TARGET` (.env.example, control-plane compose, configuration/cloud-burst/deployment docs) [wave 1]
+- [x] 55-01-PLAN.md — `cloud_target` config rename (D-02 hard-replace `cloud_burst_enabled`, per-target validators, call-site + test re-keys) [wave 1]
+- [x] 55-02-PLAN.md — `cloud_phase` schema: migration 027 + `CloudPhase` enum/column + submit seed + reconcile co-writes (D-04) [wave 1]
+- [x] 55-06-PLAN.md — operator config/docs migration to `PHAZE_CLOUD_TARGET` (.env.example, control-plane compose, configuration/cloud-burst/deployment docs) [wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
