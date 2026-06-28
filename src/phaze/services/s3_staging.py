@@ -130,12 +130,26 @@ async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: l
 
     ``parts`` is a list of ``(part_number, etag)`` pairs; they are sorted by part number so
     the ``MultipartUpload.Parts`` list is ordered as S3 requires.
+
+    Idempotent: once a multipart upload completes, S3 invalidates the ``UploadId`` and a repeat
+    completion returns ``NoSuchUpload``. ``report_uploaded`` has a status pre-check, but it only
+    prevents the double-call when the DB flip to UPLOADED committed -- a retry after an
+    S3-success / DB-failure still re-reads UPLOADING, passes the pre-check, and re-calls here.
+    Swallowing the already-gone-upload codes makes that retry an idempotent no-op (the object is
+    already assembled) instead of a permanent 500-retry loop (WR-01). Any other ``ClientError``
+    is re-raised as ``S3StagingError``.
     """
     cfg = _staging_config()
     key = staged_object_key(file_id)
     multipart = {"Parts": [{"PartNumber": part_number, "ETag": etag} for part_number, etag in sorted(parts)]}
     async with _client(cfg) as client:
-        await client.complete_multipart_upload(Bucket=cfg.s3_bucket, Key=key, UploadId=upload_id, MultipartUpload=multipart)
+        try:
+            await client.complete_multipart_upload(Bucket=cfg.s3_bucket, Key=key, UploadId=upload_id, MultipartUpload=multipart)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in _ABORT_ABSENT_CODES:
+                return
+            raise S3StagingError(f"failed to complete multipart upload for {file_id}") from exc
 
 
 async def abort_multipart_upload(file_id: uuid.UUID, upload_id: str) -> None:

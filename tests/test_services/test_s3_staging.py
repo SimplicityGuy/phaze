@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 import uuid
 
 import boto3
+from botocore.exceptions import ClientError
 import httpx
 from moto.server import ThreadedMotoServer
 import pytest
@@ -116,6 +118,49 @@ async def test_abort_multipart_upload_absent_is_idempotent_noop(s3_env: str) -> 
     is the desired end state, so it must not raise (else a permanent 500-retry loop -- CR-02).
     """
     await s3_staging.abort_multipart_upload(uuid.uuid4(), "nonexistent-upload-id")
+
+
+async def test_complete_multipart_upload_already_gone_is_idempotent_noop(s3_env: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Completing an already-gone multipart upload (NoSuchUpload from S3) is an idempotent no-op (WR-01).
+
+    A retry after an S3-success / DB-failure re-calls complete on an invalidated UploadId; it must
+    not raise (else a permanent 500-retry loop with the file stuck UPLOADING while the object IS
+    already assembled). report_uploaded's status pre-check does NOT cover this case (the flip never
+    committed), so the swallow in the service is the real fix.
+
+    moto returns an internal 500 (KeyError) rather than a clean NoSuchUpload for complete-on-missing
+    (real S3/AWS returns NoSuchUpload), so the S3 client is stubbed to raise the genuine ClientError.
+    """
+
+    class _FakeClientCM:
+        async def __aenter__(self) -> AsyncMock:
+            client = AsyncMock()
+            client.complete_multipart_upload.side_effect = ClientError({"Error": {"Code": "NoSuchUpload"}}, "CompleteMultipartUpload")
+            return client
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr(s3_staging, "_client", lambda _cfg: _FakeClientCM())
+    # NoSuchUpload from the S3 client is swallowed -> no raise (idempotent success).
+    await s3_staging.complete_multipart_upload(uuid.uuid4(), "gone-upload-id", [(1, '"deadbeef"')])
+
+
+async def test_complete_multipart_upload_other_clienterror_raises(s3_env: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-absent ClientError from complete is re-raised as S3StagingError (WR-01 -- fail loud)."""
+
+    class _FakeClientCM:
+        async def __aenter__(self) -> AsyncMock:
+            client = AsyncMock()
+            client.complete_multipart_upload.side_effect = ClientError({"Error": {"Code": "InvalidPart"}}, "CompleteMultipartUpload")
+            return client
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr(s3_staging, "_client", lambda _cfg: _FakeClientCM())
+    with pytest.raises(s3_staging.S3StagingError):
+        await s3_staging.complete_multipart_upload(uuid.uuid4(), "upload-id", [(1, '"deadbeef"')])
 
 
 async def test_presign_get_encodes_short_ttl(s3_env: str) -> None:
