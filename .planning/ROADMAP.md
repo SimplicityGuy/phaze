@@ -153,7 +153,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 50. Push pipeline | v5.0 | 8/8 | Complete    | 2026-06-26 |
 | 51. Deployment, config & docs | v5.0 | 4/4 | Complete   | 2026-06-26 |
 | 52. Job-runner image & one-shot entrypoint | v6.0 | 3/3 | Complete    | 2026-06-27 |
-| 53. S3 object-staging leg | v6.0 | 3/5 | In Progress|  |
+| 53. S3 object-staging leg | v6.0 | 5/5 | Complete   | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 0/? | Not started | - |
 | 55. Routing, state & ledger integration | v6.0 | 0/? | Not started | - |
 | 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
@@ -212,8 +212,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 53-04-PLAN.md — Control-side callbacks + cloud_staging producer/re-drive (KSTAGE-01, KSTAGE-04)
-- [ ] 53-05-PLAN.md — Inline staged-object delete on the result callback, D-02 (KSTAGE-04)
+- [x] 53-04-PLAN.md — Control-side callbacks + cloud_staging producer/re-drive (KSTAGE-01, KSTAGE-04)
+- [x] 53-05-PLAN.md — Inline staged-object delete on the result callback, D-02 (KSTAGE-04)
 
 **Research**: Skip — aioboto3 well-documented; moto patterns established.
 
