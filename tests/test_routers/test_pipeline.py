@@ -659,12 +659,21 @@ async def test_analyze_ui_no_agents_surfaces_held_count(client: AsyncClient, ses
 # ---------------------------------------------------------------------------
 
 
-async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None]) -> list[FileRecord]:
+async def _persist_failed_with_duration(session: AsyncSession, specs: list[float | None], *, with_ledger: bool = True) -> list[FileRecord]:
     """Persist one ANALYSIS_FAILED file per duration spec (+ metadata) and return the records.
 
     A ``None`` duration is modeled as the absence of a metadata row — such a file is
     structurally excluded from the backfill candidate set (the INNER JOIN drops it).
+
+    ``with_ledger`` (default ``True``) also seeds a ``process_file:<id>`` scheduling-ledger row
+    per file, modelling **previously-scheduled, then timed-out** work: a SAQ timeout abandons the
+    job WITHOUT firing ``report_analysis_failed`` (which would clear the row), so the orphaned
+    ledger row persists into ``ANALYSIS_FAILED``. Phase 55 (L4) scopes the backfill candidate query
+    to exactly these ledgered files. Pass ``with_ledger=False`` to model a never-scheduled (or
+    cleanly-reported-failed, row-cleared) file that the EXISTS predicate must exclude.
     """
+    from phaze.services.scheduling_ledger import insert_ledger_if_absent
+
     files: list[FileRecord] = []
     mds: list[FileMetadata] = []
     for dur in specs:
@@ -687,8 +696,59 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
     await session.flush()
     if mds:
         session.add_all(mds)
+    if with_ledger:
+        for file in files:
+            await insert_ledger_if_absent(
+                session,
+                key=f"process_file:{file.id}",
+                function="process_file",
+                kwargs={},
+                timeout=7200,
+                retries=2,
+            )
     await session.commit()
     return files
+
+
+# --- Phase 55 Plan 04 Task 1 (L4): ledger-scoped backfill candidate query --------------------
+# The candidate set is now ANALYSIS_FAILED ∧ duration >= threshold ∧ EXISTS a prior
+# process_file:<id> scheduling-ledger row. This excludes never-scheduled (or cleanly
+# report_analysis_failed-cleared) failures so backfill re-drives ONLY previously-scheduled,
+# timed-out work -- mirroring the v5.0 recover-over-enqueue fix (no whole-backlog sweep).
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidate_query_requires_prior_ledger_row(session: AsyncSession) -> None:
+    """L4: only a failed long file WITH a prior process_file ledger row is a backfill candidate.
+
+    A never-scheduled failed long file (no ledger row) is excluded -- this is the bounded
+    "previously-scheduled work only" property that closes the over-enqueue class.
+    """
+    from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates
+
+    (ledgered_long,) = await _persist_failed_with_duration(session, [_LONG])  # has process_file ledger row
+    (never_scheduled_long,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
+    threshold = settings.cloud_route_threshold_sec
+
+    count = await count_backfill_candidates(session, threshold)
+    candidates = await get_backfill_candidates(session, threshold)
+    candidate_ids = {file.id for file, _duration in candidates}
+
+    assert count == 1
+    assert ledgered_long.id in candidate_ids
+    assert never_scheduled_long.id not in candidate_ids  # never-scheduled work is NOT swept in
+
+
+@pytest.mark.asyncio
+async def test_backfill_candidate_query_excludes_short_even_with_ledger(session: AsyncSession) -> None:
+    """A failed SHORT file (duration < threshold) is excluded even though it carries a ledger row."""
+    from phaze.services.pipeline import count_backfill_candidates, get_backfill_candidates
+
+    await _persist_failed_with_duration(session, [_SHORT])  # short, WITH ledger row
+    threshold = settings.cloud_route_threshold_sec
+
+    assert await count_backfill_candidates(session, threshold) == 0
+    assert await get_backfill_candidates(session, threshold) == []
 
 
 @pytest.mark.asyncio
@@ -844,7 +904,7 @@ async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: 
     from phaze.config import settings
 
     monkeypatch.setattr(settings, "cloud_target", "local")
-    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
     capture = wire_fakes(client)
