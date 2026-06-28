@@ -141,6 +141,15 @@ def test_kube_config_raises_when_unset(monkeypatch: pytest.MonkeyPatch, missing:
         kube_staging._kube_config()
 
 
+@pytest.mark.parametrize("missing", ["kube_job_image", "kube_job_cpu_request", "kube_job_memory_request"])
+def test_build_job_manifest_raises_when_manifest_field_unset(missing: str) -> None:
+    """WR-02: an unset image/cpu/memory fail-louds with a message NAMING the missing variable,
+    instead of building a ``None``-valued manifest the kube API rejects with an opaque error."""
+    cfg = _StubCfg(**{missing: None})
+    with pytest.raises(kube_staging.KubeStagingError, match=missing):
+        kube_staging.build_job_manifest(uuid.uuid4(), cfg)
+
+
 # --------------------------------------------------------------------------- #
 # submit_job -- create 201 + 409-idempotent (KSUBMIT-01)
 # --------------------------------------------------------------------------- #
@@ -188,6 +197,27 @@ async def test_submit_job_reraises_non_409(stub_cfg: _StubCfg, kube_respx: MockR
     kube_respx.post(_JOBS_PATH).mock(return_value=Response(500, json=status_500))
     with pytest.raises(kube_staging.KubeStagingError):
         await kube_staging.submit_job(fid)
+
+
+async def test_sa_token_applied_as_bearer(monkeypatch: pytest.MonkeyPatch, kube_respx: MockRouter) -> None:
+    """WR-03: when ``kube_sa_token`` is set, outgoing kube requests carry ``Authorization: Bearer <token>``.
+
+    The control plane runs OUTSIDE the cluster and authenticates with an operator-provided SA token;
+    this covers the single credential-application line (``_api``) so a wrong auth form is caught here
+    rather than as live-cluster 401s.
+    """
+    from pydantic import SecretStr
+
+    cfg = _StubCfg(kube_sa_token=SecretStr("sa-secret-token"))
+    monkeypatch.setattr(kube_staging, "get_settings", lambda: cfg)
+    fid = uuid.uuid4()
+    name = f"phaze-analyze-{fid}"
+    route = kube_respx.post(_JOBS_PATH).mock(return_value=Response(201, json=_job_json(name, "uid-tok")))
+
+    await kube_staging.submit_job(fid)
+
+    assert route.called
+    assert route.calls.last.request.headers.get("Authorization") == "Bearer sa-secret-token"
 
 
 # --------------------------------------------------------------------------- #

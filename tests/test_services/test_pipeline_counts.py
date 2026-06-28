@@ -36,13 +36,13 @@ def _file(i: int) -> FileRecord:
     )
 
 
-def _cloud_job(file_id: uuid.UUID, *, inadmissible: bool) -> CloudJob:
+def _cloud_job(file_id: uuid.UUID, *, inadmissible: bool, status: str = CloudJobStatus.SUBMITTED.value) -> CloudJob:
     """Build a CloudJob seed flagged inadmissible (or not) for the given file_id."""
     return CloudJob(
         id=uuid.uuid4(),
         file_id=file_id,
         s3_key=f"phaze-staging/{file_id}",
-        status=CloudJobStatus.SUBMITTED.value,
+        status=status,
         inadmissible=inadmissible,
     )
 
@@ -63,6 +63,27 @@ async def test_get_inadmissible_count_happy_path(session: AsyncSession) -> None:
     await session.commit()
 
     assert await get_inadmissible_count(session) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_inadmissible_count_excludes_terminal_rows(session: AsyncSession) -> None:
+    """CR-01: a terminal row (SUCCEEDED/FAILED) that was transiently inadmissible never inflates the alert.
+
+    cloud_job rows are never deleted, so a row flagged inadmissible that later succeeds would keep the
+    banner lit if the count weren't scoped to in-flight (SUBMITTED/RUNNING) rows."""
+    files = [_file(i) for i in range(3)]
+    session.add_all(files)
+    await session.flush()
+    session.add_all(
+        [
+            _cloud_job(files[0].id, inadmissible=True, status=CloudJobStatus.SUBMITTED.value),  # counted
+            _cloud_job(files[1].id, inadmissible=True, status=CloudJobStatus.SUCCEEDED.value),  # terminal -> excluded
+            _cloud_job(files[2].id, inadmissible=True, status=CloudJobStatus.FAILED.value),  # terminal -> excluded
+        ]
+    )
+    await session.commit()
+
+    assert await get_inadmissible_count(session) == 1
 
 
 @pytest.mark.asyncio

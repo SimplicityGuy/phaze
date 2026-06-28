@@ -491,6 +491,104 @@ async def test_redrive_confirms_prior_job_gone_before_resubmit(
     assert queue_b.captured == []  # NO re-submit enqueued on this tick
 
 
+# --- CR-01: the Inadmissible alert flag clears once the Workload recovers ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_inadmissible_clears_on_admission(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inadmissible tick sets the flag; a later Admitted tick clears it (CR-01 -- the alert must recover)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)
+    ctx = _make_ctx(async_engine)
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
+
+    # Tick 1: Inadmissible -> flag set.
+    monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(INADMISSIBLE))
+    await reconcile_cloud_jobs(ctx)
+    assert (await _read_cloud_job(session, fid)).inadmissible is True
+
+    # Tick 2: operator fixed the LocalQueue -> Admitted -> flag cleared + RUNNING.
+    monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(ADMITTED))
+    await reconcile_cloud_jobs(ctx)
+    cj = await _read_cloud_job(session, fid)
+    assert cj.inadmissible is False
+    assert cj.status == CloudJobStatus.RUNNING.value
+
+
+@pytest.mark.asyncio
+async def test_inadmissible_clears_on_pending(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A recovered Workload that returns to a healthy Pending wait clears the stale alert flag (CR-01)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)
+    ctx = _make_ctx(async_engine)
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
+
+    monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(INADMISSIBLE))
+    await reconcile_cloud_jobs(ctx)
+    assert (await _read_cloud_job(session, fid)).inadmissible is True
+
+    monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(PENDING))
+    await reconcile_cloud_jobs(ctx)
+    assert (await _read_cloud_job(session, fid)).inadmissible is False
+
+
+@pytest.mark.asyncio
+async def test_inadmissible_clears_on_success(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transiently-Inadmissible row that then succeeds ends with the flag cleared (CR-01)."""
+    _patch_cap(monkeypatch)
+    fid, name = await _seed(session)
+    ctx = _make_ctx(async_engine)
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", DeleteJobSpy([]))
+
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
+    monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(INADMISSIBLE))
+    await reconcile_cloud_jobs(ctx)
+    assert (await _read_cloud_job(session, fid)).inadmissible is True
+
+    # Job later succeeds -> SUCCEEDED + flag cleared (so it never inflates the terminal-row count).
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(succeeded=1, name=name)))
+    await reconcile_cloud_jobs(ctx)
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.SUCCEEDED.value
+    assert cj.inadmissible is False
+
+
+# --- WR-01: a vanished Job (404 / None) is a no-callback terminal, not a stuck transient -------------
+
+
+@pytest.mark.asyncio
+async def test_vanished_job_routes_to_terminal_redrive(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An in-flight row whose Job has vanished (get_job -> None) re-drives under cap instead of sticking (WR-01)."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=0)
+    queue = DedupFakeQueue("controller")
+    # get_job returns None on every call: the initial read (gone) AND the confirm-gone read.
+    _, _, dj, _ = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(async_engine, queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1
+    assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert dj.calls == [name]  # idempotent delete of the (already-gone) Job
+    assert [t for t, _ in queue.captured] == ["submit_cloud_job"]
+    assert tally["redriven"] == 1
+
+
+@pytest.mark.asyncio
+async def test_vanished_job_at_cap_marks_analysis_failed(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At the cap a vanished Job is a terminal no-callback -> ANALYSIS_FAILED, never an eternal skip (WR-01)."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, _name = await _seed(session, attempts=3)  # next_attempt = 4 > cap
+    _, _, _, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.FAILED.value
+    assert (await _read_file(session, fid)).state == FileState.ANALYSIS_FAILED
+    assert s3.calls == [fid]
+
+
 # --- Per-row guard: one bad row never aborts the tick ----------------------------------------------
 
 

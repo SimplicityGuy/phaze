@@ -96,7 +96,13 @@ async def _api(cfg: ControlSettings) -> Any:
     api = await kr8s.asyncio.api(url=cfg.kube_api_url, namespace=cfg.kube_namespace)
     token = cfg.kube_sa_token.get_secret_value() if cfg.kube_sa_token else None
     if token:
+        # kr8s bakes ``Authorization: Bearer <token>`` into its httpx session at session-CREATION time
+        # (kr8s 0.20.15 ``_api._create_session``), and that session was already built during the
+        # ``api()`` version-check -- so a post-construction ``auth.token`` assignment alone never reaches
+        # the wire. Set the token, then rebuild the session so the Bearer header actually applies. The
+        # token is never logged (T-54-07); exact auth form stays a Phase-56 live-cluster item (RESEARCH Q3).
         api.auth.token = token
+        await api._create_session()
     return api
 
 
@@ -110,7 +116,25 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
     ``restartPolicy: Never``, the ``kueue.x-k8s.io/queue-name`` label ON THE JOB (Kueue reads it
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
+
+    Fail-loud on an unset ``kube_job_image`` / ``kube_job_cpu_request`` / ``kube_job_memory_request``
+    (all ``Optional`` in Phase 54): a half-configured manifest would otherwise carry ``None`` values
+    and surface as an opaque non-409 ``KubeStagingError`` from the kube API, instead of naming the
+    missing operator variable. Mirrors the connection-field discipline in :func:`_kube_config`.
     """
+    missing = [
+        name
+        for name, value in (
+            ("kube_job_image", cfg.kube_job_image),
+            ("kube_job_cpu_request", cfg.kube_job_cpu_request),
+            ("kube_job_memory_request", cfg.kube_job_memory_request),
+        )
+        if not value
+    ]
+    if missing:
+        raise KubeStagingError(
+            f"Kube Job submission requires {', '.join(missing)} to be configured (set {' / '.join(f'PHAZE_{name.upper()}' for name in missing)})"
+        )
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",

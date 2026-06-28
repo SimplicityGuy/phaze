@@ -130,6 +130,7 @@ async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str,
     never lose to GC.
     """
     cloud_job.status = CloudJobStatus.SUCCEEDED.value
+    cloud_job.inadmissible = False  # CR-01: a transiently-Inadmissible row that then succeeds must clear the alert flag.
     await session.commit()
     await kube_staging.delete_job(name)
     tally["succeeded"] += 1
@@ -161,6 +162,7 @@ async def _handle_no_callback_terminal(
 
     if next_attempt > cap:
         cloud_job.status = CloudJobStatus.FAILED.value
+        cloud_job.inadmissible = False  # CR-01: terminal row must not keep the operator alert lit.
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
         await session.commit()
         await s3_staging.delete_staged_object(file_id)
@@ -176,6 +178,7 @@ async def _handle_no_callback_terminal(
         return
     cloud_job.attempts = next_attempt
     cloud_job.status = CloudJobStatus.SUBMITTED.value
+    cloud_job.inadmissible = False  # CR-01: re-driving a failed Job clears any stale Inadmissible flag.
     await session.commit()
     await _enqueue_resubmit(ctx, file_id)
     tally["redriven"] += 1
@@ -189,7 +192,18 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
         return
 
-    job = await kube_staging.get_job(name)
+    # WR-01: a vanished Job (real kube 404 -> NotFoundError; fake seam -> None) on an in-flight row is a
+    # no-callback terminal, NOT a transient error. Route it to the bounded re-drive / ANALYSIS_FAILED
+    # handler instead of letting NotFoundError bubble to the per-row guard, where it would be rolled back
+    # and skipped every tick -- leaving the row stuck in-flight forever (e.g. a Failed Job GC'd by
+    # ttlSecondsAfterFinished before reconcile read it, or an enqueue that raised after the attempt commit).
+    try:
+        job = await kube_staging.get_job(name)
+    except kr8s.NotFoundError:
+        job = None
+    if job is None:
+        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally)
+        return
 
     # 1. Job terminal signals first -- the Job is the source of truth for succeeded-vs-failed.
     if _job_counter(job, "succeeded") >= 1 or _job_has_true_condition(job, "Complete"):
@@ -230,14 +244,18 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
 
     # Healthy Pending: silent hold, waits indefinitely -- no cap, no alert (D-07, Pitfall 3).
     if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_PENDING:
+        if cloud_job.inadmissible:  # CR-01: the misconfig was fixed -- Workload is back to a healthy quota wait.
+            cloud_job.inadmissible = False
+            await session.commit()
         tally["pending"] += 1
         return
 
     # Admitted / QuotaReserved=True -> in-flight running; advance SUBMITTED -> RUNNING.
     admitted = _workload_condition(workload, _TYPE_ADMITTED)
     if (admitted is not None and admitted.get("status") == "True") or (quota_reserved is not None and quota_reserved.get("status") == "True"):
-        if cloud_job.status != CloudJobStatus.RUNNING.value:
+        if cloud_job.status != CloudJobStatus.RUNNING.value or cloud_job.inadmissible:
             cloud_job.status = CloudJobStatus.RUNNING.value
+            cloud_job.inadmissible = False  # CR-01: an admitted Workload is no longer Inadmissible -- clear the alert.
             await session.commit()
         tally["running"] += 1
         return
@@ -270,11 +288,13 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
         cloud_job_ids = [row.id for row in rows]
 
         for cloud_job_id in cloud_job_ids:
-            tally["reconciled"] += 1
             try:
                 cloud_job = await session.get(CloudJob, cloud_job_id)
                 if cloud_job is None:
                     continue
+                # IN-01: count only rows that actually reach reconcile (a concurrently deleted/terminalized
+                # row resolves to None above and must not inflate the log-only tally).
+                tally["reconciled"] += 1
                 await _reconcile_one(ctx, session, cloud_job, cap, tally)
             except Exception:
                 # Per-row guard: a single bad row (transient kube error, unexpected shape) never aborts

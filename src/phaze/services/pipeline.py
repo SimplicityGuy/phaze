@@ -12,7 +12,7 @@ import structlog
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
@@ -830,7 +830,12 @@ async def get_inadmissible_count(session: AsyncSession) -> int:
     """
     return await _safe_count(
         session,
-        select(func.count(CloudJob.id)).where(CloudJob.inadmissible.is_(True)),
+        # CR-01: scope to in-flight rows so a terminal row that was transiently Inadmissible (and whose
+        # flag the reconcile cron clears anyway) can never inflate the alert -- belt-and-suspenders.
+        select(func.count(CloudJob.id)).where(
+            CloudJob.inadmissible.is_(True),
+            CloudJob.status.in_([CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value]),
+        ),
         node="inadmissible",
     )
 
