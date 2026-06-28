@@ -17,6 +17,7 @@ from moto.server import ThreadedMotoServer
 import pytest
 
 from phaze.config import get_settings
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.schemas.agent_analysis import PresignDownloadResponse
 
@@ -78,6 +79,20 @@ async def _seed_file(session: AsyncSession, agent: Agent, *, sha256: str = _SHA)
     return file
 
 
+async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, *, status: CloudJobStatus = CloudJobStatus.UPLOADED) -> None:
+    """Insert a CloudJob row for ``file_id`` (defaults to UPLOADED -- the staged-object-ready state)."""
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            s3_key=f"phaze-staging/{file_id}",
+            status=status.value,
+            upload_id="upload-xyz",
+        )
+    )
+    await session.commit()
+
+
 async def test_presign_download_returns_url_and_server_sourced_sha256(
     s3_env: str,
     authenticated_client: AsyncClient,
@@ -87,6 +102,7 @@ async def test_presign_download_returns_url_and_server_sourced_sha256(
     """A valid token returns 200 with a presigned download_url + expected_sha256 from FileRecord."""
     agent, _token = seed_test_agent
     file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=CloudJobStatus.UPLOADED)
 
     resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
 
@@ -105,6 +121,7 @@ async def test_presign_download_body_validates_against_response_schema(
     """The response body parses cleanly under PresignDownloadResponse (extra=forbid, 64-hex sha)."""
     agent, _token = seed_test_agent
     file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=CloudJobStatus.UPLOADED)
 
     resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
 
@@ -137,6 +154,7 @@ async def test_presign_download_mints_per_call_with_server_sourced_hash(
     """Each call mints a fresh presign (KSTAGE-03); expected_sha256 is always the FileRecord hash."""
     agent, _token = seed_test_agent
     file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=CloudJobStatus.UPLOADED)
 
     first = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
     second = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
@@ -147,3 +165,35 @@ async def test_presign_download_mints_per_call_with_server_sourced_hash(
     assert second.json()["expected_sha256"] == _SHA
     assert str(file.id) in first.json()["download_url"]
     assert str(file.id) in second.json()["download_url"]
+
+
+async def test_presign_download_not_uploaded_returns_409(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> None:
+    """A file whose cloud_job is not yet UPLOADED returns 409, not a dead presigned URL (WR-03)."""
+    agent, _token = seed_test_agent
+    file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=CloudJobStatus.UPLOADING)  # bytes not staged yet
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 409, resp.text
+    assert "not ready" in resp.json()["detail"]
+
+
+async def test_presign_download_no_cloud_job_returns_409(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> None:
+    """A file with no cloud_job row at all returns 409 (nothing was ever staged) -- WR-03."""
+    agent, _token = seed_test_agent
+    file = await _seed_file(session, agent)  # no cloud_job seeded
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 409, resp.text
