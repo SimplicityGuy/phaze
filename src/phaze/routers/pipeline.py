@@ -33,6 +33,7 @@ from phaze.services.pipeline import (
     get_fingerprint_pending_files,
     get_global_reconciliation,
     get_inadmissible_count,
+    get_localqueue_unreachable,
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
@@ -498,6 +499,13 @@ async def dashboard(
     # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
     inadmissible_count = await get_inadmissible_count(session)
 
+    # Phase 56 (56-02, D-05, KDEPLOY-04): the K8s LocalQueue-unreachable amber alert flag -- True when
+    # the controller.startup probe (56-01) set the cross-process Redis key phaze:k8s:localqueue_unreachable.
+    # get_localqueue_unreachable owns the never-500 degrade (returns False on a missing handle / any Redis
+    # error), so NO try/except here -- the redis handle is read off app.state like the queue counters.
+    # Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
+    localqueue_unreachable = await get_localqueue_unreachable(getattr(request.app.state, "redis", None))
+
     # Phase 55 (55-05, D-04, KROUTE-06): the four per-cloud_phase admission-state counts driving the
     # admission_state_card. get_cloud_phase_counts owns the never-500 _safe_count degrade per phase
     # (returns 0 on any DB error), so NO try/except here -- same service-owns-degrade idiom as
@@ -524,6 +532,7 @@ async def dashboard(
         "pushing_count": pushing_count,
         "analyzing_cloud_count": analyzing_cloud_count,
         "inadmissible_count": inadmissible_count,
+        "localqueue_unreachable": localqueue_unreachable,
         "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
         "admitted_count": cloud_phase_counts["admitted"],
         "running_count": cloud_phase_counts["running"],
@@ -573,6 +582,11 @@ async def pipeline_stats_partial(
     # poll so the inadmissible_card stays live via its OOB swap. Degrade-safe at the service layer,
     # so NO router try/except -- mirrors the awaiting_cloud_count wiring.
     inadmissible_count = await get_inadmissible_count(session)
+    # Phase 56 (56-02, D-05, KDEPLOY-04): the same K8s LocalQueue-unreachable flag the dashboard seeds,
+    # re-pushed on every 5s poll so the localqueue_card stays live via its OOB swap. Degrade-safe at the
+    # service layer (56-01), so NO router try/except -- mirrors the inadmissible_count wiring; the redis
+    # handle is read off app.state exactly like the dashboard() first-load path.
+    localqueue_unreachable = await get_localqueue_unreachable(getattr(request.app.state, "redis", None))
     # Phase 55 (55-05, D-04, KROUTE-06): the same four per-cloud_phase admission counts the dashboard
     # seeds, re-pushed on every 5s poll so the admission_state_card stays live via its OOB swap.
     # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
@@ -596,6 +610,7 @@ async def pipeline_stats_partial(
             "pushing_count": pushing_count,
             "analyzing_cloud_count": analyzing_cloud_count,
             "inadmissible_count": inadmissible_count,
+            "localqueue_unreachable": localqueue_unreachable,
             "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
             "admitted_count": cloud_phase_counts["admitted"],
             "running_count": cloud_phase_counts["running"],
