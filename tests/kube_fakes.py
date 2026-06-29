@@ -50,6 +50,20 @@ def fake_job(succeeded: int = 0, failed: int = 0, suspend: bool = False, uid: st
     )
 
 
+def fake_local_queue(name: str = "phaze-lq", namespace: str = "phaze") -> SimpleNamespace:
+    """Return a canned Kueue LocalQueue stand-in (Phase 56, KDEPLOY-04 reachability probe).
+
+    Mirrors ``fake_job``/``fake_workload``: the kr8s LocalQueue surfaces ``.metadata`` as an
+    attribute object, so this exposes ``metadata=SimpleNamespace(name=..., namespace=...)`` -- the
+    only fields the startup probe touches (it GETs the object; existence == reachable). The probe's
+    failure modes (404 -> ``kr8s.NotFoundError``, transient -> other exc) are exercised by
+    monkeypatching ``kube_staging.get_local_queue`` to raise, so no ``.status`` shape is needed here.
+    """
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name, namespace=namespace),
+    )
+
+
 # Canned Workload condition sets -- the exact (type, status, reason) tuples from
 # RESEARCH Status -> Outcome Mapping (verified against Context7 /kubernetes-sigs/kueue).
 PENDING = fake_workload(("QuotaReserved", "False", "Pending"))
