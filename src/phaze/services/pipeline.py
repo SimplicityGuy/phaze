@@ -841,6 +841,26 @@ async def get_inadmissible_count(session: AsyncSession) -> int:
     )
 
 
+async def get_localqueue_unreachable(redis: Any) -> bool:
+    """Return True when the controller flagged the Kueue LocalQueue unreachable, degrading to False.
+
+    Drives the dashboard amber "K8s LocalQueue unreachable" alert (D-05, KDEPLOY-04). The WRITER is
+    the ``controller.startup`` probe (D-06): on a reachability failure it sets the cross-process Redis
+    key ``phaze:k8s:localqueue_unreachable``; on success it deletes it. This is the degrade-safe READER
+    the api process consumes -- it returns False when ``redis`` is None (the test client skips the
+    lifespan so ``app.state.redis`` is absent) AND on ANY Redis error, logging a warning but NEVER
+    propagating. The hot 5s ``/pipeline/stats`` poll must never 500 on a Redis hiccup (T-54-10); the
+    alert simply stays silent (reachable) instead.
+    """
+    if redis is None:
+        return False
+    try:
+        return bool(await redis.exists("phaze:k8s:localqueue_unreachable"))
+    except Exception:
+        logger.warning("localqueue_unreachable_read_degraded", exc_info=True)
+        return False
+
+
 async def get_cloud_phase_counts(session: AsyncSession) -> dict[str, int]:
     """Return per-``cloud_phase`` counts for the dashboard admission-state card, each degrading to 0.
 

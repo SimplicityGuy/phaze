@@ -30,6 +30,7 @@ import structlog
 
 from phaze.config import export_llm_api_keys, get_settings
 from phaze.logging_config import configure_logging
+from phaze.services import kube_staging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
@@ -155,6 +156,24 @@ async def startup(ctx: dict[str, Any]) -> None:
         logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])
     except Exception:
         logger.exception("recover_orphaned_work on startup failed")
+
+    # Phase 56 (KDEPLOY-04, D-05/D-06): live LocalQueue-reachability probe. This is a RUNTIME probe,
+    # distinct from the three fail-fast kube config validators -- it GETs the configured Kueue
+    # LocalQueue and writes a cross-process flag the dashboard reads. Gated on cloud_target == "k8s"
+    # so a non-k8s control plane never touches kube. Wrapped in its OWN broad try/except mirroring the
+    # recovery block above: a transient kube/mesh blip MUST NEVER abort controller boot (D-05 -- the
+    # control plane still boots Postgres/Redis/UI/local-analysis). The WARNING names only the env var
+    # PHAZE_KUBE_LOCAL_QUEUE; it never interpolates the SA token or kube DSN (T-56-LOG / T-54-07).
+    if cfg.cloud_target == "k8s":  # type: ignore[attr-defined]
+        try:
+            await kube_staging.get_local_queue()
+            await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
+        except Exception:
+            logger.warning(
+                "phaze.controller startup: Kueue LocalQueue unreachable -- check cluster connectivity "
+                "and the PHAZE_KUBE_LOCAL_QUEUE configuration; control plane boots regardless (D-05)"
+            )
+            await ctx["redis"].set("phaze:k8s:localqueue_unreachable", "1")
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
