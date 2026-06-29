@@ -622,25 +622,12 @@ jobs:
             image=moby/buildkit:latest
             network=host
 
-      - name: "🔐 Materialize the internal CA cert into the build context"
-        if: github.event_name != 'pull_request'
-        env:
-          CA_CERT: ${{ secrets.PHAZE_INTERNAL_CA_CERT }}
-        run: |
-          # The operator supplies the internal CA via the PHAZE_INTERNAL_CA_CERT
-          # repo secret; Dockerfile.job COPYs phaze-ca.crt from the build context
-          # and bakes it to /etc/phaze/phaze-ca.crt (KJOB-05). Fail the build NOW
-          # if the secret is unset/empty: `printf '%s\n' ""` would write a 1-byte
-          # newline that passes construct_agent_client's `st_size == 0` guard and
-          # ship a junk CA that only fails at the first live TLS handshake (WR-03).
-          if [ -z "${CA_CERT}" ]; then
-            echo "::error::PHAZE_INTERNAL_CA_CERT is empty or unset — cannot bake the internal CA into the Job image."
-            exit 1
-          fi
-          printf '%s\n' "${CA_CERT}" > phaze-ca.crt
-          # Verify the materialized cert is a parseable PEM before the build so a
-          # malformed secret fails at build time, not at runtime in a live pod.
-          openssl x509 -in phaze-ca.crt -noout
+      # No CA is baked into the Job image (Phase 56, KDEPLOY-06, reversing KJOB-05):
+      # the internal CA is generated per-deployment at runtime by cert_bootstrap and
+      # is unique per operator, so there is no canonical CA to materialize here — and
+      # a public GHCR image must never carry an operator's private CA. The control
+      # plane's build_job_manifest mounts the operator-created Secret into the Job at
+      # runtime instead (see docs/k8s-burst.md). The build context needs no phaze-ca.crt.
 
       - name: "🧭 Resolve the immutable x86 api base tag for FROM"
         if: github.event_name != 'pull_request'
