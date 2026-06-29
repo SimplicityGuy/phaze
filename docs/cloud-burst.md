@@ -27,24 +27,25 @@ not duplicate that table.
 
 ## Architecture at a glance
 
+```mermaid
+flowchart LR
+  %% Tailscale tailnet (default-deny grants ACL)
+  subgraph nox["nox (file server)"]
+    noxc["docker-compose.agent.yml<br/>(worker+watcher+fprint+media)"]
+  end
+  subgraph a1["OCI A1 (compute agent)"]
+    a1c["docker-compose.cloud-agent.yml<br/>worker (kind=compute)<br/>no media, scratch volume<br/>-arm64 image"]
+  end
+  subgraph lux["lux (application server)"]
+    luxapi["api(:8000) · Postgres(:5432 app ORM + saq_jobs broker) · Redis(:6379)"]
+    luxctl["controller worker (stage_cloud_window cron)"]
+    luxbroker["broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)"]
+  end
+  noxc -->|"rsync over SSH (nox → A1:22)"| a1c
+  a1c -->|"HTTP API + saq_jobs + cache (A1 → lux:{5432,6379,8000})"| luxapi
 ```
-                    Tailscale tailnet (default-deny grants ACL)
-  ┌──────────────────────────────────────────────────────────────────────────┐
-  │  nox (file server)                              OCI A1 (compute agent)     │
-  │  docker-compose.agent.yml      rsync over SSH   docker-compose.cloud-agent │
-  │  (worker+watcher+fprint+media) ── nox → A1:22 ─▶ .yml  worker (kind=compute │
-  │          │                                       no media, scratch volume, │
-  │          │ HTTP API + saq_jobs + cache           -arm64 image)             │
-  │          ▼                                                  │              │
-  │  lux (application server) ◀── A1 → lux:{5432,6379,8000} ────┘              │
-  │  api(:8000) · Postgres(:5432 app ORM + saq_jobs broker) · Redis(:6379)     │
-  │  controller worker (stage_cloud_window cron)                              │
-  │  broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)              │
-  └──────────────────────────────────────────────────────────────────────────┘
 
-  PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, staging cron no-ops,
-                             backfill rejected, A1 idle. (all-local)
-```
+_PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, staging cron no-ops, backfill rejected, A1 idle. (all-local)_
 
 Key invariants:
 
