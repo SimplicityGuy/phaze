@@ -685,12 +685,23 @@ Plans:
   4. The existing auto/dark/light theme toggle and the Jura/blue/wave-logo brand survive verbatim from `base.html`'s `<head>` (no FOUC, `dark:` utilities work, vendored Tailwind, recomputed SRI).
   5. Each of the 8 legacy routes (`/pipeline`, `/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`, `/search`, `/preview`) resolves in ≤1 hop to a 200 with the matching rail node pre-selected (a redirect-loop test asserts this), and a **seeded dead-template AST guard test is green** (watched green through cutover).
 
-**Notes**: Risk phase — do not under-scope. Lock the single stable `#stage-workspace` swap-target id, the fragment-only stage-response convention, the OOB id registry + `oob_counts` gate, `$store.pipeline` consumption (not redefinition), the `htmx:historyRestore` re-init handler, and the focus-to-heading + skip-link (→ `#stage-workspace`) baseline. Stack: bump htmx→2.0.10 / Alpine→3.15.12 / Tailwind→4.3.2 and recompute every `integrity=` SRI hash (a stale hash silently blocks the script); stay on htmx 2.0.x (4.0 is beta). SHELL-05 is hybrid: canonical-URL routes render-in-shell, true renames (`/pipeline`→`/`, `/search`→⌘K) use `RedirectResponse` on the trailing-slash canonical form (FastAPI `redirect_slashes=True`). No phase research needed — all patterns are in-repo.
-**Plans**: 4 plans (4 waves)
+**Notes**: Risk phase — do not under-scope. Lock the single stable `#stage-workspace` swap-target id, the fragment-only stage-response convention, the OOB id registry + `oob_counts` gate, `$store.pipeline` consumption (not redefinition), the `htmx:historyRestore` re-init handler, and the focus-to-heading + skip-link (→ `#stage-workspace`) baseline. Stack: bump htmx→2.0.10 / Alpine→3.15.12 / Tailwind→4.3.2 and recompute every `integrity=` SRI hash (a stale hash silently blocks the script); stay on htmx 2.0.x (4.0 is beta). SHELL-05 is hybrid: canonical-URL routes render-in-shell, true renames (`/pipeline`→`/`, `/search`→⌘K) use `RedirectResponse` on the trailing-slash canonical form (FastAPI `redirect_slashes=True`). No phase research needed — all patterns are in-repo.**Plans**: 4 plans (4 waves)
+**Wave 1**
+
 - [ ] 57-01-PLAN.md — Stack bumps (htmx 2.0.10 / Alpine 3.15.12 / Tailwind 4.3.2 + recomputed SRI) + seeded dead-template AST guard (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 57-02-PLAN.md — Shell router (`GET /` + `GET /s/{stage}`) + structural three-column shell + Analyze default + theme/brand preservation + `/pipeline`→`/` (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 57-03-PLAN.md — DAG rail nav spine + header status strip + ⌘K skeleton modal, wired into the shell (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 57-04-PLAN.md — Conditional legacy-route redirects (7 routers) + ≤1-hop redirect-resolution test (wave 4)
+
 **UI hint**: yes
 
 ### Phase 58: Enrich + Analyze workspaces
