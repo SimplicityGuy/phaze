@@ -553,7 +553,8 @@ jobs:
   # no ordering — a parallel row could build before the api image is pushed
   # (Pitfall 1 / Tampering T-52-06). The Job image ships off the SAME annotated
   # v-tag set as the api image so it stays in release lockstep (D-04). Zero new
-  # deps (KJOB-01); the internal CA is baked from a repo secret (KJOB-05).
+  # deps (KJOB-01); the image bakes NO CA — the internal CA is mounted at runtime
+  # from an operator-created K8s Secret (KDEPLOY-06 supersedes the old KJOB-05 bake).
   build-job-runner:
     runs-on: ubuntu-latest
     timeout-minutes: 30
