@@ -1,10 +1,11 @@
 ---
 phase: 57
 slug: shell-dag-rail
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-06-29
+reviewed_at: 2026-06-29
 ---
 
 # Phase 57 — UI Design Contract
