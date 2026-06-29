@@ -178,8 +178,23 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
                         {
                             "name": "analyze",
                             "image": cfg.kube_job_image,
+                            # Two env sources with distinct lifecycles (JOB-ENV-CONTRACT):
+                            #   - `env`: the PER-JOB PHAZE_JOB_FILE_ID, code-injected here because it
+                            #     varies per submit and CANNOT come from a static ConfigMap/Secret.
+                            #     job_runner reads it and sys.exit(EXIT_CONFIG)=20 if it is absent.
+                            #     (PHAZE_AGENT_CA_FILE stays here too -- it points at the mounted CA.)
+                            #   - `envFrom`: the STATIC-per-deployment agent env (PHAZE_ROLE=agent,
+                            #     PHAZE_AGENT_API_URL, PHAZE_MODELS_DIR from the ConfigMap;
+                            #     PHAZE_AGENT_TOKEN from the Secret) the pod entrypoint requires to
+                            #     build AgentSettings + call back. Both objects are operator-created;
+                            #     phaze references them by name only (kube_env_*_name).
                             "env": [
                                 {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"},
+                                {"name": "PHAZE_JOB_FILE_ID", "value": str(file_id)},
+                            ],
+                            "envFrom": [
+                                {"configMapRef": {"name": cfg.kube_env_configmap_name}},
+                                {"secretRef": {"name": cfg.kube_env_secret_name}},
                             ],
                             "volumeMounts": [
                                 {"name": "phaze-ca", "mountPath": "/certs", "readOnly": True},

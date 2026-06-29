@@ -54,6 +54,8 @@ class _StubCfg(SimpleNamespace):
             "kube_job_memory_request": "4Gi",
             "kube_workload_api_version": "kueue.x-k8s.io/v1beta1",
             "kube_ca_secret_name": "phaze-internal-ca",
+            "kube_env_configmap_name": "phaze-agent-env",
+            "kube_env_secret_name": "phaze-agent-token",
             "kube_sa_token": None,
         }
         defaults.update(overrides)
@@ -145,6 +147,29 @@ def test_build_job_manifest_mounts_ca_secret(stub_cfg: _StubCfg) -> None:
     assert ca_mount["mountPath"] == "/certs"
     assert ca_mount["readOnly"] is True
 
+    assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
+
+
+def test_build_job_manifest_injects_env_contract(stub_cfg: _StubCfg) -> None:
+    """JOB-ENV-CONTRACT: the analyze container carries the per-Job PHAZE_JOB_FILE_ID (== str(file_id))
+    PLUS an envFrom that sources the static agent env from the operator-created ConfigMap + Secret.
+
+    Without these, every admitted pod hits job_runner with no file id / no agent role+url+token and
+    exits EXIT_CONFIG=20 before any analysis. The pre-existing PHAZE_AGENT_CA_FILE entry must remain
+    (the injection is additive, not a replacement)."""
+    fid = uuid.uuid4()
+    manifest = kube_staging.build_job_manifest(fid, stub_cfg)
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+
+    # (a) the per-Job file id is code-injected (cannot come from a static ConfigMap/Secret).
+    assert {"name": "PHAZE_JOB_FILE_ID", "value": str(fid)} in container["env"]
+
+    # (b) the static agent env is sourced via envFrom from the configured ConfigMap + Secret.
+    env_from = container["envFrom"]
+    assert {"configMapRef": {"name": stub_cfg.kube_env_configmap_name}} in env_from
+    assert {"secretRef": {"name": stub_cfg.kube_env_secret_name}} in env_from
+
+    # (c) regression guard: the additive change keeps the existing CA env entry.
     assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
 
 
