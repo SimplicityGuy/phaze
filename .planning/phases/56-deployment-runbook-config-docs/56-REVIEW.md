@@ -29,7 +29,7 @@ findings:
   warning: 2
   info: 1
   total: 4
-status: issues_found
+status: resolved
 ---
 
 # Phase 56: Code Review Report
@@ -51,6 +51,13 @@ defect that directly contradicts the design's load-bearing "control plane boots 
 plus a flag-lifecycle gap that produces a stuck false alert. The new probe failure paths are not
 exercised against a raising Redis handle, so the tests give false confidence on exactly the path that
 breaks.
+
+> **RESOLUTION (2026-06-28, commit 3b4d71b):** CR-01 and WR-01 were fixed during the
+> execute-phase code-review gate. The kube probe is now split from the flag persistence,
+> and both the persistence write and the new off-k8s stale-flag clear are wrapped in their
+> own broad try/except so neither a kube nor a Redis blip can abort controller boot (D-05).
+> Startup-probe tests now cover both Redis-down paths and the off-k8s clear. WR-02 (kr8s
+> private internals) and IN-01 (internal IDs in docs) were left as documented follow-ups.
 
 ## Critical Issues
 
