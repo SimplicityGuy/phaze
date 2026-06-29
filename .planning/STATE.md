@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
 status: planning
-last_updated: "2026-06-29T17:46:24.771Z"
+last_updated: "2026-06-29T18:30:00.000Z"
 last_activity: 2026-06-29
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,17 +17,19 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
+See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Milestone complete
+**Current focus:** Phase 57 — Shell & DAG rail (v7.0 roadmap created; ready to plan)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-06-29 — Milestone v7.0 started
+Phase: 57 of 62 (Shell & DAG rail) — first of 6 v7.0 phases (57-62)
+Plan: — (none yet)
+Status: Ready to plan
+Last activity: 2026-06-29 — v7.0 ROADMAP created (6 phases 57-62, 25/25 requirements mapped)
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -64,6 +66,7 @@ Last activity: 2026-06-29 — Milestone v7.0 started
 
 ### Roadmap Evolution
 
+- v7.0 UI Redesign (DAG-Centric Hybrid Console) roadmap created (2026-06-29): 6 phases (57-62), the phase structure locked in REQUIREMENTS.md honored exactly, 25/25 requirements mapped (no orphans, no duplicates), dependency-strict build order 57→58→59→60→61→62. **57** Shell & DAG rail (three-column shell, DAG-rail-as-nav, `/`=Analyze default, ⌘K + status strip, brand/theme preserved, ≤1-hop legacy redirects; the load-bearing risk phase — locks `#stage-workspace` swap target, single `/pipeline/stats`→OOB fanout, `$store.pipeline` cross-swap survival, `htmx:historyRestore`, focus/ARIA baseline, seeded dead-template AST guard; stack bumps htmx 2.0.10/Alpine 3.15.12/Tailwind 4.3.2 + SRI recompute; SHELL-01..05). **58** Enrich + Analyze workspaces (Discover/Metadata/Fingerprint + Analyze 3 lane cards local/A1/k8s with Kueue quota-wait vs Inadmissible; reuse stats_bar OOB seed, NO second poll loop; WORK-01..05). **59** Identify workspaces (Track-ID surfaces EXISTING audfprint+Panako + rapidfuzz signals ONLY — IDENT-01 re-scoped off AcoustID/MusicBrainz → deferred IDENT-03; Tracklist Search→Scrape→Match 3-step; IDENT-01..02). **60** Review & Apply (unified before→after diff + per-file Approve/Edit/Skip; bulk approve-high-conf = SERVER-evaluated predicate at a fixed threshold, not a client id-list; dedupe keeper-select; cue preview; audit+reversible; REVIEW-01..05). **61** Full record + ⌘K + Agents (per-file record slide-in, ⌘K over existing search w/ `@alpinejs/focus@3.15.12`, ephemeral Job-based k8s Agents identity, first-run empty state; RECORD-01..04). **62** Polish & cutover (a11y audit, dead-template guard green after removing legacy page wrappers/keep partials, docs/README, narrow rail-collapse; CUT-02 necessarily LAST; CUT-01..04). IA/presentation rewrite over existing routers/services — **no backend behavior change**; visualizes v6.0 local/A1/k8s routing. No phase needs a research-phase (all patterns in-repo; verified 2026-06-29). Each phase = own PR (worktree branch).
 - v6.0 Kubernetes Burst Analysis roadmap created (2026-06-27): 5 phases (52-56), one per requirement category, in dependency order mirroring v5.0 (image → legs → pipeline → routing seam → deploy) — **52** Job-runner image & one-shot entrypoint (x86 GHCR image FROM existing essentia base, zero new pip deps; one-shot httpx-GET → windowed analyze → POST `/api/internal/agent/*` reconciled by `file_id` → exit; honest exit codes; internal CA baked in; KJOB-01..05); **53** S3 object-staging leg (control-plane aioboto3 presign PUT/GET + delete, file-server agent httpx-PUT uploads bytes, pod presigned GET — DIST-01 preserved, agent+pod S3-credential-free; `file_id`-scoped keys, cleanup on every terminal outcome + bucket-lifecycle TTL backstop; `endpoint_url` any-S3, `_FILE` secrets; `cloud_job` sidecar Alembic migration; KSTAGE-01..05); **54** Kube submit/watch + reconcile cron (kr8s submit of a suspended `batch/v1` Job labeled `kueue.x-k8s.io/queue-name`, deterministic name keyed to `file_id`; fast submit returns in seconds, periodic `reconcile_k8s_jobs` cron owns lifecycle; out-of-band callback is the ONLY authoritative result; Inadmissible-vs-Pending; bounded max-attempts re-drive → ANALYSIS_FAILED, no cross-target fallback; NO `process_file:<id>` ledger seed — highest-risk phase; KSUBMIT-01..06); **55** Routing/state/ledger integration — the ONE live-seam edit (`cloud_target` Literal["local","a1","k8s"] selector + `stage_cloud_window` K8s branch enqueuing `upload_file_s3`; reuse duration router + AWAITING_CLOUD hold + advisory-locked in-flight window + `PUSHING`/`PUSHED` states + `cloud_phase` column; `enqueue_router` frozenset additions + AST guard against over-enqueue; ledger-scoped backfill; KROUTE-01..05); **56** Deploy/runbook/config/docs (cluster-admin Kueue/RBAC/Secret runbook for objects phaze does NOT create, least-privilege namespaced Role, transport-agnostic Tailscale-OR-WireGuard endpoints, pydantic-settings `_FILE` + fail-fast model validator, startup LocalQueue validation, ephemeral Job-based identity in Agents UI vs perpetually-DEAD, master toggle revert; KDEPLOY-01..05). 26 requirements, 100% coverage, no orphans. **No phase needs a research-phase** — kr8s/aioboto3/Kueue v1beta2 verified same-day against Context7/official docs; each phase has a direct v5.0 precedent. Two new control-plane deps vs v5.0 (`kr8s`, `aioboto3`); zero new pip deps in the Job image. Each phase = own PR.
 - v5.0 Cloud Burst Analysis roadmap created (2026-06-24): 5 phases (47-51), one per requirement category, in dependency order — **47** Official arm64 essentia agent image (build from source on a native arm64 CI runner, GHCR publish, parity guard; CLOUDIMG-01..03); **48** Compute-agent type (`kind="compute"` media-less agent, drains per-agent SAQ queue + HTTP result PUT, Agents-page badge/liveness/depth; CLOUDAGENT-01..03); **49** Duration routing & backfill (capability-aware `enqueue_router` on `metadata.duration` threshold default 90min, "awaiting cloud" hold when no compute agent online, backfill the 144 `analysis_failed` long files via the Phase 45 scheduling ledger; CLOUDROUTE-01..04); **50** Push pipeline (control-plane "stay one ahead" orchestrator + file-server `push_file_to_cloud` rsync/SSH-over-Tailscale to A1 scratch, `ProcessFilePayload.ephemeral`, sha256 verify, scratch delete, idempotent re-drive; CLOUDPIPE-01..05); **51** Deployment/config/docs (`docker-compose.cloud-agent.yml` + Tailscale, all pydantic-settings knobs with `_FILE` secrets, OCI A1 + Tailscale-ACL runbook scoping A1→lux:{5432,6379,8000}+nox→A1:22 + least-privilege queue role, master enable toggle; CLOUDDEPLOY-01..04). 18 requirements, 100% coverage, no orphans. Design brainstormed + approved this session. Replaces the "Distributed cloud analysis" backlog item (now narrowed to rsync-over-Tailscale to A1 local disk — no object storage — because arm64 essentia builds from source, proven on `spike/arm64-essentia-analysis`). Each phase = own PR.
 - Phase 46 added (2026-06-23): Heartbeat Starvation Fix — decouple the agent liveness heartbeat from the SAQ worker concurrency pool. Surfaced by live incident: agent `nox` showed `DEAD` (last seen 39m ago) while the `phaze-agent-worker` container was healthy and pegged at ~394% CPU. Root cause: `heartbeat_tick` is a SAQ `CronJob` registered in the same agent worker (`agent_worker.py:227`), so it competes for the same `worker_max_jobs=8` concurrency slots as `process_file`. With all 8 slots full of multi-hour analysis jobs (long concert sets, 2–3.6h each), the 30s heartbeat cron could only run when a slot freed (~every 50 min) → `last_seen` exceeded the 300s staleness threshold (`constants.py:61`) → control plane marked the busy agent DEAD, which also blocks new agent-task routing (fingerprint/metadata). Fix: run the heartbeat independent of the job concurrency pool so a saturated worker still reports liveness. Distinct from the Phase 43 analyze-throughput work (that bounds job cost; this guarantees liveness regardless of job cost). NOTE: phase.add mis-numbered it 43 (counted dirs, max=42; collided with shipped text-only 43/44/45) — manually renumbered to 46 + dir renamed to `46-heartbeat-starvation-fix`.
@@ -175,11 +178,11 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-06-29 — v6.0 milestone completed, archived, and tagged
-Stopped at: Milestone v6.0 complete (audit passed after closing JOB-ENV-CONTRACT via quick 260628-wzq)
-Resume file: .planning/milestones/v6.0-ROADMAP.md (archived milestone detail)
+Last session: 2026-06-29 — v7.0 ROADMAP created (phases 57-62)
+Stopped at: v7.0 roadmap + STATE + REQUIREMENTS traceability written; 25/25 requirements mapped; ready to plan Phase 57
+Resume file: None — next is `/gsd:plan-phase 57`
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone (v7.0 UI Redesign is already scoped — `.planning/REQUIREMENTS-v7.0.md`)
-- After the live x64 Kueue cluster + S3 rollout, re-run the deferred live K8s E2E FIRST (Phase 55 HUMAN-UAT test 2) — it is the test that would have caught JOB-ENV-CONTRACT
+- Plan the first v7.0 phase with `/gsd:plan-phase 57` (Shell & DAG rail — the load-bearing foundation; do not under-scope it)
+- After the live x64 Kueue cluster + S3 rollout, re-run the deferred live K8s E2E FIRST (Phase 55 HUMAN-UAT test 2) — it is the test that would have caught JOB-ENV-CONTRACT (v6.0 deferred item, independent of v7.0)

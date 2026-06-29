@@ -81,15 +81,15 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ## Traceability
 
-Each v7.0 requirement maps to exactly one phase. **Coverage: 25/25 — no orphans, no duplicates.**
+Each v7.0 requirement maps to exactly one phase. **Coverage: 25/25 — no orphans, no duplicates.** ROADMAP.md (created 2026-06-29) carries the per-phase goal, dependency order (57→58→59→60→61→62), and 2-5 success criteria for each phase. Note: **IDENT-01 was re-scoped 2026-06-29** to surface only the existing audfprint+Panako fingerprint + rapidfuzz tracklist signals — the prototype's AcoustID→MusicBrainz label is dropped (that backend does not exist; building it is out of this presentation-only milestone, deferred to IDENT-03).
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHELL-01 | Phase 57 — Shell & rail | Planned |
-| SHELL-02 | Phase 57 — Shell & rail | Planned |
-| SHELL-03 | Phase 57 — Shell & rail | Planned |
-| SHELL-04 | Phase 57 — Shell & rail | Planned |
-| SHELL-05 | Phase 57 — Shell & rail | Planned |
+| SHELL-01 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-02 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-03 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-04 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-05 | Phase 57 — Shell & DAG rail | Planned |
 | WORK-01 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-02 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-03 | Phase 58 — Enrich + Analyze workspaces | Planned |
