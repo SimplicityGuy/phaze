@@ -165,15 +165,36 @@ async def startup(ctx: dict[str, Any]) -> None:
     # control plane still boots Postgres/Redis/UI/local-analysis). The WARNING names only the env var
     # PHAZE_KUBE_LOCAL_QUEUE; it never interpolates the SA token or kube DSN (T-56-LOG / T-54-07).
     if cfg.cloud_target == "k8s":  # type: ignore[attr-defined]
+        # Probe the LocalQueue and persist the flag in two INDEPENDENTLY-guarded steps. CR-01: the flag
+        # write is the FIRST Redis call in startup (backfill/recovery above use Postgres), so a Redis-down
+        # boot would let an unguarded ``.set``/``.delete`` propagate and crash the control worker -- the
+        # exact opposite of the D-05 invariant. A Redis blip must be as non-fatal to boot as a kube blip,
+        # so the persistence step gets its OWN broad try/except and never re-raises.
         try:
             await kube_staging.get_local_queue()
-            await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
+            reachable = True
         except Exception:
             logger.warning(
                 "phaze.controller startup: Kueue LocalQueue unreachable -- check cluster connectivity "
                 "and the PHAZE_KUBE_LOCAL_QUEUE configuration; control plane boots regardless (D-05)"
             )
-            await ctx["redis"].set("phaze:k8s:localqueue_unreachable", "1")
+            reachable = False
+        try:
+            if reachable:
+                await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
+            else:
+                await ctx["redis"].set("phaze:k8s:localqueue_unreachable", "1")
+        except Exception:
+            logger.warning("phaze.controller startup: could not persist LocalQueue-reachability flag; control plane boots regardless (D-05)")
+    else:
+        # WR-01: the flag lives in long-lived Redis. Switching the control plane away from k8s (the
+        # documented one-flip ``PHAZE_CLOUD_TARGET=k8s`` -> ``local`` revert) must clear any stale flag,
+        # else the dashboard shows a perpetual false LocalQueue-unreachable alert. Best-effort + guarded:
+        # a Redis blip on a non-k8s boot must not abort the control plane either (D-05).
+        try:
+            await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
+        except Exception:
+            logger.warning("phaze.controller startup: could not clear stale LocalQueue-reachability flag; control plane boots regardless (D-05)")
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:

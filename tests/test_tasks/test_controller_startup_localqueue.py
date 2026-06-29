@@ -115,3 +115,89 @@ async def test_localqueue_probe_clears_flag_on_success(monkeypatch: pytest.Monke
     probe.assert_awaited()
     delete_keys = [call.args[0] for call in fake_redis.delete.await_args_list if call.args]
     assert _FLAG_KEY in delete_keys
+
+
+@pytest.mark.asyncio
+async def test_redis_down_during_unreachable_probe_does_not_abort_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: with kube unreachable AND Redis down, the flag ``.set`` raises -- startup must still NOT abort.
+
+    The probe is the first Redis call in ``startup`` (backfill/recovery use Postgres). If a Redis-down
+    boot lets the flag write propagate, the control worker crashes -- the exact opposite of the D-05
+    "control plane boots regardless" invariant. Persisting the flag must therefore be guarded too.
+    """
+    fake_redis = AsyncMock()
+    fake_redis.set.side_effect = ConnectionError("redis down")
+    fake_redis.delete.side_effect = ConnectionError("redis down")
+    _stub_controller(monkeypatch, fake_redis, cloud_target="k8s")
+
+    probe = AsyncMock(side_effect=RuntimeError("kube unreachable"))
+    monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    # Must NOT raise -- neither a kube blip nor a Redis blip can abort controller boot (D-05).
+    await controller.startup(ctx)
+
+    probe.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_redis_down_during_reachable_probe_does_not_abort_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01 (success path): kube reachable but Redis down -- the clearing ``.delete`` must not abort boot."""
+    fake_redis = AsyncMock()
+    fake_redis.delete.side_effect = ConnectionError("redis down")
+    _stub_controller(monkeypatch, fake_redis, cloud_target="k8s")
+
+    probe = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    await controller.startup(ctx)
+
+    probe.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_flag_cleared_when_not_k8s(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WR-01: switching the control plane away from k8s clears any stale unreachable flag.
+
+    The flag lives in long-lived Redis. Without an explicit clear on a non-k8s boot, a previously-set
+    flag persists forever and the dashboard shows a perpetual false alert -- the documented one-flip
+    revert (``PHAZE_CLOUD_TARGET=k8s`` -> ``local``) would not silence it.
+    """
+    fake_redis = AsyncMock()
+    _stub_controller(monkeypatch, fake_redis, cloud_target="local")
+
+    probe = AsyncMock()
+    monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    await controller.startup(ctx)
+
+    # The probe never runs off-k8s, but the stale flag is cleared so the alert cannot persist.
+    probe.assert_not_called()
+    delete_keys = [call.args[0] for call in fake_redis.delete.await_args_list if call.args]
+    assert _FLAG_KEY in delete_keys
+
+
+@pytest.mark.asyncio
+async def test_stale_flag_clear_redis_down_does_not_abort_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WR-01 + D-05: the off-k8s stale-flag clear is best-effort -- a Redis blip must not abort boot."""
+    fake_redis = AsyncMock()
+    fake_redis.delete.side_effect = ConnectionError("redis down")
+    _stub_controller(monkeypatch, fake_redis, cloud_target="local")
+
+    probe = AsyncMock()
+    monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    await controller.startup(ctx)
+
+    probe.assert_not_called()
