@@ -88,6 +88,12 @@
    inadmissible_count rides this poll context (degrade-safe, never 500). The empty <section>
    carrier is re-pushed too so a previously-shown banner clears once the count returns to 0. #}
 {% with oob = True %}{% include "pipeline/partials/inadmissible_card.html" %}{% endwith %}
+{# Phase 56 (56-02, D-05, KDEPLOY-04): re-render the K8s LocalQueue-unreachable alert OUT-OF-BAND on
+   the same 5s tick (it lives outside #pipeline-stats, so the innerHTML swap never reaches it). Same id
+   (#localqueue-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob.
+   localqueue_unreachable rides this poll context (degrade-safe, never 500). The empty <section> carrier
+   is re-pushed too so a previously-shown banner clears once the LocalQueue becomes reachable again. #}
+{% with oob = True %}{% include "pipeline/partials/localqueue_card.html" %}{% endwith %}
 {# Phase 55 (55-05, D-04, KROUTE-06): re-render the Cloud admission-state card OUT-OF-BAND on the same
    5s tick (it lives outside #pipeline-stats, so the innerHTML swap never reaches it). Same id
    (#admission-state-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob. The
