@@ -1,6 +1,6 @@
 # Requirements: Phaze — v7.0 UI Redesign (DAG-Centric Hybrid Console)
 
-**Status:** PLANNED — scoped 2026-06-28, **activates after v6.0 ships**. This is a forward-looking draft produced via the `/gsd:new-milestone` scope-only path (the active milestone remains v6.0; STATE.md was intentionally not switched and v6.0 phase dirs were not cleared). When v6.0 completes and is archived, this becomes the v7.0 `REQUIREMENTS.md`.
+**Status:** ACTIVE — milestone v7.0 started 2026-06-29 (v6.0 shipped and archived). Originally scoped 2026-06-28 via the `/gsd:new-milestone` scope-only path; activated as the v7.0 `REQUIREMENTS.md` with STATE.md switched to v7.0 and the v6.0 phase dirs archived.
 
 **Defined:** 2026-06-28
 **Design source:** `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype in the co-located `2026-06-28-ui-redesign-assets/`).

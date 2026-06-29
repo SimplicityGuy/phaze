@@ -8,9 +8,24 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
+## Current Milestone: v7.0 UI Redesign — DAG-Centric Hybrid Console
+
+**Goal:** Replace the MVP tab-sprawl admin UI with a DAG-centric hybrid console — the pipeline becomes the home and the navigation spine, the local/A1/k8s execution targets are first-class, and every human approval unifies behind one before→after diff/approve gate. An information-architecture + presentation rewrite over the existing routers/services; **no backend behavior change.**
+
+**Target features:**
+- Three-column "Hybrid Console" shell — a persistent left **DAG rail** (pipeline stages with live counts) is the navigation spine; clicking a stage swaps the center workspace via HTMX (no tab-jumping); a right per-file pane. `/` renders the shell with **Analyze** selected by default.
+- Full legacy tab collapse — the ~10 sibling tabs become pipeline stages; global Search → **⌘K command bar**; Agents/health → header status strip + Agents page. Old per-tab routes redirect into the corresponding shell stage so bookmarks survive.
+- Enrich + Analyze workspaces — Discover/Metadata/Fingerprint queues with their existing triggers; an Analyze workspace with three **execution-lane cards (local / A1 / k8s)** showing live capacity (k8s surfaces Kueue quota-wait vs. Inadmissible), and per-file lane + windowed progress.
+- Identify workspaces — Track-ID (AcoustID→MusicBrainz match state/confidence) and Tracklist (Search→Scrape→Match shown inline as a visible 3-step).
+- Unified Review & Apply — Rename/Tag/Move each as a before→after diff with per-file Approve/Edit/Skip + bulk "approve all high-confidence"; Dedupe keeper-select; Cue preview; every applied change audited and reversible.
+- Full per-file record, ⌘K command palette (search files/tracklists/artists + quick commands), an Agents page that models the k8s burst lane as an ephemeral Job-based identity (not perpetually-DEAD), and a first-run empty state.
+- Polish & cutover — baseline accessibility (keyboard rail + ⌘K, focus states, skip link, ARIA on the DAG), removal of dead legacy templates/routers, updated docs/README, and a narrow-width rail-collapse.
+
+**Key context:** Aesthetic is **C3 "Evolved phaze"** — preserve the existing brand (Jura headings, blue accent, wave logo, dark `phaze-bg` theme + light toggle); evolve, don't reskin. Stack stays server-rendered: FastAPI + Jinja2 + HTMX + Tailwind + Alpine — **no SPA build**. Design spine is locked in `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype in the co-located assets dir). Depends on and visualizes the v6.0 local/A1/k8s routing targets but does not modify v6.0 backend behavior. 25 requirements (SHELL/WORK/IDENT/REVIEW/RECORD/CUT) across phases 57–62.
+
 ## Last Milestone: v6.0 Kubernetes Burst Analysis — SHIPPED 2026-06-29
 
-**Next:** v7.0 UI Redesign (DAG-Centric Hybrid Console) is scoped (phases 57-62, `REQUIREMENTS-v7.0.md`, 25 reqs) but not started — run `/gsd:new-milestone` to activate. The v6.0 goal and target features below are retained as shipped-milestone context.
+**Next:** v7.0 UI Redesign (DAG-Centric Hybrid Console) is now the active milestone (started 2026-06-29; see Current Milestone above). The v6.0 goal and target features below are retained as shipped-milestone context.
 
 **Goal (shipped):** Offload long-duration audio analysis to a remote **x64 Kubernetes cluster running Kueue** as a third routing target alongside local and the v5.0 OCI A1 — following the v5.0 cloud-burst pattern (duration routing, compute-agent result callback, master toggle), but with the execution unit changed from "persistent host draining a SAQ queue" to "ephemeral, quota-scheduled Kueue batch Job submitted per file."
 
@@ -263,4 +278,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-29 — after v6.0 Kubernetes Burst Analysis milestone (shipped; audit passed after closing the JOB-ENV-CONTRACT cross-phase blocker)*
+*Last updated: 2026-06-29 — started milestone v7.0 UI Redesign (DAG-Centric Hybrid Console); v6.0 shipped and archived*

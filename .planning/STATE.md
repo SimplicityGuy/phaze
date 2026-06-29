@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v6.0
-milestone_name: Kubernetes Burst Analysis
-status: Awaiting next milestone
-last_updated: "2026-06-29T15:23:06.740Z"
-last_activity: 2026-06-29 — Milestone v6.0 completed and archived
+milestone: v7.0
+milestone_name: UI Redesign (DAG-Centric Hybrid Console)
+status: planning
+last_updated: "2026-06-29T17:46:24.771Z"
+last_activity: 2026-06-29
 progress:
-  total_phases: 27
-  completed_phases: 5
-  total_plans: 27
-  completed_plans: 27
-  percent: 19
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 ## Current Position
 
-Phase: Milestone v6.0 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-06-29 — Milestone v6.0 completed and archived
+Status: Defining requirements
+Last activity: 2026-06-29 — Milestone v7.0 started
 
 ## Performance Metrics
 
