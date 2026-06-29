@@ -376,18 +376,18 @@ async def test_legacy_route_redirects_one_hop(app, legacy, target):
 | A3 | `/search` → ⌘K is implemented as `RedirectResponse("/?palette=1")` + Alpine reading the query param | Legacy route resolution | If a different signal is chosen, the skeleton modal won't auto-open from a `/search` bookmark. D-04 only requires the skeleton; the open-on-redirect mechanism is unspecified. |
 | A4 | All `TemplateResponse(name=...)` / `{% include %}` use string literals (dead-template guard can resolve statically) | Code examples | A dynamic name would make the guard under-count reachable templates and false-positive an orphan. Verified across current routers; add an allowlist if a dynamic name is introduced. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Route→rail-node mapping for the 6 render-in-shell legacy routes**
+1. **Route→rail-node mapping for the 6 render-in-shell legacy routes** — RESOLVED: see 57-PATTERNS.md legacy-router redirect table + Plan 04 interfaces.
    - What we know: rail node ids (prototype): `proposals`(=Propose), `rename/tagwrite/move/dedupe/cue` (Review & Apply), `tracklist`, `discover`, `metadata`, `fingerprint`, `trackid`, `analyze`.
    - What's unclear: design §7 collapses Proposals/Preview/Tags/Cue/Duplicates into one "Review & Apply" gate, but Phase 57 bridges to *existing* per-page content. So which rail node does each legacy route pre-select? (`/proposals`→Propose node or Rename node? `/preview`→Move node?)
    - Recommendation: For Phase 57's bridge, map each legacy route to the rail node whose embedded content is that route's existing page (most direct, keeps the app usable). Lock the mapping in the plan as a single `STAGE_PARTIALS` / route table. Defer the Review&Apply *consolidation* to Phase 60.
 
-2. **Does `/` build the Analyze workspace by calling pipeline.py's existing context builders, or by `{% include %}` of `dag_canvas.html` with a shared context?**
+2. **Does `/` build the Analyze workspace by calling pipeline.py's existing context builders, or by `{% include %}` of `dag_canvas.html` with a shared context?** — RESOLVED: Plan 02 Task 1 factors `build_dashboard_context` in pipeline.py.
    - What we know: the Analyze default embeds the existing pipeline-dashboard content (D-01); `_build_dag_context` (pipeline.py:131) + the dashboard context (pipeline.py:435) build it today.
    - Recommendation: factor the dashboard's context builder so both `/pipeline/` (until removed) and `/` (shell) can call it; avoid duplicating the query logic. Planner decides extraction granularity.
 
-3. **`@alpinejs/focus` and `Alpine.initTree` availability** — focus is a Phase 61 dep, but `Alpine.initTree` (core API) is needed in Phase 57's history handler. Confirm `Alpine.initTree` exists in 3.15.12 (it is core, present since Alpine 3.x). `[ASSUMED — core API, low risk]`
+3. **`@alpinejs/focus` and `Alpine.initTree` availability** — focus is a Phase 61 dep, but `Alpine.initTree` (core API) is needed in Phase 57's history handler. Confirm `Alpine.initTree` exists in 3.15.12 (it is core, present since Alpine 3.x). `[ASSUMED — core API, low risk]` RESOLVED: core API; Plan 02/03 `read_first` note A1 to confirm the exact `htmx:historyRestore` event token against htmx 2.0.10 at execution time.
 
 ## Environment Availability
 
