@@ -182,7 +182,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
-| 57. Shell & DAG rail | v7.0 | 0/TBD | Not started | - |
+| 57. Shell & DAG rail | v7.0 | 1/4 | In Progress|  |
 | 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
@@ -688,7 +688,7 @@ Plans:
 **Notes**: Risk phase — do not under-scope. Lock the single stable `#stage-workspace` swap-target id, the fragment-only stage-response convention, the OOB id registry + `oob_counts` gate, `$store.pipeline` consumption (not redefinition), the `htmx:historyRestore` re-init handler, and the focus-to-heading + skip-link (→ `#stage-workspace`) baseline. Stack: bump htmx→2.0.10 / Alpine→3.15.12 / Tailwind→4.3.2 and recompute every `integrity=` SRI hash (a stale hash silently blocks the script); stay on htmx 2.0.x (4.0 is beta). SHELL-05 is hybrid: canonical-URL routes render-in-shell, true renames (`/pipeline`→`/`, `/search`→⌘K) use `RedirectResponse` on the trailing-slash canonical form (FastAPI `redirect_slashes=True`). No phase research needed — all patterns are in-repo.**Plans**: 4 plans (4 waves)
 **Wave 1**
 
-- [ ] 57-01-PLAN.md — Stack bumps (htmx 2.0.10 / Alpine 3.15.12 / Tailwind 4.3.2 + recomputed SRI) + seeded dead-template AST guard (wave 1)
+- [x] 57-01-PLAN.md — Stack bumps (htmx 2.0.10 / Alpine 3.15.12 / Tailwind 4.3.2 + recomputed SRI) + seeded dead-template AST guard (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
