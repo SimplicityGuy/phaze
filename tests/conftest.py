@@ -220,7 +220,7 @@ async def authenticated_client(
 # ``get_settings`` lru_cache so each test gets a fresh ``AgentSettings`` dispatch.
 #
 # ``construct_agent_client`` passes the CA path to ``httpx.AsyncClient(verify=...)``,
-# which eagerly builds an SSLContext from the file — so the baked CA must be a
+# which eagerly builds an SSLContext from the file — so the CA file must be a
 # PARSEABLE PEM cert (respx intercepts below TLS, so it is never used in a real
 # handshake; it only has to load). This is a static self-signed test CA.
 # ---------------------------------------------------------------------------
@@ -252,7 +252,7 @@ jzO99XLCVGQKtzlazzxEILFIF8Ih
 def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path):  # type: ignore[no-untyped-def]
     """Env + on-disk artifacts the one-shot job_runner reads at startup.
 
-    Writes a non-empty baked-CA file (so ``construct_agent_client`` passes its
+    Writes a non-empty CA file (so ``construct_agent_client`` passes its
     existence/size guard) and a models dir, sets the agent env vars, and yields
     the resolved values. The ``get_settings`` lru_cache is cleared before AND
     after so the autouse env-isolation fixture cannot leak a cached settings

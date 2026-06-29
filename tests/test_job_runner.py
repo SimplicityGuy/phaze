@@ -8,8 +8,8 @@ store. Coverage:
 - ``exit_code`` — the failure→exit-code matrix: presign/download → 10,
   sha256 mismatch → 11, analyze raises → 12, PUT fails → 13 (KJOB-04). A failed
   analysis NEVER exits 0.
-- ``ca_verify`` — the agent client is constructed with ``verify=<baked CA>``
-  (KJOB-05); ``verify=False`` appears nowhere.
+- ``ca_verify`` — the agent client is constructed with ``verify=<internal CA>``
+  (KJOB-05; CA mounted at runtime per KDEPLOY-06); ``verify=False`` appears nowhere.
 - ``no_monoloader`` — a source guard proving the windowed ``analyze_file`` path
   is wired and no whole-file ``MonoLoader`` decode is referenced (KJOB-03).
 
