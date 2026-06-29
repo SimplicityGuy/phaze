@@ -536,6 +536,62 @@ def test_job_runner_does_not_import_phaze_database() -> None:
     assert result.returncode == 0, f"job_runner import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
+def test_job_runner_does_not_run_heartbeat_loop() -> None:
+    """Phase 56 (56-03) D-07 invariant: the ephemeral k8s Job pod never heartbeats.
+
+    The liveness ``_heartbeat_loop`` is what sets ``Agent.last_seen_at``; it lives ONLY in
+    the long-lived SAQ agent worker (``phaze.tasks.agent_worker`` imports it from
+    ``phaze.tasks.heartbeat`` and runs it as a background task). The one-shot Kueue Job
+    entrypoint (``phaze.job_runner``) must NEVER import or call it — that is the structural
+    proof the k8s burst lane's bearer-token Agent row stays at ``last_seen_at IS NULL`` and
+    so classifies 'never' (never 'dead'), pairing with the never-not-dead invariant in
+    ``tests/test_services/test_agent_liveness.py``.
+
+    Verified by subprocess (mirroring the D-25 import-boundary style) so a contaminated
+    import in the test process cannot poison downstream tests via sys.modules caching. We
+    assert BOTH that the heartbeat module stays out of the import graph AND that no
+    ``_heartbeat_loop`` / ``heartbeat`` symbol appears in the module source/namespace.
+    """
+    script = textwrap.dedent("""
+        import inspect
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        import phaze.job_runner as jr
+
+        # The heartbeat machinery must never be dragged into the one-shot pod's import graph.
+        forbidden = ("phaze.tasks.heartbeat", "phaze.tasks.agent_worker")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+
+        # No imported name nor source reference to the heartbeat loop.
+        if "_heartbeat_loop" in vars(jr):
+            sys.stderr.write("_heartbeat_loop must NOT be a name in phaze.job_runner\\n")
+            sys.exit(2)
+        source = inspect.getsource(jr)
+        if "_heartbeat_loop" in source or "heartbeat" in source:
+            sys.stderr.write("phaze.job_runner source must not reference the heartbeat loop\\n")
+            sys.exit(3)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"job_runner must not import/call the heartbeat loop:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
 def test_stage_control_stays_postgres_free() -> None:
     """Phase 37 T-37-04 invariant: phaze.tasks._shared.stage_control is Postgres-free.
 

@@ -75,6 +75,33 @@ def test_classify_never_when_last_seen_at_is_none() -> None:
     assert classify(agent, NOW) == "never"
 
 
+@pytest.mark.parametrize(
+    "elapsed",
+    [
+        timedelta(0),
+        timedelta(seconds=1),
+        timedelta(seconds=300),
+        timedelta(hours=1),
+        timedelta(days=365),
+        timedelta(days=36500),  # far-future now: a century later
+    ],
+)
+def test_classify_never_not_dead_when_last_seen_at_none(elapsed: timedelta) -> None:
+    """D-07 structural DEAD-suppression invariant: an agent that never heartbeated
+    (``last_seen_at IS NULL``) classifies as 'never', NEVER 'dead' — at ANY ``now``,
+    including a now far in the future. The 'never' branch precedes the threshold
+    math in ``classify`` (agent_liveness.py:79-80), so no elapsed time can ever
+    promote a no-signal agent to 'dead'. This is the executable proof that the k8s
+    burst lane (a non-heartbeating bearer-token Agent row) can never render a
+    perpetually-DEAD pill.
+    """
+    agent = _make_agent("k8s-burst-lane")  # last_seen_at is None by default
+    now = NOW + elapsed
+    status = classify(agent, now)
+    assert status != "dead"
+    assert status == "never"
+
+
 def test_classify_revoked_takes_precedence_over_alive() -> None:
     """Revoked agent with recent last_seen_at still classifies as 'revoked'."""
     agent = _make_agent(
