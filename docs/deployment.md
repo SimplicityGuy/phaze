@@ -468,6 +468,8 @@ docker compose restart api            # cert_bootstrap regenerates + prints the 
 
 Every file-server agent will fail to connect until you re-distribute the new `phaze-ca.crt`. The loud banner is the only safeguard — do not delete the certs directory casually.
 
+> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from an operator-created `core/v1` Secret read-only at `/certs` (KDEPLOY-06; `PHAZE_KUBE_CA_SECRET_NAME`, default `phaze-internal-ca`). After regenerating the CA above, re-create that Secret with the new `phaze-ca.crt` (`kubectl create secret generic phaze-internal-ca --from-file=phaze-ca.crt=./certs/phaze-ca.crt`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
+
 ## Pinning the agent image for production
 
 For first-time setup, `PHAZE_IMAGE_TAG=latest` pulls the most recent tagged release from GHCR. For production, pin to a specific version:
