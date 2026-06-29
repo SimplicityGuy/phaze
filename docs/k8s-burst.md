@@ -29,25 +29,35 @@ This page does not duplicate those tables.
 
 ## Architecture at a glance
 
+```mermaid
+flowchart LR
+  %% transport-agnostic mesh (Tailscale OR WireGuard)
+  subgraph lux["lux (application server / control plane)"]
+    luxsvc["api(:8000) · Postgres · Redis"]
+    s3_staging["s3_staging"]
+    submit_cloud_job["submit_cloud_job"]
+    reconcile["reconcile_cloud_jobs (*/5 cron)"]
+    lqprobe["LocalQueue probe (startup)"]
+    callback["POST /api/internal/agent/analysis/{file_id}<br/>(the ONLY result channel)"]
+  end
+  s3bucket["S3 bucket"]
+  subgraph cluster["x64 Kueue cluster"]
+    ns["namespace: phaze"]
+    rf["ResourceFlavor phaze-cpu"]
+    cq["ClusterQueue phaze-cq"]
+    lq["LocalQueue phaze-lq"]
+    rbac["SA/Role/RoleBinding"]
+    secret["Secret phaze-agent-token"]
+    job["suspended batch Job"]
+    pod["one-shot pod (presign GET → analyze → POST result → exit)"]
+  end
+  s3_staging -->|"presign PUT/GET"| s3bucket
+  submit_cloud_job -->|"kube POST"| job
+  lq -->|"Kueue admits"| pod
+  pod -->|"POST /api/internal/agent/analysis/{file_id} (the ONLY result channel)"| callback
 ```
-                 transport-agnostic mesh (Tailscale OR WireGuard)
-  ┌────────────────────────────────────────────────────────────────────────────┐
-  │  lux (application server / control plane)        x64 Kueue cluster            │
-  │  api(:8000) · Postgres · Redis                   ┌──────────────────────────┐ │
-  │  controller worker:                              │  namespace: phaze         │ │
-  │   ├─ s3_staging  ── presign PUT/GET ──▶ S3 bucket │   ResourceFlavor phaze-cpu│ │
-  │   ├─ submit_cloud_job ── kube POST ──▶ suspended  │   ClusterQueue  phaze-cq  │ │
-  │   │                                    batch Job  │   LocalQueue    phaze-lq  │ │
-  │   ├─ reconcile_cloud_jobs (*/5 cron)              │   SA/Role/RoleBinding     │ │
-  │   └─ LocalQueue probe (startup)                   │   Secret phaze-agent-token│ │
-  │                                                   │      │ Kueue admits       │ │
-  │   POST /api/internal/agent/analysis/{file_id} ◀───┼──── one-shot pod          │ │
-  │   (the ONLY result channel)                       │  (presign GET → analyze   │ │
-  │                                                   │   → POST result → exit)   │ │
-  └────────────────────────────────────────────────────────────────────────────┘
 
-  PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, no kube submit, no S3 staging. (all-local)
-```
+_PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, no kube submit, no S3 staging. (all-local)_
 
 ## Submit → reconcile lifecycle (Phase 54)
 
