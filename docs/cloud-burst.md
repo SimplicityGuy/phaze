@@ -23,7 +23,7 @@ not duplicate that table.
 > deploy behaves **all-local** with zero cloud activity. Provision the infrastructure below first,
 > then set the target and restart the control plane (Step 6). Use `PHAZE_CLOUD_TARGET=a1` for the
 > OCI A1 compute agent documented on this page, or `PHAZE_CLOUD_TARGET=k8s` for the Kubernetes
-> (Kueue) target (see *Kubernetes burst* below).
+> (Kueue) target — documented in its own runbook, [k8s-burst.md](k8s-burst.md).
 
 ## Architecture at a glance
 
@@ -273,8 +273,8 @@ PHAZE_CLOUD_TARGET=a1
 controller does **nothing** until the controller worker + api restart. Once set to `a1`, long files
 begin routing to the A1, and any pre-existing `AWAITING_CLOUD` rows held from before the change are
 released by the staging cron. For the Kubernetes target set `PHAZE_CLOUD_TARGET=k8s` instead and
-provide the kube/S3 knobs (see *Kubernetes burst* below). See *Cloud target & runtime-state
-semantics* below.
+provide the kube/S3 knobs — see the dedicated [k8s-burst.md](k8s-burst.md) runbook. See *Cloud
+target & runtime-state semantics* below.
 
 ## Step 7 — Smoke test
 
@@ -312,7 +312,8 @@ whole feature (CLOUDDEPLOY-04):
 - **`a1` = OCI A1 compute agent (this page).** Long files route to the A1 via rsync-over-SSH.
   Requires `compute_scratch_dir` (control plane) matched to the A1's `cloud_scratch_dir`.
 - **`k8s` = Kubernetes (Kueue).** Long files stage to S3 and the control plane submits a suspended
-  Kueue Job (see *Kubernetes burst* below). Requires the kube + S3 knobs.
+  Kueue Job. Requires the kube + S3 knobs. Documented in its own runbook —
+  [k8s-burst.md](k8s-burst.md).
 - **Changing the target requires a control-plane restart** (startup-read — Pitfall 6). The
   controller worker + api must restart for a change to take effect.
 - **In-flight work drains; switching to `local` only stops NEW cloud work.** Files already
@@ -322,76 +323,25 @@ whole feature (CLOUDDEPLOY-04):
 - **`nox`'s `PHAZE_PUSH_KNOWN_HOSTS` must be re-provisioned** with the A1's SSH **host key** after
   the A1 is up (Phase 50 strict known_hosts), or the rsync-over-SSH push fails host verification.
 
-### Selecting the `k8s` target — required knobs
+### Selecting the `k8s` target
 
-When `PHAZE_CLOUD_TARGET=k8s`, set the control-plane kube client + S3 staging knobs (all
-control-plane-only; secrets honor the `_FILE` convention). They fail fast at startup if the
-`cloud_target=k8s` requirements are unset:
+The Kubernetes (Kueue) target — the kube + S3 config knobs, the cluster-admin runbook
+(ResourceFlavor / ClusterQueue / LocalQueue / RBAC / Secret), the apiVersion-lockstep rule, the
+transport-agnostic endpoint notes, the deploy ordering, and the submit → reconcile lifecycle —
+is documented in its own self-contained runbook:
 
-```bash
-# In the lux .env (Kubernetes / Kueue target):
-PHAZE_CLOUD_TARGET=k8s
-PHAZE_KUBE_API_URL=https://kube-api.example:6443   # required for k8s
-PHAZE_KUBE_NAMESPACE=phaze                          # required for k8s
-PHAZE_KUBE_LOCAL_QUEUE=phaze-lq                     # required for k8s (kueue.x-k8s.io/queue-name)
-PHAZE_KUBE_KUBECONFIG_FILE=/run/secrets/phaze_kube_kubeconfig   # or PHAZE_KUBE_SA_TOKEN_FILE
-PHAZE_S3_BUCKET=phaze-staging                        # S3 byte-staging bucket
-PHAZE_S3_ENDPOINT_URL=https://s3.example             # any S3-compatible endpoint
-# then restart the controller worker + api
-```
+> **➡ See [k8s-burst.md](k8s-burst.md)** for the full Kubernetes burst setup. This page stays
+> A1-specific; the k8s target is **not** folded in here.
 
-See [configuration.md → Kube submit/reconcile settings](configuration.md#kube-submitreconcile-settings-phase-54-v60)
+See also [configuration.md → Kube submit/reconcile settings](configuration.md#kube-submitreconcile-settings-phase-54-v60)
 for the full per-knob reference (defaults, `_FILE` support).
-
-## Kubernetes burst — the submit → reconcile lifecycle (v6.0, Phase 54)
-
-The v6.0 Kubernetes (Kueue) target is a **third** routing destination alongside the local
-file-server and the v5.0 OCI A1 compute agent. Instead of an rsync push to a long-lived agent, the
-control plane stages the file's bytes to S3 and submits a **suspended one-shot Kueue Job**; a pod runs
-the analysis and PUTs the result back. Two control-plane pieces own this:
-
-- **`submit_cloud_job`** (the fast producer, `phaze.tasks.submit_cloud_job`) — a controller-queue task
-  that does ONE kube POST (a suspended `batch/v1` Job named `phaze-analyze-<file_id>`), upserts the
-  `cloud_job` row to `SUBMITTED`, and returns in seconds. It never awaits analysis.
-- **`reconcile_cloud_jobs`** (the safety net, `phaze.tasks.reconcile_cloud_jobs`) — a **cron-only**
-  `*/5 * * * *` CronJob registered on the controller (D-01/D-03). There is **no live kube watch**: each
-  tick it re-reads the in-flight Jobs/Workloads and reconciles them.
-
-**The callback is the only result channel (KSUBMIT-03).** The one-shot pod PUTs its analysis result to
-the existing `/api/internal/agent/analysis/{file_id}` callback — the SAME endpoint the local/agent path
-uses, reconciled by `file_id`. `reconcile_cloud_jobs` **never** writes an analysis result; it only
-drives cleanup, re-drive, and alerting. This is what makes "a dropped/expired watch never loses or
-duplicates a result" true.
-
-**What the reconcile cron does per tick:**
-
-- **Iterates the `cloud_job` sidecar (D-02)** — `SELECT cloud_job WHERE status IN (SUBMITTED, RUNNING)`
-  is the in-flight registry (NOT a watch, NOT the recovery ledger). It reads each Job (succeeded/failed)
-  and, when not yet terminal, the paired Kueue Workload for admission state.
-- **Delete-after-record ordering (D-04)** — on a terminal outcome it records the result in Postgres and
-  **commits** *before* it deletes the Job, so the status read can never lose to GC. `JOB_TTL_SECONDS`
-  (900s, `ttlSecondsAfterFinished`) is only the never-reconciled backstop.
-- **S3 cleanup on a no-callback terminal (D-05)** — a `Failed`/`Evicted`/lost Job (no callback landed)
-  triggers `s3_staging.delete_staged_object(file_id)` before the Job delete. The **success** path does
-  NOT delete S3 — the callback already deleted it inline.
-- **Bounded re-drive then ANALYSIS_FAILED (D-08)** — a no-callback terminal under
-  `cloud_submit_max_attempts` (default 3) increments `cloud_job.attempts` and re-drives a fresh
-  `submit_cloud_job`; at the cap the file is marked `ANALYSIS_FAILED` (no cross-target fallback). The
-  prior Job is deleted **and confirmed gone** before the re-submit, so the deterministic-name
-  `409 → refresh` cannot latch onto the still-terminating Job and burn an extra attempt.
-- **Inadmissible vs Pending (D-06/D-07)** — a Workload `Inadmissible` (operator misconfig — e.g. a
-  missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and **holds
-  indefinitely without consuming the re-drive cap**. A healthy `Pending` (queued behind quota) is
-  **silent** and waits forever — it is never mistaken for a failure.
-
-`reconcile_cloud_jobs` is **control-only** (kube creds live on the control plane, DIST-01) and
-**cron-only** — it is intentionally absent from `enqueue_router.CONTROLLER_TASKS` (mirroring
-`reap_stalled_scans`), so it is never operator-enqueued.
 
 ## See also
 
 - [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings) — the canonical
   per-knob reference (env var, default, `_FILE` support, description).
+- [k8s-burst.md](k8s-burst.md) — the **Kubernetes (Kueue)** burst target (`PHAZE_CLOUD_TARGET=k8s`):
+  the cluster-admin runbook, RBAC, and submit → reconcile lifecycle.
 - [deployment.md](deployment.md) — the two-host base deployment the cloud agent extends.
 - [arm64-agent-image.md](arm64-agent-image.md) — how the `-arm64` image is built and tagged.
 - [`51-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md)

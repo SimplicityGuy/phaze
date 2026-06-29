@@ -57,6 +57,37 @@ smoke test live in **[cloud-burst.md](cloud-burst.md)** — they are intentional
 guide. See also [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings)
 for the per-knob reference.
 
+For the **Kubernetes (Kueue) burst** target (`PHAZE_CLOUD_TARGET=k8s`) — the cluster-admin
+Kueue objects (ResourceFlavor / ClusterQueue / LocalQueue), the namespaced RBAC Role phaze's
+ServiceAccount needs to submit/watch Jobs, the `_FILE`-mounted kubeconfig/SA-token + S3-credential
+Secret, the S3 staging bucket + lifecycle rule, and the transport (Tailscale **or** WireGuard) to
+the kube API and S3 endpoint — see the dedicated runbook in **[k8s-burst.md](k8s-burst.md)**.
+
+### Revert / single-toggle (disable cloud offload)
+
+`PHAZE_CLOUD_TARGET` is the **single master switch** for the whole cloud-offload feature, so
+reverting is one env-var flip plus a restart — **no other change**:
+
+1. Set `PHAZE_CLOUD_TARGET=local` on the application server (the `api` + `worker` services).
+   `local` is also the shipped default, so simply **removing** the var has the same effect.
+2. Restart the controller worker **and** the api (`docker compose up -d --force-recreate worker api`).
+   `cloud_target` is read from the import-time settings singleton, so the flip takes effect only
+   after a restart — like every other knob.
+
+After the restart, **every** file — short and long alike — routes to the local file-server queue
+exactly as it did before cloud burst existed: no file is held `AWAITING_CLOUD`, the staging cron
+no-ops, and backfill-to-cloud is rejected. (Long files may then time out locally and fail cleanly
+as `ANALYSIS_FAILED`.) In-flight work drains rather than aborting — files already `PUSHING`/`PUSHED`
+finish on their current target.
+
+You do **not** need to tear down the K8s/S3 (or A1) objects to revert: the kube API, the LocalQueue,
+the S3 bucket, the mounted Secret, and the OCI A1 compute agent can all be left in place, inert. The
+toggle alone fully disables the path; re-enabling later is the reverse flip (`a1` or `k8s`) plus a
+restart, with no re-provisioning. To switch *between* cloud targets instead of fully reverting, set
+`a1` (rsync → OCI A1; requires `compute_scratch_dir`) or `k8s` (S3 → Kueue; requires
+`kube_api_url` / `kube_namespace` / `kube_local_queue` + `s3_bucket` / `s3_endpoint_url`, all
+fail-fast at startup) — full cluster/bucket/secret setup for `k8s` is in **[k8s-burst.md](k8s-burst.md)**.
+
 ## Controller vs Agent roles
 
 Phaze v4.0 selects its settings class at process boot from the `PHAZE_ROLE` env var (default `control`), via `phaze.config.get_settings()`:
@@ -436,6 +467,8 @@ docker compose restart api            # cert_bootstrap regenerates + prints the 
 ```
 
 Every file-server agent will fail to connect until you re-distribute the new `phaze-ca.crt`. The loud banner is the only safeguard — do not delete the certs directory casually.
+
+> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from an operator-created `core/v1` Secret read-only at `/certs` (KDEPLOY-06; `PHAZE_KUBE_CA_SECRET_NAME`, default `phaze-internal-ca`). After regenerating the CA above, re-create that Secret with the new `phaze-ca.crt` (`kubectl create secret generic phaze-internal-ca --from-file=phaze-ca.crt=./certs/phaze-ca.crt`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
 
 ## Pinning the agent image for production
 

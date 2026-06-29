@@ -8,9 +8,11 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
-## Current Milestone: v6.0 Kubernetes Burst Analysis
+## Last Milestone: v6.0 Kubernetes Burst Analysis — SHIPPED 2026-06-29
 
-**Goal:** Offload long-duration audio analysis to a remote **x64 Kubernetes cluster running Kueue** as a third routing target alongside local and the v5.0 OCI A1 — following the v5.0 cloud-burst pattern (duration routing, compute-agent result callback, master toggle), but with the execution unit changed from "persistent host draining a SAQ queue" to "ephemeral, quota-scheduled Kueue batch Job submitted per file."
+**Next:** v7.0 UI Redesign (DAG-Centric Hybrid Console) is scoped (phases 57-62, `REQUIREMENTS-v7.0.md`, 25 reqs) but not started — run `/gsd:new-milestone` to activate. The v6.0 goal and target features below are retained as shipped-milestone context.
+
+**Goal (shipped):** Offload long-duration audio analysis to a remote **x64 Kubernetes cluster running Kueue** as a third routing target alongside local and the v5.0 OCI A1 — following the v5.0 cloud-burst pattern (duration routing, compute-agent result callback, master toggle), but with the execution unit changed from "persistent host draining a SAQ queue" to "ephemeral, quota-scheduled Kueue batch Job submitted per file."
 
 **Target features:**
 - x86 Kueue Job-runner image published to GHCR — reuses the existing x86 essentia stack (the cluster is x64, so no arm64 source build); a one-shot entrypoint: pull file from object storage → analyze → POST result → exit
@@ -25,9 +27,15 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 ## Current State
 
+**v6.0 Kubernetes Burst Analysis shipped 2026-06-29.** Long sets that can't finish locally now run as ephemeral, quota-scheduled **Kueue batch Jobs** on a remote x64 cluster — a third analysis-routing target selected by a single `cloud_target` (`local`/`a1`/`k8s`) config under the `cloud_burst_enabled` toggle. 5 phases (52-56), 27 plans; the x86 Job-runner image, S3 object-staging leg (DIST-01-preserving control-plane presign), kr8s submit + reconcile cron, the one-branch live-seam routing edit, and the cluster-admin runbook all shipped. All 26 requirements (KJOB/KSTAGE/KSUBMIT/KROUTE/KDEPLOY) validated + 2 bonus. The milestone audit passed after closing one critical cross-phase blocker — JOB-ENV-CONTRACT (the Job manifest didn't inject the pod's runtime env; fixed via quick task 260628-wzq). Live K8s + real-S3 end-to-end verification is deployment-gated on the homelab cluster rollout (see milestones/v6.0-MILESTONE-AUDIT.md + STATE.md Deferred Items) — and must be re-run FIRST after rollout, as it is the test that would have caught JOB-ENV-CONTRACT.
+
 **v5.0 Cloud Burst Analysis shipped 2026-06-26.** Phaze can now offload long-duration audio (≥ a configurable threshold) that times out locally to a free OCI Ampere A1 (arm64) "compute agent" reached over Tailscale — duration-routed, rsync-pushed, sha256-verified, and analyzed unattended, all behind a single `cloud_burst_enabled` master toggle that defaults to all-local. 5 phases (47-51), 23 plans; all requirements (CLOUDIMG/CLOUDAGENT/CLOUDROUTE/CLOUDPIPE/CLOUDDEPLOY) validated. Live end-to-end verification is deployment-gated on the homelab OCI A1 rollout (see milestones/v5.0-MILESTONE-AUDIT.md + STATE.md Deferred Items).
 
 **v4.0 Distributed Agents shipped 2026-05-17.** Phaze runs across two hosts: a control-plane application server and one or more file-server agents.
+
+**Phase 56 (v6.0, complete 2026-06-29):** Deployment, runbook, config & docs — the operator-facing close-out of the Kubernetes burst leg. Ships `docs/k8s-burst.md` (apply-ready Kueue/RBAC/Secret manifests with a least-privilege namespaced Role whose verb floor is machine-asserted against the kr8s call graph; transport-agnostic connectivity notes; apiVersion lockstep rule + v1beta2 upgrade note) and a homelab change-prompt; the full K8s/S3 `_FILE`-secret knob table in `docs/configuration.md`; the single-toggle (`PHAZE_CLOUD_TARGET=local`) revert in `docs/deployment.md`; a live non-fatal LocalQueue-reachability probe at controller startup that writes a cross-process Redis flag surfaced as an amber dashboard alert; an ephemeral-identity Agents-UI note (the one-shot Job never heartbeats → classifies "never", never "dead"); and KDEPLOY-06 pulled forward — the internal CA is mounted at runtime from an operator-created K8s Secret (the image bakes no CA), superseding the old KJOB-05 bake. Validated requirements: KDEPLOY-01..06. Code review surfaced and fixed 2 real probe defects (CR-01: a Redis-down k8s boot could crash the controller, violating the D-05 "boots regardless" invariant; WR-01: a stale dashboard flag persisted across a target switch); both fixed with added coverage. Security audit: 19/19 threats closed. UAT (operator-delegated, live PG+Redis): 3/3 passed. **This completes milestone v6.0.**
+
+**Phase 55 (v6.0, complete 2026-06-28):** Routing, state & ledger integration — wired the Phase 53/54 S3-staging + kube-submit producers into the live duration-routing seam behind `cloud_burst_enabled`, with the scheduling ledger as the single source of truth for what may be recovered. Validated requirements: KROUTE-01..06.
 
 **Phase 54 (v6.0, complete 2026-06-28):** Kube submit/watch + reconcile cron — the Kubernetes (Kueue) burst leg. A pure kr8s `kube_staging` service (the single home of every kube API call, mirroring `s3_staging`) builds and idempotently submits a suspended `batch/v1` Job (`suspend:true`, `backoffLimit:0`, requests-only, `kueue.x-k8s.io/queue-name` label, deterministic `phaze-analyze-<file_id>` name, 900s TTL backstop). A fast `submit_cloud_job` controller-queue producer does one kube POST and returns; a narrow `*/5` `reconcile_cloud_jobs` safety-net cron owns the Job lifecycle — iterating the `cloud_job` sidecar (extended with kueue_workload/attempts/inadmissible columns + migration 026), mapping each Job/Workload condition tuple to an outcome with delete-after-record ordering (D-04), bounded re-drive with a confirm-gone race guard, S3 cleanup on no-callback terminals, and an Inadmissible operator-alert card on the pipeline dashboard — while the out-of-band `/api/internal/agent/analysis/{file_id}` callback stays the sole result writer (KSUBMIT-03). The kube config surface (api url/namespace/local-queue/image/requests + `_FILE`-resolved SA-token/kubeconfig secrets) is optional in Phase 54; fail-fast coupling to `cloud_burst_enabled` is Phase 55/56. Validated requirements: KSUBMIT-01..06. Code review surfaced and fixed 5 real bugs incl. a critical never-clearing Inadmissible alert and an SA-token that never reached the wire (kr8s session-header timing). The submit producer is built but not yet wired into the live routing seam (Phase 55 owns that).
 
@@ -137,16 +145,15 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ rsync-over-Tailscale "stay one ahead" push pipeline (control-plane orchestrated, ephemeral scratch + sha256 verify) — v5.0 Phase 50
 - ✓ Cloud-agent deployment + OCI A1 / Tailscale-ACL runbook; `cloud_burst_enabled` master toggle; `_FILE`-secret-capable config — v5.0 Phase 51
 
+- ✓ x86 Kueue Job-runner image (FROM essentia base, zero new pip deps) + one-shot entrypoint (presign-download → sha256-verify → windowed analyze → POST → exit, honest exit codes, runtime-mounted CA) — v6.0 Phase 52
+- ✓ S3 object-staging leg: control-plane aioboto3 presign/cleanup (sole importer, DIST-01 preserved), agent httpx upload, pod just-in-time GET, `file_id`-scoped keys + lifecycle TTL, `_FILE`-secret any-S3 — v6.0 Phase 53
+- ✓ Kube submit + `*/5` reconcile cron (kr8s): idempotent suspended Job, fast non-blocking submit, out-of-band callback authoritative, Inadmissible-vs-Pending, bounded re-drive, no `process_file` ledger seed — v6.0 Phase 54
+- ✓ K8s as a third cloud target via the `cloud_target` selector (replaces `cloud_burst_enabled` bool) wired as one `stage_cloud_window` branch + AST over-enqueue guard + ledger-scoped backfill — v6.0 Phase 55
+- ✓ Cluster-admin Kueue/RBAC/Secret runbook, transport-agnostic endpoints, `_FILE`-secret config + fail-fast validator, LocalQueue startup probe + dashboard alert, ephemeral Job-based Agents identity, single-toggle revert — v6.0 Phase 56
+
 ### Active
 
-_v6.0 Kubernetes Burst Analysis (detailed REQ-IDs in `REQUIREMENTS.md`):_
-- x86 Kueue Job-runner image published to GHCR (one-shot: pull from object storage → analyze → POST result → exit)
-- Kube-API submission seam: control plane submits a suspended Kueue `Job`, watches the `Workload`, reconciles by `file_id`
-- Object-storage staging to an operator-provided S3-compatible bucket (ephemeral upload + cleanup; `_FILE` secrets)
-- K8s as a third routing target; single config setting selects the active cloud target (local / A1 / K8s)
-- Job-pod result callback reuses the v5.0 compute-agent `/api/internal/agent/*` surface
-- Transport-agnostic connectivity (Tailscale or WireGuard) — operator-provided reachable endpoints only
-- Cluster/Kueue deployment + runbook; all parameters configurable via pydantic-settings under the `cloud_burst_enabled` toggle
+_No active milestone in flight. v7.0 UI Redesign (DAG-Centric Hybrid Console) is scoped — see `REQUIREMENTS-v7.0.md` (25 reqs, phases 57-62). Run `/gsd:new-milestone` to activate._
 
 ### Out of Scope
 
@@ -234,7 +241,9 @@ Deferred to a future ops phase: mTLS for the agent boundary, agent self-registra
 | Group-by-agent execution dispatch (v4.0) | In-Python `defaultdict(list)` over SQL `GROUP BY` — at 1-5 agents × ≤10K proposals, type-safe path is cheaper than DB aggregation | ✓ Good — preserves write-ahead `ExecutionLog` audit over HTTP boundary via per-operation PATCH |
 | Pre-uvicorn entrypoint shim (v4.0) | Cert bootstrap then `execvp uvicorn` so signals + PID-1 propagate cleanly | ✓ Good — clean Docker stop semantics, no double-process tree |
 | Two-step Alembic migration (v4.0) | 012 adds + backfills, 013 enforces NOT NULL + swaps UQ — preserves v3.0 data via `legacy-application-server` seed | ✓ Good — round-trip downgrade smoke gate caught the boundary; zero data loss in production migration |
-| CPU-only cluster nodes for v6.0 (no GPU / no Coral) | essentia analysis is CPU-bound: wall-clock is dominated by `MonoLoader` decode + native DSP (rhythm/onset/spectral) on long sets; the TF classifier step is a tiny slice. Coral needs int8 TFLite (essentia ships full float TF) and GPU only speeds the negligible inference. Throughput lever is horizontal CPU parallelism across files — Kueue quota delivers exactly that. | ▶ Planned — Kueue resource requests target `cpu`/`memory` only; generic x64 CPU node pool; consistent with v1.0 ProcessPoolExecutor decision |
+| CPU-only cluster nodes for v6.0 (no GPU / no Coral) | essentia analysis is CPU-bound: wall-clock is dominated by `MonoLoader` decode + native DSP (rhythm/onset/spectral) on long sets; the TF classifier step is a tiny slice. Coral needs int8 TFLite (essentia ships full float TF) and GPU only speeds the negligible inference. Throughput lever is horizontal CPU parallelism across files — Kueue quota delivers exactly that. | ✓ Good — shipped v6.0; Kueue resource requests target `cpu`/`memory` only on a generic x64 CPU node pool; consistent with the v1.0 ProcessPoolExecutor decision |
+| Ephemeral Kueue Job as the K8s execution unit (v6.0) | One suspended `batch/v1` Job per long file instead of a persistent SAQ-draining host; Kueue owns quota/admission only, and the analysis result stays out-of-band via the `/api/internal/agent/*` callback reconciled by `file_id` (a dropped kube watch never loses a result) | ✓ Good — v6.0 shipped; the milestone audit (JOB-ENV-CONTRACT) confirmed the manifest→pod env seam needs an explicit contract test; live E2E deployment-gated |
+| Object storage for K8s staging (v6.0, reverses v5.0) | Ephemeral Job pods have no persistent local disk, so the long file is staged to an operator-provided S3-compatible bucket, downloaded by the pod, and deleted after analysis; control plane presigns only (DIST-01), agent/pod are credential-free | ✓ Good — v6.0 shipped; aioboto3 confined to one control-plane module, CI-enforced; ephemeral staging only, not a data home |
 
 ## Evolution
 
@@ -254,4 +263,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-28 — after Phase 54 (Kube submit/watch + reconcile cron, v6.0)*
+*Last updated: 2026-06-29 — after v6.0 Kubernetes Burst Analysis milestone (shipped; audit passed after closing the JOB-ENV-CONTRACT cross-phase blocker)*

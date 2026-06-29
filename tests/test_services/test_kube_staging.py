@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 from httpx import Response
+import kr8s
 import pytest
 
 from phaze.services import kube_staging
@@ -37,6 +38,7 @@ _LQ = "phaze-lq"
 _IMAGE = "phaze/job-runner:test"
 _JOBS_PATH = f"/apis/batch/v1/namespaces/{_NS}/jobs"
 _WL_PATH = f"/apis/kueue.x-k8s.io/v1beta1/namespaces/{_NS}/workloads"
+_LQ_PATH = f"/apis/kueue.x-k8s.io/v1beta1/namespaces/{_NS}/localqueues/{_LQ}"
 
 
 class _StubCfg(SimpleNamespace):
@@ -51,6 +53,9 @@ class _StubCfg(SimpleNamespace):
             "kube_job_cpu_request": "2",
             "kube_job_memory_request": "4Gi",
             "kube_workload_api_version": "kueue.x-k8s.io/v1beta1",
+            "kube_ca_secret_name": "phaze-internal-ca",
+            "kube_env_configmap_name": "phaze-agent-env",
+            "kube_env_secret_name": "phaze-agent-token",
             "kube_sa_token": None,
         }
         defaults.update(overrides)
@@ -122,6 +127,50 @@ def test_build_job_manifest_spec(stub_cfg: _StubCfg) -> None:
     resources = container["resources"]
     assert resources["requests"] == {"cpu": "2", "memory": "4Gi"}  # KSUBMIT-01: requests only
     assert "limits" not in resources  # Q1 RESOLVED (adopted): requests-only is LOCKED
+
+
+def test_build_job_manifest_mounts_ca_secret(stub_cfg: _StubCfg) -> None:
+    """KDEPLOY-06: the internal CA is MOUNTED from the operator-created Secret at runtime, never
+    baked into the image (KJOB-05 reversed). The pod spec carries a `phaze-ca` volume sourced from
+    the Secret named by kube_ca_secret_name; the analyze container mounts it read-only at /certs and
+    points PHAZE_AGENT_CA_FILE at /certs/phaze-ca.crt so construct_agent_client verifies the
+    control-plane TLS chain (never verify=False)."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), stub_cfg)
+    pod_spec = manifest["spec"]["template"]["spec"]
+
+    volumes = pod_spec["volumes"]
+    ca_volume = next(v for v in volumes if v["name"] == "phaze-ca")
+    assert ca_volume["secret"]["secretName"] == "phaze-internal-ca"  # cfg.kube_ca_secret_name
+
+    container = pod_spec["containers"][0]
+    ca_mount = next(m for m in container["volumeMounts"] if m["name"] == "phaze-ca")
+    assert ca_mount["mountPath"] == "/certs"
+    assert ca_mount["readOnly"] is True
+
+    assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
+
+
+def test_build_job_manifest_injects_env_contract(stub_cfg: _StubCfg) -> None:
+    """JOB-ENV-CONTRACT: the analyze container carries the per-Job PHAZE_JOB_FILE_ID (== str(file_id))
+    PLUS an envFrom that sources the static agent env from the operator-created ConfigMap + Secret.
+
+    Without these, every admitted pod hits job_runner with no file id / no agent role+url+token and
+    exits EXIT_CONFIG=20 before any analysis. The pre-existing PHAZE_AGENT_CA_FILE entry must remain
+    (the injection is additive, not a replacement)."""
+    fid = uuid.uuid4()
+    manifest = kube_staging.build_job_manifest(fid, stub_cfg)
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+
+    # (a) the per-Job file id is code-injected (cannot come from a static ConfigMap/Secret).
+    assert {"name": "PHAZE_JOB_FILE_ID", "value": str(fid)} in container["env"]
+
+    # (b) the static agent env is sourced via envFrom from the configured ConfigMap + Secret.
+    env_from = container["envFrom"]
+    assert {"configMapRef": {"name": stub_cfg.kube_env_configmap_name}} in env_from
+    assert {"secretRef": {"name": stub_cfg.kube_env_secret_name}} in env_from
+
+    # (c) regression guard: the additive change keeps the existing CA env entry.
+    assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
 
 
 def test_job_name_is_deterministic_and_file_id_scoped() -> None:
@@ -337,3 +386,54 @@ def test_kube_staging_has_no_orm_imports() -> None:
     assert "import sqlalchemy" not in source
     assert "from sqlalchemy" not in source
     assert "phaze.models" not in source
+
+
+# --------------------------------------------------------------------------- #
+# get_local_queue -- success / NotFoundError / transient (Phase 56, KDEPLOY-04 probe)
+#
+# RED until 56-01 adds ``kube_staging.get_local_queue()``. The startup reachability probe GETs the
+# configured Kueue LocalQueue by name: refresh() raises ``kr8s.NotFoundError`` on a 404 (the queue is
+# missing / mis-named -> operator misconfig) and a generic ``kr8s.ServerError`` on a transient
+# kube-API/mesh failure. The caller (controller.startup) treats BOTH as "unreachable" and flags it
+# non-fatally -- so these cases pin the success/not-found/transient contract the impl must satisfy.
+# The LocalQueue lives in the same Kueue group as the Workload (``new_class`` version
+# ``kube_workload_api_version``), so the GET path is the localqueues sibling of ``_WL_PATH``.
+# --------------------------------------------------------------------------- #
+
+
+def _local_queue_json() -> dict[str, object]:
+    return {
+        "apiVersion": "kueue.x-k8s.io/v1beta1",
+        "kind": "LocalQueue",
+        "metadata": {"name": _LQ, "namespace": _NS, "uid": "lq-uid"},
+        "spec": {"clusterQueue": "phaze-cq"},
+        "status": {},
+    }
+
+
+async def test_get_local_queue_success(stub_cfg: _StubCfg, kube_respx: MockRouter) -> None:
+    """A 200 on the configured LocalQueue GET returns the refreshed object (reachable)."""
+    route = kube_respx.get(_LQ_PATH).mock(return_value=Response(200, json=_local_queue_json()))
+
+    lq = await kube_staging.get_local_queue()
+
+    assert route.called
+    assert lq.name == _LQ
+
+
+async def test_get_local_queue_not_found(stub_cfg: _StubCfg, kube_respx: MockRouter) -> None:
+    """A 404/NotFound on the LocalQueue GET surfaces as ``kr8s.NotFoundError`` (queue mis-named/absent)."""
+    status_404 = {"kind": "Status", "status": "Failure", "reason": "NotFound", "code": 404, "message": "not found"}
+    kube_respx.get(_LQ_PATH).mock(return_value=Response(404, json=status_404))
+
+    with pytest.raises(kr8s.NotFoundError):
+        await kube_staging.get_local_queue()
+
+
+async def test_get_local_queue_transient(stub_cfg: _StubCfg, kube_respx: MockRouter) -> None:
+    """A 500 on the LocalQueue GET raises (transient kube-API/mesh failure -> caller treats as unreachable)."""
+    status_500 = {"kind": "Status", "status": "Failure", "reason": "InternalError", "code": 500, "message": "boom"}
+    kube_respx.get(_LQ_PATH).mock(return_value=Response(500, json=status_500))
+
+    with pytest.raises(kr8s.ServerError):
+        await kube_staging.get_local_queue()

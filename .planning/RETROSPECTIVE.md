@@ -161,6 +161,36 @@
 
 ---
 
+## Milestone: v6.0 — Kubernetes Burst Analysis
+
+**Shipped:** 2026-06-29
+**Phases:** 5 (52-56) | **Plans:** 27
+
+### What Was Built
+K8s as a third analysis-routing target: ephemeral, quota-scheduled Kueue batch Jobs per long file. x86 Job-runner image + one-shot entrypoint (52), a DIST-01-preserving S3 object-staging leg (53), a kr8s submit + `*/5` reconcile cron (54), the one-branch live-seam routing edit that replaced the `cloud_burst_enabled` boolean with a `cloud_target` selector (55), and the cluster-admin runbook + LocalQueue startup probe + ephemeral Agents identity (56).
+
+### What Worked
+- The v5.0 spine (image → legs → pipeline → routing seam → deploy) replayed cleanly — every phase had a direct v5.0 precedent, so no phase needed a research-phase.
+- Keeping the single live-seam edit (Phase 55) last minimized the partially-integrated window; Phases 52-54 stayed independently unit-testable against fakes (respx / moto / fake-kube), holding the 85% gate at every boundary.
+- Confining each external SDK to one module (aioboto3 → `s3_staging`, kr8s → `kube_staging`) plus subprocess import-boundary tests kept DIST-01 enforced for free.
+
+### What Was Inefficient
+- The manifest→pod env seam (Phase 54 produces the Job manifest, Phase 52 consumes the env) was never integration-tested: Phase 52 tests injected `PHAZE_JOB_FILE_ID` via fixture, Phase 54 manifest tests asserted structure but not the env contract. The milestone audit's integration-checker caught it (**JOB-ENV-CONTRACT**) — every admitted pod would have exited code 20. A one-function fix, but it should have had a contract test at phase time.
+- Deferring the live E2E (the one test that exercises the real seam) let the gap reach milestone close. Deployment-gated deferral is necessary here, but it hides producer↔consumer seam bugs.
+
+### Patterns Established
+- For cross-phase producer/consumer artifacts (manifest builder ↔ entrypoint, payload builder ↔ validator), add a contract test on the *actually-produced* artifact, not fixture-injected inputs.
+- Run `/gsd:audit-milestone` BEFORE `complete-milestone` — the audit caught a milestone-breaking defect this cycle that all 5 per-phase verifications missed.
+
+### Key Lessons
+1. Per-phase VERIFICATION passing ≠ the milestone works end-to-end — cross-phase seams need their own integration check. This is the third time integration-at-boundaries beat unit tests (v1.0 audit gaps, v4.0 cross-tenant guards, v6.0 manifest env).
+2. Deployment-gated live E2E is a real outstanding risk, not a formality — re-run it FIRST after rollout (same lesson the v4.0.8 payload incident taught: build in one place, validate in another).
+
+### Cost Observations
+- 5 phases / 27 plans / 44 tasks over ~3 days; ~8,450 LOC added across 61 files. The audit + one quick-task fix (260628-wzq) closed the milestone in the same session.
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -180,6 +210,8 @@
 | v2.0 | 538 | 5,966 added | 6 |
 | v3.0 | (unrecorded) | (single-host enrichment) | 6 |
 | v4.0 | (full suite passing) | ~14,300 src + ~28,000 tests cumulative; ~23,242 lines added since v3.0 tag | 6 |
+| v5.0 | (full suite passing) | (arm64 essentia image + cloud-burst push pipeline) | 5 |
+| v6.0 | 2,474 passing | ~8,452 lines added across 61 files since v5.0 tag | 5 |
 
 ### Top Lessons (Verified Across Milestones)
 

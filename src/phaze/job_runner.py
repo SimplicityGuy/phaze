@@ -105,7 +105,8 @@ async def _download_to(url: str, dest: Path) -> None:
     Uses a FRESH httpx client with NO Authorization header: the presigned URL is
     self-authenticating, and attaching the internal bearer would leak it to the
     object store (T-52-04). ``verify`` defaults to True (system CAs) for the
-    public bucket endpoint — distinct from the baked-CA internal callback.
+    public bucket endpoint — distinct from the internal-CA callback (the CA is
+    mounted from a K8s Secret at runtime, KDEPLOY-06).
     """
     timeout = httpx.Timeout(_DOWNLOAD_CONNECT_TIMEOUT_S, read=_DOWNLOAD_READ_TIMEOUT_S)
     async with httpx.AsyncClient(timeout=timeout) as downloader, downloader.stream("GET", url) as resp:
@@ -169,8 +170,9 @@ async def run() -> None:
     fid = str(file_id)
 
     # KJOB-05 / T-52-01: build the callback client with verify=cfg.agent_ca_file
-    # (the baked internal CA). construct_agent_client raises if the CA is missing
-    # or empty; TLS verification is never bypassed.
+    # (the internal CA, mounted from a K8s Secret at runtime per KDEPLOY-06 — no
+    # longer baked into the image). construct_agent_client raises if the CA is
+    # missing or empty; TLS verification is never bypassed.
     client = construct_agent_client(cfg)
 
     tmp_path: Path | None = None

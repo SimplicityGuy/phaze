@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v6.0
 milestone_name: Kubernetes Burst Analysis
-status: ready_to_plan
-last_updated: 2026-06-28T23:53:56.940Z
-last_activity: 2026-06-28
+status: Awaiting next milestone
+last_updated: "2026-06-29T15:23:06.740Z"
+last_activity: 2026-06-29 — Milestone v6.0 completed and archived
 progress:
   total_phases: 27
-  completed_phases: 3
-  total_plans: 20
-  completed_plans: 20
-  percent: 11
-stopped_at: Phase 55 complete (6/6) — ready to discuss Phase 56
+  completed_phases: 5
+  total_plans: 27
+  completed_plans: 27
+  percent: 19
 ---
 
 # Project State
@@ -21,20 +20,20 @@ stopped_at: Phase 55 complete (6/6) — ready to discuss Phase 56
 See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 56 — deployment, runbook, config & docs
+**Current focus:** Milestone complete
 
 ## Current Position
 
-Phase: 56
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-06-28
+Phase: Milestone v6.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-29 — Milestone v6.0 completed and archived
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 93
+- Total plans completed: 100
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -131,6 +130,7 @@ None.
 | 260615-cyp | Fix pipeline DAG rendering as visible text: a JS comment inside the parent `#pipeline-dag` Alpine `x-data="..."` attribute used double quotes (`"no online agent"`), terminating the HTML attribute at the first inner `"` and dumping the entire `nodes` getter into the DOM as text (Phase-40 `fingerprint_scan` comment regression, live on nox/lux v4.2.0). Single-quote the comment + regression guard `test_xdata_getter_has_no_unescaped_double_quotes` asserting the `#pipeline-dag` x-data value holds zero literal `"`. 30 non-DB tests pass; all hooks clean. | 2026-06-15 | 928d229 | [260615-cyp-fix-dag-canvas-xdata-quote](./quick/260615-cyp-fix-dag-canvas-xdata-quote/) |
 | 260618-sx6 | Bridge configured LLM API key into litellm (Bug A): generate_proposals failed every run with litellm AuthenticationError because the file-loaded ControlSettings.anthropic_api_key had zero consumers — litellm reads the bare ANTHROPIC_API_KEY env var, never set. Add config.export_llm_api_keys() (exports present SecretStr keys only when unset, operator wins, never logs) called from controller.startup(); unit + functional wiring-guard tests. Full suite 1888 passed, 97.64% cov. Bug B (nox panako/audfprint host alias) handled separately as a homelab fix. | 2026-06-19 | 9e6dd53 | [260618-sx6-pass-configured-anthropic-openai-api-key](./quick/260618-sx6-pass-configured-anthropic-openai-api-key/) |
 | 260627-ktb | Uniform supply-chain cooldown via the canonical relative `[tool.uv] exclude-newer = "7 days"` across root + both service pyproject.toml (satisfies semgrep uv-missing-dependency-cooldown). A relative window only resolves when every floor is ≥7d old, so: reverted yesterday's `chore: update deps` (c8574dc) 7 fresh floors to prior ≥7d-old values (alembic 1.18.4, fastapi 0.138.0, litellm 1.85.6, mutagen 1.47.0, numpy 2.4.6, greenlet 3.5.2, ruff 0.15.18), and relaxed redis `>=8.0.1`→`>=8.0.0` (8.0.1 was a <7d Dependabot bump #160, not a security pin; still redis 8, auto-lifts post-cooldown). Resilience: `.github/dependabot.yml` cooldown.default-days=7 on all ecosystems; update-project.sh `ensure_cooldown_window()` re-asserts the relative window uniformly. Also reorganized root pyproject headings+settings. Why the 4 --major packages stay put: constraint-blocked (litellm <1.86 cap; importlib-metadata <9 via litellm; typer <0.26 via huggingface-hub; pydantic-core 2.47.0 alpha-only). ruff 0.15.18 + mypy green. | 2026-06-27 | a8edbf8 | [260627-ktb-upgrade-litellm-and-transitive-deps-fix-](./quick/260627-ktb-upgrade-litellm-and-transitive-deps-fix-/) |
+| 260628-wzq | Fix JOB-ENV-CONTRACT (v6.0 milestone-audit critical blocker): the Kueue Job manifest built by `build_job_manifest` injected only `PHAZE_AGENT_CA_FILE`, so every admitted pod exited `EXIT_CONFIG=20` before analysis (`job_runner` requires `PHAZE_JOB_FILE_ID` + agent env). Inject `{"name":"PHAZE_JOB_FILE_ID","value":str(file_id)}` into the container env + an `envFrom` (configMapRef `kube_env_configmap_name` default `phaze-agent-env`; secretRef `kube_env_secret_name` default `phaze-agent-token`, reusing the existing bearer-token Secret), two new defaulted `ControlSettings` knobs mirroring `kube_ca_secret_name` (no change to `_enforce_kube_config_when_k8s`), the agent-env ConfigMap + envFrom documented in `docs/k8s-burst.md` §6, and `test_build_job_manifest_injects_env_contract` (the regression test that would have caught it). 26 + 127 tests pass, mypy clean. | 2026-06-29 | 5f43aa7 | [260628-wzq-fix-job-env-contract-inject-pod-runtime-](./quick/260628-wzq-fix-job-env-contract-inject-pod-runtime-/) |
 | Phase 34 P01 | 12 min | 2 tasks | 2 files |
 | Phase 34 P02 | ~10 min | 3 tasks | 4 files |
 | Phase 34 P03 | ~8 min | 2 tasks | 4 files |
@@ -160,13 +160,25 @@ Items acknowledged and deferred at the v5.0 milestone close on 2026-06-26. All t
 
 These are tracked for the v5.0 deploy; they are NOT blockers for the milestone record.
 
+Items acknowledged and deferred at the **v6.0** milestone close on 2026-06-29. All three are
+**deployment-gated** — they unblock on the live x64 Kueue cluster + S3 bucket rollout (see
+`.planning/milestones/v6.0-MILESTONE-AUDIT.md` and `docs/k8s-burst.md`).
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 53-UAT | partial | S3 round-trip verified against moto; the live real-S3 leg pends a real bucket |
+| uat | 54-UAT | partial | Kube submit/reconcile verified against a fake kube API; live Kueue admission/eviction pends a real cluster |
+| uat | 55-HUMAN-UAT | partial | Test 2 (end-to-end K8s routing) blocked on a live Kueue cluster + real S3 — the test that would have caught JOB-ENV-CONTRACT; **re-run FIRST after rollout**. Tests 1+3 passed in-app. |
+
+These are tracked for the v6.0 deploy; they are NOT blockers for the milestone record. The JOB-ENV-CONTRACT seam fix (quick 260628-wzq) makes the live E2E re-run especially important.
+
 ## Session Continuity
 
-Last session: 2026-06-28T18:46:44.607Z
-Stopped at: Phase 55 UI-SPEC approved
-Resume file: .planning/phases/55-routing-state-ledger-integration-the-live-seam/55-UI-SPEC.md
+Last session: 2026-06-29 — v6.0 milestone completed, archived, and tagged
+Stopped at: Milestone v6.0 complete (audit passed after closing JOB-ENV-CONTRACT via quick 260628-wzq)
+Resume file: .planning/milestones/v6.0-ROADMAP.md (archived milestone detail)
 
 ## Operator Next Steps
 
-- Review the v6.0 roadmap draft (phases 52-56) in `.planning/ROADMAP.md`
-- Plan the first phase with `/gsd:plan-phase 52`
+- Start the next milestone with /gsd-new-milestone (v7.0 UI Redesign is already scoped — `.planning/REQUIREMENTS-v7.0.md`)
+- After the live x64 Kueue cluster + S3 rollout, re-run the deferred live K8s E2E FIRST (Phase 55 HUMAN-UAT test 2) — it is the test that would have caught JOB-ENV-CONTRACT

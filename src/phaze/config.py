@@ -566,6 +566,21 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_KUBE_WORKLOAD_API_VERSION", "kube_workload_api_version"),
         description="apiVersion of the Kueue Workload/Job resources the control plane submits and reconciles (Phase 54, KSUBMIT-01). Default 'kueue.x-k8s.io/v1beta1'.",
     )
+    kube_ca_secret_name: str = Field(
+        default="phaze-internal-ca",
+        validation_alias=AliasChoices("PHAZE_KUBE_CA_SECRET_NAME", "kube_ca_secret_name"),
+        description="Name of the operator-created core/v1 Secret holding the internal CA cert (key 'phaze-ca.crt'). The suspended Job mounts it read-only at /certs so the one-shot pod verifies the control-plane TLS chain (Phase 56, KDEPLOY-06). The CA is NOT baked into the Job image (KJOB-05 reversed); rotation is a Secret update + re-submit, no image rebuild. phaze references this Secret by name only and never authors it.",
+    )
+    kube_env_configmap_name: str = Field(
+        default="phaze-agent-env",
+        validation_alias=AliasChoices("PHAZE_KUBE_ENV_CONFIGMAP_NAME", "kube_env_configmap_name"),
+        description="Name of the operator-created core/v1 ConfigMap the suspended Job sources its static agent env from via envFrom (PHAZE_ROLE=agent, PHAZE_AGENT_API_URL, PHAZE_MODELS_DIR). The per-Job PHAZE_JOB_FILE_ID is injected separately at submit time, not from this ConfigMap. phaze references this ConfigMap by name only and never authors it.",
+    )
+    kube_env_secret_name: str = Field(
+        default="phaze-agent-token",
+        validation_alias=AliasChoices("PHAZE_KUBE_ENV_SECRET_NAME", "kube_env_secret_name"),
+        description="Name of the operator-created core/v1 Secret the suspended Job sources PHAZE_AGENT_TOKEN from via envFrom; defaults to the existing compute-agent bearer-token Secret (phaze-agent-token). phaze references this Secret by name only and never authors it.",
+    )
     # Phase 54 (KSUBMIT-01) credentials -- file-mounted SecretStr resolved via SECRET_FILE_FIELDS
     # above. NEVER log (T-54-01). Control plane only.
     kube_kubeconfig: SecretStr | None = Field(

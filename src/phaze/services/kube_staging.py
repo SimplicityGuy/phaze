@@ -117,6 +117,12 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
 
+    The internal CA is MOUNTED at runtime, not baked into the image (Phase 56, KJOB-05 reversed ->
+    KDEPLOY-06): the pod spec carries a ``phaze-ca`` volume sourced from the operator-created Secret
+    named by ``kube_ca_secret_name`` (key ``phaze-ca.crt``), mounted read-only at ``/certs``, and
+    the container sets ``PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`` so the one-shot callback verifies
+    the control-plane TLS chain (never ``verify=False``). CA rotation = Secret update + re-submit.
+
     Fail-loud on an unset ``kube_job_image`` / ``kube_job_cpu_request`` / ``kube_job_memory_request``
     (all ``Optional`` in Phase 54): a half-configured manifest would otherwise carry ``None`` values
     and surface as an opaque non-409 ``KubeStagingError`` from the kube API, instead of naming the
@@ -156,10 +162,43 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
             "template": {
                 "spec": {
                     "restartPolicy": "Never",
+                    # The internal CA is MOUNTED from the operator-created Secret at runtime, NOT
+                    # baked into the image (KJOB-05 reversed -> KDEPLOY-06). The Secret named by
+                    # kube_ca_secret_name carries key `phaze-ca.crt`; mounting it read-only at
+                    # /certs surfaces /certs/phaze-ca.crt, which PHAZE_AGENT_CA_FILE (below) points
+                    # construct_agent_client at to verify the control-plane TLS chain (never
+                    # verify=False). Rotation is a Secret update + re-submit -- no image rebuild.
+                    "volumes": [
+                        {
+                            "name": "phaze-ca",
+                            "secret": {"secretName": cfg.kube_ca_secret_name},
+                        }
+                    ],
                     "containers": [
                         {
                             "name": "analyze",
                             "image": cfg.kube_job_image,
+                            # Two env sources with distinct lifecycles (JOB-ENV-CONTRACT):
+                            #   - `env`: the PER-JOB PHAZE_JOB_FILE_ID, code-injected here because it
+                            #     varies per submit and CANNOT come from a static ConfigMap/Secret.
+                            #     job_runner reads it and sys.exit(EXIT_CONFIG)=20 if it is absent.
+                            #     (PHAZE_AGENT_CA_FILE stays here too -- it points at the mounted CA.)
+                            #   - `envFrom`: the STATIC-per-deployment agent env (PHAZE_ROLE=agent,
+                            #     PHAZE_AGENT_API_URL, PHAZE_MODELS_DIR from the ConfigMap;
+                            #     PHAZE_AGENT_TOKEN from the Secret) the pod entrypoint requires to
+                            #     build AgentSettings + call back. Both objects are operator-created;
+                            #     phaze references them by name only (kube_env_*_name).
+                            "env": [
+                                {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"},
+                                {"name": "PHAZE_JOB_FILE_ID", "value": str(file_id)},
+                            ],
+                            "envFrom": [
+                                {"configMapRef": {"name": cfg.kube_env_configmap_name}},
+                                {"secretRef": {"name": cfg.kube_env_secret_name}},
+                            ],
+                            "volumeMounts": [
+                                {"name": "phaze-ca", "mountPath": "/certs", "readOnly": True},
+                            ],
                             "resources": {
                                 "requests": {
                                     "cpu": cfg.kube_job_cpu_request,
@@ -201,6 +240,25 @@ async def get_job(name: str) -> Any:
     job = Job({"metadata": {"name": name, "namespace": cfg.kube_namespace}}, api=api)
     await job.refresh()
     return job
+
+
+async def get_local_queue() -> Any:
+    """GET the configured Kueue LocalQueue by name (Phase 56, KDEPLOY-04 reachability probe).
+
+    Mirrors :func:`get_job`: construct-by-name + ``refresh()``. The LocalQueue lives in the same
+    ``kueue.x-k8s.io`` group as the Workload, so it reuses ``kube_workload_api_version`` via
+    ``new_class`` (no new import). This service RAISES -- it never swallows: ``refresh()`` raises
+    ``kr8s.NotFoundError`` on a 404 (the queue is mis-named / absent -> operator misconfig) and a
+    generic ``kr8s.ServerError`` on a transient kube-API/mesh failure. The non-fatal catch belongs to
+    the controller.startup caller (D-05/D-06), which treats BOTH 404 and transient errors as
+    "unreachable" and flags it without aborting boot.
+    """
+    cfg = _kube_config()
+    api = await _api(cfg)
+    local_queue_cls = new_class(kind="LocalQueue", version=cfg.kube_workload_api_version, namespaced=True)
+    local_queue = local_queue_cls({"metadata": {"name": cfg.kube_local_queue, "namespace": cfg.kube_namespace}}, api=api)
+    await local_queue.refresh()
+    return local_queue
 
 
 async def list_inflight_jobs() -> list[Any]:
