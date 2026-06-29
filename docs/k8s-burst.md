@@ -294,7 +294,53 @@ stringData:
 > Secret on the kube side. Use the `*_FILE` convention end to end; do not inline it in plain
 > env or compose files.
 
-### 6 — Internal-CA Secret (the control-plane TLS trust anchor)
+### 6 — Agent-env ConfigMap (the static pod env)
+
+The one-shot pod needs more than the file id to run: its entrypoint builds the agent settings and
+calls back to the control plane, so it must know its role, where the control-plane API lives, and
+where the analysis models are on disk. phaze sources that **static, per-deployment** env into the
+suspended Job's analyze container via `envFrom` from an operator-created `core/v1` ConfigMap —
+named **by name only** (`PHAZE_KUBE_ENV_CONFIGMAP_NAME`, default `phaze-agent-env`); **phaze does
+not create it**.
+
+```bash
+# On the control plane: create the agent-env ConfigMap. Use the reachable control-plane HTTPS URL
+# the pod calls back to, and the in-image models path the Job image ships.
+kubectl create configmap phaze-agent-env \
+  --namespace phaze \
+  --from-literal=PHAZE_ROLE=agent \
+  --from-literal=PHAZE_AGENT_API_URL=https://<control-plane-host>:8000 \
+  --from-literal=PHAZE_MODELS_DIR=/models
+```
+
+```yaml
+# Equivalent declarative form (core/v1 ConfigMap carrying the static, non-secret agent env).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: phaze-agent-env
+  namespace: phaze
+data:
+  PHAZE_ROLE: agent
+  PHAZE_AGENT_API_URL: "https://<control-plane-host>:8000"   # reachable control-plane HTTPS URL
+  PHAZE_MODELS_DIR: "/models"                                  # in-image models path the Job image ships
+```
+
+The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretRef(phaze-agent-token)]`:
+
+- The **ConfigMap** above carries the non-secret env — `PHAZE_ROLE`, `PHAZE_AGENT_API_URL`,
+  `PHAZE_MODELS_DIR`.
+- `PHAZE_AGENT_TOKEN` is **not** a new object — it is sourced via `envFrom.secretRef` from the
+  **existing bearer-token Secret** (§5, default `phaze-agent-token`). No additional Secret is
+  needed; the same Secret that backs the callback token backs the pod env.
+- `PHAZE_JOB_FILE_ID` is **not** in this ConfigMap and is **not** operator-managed — it varies per
+  file, so phaze injects it **per-Job at submit time** into the container env directly.
+
+> If you name the ConfigMap or the env Secret something other than the defaults, set
+> `PHAZE_KUBE_ENV_CONFIGMAP_NAME` / `PHAZE_KUBE_ENV_SECRET_NAME` on the control plane to match
+> (mirrors the `PHAZE_KUBE_CA_SECRET_NAME` note in §7).
+
+### 7 — Internal-CA Secret (the control-plane TLS trust anchor)
 
 The one-shot pod calls back to the control plane over HTTPS and verifies its TLS chain against the
 **internal CA** — never `verify=False`. That CA is **not baked into the Job image** (Phase 56,
@@ -402,7 +448,8 @@ request — with `datum@nox` / `datum@lux` SSH steps — is
 2. **Cluster (operator):** `kubectl apply` the namespaced RBAC — ServiceAccount + Role +
    RoleBinding (runbook §4).
 3. **Control plane:** mint the compute-agent token (`phaze agents add --kind compute`); paste
-   it into the Secret and `kubectl apply` it (runbook §5).
+   it into the Secret and `kubectl apply` it (runbook §5). Then `kubectl apply` the agent-env
+   ConfigMap and the internal-CA Secret (runbook §6–§7).
 4. **Control plane (`datum@lux`):** set `PHAZE_CLOUD_TARGET=k8s` plus the kube + S3 knobs (see
    the configuration links above), then **restart** the controller worker + api — `cloud_target`
    is a startup-read; the running process will not pick up the change until it restarts.
@@ -418,8 +465,8 @@ No CI cluster exists — this checklist is the live apply verification on the op
 cluster:
 
 - [ ] **Manifests apply clean.** `kubectl apply` of the ResourceFlavor, ClusterQueue,
-      LocalQueue, RBAC, and Secret returns no error (a `dry-run=server` apply is a good
-      pre-check: `kubectl apply --dry-run=server -f <manifest>`).
+      LocalQueue, RBAC, agent-env ConfigMap, and Secrets returns no error (a `dry-run=server`
+      apply is a good pre-check: `kubectl apply --dry-run=server -f <manifest>`).
 - [ ] **Kueue admits the queues.** `kubectl get clusterqueue phaze-cq` and
       `kubectl get localqueue -n phaze phaze-lq` show the objects; the ClusterQueue reports
       `Active`.
