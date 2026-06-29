@@ -1,0 +1,33 @@
+{# Phase 56 (56-02, D-05, KDEPLOY-04): K8s LocalQueue-unreachable operator alert card.
+
+   localqueue_unreachable = get_localqueue_unreachable(redis): True when the controller.startup probe
+   (56-01, D-06) flagged the Kueue LocalQueue unreachable by setting the cross-process Redis key
+   phaze:k8s:localqueue_unreachable; on a healthy probe the key is absent so the flag is False and the
+   banner is rendered EMPTY (no visible content) — loud only when the k8s lane can't reach its
+   LocalQueue. D-05 is warn+surface (the app stays up), so this uses AMBER, NOT red.
+
+   The flag arrives in the context from the 56-01 degrade-safe service read (get_localqueue_unreachable);
+   a missing app.state.redis or any Redis error surfaces as False, so the card always renders (possibly
+   empty) and NEVER raises (T-56-POLL). All copy is a STATIC string rendered through Jinja autoescape —
+   no operator free-text or PII is interpolated (T-56-XSS).
+
+   Rendered inline in dashboard.html on first load (#localqueue-card lives OUTSIDE the #pipeline-stats
+   poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on every 5s poll (oob=True)
+   so the alert stays live without re-rendering the DAG buttons. Same id on both renders is the OOB
+   contract (mirrors inadmissible_card.html). The empty <section> carrier is always emitted so the OOB
+   swap has a stable target even when the alert is silent. #}
+<section id="localqueue-card"
+         {% if oob %}hx-swap-oob="true"{% endif %}>
+    {% if localqueue_unreachable %}
+    <div role="alert"
+         aria-labelledby="localqueue-heading"
+         class="border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 rounded-lg p-4 space-y-1">
+        <h2 id="localqueue-heading" class="text-lg font-semibold text-amber-800 dark:text-amber-300">
+            ⚠ K8s LocalQueue unreachable
+        </h2>
+        <p class="text-sm text-amber-700 dark:text-amber-400">
+            K8s LocalQueue unreachable — verify PHAZE_KUBE_LOCAL_QUEUE / cluster connectivity.
+        </p>
+    </div>
+    {% endif %}
+</section>
