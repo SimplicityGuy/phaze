@@ -53,6 +53,7 @@ class _StubCfg(SimpleNamespace):
             "kube_job_cpu_request": "2",
             "kube_job_memory_request": "4Gi",
             "kube_workload_api_version": "kueue.x-k8s.io/v1beta1",
+            "kube_ca_secret_name": "phaze-internal-ca",
             "kube_sa_token": None,
         }
         defaults.update(overrides)
@@ -124,6 +125,27 @@ def test_build_job_manifest_spec(stub_cfg: _StubCfg) -> None:
     resources = container["resources"]
     assert resources["requests"] == {"cpu": "2", "memory": "4Gi"}  # KSUBMIT-01: requests only
     assert "limits" not in resources  # Q1 RESOLVED (adopted): requests-only is LOCKED
+
+
+def test_build_job_manifest_mounts_ca_secret(stub_cfg: _StubCfg) -> None:
+    """KDEPLOY-06: the internal CA is MOUNTED from the operator-created Secret at runtime, never
+    baked into the image (KJOB-05 reversed). The pod spec carries a `phaze-ca` volume sourced from
+    the Secret named by kube_ca_secret_name; the analyze container mounts it read-only at /certs and
+    points PHAZE_AGENT_CA_FILE at /certs/phaze-ca.crt so construct_agent_client verifies the
+    control-plane TLS chain (never verify=False)."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), stub_cfg)
+    pod_spec = manifest["spec"]["template"]["spec"]
+
+    volumes = pod_spec["volumes"]
+    ca_volume = next(v for v in volumes if v["name"] == "phaze-ca")
+    assert ca_volume["secret"]["secretName"] == "phaze-internal-ca"  # cfg.kube_ca_secret_name
+
+    container = pod_spec["containers"][0]
+    ca_mount = next(m for m in container["volumeMounts"] if m["name"] == "phaze-ca")
+    assert ca_mount["mountPath"] == "/certs"
+    assert ca_mount["readOnly"] is True
+
+    assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
 
 
 def test_job_name_is_deterministic_and_file_id_scoped() -> None:

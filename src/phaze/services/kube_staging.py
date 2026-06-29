@@ -117,6 +117,12 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
 
+    The internal CA is MOUNTED at runtime, not baked into the image (Phase 56, KJOB-05 reversed ->
+    KDEPLOY-06): the pod spec carries a ``phaze-ca`` volume sourced from the operator-created Secret
+    named by ``kube_ca_secret_name`` (key ``phaze-ca.crt``), mounted read-only at ``/certs``, and
+    the container sets ``PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`` so the one-shot callback verifies
+    the control-plane TLS chain (never ``verify=False``). CA rotation = Secret update + re-submit.
+
     Fail-loud on an unset ``kube_job_image`` / ``kube_job_cpu_request`` / ``kube_job_memory_request``
     (all ``Optional`` in Phase 54): a half-configured manifest would otherwise carry ``None`` values
     and surface as an opaque non-409 ``KubeStagingError`` from the kube API, instead of naming the
@@ -156,10 +162,28 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
             "template": {
                 "spec": {
                     "restartPolicy": "Never",
+                    # The internal CA is MOUNTED from the operator-created Secret at runtime, NOT
+                    # baked into the image (KJOB-05 reversed -> KDEPLOY-06). The Secret named by
+                    # kube_ca_secret_name carries key `phaze-ca.crt`; mounting it read-only at
+                    # /certs surfaces /certs/phaze-ca.crt, which PHAZE_AGENT_CA_FILE (below) points
+                    # construct_agent_client at to verify the control-plane TLS chain (never
+                    # verify=False). Rotation is a Secret update + re-submit -- no image rebuild.
+                    "volumes": [
+                        {
+                            "name": "phaze-ca",
+                            "secret": {"secretName": cfg.kube_ca_secret_name},
+                        }
+                    ],
                     "containers": [
                         {
                             "name": "analyze",
                             "image": cfg.kube_job_image,
+                            "env": [
+                                {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"},
+                            ],
+                            "volumeMounts": [
+                                {"name": "phaze-ca", "mountPath": "/certs", "readOnly": True},
+                            ],
                             "resources": {
                                 "requests": {
                                     "cpu": cfg.kube_job_cpu_request,
