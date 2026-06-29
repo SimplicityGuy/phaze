@@ -22,7 +22,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 - [x] **KJOB-02**: The entrypoint runs as a one-shot: request a fresh presigned download URL from the control plane → download the file → sha256-verify against `FileRecord` → analyze → POST the result to `/api/internal/agent/*` (reconciled by `file_id`) → exit.
 - [x] **KJOB-03**: Analysis in the pod uses the windowed/streaming path so a multi-hour set never OOMs under a hard pod memory limit (no whole-file `MonoLoader` decode); memory requests are sized from measured peak RSS on the longest real sets.
 - [x] **KJOB-04**: The entrypoint has an honest exit-code contract — non-zero on download, integrity, analysis, or callback failure; it never reports success on a failed analysis.
-- [x] **KJOB-05**: The pod trusts the control plane's internal CA (baked into the image) for the HTTPS callback; no TLS bypass (`verify=False`) anywhere.
+- [x] **KJOB-05**: The pod trusts the control plane's internal CA for the HTTPS callback; no TLS bypass (`verify=False`) anywhere. _(~~baked into the image~~ **SUPERSEDED by KDEPLOY-06**, Phase 56/56-06: the CA is now mounted at runtime from an operator-created K8s Secret, not baked. The internal CA is generated per-deployment by `cert_bootstrap` and is unique per operator, so there is no canonical CA to bake — and a public GHCR image must never carry an operator's private CA. The no-`verify=False` invariant is unchanged.)_
 
 ### S3 object-staging leg (KSTAGE)
 
@@ -64,7 +64,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 - **KROUTE-06**: Pipeline dashboard admission-state cards (queued-behind-quota / admitted / running / finished) driven by `cloud_phase`.
 - **KJOB-06**: Multi-arch single-tag manifest for the Job image (currently x86-only; the cluster is x64).
 - **KSUBMIT-09**: More than one concurrent file per Job / multiple LocalQueues / elastic parallelism (each Job is `parallelism: 1` in v6.0).
-- **KDEPLOY-06**: ConfigMap-mounted internal CA so CA rotation doesn't require a Job-image rebuild (v6.0 bakes the CA into the image).
+- [x] **KDEPLOY-06**: ~~ConfigMap-mounted~~ **Secret-mounted** internal CA so CA rotation doesn't require a Job-image rebuild. **IMPLEMENTED in Phase 56 (56-06)**, pulled forward from deferred: `build_job_manifest` mounts the operator-created `phaze-internal-ca` Secret (`PHAZE_KUBE_CA_SECRET_NAME`) read-only at `/certs`; the Job image no longer bakes a CA (supersedes KJOB-05). A Secret (not ConfigMap) is used because it carries the CA cert as cluster-managed secret material; rotation = Secret update + re-submit.
 
 ## Out of Scope
 
