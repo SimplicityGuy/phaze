@@ -103,21 +103,27 @@ headings/eyebrows/labels (uppercase, letter-spaced), **Inter** for body/UI text.
 
 | Role | Family | Size | Weight | Line Height | Usage |
 |------|--------|------|--------|-------------|-------|
-| Display | Jura | 24px (`text-2xl`) | 500 | 1.2 | first-run / empty-state heading (rendered in 61; reserve the scale) |
 | Heading | Jura | 18px (`text-lg`) | 500 | 1.2 | stage-workspace `<h1>` (uppercase, `tracking-[0.15em]`); focus target after swap |
 | Body | Inter | 14px (`text-sm`) | 400 | 1.5 | default UI text, rail node labels, table cells, pane text |
+| Mono counts | monospace | 12px (`text-xs`) | 400 | 1.4 | rail live-counts + capacity numerals (`mono` → `ui-monospace, 'SF Mono', Menlo`) so digit columns align — a display treatment, not a new family |
 | Label | Jura | 11px (`text-[11px]`) | 500 | 1.4 | section eyebrows, rail group labels (`uppercase tracking-[0.2em]`), "PHAZE" wordmark (`text-sm tracking-[0.25em]`), footer |
 
-**Weights — exactly two body weights + one brand heading weight (all preserved from `base.html`):**
+Exactly **four sizes** in Phase 57's shell chrome: 18 / 14 / 12 / 11px. The **Display / 24px**
+(`text-2xl`) scale is **reserved for and defined by Phase 61's first-run / empty-state heading**,
+where it first renders — it appears in no Phase 57 header/rail/pane element, so it is not declared
+here.
 
-- **400 (regular)** — Inter body, the default.
-- **600 (semibold)** — Inter emphasis (active link text, button labels where Inter is used).
-- **500 (medium)** — Jura headings/labels (the brand-locked heading weight; `base.html` loads
-  Jura 300/500). Do not introduce Jura 700/bold in the shell.
+**Weights — exactly two declared for Phase 57 chrome (both preserved from `base.html`):**
 
-Numeric counts (rail counts, capacity) render in a **monospace** stack (`mono` →
-`ui-monospace, 'SF Mono', Menlo`) at `text-xs` (12px) so digit columns align — this is a
-display treatment, not a new font family.
+- **400 (regular)** — Inter body, the default (rail node labels, table cells, pane text, the
+  ⌘K placeholder, mono counts).
+- **500 (medium)** — Jura headings/eyebrows/labels and brand wordmark (the brand-locked heading
+  weight; `base.html` loads Jura 300/500), and the Jura-tracked controls (the "+ Scan" CTA, the
+  "Agents" link). Do not introduce Jura 700/bold in the shell.
+
+> **Note:** Inter 600 (semibold) exists in `base.html` and will appear in bridged stage content /
+> Phase 58+ workspaces; Phase 57 chrome does not introduce it, so it is not part of this phase's
+> declared weight set.
 
 ---
 
