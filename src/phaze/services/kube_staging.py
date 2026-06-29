@@ -203,6 +203,25 @@ async def get_job(name: str) -> Any:
     return job
 
 
+async def get_local_queue() -> Any:
+    """GET the configured Kueue LocalQueue by name (Phase 56, KDEPLOY-04 reachability probe).
+
+    Mirrors :func:`get_job`: construct-by-name + ``refresh()``. The LocalQueue lives in the same
+    ``kueue.x-k8s.io`` group as the Workload, so it reuses ``kube_workload_api_version`` via
+    ``new_class`` (no new import). This service RAISES -- it never swallows: ``refresh()`` raises
+    ``kr8s.NotFoundError`` on a 404 (the queue is mis-named / absent -> operator misconfig) and a
+    generic ``kr8s.ServerError`` on a transient kube-API/mesh failure. The non-fatal catch belongs to
+    the controller.startup caller (D-05/D-06), which treats BOTH 404 and transient errors as
+    "unreachable" and flags it without aborting boot.
+    """
+    cfg = _kube_config()
+    api = await _api(cfg)
+    local_queue_cls = new_class(kind="LocalQueue", version=cfg.kube_workload_api_version, namespaced=True)
+    local_queue = local_queue_cls({"metadata": {"name": cfg.kube_local_queue, "namespace": cfg.kube_namespace}}, api=api)
+    await local_queue.refresh()
+    return local_queue
+
+
 async def list_inflight_jobs() -> list[Any]:
     """Reserved orphan-Job sweep -- built + tested here, intentionally NOT invoked in Phase 54.
 
