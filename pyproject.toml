@@ -214,7 +214,7 @@ dev = [
     # ThreadedMotoServer -- required because aioboto3/aiobotocore's async response parsing
     # is incompatible with moto's in-process `mock_aws`, so the SDK must talk real HTTP to a
     # wire-compatible moto server (this is what makes presigned-URL round-trips testable).
-    "moto[server]>=5.1.0",
+    "moto[server]>=5.2.2",
     "mypy>=2.1.0",
     "pip-audit>=2.10.1",
     "pre-commit>=4.6.0",
