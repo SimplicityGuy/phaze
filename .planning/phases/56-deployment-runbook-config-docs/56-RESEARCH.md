@@ -581,20 +581,20 @@ is testable against `kube_fakes`).
 | A5 | RBAC/Secret YAML schemas (rbac.authorization.k8s.io/v1, core/v1) are standard and stable | Runbook Content | Very low — these are GA Kubernetes APIs |
 | A6 | API discovery endpoints are readable by the SA (kr8s session handshake) | Runbook RBAC note | On a hardened cluster, discovery may need an explicit grant; flagged for operator confirmation |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Which Kueue version is the homelab cluster actually running (v1beta1 vs v1beta2-only)?**
    - What we know: phaze code defaults to `v1beta1`; Kueue has deprecated v1beta1 in favor of v1beta2.
    - What's unclear: the operator's installed Kueue minor version.
-   - Recommendation: ship v1beta1 manifests + the v1beta2 upgrade note (Pitfall 1); the homelab
-     change-prompt should ask the operator to confirm/pin the Kueue version.
+   - RESOLVED: ship v1beta1 manifests + the v1beta2 upgrade note (Pitfall 1); the homelab
+     change-prompt asks the operator to confirm/pin the Kueue version. Implemented by plan 56-04.
 2. **`never` pill for the k8s token row — accept it or filter it?**
    - What we know: a `kind=compute` filter would wrongly hide the v5.0 A1 agent.
-   - Recommendation: accept the `never` pill + the static note (option (a)); defer the finer card to v7.0
-     RECORD-03 (explicitly out of scope per D-07).
+   - RESOLVED: accept the `never` pill + the static note (option (a)); defer the finer card to v7.0
+     RECORD-03 (explicitly out of scope per D-07). Implemented by plan 56-03.
 3. **Trim the transitional k8s section already in `cloud-burst.md:297-389`?**
-   - Recommendation (discretion): leave a short pointer in `cloud-burst.md` to the new `k8s-burst.md`;
-     planner decides exact wording (D-03/D-04 discretion).
+   - RESOLVED: leave a short pointer in `cloud-burst.md` to the new `k8s-burst.md`
+     (D-03/D-04 discretion). Implemented by plan 56-04 Task 2.
 
 ## Sources
 
