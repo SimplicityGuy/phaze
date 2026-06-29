@@ -49,8 +49,47 @@ This page does not duplicate those tables.
   PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, no kube submit, no S3 staging. (all-local)
 ```
 
-For the submit → watch → reconcile lifecycle (the control-plane code shipped in Phase 54), see
-[cloud-burst.md → Kubernetes burst — the submit → reconcile lifecycle](cloud-burst.md#kubernetes-burst--the-submit--reconcile-lifecycle-v60-phase-54).
+## Submit → reconcile lifecycle (Phase 54)
+
+Instead of an rsync push to a long-lived agent, the control plane stages the file's bytes to S3
+and submits a **suspended one-shot Kueue Job**; a pod runs the analysis and PUTs the result
+back. Two control-plane pieces own this:
+
+- **`submit_cloud_job`** (the fast producer, `phaze.tasks.submit_cloud_job`) — a
+  controller-queue task that does ONE kube POST (a suspended `batch/v1` Job named
+  `phaze-analyze-<file_id>`), upserts the `cloud_job` row to `SUBMITTED`, and returns in
+  seconds. It never awaits analysis.
+- **`reconcile_cloud_jobs`** (the safety net, `phaze.tasks.reconcile_cloud_jobs`) — a
+  **cron-only** `*/5 * * * *` CronJob registered on the controller. There is **no live kube
+  watch**: each tick it re-reads the in-flight Jobs/Workloads and reconciles them.
+
+**The callback is the only result channel (KSUBMIT-03).** The one-shot pod PUTs its analysis
+result to the existing `/api/internal/agent/analysis/{file_id}` callback — the SAME endpoint the
+local/agent path uses, reconciled by `file_id`. `reconcile_cloud_jobs` **never** writes an
+analysis result; it only drives cleanup, re-drive, and alerting. This is what makes "a
+dropped/expired watch never loses or duplicates a result" true.
+
+**What the reconcile cron does per tick:**
+
+- **Iterates the `cloud_job` sidecar** — `SELECT cloud_job WHERE status IN (SUBMITTED, RUNNING)`
+  is the in-flight registry. It reads each Job (succeeded/failed) and, when not yet terminal,
+  the paired Kueue Workload for admission state.
+- **Delete-after-record ordering** — on a terminal outcome it records the result in Postgres and
+  **commits** *before* it deletes the Job, so the status read can never lose to GC.
+  `JOB_TTL_SECONDS` (900s, `ttlSecondsAfterFinished`) is only the never-reconciled backstop.
+- **S3 cleanup on a no-callback terminal** — a `Failed`/`Evicted`/lost Job (no callback landed)
+  triggers `s3_staging.delete_staged_object(file_id)` before the Job delete. The **success**
+  path does NOT delete S3 — the callback already deleted it inline.
+- **Bounded re-drive then ANALYSIS_FAILED** — a no-callback terminal under
+  `cloud_submit_max_attempts` (default 3) increments `cloud_job.attempts` and re-drives a fresh
+  `submit_cloud_job`; at the cap the file is marked `ANALYSIS_FAILED` (no cross-target fallback).
+- **Inadmissible vs Pending** — a Workload `Inadmissible` (operator misconfig — e.g. a
+  missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and
+  **holds indefinitely without consuming the re-drive cap**. A healthy `Pending` (queued behind
+  quota) is **silent** and waits forever — never mistaken for a failure.
+
+`reconcile_cloud_jobs` is **control-only** (kube creds live on the control plane, DIST-01) and
+**cron-only** — never operator-enqueued.
 
 ## Cluster-admin runbook
 
@@ -359,5 +398,5 @@ cluster:
   — the canonical per-knob reference (`_FILE` support, defaults).
 - [deployment.md](deployment.md) — the two-host base deployment + the single-`cloud_target`
   revert toggle.
-- [cloud-burst.md](cloud-burst.md) — the v5.0 OCI A1 target and the shared
-  submit → reconcile lifecycle prose.
+- [cloud-burst.md](cloud-burst.md) — the v5.0 OCI A1 compute-agent target (the other
+  `PHAZE_CLOUD_TARGET`).
