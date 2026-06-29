@@ -51,11 +51,11 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Deployment, runbook, config & docs (KDEPLOY)
 
-- [ ] **KDEPLOY-01**: A cluster-admin runbook documents the Kueue objects phaze does **not** create (ResourceFlavor / ClusterQueue / LocalQueue, CPU-only flavor, single-CQ no-preemption quota), the least-privilege RBAC Role/ServiceAccount for phaze (create/get/delete Jobs, get/watch/list Workloads in one namespace), and the cluster Secret carrying the compute-agent bearer token.
-- [ ] **KDEPLOY-02**: All K8s/S3 parameters — `cloud_target`, kube API endpoint + kubeconfig/SA-token, LocalQueue name, Workload apiVersion, S3 endpoint/bucket/credentials, presign expiry, max-attempts, in-flight timeout — are pydantic-settings with `_FILE`-secret support and a model validator that fail-fasts when `cloud_target="k8s"` but required K8s/S3 config is missing.
-- [ ] **KDEPLOY-03**: Connectivity is transport-agnostic — phaze consumes operator-provided reachable endpoints (kube API, S3, callback) over either Tailscale or WireGuard, with no mesh-specific code or assumptions.
-- [ ] **KDEPLOY-04**: At startup (when `cloud_target="k8s"`) phaze validates the configured LocalQueue is reachable and surfaces a clear error otherwise; the cluster compute-agent identity is shown as an ephemeral (Job-based) identity in the Agents UI rather than a perpetually-DEAD heartbeating agent.
-- [ ] **KDEPLOY-05**: The entire K8s offload reverts to all-local (or A1) via the single `cloud_target` / `cloud_burst_enabled` toggle with no other change; `docs/deployment.md` documents the full cluster + bucket + secret setup.
+- [x] **KDEPLOY-01**: A cluster-admin runbook documents the Kueue objects phaze does **not** create (ResourceFlavor / ClusterQueue / LocalQueue, CPU-only flavor, single-CQ no-preemption quota), the least-privilege RBAC Role/ServiceAccount for phaze (create/get/delete Jobs, get/watch/list Workloads in one namespace), and the cluster Secret carrying the compute-agent bearer token.
+- [x] **KDEPLOY-02**: All K8s/S3 parameters — `cloud_target`, kube API endpoint + kubeconfig/SA-token, LocalQueue name, Workload apiVersion, S3 endpoint/bucket/credentials, presign expiry, max-attempts, in-flight timeout — are pydantic-settings with `_FILE`-secret support and a model validator that fail-fasts when `cloud_target="k8s"` but required K8s/S3 config is missing.
+- [x] **KDEPLOY-03**: Connectivity is transport-agnostic — phaze consumes operator-provided reachable endpoints (kube API, S3, callback) over either Tailscale or WireGuard, with no mesh-specific code or assumptions.
+- [x] **KDEPLOY-04**: At startup (when `cloud_target="k8s"`) phaze validates the configured LocalQueue is reachable and surfaces a clear error otherwise; the cluster compute-agent identity is shown as an ephemeral (Job-based) identity in the Agents UI rather than a perpetually-DEAD heartbeating agent.
+- [x] **KDEPLOY-05**: The entire K8s offload reverts to all-local (or A1) via the single `cloud_target` / `cloud_burst_enabled` toggle with no other change; `docs/deployment.md` documents the full cluster + bucket + secret setup.
 
 ## Future Requirements (deferred)
 
@@ -104,8 +104,13 @@ Each v6.0 requirement maps to exactly one phase. **Coverage: 26/26 — no orphan
 | KROUTE-04 | Phase 55 — Routing, state & ledger integration | Complete |
 | KROUTE-05 | Phase 55 — Routing, state & ledger integration | Complete |
 | KROUTE-06 | Phase 55 — Routing, state & ledger integration | Complete |
-| KDEPLOY-01 | Phase 56 — Deployment, runbook, config & docs | Pending |
-| KDEPLOY-02 | Phase 56 — Deployment, runbook, config & docs | Pending |
-| KDEPLOY-03 | Phase 56 — Deployment, runbook, config & docs | Pending |
-| KDEPLOY-04 | Phase 56 — Deployment, runbook, config & docs | Pending |
-| KDEPLOY-05 | Phase 56 — Deployment, runbook, config & docs | Pending |
+| KDEPLOY-01 | Phase 56 — Deployment, runbook, config & docs | Complete |
+| KDEPLOY-02 | Phase 56 — Deployment, runbook, config & docs | Complete |
+| KDEPLOY-03 | Phase 56 — Deployment, runbook, config & docs | Complete |
+| KDEPLOY-04 | Phase 56 — Deployment, runbook, config & docs | Complete |
+| KDEPLOY-05 | Phase 56 — Deployment, runbook, config & docs | Complete |
+| KDEPLOY-06 | Phase 56 — Deployment, runbook, config & docs (pulled forward; supersedes KJOB-05 bake) | Complete |
+| KJOB-06 | Deferred (Future Requirements) — multi-arch single-tag Job image | Deferred |
+| KSUBMIT-07 | Deferred (Future Requirements) — Workload runaway guard (v6.x) | Deferred |
+| KSUBMIT-08 | Deferred (Future Requirements) — cross-target re-route on eviction (P2) | Deferred |
+| KSUBMIT-09 | Deferred (Future Requirements) — concurrent files / elastic parallelism | Deferred |
