@@ -174,7 +174,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
-| 56. Deployment, runbook, config & docs | v6.0 | 5/6 | In Progress|  |
+| 56. Deployment, runbook, config & docs | v6.0 | 6/7 | In Progress|  |
 
 ## Phase Details (v6.0 Kubernetes Burst Analysis)
 
@@ -328,7 +328,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 56-02-PLAN.md — LocalQueue-unreachable dashboard alert surface (amber OOB partial + both render paths) (KDEPLOY-04, D-05)
+- [x] 56-02-PLAN.md — LocalQueue-unreachable dashboard alert surface (amber OOB partial + both render paths) (KDEPLOY-04, D-05)
 
 **UI hint**: yes
 **Research**: Skip — ops runbook; no research needed.
