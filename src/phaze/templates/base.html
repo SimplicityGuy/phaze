@@ -22,22 +22,22 @@
          on the fly with per-edge Terser versions, so the served bytes (and thus the SRI
          hash) differ across edges; that broke SRI verification and could block the
          stylesheet for clients on a divergent edge. Vendoring the audited build
-         (@tailwindcss/browser@4.3.0/dist/index.global.min.js, sha384-d5Pc0U2…) makes
+         (@tailwindcss/browser@4.3.2/dist/index.global.min.js, sha384-shaHAtPg…) makes
          delivery deterministic and works on an isolated/private network. To update:
          re-download that exact file into static/vendor/ and bump the filename version. -->
-    <script src="/static/vendor/tailwindcss-browser-4.3.0.min.js"></script>
+    <script src="/static/vendor/tailwindcss-browser-4.3.2.min.js"></script>
 
     <!-- Jura font (design language primary) + Inter (body) -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Jura:wght@300;500&display=swap" rel="stylesheet">
 
     <!-- HTMX -->
-    <script src="https://unpkg.com/htmx.org@2.0.7/dist/htmx.min.js" integrity="sha384-ZBXiYtYQ6hJ2Y0ZNoYuI+Nq5MqWBr+chMrS/RkXpNzQCApHEhOt2aY8EJgqwHLkJ" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous"></script>
 
     <!-- HTMX SSE extension -->
     <script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/sse.js" integrity="sha384-QA9wXqexhwzXTuTvuF5QP82pddm3R2hy81UzXi7ioNTqNF2b75hlkkSGjafohhL3" crossorigin="anonymous"></script>
 
     <!-- Alpine.js -->
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.9/dist/cdn.min.js" integrity="sha384-MEh8ZMZhsmD6/1Bd3kfTiGZoYIKR9u+BilQQWl5DOonh+pvKg6fP2AejtOozsZK8" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.12/dist/cdn.min.js" integrity="sha384-pb6hrQvo4s23cEUFtj0CZkzGE3jyK3pj26RIupXXxhSrrcUA/Cn0lZgcCrGH0t6L" crossorigin="anonymous"></script>
 
     <!-- Theme store: auto/dark/light with localStorage persistence.
 
