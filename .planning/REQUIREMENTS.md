@@ -38,7 +38,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Identify workspaces (IDENT)
 
-- [ ] **IDENT-01**: The Track-ID workspace shows each file's AcoustID→MusicBrainz match state and confidence.
+- [ ] **IDENT-01**: The Track-ID workspace shows each file's **existing** identity signals — audfprint + Panako fingerprint match/score and rapidfuzz tracklist-match confidence — surfaced as match state and confidence. (Re-scoped 2026-06-29 from the prototype's "AcoustID→MusicBrainz" label: that lookup backend does not exist, so building it is out of this presentation-only milestone — deferred to IDENT-03 below. Confirmed by research: `grep -ri 'acoustid|musicbrainz' src/phaze` is empty.)
 - [ ] **IDENT-02**: The Tracklist workspace presents the Search→Scrape→Match sub-chain inline as a visible 3-step with per-set match progress, triggerable from one surface.
 
 ### Review & Apply (REVIEW)
@@ -69,6 +69,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 - **SHELL-06**: Mobile/touch layout beyond narrow-desktop collapse (single-user desktop tool — low priority).
 - **REVIEW-06**: Per-stage configurable confidence thresholds + override UI for "approve all high-confidence" (v7.0 ships a sensible fixed threshold).
 - **WORK-06**: Pipeline admission-state cards driven by `cloud_phase` (the v6.0 deferred KROUTE-06) surfaced as Analyze-lane sub-states.
+- **IDENT-03**: AcoustID acoustic-fingerprint lookup + MusicBrainz recording resolution as a new identity backend, then surfaced in the Track-ID workspace (a future milestone — requires net-new backend, out of v7.0's presentation-only scope; IDENT-01 ships the existing fingerprint + tracklist signals instead).
 
 ## Out of Scope
 
