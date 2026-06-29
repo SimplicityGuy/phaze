@@ -1,5 +1,27 @@
 # Milestones
 
+## v6.0 Kubernetes Burst Analysis (Shipped: 2026-06-29)
+
+**Phases completed:** 5 phases (52–56), 27 plans, 44 tasks
+
+**Delivered:** Long sets that can't finish locally now run as ephemeral, quota-scheduled **Kueue batch Jobs** on a remote x64 cluster — a third analysis-routing target alongside local and the v5.0 OCI A1 — reusing the v5.0 control-plane choreography with the execution unit changed from a persistent SAQ-draining host to a one-shot per-file Job.
+
+**Key accomplishments:**
+
+- **K8s as a third analysis target (Phase 55):** a single `cloud_target` selector (`local` / `a1` / `k8s`) under the `cloud_burst_enabled` toggle routes ≥threshold long files through the Kueue path, wired as ONE new branch in the existing duration router / advisory-locked `stage_cloud_window` in-flight window, reusing PUSHING/PUSHED states + a `cloud_phase` sidecar column, a static AST over-enqueue guard, and ledger-scoped backfill (the `cloud_burst_enabled` boolean was replaced by the selector).
+- **x86 Job-runner image + one-shot entrypoint (Phase 52):** built FROM the existing essentia base with **zero new pip deps**; presign-download → sha256-verify → windowed analyze → POST `/api/internal/agent/*` (reconciled by `file_id`) → exit, with an honest distinct-exit-code contract and a runtime-mounted internal CA (no bake, no `verify=False`).
+- **S3 object-staging leg (Phase 53):** control-plane aioboto3 presign/cleanup is the **sole S3 importer** (preserving the CI-enforced DIST-01 no-media boundary); the file-server agent uploads bytes over httpx with no SDK/creds; the pod fetches a just-in-time presigned GET; `file_id`-scoped objects are deleted on every terminal outcome + a bucket lifecycle TTL backstop; any S3-compatible backend via `_FILE` secrets.
+- **Kube submit + reconcile cron (Phase 54):** a pure kr8s seam idempotently submits a suspended `batch/v1` Job (deterministic `phaze-analyze-<file_id>` name); a fast non-blocking submit + a `*/5` reconcile cron own the Workload lifecycle, Inadmissible-vs-Pending detection, bounded re-drive, and cleanup — with the out-of-band callback as the **sole** authoritative result and **no `process_file` ledger seed** for k8s files (so `recover_orphaned_work` never re-enqueues them onto an agent queue).
+- **Operability (Phase 56):** cluster-admin Kueue/RBAC/Secret runbook (`docs/k8s-burst.md`, least-privilege namespaced Role), full `_FILE`-secret config knob table, transport-agnostic (Tailscale *or* WireGuard) endpoints, a non-fatal LocalQueue startup probe surfaced as an amber dashboard alert, an ephemeral Job-based Agents-UI identity (never perpetually-DEAD), and a single-toggle revert to all-local.
+
+**Stats:** ~8,450 LOC added across 61 files since v5.0; 27 plans, 44 tasks; ~3 days (2026-06-27 → 2026-06-29). 3 additive migrations (025/026/027 — the `cloud_job` sidecar). Two new control-plane deps (`kr8s`, `aioboto3`); zero new deps in the Job image. Full suite green (2474 passed). 26/26 requirements (KJOB/KSTAGE/KSUBMIT/KROUTE/KDEPLOY) validated, +2 bonus (KROUTE-06, KDEPLOY-06).
+
+**Milestone audit:** Passed after closing one critical cross-phase blocker — **JOB-ENV-CONTRACT** (the Kueue Job manifest injected only the CA env, so every admitted pod would have exited code 20 before analysis); fixed inline via quick task `260628-wzq` (inject `PHAZE_JOB_FILE_ID` + `envFrom`). See `milestones/v6.0-MILESTONE-AUDIT.md`.
+
+**Known deferred items at close: 3** (deployment-gated live K8s + real-S3 E2E — UAT phases 53/54/55; see STATE.md Deferred Items). The live E2E must be re-run FIRST after the live rollout — it is the test that would have caught JOB-ENV-CONTRACT.
+
+---
+
 ## v5.0 Cloud Burst Analysis (Shipped: 2026-06-26)
 
 **Phases completed:** 5 phases, 23 plans, 39 tasks

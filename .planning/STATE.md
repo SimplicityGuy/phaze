@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v6.0
 milestone_name: Kubernetes Burst Analysis
-status: milestone_complete
-last_updated: 2026-06-29T04:21:20.097Z
-last_activity: 2026-06-29 -- Phase 56 execution started
+status: Awaiting next milestone
+last_updated: "2026-06-29T15:23:06.740Z"
+last_activity: 2026-06-29 — Milestone v6.0 completed and archived
 progress:
   total_phases: 27
-  completed_phases: 4
-  total_plans: 26
+  completed_phases: 5
+  total_plans: 27
   completed_plans: 27
-  percent: 15
-stopped_at: Milestone complete (Phase 56 was final phase)
+  percent: 19
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-17 after v4.0 milestone)
 
 ## Current Position
 
-Phase: 56
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-06-29
+Phase: Milestone v6.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-29 — Milestone v6.0 completed and archived
 
 ## Performance Metrics
 
@@ -161,13 +160,25 @@ Items acknowledged and deferred at the v5.0 milestone close on 2026-06-26. All t
 
 These are tracked for the v5.0 deploy; they are NOT blockers for the milestone record.
 
+Items acknowledged and deferred at the **v6.0** milestone close on 2026-06-29. All three are
+**deployment-gated** — they unblock on the live x64 Kueue cluster + S3 bucket rollout (see
+`.planning/milestones/v6.0-MILESTONE-AUDIT.md` and `docs/k8s-burst.md`).
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 53-UAT | partial | S3 round-trip verified against moto; the live real-S3 leg pends a real bucket |
+| uat | 54-UAT | partial | Kube submit/reconcile verified against a fake kube API; live Kueue admission/eviction pends a real cluster |
+| uat | 55-HUMAN-UAT | partial | Test 2 (end-to-end K8s routing) blocked on a live Kueue cluster + real S3 — the test that would have caught JOB-ENV-CONTRACT; **re-run FIRST after rollout**. Tests 1+3 passed in-app. |
+
+These are tracked for the v6.0 deploy; they are NOT blockers for the milestone record. The JOB-ENV-CONTRACT seam fix (quick 260628-wzq) makes the live E2E re-run especially important.
+
 ## Session Continuity
 
-Last session: 2026-06-29T01:48:55.874Z
-Stopped at: Phase 56 UI-SPEC approved
-Resume file: .planning/phases/56-deployment-runbook-config-docs/56-UI-SPEC.md
+Last session: 2026-06-29 — v6.0 milestone completed, archived, and tagged
+Stopped at: Milestone v6.0 complete (audit passed after closing JOB-ENV-CONTRACT via quick 260628-wzq)
+Resume file: .planning/milestones/v6.0-ROADMAP.md (archived milestone detail)
 
 ## Operator Next Steps
 
-- Review the v6.0 roadmap draft (phases 52-56) in `.planning/ROADMAP.md`
-- Plan the first phase with `/gsd:plan-phase 52`
+- Start the next milestone with /gsd-new-milestone (v7.0 UI Redesign is already scoped — `.planning/REQUIREMENTS-v7.0.md`)
+- After the live x64 Kueue cluster + S3 rollout, re-run the deferred live K8s E2E FIRST (Phase 55 HUMAN-UAT test 2) — it is the test that would have caught JOB-ENV-CONTRACT
