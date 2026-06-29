@@ -34,6 +34,10 @@ The secret-bearing fields and their `_FILE` siblings:
 | `agent_token`       | agent   | `PHAZE_AGENT_TOKEN_FILE`, `AGENT_TOKEN_FILE` |
 | `push_ssh_key`      | agent   | `PHAZE_PUSH_SSH_KEY_FILE` (whitespace **preserved**) |
 | `push_known_hosts`  | agent   | `PHAZE_PUSH_KNOWN_HOSTS_FILE` (whitespace **preserved**) |
+| `s3_access_key_id`     | control | `PHAZE_S3_ACCESS_KEY_ID_FILE` |
+| `s3_secret_access_key` | control | `PHAZE_S3_SECRET_ACCESS_KEY_FILE` |
+| `kube_kubeconfig`      | control | `PHAZE_KUBE_KUBECONFIG_FILE` |
+| `kube_sa_token`        | control | `PHAZE_KUBE_SA_TOKEN_FILE` |
 
 Semantics (implemented by the shared `_resolve_secret_files` validator in `config.py`, which derives the `_FILE` names from each field's existing aliases):
 
@@ -118,6 +122,37 @@ Phase 54 (v6.0 Kubernetes Burst) adds a third routing target: instead of an rsyn
 | `kube_workload_api_version` | `PHAZE_KUBE_WORKLOAD_API_VERSION` (or `kube_workload_api_version`) | Control | `kueue.x-k8s.io/v1beta1` | no | apiVersion of the Kueue Workload/Job resources the control plane submits and reconciles. |
 | `kube_kubeconfig` | `PHAZE_KUBE_KUBECONFIG` (or `kube_kubeconfig`) | Control | `None` | **YES** | Kubeconfig contents for the control plane's kube client, file-mounted via `PHAZE_KUBE_KUBECONFIG_FILE`. Never logged. |
 | `kube_sa_token` | `PHAZE_KUBE_SA_TOKEN` (or `kube_sa_token`) | Control | `None` | **YES** | ServiceAccount bearer token for the control plane's kube client, file-mounted via `PHAZE_KUBE_SA_TOKEN_FILE`. Never logged. |
+
+### S3 object-staging settings (Phase 53, v6.0)
+
+Phase 53 (v6.0) adds the **S3 object-staging leg** the `k8s` target needs: an ephemeral Kueue Job pod has no persistent local disk, so the control plane presigns a multipart **PUT** (the file-server agent uploads the long file's bytes over the presigned URL — it never sees bucket credentials) and a just-in-time **GET** (the pod downloads at startup), then deletes the staged object on every terminal outcome with a bucket-lifecycle TTL backstop. Works against **any** S3-compatible backend (MinIO / Backblaze / AWS / …) via an explicit `endpoint_url`. The control plane is the **only** holder of bucket credentials (the agent and pod are credential-free; KSTAGE-02 / T-53-01), so both credential fields honor the `_FILE` convention. These knobs are selected by `PHAZE_CLOUD_TARGET=k8s`: when the target is `k8s`, `s3_bucket` and `s3_endpoint_url` are **required** and fail fast at startup if unset (the `_enforce_s3_config_when_k8s` per-target validator); for any other target (`local` / `a1`) they stay optional (`a1` uses rsync, not S3).
+
+All bounded knobs (`gt`/`ge`/`lt`) reject an out-of-range operator value at startup so a misconfig never reaches the presign/upload code path (T-53-03).
+
+| Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
+|------|-----------------|-------|---------|----------|-------------|
+| `s3_endpoint_url` | `PHAZE_S3_ENDPOINT_URL` (or `s3_endpoint_url`) | Control | `None` | no | S3-compatible endpoint URL (e.g. `https://s3.us-west-1.amazonaws.com` or a MinIO/Backblaze URL). Must be a well-formed **http(s)** URL with a host — a scheme-less or non-http value is rejected at construction (`_validate_s3_endpoint_url`; T-53-02 SSRF surface). **Required when `cloud_target=k8s`** (fail-fast at startup). |
+| `s3_bucket` | `PHAZE_S3_BUCKET` (or `s3_bucket`) | Control | `None` | no | Operator-created bucket used for ephemeral `file_id`-scoped staging objects. **Required when `cloud_target=k8s`** (fail-fast at startup). |
+| `s3_region` | `PHAZE_S3_REGION` (or `s3_region`) | Control | `None` | no | S3 region (e.g. `us-west-1`). Optional for many S3-compatible backends. |
+| `s3_addressing_style` | `PHAZE_S3_ADDRESSING_STYLE` (or `s3_addressing_style`) | Control | `path` | no | S3 addressing style. `path` (default) maximizes S3-compatible-backend support; `virtual` for AWS virtual-hosted-style. |
+| `s3_access_key_id` | `PHAZE_S3_ACCESS_KEY_ID` (or `s3_access_key_id`) | Control | `None` | **YES** | S3 access key id (control-plane only; file-mount via `PHAZE_S3_ACCESS_KEY_ID_FILE`). KSTAGE-02 / T-53-01. Never logged. |
+| `s3_secret_access_key` | `PHAZE_S3_SECRET_ACCESS_KEY` (or `s3_secret_access_key`) | Control | `None` | **YES** | S3 secret access key (control-plane only; file-mount via `PHAZE_S3_SECRET_ACCESS_KEY_FILE`). KSTAGE-02 / T-53-01. Never logged. |
+| `s3_presign_put_ttl_sec` | `PHAZE_S3_PRESIGN_PUT_TTL_SEC` (or `s3_presign_put_ttl_sec`) | Control | `3600` | no | TTL (seconds) for the presigned multipart PUT/part URLs minted for the upload leg. Bounded `gt=0, lt=86400`. |
+| `s3_presign_get_ttl_sec` | `PHAZE_S3_PRESIGN_GET_TTL_SEC` (or `s3_presign_get_ttl_sec`) | Control | `900` | no | TTL (seconds) for the just-in-time presigned GET URL minted at pod startup. Default 900 (short — minted post-admission so it never expires during a Kueue wait). Bounded `gt=0, lt=86400`. |
+| `s3_lifecycle_ttl_days` | `PHAZE_S3_LIFECYCLE_TTL_DAYS` (or `s3_lifecycle_ttl_days`) | Control | `2` | no | Bucket lifecycle TTL (days) — the backstop that deletes any staged object the inline callback delete missed (KSTAGE-04, D-02). Bounded `gt=0, lt=30`. |
+| `s3_multipart_part_size_bytes` | `PHAZE_S3_MULTIPART_PART_SIZE_BYTES` (or `s3_multipart_part_size_bytes`) | Control | `67108864` | no | Multipart upload part size (bytes) the agent streams over presigned part URLs. Default 67108864 (64 MiB); bounded to the S3 `[5 MiB, 5 GiB)` part-size range (`ge=5242880, lt=5368709120`). |
+
+### Fail-fast startup validators vs. the non-fatal runtime LocalQueue probe
+
+Two **distinct** guard layers protect the `k8s` path, and it is worth keeping them apart:
+
+- **Startup fail-fast (config completeness).** When `cloud_target=k8s`, the already-shipped `ControlSettings` model validators reject an incomplete config at construction — the controller worker + api refuse to start:
+  - `_enforce_s3_config_when_k8s` — requires `s3_bucket` and `s3_endpoint_url` (the S3→Kueue byte path).
+  - `_enforce_kube_config_when_k8s` — requires `kube_api_url`, `kube_namespace`, and `kube_local_queue` (where/how the Job is submitted).
+  - These are deliberately kept as **three separate** per-target validators (the third, `_enforce_compute_scratch_dir_when_a1`, guards the `a1` path) so collapsing them into one `!= "local"` gate can't silently change `a1`'s fail-fast semantics.
+- **Runtime non-fatal LocalQueue admission probe (warn + surface).** A correctly-*configured* `kube_local_queue` can still point at a LocalQueue/ClusterQueue that the cluster admin has mis-set so Kueue never **admits** the Job. That is a *cluster-side* condition phaze cannot detect at startup, so it is handled at runtime, **non-fatally**: the `*/5` `reconcile_cloud_jobs` cron maps an `Inadmissible` Workload condition to a warning log and an **Inadmissible** operator-alert card on the pipeline dashboard (it clears when admission recovers). It never crashes the controller — the value was *present* (so startup passed); only the cluster's admission of it is wrong.
+
+In short: **missing K8s/S3 config → startup crash**; **present-but-unadmittable LocalQueue → live dashboard warning**. Cluster-side setup of the Kueue ResourceFlavor / ClusterQueue / LocalQueue, the namespaced RBAC Role, and the `_FILE`-mounted Secret lives in [k8s-burst.md](k8s-burst.md).
 
 ### ⚠️ `PHAZE_AGENT_QUEUE` is the one knob NOT configurable via pydantic-settings
 
