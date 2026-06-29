@@ -174,7 +174,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
-| 56. Deployment, runbook, config & docs | v6.0 | 0/? | Not started | - |
+| 56. Deployment, runbook, config & docs | v6.0 | 0/6 | Planned | - |
 
 ## Phase Details (v6.0 Kubernetes Burst Analysis)
 
@@ -313,7 +313,23 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   4. At startup (when `cloud_target="k8s"`) phaze validates the configured LocalQueue is reachable and surfaces a clear error otherwise; the cluster compute-agent shows as an ephemeral (Job-based) identity in the Agents UI rather than a perpetually-DEAD heartbeating agent.
   5. Operator can revert the entire K8s offload to all-local (or A1) via the single `cloud_target` / `cloud_burst_enabled` toggle with no other change; `docs/deployment.md` documents the full cluster + bucket + secret setup.
 
-**Plans**: TBD
+**Plans**: 6 plans in 3 waves
+
+**Wave 0**
+
+- [ ] 56-00-PLAN.md — Wave 0 test scaffolding: get_local_queue / startup-probe / dashboard-alert RED tests + runbook YAML/RBAC test (KDEPLOY-01, KDEPLOY-04)
+
+**Wave 1** *(blocked on Wave 0)*
+
+- [ ] 56-01-PLAN.md — LocalQueue probe backend: get_local_queue + non-fatal startup probe + degrade-safe Redis flag read (KDEPLOY-04, D-05/D-06)
+- [ ] 56-03-PLAN.md — Ephemeral k8s-lane Agents note + DEAD-suppression invariants (KDEPLOY-04, D-07)
+- [ ] 56-04-PLAN.md — K8s cluster-admin runbook (Kueue/RBAC/Secret manifests) + transport notes + homelab change-prompt (KDEPLOY-01, KDEPLOY-03, D-01/D-02/D-03)
+- [ ] 56-05-PLAN.md — Config + deployment + README docs: K8s/S3 knob table + single-toggle revert (KDEPLOY-02, KDEPLOY-05, D-04)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 56-02-PLAN.md — LocalQueue-unreachable dashboard alert surface (amber OOB partial + both render paths) (KDEPLOY-04, D-05)
+
 **UI hint**: yes
 **Research**: Skip — ops runbook; no research needed.
 
