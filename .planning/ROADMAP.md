@@ -174,7 +174,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 53. S3 object-staging leg | v6.0 | 5/5 | Complete    | 2026-06-28 |
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
-| 56. Deployment, runbook, config & docs | v6.0 | 0/6 | Planned | - |
+| 56. Deployment, runbook, config & docs | v6.0 | 3/6 | In Progress|  |
 
 ## Phase Details (v6.0 Kubernetes Burst Analysis)
 
@@ -317,14 +317,14 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 
 **Wave 0**
 
-- [ ] 56-00-PLAN.md — Wave 0 test scaffolding: get_local_queue / startup-probe / dashboard-alert RED tests + runbook YAML/RBAC test (KDEPLOY-01, KDEPLOY-04)
+- [x] 56-00-PLAN.md — Wave 0 test scaffolding: get_local_queue / startup-probe / dashboard-alert RED tests + runbook YAML/RBAC test (KDEPLOY-01, KDEPLOY-04)
 
 **Wave 1** *(blocked on Wave 0)*
 
 - [ ] 56-01-PLAN.md — LocalQueue probe backend: get_local_queue + non-fatal startup probe + degrade-safe Redis flag read (KDEPLOY-04, D-05/D-06)
-- [ ] 56-03-PLAN.md — Ephemeral k8s-lane Agents note + DEAD-suppression invariants (KDEPLOY-04, D-07)
+- [x] 56-03-PLAN.md — Ephemeral k8s-lane Agents note + DEAD-suppression invariants (KDEPLOY-04, D-07)
 - [ ] 56-04-PLAN.md — K8s cluster-admin runbook (Kueue/RBAC/Secret manifests) + transport notes + homelab change-prompt (KDEPLOY-01, KDEPLOY-03, D-01/D-02/D-03)
-- [ ] 56-05-PLAN.md — Config + deployment + README docs: K8s/S3 knob table + single-toggle revert (KDEPLOY-02, KDEPLOY-05, D-04)
+- [x] 56-05-PLAN.md — Config + deployment + README docs: K8s/S3 knob table + single-toggle revert (KDEPLOY-02, KDEPLOY-05, D-04)
 
 **Wave 2** *(blocked on Wave 1)*
 
