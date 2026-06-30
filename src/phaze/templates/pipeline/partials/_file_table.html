@@ -1,0 +1,51 @@
+{# Phase 58 (58-02, UI-SPEC Pattern 2): the reusable file/queue table.
+
+   Modeled on recent_scans_table.html's empty-state + thead/tbody structure, retokened to the
+   C3 workspace palette, and made GENERIC so each workspace (Discover here; Metadata /
+   Fingerprint / Analyze in Plans 03-04) feeds its own column set. NO self-poll: live values
+   ride the single chrome poll via OOB seeds (WORK-05) — this partial carries no hx-trigger /
+   setInterval.
+
+   Context contract:
+     * columns        — list[str] header labels.
+     * rows           — list of rows; each row is a list of cell dicts:
+                          {text, mono?(bool), title?(str), color?(class str)}.
+                        `text` is ALWAYS autoescaped and NEVER piped through `| safe`
+                        (path/tag values cross the DB→render trust boundary — XSS V5 /
+                        recent_scans_table precedent). `color` is a caller-controlled class
+                        string (status word colour); a status cell ALWAYS carries a word, never
+                        hue-only (WCAG 1.4.1).
+     * empty_heading  — empty-state heading (e.g. "No scans yet").
+     * empty_body     — empty-state body copy.
+     * row_id_prefix  — optional stable per-row id stem (D-06 inert-but-present rows).
+
+   D-06: rows carry `cursor-pointer` + a stable id + hover, but the click is UNBOUND in Phase 58
+   (no hx-get, no selected-state, no pane fetch) — row→record wiring is Phase 61 (R-1).
+#}
+{% if not rows %}
+<div class="px-6 py-12 text-center">
+    <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">{{ empty_heading }}</p>
+    <p class="text-sm text-gray-500 dark:text-gray-400">{{ empty_body }}</p>
+</div>
+{% else %}
+<div class="overflow-x-auto">
+    <table class="w-full text-left text-sm"{% if table_id %} id="{{ table_id }}"{% endif %}>
+        <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
+            <tr>
+                {% for col in columns %}
+                <th scope="col" class="px-6 py-2.5 font-medium">{{ col }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+            {% for row in rows %}
+            <tr {% if row_id_prefix %}id="{{ row_id_prefix }}-{{ loop.index }}" {% endif %}class="cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5">
+                {% for cell in row %}
+                <td class="px-6 py-3 {% if cell.color %}{{ cell.color }}{% elif loop.first %}text-gray-900 dark:text-gray-200{% else %}text-gray-500 dark:text-gray-400{% endif %}{% if cell.mono %} max-w-md truncate font-mono text-xs{% endif %}"{% if cell.title %} title="{{ cell.title }}"{% endif %}>{{ cell.text }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}

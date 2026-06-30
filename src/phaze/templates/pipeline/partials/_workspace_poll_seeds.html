@@ -1,0 +1,70 @@
+{# Phase 58 (58-02, WORK-05): persistent hidden OOB seed-target host.
+
+   The v7.0 shell fires ONE /pipeline/stats poll from chrome (58-01). On each tick
+   stats_bar.html emits hidden `hx-swap-oob="true"` paragraphs that re-push live counts
+   into $store.pipeline. htmx OOB swaps land ONLY on ids ALREADY present in the DOM, so
+   every workspace mounted into #stage-workspace must carry a pre-existing placeholder for
+   each emitted id — otherwise the seed no-ops and the workspace sub-counts/badges stick at
+   their initial 0. This host (included by _workspace_scaffold.html) provides those targets.
+
+   These are OOB *targets only*: no x-init, no hx-trigger, no setInterval. The poll's emitted
+   seeds replace each placeholder's content every 5s. Adding a poll loop here would violate
+   the single-poll discipline (WORK-05 / R-2) — do NOT.
+
+   ids provided:
+     * dag-seed-<key> for every $store.pipeline key (mirrors base.html Alpine.store init),
+       so any dag.items() OOB seed stats_bar.html emits has a landing target;
+     * dag-seed-notYetEnriched — added EXPLICITLY: notYetEnriched joins base.html's store +
+       the dag dict in THIS plan's Task 2, but the OOB-target rule means the placeholder must
+       pre-exist before the first seed tick (the same class of finding as Plan 04's computeOnline);
+     * the five LEGACY seed ids stats_bar.html emits OUTSIDE the dag-seed- prefix:
+       analyze-files-ready / fingerprint-files-ready / proposals-files-ready (the *-files-ready
+       store writes) + agent-busy-seed / controller-busy-seed.
+#}
+<div class="hidden" aria-hidden="true">
+    {# dag-seed-<key> targets — one per $store.pipeline key (base.html Alpine.store). #}
+    <p id="dag-seed-discovered" class="hidden"></p>
+    <p id="dag-seed-analyzed" class="hidden"></p>
+    <p id="dag-seed-metadataExtracted" class="hidden"></p>
+    <p id="dag-seed-agentBusy" class="hidden"></p>
+    <p id="dag-seed-controllerBusy" class="hidden"></p>
+    <p id="dag-seed-metadataBusy" class="hidden"></p>
+    <p id="dag-seed-analyzeBusy" class="hidden"></p>
+    <p id="dag-seed-fingerprintBusy" class="hidden"></p>
+    <p id="dag-seed-searchBusy" class="hidden"></p>
+    <p id="dag-seed-scanBusy" class="hidden"></p>
+    <p id="dag-seed-agentOnline" class="hidden"></p>
+    <p id="dag-seed-scrapeBusy" class="hidden"></p>
+    <p id="dag-seed-matchBusy" class="hidden"></p>
+    <p id="dag-seed-metadataDone" class="hidden"></p>
+    <p id="dag-seed-metadataTotal" class="hidden"></p>
+    <p id="dag-seed-fingerprintDone" class="hidden"></p>
+    <p id="dag-seed-fingerprintTotal" class="hidden"></p>
+    <p id="dag-seed-analyzeDone" class="hidden"></p>
+    <p id="dag-seed-analyzeTotal" class="hidden"></p>
+    <p id="dag-seed-analyzeActive" class="hidden"></p>
+    <p id="dag-seed-tracklistDone" class="hidden"></p>
+    <p id="dag-seed-scrapeDone" class="hidden"></p>
+    <p id="dag-seed-scrapeTotal" class="hidden"></p>
+    <p id="dag-seed-matchDone" class="hidden"></p>
+    <p id="dag-seed-matchTotal" class="hidden"></p>
+    <p id="dag-seed-proposalsDone" class="hidden"></p>
+    <p id="dag-seed-proposalsTotal" class="hidden"></p>
+    <p id="dag-seed-approved" class="hidden"></p>
+    <p id="dag-seed-executedDone" class="hidden"></p>
+    <p id="dag-seed-executedTotal" class="hidden"></p>
+    <p id="dag-seed-metadataPaused" class="hidden"></p>
+    <p id="dag-seed-metadataPriority" class="hidden"></p>
+    <p id="dag-seed-analyzePaused" class="hidden"></p>
+    <p id="dag-seed-analyzePriority" class="hidden"></p>
+    <p id="dag-seed-fingerprintPaused" class="hidden"></p>
+    <p id="dag-seed-fingerprintPriority" class="hidden"></p>
+    {# Pre-mounted ahead of base.html — notYetEnriched joins the store + dag dict in Task 2. #}
+    <p id="dag-seed-notYetEnriched" class="hidden"></p>
+    {# Legacy (non-dag-seed-prefixed) ids stats_bar.html emits. #}
+    <p id="analyze-files-ready" class="hidden"></p>
+    <p id="fingerprint-files-ready" class="hidden"></p>
+    <p id="proposals-files-ready" class="hidden"></p>
+    <p id="agent-busy-seed" class="hidden"></p>
+    <p id="controller-busy-seed" class="hidden"></p>
+</div>

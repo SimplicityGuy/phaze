@@ -1,0 +1,40 @@
+{# Phase 58 (58-02, UI-SPEC Pattern 1): the reusable workspace scaffold every stage
+   workspace composes against.
+
+   Content-only by construction: this file declares a single Jinja macro and renders NO
+   document wrapper (no <html>/<head>, no skip-link/landmark) — it is imported + called from
+   the workspace fragments that swap into #stage-workspace, so the fragment-only contract
+   (R-5) and the Phase-57 dead-template AST guard both stay green (import/include targets are
+   followed by jinja2.meta).
+
+   Composition: callers do
+       {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+       {% call ws.workspace(title="DISCOVER", subcount="`...`", actions=actions,
+                            x_data="{ scanOpen: false }") %}
+         {# body markup — e.g. the file table #}
+       {% endcall %}
+   `caller()` supplies the body; `actions` is a block-set ({% set actions %}…{% endset %})
+   markup capture (Markup under autoescape, rendered as-is); `subcount` is a JS expression
+   string bound via x-text against $store.pipeline (refreshed by the single chrome poll —
+   no per-workspace timer, WORK-05).
+
+   Contract:
+     * EXACTLY ONE <h1 tabindex="-1"> — the focus landing target the shell's htmx:afterSwap /
+       htmx:historyRestore handler moves keyboard focus to after a rail swap (Focus/ARIA baseline).
+     * Stage-action buttons use the Phase-57 SECONDARY control style (NOT the blue primary,
+       which is reserved for the rail "+ Scan").
+     * Always includes _workspace_poll_seeds.html so the OOB store seeds have landing targets.
+#}
+{% macro workspace(title, subcount='', actions='', x_data='') %}
+<section{% if x_data %} x-data="{{ x_data }}"{% endif %} class="flex flex-col">
+    <header class="flex items-start justify-between gap-4 px-6 py-4 border-b border-gray-200 dark:border-phaze-border">
+        <div>
+            <h1 tabindex="-1" class="font-jura text-lg font-medium uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ title }}</h1>
+            {% if subcount %}<p class="mt-1 text-sm text-gray-500 dark:text-gray-400" x-text="{{ subcount }}"></p>{% endif %}
+        </div>
+        {% if actions %}<div class="flex shrink-0 items-center gap-2">{{ actions }}</div>{% endif %}
+    </header>
+    {{ caller() }}
+    {% include "pipeline/partials/_workspace_poll_seeds.html" %}
+</section>
+{% endmacro %}
