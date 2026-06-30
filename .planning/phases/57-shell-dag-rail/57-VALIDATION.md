@@ -1,10 +1,11 @@
 ---
 phase: 57
 slug: shell-dag-rail
-status: approved
+status: validated
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-06-29
+updated: 2026-06-30
 ---
 
 # Phase 57 — Validation Strategy
@@ -39,27 +40,29 @@ created: 2026-06-29
 
 | Req ID | Behavior | Test Type | Automated Command | File Exists | Status |
 |--------|----------|-----------|-------------------|-------------|--------|
-| SHELL-01 | `GET /` → 200, renders shell, Analyze rail node pre-selected (`aria-current="page"`), no redirect | integration (ASGI client) | `uv run pytest tests/test_shell_routes.py::test_root_renders_shell_analyze_default` | ❌ W0 | ⬜ pending |
-| SHELL-02 | `GET /s/<stage>` with `HX-Request: true` → bare fragment (no `<html>`); counts bound to `$store.pipeline` | integration + render assert | `uv run pytest tests/test_shell_routes.py::test_stage_fragment_is_bare` | ❌ W0 | ⬜ pending |
-| SHELL-02 | Rail markup carries `hx-get=/s/<stage>` `hx-target=#stage-workspace` `hx-push-url=true` for every node | render assert | `uv run pytest tests/test_shell_routes.py::test_rail_nodes_wired` | ❌ W0 | ⬜ pending |
-| SHELL-03 | Legacy `<nav>` tab-bar absent from shell; header has ⌘K button + Agents link + status dots | render assert | `uv run pytest tests/test_shell_routes.py::test_tabbar_removed_header_present` | ❌ W0 | ⬜ pending |
-| SHELL-04 | Theme `<head>` script + `Alpine.store('theme')` + Jura/wave brand present in shell; `$store.pipeline` NOT redefined | render assert | `uv run pytest tests/test_shell_routes.py::test_theme_and_store_preserved` | ❌ W0 | ⬜ pending |
-| SHELL-05 | All 8 legacy canonical (trailing-slash) routes → ≤1-hop redirect → 200 with matching rail node | integration parametrized | `uv run pytest tests/test_redirect_resolution.py` | ❌ W0 | ⬜ pending |
-| SHELL-05 | In-page filter on a legacy route (`HX-Request: true`) still returns its filter partial (NOT a redirect) | integration | `uv run pytest tests/test_redirect_resolution.py::test_hx_filter_not_redirected` | ❌ W0 | ⬜ pending |
-| cross-cut | SRI hashes match served CDN bytes for bumped htmx/Alpine; full-semver pins | static + integration | `uv run pytest tests/test_base_html_sri.py` | ✅ (update hashes) | ⬜ pending |
-| cross-cut | No orphaned Jinja2 templates | static AST | `uv run pytest tests/test_dead_template_guard.py` | ❌ W0 (seed green) | ⬜ pending |
+| SHELL-01 | `GET /` → 200, renders shell, Analyze rail node pre-selected (`aria-current="page"`), no redirect | integration (ASGI client) | `uv run pytest tests/test_shell_routes.py::test_root_renders_shell_analyze_default` | ✅ | ✅ green † |
+| SHELL-02 | `GET /s/<stage>` with `HX-Request: true` → bare fragment (no `<html>`); counts bound to `$store.pipeline` | integration + render assert | `uv run pytest tests/test_shell_routes.py::test_stage_fragment_is_bare` | ✅ | ✅ green † |
+| SHELL-02 | Rail markup carries `hx-get=/s/<stage>` `hx-target=#stage-workspace` `hx-push-url=true` for every node | render assert | `uv run pytest tests/test_shell_routes.py::test_rail_nodes_wired` | ✅ | ✅ green † |
+| SHELL-03 | Legacy `<nav>` tab-bar absent from shell; header has ⌘K button + Agents link + status dots | render assert | `uv run pytest tests/test_shell_routes.py::test_tabbar_removed_header_present` | ✅ | ✅ green † |
+| SHELL-04 | Theme `<head>` script + `Alpine.store('theme')` + Jura/wave brand present in shell; `$store.pipeline` NOT redefined | render assert | `uv run pytest tests/test_shell_routes.py::test_theme_and_store_preserved` | ✅ | ✅ green † |
+| SHELL-05 | All 8 legacy canonical (trailing-slash) routes → ≤1-hop redirect → 200 with matching rail node | integration parametrized | `uv run pytest tests/test_redirect_resolution.py::test_legacy_route_redirects_one_hop` | ✅ | ✅ green † |
+| SHELL-05 | In-page filter on a legacy route (`HX-Request: true`) still returns its filter partial (NOT a redirect) | integration | `uv run pytest tests/test_redirect_resolution.py::test_hx_filter_not_redirected` | ✅ | ✅ green † |
+| cross-cut | SRI hashes match served CDN bytes for bumped htmx/Alpine; full-semver pins | static + integration | `uv run pytest tests/test_base_html_sri.py` | ✅ | ✅ green |
+| cross-cut | No orphaned Jinja2 templates | static AST | `uv run pytest tests/test_dead_template_guard.py` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+† Green per the executors' full-suite run against an ephemeral Postgres+Redis during execution (2517 passed, 0 failed, 97.24% coverage). These ASGI-client tests require a live DB; in a DB-less audit sandbox they raise `OSError` at connection time (environmental, not assertion failures). The two static tests (`test_base_html_sri.py`, `test_dead_template_guard.py`) were re-confirmed green in the audit sandbox.
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_shell_routes.py` — SHELL-01..04 (root render, bare fragment, rail wiring, tab-bar removal, theme/store preserved)
-- [ ] `tests/test_redirect_resolution.py` — SHELL-05 8-route ≤1-hop + HX-filter-not-redirected (uses `_route_introspection.iter_effective_routes`)
-- [ ] `tests/test_dead_template_guard.py` — orphan-template AST guard via `jinja2.meta.find_referenced_templates` (seed green)
-- [ ] Update inline SRI hashes in `base.html` (existing `tests/test_base_html_sri.py` then validates)
-- [ ] Shared ASGI-app fixture for the new route tests (reuse existing `app`/`client` fixture in `tests/conftest.py` if present)
+- [x] `tests/test_shell_routes.py` — SHELL-01..04 (root render, bare fragment, rail wiring, tab-bar removal, theme/store preserved)
+- [x] `tests/test_redirect_resolution.py` — SHELL-05 8-route ≤1-hop + HX-filter-not-redirected (uses `_route_introspection.iter_effective_routes`)
+- [x] `tests/test_dead_template_guard.py` — orphan-template AST guard via `jinja2.meta.find_referenced_templates` (seed green)
+- [x] Update inline SRI hashes in `base.html` (existing `tests/test_base_html_sri.py` then validates)
+- [x] Shared ASGI-app fixture for the new route tests (reuse existing `app`/`client` fixture in `tests/conftest.py`)
 
 ---
 
@@ -76,11 +79,26 @@ created: 2026-06-29
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < ~5s (quick run)
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < ~5s (quick run)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** validated 2026-06-30
+
+---
+
+## Validation Audit 2026-06-30
+
+Post-execution audit (State A — existing contract audited against built artifacts).
+
+| Metric | Count |
+|--------|-------|
+| Requirements in contract | 9 |
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+
+Every requirement row maps to an existing, behavior-targeting test; all 9 are COVERED. Two static tests re-confirmed green in the DB-less audit sandbox; the seven ASGI-client tests were verified green by the executors against an ephemeral Postgres+Redis during execution. No `gsd-nyquist-auditor` spawn was required (no MISSING/PARTIAL gaps). Phase 57 is **Nyquist-compliant**.
