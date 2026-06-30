@@ -1,0 +1,52 @@
+{# Phase 58 (58-04, UI-SPEC Pattern 3, WORK-03): the reusable execution-lane summary card.
+
+   ONE per execution lane (local / A1 / k8s); analyze_workspace.html includes it three times
+   in a grid grid-cols-3 grid. Mirrors the prototype lane() helper, production-C3-tokened: a
+   title row (emoji + LANE · NODE in the lane identity color), a mono font-medium capacity
+   numeral (Inter 500 -- NOT font-semibold, to stay inside the two-weight Phase-58 contract),
+   an h-1.5 capacity bar, and a sub-label.
+
+   D-05 (ALWAYS render all three): a lane is NEVER hidden. When it is unavailable the card
+   renders greyed (opacity) with 0 capacity and an EXPLICIT word label -- "offline"
+   (configured-but-no-online-agent: A1 with computeOnline==0, or k8s with localqueue_unreachable)
+   vs "not configured" (cloud_target != lane). Lane/state identity always carries a word + glyph
+   (never hue-only -- WCAG 1.4.1).
+
+   Context contract (set by the caller before each {% include %}):
+     * lane_emoji        -- the lane glyph (🖥️ / ☁️ / ⎈).
+     * lane_title        -- "LOCAL · nox" / "A1 · arm64" / "K8S · burst".
+     * lane_border       -- the card border class (k8s uses border-amber-500/30).
+     * lane_color        -- the capacity-numeral color class (online).
+     * lane_bar          -- the capacity-bar fill bg class (online).
+     * lane_state        -- 'online' | 'offline' | 'not configured'.
+     * capacity_expr     -- (optional) an x-text JS expression bound to $store.pipeline so the
+                            numeral rides the single chrome poll (local/A1). Empty for k8s, whose
+                            counts are NOT store keys (they arrive as OOB card swaps -- Pitfall 2).
+     * capacity_value    -- (optional) a server-rendered static numeral used when capacity_expr is
+                            empty (k8s pending/running, from the admission counts already in context).
+     * capacity_pct_expr -- (optional) an x-bind :style JS expression for the bar fill width.
+     * sub_label         -- the online sub-label (replaced by the offline/not-configured word when down).
+
+   Pure presentation: no hx-trigger / setInterval (single-poll discipline, WORK-05/R-2). #}
+<div class="rounded-xl border {{ lane_border }} bg-white p-4 dark:bg-phaze-panel{% if lane_state != 'online' %} opacity-60{% endif %}">
+    <div class="flex items-center justify-between gap-2">
+        <span class="text-sm text-gray-700 dark:text-gray-200">{{ lane_emoji }} {{ lane_title }}</span>
+        {% if lane_state == 'online' %}
+            {% if capacity_expr %}
+            <span class="font-mono text-sm font-medium {{ lane_color }}" x-text="{{ capacity_expr }}"></span>
+            {% else %}
+            <span class="font-mono text-sm font-medium {{ lane_color }}">{{ capacity_value }}</span>
+            {% endif %}
+        {% else %}
+        <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-500">0</span>
+        {% endif %}
+    </div>
+    <div class="mt-3 h-1.5 rounded-full bg-gray-200 dark:bg-phaze-border">
+        {% if lane_state == 'online' and capacity_pct_expr %}
+        <div class="h-full rounded-full {{ lane_bar }}" :style="{{ capacity_pct_expr }}"></div>
+        {% endif %}
+    </div>
+    <div class="mt-2 text-xs {% if lane_state == 'online' %}text-gray-500 dark:text-gray-500{% else %}text-amber-600 dark:text-amber-400{% endif %}">
+        {% if lane_state == 'not configured' %}not configured{% elif lane_state == 'offline' %}offline{% else %}{{ sub_label }}{% endif %}
+    </div>
+</div>

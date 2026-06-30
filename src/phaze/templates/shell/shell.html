@@ -131,7 +131,12 @@
                 // the dag.items() OOB loop in stats_bar.html pushes the real values each 5s.
                 metadataPaused: 0, metadataPriority: 0,
                 analyzePaused: 0, analyzePriority: 0,
-                fingerprintPaused: 0, fingerprintPriority: 0
+                fingerprintPaused: 0, fingerprintPriority: 0,
+                // Phase 58: derived workspace sub-counts seeded to int 0 so no x-text binding
+                // reads `undefined` on initial shell paint (Discover sub-count / A1 lane capacity);
+                // the dag.items() OOB loop pushes real values onto dag-seed-notYetEnriched /
+                // dag-seed-computeOnline each 5s poll (58-02, 58-04 — WORK-01/03/05).
+                notYetEnriched: 0, computeOnline: 0
             });
         });
     </script>
@@ -165,6 +170,25 @@
     <!-- ⌘K skeleton command palette (D-04). Its x-init also reads the `palette` query param
          (the /search → /?palette=1 rename target, Plan 04) to auto-open on load (A3). -->
     {% include "shell/partials/cmdk_modal.html" %}
+
+    <!-- Single persistent live-refresh poll (WORK-05 / R-2 / R-3). Lives in chrome OUTSIDE
+         #stage-workspace, so a rail swap never re-renders, duplicates, or stops it — there is
+         exactly ONE /pipeline/stats poll for the whole shell (the v7.0 shell had no live poll
+         element before this; the only prior poll lived in the never-rendered legacy
+         pipeline/dashboard.html). It reuses the EXISTING GET /pipeline/stats endpoint verbatim
+         (no new route): each 5s it innerHTML-swaps stats_bar.html, whose hx-swap-oob seeds fan
+         out to $store.pipeline + the cloud-card targets that ride whatever workspace is mounted
+         (Plans 02-04 provide those targets). The element stays hidden — its job is the OOB
+         fanout, not a visible counts grid.
+         R-3 shed: the `[document.visibilityState === 'visible']` trigger filter makes htmx skip
+         the request on every tick while the tab is backgrounded (the interval keeps running but
+         no fetch fires — a SINGLE poll element, never a second loop); the visibilitychange
+         listener below resumes immediately on foreground. -->
+    <div id="pipeline-stats"
+         hx-get="/pipeline/stats"
+         hx-trigger="every 5s [document.visibilityState === 'visible']"
+         hx-swap="innerHTML"
+         class="hidden"></div>
 
     <!-- History restore + focus-to-heading re-init (Phase 57 Focus/ARIA baseline).
          htmx snapshots #stage-workspace innerHTML into its history cache and restores it on
@@ -219,6 +243,16 @@
                 // (hx-push-url has updated location.pathname by afterSwap).
                 syncRailSelection(location.pathname);
                 _focusStageHeading();
+            }
+        });
+        // R-3 visibilitychange shed (WORK-05): the single #pipeline-stats poll's hx-trigger
+        // filter `[document.visibilityState === 'visible']` already sheds the request on every
+        // tick while the tab is backgrounded (htmx keeps the interval but skips the fetch — no
+        // second loop). On return to foreground, fire ONE immediate refresh so the live values
+        // catch up instead of sitting stale for up to the next 5s tick.
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden && window.htmx && document.getElementById('pipeline-stats')) {
+                window.htmx.ajax('GET', '/pipeline/stats', { target: '#pipeline-stats', swap: 'innerHTML' });
             }
         });
     </script>

@@ -1,0 +1,59 @@
+{# Phase 58 (58-03, WORK-02): the Metadata stage workspace.
+
+   Content-only fragment swapped into #stage-workspace -- a SIBLING of discover_workspace.html
+   (same shape, different endpoint). Composes the shared scaffold (_workspace_scaffold.html):
+   one <h1 tabindex="-1"> focus target + a live sub-count bound to $store.pipeline (refreshed by
+   the SINGLE chrome poll -- no second loop, WORK-05/R-2) + a secondary-style action row + body.
+   The OOB seed-target host rides in via the scaffold.
+
+   Trigger (D-01, reused VERBATIM): ONE EXTRACT ALL button posting to the EXISTING
+   POST /pipeline/extract-metadata (routers/pipeline.py:959 trigger_extraction_ui), which enqueues
+   the metadata-pending set (services/pipeline.py get_metadata_pending_files -- every music/video
+   file) and returns pipeline/partials/trigger_response.html into #metadata-trigger-response. R-4
+   bulk-enqueue guard: hx-confirm + a :disabled busy-gate on $store.pipeline.metadataBusy so a
+   second bulk enqueue can't fire while the agent churns. D-02: NO EXTRACT SELECTED button, NO
+   per-row checkbox/selection state -- a subset enqueue would need a new backend endpoint.
+
+   Body = the metadata-pending queue (shell._render_stage -> metadata_files) rendered through the
+   reusable _file_table.html. Rows are inert-but-present (D-06 / R-1): cursor-pointer + a stable id,
+   but no click binding in Phase 58 (row->record is Phase 61). Pending files have not been enriched
+   yet, so "Existing tags" shows a neutral placeholder -- the rich per-file record is Phase 61.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = '`${$store.pipeline.metadataDone} extracted · ${Math.max($store.pipeline.metadataTotal - $store.pipeline.metadataDone, 0)} pending · manual stage`' %}
+{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't double-enqueue while the agent churns). #}
+    <button type="button"
+            hx-post="/pipeline/extract-metadata" hx-target="#metadata-trigger-response" hx-swap="innerHTML"
+            hx-confirm="Enqueue metadata extraction for all pending files?"
+            hx-indicator="#metadata-trigger-spinner"
+            :disabled="$store.pipeline.metadataBusy > 0"
+            aria-label="Extract metadata for all pending files"
+            class="{{ _btn }}">EXTRACT ALL</button>
+    <span id="metadata-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+{% endset %}
+{% call ws.workspace(title="METADATA", subcount=subcount, actions=actions) %}
+    {# Trigger response lands here (trigger_response.html branches: no_active_agent / count>0 / none ready). #}
+    <div id="metadata-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+    <div class="p-6">
+        {% set columns = ["File", "Format", "Size", "Existing tags", "State"] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for f in metadata_files %}
+            {% set extracted = f.state in ("metadata_extracted", "fingerprinted", "analyzed") %}
+            {% set state_color = 'text-emerald-600 dark:text-emerald-300' if extracted else 'text-gray-500 dark:text-gray-400' %}
+            {% set _ = ns.rows.append([
+                {'text': f.original_filename, 'mono': True, 'title': f.original_path},
+                {'text': f.file_type},
+                {'text': f.file_size | filesizeformat, 'mono': True},
+                {'text': '—'},
+                {'text': f.state, 'color': state_color},
+            ]) %}
+        {% endfor %}
+        {% set rows = ns.rows %}
+        {% set empty_heading = "Nothing pending" %}
+        {% set empty_body = "Every discovered file already has extracted metadata." %}
+        {% set row_id_prefix = "metadata-row" %}
+        {% include "pipeline/partials/_file_table.html" %}
+    </div>
+{% endcall %}

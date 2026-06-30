@@ -1,0 +1,67 @@
+{# Phase 58 (58-02, WORK-01): the Discover stage workspace.
+
+   Content-only fragment swapped into #stage-workspace. Composes the shared scaffold
+   (_workspace_scaffold.html) -> one <h1 tabindex="-1"> focus target + a live sub-count bound
+   to $store.pipeline (refreshed by the SINGLE chrome poll -- no second loop, WORK-05/R-2) +
+   a secondary-style action row + the body. The OOB seed-target host rides in via the scaffold.
+
+   Body = the EXISTING recent-scans data (build_recent_scans, loaded by shell._render_stage)
+   rendered through the reusable _file_table.html. We do NOT reuse recent_scans_table.html
+   directly because it self-polls (`hx-trigger="every 5s"`) -- that would be a second poll loop
+   (A3 / Pitfall 4 / T-58-POLL). Rows are inert-but-present (D-06 / R-1): cursor-pointer + a
+   stable id, but no click binding in Phase 58.
+
+   Actions (UI-SPEC Copywriting): SCAN (reveals the reused Trigger Scan form -> POST /pipeline/scans)
+   and RECOVER (POST /pipeline/recover, the existing Phase-42 gated all-stages recovery). RECOVER
+   carries the R-4 bulk-enqueue guard: hx-confirm + a :disabled busy-gate.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set last_scan_when = recent_scans[0].created_at.strftime('%Y-%m-%d %H:%M') if recent_scans and recent_scans[0].created_at else 'never' %}
+{% set subcount = '`${$store.pipeline.discovered} files · last scan ' ~ last_scan_when ~ ' · ${$store.pipeline.notYetEnriched} not yet enriched`' %}
+{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    <button type="button" @click="scanOpen = !scanOpen" :aria-expanded="scanOpen" aria-controls="discover-scan-form" class="{{ _btn }}">SCAN</button>
+    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't force recovery while agents churn). #}
+    <span id="discover-recover-response" class="inline-flex items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
+        <button type="button"
+                hx-post="/pipeline/recover" hx-target="#discover-recover-response" hx-swap="innerHTML"
+                hx-confirm="Re-enqueue orphaned work across all pipeline stages?"
+                hx-indicator="#discover-recover-spinner"
+                @click="error = false"
+                :disabled="$store.pipeline.agentBusy > 0"
+                aria-label="Recover orphaned work across all pipeline stages"
+                class="{{ _btn }}">RECOVER</button>
+        <span id="discover-recover-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Recovering…</span>
+        <span x-show="error" class="text-xs text-rose-600 dark:text-rose-400">Couldn't recover. Retry.</span>
+    </span>
+{% endset %}
+{% call ws.workspace(title="DISCOVER", subcount=subcount, actions=actions, x_data="{ scanOpen: false }") %}
+    {# Reused Trigger Scan form (POST /pipeline/scans), revealed by SCAN. Hidden by default. #}
+    <div id="discover-scan-form" x-show="scanOpen" x-cloak class="border-b border-gray-200 p-6 dark:border-phaze-border">
+        {% include "pipeline/partials/trigger_scan_card.html" %}
+    </div>
+    {# Recent scans rendered through the generic file table (self-poll stripped). #}
+    <div class="p-6">
+        {% set columns = ["Agent", "Path", "Status", "Files", "Started", "Elapsed"] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for b in recent_scans %}
+            {% set status_word = {'completed': 'complete', 'running': 'running', 'failed': 'failed'}.get(b.status, b.status) %}
+            {% set status_color = {'completed': 'text-emerald-600 dark:text-emerald-300', 'running': 'text-blue-600 dark:text-blue-300', 'failed': 'text-rose-600 dark:text-rose-400'}.get(b.status, 'text-gray-500 dark:text-gray-400') %}
+            {% set files_cell = (b.processed_files | string) ~ ' / ' ~ ((b.total_files | string) if b.total_files else '—') %}
+            {% set elapsed_cell = ((b._elapsed_seconds | string) ~ 's') if b._elapsed_seconds is not none else '—' %}
+            {% set _ = ns.rows.append([
+                {'text': b._agent_name},
+                {'text': b.scan_path, 'mono': True, 'title': b.scan_path},
+                {'text': status_word, 'color': status_color},
+                {'text': files_cell, 'mono': True},
+                {'text': b.created_at.strftime('%Y-%m-%d %H:%M') if b.created_at else '—'},
+                {'text': elapsed_cell},
+            ]) %}
+        {% endfor %}
+        {% set rows = ns.rows %}
+        {% set empty_heading = "No scans yet" %}
+        {% set empty_body = "Trigger a scan to walk a directory on a registered agent." %}
+        {% set row_id_prefix = "discover-row" %}
+        {% include "pipeline/partials/_file_table.html" %}
+    </div>
+{% endcall %}

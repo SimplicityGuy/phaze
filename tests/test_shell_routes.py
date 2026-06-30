@@ -55,11 +55,12 @@ async def test_root_renders_shell_analyze_default(client: AsyncClient) -> None:
     body = response.text
     # The single stable swap target every rail node innerHTML-swaps.
     assert 'id="stage-workspace"' in body
-    # Analyze is the selected/active default: the swap target carries the stage marker AND
-    # the bridged pipeline-dashboard DAG content (dag_canvas id="pipeline-dag") renders
-    # inside it (D-01). The rail aria-current assertion is added in Plan 03.
+    # Analyze is the selected/active default: the swap target carries the stage marker AND the
+    # real Analyze workspace (Phase 58 / 58-04) renders inside it -- the lane-card grid
+    # (#analyze-lanes) supersedes the Phase-57 bridged dag_canvas (id="pipeline-dag"), which now
+    # lives only on the legacy /pipeline/ dashboard. The rail aria-current assertion is added in Plan 03.
     assert 'data-stage="analyze"' in body
-    assert 'id="pipeline-dag"' in body
+    assert 'id="analyze-lanes"' in body
 
 
 @pytest.mark.asyncio

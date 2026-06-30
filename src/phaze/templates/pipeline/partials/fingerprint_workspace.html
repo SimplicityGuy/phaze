@@ -1,0 +1,54 @@
+{# Phase 58 (58-03, WORK-02): the Fingerprint stage workspace.
+
+   Content-only fragment swapped into #stage-workspace -- the SIBLING of metadata_workspace.html
+   (same shape, different endpoint). Composes the shared scaffold (_workspace_scaffold.html):
+   one <h1 tabindex="-1"> focus target + a live sub-count bound to $store.pipeline (refreshed by
+   the SINGLE chrome poll -- no second loop, WORK-05/R-2) + a secondary-style action row + body.
+
+   Trigger (D-01, reused VERBATIM): ONE FINGERPRINT ALL button posting to the EXISTING
+   POST /pipeline/fingerprint (routers/pipeline.py:1045 trigger_fingerprint_ui), which enqueues the
+   fingerprint-pending set (services/pipeline.py get_fingerprint_pending_files -- METADATA_EXTRACTED
+   plus failed-retry, deduped) and returns pipeline/partials/trigger_response.html into
+   #fingerprint-trigger-response. R-4 bulk-enqueue guard: hx-confirm + a :disabled busy-gate on
+   $store.pipeline.fingerprintBusy. D-02: NO per-row checkbox/selection state (ALL-only).
+
+   Body = the fingerprint-pending queue (shell._render_stage -> fingerprint_files) rendered through
+   the reusable _file_table.html. Rows are inert-but-present (D-06 / R-1). Pending files have not
+   been fingerprinted yet, so Duration / Chromaprint / AcoustID show a neutral placeholder -- the
+   rich per-file record is Phase 61.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = '`${$store.pipeline.fingerprintDone} fingerprinted · chromaprint / fpcalc`' %}
+{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't double-enqueue while the agent churns). #}
+    <button type="button"
+            hx-post="/pipeline/fingerprint" hx-target="#fingerprint-trigger-response" hx-swap="innerHTML"
+            hx-confirm="Enqueue fingerprinting for all pending files?"
+            hx-indicator="#fingerprint-trigger-spinner"
+            :disabled="$store.pipeline.fingerprintBusy > 0"
+            aria-label="Fingerprint all pending files"
+            class="{{ _btn }}">FINGERPRINT ALL</button>
+    <span id="fingerprint-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+{% endset %}
+{% call ws.workspace(title="FINGERPRINT", subcount=subcount, actions=actions) %}
+    {# Trigger response lands here (trigger_response.html branches: no_active_agent / count>0 / none ready). #}
+    <div id="fingerprint-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+    <div class="p-6">
+        {% set columns = ["File", "Duration", "Chromaprint", "AcoustID"] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for f in fingerprint_files %}
+            {% set _ = ns.rows.append([
+                {'text': f.original_filename, 'mono': True, 'title': f.original_path},
+                {'text': '—'},
+                {'text': '—'},
+                {'text': '—'},
+            ]) %}
+        {% endfor %}
+        {% set rows = ns.rows %}
+        {% set empty_heading = "Nothing to fingerprint" %}
+        {% set empty_body = "All discovered files have a chromaprint fingerprint." %}
+        {% set row_id_prefix = "fingerprint-row" %}
+        {% include "pipeline/partials/_file_table.html" %}
+    </div>
+{% endcall %}

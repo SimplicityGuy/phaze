@@ -26,6 +26,7 @@ from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
     get_analysis_failed_count,
+    get_analyze_stage_files,
     get_awaiting_cloud_count,
     get_backfill_candidates,
     get_cloud_phase_counts,
@@ -128,7 +129,9 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
     return min(fallback, stage_total) if stage_total > 0 else fallback
 
 
-async def _build_dag_context(app_state: Any, session: AsyncSession, activity: dict[str, int]) -> dict[str, dict[str, int]]:
+async def _build_dag_context(
+    app_state: Any, session: AsyncSession, activity: dict[str, int], stats: dict[str, int] | None = None
+) -> dict[str, dict[str, int]]:
     """Build the per-DAG-node store-key context consumed by stats_bar.html + the 35-05 canvas.
 
     Reconciles three sources (D-03): ``get_stage_progress`` (DB-truth ``done``/``total`` per
@@ -205,6 +208,14 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     dag["scanBusy"] = int(await get_scan_busy_count(session))
     dag["agentOnline"] = int(await count_active_agents(session))
 
+    # Phase 58 (58-04, WORK-03): the Analyze A1 lane's "compute online" capacity numeral -- a
+    # READ-ONLY kind-scoped count of online compute agents, using the SAME liveness predicate as
+    # agentOnline (count_active_agents owns the never-500 SAVEPOINT degrade -> 0 on any DB error,
+    # so NO try/except here). It rides the existing dag.items() OOB seed loop onto the
+    # dag-seed-computeOnline placeholder the Analyze workspace pre-mounts (B1: an OOB seed lands
+    # only on an id already in the DOM) -- no second poll, no stats_bar.html edit, no new backend.
+    dag["computeOnline"] = int(await count_active_agents(session, kind="compute"))
+
     # Phase 41 (REQ-41-3): the scrape_and_store_tracklist / match_tracklist_to_discogs in-flight counts
     # gate the DAG Scrape/Match trigger nodes "busy" (Scraping… / Matching…). Both are controller tasks
     # (NOT part of get_stage_busy_counts's three agent stages) -- get_scrape_busy_count + get_match_busy_
@@ -213,6 +224,15 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     # matchDone are already seeded above; the gate derives pending = total - done client-side.)
     dag["scrapeBusy"] = int(await get_scrape_busy_count(session))
     dag["matchBusy"] = int(await get_match_busy_count(session))
+
+    # Phase 58 (58-02, WORK-01): the Discover "not yet enriched" backlog -- a READ-ONLY derived
+    # int (discovered files that have no extracted metadata yet), clamped >= 0. No new query path
+    # and no new poll: it reuses get_pipeline_stats (passed through by both poll/dashboard callers
+    # to avoid a duplicate query; read here if a direct caller omits it) and rides the existing
+    # dag.items() OOB seed loop onto the dag-seed-notYetEnriched placeholder the workspaces pre-mount.
+    if stats is None:
+        stats = await get_pipeline_stats(session)
+    dag["notYetEnriched"] = max(int(stats["discovered"]) - int(stats["metadata_extracted"]), 0)
 
     return {"dag": dag}
 
@@ -469,7 +489,8 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # (DB-truth) + the maintained completed counters (backstop) + the queue activity. The
     # 35-05 canvas seeds these into $store.pipeline on the full-page render; here they ride
     # the dashboard context. _build_dag_context isolates its own counter-source failures.
-    dag_ctx = await _build_dag_context(app_state, session, activity)
+    # stats is passed through so the Phase-58 notYetEnriched derived seed reuses it (no 2nd query).
+    dag_ctx = await _build_dag_context(app_state, session, activity, stats)
 
     # Phase 44 (44-04): the STRAGGLER count (long-running in-flight process_file jobs,
     # "still grinding") and the ANALYSIS_FAILED count ("gave up") -- two distinct buckets
@@ -511,6 +532,13 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
     cloud_phase_counts = await get_cloud_phase_counts(session)
 
+    # Phase 58 (58-04, WORK-04 / D-03): the all-in-stage Analyze file list (one table of queued ·
+    # running · awaiting-cloud · done) with each file's DERIVED lane + windowed coverage. ONE
+    # read-only multi-state SELECT (get_analyze_stage_files owns the never-500 SAVEPOINT degrade
+    # -> [] on any DB error, so NO try/except here -- same service-owns-degrade idiom as the cloud
+    # counts above). Pure read; no enqueue, no schema change.
+    analyze_files = await get_analyze_stage_files(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -537,6 +565,11 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
+        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03) + the deployment-wide cloud
+        # target read (config.py:406, Literal["local","a1","k8s"]) that drives the D-05 "not
+        # configured" lane labels. Both read-only; no backend behavior change.
+        "analyze_files": analyze_files,
+        "cloud_target": settings.cloud_target,
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -585,7 +618,8 @@ async def pipeline_stats_partial(
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
     # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
-    dag_ctx = await _build_dag_context(request.app.state, session, activity)
+    # stats is passed through so the Phase-58 notYetEnriched derived seed reuses it (no 2nd query).
+    dag_ctx = await _build_dag_context(request.app.state, session, activity, stats)
     # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
     # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
     # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.

@@ -25,8 +25,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 
 from phaze.database import get_session
+from phaze.models.agent import Agent
+from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.services.pipeline import get_fingerprint_pending_files, get_metadata_pending_files
 
 from .pipeline import build_dashboard_context
 
@@ -49,10 +53,19 @@ router = APIRouter(tags=["shell"])
 # literals also act as the dead-template guard's entry roots, so each stays reachable.
 _STAGE_PLACEHOLDER = "shell/partials/_stage_placeholder.html"
 STAGE_PARTIALS: dict[str, str] = {
-    "discover": _STAGE_PLACEHOLDER,
-    "metadata": _STAGE_PLACEHOLDER,
-    "fingerprint": _STAGE_PLACEHOLDER,
-    "analyze": "pipeline/partials/dag_canvas.html",
+    # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
+    # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
+    "discover": "pipeline/partials/discover_workspace.html",
+    # Phase 58 (58-03, WORK-02): the Metadata + Fingerprint enrich workspaces -- static literals
+    # (T-57-01: `stage` is never spliced into a template path). Supersede-in-place; legacy templates
+    # stay until CUT-02.
+    "metadata": "pipeline/partials/metadata_workspace.html",
+    "fingerprint": "pipeline/partials/fingerprint_workspace.html",
+    # Phase 58 (58-04, WORK-03/04): the real Analyze workspace (3 lane cards + reused cloud cards +
+    # per-file lane/window table) supersedes the bridged dag_canvas.html -- a static literal (T-57-01:
+    # `stage` is never spliced into a template path). dag_canvas.html stays reachable via the legacy
+    # dashboard.html until CUT-02 (Phase 62), so the dead-template guard stays green (supersede-in-place).
+    "analyze": "pipeline/partials/analyze_workspace.html",
     "trackid": _STAGE_PLACEHOLDER,
     "tracklist": _STAGE_PLACEHOLDER,
     "propose": _STAGE_PLACEHOLDER,
@@ -91,6 +104,29 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["stage"] = stage
         context["stage_partial"] = STAGE_PARTIALS[stage]
         context["oob_counts"] = False
+    elif stage == "discover":
+        # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
+        # data verbatim (build_recent_scans -- the SAME helper build_dashboard_context uses) and
+        # the non-revoked agent list driving the reused Trigger Scan form. Both reads degrade-safe
+        # at the service/ORM layer (no router try/except). oob_counts stays False on the stage
+        # render (Pitfall 3); the live sub-count refreshes via the single chrome poll's OOB seeds.
+        context["recent_scans"] = await build_recent_scans(session)
+        agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+        context["agents"] = (await session.execute(agents_stmt)).scalars().all()
+    elif stage == "metadata":
+        # Phase 58 (58-03, WORK-02): the Metadata workspace renders the metadata-pending queue --
+        # the EXACT set its EXTRACT ALL button enqueues (get_metadata_pending_files: every
+        # music/video FileRecord, D-01). Pitfall 5 -- the metadata stage had NO DB context before
+        # this plan (only analyze/discover did). Reuses the existing shared pending-set helper (no
+        # new service fn, no enqueue change). oob_counts stays False; the live sub-count refreshes
+        # via the single chrome poll's OOB seeds.
+        context["metadata_files"] = await get_metadata_pending_files(session)
+    elif stage == "fingerprint":
+        # Phase 58 (58-03, WORK-02): the Fingerprint workspace renders the fingerprint-pending
+        # queue -- the EXACT set its FINGERPRINT ALL button enqueues (get_fingerprint_pending_files:
+        # METADATA_EXTRACTED plus failed-retry, deduped, D-01). Pitfall 5 (no prior context for this
+        # stage). Existing read only; no new service fn, no enqueue change.
+        context["fingerprint_files"] = await get_fingerprint_pending_files(session)
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)
