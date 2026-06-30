@@ -356,7 +356,7 @@ async def test_stats_poll_degrades_to_200_without_counter_source(client: AsyncCl
 @pytest.mark.asyncio
 async def test_dashboard_full_page_renders_200_with_dag_context(client: AsyncClient) -> None:
     """GET /pipeline/ renders 200 — the dashboard context carries the per-node dag values."""
-    response = await client.get("/pipeline/")
+    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Pipeline Dashboard" in response.text
 
@@ -401,7 +401,10 @@ async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
         return HTMLResponse("ok")
 
     monkeypatch.setattr(pipeline_router.templates, "TemplateResponse", _spy)
-    response = await client.get(path)
+    # Phase 57: GET /pipeline/ now 302-redirects to the shell root `/` for plain (non-HX)
+    # navigations (the true rename). Send HX-Request so the dashboard still renders its
+    # full context here; /pipeline/stats ignores the header, so this is safe for both paths.
+    response = await client.get(path, headers={"HX-Request": "true"})
     assert response.status_code == 200
     return captured
 

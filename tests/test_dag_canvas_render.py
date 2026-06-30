@@ -688,7 +688,7 @@ def test_gating_execute_is_navigational_link() -> None:
 @pytest.mark.asyncio
 async def test_integration_dashboard_renders_dag_canvas(client: AsyncClient) -> None:
     """GET /pipeline renders the DAG canvas with all 10 node labels and no legacy markers."""
-    response = await client.get("/pipeline/")
+    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     assert 'aria-label="Pipeline stage graph"' in body
@@ -702,7 +702,7 @@ async def test_integration_dashboard_renders_dag_canvas(client: AsyncClient) -> 
 @pytest.mark.asyncio
 async def test_integration_dashboard_edge_honesty(client: AsyncClient) -> None:
     """The rendered SVG converges only Metadata+Analyze into Proposals (edge honesty)."""
-    response = await client.get("/pipeline/")
+    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
     body = response.text
     # Ten anchor-derived bézier edges; none originate at fingerprint/scrape/match into proposals.
     paths = re.findall(r'<path d="M [\d., ]+C [\d., ]+"', body)
@@ -717,7 +717,7 @@ async def test_integration_dashboard_edge_honesty(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_integration_dashboard_scan_search_em_dash(client: AsyncClient) -> None:
     """The rendered Scan/Search node shows the literal em-dash denominator."""
-    response = await client.get("/pipeline/")
+    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
     body = response.text
     # Phase 40: slice ONLY the scan_search chip (its new lower bound is the fingerprint_scan node,
     # inserted immediately after it in DOM order).

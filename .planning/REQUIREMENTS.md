@@ -1,6 +1,6 @@
 # Requirements: Phaze — v7.0 UI Redesign (DAG-Centric Hybrid Console)
 
-**Status:** PLANNED — scoped 2026-06-28, **activates after v6.0 ships**. This is a forward-looking draft produced via the `/gsd:new-milestone` scope-only path (the active milestone remains v6.0; STATE.md was intentionally not switched and v6.0 phase dirs were not cleared). When v6.0 completes and is archived, this becomes the v7.0 `REQUIREMENTS.md`.
+**Status:** ACTIVE — milestone v7.0 started 2026-06-29 (v6.0 shipped and archived). Originally scoped 2026-06-28 via the `/gsd:new-milestone` scope-only path; activated as the v7.0 `REQUIREMENTS.md` with STATE.md switched to v7.0 and the v6.0 phase dirs archived.
 
 **Defined:** 2026-06-28
 **Design source:** `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype in the co-located `2026-06-28-ui-redesign-assets/`).
@@ -38,7 +38,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Identify workspaces (IDENT)
 
-- [ ] **IDENT-01**: The Track-ID workspace shows each file's AcoustID→MusicBrainz match state and confidence.
+- [ ] **IDENT-01**: The Track-ID workspace shows each file's **existing** identity signals — audfprint + Panako fingerprint match/score and rapidfuzz tracklist-match confidence — surfaced as match state and confidence. (Re-scoped 2026-06-29 from the prototype's "AcoustID→MusicBrainz" label: that lookup backend does not exist, so building it is out of this presentation-only milestone — deferred to IDENT-03 below. Confirmed by research: `grep -ri 'acoustid|musicbrainz' src/phaze` is empty.)
 - [ ] **IDENT-02**: The Tracklist workspace presents the Search→Scrape→Match sub-chain inline as a visible 3-step with per-set match progress, triggerable from one surface.
 
 ### Review & Apply (REVIEW)
@@ -69,6 +69,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 - **SHELL-06**: Mobile/touch layout beyond narrow-desktop collapse (single-user desktop tool — low priority).
 - **REVIEW-06**: Per-stage configurable confidence thresholds + override UI for "approve all high-confidence" (v7.0 ships a sensible fixed threshold).
 - **WORK-06**: Pipeline admission-state cards driven by `cloud_phase` (the v6.0 deferred KROUTE-06) surfaced as Analyze-lane sub-states.
+- **IDENT-03**: AcoustID acoustic-fingerprint lookup + MusicBrainz recording resolution as a new identity backend, then surfaced in the Track-ID workspace (a future milestone — requires net-new backend, out of v7.0's presentation-only scope; IDENT-01 ships the existing fingerprint + tracklist signals instead).
 
 ## Out of Scope
 
@@ -80,15 +81,15 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ## Traceability
 
-Each v7.0 requirement maps to exactly one phase. **Coverage: 25/25 — no orphans, no duplicates.**
+Each v7.0 requirement maps to exactly one phase. **Coverage: 25/25 — no orphans, no duplicates.** ROADMAP.md (created 2026-06-29) carries the per-phase goal, dependency order (57→58→59→60→61→62), and 2-5 success criteria for each phase. Note: **IDENT-01 was re-scoped 2026-06-29** to surface only the existing audfprint+Panako fingerprint + rapidfuzz tracklist signals — the prototype's AcoustID→MusicBrainz label is dropped (that backend does not exist; building it is out of this presentation-only milestone, deferred to IDENT-03).
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHELL-01 | Phase 57 — Shell & rail | Planned |
-| SHELL-02 | Phase 57 — Shell & rail | Planned |
-| SHELL-03 | Phase 57 — Shell & rail | Planned |
-| SHELL-04 | Phase 57 — Shell & rail | Planned |
-| SHELL-05 | Phase 57 — Shell & rail | Planned |
+| SHELL-01 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-02 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-03 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-04 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-05 | Phase 57 — Shell & DAG rail | Planned |
 | WORK-01 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-02 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-03 | Phase 58 — Enrich + Analyze workspaces | Planned |

@@ -91,21 +91,23 @@ async def create_searchable_tracklist(
 
 @pytest.mark.asyncio
 async def test_search_page_loads(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /search/ returns 200 with Search heading and summary counts."""
-    await create_searchable_file(session)
-    await create_searchable_tracklist(session)
-    response = await client.get("/search/")
-    assert response.status_code == 200
-    assert "Search" in response.text
-    assert "files" in response.text
-    assert "tracklists" in response.text
+    """Phase 57 (SHELL-05 / D-04): /search is renamed to the ⌘K command palette.
+
+    A plain GET /search/ 302-redirects to the shell root with ``?palette=1`` (the shell
+    Alpine reads it to auto-open the palette). The legacy search landing page (heading +
+    summary counts + filter panel) is retired by the rename; the live results path survives
+    via the HX fragment (test_search_with_query_returns_results covers it).
+    """
+    response = await client.get("/search/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/?palette=1"
 
 
 @pytest.mark.asyncio
 async def test_search_with_query_returns_results(client: AsyncClient, session: AsyncSession) -> None:
     """GET /search/?q=deadmau5 returns 200 with results table."""
     await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
-    response = await client.get("/search/", params={"q": "deadmau5"})
+    response = await client.get("/search/", params={"q": "deadmau5"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "deadmau5" in response.text
     assert "<table" in response.text.lower()
@@ -116,7 +118,7 @@ async def test_search_returns_file_and_tracklist_results(client: AsyncClient, se
     """Results contain both File and Tracklist type badges."""
     await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
     await create_searchable_tracklist(session, artist="deadmau5", event="deadmau5 Coachella 2024")
-    response = await client.get("/search/", params={"q": "deadmau5"})
+    response = await client.get("/search/", params={"q": "deadmau5"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" in response.text  # File badge
     assert "bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" in response.text  # Tracklist badge
@@ -125,7 +127,7 @@ async def test_search_returns_file_and_tracklist_results(client: AsyncClient, se
 @pytest.mark.asyncio
 async def test_search_no_results_message(client: AsyncClient) -> None:
     """GET /search/?q=nonexistent returns No results found message (D-07)."""
-    response = await client.get("/search/", params={"q": "xyznonexistent123"})
+    response = await client.get("/search/", params={"q": "xyznonexistent123"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "No results found" in response.text
     assert "xyznonexistent123" in response.text
@@ -145,7 +147,7 @@ async def test_search_artist_filter(client: AsyncClient, session: AsyncSession) 
     """GET /search/?q=Strobe&artist=deadmau5 narrows results."""
     await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
     await create_searchable_file(session, original_filename="Daft Punk - Strobe Remix.mp3", artist="Daft Punk")
-    response = await client.get("/search/", params={"q": "Strobe", "artist": "deadmau5"})
+    response = await client.get("/search/", params={"q": "Strobe", "artist": "deadmau5"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "deadmau5" in response.text
 
@@ -155,7 +157,7 @@ async def test_search_bpm_filter(client: AsyncClient, session: AsyncSession) -> 
     """GET /search/?q=deadmau5&bpm_min=120&bpm_max=130 narrows results."""
     await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5", bpm=128.0)
     await create_searchable_file(session, original_filename="deadmau5 - Raise Your Weapon.mp3", artist="deadmau5", bpm=140.0)
-    response = await client.get("/search/", params={"q": "deadmau5", "bpm_min": "120", "bpm_max": "130"})
+    response = await client.get("/search/", params={"q": "deadmau5", "bpm_min": "120", "bpm_max": "130"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Strobe" in response.text
 
@@ -165,7 +167,7 @@ async def test_search_file_state_filter(client: AsyncClient, session: AsyncSessi
     """GET /search/?q=deadmau5&file_state=approved narrows results."""
     await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", state=FileState.APPROVED)
     await create_searchable_file(session, original_filename="deadmau5 - FML.mp3", state=FileState.DISCOVERED)
-    response = await client.get("/search/", params={"q": "deadmau5", "file_state": "approved"})
+    response = await client.get("/search/", params={"q": "deadmau5", "file_state": "approved"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Strobe" in response.text
 
@@ -179,27 +181,33 @@ async def test_search_pagination(client: AsyncClient, session: AsyncSession) -> 
             original_filename=f"track {i:03d}.mp3",
             artist=f"artist {i:03d}",
         )
-    response = await client.get("/search/", params={"q": "track", "page": "1", "page_size": "25"})
+    response = await client.get("/search/", params={"q": "track", "page": "1", "page_size": "25"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Showing 1-25 of 30" in response.text
 
 
 @pytest.mark.asyncio
 async def test_search_nav_tab_first(client: AsyncClient) -> None:
-    """GET /search/ response contains Search link before Pipeline link in HTML."""
-    response = await client.get("/search/")
-    assert response.status_code == 200
-    search_pos = response.text.index('href="/search/"')
-    pipeline_pos = response.text.index('href="/pipeline/"')
-    assert search_pos < pipeline_pos
+    """Phase 57 (SHELL-03/05): the legacy search/pipeline nav tabs are gone (DAG rail).
+
+    Plan 57-03 retired the base.html tab-bar, so there is no nav-tab ordering to assert; a
+    plain GET /search/ now 302-redirects to the ⌘K palette (/?palette=1).
+    """
+    response = await client.get("/search/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/?palette=1"
 
 
 @pytest.mark.asyncio
 async def test_search_filter_panel_collapsed(client: AsyncClient) -> None:
-    """Response contains x-data='{ showFilters: false }' indicating collapsed by default (D-04)."""
-    response = await client.get("/search/")
-    assert response.status_code == 200
-    assert 'x-data="{ showFilters: false }"' in response.text
+    """Phase 57 (SHELL-05 / D-04): the legacy search filter panel is retired by the ⌘K rename.
+
+    The collapsible filter panel was search-page chrome; the page is replaced by the command
+    palette, so a plain GET /search/ now 302-redirects to /?palette=1.
+    """
+    response = await client.get("/search/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/?palette=1"
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +274,7 @@ async def create_searchable_discogs_link(
 async def test_search_returns_discogs_results(client: AsyncClient, session: AsyncSession) -> None:
     """GET /search/?q=daft+punk returns Discogs results with discogs_release type."""
     await create_searchable_discogs_link(session, discogs_artist="Daft Punk", discogs_title="Random Access Memories")
-    response = await client.get("/search/", params={"q": "daft punk"})
+    response = await client.get("/search/", params={"q": "daft punk"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Discogs" in response.text
 
@@ -275,7 +283,7 @@ async def test_search_returns_discogs_results(client: AsyncClient, session: Asyn
 async def test_search_discogs_purple_pill(client: AsyncClient, session: AsyncSession) -> None:
     """Discogs results render with purple pill badge."""
     await create_searchable_discogs_link(session, discogs_artist="Bonobo", discogs_title="Migration")
-    response = await client.get("/search/", params={"q": "bonobo"})
+    response = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400" in response.text
 
@@ -286,7 +294,7 @@ async def test_search_three_entity_types(client: AsyncClient, session: AsyncSess
     await create_searchable_file(session, original_filename="bonobo - migration.mp3", artist="bonobo")
     await create_searchable_tracklist(session, artist="bonobo", event="bonobo Coachella 2024")
     await create_searchable_discogs_link(session, discogs_artist="bonobo", discogs_title="migration")
-    response = await client.get("/search/", params={"q": "bonobo"})
+    response = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" in response.text  # File
     assert "bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" in response.text  # Tracklist
@@ -295,8 +303,12 @@ async def test_search_three_entity_types(client: AsyncClient, session: AsyncSess
 
 @pytest.mark.asyncio
 async def test_summary_counts_include_discogs(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /search/ landing page shows Discogs link count."""
-    await create_searchable_discogs_link(session, discogs_artist="Count Artist", discogs_title="Count Album")
-    response = await client.get("/search/")
-    assert response.status_code == 200
-    assert "discogs links" in response.text
+    """Phase 57 (SHELL-05 / D-04): the search landing summary-counts moved to the ⌘K palette.
+
+    The empty-query landing page (with its Discogs-link summary count) is retired by the
+    search → ⌘K rename, so a plain GET /search/ now 302-redirects to /?palette=1. The
+    discogs-result rendering itself is covered by test_search_returns_discogs_results.
+    """
+    response = await client.get("/search/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/?palette=1"

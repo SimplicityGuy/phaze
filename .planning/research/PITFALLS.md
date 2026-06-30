@@ -1,543 +1,223 @@
 # Pitfalls Research
 
-**Domain:** Adding remote Kueue-Job submission + S3 staging to an existing async Python control plane (phaze v6.0 Kubernetes Burst Analysis)
-**Researched:** 2026-06-26
-**Confidence:** HIGH (Kueue lifecycle + kr8s/aioboto3 verified by sibling FEATURES.md/STACK.md against Context7; S3 presigned-URL credential-expiry constraint verified via AWS docs/re:Post; phaze-specific integration mistakes derived from PROJECT.md decisions + v4.0/v5.0 incident memory)
+**Domain:** Rewriting an existing server-rendered tabbed HTMX/Jinja admin UI (~10 tabs, 105 templates / 94 partials) into a DAG-centric three-column HTMX "hybrid console" — then retiring the old UI. phaze v7.0, phases 57–62.
+**Researched:** 2026-06-29
+**Confidence:** HIGH (grounded in the actual `src/phaze/templates`, `src/phaze/routers`, and `base.html`; HTMX history/OOB behavior verified against current HTMX docs via Context7)
 
-> Scope: these are mistakes specific to **bolting a remote, ephemeral, quota-scheduled execution
-> unit onto phaze's existing async control plane** — not generic Kubernetes advice. The v5.0
-> cloud-burst machinery (duration routing, compute-agent callback to `/api/internal/agent/*`,
-> reconcile-by-`file_id`, ledger scoping, `cloud_burst_enabled` toggle) already exists and is the
-> safety net that several of these pitfalls lean on. Suggested phase numbers assume the v6.0
-> roadmap starts at **Phase 52**; the likely phase shape (from FEATURES MVP) is:
-> **52** Job-runner image + one-shot entrypoint · **53** S3 staging seam · **54** Kube-API
-> submit/watch/reconcile · **55** router/ledger/active-target · **56** deploy/runbook/secrets/docs.
+> Scope note: this is **not** generic web-pitfall research. Every pitfall below is anchored to something that already exists in this codebase and will break (or silently regress) when the tab IA is collapsed into a rail-driven stage-swapping shell. File citations are load-bearing — they are where the existing pattern lives that the rewrite must preserve or replace.
+
+---
+
+## The existing UI in one paragraph (so the pitfalls make sense)
+
+Today there is **no bare-`/` handler** — every page is a full-page template (`extends "base.html"`, 10 of them) served under a prefixed router: `/proposals/` (default-ish), `/pipeline/`, `/search/`, `/duplicates/`, `/tags/`, `/cue/`, `/tracklists/`, `/preview/`, `/audit/`, `/admin/agents`. `base.html` owns the brand (Jura/Inter, blue accent, wave SVG, `phaze-bg`/`phaze-panel` tokens), a flat `<nav>` of ~10 `<a href>` tabs highlighted by `current_page`, a hand-rolled **theme store** (`auto/dark/light` with a documented "Alpine doesn't process `:class` on `<html>`" landmine), and two global Alpine stores (`theme`, `pipeline`). The pipeline dashboard is the most sophisticated page and the template the rewrite most resembles: a single `#pipeline-stats` div polls `/pipeline/stats` `every 5s` with `hx-swap="innerHTML"`, and that one poll response carries **~10 `hx-swap-oob` fragments** to refresh cards that live *outside* the polled div, plus a `dag.items()` loop of hidden `x-init="$store.pipeline.<key> = N"` store-write paragraphs — all gated behind an `oob_counts` flag to avoid duplicate-id collisions at first paint. Bulk approval (`proposals/partials/bulk_actions.html`) serializes a client-side Alpine `selectedRows` Set into hidden `proposal_ids` inputs and PATCHes `/proposals/bulk`, which blindly applies the status change to whatever ids arrive. This is the machinery v7.0 must generalize to a rail.
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Treating the kube watch as the result channel (a dropped watch loses a result)
+### Pitfall 1: The rail swap clobbers the shell — wrong `hx-target`/`hx-swap` eats the header, rail, or per-file pane
 
 **What goes wrong:**
-A developer writes `await job.wait(["condition=Complete"])`, reads the analysis result out of the
-Job/pod, and updates `FileRecord` from there. Over an operator VPN (Tailscale or WireGuard), the
-watch connection drops after minutes-to-hours, the `resourceVersion` the watch was holding ages out
-of etcd's compaction window, and the re-list/re-watch either 410-Gones or silently misses the
-terminal transition. The file is stranded as "in progress" forever even though the pod ran perfectly
-and the analysis succeeded.
+A rail node is wired like the existing tabs (`hx-get="/stage/analyze"`) but with a target that is too broad (`hx-target="body"`, `hx-target="#shell"`, or an implicit `outerHTML` on a wrapping element). The stage response then replaces the three-column shell itself — the rail, the ⌘K header, and the per-file pane vanish on the first click, leaving only the workspace fragment. The inverse also happens: the stage endpoint returns a **full** `extends "base.html"` page, so HTMX injects a second `<nav>`, a second theme toggle, and a second `$store` init into the middle column.
 
 **Why it happens:**
-Kube watches *feel* like a reliable real-time stream, so people make them authoritative. But Kueue
-carries **no result payload** — it is purely an admission/quota gate (FEATURES.md) — and a kube watch
-is a best-effort lifecycle signal, not a durable queue. The VPN makes drops frequent; long-set
-analysis (hours) makes `resourceVersion` expiry likely.
+The current app has *no* sub-page swapping — every nav item is a hard `<a href>` full-page load (`base.html` lines 191–239). There is no existing "swap just the center" pattern to copy; the closest analog is `#pipeline-stats` which swaps `innerHTML` of a *leaf* div, not a layout region. Developers reach for the pattern they know (full-page templates) and a blunt target.
 
 **How to avoid:**
-Keep phaze's existing invariant absolute: **the pod POSTing to `/api/internal/agent/*`, reconciled by
-`file_id`, is the ONLY source of truth for the result.** The kube watch is lifecycle/observability
-ONLY — it tells phaze *whether/when* the Job ran, never *what the answer was*. The `FileRecord` must be
-able to reach its terminal analyzed state purely from the out-of-band callback even if the watch never
-returns a single event. Pair the watch (fast path) with a **periodic reconcile loop** that re-reads
-Workload/Job status for in-flight `file_id`s (FEATURES.md "orphan/timeout reconcile"). Use bookmarked
-watches (`allowWatchBookmarks`) where kr8s supports it, and on any watch error, fall back to a fresh
-list+reconcile rather than resuming a stale `resourceVersion`.
+- Give the center column a single stable id (e.g. `#stage-workspace`) and make **every** rail node `hx-get="/console/stage/<name>" hx-target="#stage-workspace" hx-swap="innerHTML"`. Never target a parent of the rail/header.
+- Stage endpoints return **fragments only** (no `extends "base.html"`). Establish a `_console/_stage_base.html` partial-include convention distinct from the full-page `base.html`, exactly as the codebase already separates `proposals/list.html` (full) from `proposals/partials/*.html` (fragments).
+- The shell (`base.html` successor) renders once on `GET /`; the right per-file pane updates via an **OOB** fragment in the stage response (`hx-swap-oob` targeting `#file-pane`), never by widening the main target — the dashboard already proves this OOB-alongside-primary pattern (`proposals/partials/approve_response.html` swaps the row primary + `#stats-bar` OOB + toast OOB).
 
 **Warning signs:**
-Files sit in `AWAITING_CLOUD`/submitted long after the pod's callback already landed; the callback
-log shows a result POST for a `file_id` whose `FileRecord` never advanced; watch handlers throw
-`410 Gone` / "resourceVersion too old."
+The rail/header flicker or disappear on a stage click; "Skip to…" link count doubles; two theme toggles render; `$store.pipeline` resets to zeros mid-session (a second store init ran); browser devtools shows nested `<main>`/`<nav>`.
 
-**Phase to address:** Phase 54 (submit/watch/reconcile) — make the callback authoritative and the
-reconcile loop mandatory from day one, not a later hardening pass.
+**Phase to address:** **57** (Shell & rail) — lock the `#stage-workspace` target contract and the fragment-vs-full-page template split before any stage is built.
 
 ---
 
-### Pitfall 2: Holding a SAQ worker slot for hours blocking on `job.wait(...)`
+### Pitfall 2: Lost Alpine state and dead event handlers after a swap (`x-data` re-init, keyboard nav, `selectedRows`)
 
 **What goes wrong:**
-The submit-and-watch logic runs inside a single SAQ task that calls `await job.wait(...)` with no
-timeout (or a multi-hour one). A long-set Job can sit **suspended behind Kueue quota for hours** before
-it even starts, then run for hours more. One worker slot is pinned the whole time. With a conservative
-long-files workload, a handful of these starve the `controller` queue and stall everything else
-(tracklist crons, pipeline triggers).
+The proposals table keyboard navigation and multi-select live entirely in an Alpine `x-data="proposalTable()"` component on `#proposal-list-container` with `@keydown.window`, a `focusedRow` cursor, and a `selectedRows` Set (`proposals/list.html` lines 17–20, 49–105). When that table becomes a *swapped* stage workspace, the new content's `x-data` is a fresh component instance — selection, focus cursor, and any open inline-edit state reset to empty on **every** swap and every 5s poll that re-renders the subtree. Worse, handlers bound with plain `<script>` or `htmx.onLoad` against ids that no longer exist after a swap silently stop firing.
 
 **Why it happens:**
-`await job.wait()` reads like cheap async I/O, so it looks free to hold. But "queued behind quota" is
-an indefinite, *normal* state in Kueue (FEATURES.md: tolerate pending-on-quota), not a transient blip —
-so the wait genuinely lasts hours. phaze already learned this exact lesson in v5.0 ("stay one ahead"
-push pipeline) and the v4.0.10 windowed-analysis timeout incident: don't let one long unit own a worker.
+HTMX swaps raw HTML; Alpine *re-initializes* `x-data` on inserted nodes (good) but does **not** preserve the prior instance's runtime state (bad if you assumed persistence). The current code already had to defend this — note `@htmx:after-swap.window="$nextTick(() => { rowIds = …; focusedRow = -1; selectedRows = new Set(); })"` in `proposals/list.html`: it *deliberately resets* selection after a swap because state can't survive it. In a rail console, swaps are constant, so this reset-on-swap becomes a UX regression (operator loses their multi-select when a poll ticks).
 
 **How to avoid:**
-Submit-then-return. The submit task creates the Job and records `submitted` state, then **exits**. A
-short, **bounded** `wait(..., timeout=...)` is acceptable to catch fast failures, but on timeout the
-task returns and a separate periodic reconcile task re-reads status on its next run (Stack integration
-note: "re-poll on the next task run rather than holding a worker slot for hours"). State lives on
-`FileRecord` (submitted → admitted → result-reconciled), not in a held coroutine. This also makes the
-whole flow restart-safe: a control-plane reboot mid-analysis just reconciles on the next cron tick.
+- Hoist any state that must outlive a swap into an **Alpine global store** (the codebase's established pattern — `$store.theme`, `$store.pipeline` in `base.html`), not into the swapped component's `x-data`. Selection-in-progress, the active stage, ⌘K open/closed, and the open per-file id should be store-level.
+- Keep volatile, intentionally-ephemeral state (a row's inline edit buffer) in the swapped `x-data` — and **never** let the 5s poll re-render the subtree that holds an in-flight interaction. The dashboard already enforces this: the poll swaps `#pipeline-stats` only and pushes counts to `#pipeline-stages` buttons via **OOB hidden `x-init` store writes** so "the button subtree is never the swap target" (`stats_bar.html` lines 27–49). Replicate that split for every workspace with interactive rows.
+- Prefer `@event.window` Alpine listeners (survive because they bind to `window`) over element-scoped `htmx.onLoad` re-binding.
 
 **Warning signs:**
-`controller` queue depth climbs while only a few cloud files are in flight; SAQ worker utilization
-shows long-lived tasks; unrelated controller work (crons) lags whenever cloud burst is active.
+Multi-select clears when the live poll ticks; keyboard row-nav stops after the first stage swap; inline edit fields blank out under load; `x-cloak` flashes on every swap.
 
-**Phase to address:** Phase 54 — design the submit and the reconcile as separate tasks from the start.
+**Phase to address:** **57** (state-survival store contract) + revisited in **60** (Review & Apply multi-select must survive the live diff poll).
 
 ---
 
-### Pitfall 3: `ttlSecondsAfterFinished` deletes the Job/Workload before phaze reads terminal status (TTL-vs-read race)
+### Pitfall 3: Out-of-band swap collisions when one stage response updates rail counts + header strip + workspace at once
 
 **What goes wrong:**
-The Job is created with a tidy short `ttlSecondsAfterFinished` (say 30–60s) so the cluster stays clean.
-The Kubernetes TTL-after-finished controller deletes the finished Job **and its owned Workload** shortly
-after completion. phaze's periodic reconcile runs on a longer interval (minutes) — by the time it looks,
-the Job and Workload are gone. The reconcile can't distinguish "succeeded and GC'd" from "never
-existed / failed," and may wrongly re-route or re-submit the file.
+A rail console wants one click/poll to update three regions: the workspace (primary), the rail's live per-stage counts, and the header agent-status strip. Done naively with multiple `hx-swap-oob` fragments, two failure modes appear that this codebase has *already hit*: (a) OOB fragments emitted on the **initial full-page render** (not just the poll response) produce **duplicate ids** in the DOM and stray visible nodes; (b) an OOB fragment's id doesn't exactly match the live element, so the swap silently no-ops and a count goes stale.
 
 **Why it happens:**
-TTL and the reconcile interval are set independently by different people thinking about different goals
-(cluster hygiene vs. control-plane polling cost). FEATURES.md flags this as "the single most important
-ordering decision in the watch loop."
+`hx-swap-oob` is only honored *during an HTMX swap* — at first paint it renders as ordinary (duplicate) markup. The dashboard guards this with an explicit `{% if oob_counts %}` gate and a documented "same-id contract" between the in-place seed and the OOB twin (`stats_bar.html` lines 36–45, 65–68; the `dag-seed-<key>` id convention). A new rail built without internalizing that gate will regress it.
 
 **How to avoid:**
-Make the result callback the durable record (Pitfall 1) so a GC'd Job is *not* catastrophic — but still
-prevent the race: set `ttlSecondsAfterFinished` **comfortably longer than the reconcile period** (e.g.
-TTL = several × reconcile interval, minutes not seconds), OR have phaze **delete the Job explicitly
-after it has recorded the outcome** (delete-on-reconcile) and set a long TTL only as a backstop for
-control-plane-down scenarios. Treat "Job not found + no callback received + ledger says it was
-scheduled" as "needs re-route," never as success.
+- Reuse the exact `oob_counts`-style flag: stage/poll endpoints set it `True`, the full-page shell include omits it, so OOB blocks fire *only* on swap responses. This is a proven phaze idiom — copy it, don't reinvent.
+- Maintain a **single documented id registry** for OOB targets (rail counts `#rail-count-<stage>`, header dots `#agent-status-strip`, file pane `#file-pane`). The codebase already relies on id-contract discipline (`#straggler-failed-card`, `#admission-state-card`, etc., each re-pushed `{% with oob = True %}`); a console multiplies these, so the registry must be explicit or drift is guaranteed.
+- Push **rail counts via hidden `x-init` store writes** (the `$store.pipeline` pattern) rather than re-rendering rail DOM, so a count refresh never clobbers rail focus/hover or an in-flight nav.
 
 **Warning signs:**
-Reconcile logs `Job/Workload not found` for files that did complete; occasional duplicate Jobs for the
-same `file_id`; flaky success/failure attribution that correlates with cluster load (slower reconcile).
+Duplicate-id warnings in devtools; a rail count freezes while the workspace updates; a stray "12 files ready" text node appears at page top on first load (the classic un-gated-OOB symptom); the header status dots stop updating after the first poll.
 
-**Phase to address:** Phase 54 — fix TTL/reconcile ordering as an explicit, tested invariant.
+**Phase to address:** **57** (rail count + header strip OOB contract) — and every later phase must conform to the id registry.
 
 ---
 
-### Pitfall 4: Presigned GET URL expires before the suspended Job is admitted and fetches
+### Pitfall 4: Poll storms — many concurrent `hx-trigger="every Ns"` loops hammering endpoints, including in a backgrounded tab
 
 **What goes wrong:**
-The control plane uploads the long file to S3, mints a presigned GET URL with a "reasonable" 15-minute
-or 1-hour expiry, bakes it into the Job spec, and submits the suspended Job. Kueue holds the Job behind
-quota for **3 hours**. When the pod finally runs, the presigned URL is already expired — `httpx` GET
-returns 403, the pod fails, and the file looks like an analysis failure when it was really a staging
-timing bug.
+The repo already has **15 `every Ns` polling triggers across 16 templates** (`base.html`, `pipeline/dashboard.html`, `admin/agents.html`, `tracklists/.../scan_progress.html`, and ~10 pipeline cards). A three-column console that shows the rail (per-stage counts), a workspace (lane cards + file queue), and a per-file pane *simultaneously* can easily mount **3–5 independent 5s polls at once** — and because each is its own request, they fan out to separate DB-querying endpoints (`/pipeline/stats` alone calls ~12 service functions per tick: `pipeline.py` lines 549–594). On ~200K files these become non-trivial; multiplied across regions and never paused when the tab is backgrounded, they are a self-inflicted load source.
 
 **Why it happens:**
-Two facts collide: (a) Kueue admission is intentionally indefinite under a conservative quota, and (b)
-presigned URLs are short-lived by nature. Worse, **SigV4 caps presigned URLs at 7 days (604800s) — but
-only if minted from long-lived IAM-user keys; if minted from STS/role temporary credentials the URL
-dies when those creds expire (often 1–12h) regardless of the requested expiry** (verified, AWS docs).
-A developer who tests with an admitted-immediately Job never sees the failure.
+HTMX makes per-element polling trivial (`hx-trigger="every 5s"`), so each new live region "just adds a poll." There is no shared scheduler. The existing dashboard already consolidates *deliberately* — one `#pipeline-stats` poll fans out to ~10 OOB updates rather than 10 polls — but a rail rewrite that adds the rail and file pane as separate pollers loses that consolidation.
 
 **How to avoid:**
-Mint the presigned GET with an expiry that **exceeds the worst-case queue-wait + analysis time** —
-hours, with margin — using **long-lived bucket credentials**, not STS/role temp creds (else the URL
-silently expires early). Better yet, **stage the file just-in-time on admission**: have the reconcile
-loop generate the presigned URL only once the Workload flips `Admitted=True`, so the URL's clock starts
-when the pod is about to run, not when the Job is queued. If the spec must carry the URL at submit time,
-size the expiry to the operator's quota-wait SLA and surface "presigned URL near expiry" as a re-mint
-trigger. Distinguish a 403-on-fetch (staging/expiry) from an analysis error in the pod's exit semantics
-so the control plane re-stages rather than abandoning the file.
+- **One console-level poll.** Keep the single-poll/fan-out-via-OOB architecture the dashboard already uses (`stats_bar.html`): a single `every 5s` request returns the workspace delta **plus** OOB rail counts **plus** OOB header dots **plus** OOB file-pane facts. Do not give the rail, workspace, and pane independent `every Ns` triggers.
+- Add a load-shedding visibility guard so polls don't fire on a hidden tab — an `every Ns` trigger keeps firing regardless of tab focus unless gated (verified current HTMX behavior). Gate via a `visibilitychange` listener that pauses/resumes (e.g. add/remove the polling attribute, or only `htmx.trigger` when `document.visibilityState === 'visible'`).
+- Verify each poll endpoint stays **degrade-safe and cheap**: phaze's service layer already owns "never-500, return 0 on DB error" degrade (`get_queue_activity`, `get_stage_busy_counts`, etc., per `pipeline.py` comments) — keep new lane/rail counts on the same single poll context so they inherit that contract instead of adding fresh failure surfaces.
 
 **Warning signs:**
-Pod logs show `403 Forbidden` / `Request has expired` on the GET; failures correlate with high cluster
-queue depth (long waits) and never happen when quota is free; STS-based creds make even short waits fail.
+Network tab shows N requests every 5s where N = number of live regions; Postgres connection pool pressure rises when the console is open; CPU on the app server climbs with the console idle in a background tab; `/pipeline/stats`-equivalent p95 latency grows with file count.
 
-**Phase to address:** Phase 53 (S3 staging seam) for the expiry/credential decision; Phase 54 for
-just-in-time minting on admission.
+**Phase to address:** **58** (Enrich + Analyze workspaces own WORK-05 live refresh + the three lane cards — the densest live region; the consolidation decision lives here). Re-checked in **61** (per-file pane must ride the same poll, not add its own).
 
 ---
 
-### Pitfall 5: OOM on long files — MonoLoader decodes the whole set into RAM in a pod with a tight memory limit
+### Pitfall 5: URL/history breakage — deep-linking a stage, back/forward landing on a bare fragment, refresh on a swapped state, and SHELL-05 redirect loops
 
 **What goes wrong:**
-The Job pod requests, say, 2Gi of memory. essentia's `MonoLoader` decodes the **entire** audio file
-into a single in-RAM float array before analysis. A multi-hour Coachella set is exactly the workload
-v6.0 exists to handle — and exactly the case that blows past 2Gi. The kubelet OOM-kills the pod
-(exit 137). Kueue/Job sees a pod failure; with `backoffLimit: 0` the Job fails immediately, and the
-file is stranded or bounced to fallback for the wrong reason.
+Four linked failures: (1) Clicking a rail node with `hx-push-url="true"` snapshots the *current DOM* into history (verified: "the current DOM is snapshotted and stored for restoration"). On **back**, HTMX restores that snapshot — which for an HTMX-swapped state may be a half-built DOM whose Alpine `x-data` does not re-run, so the restored page is visually right but **dead** (no reactivity). (2) A user who **refreshes** while deep-linked to `/?stage=analyze` hits a server route that must rebuild the *whole shell with Analyze selected* — if `GET /` ignores the stage param and always renders Analyze-default, the deep link silently resets. (3) A bookmarked **bare fragment** URL (the stage endpoint `/console/stage/analyze`) opened directly returns a headerless fragment (no shell). (4) SHELL-05 redirects (`/proposals` → shell Rename queue, etc.) collide with FastAPI's default `redirect_slashes=True`: `/proposals` already 307s to `/proposals/`, so a naive redirect rule can bounce `/proposals` → `/` → (stage) → … or break the existing trailing-slash bookmark.
 
 **Why it happens:**
-This is a **known phaze issue**: the v4.0.10 windowed-analysis incident was `RhythmExtractor2013`
-crashing on long files, and full-file decode is memory-proportional to duration. On a persistent host
-(local / OCI A1) there's lots of RAM and swap; an **ephemeral pod with a hard cgroup memory limit has
-neither**, so the same file that "worked locally" OOM-kills in the cluster. Resource requests get
-copied from a short-track example and never sized for the long-set tail.
+The current app never uses `hx-push-url` or history at all (hard `<a>` navigation handles it natively), so there is zero existing history-correctness code to lean on. And the legacy routes are *prefixed with trailing-slash semantics* (`prefix="/proposals"` + `get("/")` ⇒ canonical `/proposals/`), which the redesign's redirect layer must respect.
 
 **How to avoid:**
-Size the Job's `resources.requests`/`limits.memory` from the **measured peak RSS of the longest real
-sets**, not a guess — and add headroom (full-file float decode ≈ samplerate × channels × 4 bytes ×
-duration, plus model + framework overhead; a 3-hour 44.1k stereo set is multiple GB just for the raw
-buffer). Reuse the v4.0.10 windowed/streaming analysis path in the one-shot entrypoint so memory is
-bounded by window size, not file length — this is the real fix; large memory limits only delay the
-cliff. Set the Kueue ClusterQueue memory quota and the per-Job request consistently so admission
-reflects real footprint. Treat OOM (exit 137) distinctly from analysis failure so the control plane can
-escalate memory or re-route rather than marking the file permanently failed.
+- Make **stage selection a server-resolvable URL**: `GET /` accepts the selected stage (path `/` = Analyze default, plus `/stage/<name>` or `?stage=<name>`) and renders the **full shell** with that stage's workspace inlined. The rail's `hx-get` uses `hx-push-url` pointed at that *same* canonical URL — so back/forward/refresh/deep-link all resolve to a full-shell render, not a bare fragment.
+- Serve **two shapes from one stage route** keyed on the `HX-Request` header: HTMX request → fragment (for the swap); full navigation/refresh → full shell with the stage inlined. This is the standard HTMX deep-link pattern and avoids "bookmark returns a headerless fragment."
+- For SHELL-05, write **explicit redirect routes** for each legacy path (`/proposals/`, `/pipeline/`, `/search/`, `/duplicates/`, `/tags/`, `/cue/`, `/tracklists/`, `/preview/`, `/audit/`, `/admin/agents`) → the canonical shell URL, and **add a redirect-loop test** asserting each legacy path resolves to a 200 shell in ≤1 hop and never targets a path that itself redirects. Account for `redirect_slashes`: redirect the *canonical* (trailing-slash) form the routers actually expose.
+- Handle `htmx:historyRestore`/`htmx:historyCacheMiss` (verified events) to re-trigger the live poll and re-init Alpine on a restored snapshot, so a back-navigated console isn't a dead DOM.
 
 **Warning signs:**
-Pods exit 137 / `OOMKilled` on the longest files while short files pass; failures scale with file
-duration; node memory pressure / evictions appear under cloud burst load.
+Back button shows the right stage but buttons/counts are frozen (Alpine didn't re-init); refresh on a deep link drops you to Analyze; pasting a stage URL into a new tab returns un-styled fragment HTML; `curl -sI /proposals` shows a redirect chain >1 hop; existing `/proposals/` bookmarks 404 or loop.
 
-**Phase to address:** Phase 52 (one-shot entrypoint — reuse windowed analysis, set realistic
-requests); revisit memory quota in Phase 56 (deploy/runbook).
+**Phase to address:** **57** (SHELL-01 `/` route, SHELL-02 push-url, SHELL-05 legacy redirects — all live here; the redirect-loop test is a phase-57 must-have).
 
 ---
 
-### Pitfall 6: Suspended Job never admitted (quota exhausted / `Inadmissible`) looks identical to a hang
+### Pitfall 6: Accessibility regressions baked in during the swap rewrite (focus management, ⌘K focus trap, rail keyboard nav, skip link, ARIA on the DAG)
 
 **What goes wrong:**
-A submitted Job sits forever. The operator stares at "in progress." Two very different causes look
-identical: (a) **quota exhausted** — Workload `QuotaReserved=False, reason=Pending`, a *normal* queued
-state that resolves when quota frees; (b) **misconfiguration** — Workload `QuotaReserved=False,
-reason=Inadmissible` because the `queue-name` points at a LocalQueue/ClusterQueue that doesn't exist (or
-flavor mismatch), which will **never** resolve. phaze either times out the legitimate queued file as a
-failure, or waits forever on a permanently-broken misconfig.
+HTMX swaps replace DOM without moving focus, so after a rail click focus stays on the (now-replaced) trigger or resets to `<body>` — keyboard users lose their place. The ⌘K palette (RECORD-02) opened/closed without an explicit focus trap + focus-restore traps or strands focus. The today-existing skip link is **wrong for a console**: `base.html` hard-codes `href="#proposals-table"` (overridden per page via a `{% block skip_link %}`), which points at a target that won't exist in most stages. ARIA on the DAG rail (CUT-01 requires it) is absent — today only the Agents nav link has `aria-current="page"` (a documented partial retrofit, `base.html` lines 228–239); the other 9 links never got it. A from-scratch rail with no `role`/`aria-current`/`aria-selected` ships *worse* a11y than the tabs it replaces.
 
 **Why it happens:**
-Both states present as "Job suspended, no pod." Without reading the Workload's *reason*, they're
-indistinguishable. Conservative long-file workloads spend real time in `Pending`, so a naive timeout
-punishes the healthy case; meanwhile a fat-fingered LocalQueue name in config silently black-holes every
-file.
+a11y is the named CUT-01 deliverable parked in the **final** phase (62), so the swap mechanics get built in 57–61 with no focus/ARIA discipline and 62 inherits a mountain of retrofits. Focus management is invisible in mouse testing, so it's not noticed until a keyboard pass.
 
 **How to avoid:**
-Read the **Workload condition reason**, not just presence/absence of a pod (FEATURES.md Kueue Behavior
-Reference). `reason=Pending` → display "queued behind quota," do NOT time out as failure. `reason=
-Inadmissible` → surface to the operator immediately as a config error (bad/missing LocalQueue), don't
-wait. **Validate the configured LocalQueue exists at startup / first submit** (`kubectl get localqueue`
-equivalent via kr8s) and fail fast with a clear message rather than discovering it per-file. Confirm the
-served Kueue apiVersion (`v1beta2` vs deprecated `v1beta1`) at deploy time as a config constant.
+- Bake focus discipline into the **phase-57 swap contract**, not phase 62: after a stage swap, move focus to the workspace heading (`hx-on::after-swap` focusing an `[tabindex="-1"]` stage `<h1>`), and mark the active rail node `aria-current="page"`/`aria-selected="true"`. Treat "every swap manages focus" as a phase-57 acceptance criterion.
+- Build ⌘K with a real focus trap from day one (Phase 61): on open, save `document.activeElement`, trap Tab within the palette, `Esc` closes and **restores** focus to the saved element. Alpine `x-trap` (or a tiny hand-rolled trap) is the lightweight fit for the no-build stack.
+- Replace the hard-coded `#proposals-table` skip link with a console-correct `#stage-workspace` target in the shell's `{% block skip_link %}` default.
+- Give the rail proper semantics: `role="navigation"` / a `role="list"` of stages with `aria-current` on the active one, `aria-label`s on the lane cards, and `focus-visible` rings preserved (Tailwind `focus-visible:` — verify they aren't stripped by the restyle).
+- Run an **axe/keyboard pass after EACH phase** (57–61), not only in 62 — a per-phase a11y smoke check prevents the debt pile-up.
 
 **Warning signs:**
-Every cloud file hangs from the first deploy (→ Inadmissible/misconfig); files hang only under load and
-clear later (→ healthy Pending); operator can't tell which from the UI.
+Tabbing after a rail click jumps to `<body>` or the page top; ⌘K closes but focus is lost to the document; Esc doesn't restore focus; screen-reader announces nothing on stage change; the skip link jumps to a missing anchor; no visible focus ring on rail items.
 
-**Phase to address:** Phase 54 (read Workload reason; classify Pending vs Inadmissible); Phase 56
-(startup LocalQueue validation in the runbook/config surface).
+**Phase to address:** Distributed — focus/ARIA contract **57**, ⌘K trap **61**, *full* CUT-01 audit + parity sign-off **62**. (Anti-pattern: deferring *all* of it to 62.)
 
 ---
 
-### Pitfall 7: Job `backoffLimit` / Kueue requeue fighting the control plane's own retry & fallback
+### Pitfall 7: Cutover removes templates/routers/partials that something still references (CUT-02 dead-code deletion)
 
 **What goes wrong:**
-The Job is created with a generous `backoffLimit` (default is 6) and/or the operator enables Kueue
-PodsReady requeue. A failing analysis now retries *inside the cluster* up to 6 times — each attempt
-re-fetching the (possibly expired) presigned URL and re-running a multi-hour analysis — while phaze's
-own duration-routing fallback (re-route to A1/local) *also* fires. The same expensive file runs many
-times across two competing retry systems, multiplying cost and producing duplicate result callbacks.
+With **105 templates / 94 partials** and prefixed routers, "delete the old tab" in phase 62 removes a `*/list.html` or a partial that is still `{% include %}`d by a kept template, still rendered by a still-mounted endpoint, or still targeted by an `hx-get` string in a partial that survived. Jinja include errors throw at **request time**, not at deploy — so a missed reference 500s a live stage. Routers are registered by hand in `main.py` (lines 185–227); removing a router file without removing its `include_router` line breaks import; removing the line but leaving a template that `hx-post`s to its URL yields a 404 on click.
 
 **Why it happens:**
-Two independent retry owners (Kubernetes Job backoff + Kueue requeue + phaze's control-plane fallback)
-are easy to leave both "on" because each has sensible defaults. FEATURES.md anti-feature: "Rely on
-Kueue/Job requeue + backoff as the retry mechanism" conflates infra retry with app retry.
+The reuse strategy ("new templates over existing routers/services") means the new shell *keeps* most routers and *replaces* templates — so which templates/partials are truly orphaned is non-obvious. Includes and `hx-*` URLs are string references invisible to a Python import graph; a grep-free deletion misses them.
 
 **How to avoid:**
-**The control plane owns retry/fallback by `file_id`, full stop.** Set `backoffLimit: 0` (or 1) and
-`restartPolicy: Never` so the pod runs once; a failure surfaces immediately to phaze, which decides
-re-submit vs. re-route vs. mark-failed using the v5.0 routing seam. Keep Kueue PodsReady requeue/
-preemption off in the runbook (conservative single-CQ, no priority — FEATURES anti-feature). A
-`podFailurePolicy` can be added to classify pod-level failures (e.g. don't count an OOM/infra exit
-against `backoffLimit`), but the authoritative retry decision stays with the control plane. Make
-idempotent submission + idempotent callback (reconcile-by-`file_id` + ledger) absorb any double-fire
-that slips through.
+- **Staged removal, reference-proven.** Before deleting any template/partial/router, grep the whole tree for: its filename in `{% include %}`/`{% extends %}`, its route path in `hx-get`/`hx-post`/`hx-patch`/`href`/`url_for`, and its symbol in `main.py`. Only delete when all three are empty. Encode this as a checklist in the phase-62 plan.
+- Add a **dead-template test**: a unit test that walks `templates/` and asserts every non-fragment template is reachable from a mounted route, and every `{% include %}` target exists on disk (Jinja's `meta.find_referenced_templates` makes this mechanical). This catches an orphaned-include 500 before runtime.
+- Delete **router-then-template in lockstep**, each in its own small PR (the repo's "one PR per feature, worktree-per-feature" rule, per CLAUDE.md), so a broken reference is bisectable and revertable.
+- Keep the **SHELL-05 redirects** until after the legacy templates are gone — the redirect routes are the safety net proving no inbound bookmark hits a deleted page.
 
 **Warning signs:**
-The same `file_id` produces multiple result callbacks; cluster shows repeated pod attempts per Job;
-cloud-compute cost/wall-clock far exceeds files-analyzed count.
+A stage 500s with `TemplateNotFound` only when a specific row type renders; `grep -rn "old_partial.html" src` returns hits after you "removed" it; `main.py` import fails on boot; an `hx-post` button returns 404; coverage on a "removed" router file is suspiciously still >0.
 
-**Phase to address:** Phase 54 (Job spec: backoffLimit 0/1, restartPolicy Never, optional
-podFailurePolicy; idempotent submit); Phase 56 (runbook: requeue/preemption off).
+**Phase to address:** **62** (CUT-02) — but seed the dead-template test in **57** so it's green-then-watched across the whole migration.
 
 ---
 
-### Pitfall 8: Orphaned S3 objects when a Job fails, evicts, or never fetches (cleanup leak)
+### Pitfall 8: before→after diff approval correctness — stale data after approve, bulk "approve all high-confidence" acting on changed rows, reversibility gaps (REVIEW)
 
 **What goes wrong:**
-The staged long file is supposed to be deleted "after analysis." Cleanup is wired only into the **happy
-path** (pod POSTs success → control plane deletes the object). When the Job fails, is evicted, OOM-kills,
-or the file is re-routed to A1/local instead, nobody deletes the staged object. Over a 200K-file archive
-with many long sets, orphaned multi-GB objects accumulate and rack up storage cost on the operator's
-bucket — the exact thing PROJECT.md's "ephemeral staging, not a data home" decision is meant to avoid.
+Today's bulk approve serializes a **client-side** `selectedRows` Set into hidden `proposal_ids` inputs and PATCHes `/proposals/bulk`, which calls `bulk_update_status(uuids, APPROVED)` with **no re-validation** that those rows are still pending or still high-confidence (`bulk_actions.html`; `proposals.py` `bulk_action` lines 304–331). In a live-polling console where the diff list refreshes every 5s, the operator can approve a stale set: a row that changed confidence, was re-proposed, or was already executed by another action between render and submit. The unified REVIEW gate widens this from one queue (proposals) to **four** (Rename/Tag/Move/Dedupe), each with a "approve all high-confidence" bulk button — so a single stale-bulk bug now mis-applies renames, tag writes, and **file moves**. REVIEW-05 requires every applied change be audited and reversible; if the new diff UI bypasses the existing `ExecutionLog`/audit write or the copy-verify-delete protocol, reversibility silently breaks.
 
 **Why it happens:**
-Cleanup is modeled as a step in the success flow rather than a guaranteed lifecycle event. Failure and
-re-route paths are added later and forget to unstage. The bucket is "someone else's problem"
-(operator-provided), so leaks aren't visible to phaze.
+The current bulk action was built for a *static* page (you load proposals, select, submit — little time passes). The console makes the list **live**, dramatically widening the render→submit staleness window, while the "approve all high-confidence" affordance encourages large, unreviewed batch actions. The threshold is also a fixed value (REVIEW-06 defers per-stage config), so "high-confidence" is evaluated *somewhere* — if client-side off possibly-stale rendered confidence, it acts on what the user *saw*, not current truth.
 
 **How to avoid:**
-Make cleanup **unconditional on terminal outcome**: the reconcile loop deletes the staged object on
-success, failure, eviction, AND re-route — driven off the ledger entry, not the callback. Belt-and-
-suspenders: set an **S3 lifecycle/TTL rule on the bucket** (operator runbook) so any object older than
-N days is auto-expired regardless of phaze — this catches control-plane-crash leaks. Tie the object key
-to the `file_id`/ledger so an orphan is always traceable and a sweep can reconcile bucket contents
-against in-flight files.
+- **Server is the source of truth for bulk scope.** "Approve all high-confidence" should send a *predicate* (action + threshold), not a client-built id list — the server re-queries pending rows above the threshold *at submit time* and applies to that fresh set, returning the actual count acted on. This eliminates the stale-id class entirely. (Per-file Approve/Edit/Skip can still send a single id, but the endpoint must re-check the row is still pending and 409/no-op if not.)
+- **Optimistic-concurrency guard on per-file approve:** include the row's last-known state/version; the endpoint approves only if unchanged, else returns the refreshed diff fragment so the operator re-sees current truth (the dashboard already returns refreshed fragments — `approve_response.html` re-renders the row + OOB stats).
+- **Preserve the audit + reversibility seam unchanged.** REVIEW is an IA rewrite over *existing* execution/tags/cue/duplicates routers (the milestone's explicit "no backend behavior change") — the new templates must POST to the **same** endpoints that already write `ExecutionLog` and honor copy-verify-delete; do not add a new direct-apply path that skips them. Add a test asserting every REVIEW apply action produces an audit row.
+- **Don't let the 5s poll re-render an in-flight selection** (ties to Pitfall 2/4): the diff list's live refresh must OOB-update *counts* without clobbering the operator's checked rows mid-review.
 
 **Warning signs:**
-Bucket object count grows monotonically and doesn't drop after analyses complete; storage bill climbs;
-objects exist for `file_id`s already in a terminal state.
+"Approve all high-confidence" count returned ≠ what the operator saw; a row that was just executed gets re-approved; an approved move has no `ExecutionLog`/audit entry; undo fails to find a reversal record; selection clears or shifts when the diff list polls; bulk acted on a row whose confidence dropped below threshold after render.
 
-**Phase to address:** Phase 53 (cleanup as a lifecycle event, not a success step); Phase 56 (bucket
-lifecycle rule in the runbook).
+**Phase to address:** **60** (Review & Apply — REVIEW-01/02/03/05). The server-predicate bulk + audit-parity test are phase-60 must-haves.
 
 ---
 
-## Moderate Pitfalls
-
-### Pitfall 9: SigV4 / `endpoint_url` misconfig for a non-AWS S3 backend
+### Pitfall 9: Theme-toggle and brand regressions during the shell rewrite (dark `phaze-bg`, light toggle, Jura/blue/wave)
 
 **What goes wrong:**
-The operator's bucket is MinIO / Ceph RGW / B2 / Wasabi, but the client defaults to AWS endpoints, or
-uses path-style vs virtual-host addressing wrong, or signs with the wrong region. Uploads or presigned
-URLs 403 / `SignatureDoesNotMatch` against the non-AWS backend.
+`base.html` carries a **fragile, already-bitten** theme mechanism: a pre-Alpine inline script applies `.dark` to `<html>` to prevent FOUC, an OS `prefers-color-scheme` listener for auto mode, and an `$store.theme` whose `set()` calls `_applyTheme` directly — *because* a prior version that bound `:class` on `<html>` was "silently inert" (documented in the lines 42–53 comment). The `@theme` block defines the brand palette (`--color-blue-*`, `--color-phaze-bg/panel/border`) and Jura/Inter are loaded by `<link>`. A shell rewrite that regenerates `base.html` from the prototype can: re-introduce the inert `:class`-on-`<html>` bug, drop the pre-flash script (FOUC on every load), lose the `@custom-variant dark` registration (so all `dark:` utilities silently stop working), or hard-code Tailwind-default blue (losing the phaze accent). The Tailwind build is **self-hosted, not CDN** (lines 21–28, with a deliberate SRI rationale) — swapping to a CDN URL during the rewrite reintroduces the exact SRI-divergence bug that vendoring fixed.
 
 **Why it happens:**
-boto3/aioboto3 assume AWS unless told otherwise; non-AWS backends need `endpoint_url=`, often
-`addressing_style="path"`, and a region the backend accepts. The bucket type is operator-provided and
-transport-agnostic, so it's unknown at code time.
+The prototype (`prototype.html`) is a standalone artifact that almost certainly inlines its own theme handling; "port the prototype" invites replacing the hard-won `base.html` head wholesale, discarding the embedded fixes and the vendored-Tailwind decision.
 
 **How to avoid:**
-Drive `endpoint_url`, region, and addressing style from pydantic-settings (no hard-coded AWS). Verify a
-round-trip (put → presign → GET → delete) against the operator's actual endpoint in the deploy runbook
-before any real file. Keep the pod credential-free: it only ever receives a presigned URL, so a backend
-quirk surfaces on the control plane (where it's debuggable), not in an opaque pod.
+- **Preserve `base.html`'s `<head>` as the source of truth** — port the prototype's *markup* into the existing head/theme scaffolding, do not replace the scaffolding. Keep `_applyTheme`, the pre-flash IIFE, the OS listener, `@custom-variant dark`, the `@theme` token block, the Jura/Inter `<link>`, and the **self-hosted** `/static/vendor/tailwindcss-browser-4.3.0.min.js` script (not CDN).
+- Add a **theme smoke test/checklist**: load `/`, assert `.dark` is present when `localStorage['phaze-theme']='dark'`, assert `dark:bg-phaze-bg` actually paints, assert no FOUC (the IIFE runs before first paint), and cycle auto/dark/light.
+- Keep brand tokens (`phaze-bg`/`phaze-panel`/blue accent) and the wave SVG logo verbatim from `base.html` (SHELL-04) — diff the new shell's computed colors against the old to confirm "evolve, don't reskin."
 
-**Warning signs:** `SignatureDoesNotMatch` / 403 on first upload; presigned URLs work against AWS in a
-test but fail against the operator bucket.
+**Warning signs:**
+A flash of light theme on load (pre-flash script lost); the toggle cycles `mode` but the page doesn't change (the inert `:class`-on-`<html>` regression is back); `dark:` utilities do nothing (custom-variant lost); accent renders as Tailwind default blue; SRI console error on the Tailwind script (CDN regression).
 
-**Phase to address:** Phase 53; runbook round-trip check in Phase 56.
+**Phase to address:** **57** (SHELL-04 — theme + brand preservation is a shell-phase acceptance gate).
 
 ---
 
-### Pitfall 10: The result-callback bearer token leaking through the pod spec
+### Pitfall 10: Template/partial duplication and drift between full-page and fragment responses
 
 **What goes wrong:**
-To let the pod authenticate back to `/api/internal/agent/*`, the compute-agent bearer token is passed
-as a plain Job container `env` value or, worse, a command-line `arg`. The token is then visible in the
-Job/pod manifest to anyone with `get pod`/`get job` RBAC, in `kubectl describe`, in audit logs, and in
-the Workload copy — a long-lived credential to phaze's internal API exposed cluster-wide.
+HTMX endpoints must return a **fragment** to a swap request and a **full page** to a direct navigation/refresh (see Pitfall 5). The repo's idiom is "full-page `*/list.html` includes the same `*/partials/*` the HTMX endpoint returns" — e.g. `proposals/list.html` includes `proposal_table.html` + `bulk_actions.html`, and the bulk endpoint returns `approve_response.html` which re-includes the row + stats partials. When a console adds a stage, it's easy to write the workspace markup **twice** (once inline in the shell for the full render, once in the fragment for the swap), and they drift — a column added to the fragment never appears on refresh, or vice versa.
 
 **Why it happens:**
-Env/arg is the path of least resistance for getting a value into a pod, and the cluster is "trusted."
-But the token reaches phaze's internal write API over the VPN — it's not low-value.
+The "two shapes from one route" requirement (Pitfall 5) naturally tempts two code paths. With 94 partials already, the include graph is deep and a new contributor copies markup rather than extracting a shared partial.
 
 **How to avoid:**
-Inject the token via a **Kubernetes Secret** mounted as env-from-secret or a file, not an inline env
-literal and never an arg (args leak in process listings and manifests). Scope the token to the
-compute-agent role (it already is, v5.0). Prefer **short-lived, per-Job tokens** if feasible so a leaked
-manifest ages out. Same treatment for the presigned URL (it grants object read) — pass via Secret/env-
-from-secret, not arg. Keep kubeconfig/SA-token on the control plane via the `_FILE` convention; never
-ship cluster creds into the pod.
+- **One partial, two callers.** Every stage workspace is a single `_console/stages/<name>.html` partial; the full-shell route `{% include %}`s it into the shell, and the HTMX stage route returns it bare. Neither path hand-writes the workspace markup. This is exactly how `proposals/list.html` and the proposals HTMX endpoints already share `proposals/partials/*`.
+- A drift test: render each stage via the full route and via the HTMX route and assert the workspace subtree HTML is identical (or that the fragment is a literal substring of the full page).
+- Watch for **orphaned partials** created during iteration (a `_v2` partial left behind) — fold this into the Pitfall-7 dead-template test.
 
-**Warning signs:** Token visible in `kubectl get job -o yaml` / `describe pod`; one token reused across
-all Jobs indefinitely; secrets appearing in pod args.
+**Warning signs:**
+A field shows after a swap but vanishes on refresh (or vice versa); two near-identical partials differ by one column; `grep` finds the same table markup in both a `list.html` and a fragment.
 
-**Phase to address:** Phase 54 (pod-spec secret injection); Phase 56 (token rotation/scoping in runbook).
-
----
-
-### Pitfall 11: RBAC over- or under-scoped for the control plane's kube identity
-
-**What goes wrong:**
-The kubeconfig/SA phaze uses is either cluster-admin ("just make it work") — a huge blast radius if the
-control plane or VPN is compromised — or too narrow (can create Jobs but can't read Workloads / can't
-delete Jobs), so watch/reconcile/cleanup silently fail with 403s that look like hangs.
-
-**Why it happens:**
-RBAC is fiddly; people grant broad to unblock, or copy a minimal example that omits the Workload-read or
-Job-delete verbs phaze actually needs.
-
-**How to avoid:**
-Least-privilege Role in the single target namespace: `create/get/list/watch/delete` on
-`batch/jobs`, `get/list/watch` on `kueue.x-k8s.io/workloads`, and `get` on the configured `localqueue`.
-No cluster-scoped grants (phaze never touches ResourceFlavor/ClusterQueue — those are admin). Document
-the exact RBAC in the runbook and test it with the real SA before go-live.
-
-**Warning signs:** 403s in submit/watch/delete paths; cleanup never runs (missing delete verb);
-conversely, the SA can read secrets/other namespaces it has no reason to.
-
-**Phase to address:** Phase 56 (runbook RBAC manifest); exercised in Phase 54.
-
----
-
-### Pitfall 12: Pod can't reach `/api/internal/agent/*` over the VPN — internal CA not trusted in the pod
-
-**What goes wrong:**
-phaze's internal API is HTTPS via a **self-signed internal CA** (v4.0 invariant). The Job pod's `httpx`
-callback hits the API over the operator VPN and fails TLS verification because the pod's image doesn't
-trust `phaze-ca.crt`. Either the callback fails (file stranded) or someone "fixes" it with
-`verify=False` — disabling TLS verification on the internal write API over a VPN.
-
-**Why it happens:**
-The CA-distribution step (operator scp's `phaze-ca.crt` to file servers in v4.0) has no equivalent for
-ephemeral pods that don't exist yet at provisioning time. The reachable API endpoint over the VPN is
-operator-provided, so the URL is configured but the trust anchor is forgotten.
-
-**How to avoid:**
-Bake or mount the internal CA cert into the Job image / pod (via ConfigMap or the image's trust store)
-and point `httpx` at it (`verify=/path/to/phaze-ca.crt`) — **never `verify=False`**. Make the API
-callback URL a config value (operator-provided VPN-reachable endpoint), transport-agnostic. Confirm the
-pod→API TLS round-trip in the deploy runbook.
-
-**Warning signs:** Pod callback fails with `SSLCertVerificationError`; a `verify=False` creeps into the
-pod's httpx client; callbacks work on LAN but fail from the cluster.
-
-**Phase to address:** Phase 52 (CA into the image) + Phase 54 (callback config); runbook verify in 56.
-
----
-
-### Pitfall 13: One-shot entrypoint exit-code semantics swallow failures or hide partial work
-
-**What goes wrong:**
-The one-shot entrypoint (pull → analyze → POST → exit) catches its own exceptions and `exit 0`
-regardless, or POSTs a "success" callback before confirming the analysis actually produced valid output.
-The Job shows `Complete`, the control plane marks the file analyzed, but the result is empty/garbage — or
-a real failure (download 403, OOM-survived-but-wrong) is masked as success.
-
-**Why it happens:**
-Entrypoints often wrap everything in a try/except to "be robust," inverting exit semantics. The Job's
-`Complete` vs `Failed` condition is only meaningful if the process exits non-zero on failure.
-
-**How to avoid:**
-Make exit codes honest and **distinct**: 0 only after a validated result POST returns 2xx; non-zero on
-download failure (distinguish 403/expiry from network), on analysis failure, on callback failure. Don't
-POST success before the analysis is validated. Let the process crash/exit-non-zero so the Job goes
-`Failed` and the control plane re-routes. Reconcile-by-`file_id` + idempotent callback means a
-re-submit after a non-zero exit is safe.
-
-**Warning signs:** Jobs always `Complete` even when files didn't analyze; `FileRecord`s marked analyzed
-with empty/implausible BPM/key; no `Failed` Jobs ever despite known bad inputs.
-
-**Phase to address:** Phase 52 (entrypoint exit-code contract).
-
----
-
-### Pitfall 14: Pod eviction mid-analysis treated as analysis failure (or not handled at all)
-
-**What goes wrong:**
-A node drains, a higher-QoS pod preempts, or Kueue's `maximumExecutionTimeSeconds` deactivates a
-runaway Workload — the pod dies hours into a long analysis. phaze either marks the file permanently
-failed (losing the file from the pipeline) or doesn't notice (stranded), instead of re-routing.
-
-**Why it happens:**
-Eviction (`Evicted`, reason `WorkloadInactive`/`Deactivated`) is a distinct Kueue signal from analysis
-failure (Job `Failed`) (FEATURES.md), and it's easy to lump all non-success into "failed."
-
-**How to avoid:**
-Detect the `Evicted`/deactivated Workload condition and route it back through the v5.0 fallback (re-
-submit, or re-route to A1/local) rather than terminal-failing. Set Job pods `restartPolicy: Never` and
-let the control plane own re-attempt. Conservative single-CQ no-preemption setup makes this rare, but
-detecting it is cheap and prevents stranded long files. A bounded `maximumExecutionTimeSeconds` is a
-useful server-side runaway guard (mirrors v4.0.10) — but its eviction must route to fallback, not death.
-
-**Warning signs:** Long files intermittently land in FAILED with no analysis error; failures coincide
-with cluster node maintenance / capacity changes; Workloads show `Evicted` but `FileRecord` is terminal.
-
-**Phase to address:** Phase 54 (eviction detection → fallback); FEATURES marks this P2 (add after happy
-path proven) — acceptable to defer detection-to-reroute to a v6.x follow-up, but don't terminal-fail
-evictions in the meantime.
-
----
-
-### Pitfall 15: Driving the whole backlog instead of ledger-scoped long files (over-enqueue)
-
-**What goes wrong:**
-The K8s router target, when enabled, sweeps every eligible file (or the whole backlog) into cluster
-Jobs instead of only the **timed-out long files the ledger says should burst**. phaze has hit this
-exact class of bug repeatedly: the v4.0.6 default-queue incident stranded 11,428 jobs; the v5.0 "Recover
-orphaned work `force=True`" swept 44.5k jobs. At cluster scale this also instantly exhausts Kueue quota
-and floods S3 with staged objects.
-
-**Why it happens:**
-A new routing target is wired to "all eligible" rather than reusing v5.0's **scheduling-ledger scope**
-(only previously-scheduled long files). The active-target toggle flipping to K8s re-routes more than
-intended.
-
-**How to avoid:**
-Reuse v5.0's ledger-scoped backfill verbatim — K8s is a third *target* of the same duration-routing +
-ledger seam, not a new "analyze everything" path. Only files at/above the duration threshold that timed
-out locally and are ledger-tracked are eligible. Add the same AST/guard test phaze uses elsewhere to
-prevent an enqueue site from bypassing the router. Cap concurrent in-flight Jobs ("stay one ahead"
-analog) so even a correct scope can't flood quota/S3.
-
-**Warning signs:** Sudden spike of submitted Jobs / staged objects far exceeding the long-file count;
-Kueue quota instantly saturated; short files appearing as cluster Jobs.
-
-**Phase to address:** Phase 55 (router/ledger scoping) — the guard test is the verification.
-
----
-
-### Pitfall 16: Active-cloud-target toggle misrouting (local / A1 / K8s)
-
-**What goes wrong:**
-The single config setting that selects the active cloud target (local / A1 / K8s) is read
-inconsistently across the three cloud entry points (routing seam, staging cron, backfill), so a file is
-staged for K8s but routed to A1, or `cloud_burst_enabled` is off yet a K8s submit still fires. phaze's
-v5.0 toggle gates three entry points; adding a third *target* multiplies the misroute surface.
-
-**Why it happens:**
-A boolean `cloud_burst_enabled` plus a new tri-state target is easy to check in some places and not
-others; the staging step and the submit step can disagree about the target.
-
-**How to avoid:**
-Resolve the active target **once** through a single helper (analogous to v5.0's
-`enqueue_router.resolve_queue_for_task`) that every cloud entry point consults — staging, submission,
-and reconcile all key off the same resolved target. The master `cloud_burst_enabled` toggle short-
-circuits all three. Test all three entry points honor both the master toggle and the target selector.
-
-**Warning signs:** A file staged to S3 but analyzed on A1 (or vice versa); K8s Jobs created while
-`cloud_burst_enabled=false`; staging and submit logs disagree on target.
-
-**Phase to address:** Phase 55 (single target-resolution helper + toggle gating).
-
----
-
-### Pitfall 17: Transport-specific (Tailscale/WireGuard) assumptions leaking into code
-
-**What goes wrong:**
-Code hard-codes a Tailscale hostname/MagicDNS name, a `100.x` CGNAT address, or shells out to
-`tailscale` — breaking the PROJECT.md mandate that v6.0 is **transport-agnostic** (Tailscale OR
-WireGuard). v5.0's pipeline was deliberately Tailscale-specific; copying that pattern regresses the
-generalization.
-
-**Why it happens:**
-v5.0 code and runbooks reference Tailscale concretely; reuse drags those assumptions forward. The
-operator VPN "just is Tailscale on my box," so it's tempting to special-case it.
-
-**How to avoid:**
-phaze consumes only **operator-provided reachable endpoint URLs** (kube API, S3 endpoint, callback URL)
-from pydantic-settings — no mesh SDK, no hostname assumptions, no `tailscale`/`wg` shell calls (STACK.md
-"What NOT to Use"). The same config works whether the operator runs Tailscale or WireGuard. Grep guard
-against `tailscale`/`100.` literals in v6.0 code paths.
-
-**Warning signs:** `tailscale`/`wg`/`100.64.` strings in v6.0 modules; config that only accepts a
-MagicDNS name; deploy docs that assume one mesh.
-
-**Phase to address:** Phase 56 (config/docs); enforced as a convention across 52–55.
-
----
-
-### Pitfall 18: Object-key collisions and non-idempotent multi-attempt staging
-
-**What goes wrong:**
-Staged objects are keyed by filename or a non-unique field, so two files (or a re-stage of the same
-`file_id` after a failed attempt) collide — one overwrites the other, or a stale object is fetched by
-the wrong Job. Large sets also exceed single-PUT limits, needing multipart, which a naive `put_object`
-doesn't do.
-
-**Why it happens:**
-Filenames in a 200K archive collide (many "set1.mp3"); re-stage-on-retry reuses the same key; multi-GB
-uploads silently need multipart.
-
-**How to avoid:**
-Key objects by a collision-proof identity tied to the ledger — e.g. `{file_id}/{sha256-or-attempt}` —
-so re-stage is idempotent/traceable and two files never collide. Use the SDK's managed `upload_file`/
-multipart for large sets (aioboto3 handles multipart transparently above the threshold). The
-`file_id`-scoped key also makes orphan cleanup (Pitfall 8) and reconcile trivially correlatable.
-
-**Warning signs:** A Job analyzes the wrong audio (key collision); large-file uploads truncate/fail;
-re-staged objects pile up under colliding keys.
-
-**Phase to address:** Phase 53 (key scheme + multipart upload).
+**Phase to address:** **57** (establish the one-partial-two-callers convention) and enforced through **58–61** as stages are added.
 
 ---
 
@@ -545,110 +225,106 @@ re-staged objects pile up under colliding keys.
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Block a worker on unbounded `job.wait()` | Simplest happy-path code | Worker-slot starvation under real (hours-long) queue waits; not restart-safe | Never — submit-then-reconcile from the start |
-| Short presigned-URL expiry (15m/1h) | Tighter security window | 403s whenever Kueue queues the Job for hours | Only with just-in-time minting on admission |
-| Presigned URL minted from STS/role temp creds | No long-lived keys | URL silently dies in 1–12h regardless of requested expiry | Only if every Job is admitted well within the cred lifetime (not guaranteed) |
-| Cleanup wired only into the success callback | Less code | Orphaned multi-GB objects on failure/re-route → storage cost | Never — cleanup must be terminal-outcome-driven + bucket lifecycle backstop |
-| `verify=False` for the pod→API callback | Skips CA distribution to pods | Unauthenticated-TLS on the internal write API over a VPN | Never — mount the internal CA into the image |
-| Default `backoffLimit` (6) on the Job | Fewer transient failures bubble up | Multi-hour analysis runs ≤6× and fights phaze's own fallback; cost blowup | Never for this workload — backoffLimit 0/1, control plane owns retry |
-| Tailscale hostname hard-coded (copied from v5.0) | Works on the dev box today | Breaks WireGuard operators; regresses transport-agnostic mandate | Never in v6.0 code — endpoints are config |
-| Big memory limit instead of windowed analysis | Pod stops OOM-ing today | Cliff just moves to the next longer set; quota waste | Only as interim while wiring windowed analysis |
+| Give the rail, workspace, and file-pane each their own `every 5s` poll | Trivial to wire; each region "just works" | 3–5× request fan-out on a 200K-file DB; load even when tab is backgrounded (Pitfall 4) | Never — keep the single-poll/OOB-fanout architecture the dashboard already proves |
+| Stage endpoints return full `extends base.html` pages | Reuse existing full-page templates as-is | Nested shells, duplicate `$store`/nav/theme (Pitfall 1); no clean swap | Never for swap targets; the full-page shape is only for direct-nav/refresh |
+| Client-built id list for "approve all high-confidence" | Reuses the existing `selectedRows`→hidden-inputs bulk pattern | Acts on stale rows under live polling; mis-applies moves/tags (Pitfall 8) | Never for bulk — send a server-evaluated predicate |
+| Defer ALL of CUT-01 a11y to phase 62 | Faster stage builds in 57–61 | Mountain of focus/ARIA retrofits across every swap; likely ships worse than the tabs | Only the *final audit* belongs in 62; the focus/ARIA contract must be in 57 |
+| Port the prototype's `<head>` wholesale | One copy-paste shell | Re-introduces the inert-`:class` theme bug, FOUC, lost `dark:` variant, CDN/SRI regression (Pitfall 9) | Never — port markup into the existing head scaffolding |
+| Hand-write workspace markup in both the shell render and the fragment | Quick to see it working both ways | Full-page/fragment drift (Pitfall 10) | Never — one partial, two callers |
+| Delete a legacy router/template by "it looks unused" | Removes clutter fast | Runtime `TemplateNotFound`/404 from a surviving include or `hx-*` URL (Pitfall 7) | Never without the three-way grep + dead-template test |
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Kueue Workload | Hard-coding the Workload name (`<job>-<hash>`) | Resolve via Job owner-ref / `kueue.x-k8s.io/job-uid` label selector (FEATURES.md) |
-| Kueue apiVersion | Assuming `v1beta1` (deprecated) or `v1beta2` blindly | Make apiVersion a config constant; confirm served version via `/apis/kueue.x-k8s.io` at deploy (STACK.md) |
-| Kube watch over VPN | Resuming a stale `resourceVersion` after a drop → 410 Gone, missed events | Bookmarked watch + on-error fall back to list+reconcile; callback is source of truth |
-| S3 (non-AWS backend) | Defaulting to AWS endpoints / wrong addressing style | `endpoint_url` + addressing style + region from settings; runbook round-trip test |
-| S3 presigned URL | Expiry shorter than queue-wait; minted from temp creds | Long expiry from long-lived keys, or just-in-time mint on admission |
-| Internal API callback | Pod doesn't trust the self-signed internal CA | Mount `phaze-ca.crt` into the image; `httpx verify=<ca>`, never `verify=False` |
-| Bearer token / presigned URL → pod | Passed as inline env literal or CLI arg (leaks in manifest) | Inject via Kubernetes Secret (env-from-secret/file); never an arg |
-| kr8s in a SAQ task | Holding the event loop on a long wait | Bounded `wait(timeout=)`, re-poll next task run; state on `FileRecord` |
-| Job retry | Leaving Job backoff + Kueue requeue + phaze fallback all on | `backoffLimit 0/1`, `restartPolicy Never`, requeue/preemption off; control plane owns retry |
+| HTMX history (`hx-push-url`) | Assuming back/forward re-fetches; it restores a **DOM snapshot** (verified), leaving Alpine un-initialized | Point `hx-push-url` at a server-resolvable canonical URL; handle `htmx:historyRestore` to re-init Alpine + re-trigger the poll (Pitfall 5) |
+| FastAPI `redirect_slashes` | Writing SHELL-05 redirects against `/proposals` while the router canonical is `/proposals/`, creating a 2-hop chain or loop | Redirect the canonical trailing-slash form the routers expose; assert ≤1 hop in a test |
+| HTMX `hx-swap-oob` | Emitting OOB fragments on the initial full-page render → duplicate ids + stray nodes | Gate OOB blocks behind an `oob_counts`-style flag set only on swap responses (the existing `stats_bar.html` idiom) |
+| Alpine `x-data` + HTMX swap | Expecting component state (selection/focus) to survive a swap | Hoist cross-swap state to `$store`; keep only ephemeral state in `x-data` (Pitfall 2) |
+| Alpine `:class` on `<html>` | Binding theme `:class` on `<html>` — Alpine scans from `<body>` down, so it's silently inert (documented in `base.html`) | Drive `.dark` via `classList` from one `_applyTheme` function (preserve the existing fix) |
+| Self-hosted Tailwind browser build | Swapping the vendored `/static/vendor/...min.js` for a CDN URL with SRI | Keep the vendored audited build; CDN minification diverges per-edge and breaks SRI (documented rationale) |
+| Existing execution/tags/cue routers (REVIEW) | Adding a new direct-apply path from the diff UI that skips `ExecutionLog`/copy-verify-delete | POST to the same existing endpoints; assert an audit row per apply (REVIEW-05) |
 
-## Performance / Cost Traps
+## Performance Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| OOM on long files (full-file MonoLoader decode) | Exit 137 on the longest sets only | Windowed analysis + memory requests sized from measured peak RSS | First multi-hour set in a tight-memory pod |
-| Whole-backlog over-enqueue into the cluster | Job/object spike ≫ long-file count; quota saturated | Ledger-scoped routing + concurrency cap + AST guard | The moment K8s target is enabled without scope |
-| Orphaned S3 objects accumulating | Bucket object count never drops; bill climbs | Terminal-outcome cleanup + bucket lifecycle TTL | After the first wave of failed/re-routed Jobs |
-| Worker-slot starvation on long waits | `controller` queue backs up; crons lag | Submit-then-reconcile, never hold the slot | A few concurrent hours-long queue waits |
-| Re-running the same expensive analysis | Cost/wall-clock ≫ files analyzed | Single attempt + idempotent reconcile-by-`file_id` | Any failure path with default backoff on |
+| Per-region polling fan-out | N requests/5s where N = live regions; rising PG pool pressure | Single console poll + OOB fan-out (Pitfall 4) | Noticeable now at ~200K files; worse with the 3-column always-live layout |
+| Polls keep firing in a backgrounded tab | App-server CPU stays high with the console idle in another tab | Gate `every Ns` on `document.visibilityState` | Any long-lived admin session (this is a single-user tool left open) |
+| Stage workspace re-renders the whole file queue every poll | Large innerHTML swaps; lost scroll/selection; jank | Poll updates counts via OOB store-writes; only swap rows when they actually change | Queues with thousands of pending rows (proposals/move on a big import) |
+| `/pipeline/stats`-style endpoint grows more service calls per tick | p95 latency creeps as each phase adds a count | Keep new lane/rail counts on the one degrade-safe poll context; don't add fresh endpoints | As phases 58–61 each add "just one more live count" |
 
 ## Security Mistakes
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Bearer token / presigned URL as pod env literal or arg | Long-lived internal-API credential / object-read URL exposed cluster-wide in manifests, describe, audit logs | Kubernetes Secret injection; short-lived per-Job tokens where feasible |
-| `verify=False` on the pod→internal-API callback | Unauthenticated TLS to phaze's internal write API over a VPN | Mount internal CA into the image; verify against it |
-| Cluster-admin kubeconfig for the control plane | Huge blast radius if control plane / VPN compromised | Least-privilege namespaced Role (jobs CRUD + workloads read + localqueue get) |
-| Long-lived S3 keys shipped into the pod | Cluster compromise = bucket compromise | Pod is credential-free: presigned GET URL only; keys stay on control plane via `_FILE` |
-| kubeconfig/SA token in env not `_FILE` secret | Cluster creds in process env / image layers | `_FILE` convention (existing); Docker/K8s secret mount |
-| Bucket left as a data home | Long files persist off-host indefinitely | Ephemeral only: delete after analysis + lifecycle TTL; never canonical |
+| Trusting client-submitted bulk id lists for destructive applies (move/tag-write) | Operator approves a stale/changed set; irreversible file moves on wrong rows | Server re-evaluates the predicate at submit time; per-file approve re-checks state (Pitfall 8) |
+| Removing SHELL-05 redirects before legacy templates are gone | Inbound bookmarks 404; or a deleted page leaks a stack trace | Keep redirects until cutover proven; never expose raw 500s (the codebase's "never raw 500" discipline) |
+| ⌘K command palette running "quick commands" (scan, etc.) without the same guards as the buttons | A command bypasses an enqueue guard (e.g. the Phase-30 default-queue / no-active-agent guard) | ⌘K commands must funnel through the same router endpoints + `enqueue_router` guards, not a new path |
+
+> Note: this is a single-user private-LAN tool (no public access, no multi-tenant auth) — so classic web-auth pitfalls are out of scope; the real "security" surface here is **destructive-action correctness** (moves/tag-writes are hard to reverse) and **not bypassing existing enqueue guards**.
+
+## UX Pitfalls
+
+| Pitfall | User Impact | Better Approach |
+|---------|-------------|-----------------|
+| Live poll clears the operator's in-progress multi-select | Loses a 50-row selection mid-review; rage | OOB-update counts only; never re-render the selection subtree (Pitfall 2/4/8) |
+| Stage swap doesn't move focus | Keyboard user is stranded on a replaced trigger | Focus the stage heading after swap (Pitfall 6) |
+| ⌘K doesn't restore focus on close | User loses their place in the rail/workspace | Save+restore `activeElement`; Esc closes and restores (Pitfall 6) |
+| Rail counts go stale while workspace updates | Operator distrusts the whole console | Single poll updates rail + workspace together via OOB (Pitfall 3/4) |
+| k8s lane shown as perpetually-DEAD agent | Operator thinks burst is broken | Model k8s as ephemeral Job-based identity (RECORD-03, carries v6.0 KDEPLOY-04 intent) |
+| FOUC / theme flash on every navigation | Looks broken/cheap — the exact "v1-ish" complaint the redesign exists to kill | Preserve the pre-flash IIFE + `_applyTheme` (Pitfall 9) |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Result reconciliation:** Works in the demo via the watch — verify the `FileRecord` still reaches terminal state from the **callback alone** with the watch killed mid-run.
-- [ ] **TTL vs read:** Job cleans up nicely — verify phaze still attributes success/failure correctly when the Job is GC'd **before** the next reconcile tick.
-- [ ] **Presigned URL:** Fetch works in a fast test — verify it still works when the Job sits suspended **for hours** before fetching (and isn't minted from temp creds).
-- [ ] **OOM:** Short tracks pass — verify the **longest real Coachella set** doesn't exit 137 under the pod's memory limit.
-- [ ] **Cleanup:** Object deleted on success — verify it's **also** deleted on Job failure, eviction, and re-route-to-A1/local.
-- [ ] **Quota hang:** "In progress" shown — verify phaze distinguishes `Pending` (queued) from `Inadmissible` (misconfig) and surfaces the latter.
-- [ ] **Toggle:** K8s path works — verify `cloud_burst_enabled=false` blocks staging **and** submission **and** reconcile.
-- [ ] **Scope:** Long file bursts — verify a full pipeline run does **not** sweep the whole backlog or short files into the cluster.
-- [ ] **Transport-agnostic:** Works on Tailscale — verify no `tailscale`/`100.x` literals; same config runs on WireGuard.
-- [ ] **CA trust:** Callback succeeds — verify it's via the mounted internal CA, not `verify=False`.
-- [ ] **Exit codes:** Job shows Complete — verify a download-403 or analysis failure exits **non-zero** and shows Job `Failed`.
+- [ ] **Rail swap:** Looks right on click — verify **refresh** on a deep-linked stage rebuilds the full shell with that stage selected (not Analyze-default), and **back/forward** restores a *live* (Alpine-initialized) DOM, not a frozen snapshot.
+- [ ] **Legacy redirects (SHELL-05):** Each of `/proposals/ /pipeline/ /search/ /duplicates/ /tags/ /cue/ /tracklists/ /preview/ /audit/ /admin/agents` resolves to a 200 shell in ≤1 hop — `curl -sI` each, assert no loop.
+- [ ] **Theme (SHELL-04):** dark/light/auto cycle works, `.dark` paints `phaze-bg`, no FOUC, accent is phaze-blue not Tailwind-blue, Tailwind script is the vendored file (not CDN).
+- [ ] **Live polling:** Open the console, count requests/5s — verify it's **one**, not one-per-region; backgrounding the tab pauses/sheds the poll.
+- [ ] **Bulk approve (REVIEW-02):** "Approve all high-confidence" returns a count derived from a **server** re-query at submit time; approving a row that changed since render no-ops/refreshes instead of mis-applying.
+- [ ] **Reversibility (REVIEW-05):** every apply (rename/tag/move/dedupe) writes an `ExecutionLog`/audit row and is undoable — assert in a test, not by eye.
+- [ ] **a11y (CUT-01):** keyboard-only pass of rail + ⌘K; focus moves on swap; Esc restores focus; skip link targets `#stage-workspace`; rail nodes carry `aria-current`; visible focus rings present.
+- [ ] **Dead code (CUT-02):** grep proves no surviving `{% include %}`/`hx-*`/`main.py` reference to each removed template/router; dead-template test green.
+- [ ] **Full/fragment parity:** each stage rendered via full route == via HTMX route (no drift).
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Lost watch / stranded in-flight files | LOW | Reconcile loop re-reads Workload/Job by `file_id`; callback already durable — file advances on next tick |
-| Job GC'd before status read | LOW | Treat "no Job + no callback + ledger-scheduled" as re-route; idempotent re-submit |
-| Presigned URL expired before fetch | LOW | Re-mint URL (long expiry / on-admission) and re-submit the same `file_id` (idempotent) |
-| OOM on long files | MEDIUM | Switch entrypoint to windowed analysis; raise memory request/quota; re-route stranded files |
-| Orphaned S3 objects | LOW-MEDIUM | Sweep bucket vs in-flight `file_id`s; delete orphans; enable bucket lifecycle TTL going forward |
-| Over-enqueued backlog into cluster | MEDIUM-HIGH | Purge/suspend extra Jobs; delete staged objects; re-scope to ledger; add AST guard (cf. v4.0.6/v5.0 recovery playbooks) |
-| Inadmissible misconfig (bad LocalQueue) | LOW | Fix config; startup validation prevents recurrence; suspended Jobs re-submit cleanly |
-| Token/URL leaked in pod manifest | MEDIUM | Rotate the compute-agent token; move to Secret injection; shorten token lifetime |
+| Shell clobbered by over-broad swap target | LOW | Narrow `hx-target` to `#stage-workspace`; convert stage templates to fragments |
+| Lost Alpine selection/focus on swap | LOW–MEDIUM | Hoist the lost state into `$store`; stop polling the interactive subtree |
+| Poll storm in production | LOW | Collapse per-region polls into one console poll + OOB; add visibility gate |
+| History/back returns a dead DOM | MEDIUM | Make `/` stage-resolvable; add `htmx:historyRestore` re-init; serve full-vs-fragment by `HX-Request` |
+| Deleted template still referenced (runtime 500) | MEDIUM | Revert the deletion PR (one-PR-per-removal makes this clean); add the missing reference to the dead-template test; re-delete |
+| Theme/brand regression | LOW | Restore `base.html`'s `<head>` scaffolding (it's in git history); re-run theme smoke test |
+| Stale bulk approve mis-applied moves | HIGH | Use the existing audit log + undo/copy-verify-delete reversal to roll back; then switch bulk to server-predicate before re-enabling |
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Watch as result channel (lost watch loses result) | 54 | Kill watch mid-run; `FileRecord` still reaches terminal from callback |
-| Worker-slot starvation on `job.wait` | 54 | Submit task returns fast; reconcile advances state on next tick |
-| TTL-vs-read race | 54 | Status attributed correctly when Job GC'd before reconcile |
-| Presigned URL expiry vs queue wait | 53 (+54 on-admission mint) | Hours-suspended Job still fetches; not from temp creds |
-| OOM on long files | 52 | Longest real set analyzes without exit 137 |
-| Inadmissible vs Pending hang | 54 (+56 startup validation) | UI shows misconfig vs queued; bad LocalQueue fails fast |
-| Job backoff / requeue vs control-plane retry | 54 (+56 runbook) | One pod attempt per Job; no duplicate callbacks |
-| Orphaned S3 objects | 53 (+56 lifecycle TTL) | Object deleted on failure/eviction/re-route, not just success |
-| SigV4/`endpoint_url` misconfig | 53 (+56 round-trip test) | Put→presign→GET→delete passes against operator bucket |
-| Token/URL leak in pod spec | 54 (+56 rotation) | No secret in `job -o yaml`/args; Secret injection only |
-| RBAC over/under-scoped | 56 (exercised 54) | Least-priv Role passes submit/watch/delete; no cluster grants |
-| Pod can't trust internal CA | 52 (+54 config, 56 verify) | Callback succeeds via mounted CA, never `verify=False` |
-| Exit-code semantics | 52 | Download-403/analysis-fail → non-zero → Job Failed |
-| Pod eviction mid-analysis | 54 (detection P2/v6.x) | Evicted Workload re-routes, not terminal-failed |
-| Whole-backlog over-enqueue | 55 | Pipeline run bursts only ledger-scoped long files; AST guard green |
-| Active-target toggle misrouting | 55 | All 3 entry points honor toggle + single target resolver |
-| Transport-specific leakage | 56 (convention 52–55) | No `tailscale`/`100.x` literals; same config on WireGuard |
-| Object-key collision / multipart | 53 | `file_id`-scoped keys; large set uploads via multipart |
+| 1 — Swap clobbers shell | 57 | Stage click leaves rail/header/pane intact; stage responses contain no `<nav>`/second `$store` |
+| 2 — Lost Alpine state after swap | 57 (+60) | Selection/focus survive a poll tick; cross-swap state lives in `$store` |
+| 3 — OOB collisions (rail + header + workspace) | 57 | No duplicate-id warnings; rail counts + header dots update on the same poll; OOB gated by `oob_counts`-style flag |
+| 4 — Poll storms | 58 (+61) | One request/5s with the console open; poll pauses on hidden tab |
+| 5 — URL/history + redirect loops | 57 | Deep-link refresh rebuilds full shell; back restores live DOM; each legacy path ≤1-hop to 200 |
+| 6 — a11y regressions | 57 (focus/ARIA), 61 (⌘K trap), 62 (audit) | Per-phase keyboard/axe smoke; CUT-01 parity sign-off in 62 |
+| 7 — Dead-code cutover | 62 (test seeded 57) | Three-way grep empty per removal; dead-template test green; boot succeeds |
+| 8 — Diff/bulk approval correctness | 60 | Bulk count from server re-query; per-apply audit row asserted; stale per-file approve no-ops |
+| 9 — Theme/brand regression | 57 | Theme smoke test; vendored Tailwind; phaze accent; no FOUC |
+| 10 — Full/fragment drift | 57 (enforced 58–61) | Stage full-route HTML == HTMX-route HTML |
 
 ## Sources
 
-- phaze sibling research — `.planning/research/FEATURES.md` (Kueue lifecycle, Workload conditions, TTL-vs-read ordering hazard, anti-features) and `.planning/research/STACK.md` (kr8s/aioboto3, presigned-URL-in-pod, `_FILE` secrets, v1beta2 apiVersion, integration-with-async-stack notes) — HIGH, both verified against Context7 `/kubernetes-sigs/kueue` + `/kr8s-org/kr8s` 2026-06-26
-- phaze `.planning/PROJECT.md` v6.0 milestone + Key Decisions (CPU-only nodes, ephemeral object staging, ledger scoping, transport-agnostic, reuse of v5.0 compute-agent callback) — HIGH
-- phaze project memory — v4.0.6 default-queue 11,428-job over-enqueue incident; v5.0 `force=True` 44.5k-job over-enqueue; v4.0.10 windowed-analysis OOM/crash on long sets; v4.0 self-signed internal CA + `_FILE` secrets invariants — HIGH (lived incidents)
-- AWS S3 presigned-URL expiration limits (SigV4 max 7 days = 604800s; URLs minted from STS/role temporary credentials expire when the credential expires, typically 1–12h, regardless of requested expiry) — HIGH:
-  - https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html
-  - https://repost.aws/questions/QUnrDfUE8QRgCLBaV-guPalg/s3-presigned-url-is-valid-for-7-days-but-the-role-it-s-associated-with-is-only-12-hours-is-it-possible-to-make-it-last-the-actual-stated-7days
-  - https://elasticscale.com/blog/why-do-s3-pre-signed-urls-expire-after-12-hours-despite-setting-a-longer-duration/
+- `src/phaze/templates/base.html` — theme store + documented `:class`-on-`<html>` inert bug, pre-flash `_applyTheme`, `@theme` brand tokens, `@custom-variant dark`, self-hosted Tailwind + SRI rationale, flat tab `<nav>`, skip-link block, `aria-current` partial-retrofit note (HIGH)
+- `src/phaze/templates/pipeline/dashboard.html` + `pipeline/partials/stats_bar.html` — the single-poll/OOB-fanout architecture, `oob_counts` gate, `dag-seed-<key>` same-id contract, ~10 OOB cards (HIGH)
+- `src/phaze/routers/pipeline.py` (lines 434–622) — `/pipeline/` full render vs `/pipeline/stats` partial; ~12 degrade-safe service calls per poll tick (HIGH)
+- `src/phaze/templates/proposals/list.html` + `partials/bulk_actions.html` + `routers/proposals.py` `bulk_action` — `proposalTable()` `x-data`, `selectedRows` Set→hidden inputs, `@htmx:after-swap` selection reset, client-id bulk with no server re-validation (HIGH)
+- `src/phaze/main.py` (lines 185–229) — hand-registered routers, no bare-`/` handler, router prefixes (`/proposals`, `/search`, `/duplicates`, `/tags`, `/cue`, `/tracklists`; `/preview/`, `/audit/`, `/admin/agents` path-based) (HIGH)
+- Template inventory: 105 templates / 94 partials / 10 full-page (`extends base.html`); 15 `every Ns` polls across 16 templates (HIGH — direct counts)
+- HTMX docs via Context7 (`/bigskysoftware/htmx`) — `hx-push-url` snapshots/restores the current DOM; `htmx:historyRestore`/`historyCacheMiss`; `hx-swap-oob` multi-target; combinable `hx-trigger` events; `every Ns` polling semantics (HIGH)
+- `.planning/REQUIREMENTS.md` (v7.0, 25 reqs SHELL/WORK/IDENT/REVIEW/RECORD/CUT → phases 57–62) and `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (locked design spine) (HIGH)
 
 ---
-*Pitfalls research for: adding remote Kueue-Job submission + S3 staging to phaze's async control plane (v6.0)*
-*Researched: 2026-06-26*
+*Pitfalls research for: rewriting phaze's tabbed HTMX/Jinja admin UI into a DAG-centric hybrid console + retiring the legacy UI*
+*Researched: 2026-06-29*

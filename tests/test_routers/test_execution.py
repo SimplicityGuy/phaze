@@ -165,12 +165,17 @@ async def test_sse_progress(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_execute_button_disabled(client: AsyncClient) -> None:
-    """Proposals page renders disabled execute button when no approved proposals."""
-    response = await client.get("/proposals/")
-    assert response.status_code == 200
-    # The button should be disabled (no approved proposals)
-    assert "Execute Approved" in response.text
-    assert "cursor-not-allowed" in response.text
+    """Phase 57 (SHELL-05): a plain GET /proposals/ 302-redirects into the shell.
+
+    The Execute Approved button is proposals stats-bar chrome that lives on the propose
+    workspace node -- a documented Phase-57 placeholder (real content lands in 58-61). Its
+    disabled render is unchanged and remains covered by the approve/reject OOB stats tests
+    in test_proposals.py. Here we assert the route resolves into the shell (the bookmark
+    still lands somewhere live).
+    """
+    response = await client.get("/proposals/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/propose"
 
 
 @pytest.mark.asyncio

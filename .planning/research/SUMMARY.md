@@ -1,197 +1,249 @@
-# Project Research Summary
+# Research Summary — phaze v7.0 UI Redesign (DAG-Centric Hybrid Console)
 
-**Project:** phaze — v6.0 Kubernetes Burst Analysis
-**Domain:** Adding a remote Kueue/Kubernetes offload path to an existing async Python music-analysis pipeline
-**Researched:** 2026-06-26
-**Confidence:** HIGH
+**Project:** phaze v7.0
+**Domain:** Server-rendered admin console IA/template rewrite (FastAPI + Jinja2 + HTMX + Tailwind + Alpine)
+**Researched:** 2026-06-29
+**Confidence:** HIGH (all findings grounded in actual `src/phaze/` code; one scoped gap at MEDIUM)
+
+---
 
 ## Executive Summary
 
-v6.0 is a tightly-scoped additive milestone: Kubernetes becomes a *third routing target* alongside the existing local and v5.0 OCI A1 targets. The execution model changes from "persistent SAQ-draining compute agent" to "ephemeral, quota-scheduled Kueue batch Job submitted per long file," but the control-plane choreography is structurally identical to v5.0. The duration router, AWAITING_CLOUD hold, advisory-locked window cron, scheduling ledger, and out-of-band result callback over `/api/internal/agent/*` are all reused verbatim. The single live-seam edit is one new branch inside `stage_cloud_window` gated by a `cloud_target` config setting. Stack delta versus v5.0 is exactly two new pip dependencies on the control plane (`kr8s` for async Kubernetes API access, `aioboto3` for S3 presigning and cleanup) and zero new pip deps in the Job image, which reuses the published x86 essentia base layers with a swapped entrypoint.
+v7.0 is a presentation rewrite, not a product feature: it collapses ~10 legacy tabs into a three-column DAG-centric shell (rail · workspace · per-file pane) over an entirely unchanged backend. The approach is conservative by design — every stage workspace maps to an existing router and service, the stack gains exactly one new CDN dependency (`@alpinejs/focus@3.15.12` for the ⌘K focus trap), and three of the four existing CDN libraries get patch-level bumps only. Reuse is aggressive: the `HX-Request` full-vs-fragment split already exists in 8 routers, the single-poll/OOB-fanout architecture that must power all live rail counts is already proven in `stats_bar.html`, and the `$store.pipeline` Alpine store already carries every count the rail needs. The redesign's job is to give those existing components a better home, not to replace them.
 
-Kueue is an admission/quota gate only — it carries no result payload. The authoritative result channel is unchanged: the pod POSTs analysis output to `/api/internal/agent/analysis/{file_id}` as a registered compute agent, reconciled by `file_id`, using the same idempotent upsert `put_analysis` already in production. This decoupling is architecturally load-bearing: a dropped Kubernetes watch never loses a result. The watch (via kr8s) and a periodic `reconcile_k8s_jobs` cron handle lifecycle, cleanup, and eviction detection only. Phases 52–54 are each independently unit-testable without a live cluster (respx/moto/fake kube API), keeping the 85% coverage gate reachable.
+Three convergent findings across all four research files define the mandatory architecture: (1) There is ONE poll — `GET /pipeline/stats` every 5 seconds — and all live rail counts, header status dots, and workspace counts must fan out from it via `hx-swap-oob` behind the existing `oob_counts` gate. The repo already has ~15 `every Ns` triggers; adding independent per-region pollers is the single fastest path to production pain. (2) Every stage endpoint must branch on `HX-Request`: fragment for HTMX swaps, full shell for direct navigation/refresh. The pattern exists in 8 routers and must be standardized across all 12 new workspace fragments. (3) Phase 57 (Shell & rail) is uniquely load-bearing — it must lock the swap-target contract, the OOB id registry, cross-swap `$store` survival, and the theme/brand scaffolding that all later phases depend on. Cutting corners in Phase 57 means every later phase inherits structural debt.
 
-The most critical integration constraint is DIST-01 (CI-enforced): the application server has no media mount and physically cannot upload file bytes to S3. The control plane presigns S3 URLs (aioboto3) but the **file-server agent** PUT-uploads bytes via httpx to a presigned PUT URL — mirroring how v5.0's `push_file` moved bytes via rsync. The Job pod GET-downloads via a presigned GET URL using httpx already present in the image, keeping the pod and the agent both credential-free. aioboto3 lives exclusively on the control plane. The top recurring pitfall class from the research — stranding files through a missed watch, a race between TTL and reconcile, or a presigned URL expiring while the Job waits behind quota — all resolve to the same root fix: make the out-of-band callback the only authoritative terminal signal, and treat every watch/reconcile result as supplementary lifecycle bookkeeping.
+The single concrete scope risk is **IDENT-01**: the REQUIREMENTS.md text says "AcoustID→MusicBrainz match state" but `grep -ri 'acoustid|musicbrainz' src/phaze` returns empty — the capability does not exist. Three of the four research agents independently surfaced this gap. Building AcoustID/MusicBrainz would be a net-new backend integration and would violate the milestone's explicit no-backend-change boundary. **This must be resolved before Phase 59 planning**, not during it. The recommended resolution is to re-scope IDENT-01 to surface the existing identity signals (audfprint+panako fingerprint match/score + rapidfuzz tracklist match confidence) and defer AcoustID/MusicBrainz to a future milestone.
+
+---
 
 ## Key Findings
 
 ### Recommended Stack
 
-The v6.0 stack delta versus v5.0 is deliberately minimal. Two new control-plane dependencies: `kr8s` 0.20.15 (async, built on httpx + anyio, both already in the phaze dep tree — no second HTTP stack unlike `kubernetes-asyncio`'s aiohttp) and `aioboto3` 15.5.0 (async S3, wraps botocore, works against any S3-compatible endpoint via `endpoint_url=`). Kueue has no Python binding worth adding — a normal `batch/v1` Job with the `kueue.x-k8s.io/queue-name` label is all phaze submits; the Workload CRD is read dynamically via kr8s generic object access with `kueue.x-k8s.io/v1beta2` as a config constant (v1beta1 still served but deprecated as of Kueue v0.18). All existing helpers — httpx, tenacity, pydantic-settings `_FILE`, respx — are reused without change.
+The v7.0 stack is the locked existing stack with minimal version bumps. No new frameworks, no build step, no Node. The only addition is one official Alpine plugin.
 
-**Core technologies (new):**
-- `kr8s` 0.20.15: async Kubernetes client — submit suspended Job, find Workload, read status, delete Job; reuses existing httpx/anyio dep tree
-- `aioboto3` 15.5.0: async S3 client on the control plane — presign PUT/GET, delete object; `endpoint_url=` for non-AWS backends; credentials via `_FILE` secrets
-- `httpx` (existing): byte transfer in the file-server agent (PUT to presigned URL) and in the Job pod (GET from presigned URL) — no S3 SDK on either
-- `Kueue` v0.18.2 (cluster-side, not a pip dep): admission/quota controller; phaze references a configured LocalQueue name only
+**Core technologies (bump only — already in production):**
+- **htmx 2.0.10** (was 2.0.7) — rail→workspace stage swaps, deep-link history, OOB rail/header updates; stay on the 2.0.x line — htmx 4.0.0 is in beta and must not be adopted mid-rewrite
+- **Alpine.js 3.15.12** (was 3.15.9) — local UI state: ⌘K open/close, theme store, per-row selection, slide-in panel
+- **@tailwindcss/browser 4.3.2** (was 4.3.0) — keep self-vendoring in `static/vendor/`; CDN minification diverges per-edge and breaks SRI (the repo already hit this bug)
+- **htmx-ext-sse 2.2.4** — unchanged; stays scoped to the one bounded execution-progress stream it already serves; do NOT expand its use to rail/workspace live updates
+
+**The ONE new dependency:**
+- **@alpinejs/focus 3.15.12** — `x-trap.inert.noscroll` for ⌘K and the slide-in record panel; the only correctly-implemented focus trap approach in a no-build stack; 3KB, official, CDN-delivered; version must exactly match Alpine core
+
+**What NOT to use:** htmx 4.0.0-beta; any SPA framework; graph libraries (mermaid/cytoscape/d3) for the rail; command-palette libraries (cmdk/kbar are React-only; ninja-keys pulls in lit); `htmx-ext-head-support`; WebSockets; Tailwind via bare CDN URL (SRI divergence risk).
+
+All version bumps require SRI hash recomputation (`curl | openssl dgst -sha384`). A stale hash blocks the script silently.
 
 ### Expected Features
 
-v6.0 scope covers the minimum happy path that safely routes long files to the cluster and prevents stranding, plus a clearly deferred observability tier.
+v7.0 has 25 locked requirements across 6 categories. "Must have" means required for the milestone to ship; "defer" items are already named and catalogued.
 
-**Must have (table stakes — the "happy path + don't-strand-files" set):**
-- Submit a `spec.suspend: true` `batch/v1` Job with `kueue.x-k8s.io/queue-name` label and `restartPolicy: Never` + low `backoffLimit`
-- Resolve and watch the auto-created Workload via Job UID (not a guessed name) to detect admission, success, and failure
-- Tolerate indefinite `QuotaReserved=False, reason=Pending` as a normal queued state — never time it out as failure
-- Distinguish `Inadmissible` (misconfigured LocalQueue — surface immediately) from `Pending` (healthy quota wait)
-- Out-of-band result POST from pod to `/api/internal/agent/*`, reconciled by `file_id` (reuses v5.0 machinery entirely)
-- Periodic orphan/timeout reconcile loop (watch as fast path + cron as safety net) with TTL-vs-read ordering handled
-- Idempotent submission (deterministic Job name keyed to `file_id`) and idempotent callback (`put_analysis` ON CONFLICT)
-- `ttlSecondsAfterFinished` set comfortably longer than the reconcile interval (or delete-on-reconcile with long TTL as backstop)
-- LocalQueue name, kubeconfig/SA-token, S3 credentials, bucket, and `cloud_target` selector via `_FILE` config under `cloud_burst_enabled`
-- S3 object cleanup on ALL terminal outcomes (success, failure, eviction, re-route) — not just success — plus a bucket lifecycle TTL backstop
+**Must have — the 25 locked requirements (SHELL/WORK/IDENT/REVIEW/RECORD/CUT):**
+- Three-column shell with DAG rail-as-nav: rail-click → center swap via HTMX without full-page reload (SHELL-01/02)
+- Per-stage live counts on the rail, header agent-status strip, legacy route redirects, theme/brand preserved (SHELL-03/04/05)
+- Discover/Metadata/Fingerprint/Analyze workspaces with lane cards (local/A1/k8s) and Kueue quota-wait vs. Inadmissible (WORK-01 through WORK-05)
+- Track-ID workspace surfacing **existing** fingerprint+tracklist signals (NOT AcoustID/MusicBrainz — see gap); Tracklist Search→Scrape→Match 3-step (IDENT-01/02)
+- Unified before→after diff/approve gate across Rename/Tag/Move; bulk high-confidence approval server-predicate evaluated; dedupe keeper-select; cue preview; audit+undo (REVIEW-01 through REVIEW-05)
+- Full per-file record (slide-in); ⌘K command palette over existing FTS; Agents with ephemeral k8s identity; first-run empty state (RECORD-01 through RECORD-04)
+- Keyboard nav/focus/ARIA baseline; dead-code removal; docs update; narrow rail-collapse (CUT-01 through CUT-04)
 
-**Should have (v6.x — add after happy path proven):**
-- `maximumExecutionTimeSeconds` on the Workload as a cluster-side runaway guard (measured once typical wall-clock is known)
-- Eviction/deactivation detection → automatic re-route to A1/local rather than terminal-fail
-- Pipeline dashboard admission-state cards (queued-behind-quota / admitted / running / finished) driven by `cloud_phase`
+**Defer to v7.x:**
+- REVIEW-06: per-stage configurable confidence thresholds (ship a fixed threshold in v7.0)
+- WORK-06: `cloud_phase`-driven admission-state sub-states (v6.0 KROUTE-06 deferred)
+- RECORD-05: full first-class C3 light theme treatment (dark is primary for v7.0)
 
-**Defer (likely never for this tool):**
-- Priority classes, preemption, fair-sharing, cohorts — operator manages quota; phaze doesn't own cluster policy
-- MultiKueue / multi-cluster dispatch — only one cluster planned
-- Elastic/partial-admission jobs — each Job analyzes exactly one file at `parallelism: 1`
-- phaze creating ResourceFlavor / ClusterQueue / LocalQueue — cluster-admin setup only
-- GPU/Coral accelerator resource requests — essentia analysis is CPU-bound; cluster targets `cpu`/`memory`
+**Defer to v8+:**
+- AcoustID/MusicBrainz Track-ID — net-new backend integration, out of v7.0 scope
+- SHELL-06: mobile/touch layout
+- XAGENT-01: cross-file-server fingerprint identity
+
+**Anti-features confirmed off the table:** drag-to-reorder rail; animated DAG graph canvas as home (rejected in design); per-stage historical charts; auto-applying high-confidence without a human click; Approve-with-no-undo fast path.
 
 ### Architecture Approach
 
-v6.0 is a third branch at exactly one existing seam. `stage_cloud_window` (the sole, advisory-locked staging entry for any cloud pipeline) gains a `cloud_target` branch: when `cloud_target == "k8s"`, it enqueues `upload_file_s3` on the file-server agent queue instead of `push_file`. The window math (`COUNT(PUSHING+PUSHED)`, `cloud_max_in_flight`, FIFO SKIP LOCKED) is reused verbatim. `PUSHING`/`PUSHED` are reused as generic in-flight states — no new FileRecord state is added. Kueue admission phase (Pending / Admitted / Finished) goes in a non-state nullable `cloud_phase` field the reconcile cron writes. The duration router, `put_analysis` callback, scheduling ledger, and `recover_orphaned_work` are all unchanged.
+The architecture is an integration rewrite, not a ground-up build. A new `shell.html` defines the three-column flex layout and a new thin `routers/shell.py` owns `/`, `/shell/{stage}`, `/command`, and `/record/{file_id}`. All existing routers and services are unchanged in data logic; they gain (or have expanded) an `HX-Request` fragment branch. The 5-second `/pipeline/stats` poll and `$store.pipeline` Alpine store — already proven in the dashboard — become the live-data spine for the entire console; the rail is just a new presentation of the existing store, consuming it rather than reinventing it.
 
-DIST-01 governs the byte-transfer design: the control plane (aioboto3) presigns a PUT URL, passes it to the file-server agent, the agent httpx-PUTs the bytes, callbacks `report_s3_uploaded`, the control plane presigns a GET URL, and `submit_k8s_job` bakes that URL into the Job pod env. The pod httpx-GETs the file, analyzes it, and httpx-POSTs the result back. The compute-agent bearer token is injected via a cluster Secret (not inline env) so it never appears in manifests.
+**Major components (new templates + thin routing only):**
+1. `shell.html` + `shell/` template subtree — three-column shell, rail, header, ⌘K overlay, file pane, all 12 workspace fragments; the full `base.html` `<head>` is reused verbatim
+2. `routers/shell.py` — thin new router calling existing services read-only; the only genuinely new server file
+3. Stage workspace fragments (`shell/workspaces/*.html`) — one per rail node; each `{% include %}`d by the full-shell route and returned bare by the HTMX route (one partial, two callers — no duplication)
+4. `record/detail.html` — full-record slide-in composing existing `AnalysisWindow`, `FileRecord`, `tag_comparison`, `audit_log` partials
+5. Existing UI routers (proposals/tags/duplicates/cue/tracklists/execution) — modified only to return `shell.html` on direct navigation and the workspace fragment on `HX-Request`; data logic untouched
+6. `services/*` + `models/*` + `base.html <head>` + `$store.pipeline` — entirely unchanged
 
-**Major new components:**
-1. `services/object_staging.py` — aioboto3 wrapper: presign PUT/GET, delete object; mockable via moto/stubber
-2. `services/k8s_client.py` — kr8s wrapper: build suspended labeled Job, create, find Workload by job-uid, read status, delete; Workload apiVersion as config constant
-3. `tasks/upload_file_s3.py` — agent task: httpx PUT bytes to presigned PUT URL; POST `uploaded` callback; registered in `AGENT_TASKS`; stays Postgres-free (import-boundary enforced)
-4. `routers/agent_s3.py` — control callbacks for S3 leg: `report_s3_uploaded` / `report_s3_mismatch` (analogue of `agent_push.py`); presign GET; enqueue `submit_k8s_job`
-5. `tasks/submit_k8s_job.py` — controller task: presign GET → build + submit suspended Job → record `cloud_job_name/uid` + `cloud_object_key` → `PUSHING → PUSHED`; returns in seconds, never waits for analysis
-6. `tasks/reconcile_k8s_jobs.py` — controller cron (`*/2`): poll K8s-in-flight files; cleanup, re-route, eviction/stuck handling, `cloud_phase` updates; idempotent sweep
-7. `Dockerfile.k8sjob` + `phaze/cli/k8s_runner.py` — x86 one-shot image FROM existing x86 essentia base; entrypoint: httpx GET → essentia one-shot (windowed) → httpx PUT `/analysis/{file_id}` → exit; zero new pip deps
-8. Alembic migration — sidecar `cloud_job` table (preferred over widening `files`): `cloud_job_name/uid`, `cloud_object_key`, `cloud_phase`, `cloud_submitted_at`; no FileState enum change
-9. Config additions — `cloud_target` Literal, kube endpoint + kubeconfig/SA-token `_FILE`, LocalQueue name, Workload apiVersion, S3 endpoint/bucket/credentials `_FILE`, `k8s_inflight_timeout_sec`; extend `SECRET_FILE_FIELDS`
+**The standardized full-vs-fragment pattern** (already present in 8 routers): `if request.headers.get("HX-Request") == "true"` → return the workspace fragment; else → return `shell.html` with that stage's workspace inlined via `{% include %}` and the rail node pre-selected. This handles direct navigation, bookmarks, browser back/forward, and HTMX swaps from one branch point.
 
-**Modified (low risk, additive):** `stage_cloud_window` (one branch), `enqueue_router` frozensets (add new task names), `tasks/controller.py` (register new tasks + cron), `tasks/agent_worker.py` (register `upload_file_s3`), `config.py` (new settings + model validator)
-
-**Unchanged (proof the seam is right):** `_route_discovered_by_duration`, `put_analysis`, `scheduling_ledger`, `recover_orphaned_work`, `cloud_burst_enabled` toggle, window math, advisory lock
+**SHELL-05 redirect strategy (hybrid):** Routes with a clean canonical URL (`/proposals/`, `/tags/`, `/cue/`, `/duplicates/`, `/tracklists/`) render-in-shell (the URL is already the stage state — no redirect needed). True renames (`/pipeline/` → `/`, `/search/` → `/?cmd=1`) use `RedirectResponse`. Account for FastAPI's `redirect_slashes=True` — redirect the canonical trailing-slash form, not the bare path, to avoid 2-hop chains.
 
 ### Critical Pitfalls
 
-1. **Treating the kube watch as the result channel** — a dropped watch over the operator VPN strands files forever. The pod callback to `/api/internal/agent/*` reconciled by `file_id` is the ONLY authoritative result channel. The watch is lifecycle/observability only. Pair it with a periodic reconcile cron as the mandatory safety net from day one (Phase 54).
+Ten pitfalls documented; top five by severity and phase impact:
 
-2. **Holding a SAQ worker slot on `await job.wait()`** — a Job can sit queued behind Kueue quota for hours before it starts, then run for hours more. Blocking a controller worker the entire time recreates the v4.0.10 starvation class. The fix is a fast `submit_k8s_job` task (returns in seconds) plus a periodic `reconcile_k8s_jobs` cron; state lives on `FileRecord`, not in a held coroutine (Phase 54).
+1. **Poll storms — independent per-region pollers** — the repo already has ~15 `every Ns` triggers; a three-column console naively adding rail/workspace/pane pollers independently can easily fan out to 3-5 concurrent DB-hitting loops. Prevention: one console-level poll (`/pipeline/stats` every 5s) fans out to all live regions via `hx-swap-oob`; no second poll loop; add a `visibilitychange` guard so polls shed when the tab is backgrounded. Address in Phase 58.
 
-3. **Presigned GET URL expiring before the suspended Job is admitted** — a 1-hour URL is baked into a Job that sits behind quota for 3 hours; the pod runs and gets a 403. Use long expiry from long-lived bucket credentials (not STS/role temp creds which silently cap at 1–12h regardless of requested expiry), or mint the GET URL just-in-time on Workload `Admitted` (Phase 53 + 54).
+2. **IDENT-01 scope violation** — the prototype labels Track-ID "AcoustID→MusicBrainz" but that capability is absent from the codebase. Building it would add a new API client, network dependency, and rate-limit surface — a net-new backend feature that violates the milestone boundary. Re-scope to existing signals or defer. Resolve before Phase 59 planning begins.
 
-4. **OOM on long files in a pod with a hard cgroup memory limit** — `MonoLoader` decodes the entire audio file into RAM; a multi-hour Coachella set blows past 2Gi. The known fix is the v4.0.10 windowed/streaming analysis path. Bake windowed analysis into the one-shot entrypoint from the start; size memory requests from measured peak RSS on the longest real sets, not from a short-track example (Phase 52).
+3. **REVIEW-02 stale bulk approval** — today's bulk approve serializes a client-side `selectedRows` Set into hidden inputs and submits without server re-validation. In a live-polling console the render→submit window can be many seconds; an operator can approve a stale set, leading to renames/tag-writes/file-moves on wrong rows. Prevention: "approve all high-confidence" must send a server-evaluated predicate (action + threshold), not a client-built id list. The server re-queries pending rows above threshold at submit time. Address in Phase 60.
 
-5. **Seeding a `process_file:<id>` ledger row for a K8s file** — there is no live SAQ `process_file` job for a K8s file, so `recover_orphaned_work` would wrongly re-enqueue it onto an agent queue (the CLOUDROUTE-02 violation). K8s in-flight files sit in `PUSHED`, which the backfill predicates already exclude. Do not seed the ledger row; let `reconcile_k8s_jobs` own K8s re-drive (Phase 54 + 55).
+4. **Rail swap clobbers the shell (wrong hx-target)** — if a rail node targets too broad a region (`body`, `#shell`), the swap destroys the header, rail, and pane. Stage endpoints returning full `extends base.html` pages inject nested `<nav>`, duplicate `$store`, and duplicate theme toggles into the center column. Prevention: one stable `#stage-workspace` id; all stage endpoints return fragments only; the shell renders once on `GET /`. Lock this contract in Phase 57 before building any stage.
 
-6. **Adding `SUBMITTED_K8S` as a new FileState** — forks the window count, dashboard cards, staging candidate query, and push-done set in `recover_orphaned_work`. Reuse `PUSHING`/`PUSHED` as generic in-flight states; carry Kueue admission phase in the non-state `cloud_phase` field.
+5. **URL/history breakage and redirect loops** — `hx-push-url` snapshots the DOM on forward navigation; back-button restores a potentially-dead (Alpine-uninitiated) snapshot. SHELL-05 redirects that target `/proposals` instead of `/proposals/` (the canonical trailing-slash form) create 2-hop chains with FastAPI's `redirect_slashes=True`. Prevention: every stage URL is server-resolvable (full shell + stage pre-selected); add a redirect-loop test asserting each legacy path resolves in ≤1 hop to a 200; handle `htmx:historyRestore` to re-init Alpine. Address in Phase 57.
 
-7. **Whole-backlog over-enqueue into the cluster** — phaze has hit this twice (v4.0.6: 11,428 stranded jobs; v5.0: 44,500 force-swept jobs). K8s is a third target of the same duration-router + ledger seam, not a new "analyze everything" path. The `cloud_max_in_flight` window cap prevents flooding quota. Same AST guard as post-v4.0.6 covers the K8s enqueue site (Phase 55).
+**Additional pitfalls to hold in mind:** lost Alpine `x-data` state after swaps (hoist cross-swap state to `$store`; Pitfall 2 addressed in Phase 57 + 60); OOB id collisions from un-gated OOB blocks at initial render (the `oob_counts` gate is mandatory; Pitfall 3); dead-code cutover breaking surviving `{% include %}` references (Pitfall 7; seed the dead-template test in Phase 57, execute CUT-02 in Phase 62); theme/brand regression from porting the prototype `<head>` wholesale (Pitfall 9; preserve `base.html`'s `_applyTheme`, pre-flash IIFE, `@custom-variant dark`, vendored Tailwind).
+
+---
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure continuing from v5.0's Phase 51:
+The phase structure is already defined in REQUIREMENTS.md (phases 57–62). The research validates and constrains it — the dependency order is strict and non-negotiable.
 
-### Phase 52: Job-Runner Image + One-Shot Entrypoint
+### Phase 57 — Shell & Rail (SHELL-01..05)
 
-**Rationale:** The Job image is the execution unit; everything else depends on it existing. Building it first, independently of any live cluster or bucket, lets Phases 53–54 assume a tested artifact. Parallels Phase 47 (arm64 image) in v5.0 ordering.
-**Delivers:** `Dockerfile.k8sjob` published to GHCR; `phaze/cli/k8s_runner.py` one-shot entrypoint (httpx GET presigned URL → windowed essentia analysis → httpx PUT `/api/internal/agent/analysis/{file_id}` → exit); internal CA baked into the image; honest exit-code contract (non-zero on download-403, analysis failure, or callback failure)
-**Addresses:** OOM on long files (windowed analysis from day one), pod→API TLS trust (CA in image), exit-code semantics (Pitfalls 4, 12, 13)
-**Research flag:** Standard patterns; Phase 47 is the direct precedent. Skip research-phase.
+**Rationale:** Every other phase renders into the shell. Phase 57 is the load-bearing risk phase: it must establish all cross-cutting contracts that later phases depend on. Do not under-scope it.
 
-### Phase 53: S3 Staging Leg
+**Delivers:** `shell.html` three-column layout; `_rail.html` nav spine with live count bindings; `_header.html`; `shell.py` thin router; `GET /` (Analyze default); `HX-Request` full-vs-fragment convention; all SHELL-05 redirects and render-in-shell branches; theme/brand reused from existing `base.html <head>` verbatim.
 
-**Rationale:** Object staging is the byte-transfer seam that replaces v5.0's rsync. Testable entirely without a live cluster (moto/stubber + respx). Phase 54's Job submission needs the presigned GET URL this leg produces.
-**Delivers:** `services/object_staging.py` (aioboto3: presign PUT/GET, delete_object); `tasks/upload_file_s3.py` (agent: httpx PUT bytes, POST `uploaded`); `routers/agent_s3.py` (control callbacks); `file_id`-scoped object key scheme; cleanup on all terminal outcomes; S3 config (`_FILE` secrets, `endpoint_url`, addressing style); Alembic migration (sidecar `cloud_job` table)
-**Addresses:** DIST-01 byte-transfer constraint, S3 orphan cleanup, object-key collision, multipart for large sets, SigV4/endpoint_url misconfig (Pitfalls 8, 9, 18)
-**Open question to resolve in requirements:** Presigned URL minting timing — submit-time long-expiry vs. just-in-time on Workload `Admitted=True`
-**Research flag:** aioboto3 well-documented. Skip research-phase.
+**Must lock in this phase (not deferred):**
+- The single stable swap target id (`#stage-workspace`)
+- Fragment-only stage responses (no `extends "base.html"` in swap targets)
+- `$store.pipeline` consumption pattern (not redefinition)
+- OOB id registry + `oob_counts` gate (no OOB at initial render)
+- Stage-resolvable `/` + `hx-push-url` + `htmx:historyRestore` handler
+- SHELL-05 redirect-loop test (≤1 hop to 200 for each of 8 legacy routes)
+- Focus/ARIA contract: `aria-current="page"` on active rail node, focus-to-heading after swap, skip link targeting `#stage-workspace`
+- Theme smoke test: FOUC absent, `dark:` utilities work, vendored Tailwind, phaze accent
+- Dead-template AST guard test (seeded green now; watched green through cutover)
 
-### Phase 54: Kube Submit / Watch + Reconcile Cron
+**Research flag:** No phase research needed. All patterns are in-repo.
 
-**Rationale:** The Kubernetes API leg is the core of v6.0. With Job image (52) and S3 GET URL (53) available, the submit path is complete. Highest-risk design decisions land here — watch-vs-reconcile, TTL-vs-read, ledger non-seeding, idempotent submission. Testable against a fake kube API; no live cluster needed.
-**Delivers:** `services/k8s_client.py` (kr8s: build/create/find/read/delete); `tasks/submit_k8s_job.py` (fast submit); `tasks/reconcile_k8s_jobs.py` (periodic cron: poll in-flight, cleanup, re-route, eviction detection, `cloud_phase` updates); Job spec with bearer token via cluster Secret; TTL/reconcile ordering invariant; `backoffLimit: 0` + `restartPolicy: Never`; Workload apiVersion as config constant
-**Addresses:** Watch-as-result-channel, worker-slot starvation, TTL-vs-read race, ledger non-seeding (CLOUDROUTE-02), idempotent submission, Job-backoff-vs-control-plane-retry, Inadmissible-vs-Pending distinction, bearer token injection (Pitfalls 1, 2, 3, 5, 7, 10)
-**Open question to resolve in requirements:** Job-Failed/evicted fallback policy — re-route to A1/local or mark ANALYSIS_FAILED?
-**Research flag:** kr8s/Kueue patterns verified against Context7. Skip research-phase.
+### Phase 58 — Enrich & Analyze Workspaces (WORK-01..05)
 
-### Phase 55: Routing + Ledger Integration (the live seam)
+**Rationale:** First phase that populates the shell with real workspace content. The Analyze workspace is the densest live region and owns the critical "single poll" consolidation decision (WORK-05).
 
-**Rationale:** The only phase that touches the live v5.0 seam. Both legs (S3 in 53, kube in 54) must exist before the branch is wired. Kept last among code phases to minimize the partially-integrated window.
-**Delivers:** `cloud_target` config setting; `stage_cloud_window` K8s branch (enqueue `upload_file_s3` instead of `push_file`); GATE 1 semantics for K8s; `enqueue_router` frozenset additions; controller + agent-worker task registrations; model validator for K8s config requirements; AST guard test covering K8s enqueue site
-**Addresses:** Active-target toggle misrouting, whole-backlog over-enqueue (ledger scoping preserved), transport-specific leakage (Pitfalls 15, 16, 17)
-**Open question to resolve in requirements:** `cloud_target` shape — two-way `Literal["a1", "k8s"]` or three-way `Literal["local", "a1", "k8s"]`?
-**Research flag:** Standard patterns (extends existing enqueue_router). Skip research-phase.
+**Delivers:** Discover/Metadata/Fingerprint/Analyze workspace fragments; 3 lane cards (local/A1/k8s) with capacity, utilization bar, and Kueue quota-wait vs. Inadmissible; per-file lane badge + windowed progress; live refresh via the existing `/pipeline/stats` 5s poll + `$store.pipeline` OOB seeds.
 
-### Phase 56: Deploy + Runbook + Docs
+**Key constraint:** No second poll loop. WORK-05 is not a feature to build — it is a discipline to maintain. Verify one request/5s in the network tab.
 
-**Rationale:** Ops-only phase analogous to Phase 51. All code paths exist; this phase makes them operable. Kueue admin objects are documented as admin setup — phaze never creates them.
-**Delivers:** Kueue admin runbook (RF/CQ/LQ creation, RBAC Role, cluster Secret for compute-agent bearer token, bucket lifecycle TTL, apiVersion verification at deploy, LocalQueue existence validation at startup); `_FILE` secret wiring; `cloud_burst_enabled` gate confirmed on all three K8s entry points; transport-agnostic endpoint config (Tailscale OR WireGuard); `docs/deployment.md` additions; perpetual-DEAD cluster compute-agent liveness UI note
-**Addresses:** RBAC scoping (least-privilege namespaced Role), startup LocalQueue validation, bucket lifecycle TTL, CA cert distribution (confirmed from Phase 52 bake), token rotation scope (Pitfalls 11, 17)
-**Open question to resolve in requirements:** Internal CA delivery to the Job pod — baked into image (Phase 52 planned this) vs. ConfigMap-mounted for rotation without image rebuild?
-**Research flag:** Ops runbook. Skip research-phase.
+**Research flag:** No phase research needed. All data sources in `pipeline.py`, `pipeline_scans.py`, `pipeline_stages.py`; lane-card partials exist from v6.0.
+
+### Phase 59 — Identify Workspaces (IDENT-01..02)
+
+**Rationale:** Simpler in implementation scope but blocked by the IDENT-01 scope decision. Do not plan this phase until the AcoustID/MusicBrainz question is resolved.
+
+**Delivers:** Tracklist workspace with Search→Scrape→Match 3-step chips; Track-ID workspace surfacing existing identity signals.
+
+**BLOCKING PREREQUISITE — choose one before Phase 59 planning:**
+- **Option 1 (recommended):** Re-label Track-ID to surface audfprint+panako fingerprint match/score + rapidfuzz tracklist match confidence. No backend change. Ship.
+- Option 2: Defer IDENT-01 to v7.x; ship only Tracklist in Phase 59.
+- Option 3: Treat AcoustID/MusicBrainz as an explicit deliberate backend exception. Requires scope amendment; adds API client + network dep + rate-limit surface.
+
+**Research flag:** No phase research needed for options 1 or 2. Option 3 requires targeted research before planning.
+
+### Phase 60 — Review & Apply (REVIEW-01..05)
+
+**Rationale:** The most correctness-sensitive phase. Collapses the highest-stakes user interaction (approvals on an irreplaceable archive) into a unified diff gate.
+
+**Delivers:** Unified before→after diff component across Rename/Tag/Move (one Jinja partial over three existing data sources); dedupe keeper-select; cue preview + approve; per-file Approve/Edit/Skip; bulk "approve all high-confidence" gated by a server-evaluated predicate.
+
+**Key constraints:**
+- REVIEW-02 bulk must send a predicate (threshold + action), not a client-built id list.
+- Pick a fixed server-side confidence threshold at Phase 60 plan time (REVIEW-06 deferred).
+- Every apply action must POST to existing endpoints that write `ExecutionLog`. Assert an audit row per apply.
+- The 5s diff-list poll must OOB-update counts only — never re-render the operator's in-progress selection subtree.
+
+**Research flag:** No phase research needed. All endpoints exist; pattern is standard `HX-Request` branch + existing approve/undo routers.
+
+### Phase 61 — Full Record + ⌘K + Agents (RECORD-01..04)
+
+**Rationale:** Additive features over the already-live shell and workspaces. The Agents page carries v6.0 KDEPLOY-04 intent (ephemeral k8s identity) into the new UI.
+
+**Delivers:** Full-record slide-in composing existing `analysis_timeline.html` + tag comparison + audit history; ⌘K palette (Alpine `x-data` + `@alpinejs/focus` `x-trap` + debounced `hx-get="/command"`); Agents page with ephemeral k8s burst identity; first-run empty state.
+
+**Key constraints:**
+- `@alpinejs/focus@3.15.12` introduced here — load plugin `<script defer>` before Alpine core; version must match Alpine core exactly.
+- Per-file pane and record must ride the existing single poll, not add a new one.
+- ⌘K quick commands must funnel through the same router endpoints and `enqueue_router` guards.
+
+**Research flag:** No phase research needed. Stack patterns documented in STACK.md; RECORD-01 composition mapped in ARCHITECTURE.md.
+
+### Phase 62 — Polish & Cutover (CUT-01..04)
+
+**Rationale:** Dead-code removal is only safe after every legacy route is served and every workspace has replaced its old page. CUT-02 must be last.
+
+**Delivers:** Full keyboard/ARIA audit (CUT-01 parity sign-off); dead-code removal with three-way grep + dead-template test green (CUT-02); docs/README update (CUT-03); narrow rail-collapse to icons (CUT-04).
+
+**What to delete in CUT-02:** `proposals/list.html`, `tags/list.html`, `duplicates/list.html`, `cue/list.html`, `tracklists/list.html`, `search/page.html`, `preview/tree.html`, `pipeline/dashboard.html`, and the nav block in `base.html`. Keep all `partials/` — they are the shell's fragments.
+
+**Research flag:** No phase research needed.
 
 ### Phase Ordering Rationale
 
-- **52 before 53:** The Job image defines the httpx GET interface the S3 leg must produce a URL for
-- **53 before 54:** The kube submit task needs a presigned GET URL to bake into the Job spec; S3 staging produces it
-- **54 before 55:** The live seam edit must have both legs available to branch to
-- **55 before 56:** Runbook verifies config that Phase 55 introduces
-- **52–54 are each independently unit-testable without a live cluster** — 85% coverage gate reachable at every phase boundary
-- Mirrors v5.0's own ordering (47 image → 48/49 agent + routing → 50 pipeline → 51 deploy); live-seam edit (55) is as late as possible
+- 57 must be first — all later phases render into the shell.
+- 58 before 59 — the workspace pattern (header + counts + action + table) is established in 58 and reused in 59.
+- 58 before 60 — the file-row→pane plumbing used in Review is established in 58.
+- 61 after 58–60 — the record slide-in links into workspace fragments (lane badges, pending approval rows) that must exist first.
+- 62 last — CUT-02 deletes the legacy page wrappers; removing them before 57–61 are complete breaks the SHELL-05 redirects.
 
-### Research Flags
+### Research Flags Summary
 
-All five phases have standard patterns or direct v5.0 precedents. No phases in this milestone require a research-phase.
+| Phase | Research needed? | Reason |
+|-------|-----------------|--------|
+| 57 — Shell & rail | No | All patterns in-repo |
+| 58 — Enrich + Analyze | No | All data sources in `pipeline.py`; lane-card partials from v6.0 |
+| 59 — Identify | CONDITIONAL | Only if IDENT-01 option 3 chosen; options 1/2 need no research |
+| 60 — Review & Apply | No | All endpoints exist; standard pattern |
+| 61 — Full record + ⌘K | No | Alpine focus + HTMX search pattern fully documented |
+| 62 — Polish & cutover | No | Standard cleanup; dead-template test seeded in 57 |
 
-- **Phase 52:** Skip — directly parallels Phase 47 (arm64 image)
-- **Phase 53:** Skip — aioboto3 well-documented; moto patterns established
-- **Phase 54:** Skip — kr8s/Kueue patterns verified same-day against Context7 + kueue.sigs.k8s.io
-- **Phase 55:** Skip — extends existing `enqueue_router` and `stage_cloud_window` patterns
-- **Phase 56:** Skip — ops runbook; no research needed
+---
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | kr8s 0.20.15 and aioboto3 15.5.0 verified on PyPI 2026-06-26; Kueue v0.18.2 released same day; dep overlap with existing stack confirmed; v1beta2 apiVersion verified as current served+storage version |
-| Features | HIGH | Kueue Job→Workload lifecycle and all condition signals verified against Context7 `/kubernetes-sigs/kueue` and kueue.sigs.k8s.io; phaze-specific scope grounded in PROJECT.md Key Decisions |
-| Architecture | HIGH | Every integration seam read directly from phaze source; DIST-01 constraint confirmed in `docker-compose.yml`; v5.0 spine traced through real modules |
-| Pitfalls | HIGH | Critical pitfalls grounded in lived phaze incidents (v4.0.6, v4.0.10, v5.0); S3 presigned-URL STS expiry verified against AWS docs; Kueue lifecycle edge cases verified against Context7 |
+| Stack | HIGH | All versions verified live on npm 2026-06-29; every pattern grounded in existing `src/phaze/` code; one new dep is official and CDN-delivered |
+| Features | HIGH | 25 requirements are locked; every feature traced to a present router/partial; IDENT-01 gap confirmed by grep |
+| Architecture | HIGH | Every integration point grounded in a real file under `src/phaze/`; `HX-Request` pattern verified in 8 routers; IDENT-01 backend gap flagged explicitly |
+| Pitfalls | HIGH | All 10 pitfalls anchored to specific file+line; HTMX history/OOB behavior verified against current docs via Context7 |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-Decision questions (not research gaps — options and tradeoffs are understood) to resolve in requirements:
+- **IDENT-01 backend gap (resolve before Phase 59):** `grep -ri 'acoustid|musicbrainz' src/phaze` returns empty. Also verify what `models/fingerprint.py` + `routers/agent_fingerprint.py` actually persist — if pyacoustid lookup results are stored there, IDENT-01 option 1 can surface them directly. Resolve before Phase 59 planning.
 
-- **DIST-01 confirmation as a REQ-ID:** Codify "file-server agent uploads via presigned PUT; control plane presigns only" as an explicit requirement so it cannot be reversed during implementation
-- **`cloud_target` shape:** Two-way `Literal["a1", "k8s"]` (with `cloud_burst_enabled=False` as "local") vs. three-way `Literal["local", "a1", "k8s"]`; decide in requirements, Phase 55 implements
-- **Job-Failed/evicted fallback policy:** Re-route to A1/local vs. mark ANALYSIS_FAILED; eviction-to-fallback is P2/v6.x per FEATURES.md, but Job-Failed policy must be decided for Phase 54
-- **Presigned URL minting timing:** Submit-time with long-expiry from long-lived creds vs. just-in-time on Workload `Admitted=True`; decide in requirements, Phases 53–54 implement
-- **Internal CA distribution to Job pod:** Baked into image at build time (Phase 52 already planned this; requires image rebuild on CA rotation) vs. ConfigMap-mounted at runtime (survives rotation without rebuild)
-- **Perpetual-DEAD cluster compute-agent liveness UI:** The cluster compute agent never heartbeats (ephemeral Jobs); the existing Agents page will show it as perpetually DEAD. Suppress liveness for a `kind="compute"` cluster identity, or add a `cluster_identity` flag. Low priority but needs a Phase 56 runbook note
+- **REVIEW-02 confidence threshold value:** Research confirms "ship a fixed threshold" but does not specify the value. Determine at Phase 60 plan time; check `tracklists.py` `reject-low` endpoint as a reference point.
+
+- **⌘K "artists" search facet:** Verify whether `search_queries.search` surfaces an artist dimension or whether "artists" maps to file/tracklist artist fields. Verify at Phase 61 plan time; no backend change either way.
+
+- **SRI hash recomputation:** Every version bump requires recomputing the `integrity=` hash. Mechanical but must happen in Phase 57; a stale hash silently blocks the script.
+
+---
 
 ## Sources
 
 ### Primary (HIGH confidence)
 
-- Context7 `/kr8s-org/kr8s` — async Job create, `wait(["condition=Complete","condition=Failed"])`, dynamic custom-object get
-- Context7 `/kubernetes-sigs/kueue` — Workload status conditions (QuotaReserved/Admitted/Evicted/Finished), `queue-name` label, suspend semantics, job-uid→workload lookup, KEP-973 examples, PodsReadyTimeout requeue/deactivation
-- PyPI JSON API (2026-06-26) — kr8s 0.20.15, aioboto3 15.5.0, aiobotocore 2.25.1 verified
-- GitHub `kubernetes-sigs/kueue` releases — v0.18.2 released 2026-06-26; v1beta2 as served+storage version
-- kueue.sigs.k8s.io/docs — Running Jobs task, Workload concept, `maximumExecutionTimeSeconds`, `requeueState`
-- phaze source (read directly) — `services/enqueue_router.py`, `services/scheduling_ledger.py`, `tasks/release_awaiting_cloud.py`, `tasks/push.py`, `tasks/reenqueue.py`, `routers/agent_analysis.py`, `routers/agent_push.py`, `models/file.py`, `config.py`
-- phaze `.planning/PROJECT.md` v6.0 milestone — DIST-01, CPU-only Key Decision, Out-of-Scope reversals
-- AWS S3 presigned-URL expiration docs — SigV4 max 7 days; STS/role temp creds cap at credential lifetime (1–12h) regardless of requested expiry
+- `src/phaze/templates/base.html` — theme store, `$store.pipeline`, brand tokens, pre-flash IIFE, vendored Tailwind rationale, tab nav to retire
+- `src/phaze/templates/pipeline/{dashboard.html,partials/stats_bar.html}` — single-poll/OOB-fanout architecture, `oob_counts` gate, `dag-seed-<key>` id contract
+- `src/phaze/routers/pipeline.py:434,549,625,800,857,937,1023,1074,1202,1233,1280` — all stage trigger endpoints + `pipeline_stats_partial`
+- `src/phaze/routers/{search.py:74,proposals.py:157,tags.py:201,duplicates.py:105,cue.py:228,tracklists.py:152,execution.py:372,admin_agents.py}` — the `HX-Request` full-vs-fragment pattern in 8 routers
+- `src/phaze/templates/proposals/list.html` + `partials/bulk_actions.html` — `selectedRows` client-id bulk (the anti-pattern REVIEW-02 must fix)
+- `src/phaze/main.py:185-229` — router registration; no bare `/` handler; no `RedirectResponse` today
+- `src/phaze/models/analysis.py` + `templates/proposals/partials/analysis_timeline.html` — windowed timeline backing RECORD-01
+- `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` + `2026-06-28-ui-redesign-assets/prototype.html` — locked design spine
+- `.planning/REQUIREMENTS.md` — 25 locked requirements, phase 57–62 traceability
+- npm registry `registry.npmjs.org` (live, 2026-06-29) — htmx.org 2.0.10, alpinejs 3.15.12, @alpinejs/focus 3.15.12, @tailwindcss/browser 4.3.2
+- Context7 `/bigskysoftware/htmx` — `hx-push-url` DOM-snapshot behavior, `htmx:historyRestore`/`historyCacheMiss`, `hx-swap-oob` multi-target, `every Ns` polling semantics
 
-### Secondary (MEDIUM-HIGH confidence)
+### Secondary (MEDIUM confidence)
 
-- Red Hat build of Kueue docs — v1beta2 is current; v1beta1 deprecated but still served
-- phaze project memory — v4.0.6 default-queue 11,428-job over-enqueue; v5.0 force=True 44,500-job sweep; v4.0.10 OOM on long sets; v4.0 self-signed internal CA invariants
+- `grep -ri 'acoustid|musicbrainz' src/phaze` — returns empty; IDENT-01 backend absence confirmed (absence-of-evidence; `models/fingerprint.py` not deeply inspected for pyacoustid persistence)
+- [Command Palette Pattern — UX Patterns for Developers](https://uxpatterns.dev/patterns/advanced/command-palette) — ⌘K table-stakes conventions
+- [GitLab CI/CD pipelines](https://docs.gitlab.com/ci/pipelines/) — rail-as-nav prior art
 
 ---
-*Research completed: 2026-06-26*
-*Ready for roadmap: yes*
+*Research completed: 2026-06-29*
+*Ready for roadmap: yes — pending IDENT-01 scope decision before Phase 59 planning*

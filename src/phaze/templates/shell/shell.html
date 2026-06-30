@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Phaze</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
+    <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
+    <link rel="icon" type="image/svg+xml" sizes="192x192" href="/static/favicon-192.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+    <link rel="manifest" href="/static/site.webmanifest">
+    <meta property="og:image" content="/static/og_image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+
+    <!-- Tailwind CSS — self-hosted (NOT CDN). jsDelivr minifies the bare package URL
+         on the fly with per-edge Terser versions, so the served bytes (and thus the SRI
+         hash) differ across edges; that broke SRI verification and could block the
+         stylesheet for clients on a divergent edge. Vendoring the audited build
+         (@tailwindcss/browser@4.3.2/dist/index.global.min.js, sha384-shaHAtPg…) makes
+         delivery deterministic and works on an isolated/private network. To update:
+         re-download that exact file into static/vendor/ and bump the filename version. -->
+    <script src="/static/vendor/tailwindcss-browser-4.3.2.min.js"></script>
+
+    <!-- Jura font (design language primary) + Inter (body) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Jura:wght@300;500&display=swap" rel="stylesheet">
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous"></script>
+
+    <!-- HTMX SSE extension -->
+    <script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/sse.js" integrity="sha384-QA9wXqexhwzXTuTvuF5QP82pddm3R2hy81UzXi7ioNTqNF2b75hlkkSGjafohhL3" crossorigin="anonymous"></script>
+
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.12/dist/cdn.min.js" integrity="sha384-pb6hrQvo4s23cEUFtj0CZkzGE3jyK3pj26RIupXXxhSrrcUA/Cn0lZgcCrGH0t6L" crossorigin="anonymous"></script>
+
+    <!-- Theme store: auto/dark/light with localStorage persistence.
+
+         Alpine v3 does NOT process `:class` on the <html> element unless
+         <html> carries an x-data directive (Alpine scans from <body> down).
+         A previous version bound `:class="$store.theme.dark ? 'dark' : ''"`
+         on <html> and it was silently inert — clicking the toggle changed
+         `mode` in the store but the .dark class was never added/removed
+         after the pre-flash script ran.
+
+         Fix: drive the .dark class directly via classList from one place
+         (`_applyTheme`). Both the toggle's set() and the OS-level
+         prefers-color-scheme listener (for auto mode) call it. -->
+    <script>
+        function _applyTheme(mode) {
+            const isDark = mode === 'dark' || (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            document.documentElement.classList.toggle('dark', isDark);
+        }
+        // Prevent flash: apply dark class before Alpine loads.
+        (function() {
+            const mode = localStorage.getItem('phaze-theme') || 'auto';
+            _applyTheme(mode);
+        })();
+        // OS-level dark-mode preference change must update the page when in auto mode.
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            const mode = localStorage.getItem('phaze-theme') || 'auto';
+            if (mode === 'auto') _applyTheme('auto');
+        });
+        document.addEventListener('alpine:init', () => {
+            Alpine.store('theme', {
+                mode: localStorage.getItem('phaze-theme') || 'auto',
+                get dark() {
+                    if (this.mode === 'dark') return true;
+                    if (this.mode === 'light') return false;
+                    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+                },
+                set(mode) {
+                    this.mode = mode;
+                    localStorage.setItem('phaze-theme', mode);
+                    _applyTheme(mode);
+                }
+            });
+            // Pipeline dashboard single-source-of-truth for the live "files ready"
+            // counts AND the live queue-busy gates. Both the count text and the four
+            // pipeline-action button :disabled bindings (Run Analysis / Fingerprint /
+            // Extract Metadata / Generate Proposals) read this store; the 5s
+            // /pipeline/stats poll pushes fresh values via x-init on its OOB count +
+            // busy-seed paragraphs so the buttons un-disable the instant a scan
+            // surfaces files OR a queued run drains WITHOUT the poll ever re-rendering
+            // (and clobbering) the interactive button subtree.
+            // discovered/analyzed/metadataExtracted are "files ready" stage counts;
+            // agentBusy/controllerBusy are the live SAQ queue depths that gate the
+            // buttons against double-enqueue. All five are seeded from the
+            // server-rendered counts at page load (see the DAG canvas seeds) and refreshed
+            // by the poll OOB nodes, so every :disabled binding has a defined default
+            // before the first poll tick (never reads undefined).
+            // Phase 35 (35-04) DAG-canvas extension: per-node sub-keys feeding the
+            // node-edge pipeline graph (35-05). EVERY key is seeded to 0 here so no
+            // node binding ever reads `undefined` before the first /pipeline/stats
+            // poll tick. done/total/active come from the server context (35-04 router)
+            // and are refreshed by the OOB x-init seeds in stats_bar.html on each 5s
+            // poll. The Phase-34 keys (discovered/analyzed/metadataExtracted/agentBusy/
+            // controllerBusy) are PRESERVED — the existing button :disabled gating reads
+            // them. Topology note (UI-SPEC L243): Fingerprint gates on `discovered`, not
+            // `metadataExtracted`; the store keeps both, the gating swap lands in 35-05.
+            Alpine.store('pipeline', {
+                discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
+                // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
+                // gate so each agent enqueue button gates on its OWN stage (run in parallel).
+                // agentBusy is kept — the queue_progress card path still reads agent_busy server-side.
+                metadataBusy: 0, analyzeBusy: 0, fingerprintBusy: 0,
+                // Phase 39 (REQ-39-3): search_tracklist in-flight count gates the DAG Search node
+                // "busy" — rides the same dag.items() seed/OOB poll as the agent busy counts.
+                searchBusy: 0,
+                // Phase 40 (REQ-40-2/REQ-40-3): scan_live_set in-flight count ("Scan busy") + online-agent
+                // count ("Needs agent" when 0) gate the DAG Fingerprint-Scan node — same seed/OOB poll.
+                scanBusy: 0, agentOnline: 0,
+                // Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight
+                // counts gate the DAG Scrape/Match trigger nodes ("Scraping…" / "Matching…") — same seed/OOB poll.
+                scrapeBusy: 0, matchBusy: 0,
+                metadataDone: 0, metadataTotal: 0,
+                fingerprintDone: 0, fingerprintTotal: 0,
+                analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
+                tracklistDone: 0,
+                scrapeDone: 0, scrapeTotal: 0,
+                matchDone: 0, matchTotal: 0,
+                proposalsDone: 0, proposalsTotal: 0,
+                approved: 0,
+                executedDone: 0, executedTotal: 0,
+                // Phase 38 (38-03): per-stage pause/priority live state (REQ-38-4). Seeded
+                // to int 0 so no control binding reads `undefined` before the first poll;
+                // the dag.items() OOB loop in stats_bar.html pushes the real values each 5s.
+                metadataPaused: 0, metadataPriority: 0,
+                analyzePaused: 0, analyzePriority: 0,
+                fingerprintPaused: 0, fingerprintPriority: 0
+            });
+        });
+    </script>
+
+    <style type="text/tailwindcss">
+        @custom-variant dark (&:where(.dark, .dark *));
+
+        @theme {
+            /* Phaze accent palette — replaces default blue */
+            --color-blue-50: #e6f7fb;
+            --color-blue-100: #b3e8f3;
+            --color-blue-200: #80d9eb;
+            --color-blue-300: #4dcae3;
+            --color-blue-400: #1abbdb;
+            --color-blue-500: #00b0d8;
+            --color-blue-600: #00b0d8;
+            --color-blue-700: #008caf;
+            --color-blue-800: #006882;
+            --color-blue-900: #004455;
+            --color-blue-950: #002233;
+
+            /* Phaze dark background shades */
+            --color-phaze-bg: #0a0c12;
+            --color-phaze-panel: #10141c;
+            --color-phaze-border: #232832;
+        }
+    </style>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-jura { font-family: 'Jura', sans-serif; }
+        .htmx-indicator { opacity: 0; transition: opacity 200ms; }
+        .htmx-request .htmx-indicator { opacity: 1; }
+    </style>
+</head>
+<body class="bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-200 h-screen overflow-hidden flex flex-col transition-colors duration-200">
+
+    <!-- Skip link → the stable swap target (Focus/ARIA baseline) -->
+    <a href="#stage-workspace" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to workspace</a>
+
+    <!-- Header (h-14): wave logo · ⌘K affordance · D-05 agent status strip · theme toggle. -->
+    {% include "shell/partials/header.html" %}
+
+    <!-- Three-column body row. Each column scrolls independently. -->
+    <div class="flex flex-1 min-h-0">
+        <!-- DAG rail (w-[280px]): the nav spine + live counts (SHELL-02). -->
+        {% include "shell/partials/rail.html" %}
+
+        <!-- Center workspace — the single stable swap target every rail node innerHTML-swaps. -->
+        <main class="flex-1 min-w-0 bg-white dark:bg-phaze-bg">
+            <div id="stage-workspace" data-stage="{{ stage }}" class="h-full overflow-y-auto">{% include stage_partial %}</div>
+        </main>
+
+        <!-- Right detail pane (w-[350px]). Phase 57 placeholder; bridged content is a later phase. -->
+        <aside class="w-[350px] shrink-0 overflow-y-auto border-l border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel" aria-label="Detail pane"></aside>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toast-container" aria-live="polite" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+
+    <!-- ⌘K skeleton command palette (D-04). Its x-init also reads the `palette` query param
+         (the /search → /?palette=1 rename target, Plan 04) to auto-open on load (A3). -->
+    {% include "shell/partials/cmdk_modal.html" %}
+
+    <!-- History restore + focus-to-heading re-init (Phase 57 Focus/ARIA baseline).
+         htmx snapshots #stage-workspace innerHTML into its history cache and restores it on
+         back/forward, firing htmx:historyRestore (htmx 2.0.10). Alpine does NOT auto-init
+         restored DOM, so re-bind the swapped subtree and re-mark the active rail node. After
+         a rail swap (htmx:afterSwap) and on restore, move focus to the stage <h1> so
+         keyboard/SR users land in the new content. syncRailSelection is completed in Plan 03. -->
+    <script>
+        function syncRailSelection(path) {
+            // Re-apply aria-current="page" to the rail node matching `path`; the active
+            // visual (blue tint + inset bar) follows from that attribute via the rail's
+            // aria-[current=page] variant. Map: "/" → analyze (the default node); "/s/<id>"
+            // → <id>. data-rail-stage is the rail-node hook (distinct from #stage-workspace's
+            // own data-stage marker, so the workspace div is never mis-selected).
+            var stage = null;
+            if (path === '/' || path === '') {
+                stage = 'analyze';
+            } else {
+                var m = path.match(/^\/s\/([^/?#]+)/);
+                if (m) stage = m[1];
+            }
+            document.querySelectorAll('[data-rail-stage]').forEach(function (node) {
+                if (node.getAttribute('data-rail-stage') === stage) {
+                    node.setAttribute('aria-current', 'page');
+                } else {
+                    node.removeAttribute('aria-current');
+                }
+            });
+        }
+        function _focusStageHeading() {
+            const ws = document.getElementById('stage-workspace');
+            if (!ws) return;
+            const heading = ws.querySelector('h1');
+            if (heading) {
+                if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+                heading.focus();
+            }
+        }
+        document.body.addEventListener('htmx:historyRestore', function () {
+            const ws = document.getElementById('stage-workspace');
+            if (ws && window.Alpine) Alpine.initTree(ws);
+            syncRailSelection(location.pathname);
+            _focusStageHeading();
+        });
+        document.body.addEventListener('htmx:afterSwap', function (event) {
+            // htmx:afterSwap exposes the request target as event.detail.target (htmx 2.0.10);
+            // fall back to event.target for the element the bubbling event fired on.
+            const tgt = (event.detail && event.detail.target) || event.target;
+            if (tgt && tgt.id === 'stage-workspace') {
+                // A rail swap only replaces #stage-workspace; the rail itself is not
+                // re-rendered, so re-sync the active node from the just-pushed URL
+                // (hx-push-url has updated location.pathname by afterSwap).
+                syncRailSelection(location.pathname);
+                _focusStageHeading();
+            }
+        });
+    </script>
+
+</body>
+</html>

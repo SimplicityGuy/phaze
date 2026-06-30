@@ -1,341 +1,276 @@
-# Architecture Research
+# Architecture Research — v7.0 UI Redesign (DAG-Centric Hybrid Console)
 
-**Domain:** Integrating a Kueue/K8s burst-analysis target into phaze's existing control-plane → cloud-window → result-reconciliation design (v6.0)
-**Researched:** 2026-06-26
-**Confidence:** HIGH (every integration seam read directly from `src/phaze`: `enqueue_router.py`, `scheduling_ledger.py`, `release_awaiting_cloud.py` (`stage_cloud_window`), `routers/pipeline.py` (duration router), `routers/agent_analysis.py` + `routers/agent_push.py` (callbacks), `tasks/reenqueue.py` (recovery), `models/file.py` (state machine), `config.py` (settings + `_FILE`))
+**Domain:** Server-rendered admin UI rewrite (FastAPI + Jinja2 + HTMX + Tailwind + Alpine) over an existing two-host distributed backend
+**Researched:** 2026-06-29
+**Confidence:** HIGH (every integration point below is grounded in a real file under `src/phaze/`; one capability gap flagged at MEDIUM)
 
-> Scope: this file answers ONLY "how do the v6.0 K8s features bolt onto what already
-> exists." The Kueue Job→Workload lifecycle (FEATURES.md) and the kr8s/aioboto3/presigned-URL
-> stack (STACK.md) are treated as settled inputs and not re-derived here. The thesis: **v6.0 is
-> a third branch at exactly ONE existing seam (the `stage_cloud_window` staging step), reusing
-> the AWAITING_CLOUD→window→out-of-band-callback spine wholesale.** The execution unit changes
-> from "persistent compute agent draining a SAQ queue" to "ephemeral Kueue Job," but the
-> control-plane choreography is the same shape as v5.0's rsync push pipeline.
+> **Scope discipline.** v7.0 is an **IA + presentation rewrite**. The non-negotiable constraint (PROJECT.md, REQUIREMENTS.md "Out of Scope") is **no backend behavior change**: routers' data logic and all `services/` stay unchanged. This document is therefore an *integration* architecture — it maps new templates/routes onto the existing router/service surface and is explicit about **new vs. modified vs. unchanged** at every step.
 
 ---
 
-## The v5.0 spine v6.0 must reuse (verified in code)
-
-This is the existing cloud-burst data flow, traced through the real modules. v6.0 mirrors it.
+## 1. The integration model in one picture
 
 ```
- routers/pipeline.py :: _route_discovered_by_duration   (the duration ROUTING SEAM)
-   long file (duration >= cloud_route_threshold_sec, cloud_burst_enabled)
-        │  set FileState.AWAITING_CLOUD  (HELD; enqueues nothing — committed)
+┌────────────────────────────────────────────────────────────────────────┐
+│ NEW: shell.html  (replaces base.html's nav row; keeps base.html's        │
+│      <head>: theme store, fonts, HTMX/Alpine, phaze-bg tokens)           │
+│  ┌──────────┬─────────────────────────────────┬──────────────────────┐  │
+│  │ DAG RAIL │ CENTER WORKSPACE (#workspace)    │ FILE PANE (#file-pane)│  │
+│  │ (#rail)  │  ← HTMX-swapped per stage        │  ← HTMX-swapped on row │  │
+│  │ live     │                                  │     select             │  │
+│  │ counts   │  renders a per-stage FRAGMENT    │                       │  │
+│  └────┬─────┴──────────────┬──────────────────┴───────────┬───────────┘  │
+└───────┼────────────────────┼──────────────────────────────┼──────────────┘
+        │ hx-get             │ hx-get (HX-Request branch)     │ hx-get
+        ▼                    ▼                                ▼
+  NEW shell router      EXISTING routers (UNCHANGED logic)   NEW record router
+  GET /                 pipeline · proposals · tracklists ·  GET /record/{id}
+  GET /shell/{stage}    tags · cue · duplicates · execution
+  GET /pipeline/stats ──┘ (reused 5s poll, UNCHANGED)
+        │
         ▼
- tasks/release_awaiting_cloud.py :: stage_cloud_window   (controller cron */5, THE single staging entry)
-   advisory-xact-lock → window = COUNT(PUSHING+PUSHED) → slots = cloud_max_in_flight - window
-   GATE 1 compute agent online?  GATE 2 fileserver agent online?
-   per slot:  AWAITING_CLOUD → PUSHING ; enqueue push_file on the FILESERVER per-agent queue
-        ▼
- tasks/push.py :: push_file   (FILESERVER agent — owns the media mount)
-   rsync-over-SSH/Tailscale to compute scratch ; sha256-verify ; POST .../push/{file_id}/pushed
-        ▼
- routers/agent_push.py :: report_pushed   (control callback)
-   guarded PUSHING → PUSHED ; clear_ledger_entry("push_file:<id>") ; enqueue process_file on COMPUTE queue
-        ▼
- tasks (compute agent) :: process_file   (essentia analysis on the persistent A1 host)
-   PUT .../analysis/{file_id}
-        ▼
- routers/agent_analysis.py :: put_analysis   (control callback — THE result channel)
-   idempotent ON CONFLICT(file_id) upsert ; FileRecord → ANALYZED ; clear_ledger_entry("process_file:<id>")
+  services/ (pipeline_counters, search_queries, analysis, …) — UNCHANGED
 ```
 
-Load-bearing properties v6.0 inherits unchanged:
-
-- **The duration router is target-agnostic.** `_route_discovered_by_duration` only decides "long → AWAITING_CLOUD vs short → local fileserver." It names no cloud target. v6.0 touches it **zero**.
-- **`stage_cloud_window` is the single, unbypassable entry to any cloud pipeline** and the only place that introduces new in-flight work, bounded by `cloud_max_in_flight` via the `PUSHING+PUSHED` window count under a pg advisory lock.
-- **The result arrives out-of-band** at `put_analysis` (reconciled by `file_id`, idempotent). The lifecycle signal (rsync done / Job finished) is decoupled from the result. A dropped signal never loses a result.
-- **`PUSHED` is "push-done" to recovery.** `tasks/reenqueue.py::_select_done_push_ids` treats `PUSHED/ANALYZED/ANALYSIS_FAILED` as done — so a file parked in `PUSHED` is NOT re-driven by `recover_orphaned_work`.
+**Core mechanism (already proven in this codebase):** an endpoint inspects `request.headers.get("HX-Request") == "true"` and returns a **fragment** for HTMX swaps, or a **full page** otherwise. Eight existing routers already do exactly this (`search.py:74`, `proposals.py:157`, `tracklists.py:152`, `tags.py:201`, `cue.py:228`, `duplicates.py:105`, `execution.py:372`, `admin_agents.py` helper). v7.0 **standardizes on the same pattern** and wraps it in a shell.
 
 ---
 
-## Q1 — Where the submit→watch loop lives
+## 2. Component responsibilities
 
-### Do NOT pin a worker on `job.wait()`
-
-The submit→watch must NOT be one SAQ task that blocks on `await job.wait(timeout=hours)`. That recreates the exact failure class v4.0.10/Phase 43 fixed (a worker slot held for a multi-hour essentia run). It is also unnecessary: **the result does not come from the watch** — it comes out-of-band at `put_analysis`. The Kueue watch is purely lifecycle (admission visibility + cleanup + eviction detection).
-
-### Recommended split: a fast submit task + a periodic reconcile cron
-
-Mirror v5.0's `report_pushed → process_file` handoff, but both halves run control-side:
-
-| Piece | Where | What it does | Returns |
-|-------|-------|--------------|---------|
-| `submit_k8s_job` | NEW controller task on the **`controller`** queue | presign GET (aioboto3) → build & submit the **suspended** labeled Job (kr8s) → record `job_name/uid` + S3 key on the FileRecord → flip `PUSHING → PUSHED` | fast (seconds), never waits for analysis |
-| `reconcile_k8s_jobs` | NEW controller **cron** (`*/2 * * * *`) | for every K8s-in-flight file (`PUSHED` + has job ref), read Job/Workload status via kr8s; on terminal/finished → delete Job + delete S3 object; on evicted/timed-out → re-route; on pending/running → leave | idempotent sweep |
-
-This is the watch-as-fast-path-but-poll-as-safety-net pattern FEATURES.md mandates, realized with the existing cron machinery. `submit_k8s_job` returns in seconds; the hours of analysis happen in the cluster pod; the cron re-reads status on a cheap schedule. No worker is ever pinned.
-
-### Coexistence with `stage_cloud_window` and the ledger
-
-- **`stage_cloud_window` stays the single staging entry — it just branches by target.** Today it always enqueues `push_file`. v6.0 adds: *if* `cloud_target == "k8s"`, enqueue **`upload_file_s3`** on the fileserver queue instead (the S3 analogue of `push_file`; see Q3). The window math (`COUNT(PUSHING+PUSHED)`, `cloud_max_in_flight`, advisory lock, FIFO `SKIP LOCKED`) is **reused verbatim** — it is target-agnostic backpressure.
-- **GATE 1 changes meaning per target.** For A1, GATE 1 is "a compute agent is online" (`select_active_agent(kind="compute")`). For K8s there is no persistent compute agent, so GATE 1 becomes "K8s target is configured/reachable" (LocalQueue name set, kube endpoint present). GATE 2 (fileserver agent online — the byte mover) is unchanged: the fileserver still owns the media and performs the upload.
-- **Reuse the scheduling ledger by STATE, not by a synthetic SAQ row.** The Phase-45 ledger exists so backfill/recovery only re-drive *previously-scheduled* work. K8s gets that property **for free** because a K8s-in-flight file sits in `PUSHED`, which the backfill predicates (`ANALYSIS_FAILED`, `AWAITING_CLOUD`) already exclude and which `recover_orphaned_work` already treats as push-done. **Do not seed a `process_file:<id>` ledger row for a K8s file** — there is no SAQ `process_file` job, and a seeded row would make `recover_orphaned_work` wrongly re-enqueue `process_file` onto an agent queue when it finds no live SAQ job. The K8s re-drive owner is `reconcile_k8s_jobs`, keyed on FileRecord state. `put_analysis`'s existing `clear_ledger_entry("process_file:<id>")` is then a harmless no-op for K8s files (DELETE matches nothing) — **`put_analysis` needs no change.**
-- **Ledger DOES cover the upload leg.** `upload_file_s3` is an agent task, so add it to `AGENT_TASKS`; its `before_enqueue` hook seeds `upload_file_s3:<id>` (parallel to `push_file:<id>`), and its `uploaded` callback clears it — giving the upload step the same recover-only semantics rsync push has today.
-
-> Net: only previously-scheduled long files reach K8s, because the only path in is `AWAITING_CLOUD → stage_cloud_window`, which is fed only by the duration router + the ledger-scoped backfill — both untouched.
+| Component | New / Modified / Unchanged | Responsibility | Backed by |
+|-----------|---------------------------|----------------|-----------|
+| `shell.html` | **NEW** (replaces `base.html` nav block) | Three-column flex shell: header (logo · ⌘K trigger · agent status dots · Agents link), `#rail`, `#workspace`, `#file-pane`, footer breadcrumb | reuses `base.html` `<head>` verbatim |
+| DAG rail (`shell/_rail.html`) | **NEW** | Nav spine + live per-stage counts/dots; each node is an `hx-get` into `#workspace` | counts from existing `get_pipeline_stats` / `_build_dag_context` |
+| Stage workspace fragments | **NEW templates** | One fragment per rail node (Discover/Metadata/Fingerprint/Analyze/Track-ID/Tracklist/Propose/Rename/Tag/Move/Dedupe/Cue) | render over **existing** router data |
+| File pane (`shell/_file_pane.html`) | **NEW** | Right-column summary for the selected file (windowed sparkline + journey + "open full record") | `AnalysisWindow`, `FileRecord` |
+| Full record (`record/detail.html`) | **NEW** | Slide-in over the shell: identity · metadata diff · multi-lane windowed timeline · this file's pending approvals · history | assembled from existing endpoints (§7) |
+| ⌘K palette (`shell/_command_palette.html`) | **NEW** | Search input + quick commands; results from the existing search service | `services/search_queries.search` |
+| Shell router (`routers/shell.py`) | **NEW thin router** | `GET /` (Analyze default) and stage-state assembly; the only genuinely new server route file | calls existing services read-only |
+| Existing UI routers | **UNCHANGED logic; ADD an `HX-Request` fragment branch where missing** | Serve the same data; return a shell-shaped fragment for HTMX | themselves |
+| `services/*` | **UNCHANGED** | All query/business logic | themselves |
+| `base.html` `<head>` | **UNCHANGED** (theme store, fonts, HTMX/Alpine/SSE scripts, `phaze-bg`/`phaze-panel` tokens, Jura/Inter) | SHELL-04 brand/theme preservation comes free by reusing it | itself |
 
 ---
 
-## Q2 — Slotting the active-target selector into the routing seam
+## 3. Template decomposition (avoid duplication; one fragment per stage)
 
-### One new setting, consulted at exactly one place
+The existing tree already uses the **page + `partials/` fragment** convention per feature (e.g. `proposals/list.html` extends `base.html`; `proposals/partials/proposal_content.html` is the HTMX swap body). v7.0 keeps this idea but introduces a **shell layer above it**.
 
-Add `cloud_target` to `ControlSettings`. The cleanest model keeps the existing master toggle as-is and adds a target enum consulted only when bursting:
+Proposed `templates/` additions (NEW), existing dirs UNCHANGED until cutover:
+
+```
+templates/
+├── base.html                 # UNCHANGED <head>; nav block retired in Phase 62
+├── shell.html                # NEW — defines #rail / #workspace / #file-pane (reuses base.html <head>)
+├── shell/
+│   ├── _rail.html            # NEW — rail nodes + live counts (reuses dag context keys)
+│   ├── _header.html          # NEW — logo · ⌘K trigger · status dots · Agents link
+│   ├── _command_palette.html # NEW — ⌘K overlay (Alpine open/close + hx-get results)
+│   ├── _file_pane.html       # NEW — right column
+│   └── workspaces/
+│       ├── discover.html     # NEW fragment — reuses pipeline scan/recent-scans data
+│       ├── metadata.html     # NEW fragment — reuses /pipeline/extract-metadata trigger
+│       ├── fingerprint.html  # NEW fragment — reuses /pipeline/fingerprint trigger
+│       ├── analyze.html      # NEW fragment — 3 lane cards + in-flight queue
+│       ├── trackid.html      # NEW fragment — SEE GAP §10 (IDENT-01)
+│       ├── tracklist.html    # NEW fragment — Search→Scrape→Match 3-step
+│       ├── propose.html      # NEW fragment — reuses proposals list data
+│       └── review/{rename,tag,move,dedupe,cue}.html  # NEW fragments — reuse existing diff/approve partials
+└── record/detail.html        # NEW — full-record slide-in
+```
+
+**Full-page vs. fragment from the same endpoint (the standardized pattern):**
 
 ```python
-# ControlSettings (config.py) — NEW
-cloud_target: Literal["a1", "k8s"] = Field(default="a1",
-    validation_alias=AliasChoices("PHAZE_CLOUD_TARGET", "cloud_target"),
-    description="Active cloud burst target when cloud_burst_enabled. 'a1' = v5.0 rsync→compute agent; 'k8s' = Kueue Job. 'local' of the three-way == cloud_burst_enabled=False.")
+# Pattern already used in search.py:74, proposals.py:157, tags.py:201, etc.
+context = {...}  # UNCHANGED data assembly
+if request.headers.get("HX-Request") == "true":
+    return templates.TemplateResponse(request=request, name="shell/workspaces/<stage>.html", context=context)
+return templates.TemplateResponse(request=request, name="shell.html", context={**context, "active_stage": "<stage>"})
 ```
 
-The milestone's "local / A1 / K8s" three-way maps to: `cloud_burst_enabled=False` ⇒ local (no bursting, the existing dormant path); `cloud_burst_enabled=True` + `cloud_target` ⇒ A1 or K8s. (A redundant `cloud_target="local"` member is avoidable; if the roadmap prefers a literal three-way enum, make it `Literal["local","a1","k8s"]` and treat `local` identically to the toggle being off.)
+- **Direct visit / bookmark** (no `HX-Request`) → full `shell.html` with the rail rendered and the requested workspace inlined into `#workspace` (a `{% include %}` of the same fragment). This is what makes SHELL-05 bookmarks work without a client round-trip.
+- **Rail click** (`HX-Request: true`) → fragment only, swapped into `#workspace`; the rail's active-state + live counts updated via **out-of-band swap** (§6).
 
-**The selector is read in ONE branch — inside `stage_cloud_window`** — choosing which staging task to enqueue (`push_file` vs `upload_file_s3 → submit_k8s_job`). The duration router (`_route_discovered_by_duration`), the AWAITING_CLOUD hold, the window count, and the backfill are **all untouched**. This is what "doesn't re-architect v5.0's routing seam" means concretely: the seam splits one level *below* where the long/short decision is made.
-
-### FileRecord states: REUSE `PUSHING`/`PUSHED`, do not add `SUBMITTED_K8S`
-
-Reuse the existing pair as **generic "staged-or-in-flight" window states**, reinterpreted per target:
-
-| State | A1 meaning (v5.0) | K8s meaning (v6.0) |
-|-------|-------------------|--------------------|
-| `AWAITING_CLOUD` | held, awaiting a slot | held, awaiting a slot (identical) |
-| `PUSHING` | rsync in progress to compute scratch | uploading bytes to S3 **and** submitting the Job |
-| `PUSHED` | landed on compute scratch, within analysis | Job submitted (queued/admitted/running) — within analysis |
-| `ANALYZED` | result POSTed | result POSTed (identical) |
-
-Why reuse rather than add `SUBMITTED_K8S`:
-
-- `get_cloud_window_count` = `COUNT(PUSHING+PUSHED)`, `cloud_max_in_flight`, the staging candidate query, the D-09 dashboard cards, and `recover_orphaned_work`'s push-done set **all key on this exact pair**. Reuse means every one of those keeps working with zero edits. A new state would require touching all of them.
-- The state column is `String(30)`, so adding a state is "code-only, no migration" — but the *cost* is the downstream fan-out, not the migration. Reuse avoids the fan-out.
-
-**Kueue admission phase (Pending-behind-quota vs Admitted vs Running) is observability, not a core state.** Surface it as a nullable `cloud_phase` string the reconcile cron writes from the Workload `status.conditions` (`QuotaReserved`/`Admitted`/`Finished`), feeding the P2 dashboard cards. It rides alongside `PUSHED`; it does not fork the state machine. This keeps the MVP state-machine delta at **zero new states** while still letting the UI say "5 long files queued behind cluster quota."
-
-### Schema delta
-
-One Alembic migration adding K8s bookkeeping. Two viable shapes:
-
-- **Columns on `files`** (simplest): `cloud_job_name`, `cloud_job_uid`, `cloud_object_key`, `cloud_phase`, `cloud_submitted_at`. Nullable; only K8s-in-flight rows populate them.
-- **Sidecar `cloud_job` table** (cleaner separation, FK to `files.id`): preferable if you want the `files` table to stay lean and to keep a per-attempt history. Given ~200K files and only `≤cloud_max_in_flight` ever in flight, either is cheap; **recommend the sidecar** to avoid widening the hot `files` row and to mirror the existing audit/sidecar style (TagWriteLog, ExecutionLog).
+**Anti-duplication rule:** the workspace fragment is the single source for a stage's body and is `{% include %}`-d by the full-page branch — never copy-pasted. This mirrors how `dashboard.html` already `{% include %}`s `stats_bar.html` and the cards.
 
 ---
 
-## Q3 — Object-storage staging flow
+## 4. HTMX fragment routing — map onto REAL existing routers
 
-### CRITICAL integration constraint: the control plane cannot read media bytes (DIST-01)
+**Decision: reuse existing tab endpoints with an added/expanded `HX-Request` fragment branch; add ONE new thin router (`shell.py`) for `/`, the stage shell, and cross-cutting reads.** Do **not** duplicate query logic into new endpoints — that would risk drifting backend behavior.
 
-`docker-compose.yml` mounts no media on the application server — "the app-server has no way to read or write music/video file content (DIST-01)," CI-enforced. **Therefore the control plane physically cannot upload the file bytes to S3.** STACK.md's "aioboto3 on the control plane" is correct *for the S3 client/credentials/presigning/delete*, but the **byte transfer must originate on the file-server agent**, exactly as the v5.0 rsync push did. Resolve the apparent conflict this way (and lock it as a decision):
+| Rail stage | Workspace data source (EXISTING router:endpoint) | Trigger/action endpoints (EXISTING, UNCHANGED) | Router file |
+|------------|--------------------------------------------------|------------------------------------------------|-------------|
+| Discover | `pipeline.py:434 GET /pipeline/` context (`recent_scans`, backlog) | `pipeline_scans.py POST /pipeline/scans`; `pipeline.py:1280 /pipeline/recover` | `pipeline.py`, `pipeline_scans.py` |
+| Metadata | new fragment over `get_pipeline_stats` | `pipeline.py:937 POST /pipeline/extract-metadata` | `pipeline.py` |
+| Fingerprint | new fragment over stats + `fingerprint` model | `pipeline.py:1023 POST /pipeline/fingerprint`, `:1015 GET /api/v1/fingerprint/progress` | `pipeline.py` |
+| Analyze | `pipeline.py` dashboard cloud-lane context (`pushing_count`, `analyzing_cloud_count`, `inadmissible_count`, `cloud_phase_counts`, lane cards) | `pipeline.py:625 POST /pipeline/analyze`, `:692 /pipeline/backfill-cloud`, `:800 /pipeline/files/{id}/deepen`; pause/priority via `pipeline_stages.py` | `pipeline.py`, `pipeline_stages.py` |
+| Track-ID | **GAP — no backend (§10)** | — | — |
+| Tracklist | `tracklists.py:78 GET /tracklists/` + `:158 /scan` + `:274 /scan/status` | `pipeline.py:1074 /search-tracklists`, `:1202 /scrape-tracklists`, `:1233 /match-tracklists`; `tracklists.py` approve/reject/link | `tracklists.py`, `pipeline.py` |
+| Propose | `proposals.py:140 GET /proposals/` (already returns `proposal_content.html` on `HX-Request`) | `pipeline.py:857 /pipeline/proposals`; `proposals.py` approve/undo | `proposals.py`, `pipeline.py` |
+| Review·Rename/Path | `proposals.py` (diff rows) + `preview.py /preview/` (tree) | `proposals.py PATCH /{id}/approve`; `execution.py:83 /execution/start` | `proposals.py`, `execution.py`, `preview.py` |
+| Review·Tag write | `tags.py:140 GET /tags/` (HX branch at `:201`) | `tags.py:304 POST /{file_id}/write`, `:236 edit/{field}` | `tags.py` |
+| Review·Move files | `execution.py` dispatch + `:269 progress/{batch_id}` | `execution.py:83 /execution/start` | `execution.py` |
+| Review·Dedupe | `duplicates.py:79 GET /duplicates/` (HX branch at `:105`) | `:139 /{group}/resolve`, `:194 /resolve-all`, `:164/:228 undo` | `duplicates.py` |
+| Review·Cue | `cue.py:176 GET /cue/` (HX branch at `:228`) | `:234 /{tracklist_id}/generate`, `:323 /generate-batch` | `cue.py` |
+| Audit log | `execution.py:350 GET /audit/` | — (read-only + undo) | `execution.py` |
+| Agents | `admin_agents.py GET /admin/agents` + `/_table` poll | — | `admin_agents.py` |
 
-| Actor | Holds S3 creds? | Touches bytes? | Mechanism |
-|-------|-----------------|----------------|-----------|
-| **Control plane** | YES (aioboto3, `_FILE` secrets) | NO | `generate_presigned_url("put_object")`, `("get_object")`, `delete_object` |
-| **File-server agent** | NO | YES (owns media mount) | `httpx` **PUT** bytes to the presigned PUT URL — credential-free, mirrors `push_file` |
-| **Job pod** | NO | YES (downloads) | `httpx` **GET** bytes from the presigned GET URL — credential-free (STACK.md) |
+**Naming convention for the new shell entry points (NEW, in `shell.py`):**
+- `GET /` → full shell, `active_stage="analyze"` (SHELL-01).
+- `GET /shell/{stage}` → `HX-Request`→ workspace fragment; direct → full shell with that stage active (used for the `pipeline.py`-owned stages: discover/metadata/fingerprint/analyze).
+- `GET /command?q=…` → ⌘K results fragment (delegates to `search_queries.search`).
+- `GET /record/{file_id}` → full-record slide-in fragment.
 
-This extends STACK.md's "no S3 SDK in the pod" to "no S3 SDK on the agent either" — both move bytes with the `httpx` they already have, against short-lived presigned URLs. aioboto3 lives **only** on the control plane. DIST-01 is preserved (only the agent and the ephemeral pod ever see media bytes; the control plane only ever sees presigned URLs).
-
-### Who uploads, and when
-
-**The file-server agent uploads, at staging time** (when `stage_cloud_window` allocates a slot — "stay one ahead"), **not at route time.** Route time only sets `AWAITING_CLOUD`. This is byte-for-byte the v5.0 timing, with `upload_file_s3` substituted for `push_file`:
-
-```
-stage_cloud_window (k8s target)
-  → AWAITING_CLOUD → PUSHING ; enqueue upload_file_s3 on fileserver queue
-upload_file_s3 (agent)
-  → control issues a presigned PUT URL (new internal endpoint, or carried in the task payload)
-  → httpx PUT bytes ; (optional) re-read + report sha256
-  → POST .../s3/{file_id}/uploaded
-report_s3_uploaded (control callback — the report_pushed analogue)
-  → presign GET ; enqueue submit_k8s_job on the controller queue   (PUSHING stays; flip to PUSHED at submit)
-submit_k8s_job (controller)
-  → submit suspended labeled Job referencing the presigned GET + callback secret ; PUSHING → PUSHED
-```
-
-(If you prefer fewer hops, `upload_file_s3`'s callback can hand straight to submit; keeping a distinct `report_s3_uploaded` callback maximises symmetry with `report_pushed` and keeps presign-GET on the control side where the creds live.)
-
-### How the presigned URL + callback token reach the pod
-
-Via the Job's pod spec, with a deliberate split by secret lifetime:
-
-| Item | Lifetime | Delivery | Why |
-|------|----------|----------|-----|
-| Presigned GET URL | short (minutes–hours) | **Job pod `env`** (or a per-Job Secret) | ephemeral; not a durable secret; fine as env |
-| `file_id`, callback base URL, queue/Workload names | non-secret | Job pod `env`/`args` | plain config |
-| **Compute-agent bearer token** | long-lived | **cluster `Secret` via `secretKeyRef`** (operator pre-creates) | a durable credential — never inline in Job env; reused by every Job |
-
-So `submit_k8s_job` templates a Job whose container env has the presigned GET URL + file_id + callback URL inline, and a `secretKeyRef` to the operator-provisioned compute-agent-token Secret. The pod: `httpx GET` → analyze (existing x86 essentia one-shot) → `httpx PUT /api/internal/agent/analysis/{file_id}` with the bearer token → exit.
-
-### How/when the object is deleted
-
-**After reconcile, by the control plane, belt-and-suspenders with a bucket TTL:**
-
-1. Primary: `reconcile_k8s_jobs`, on seeing the file is `ANALYZED` (result landed) and the Job is `Finished`, calls `delete_object(cloud_object_key)` then deletes the Job. The pod never deletes (it is credential-free and may die).
-2. Backstop: a **bucket lifecycle TTL** (operator-configured, e.g. 24h) expires any object the reconcile loop missed (controller down through the whole window). Documented in the runbook; "ephemeral staging only, never a data home" (PROJECT Out-of-Scope).
-
-**The TTL-vs-read race FEATURES.md flags is benign in phaze's design**, because the *result* never comes from the object or the Job — it comes from `put_analysis`. If the Job (and via `ttlSecondsAfterFinished`, its Workload) is GC'd before the reconcile cron reads it, the cron simply finds `PUSHED + ANALYZED + no Job` and treats that as "done — delete the S3 object, clear the job ref." Correctness is decoupled from GC timing. Set a generous `ttlSecondsAfterFinished` as courtesy, but do not depend on it for the read.
+**Recommended:** point rail nodes for stages that already own a canonical route at that route (`/proposals/`, `/tags/`, `/duplicates/`, `/cue/`, `/tracklists/`, `/audit/`) with `hx-get` + `hx-target="#workspace" hx-push-url="true"`, and use `shell.py GET /shell/{stage}` only for the four `pipeline.py`-owned Enrich/Analyze stages that have no single owning route today. This minimizes new surface and makes SHELL-05 redirects trivial — a bookmarked `/proposals/` simply renders inside the shell.
 
 ---
 
-## Q4 — Job-pod identity, idempotency, orphans, races
+## 5. Redirect strategy (SHELL-05) — bookmarks must survive
 
-### One shared cluster compute-agent identity — NOT per-job tokens
+Eight legacy routes must keep working: `/pipeline`, `/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`, `/search`, `/preview`.
 
-Register **a single `Agent` of `kind="compute"`** representing the whole cluster (mirrors v5.0, where the A1 host is one registered compute agent). Every Job references the same bearer token via the cluster `Secret`. Rationale:
+**Two viable mechanisms — recommend the hybrid:**
 
-- Per-job tokens would mint + insert + later revoke an `Agent` row (and churn the `ix_agents_token_hash_active` partial index) **per file** — heavy and pointless for a single-user tool.
-- Identity is already token-derived on the control side (AUTH-01: `agent_id` from the token hash, never from the body), and the result is reconciled by `file_id`, so a shared identity loses nothing — the Job carries `file_id` in its env/callback path.
-- Revocation stays instant and cluster-wide (revoke the one agent → every in-flight Job's callback 403s).
+| Legacy route | Strategy | Result |
+|--------------|----------|--------|
+| `/pipeline/` | **301/302 → `/`** (Analyze is the new home; SHELL-01 says no `/pipeline` URL) | `RedirectResponse` in `pipeline.py` dashboard, or drop `dashboard()` and let `shell.py GET /` own it |
+| `/proposals/`, `/tags/`, `/cue/`, `/duplicates/`, `/tracklists/` | **Render-in-shell** — keep the route; on a non-`HX-Request` GET, return `shell.html` with that stage active (existing fragment inlined). No redirect needed; the URL *is* the stage state. | Bookmark lands on the shell with the right workspace |
+| `/search/` | **301 → `/`** + auto-open ⌘K (search became the command palette, SHELL-03) | `RedirectResponse("/?cmd=1")`; shell reads `cmd` query and opens the palette |
+| `/preview/` | **Render-in-shell** under the Rename/Move review stage (preview tree is a Move sub-view) | Bookmark lands on Review→Move |
 
-GATE 1 in `stage_cloud_window` for K8s should therefore check "K8s target configured" rather than "a compute agent has heartbeated recently" — the cluster compute agent never heartbeats (it has no long-running worker; the Jobs are ephemeral). The compute `Agent` row exists purely to anchor the token; its liveness columns are not meaningful for K8s. (Worth an explicit note so the v4.0 heartbeat/liveness UI doesn't show the cluster agent as perpetually DEAD — either suppress liveness for a `kind="compute"` cluster identity or document it.)
-
-### Idempotency
-
-| Vector | Guard (mostly already present) |
-|--------|-------------------------------|
-| Duplicate **result POST** (Job backoff retry, or reconcile races a late pod) | `put_analysis` is `ON CONFLICT(file_id)` idempotent — verified. Second POST is a harmless upsert; the WR-02-style guard advances state only from the expected predecessor. |
-| Duplicate **submission** (controller restart mid-stage) | Derive the Job name deterministically from `file_id` (e.g. `phaze-analyze-<short-uuid>`), mirroring the `process_file:<id>` / `push_file:<id>` key pattern. A re-submit hits kube `AlreadyExists` → tolerate as success (don't double-create). |
-| Duplicate **upload** | `upload_file_s3` PUT to the deterministic object key `cloud_object_key=<file_id>.<ext>` is idempotent (overwrite); the `upload_file_s3:<id>` SAQ key dedups the enqueue. |
-| Double **staging tick** | Existing advisory `pg_advisory_xact_lock` + `PUSHING` flip + deterministic SAQ key — reused unchanged. |
-
-### Orphans, timeouts, evictions
-
-The reconcile cron is the safety net; every branch is keyed on durable FileRecord state, never on a live watch:
-
-| Situation | Detection (reconcile cron) | Action |
-|-----------|----------------------------|--------|
-| Job **succeeded**, result landed | `PUSHED` + `ANALYZED` (or Job `Complete`) | delete Job + S3 object; clear job ref (state already ANALYZED) |
-| Job **succeeded** but result POST lost | Job `Complete`/Workload `Finished` but file still `PUSHED` | re-route for another attempt (back to `AWAITING_CLOUD`) or mark `ANALYSIS_FAILED` for ledger-scoped backfill; clean up S3/Job |
-| Job **failed** (`status.failed` past `backoffLimit`) | Job `Failed` / Workload `Finished` non-success | `ANALYSIS_FAILED` (feeds existing backfill) **or** re-route to A1/local per policy; clean up |
-| **Evicted/Deactivated** (preemption, `maximumExecutionTimeSeconds`, PodsReady backoff) | Workload `Evicted`, reason `WorkloadInactive` | back to `AWAITING_CLOUD` (re-stage on a later slot) or fall back — reuses the v5.0 routing seam |
-| **Queued behind quota** (normal) | Workload `QuotaReserved=False, reason=Pending` | **leave** — not a failure; FEATURES.md P1. Only a long staleness ceiling (a control-side `k8s_inflight_timeout_sec`) converts a truly-stuck submission to a re-route |
-| **Stuck `PUSHING`** (controller died mid-submit, no job ref) | `PUSHING` + no `cloud_job_uid` past a short grace | revert to `AWAITING_CLOUD` (frees the slot). `recover_orphaned_work` won't touch it — there is no `push_file` ledger row for K8s — so the cron must own this. |
-| **TTL GC'd the Job before read** | `PUSHED` + `ANALYZED` + Job not found | benign — treat as done, delete S3 object, clear ref (see Q3) |
-
-Misconfiguration surfacing (FEATURES.md): a Job whose `queue-name` points at a missing LocalQueue yields `QuotaReserved=False, reason=Inadmissible`. The reconcile cron should distinguish `Inadmissible` (operator error → surface loudly, do not silently retry forever) from `Pending` (normal quota wait).
+**Why hybrid over pure redirects:** the design's IA *is* "URL = stage state," so the cleanest SHELL-05 implementation is to make the existing feature routes render inside the shell when hit directly (no `HX-Request`), and reserve `RedirectResponse` for true *renames* (`/pipeline`→`/`, `/search`→⌘K). Use a query param for sub-state where a stage has tabs (`/?stage=rename`, `/tracklists/?step=match`). This avoids breaking deep links and needs zero new redirect table. **No `RedirectResponse` exists in the codebase today** (grep confirms) — these are net-new, isolated, side-effect-free additions (allowed: routing, not behavior).
 
 ---
 
-## Q5 — New vs modified components + build order
+## 6. Live data flow + out-of-band rail/header updates
 
-### NEW components
-
-| Component | Kind | Responsibility |
-|-----------|------|----------------|
-| `services/object_staging.py` | control service | aioboto3 wrapper: presign PUT, presign GET, `delete_object`; reads S3 creds/endpoint/bucket from `_FILE` settings. Mockable via `moto`/botocore stubber. |
-| `services/k8s_client.py` | control service | kr8s wrapper: build the suspended labeled Job manifest, `create()`, find Workload by `kueue.x-k8s.io/job-uid`, read Job+Workload status, delete Job. Workload apiVersion as a config constant (`v1beta2`, fallback `v1beta1`). |
-| `tasks/submit_k8s_job.py` | controller task | presign GET → submit Job → record job ref + object key → `PUSHING → PUSHED`. Fast, never waits. |
-| `tasks/reconcile_k8s_jobs.py` | controller cron (`*/2`) | poll K8s-in-flight files; cleanup, re-route, evict/stuck handling, `cloud_phase` updates (Q4 table). |
-| `tasks/upload_file_s3.py` | **agent** task | `httpx` PUT media bytes to presigned PUT URL (the `push_file` analogue); POST `uploaded` callback. Stays Postgres-free (import-boundary test). |
-| `routers/agent_s3.py` | control callback router | `report_s3_uploaded` / `report_s3_mismatch` (the `agent_push.py` analogue) → presign GET → enqueue `submit_k8s_job`. Plus, if presign-on-demand, a small endpoint to mint the PUT URL for the agent task. |
-| Job-runner image | Docker/CI | `Dockerfile.k8sjob` `FROM` the published x86 essentia agent base; entrypoint `phaze/cli/k8s_runner.py` (httpx GET → essentia one-shot → httpx PUT `/analysis/{file_id}` → exit). Zero new pip deps (STACK.md). |
-| Alembic migration | schema | sidecar `cloud_job` table (or nullable `files` columns): `cloud_job_name/uid`, `cloud_object_key`, `cloud_phase`, `cloud_submitted_at`. No state-enum change (String(30)). |
-| Config additions | `config.py` | `cloud_target`; kube endpoint + kubeconfig/SA-token `_FILE`; LocalQueue name; Workload apiVersion; S3 endpoint/bucket/access-key/secret `_FILE`; `k8s_inflight_timeout_sec`. Extend `SECRET_FILE_FIELDS`. |
-
-### MODIFIED components
-
-| Component | Change | Risk |
-|-----------|--------|------|
-| `tasks/release_awaiting_cloud.py` (`stage_cloud_window`) | branch by `cloud_target`: A1 → `push_file` (today); K8s → `upload_file_s3`. GATE 1 becomes "target reachable" for K8s. Window math/lock/FIFO **unchanged**. | LOW — additive branch at the one seam |
-| `services/enqueue_router.py` | add `submit_k8s_job` to `CONTROLLER_TASKS`, `upload_file_s3` to `AGENT_TASKS` (keeps routing + ledger classifier in sync) | LOW — the frozensets are the designed extension point |
-| `tasks/controller.py` | register `submit_k8s_job` + `reconcile_k8s_jobs` in `functions`; add the reconcile `CronJob` | LOW |
-| `tasks/agent_worker.py` | register `upload_file_s3` | LOW |
-| `config.py` | new settings + `_FILE` fields + a "cloud_burst_enabled+k8s requires target config" model-validator (mirrors the existing `_enforce_compute_scratch_dir_when_cloud_enabled`) | LOW |
-| `routers/pipeline.py` + templates | P2: admission-state cards from `cloud_phase` | LOW (deferrable) |
-
-### UNCHANGED (deliberately — the proof the seam is right)
-
-- `routers/pipeline.py::_route_discovered_by_duration` — target-agnostic hold.
-- `routers/agent_analysis.py::put_analysis` — already idempotent; its `process_file:<id>` ledger-clear is a benign no-op for K8s files.
-- `scheduling_ledger.py`, the backfill, `recover_orphaned_work` — K8s integrates by FileRecord **state**, not a synthetic SAQ row (Q1).
-- `cloud_burst_enabled`, `cloud_max_in_flight`, `cloud_route_threshold_sec`, the window count, the advisory lock — all reused.
-
-### Build order (phases from 52, dependency-ordered)
-
+**Reuse the existing 5s poll verbatim.** `dashboard.html:50` already does:
+```html
+<div id="pipeline-stats" hx-get="/pipeline/stats" hx-trigger="every 5s" hx-swap="innerHTML">
 ```
-52  Job-runner image + one-shot entrypoint
-      FROM x86 essentia base; httpx GET → analyze → httpx PUT /analysis/{id} → exit.
-      No cluster needed: test the analyze→POST loop against a respx mock.   (parallels Phase 47)
-        │
-53  Object-storage staging leg
-      services/object_staging.py (aioboto3 presign/delete) + agent upload_file_s3
-      + report_s3_uploaded callback + cloud_object_key.  Test with moto/stubber.
-      No cluster needed.                                                    (depends: nothing cluster-side)
-        │
-54  Kube submit/watch leg
-      services/k8s_client.py (kr8s) + submit_k8s_job + reconcile_k8s_jobs cron
-      + cloud_job sidecar migration + cloud_phase.  Test against a fake API / recorded responses.
-                                                                            (depends: 52 image to run, 53 presigned GET to embed)
-        │
-55  Routing integration (THE seam)
-      cloud_target selector; stage_cloud_window branch; enqueue_router additions;
-      controller/agent_worker registration; config + validators; GATE-1 semantics.
-                                                                            (depends: 53, 54)
-        │
-56  Deploy + runbook + docs (+ P2 dashboard cards)
-      Kueue admin objects (RF/CQ/LQ) as cluster-admin setup; cluster Secret for the
-      compute-agent token; bucket lifecycle TTL; _FILE wiring; master-toggle gating;
-      transport-agnostic endpoint config (Tailscale OR WireGuard).
-                                                                            (depends: all)
-```
+and `pipeline.py:549 /pipeline/stats` returns `stats_bar.html`, which carries a **rich OOB seed block** (`hx-swap-oob="true"` paragraphs that write into the `$store.pipeline` Alpine store — see `stats_bar.html` and the store definition at `base.html:106`). Every count the rail needs (discovered/analyzed/metadata/fingerprint/proposals/approved/executed, per-stage busy, cloud-phase admission, inadmissible, localqueue-unreachable) is **already produced** by `pipeline.py:549` and `_build_dag_context`.
 
-Rationale: 52–54 are each independently buildable and unit-testable **without a live cluster or bucket** (respx / moto / fake kube API), keeping the 85% coverage gate reachable. 55 is the only phase that edits the live v5.0 seam, and it does so additively after both legs exist. 56 is pure ops/docs. This mirrors v5.0's own ordering (image → agent → routing → pipeline → deploy: Phases 47–51).
+**v7.0 reuse plan (no new poll loop, no new query):**
+1. Mount the same `hx-get="/pipeline/stats" hx-trigger="every 5s"` on a hidden node inside `shell.html`.
+2. The rail counts/dots, header status dots, and Analyze lane cards bind to `$store.pipeline.*` (the store already exists and is OOB-fed). The rail is **just a new presentation of the existing store** — no backend change.
+3. **OOB swap alongside a workspace swap:** when a rail click swaps `#workspace`, return the workspace fragment **plus** an `hx-swap-oob="true"` rail-active-state node (and, if desired, a fresh rail-count node) in the same response — exactly the OOB idiom `stats_bar.html` documents. The 5s poll independently keeps counts live via the store; the click only needs to flip the selected node's highlight.
+4. Workspace-internal progress (scan progress `pipeline_scans` poll, fingerprint `/api/v1/fingerprint/progress`, execution `/execution/progress/{batch_id}`, tracklist `/scan/status`) all **already exist** and drop into the workspace fragment unchanged.
+
+**Key reuse target to name for the roadmapper:** `pipeline.py:549 pipeline_stats_partial` + `templates/pipeline/partials/stats_bar.html` + the `$store.pipeline` store at `base.html:106`. The rail is a re-skin of this store; do not invent a parallel counts endpoint.
 
 ---
 
-## Anti-Patterns (phaze-specific, for v6.0)
+## 7. Per-file full record (RECORD-01) — assembled from existing endpoints/services
 
-### Pinning a worker on `await job.wait()` for the analysis duration
-**Wrong:** one SAQ task submits then blocks hours on Job completion. **Why:** recreates the v4.0.10/Phase-43 worker-starvation class; needless since the result is out-of-band. **Instead:** fast `submit_k8s_job` + periodic `reconcile_k8s_jobs` cron.
+The record slide-in is a **new template composing existing data**; every section has a real backend source:
 
-### Uploading media bytes from the control plane
-**Wrong:** `aioboto3.upload_file` on the app server. **Why:** the app server has no media mount (DIST-01, CI-enforced) — it physically can't. **Instead:** control plane presigns (aioboto3); the **file-server agent** PUTs bytes via httpx (credential-free), exactly as it rsync-pushed in v5.0.
+| Record section | Existing source (router / service / model) | New / Unchanged |
+|----------------|---------------------------------------------|-----------------|
+| Identity (name/path/format/size/sha256/lane) | `FileRecord` (`models/file.py`) | UNCHANGED model |
+| Multi-lane **windowed analysis timeline** (BPM/key/energy over windows) | `AnalysisWindow` + `AnalysisResult` (`models/analysis.py`, Phase 31/43); rendered today by `proposals/partials/analysis_timeline.html` (`bpm_points`, `has_windows`, `fine_windows_*`) | UNCHANGED data; REUSE the existing timeline partial |
+| Metadata diff (before→after) | `FileMetadata` (`models/metadata.py`) + `tags.py:207 /{file_id}/compare` (`tag_comparison.html`) | REUSE existing compare fragment |
+| Identity / tracklist match / proposed name | `tracklists.py` link state + `RenameProposal` (`models/proposal.py`) | UNCHANGED |
+| This file's **pending approvals (inline-approvable)** | `proposals.py PATCH /{id}/approve`, `tags.py POST /{file_id}/write` | REUSE existing approve endpoints (the diff/approve partials drop straight in) |
+| History | `ExecutionLog` / audit (`execution.py:350`), `tag_write_log` (`models/tag_write_log.py`) | UNCHANGED |
 
-### Seeding a `process_file:<id>` ledger row for a K8s file
-**Wrong:** mint a ledger row so "recovery knows it's scheduled." **Why:** there is no live SAQ `process_file` job for a K8s file, so `recover_orphaned_work` would re-enqueue it onto an **agent** queue — analyzing a long file locally (the CLOUDROUTE-02 violation v5.0 fought). **Instead:** rely on FileRecord state (`PUSHED`) for recover-scoping; let `reconcile_k8s_jobs` own K8s re-drive.
-
-### Adding `SUBMITTED_K8S` as a core FileState
-**Wrong:** new state for "Job submitted." **Why:** forks the window count, dashboard cards, candidate query, and recover push-done set — every consumer of `PUSHING/PUSHED` needs an edit. **Instead:** reuse `PUSHING/PUSHED` as generic in-flight states; carry Kueue admission phase in a non-state `cloud_phase` field.
-
-### Treating the Kueue watch as the result channel
-**Wrong:** parse the result from Job logs / wait for `Finished` to read output. **Why:** Kueue carries no payload; watches drop; pod GC races the read. **Instead:** pod POSTs to `/api/internal/agent/analysis/{file_id}`; watch is lifecycle/cleanup only.
-
-### Per-job compute-agent tokens
-**Wrong:** mint+revoke an `Agent` row per file. **Why:** churns the agents table + token-hash index for a single-user tool; no security gain (identity is token-derived, result reconciled by file_id). **Instead:** one cluster-wide `kind="compute"` agent token in a k8s Secret.
-
-### phaze creating Kueue admin objects (RF/CQ/LQ)
-**Wrong:** manage ClusterQueue/ResourceFlavor from the app for a "self-contained deploy." **Why:** cluster-scoped, needs elevated RBAC, couples phaze to cluster policy (PROJECT scopes them as runbook setup; FEATURES anti-feature). **Instead:** reference a configured LocalQueue name; admin provisions RF/CQ/LQ.
+**Implication:** RECORD-01 is the lowest-risk requirement — pure composition of partials that already render elsewhere. The "Deepen analysis" action (`pipeline.py:800`) and `sampled_badge` are already wired in `analysis_timeline.html` and carry into the record for free.
 
 ---
 
-## Integration Points
+## 8. ⌘K command palette (RECORD-02)
 
-### External services
+**A search service already exists — reuse it, do not build a new one.** `routers/search.py` delegates to `services/search_queries.search` + `get_summary_counts`, a **three-entity UNION ALL search over file / tracklist / discogs** (PROJECT.md v3.0). It already returns an `HX-Request` fragment (`search/partials/results_content.html`).
 
-| Service | Integration pattern | Notes / gotchas |
-|---------|---------------------|-----------------|
-| Kube API (Kueue cluster) | kr8s (async, httpx) from control plane; kubeconfig/SA token via `_FILE` | submit suspended `batch/v1` Job + `queue-name` label; read Workload dynamically (no bindings). Pin apiVersion constant. Over the operator VPN — wrap in tenacity. |
-| S3-compatible bucket | aioboto3 on control (presign + delete only); httpx PUT/GET for bytes (agent + pod) | `endpoint_url=` for non-AWS. No S3 SDK on agent or pod. Bucket lifecycle TTL as cleanup backstop. |
-| Job pod → control | reuse `/api/internal/agent/analysis/{file_id}` (bearer token, AUTH-01, idempotent) | unchanged; the existing result channel. |
-| Transport (Tailscale/WireGuard) | none — operator-provided reachable endpoints only | no mesh-specific code; just URLs in pydantic-settings. |
+**Palette wiring (NEW template + thin route, UNCHANGED service):**
+- `shell/_command_palette.html`: Alpine `x-data` open/close; `⌘K`/`Ctrl-K` keydown handler (mirror the prototype's `keydown` listener; Escape closes); an input with `hx-get="/command" hx-trigger="keyup changed delay:200ms" hx-target="#cmd-results"`.
+- `GET /command` (NEW, in `shell.py`): calls `search_queries.search(q)` and renders a palette-shaped fragment (files/tracklists/artists sections) — thin adapter over the **existing** query, no new SQL.
+- **Quick commands** (scan / jump-to-stage / open Agents) are static client-side entries that dispatch via `hx-get` to the corresponding rail route (`/shell/discover`, `/proposals/`, `/admin/agents`) targeting `#workspace`, or open the scan modal. The prototype's `go(id)` map is the reference; in production each command is an `hx-get` link.
 
-### Internal boundaries
+**Risk:** "artists" as a first-class search facet — verify `search_queries.search` surfaces an artist dimension; if it only does file/tracklist/discogs, "artists" maps to file/tracklist artist fields (no backend change), not a new index.
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| Duration router ↔ staging | FileState `AWAITING_CLOUD` (committed) | unchanged; target-agnostic |
-| `stage_cloud_window` ↔ agent | per-agent SAQ queue (`upload_file_s3`) | the one branched seam; window/lock/FIFO reused |
-| agent ↔ control | `/api/internal/agent/s3/*` callbacks | new, modeled on `agent_push.py` |
-| control ↔ cluster | kr8s submit + `reconcile_k8s_jobs` cron | new; lifecycle only |
-| pod ↔ control | `/api/internal/agent/analysis/*` | reused; the authoritative result |
+---
+
+## 9. Suggested build order (phases 57–62) and integration dependencies
+
+The dependency spine is strict: **the shell must exist before any workspace can be swapped into it, and dead-code removal must be last** (it can only be safe once every legacy route is either rendered-in-shell or redirected).
+
+| Phase | Theme | Builds | Depends on | New / Modified / Unchanged |
+|-------|-------|--------|-----------|----------------------------|
+| **57** | Shell & rail (SHELL-01..05) | `shell.html`, `_rail.html`, `_header.html`, ⌘K *skeleton*, `GET /`, the `HX-Request`/full-page branch convention, **render-in-shell + redirect mapping for all 8 legacy routes**, theme reused from `base.html` `<head>` | nothing (foundation) | NEW shell templates + `shell.py`; ADD redirect/render-in-shell branches to existing routers (routing only); `base.html <head>` UNCHANGED |
+| **58** | Enrich + Analyze (WORK-01..05) | Discover/Metadata/Fingerprint/Analyze fragments; 3 lane cards; reuse the `/pipeline/stats` 5s poll + `$store.pipeline` OOB seeds | 57 (shell + `#workspace`) | NEW fragments over `pipeline.py`/`pipeline_scans.py`/`pipeline_stages.py` data; backend UNCHANGED |
+| **59** | Identify (IDENT-01..02) | Tracklist Search→Scrape→Match 3-step fragment (reuses `tracklists.py` + `pipeline.py` triggers); Track-ID fragment **— resolve §10 GAP first** | 57; shares poll plumbing with 58 | NEW fragments; **IDENT-01 may require a scoped backend addition — flag** |
+| **60** | Review & Apply (REVIEW-01..05) | Unified before→after diff gate for Rename/Tag/Move + Dedupe keeper-select + Cue preview, per-file + bulk-high-conf | 57; reuses 58's file-row→pane plumbing | NEW review fragments wrapping EXISTING `proposals`/`tags`/`execution`/`duplicates`/`cue` approve endpoints; approve logic UNCHANGED |
+| **61** | Full record + ⌘K + Agents (RECORD-01..04) | Record slide-in (§7 composition), full ⌘K over `search_queries`, Agents page incl. ephemeral k8s identity, first-run empty state | 58–60 (record links into their fragments); 57 (⌘K skeleton) | NEW record/palette templates; REUSE `search`, `admin_agents`, `analysis_timeline`; backend UNCHANGED |
+| **62** | Polish & cutover (CUT-01..04) | a11y (keyboard rail/⌘K, focus, skip link, ARIA on DAG), narrow-width rail-collapse, docs/README, **CUT-02 dead-code removal** | **ALL of 57–61** | **DELETE** retired `list.html` page wrappers + `base.html` nav block + any now-unused routes; partials kept if reused as fragments |
+
+**Where CUT-02 (dead-code cutover) safely happens — and why last:** removal is only safe once (a) every legacy bookmark is served by a render-in-shell branch or a `RedirectResponse` (Phase 57), and (b) every workspace/record/palette has replaced its old page (Phases 58–61). At that point the deletable set is: the `*/list.html` / `*/page.html` **full-page wrappers** (`proposals/list.html`, `tags/list.html`, `duplicates/list.html`, `cue/list.html`, `tracklists/list.html`, `search/page.html`, `preview/tree.html`, `pipeline/dashboard.html`) and the **nav block in `base.html`**. **Keep** the reusable `partials/` (proposal rows, tag comparison, diff bodies, `analysis_timeline.html`, `stats_bar.html`) — they become the shell's fragments. A static guard test (the repo already favors AST guards, e.g. the enqueue-router AST test) should assert no `{% extends "base.html" %}` page wrapper and no legacy nav route remain after 62.
+
+---
+
+## 10. Critical gap / risk for the roadmapper
+
+### GAP — IDENT-01 "Track-ID (AcoustID → MusicBrainz)" has no backend (MEDIUM confidence)
+`grep` across `src/phaze/` finds **zero** `acoustid` / `musicbrainz` / recording-match code. The existing "fingerprint" capability is **chromaprint + audfprint + Panako** (per-agent dedup fingerprinting, `models/fingerprint.py`), **not** an AcoustID→MusicBrainz *recording identification* pipeline. The design doc (§6) and prototype show a Track-ID workspace with "AcoustID → MusicBrainz recording match + confidence."
+
+**This collides with the "no backend behavior change" constraint.** Options for Phase 59, in order of scope-safety:
+1. **Re-scope IDENT-01 to existing data** — surface the existing fingerprint/AcoustID-lookup *match state* the fingerprint stage already persists (verify what `models/fingerprint.py` + `routers/agent_fingerprint.py` store) rather than a new MusicBrainz join.
+2. **Defer IDENT-01** to a v7.x backend milestone and ship only the Tracklist half of Identify in v7.0.
+3. **Treat IDENT-01 as a (small, explicit) backend addition** — a deliberate exception to the no-backend rule, planned as such.
+
+**Action:** the roadmapper must resolve this before Phase 59 planning. It is the single requirement whose UI cannot be a pure presentation rewrite over today's services.
+
+### Lesser risks
+- **OOB id collisions.** `stats_bar.html` documents that `hx-swap-oob` ids must be emitted **only** on poll responses (`oob_counts` gate) to avoid duplicate-id DOM at full-page load. The shell must preserve this discipline (rail count seeds and the dashboard seeds must not both render the same id at initial load).
+- **`$store.pipeline` is large and load-bearing.** Every `:disabled` button binding and DAG count reads it (`base.html:106`). The rail should *consume* it, not redefine it; redefining keys risks `undefined` reads before the first poll tick (the store comments warn about this explicitly).
+- **Two-host reality is invisible to the UI but real.** Triggers route through `enqueue_router.resolve_queue_for_task` (per-agent queues); a 0-agent state returns 503/empty-state. Workspace fragments must keep rendering those empty/needs-agent states (the store already carries `agentOnline`).
+
+---
+
+## 11. New vs. Modified vs. Unchanged — explicit summary
+
+**NEW (templates + thin routing only):**
+- `shell.html` + `shell/` template subtree (rail, header, command palette, file pane, all workspace fragments, record detail).
+- `routers/shell.py` — `GET /`, `GET /shell/{stage}` wrappers (for the `pipeline.py`-owned stages), `GET /command`, `GET /record/{file_id}`. All call existing services read-only.
+- `RedirectResponse` for `/pipeline`→`/` and `/search`→`/?cmd=1` (no redirects exist today; net-new, side-effect-free).
+
+**MODIFIED (presentation/routing branch only — NO data-logic change):**
+- Existing UI routers gain (or have expanded) an `HX-Request` fragment branch + a render-in-shell full-page branch. `proposals.py`, `tags.py`, `duplicates.py`, `cue.py`, `tracklists.py`, `search.py`, `execution.py` already have the `HX-Request` half; the change is which template they return and adding the shell wrapper.
+- `base.html`: nav block retired in Phase 62; `<head>` (theme store, fonts, scripts, tokens) **stays**.
+
+**UNCHANGED (hard constraint):**
+- All of `services/` (`pipeline_counters`, `search_queries`, `analysis`, `pipeline`, `collision`, etc.).
+- All models, migrations, the `/api/internal/agent/*` surface, SAQ tasks, `enqueue_router`, the v6.0 local/A1/k8s routing, `pipeline.py:549 /pipeline/stats` data, `_build_dag_context`.
+- The 5s poll contract and the `$store.pipeline` store shape.
+
+---
+
+## 12. Patterns to follow (grounded in this repo)
+
+1. **`HX-Request` full-vs-fragment branch** — `search.py:74`, `proposals.py:157`. Standardize every shell route on it.
+2. **Page `{% include %}`s its own fragment** — `dashboard.html` includes `stats_bar.html` + cards. Never duplicate a fragment's markup into the page branch.
+3. **OOB store-seed on the 5s poll** — `stats_bar.html` + `$store.pipeline`. Reuse for rail/header live counts; gate OOB ids behind a poll-only flag.
+4. **Per-feature `partials/` directory** — keep new fragments under `shell/workspaces/`; keep reusable rows (diff/approve) where they are and `{% include %}` them.
+5. **Service-owns-degrade** — every dashboard count service returns 0/False on DB/Redis error so the poll never 500s (`pipeline.py:480-520` comments). The shell inherits this for free by reusing those services.
+
+## 13. Anti-patterns to avoid
+
+- **Duplicating query logic into new shell endpoints** — would fork backend behavior and violate the no-backend rule. Always delegate to the existing service/router.
+- **A second polling loop** — reuse `/pipeline/stats`; do not add a `/rail/stats`.
+- **Redefining `$store.pipeline` keys** — consume the existing store; new keys risk `undefined`-before-first-poll bugs the store comments warn about.
+- **Hard redirects for stages that have a home route** — render-in-shell instead, so the URL stays the stage state (cleaner SHELL-05, deep-link-safe).
+- **Removing `partials/` during cutover** — only the page *wrappers* and nav are dead; the fragments are the shell's body.
 
 ## Sources
 
-- phaze source (HIGH — read directly): `services/enqueue_router.py`, `services/scheduling_ledger.py`, `services/pipeline.py` (cloud helpers), `tasks/release_awaiting_cloud.py`, `tasks/push.py`, `tasks/reenqueue.py`, `tasks/controller.py`, `routers/pipeline.py` (`_route_discovered_by_duration`), `routers/agent_analysis.py`, `routers/agent_push.py`, `models/file.py` (FileState), `config.py` (ControlSettings/AgentSettings, `_FILE`)
-- `.planning/PROJECT.md` v6.0 milestone, DIST-01 boundary, CPU-only decision, Out-of-Scope reversals (HIGH)
-- `.planning/research/STACK.md` (kr8s/aioboto3/presigned-URL, credential-free pod) and `FEATURES.md` (Kueue Job→Workload lifecycle, admission/eviction signals, TTL-vs-read hazard) — sibling research, treated as settled inputs (HIGH)
-
----
-*Architecture research for: v6.0 Kubernetes Burst Analysis — K8s offload integration with the existing control-plane spine*
-*Researched: 2026-06-26*
+- `src/phaze/routers/search.py:74`, `proposals.py:157`, `tags.py:201`, `duplicates.py:105`, `cue.py:228`, `tracklists.py:152`, `execution.py:372`, `admin_agents.py` — the `HX-Request` full-vs-fragment pattern (HIGH, primary code).
+- `src/phaze/routers/pipeline.py:434,549,625,800,857,937,1023,1074,1202,1233,1280` — dashboard + stage triggers + the reused 5s `/pipeline/stats` poll (HIGH).
+- `src/phaze/templates/base.html:54-138,178-269` — theme store, `$store.pipeline`, nav block to retire, `phaze-bg`/Jura tokens (HIGH).
+- `src/phaze/templates/pipeline/{dashboard.html,partials/stats_bar.html}` — poll trigger + OOB seed idiom (HIGH).
+- `src/phaze/models/analysis.py` (`AnalysisResult`, `AnalysisWindow`) + `templates/proposals/partials/analysis_timeline.html` — windowed timeline backing RECORD-01 (HIGH).
+- `src/phaze/main.py:182-229` — full router registration list; no `/` route today, no `RedirectResponse` anywhere (HIGH).
+- `grep acoustid|musicbrainz src/phaze/` → **no matches** — IDENT-01 backend gap (MEDIUM; absence-of-evidence, verify `pyacoustid` persistence in `fingerprint.py`/`agent_fingerprint.py`).
+- `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` + `…-assets/prototype.html` — locked design spine, rail/⌘K/record structure (HIGH, design authority).
+- `.planning/REQUIREMENTS.md` (SHELL/WORK/IDENT/REVIEW/RECORD/CUT, phase 57–62 traceability) (HIGH).

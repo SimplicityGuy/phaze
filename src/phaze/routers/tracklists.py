@@ -6,7 +6,7 @@ from typing import Any, cast
 import uuid
 
 from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from saq import Status
 from sqlalchemy import delete, func, select
@@ -82,8 +82,13 @@ async def list_tracklists(
     page_size: int = Query(20, ge=10, le=100),
     filter: str = Query("all"),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the tracklists list page or HTMX partial."""
+    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
+    # The in-page HX filter branch below is left intact so the app stays usable (D-01).
+    if request.headers.get("HX-Request") != "true":
+        return RedirectResponse(url="/s/tracklist", status_code=302)
+
     stmt = select(Tracklist)
 
     if filter == "matched":

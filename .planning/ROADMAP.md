@@ -8,7 +8,7 @@
 - ✅ **v4.0 Distributed Agents** — Phases 24-29 (shipped 2026-05-17)
 - ✅ **v5.0 Cloud Burst Analysis** — Phases 47-51 (shipped 2026-06-26)
 - ✅ **v6.0 Kubernetes Burst Analysis** — Phases 52-56 (shipped 2026-06-29)
-- 📋 **v7.0 UI Redesign (DAG-Centric Hybrid Console)** — Phases 57-62 (PLANNED — scoped, activates after v6.0 ships)
+- 🚧 **v7.0 UI Redesign (DAG-Centric Hybrid Console)** — Phases 57-62 (ACTIVE — started 2026-06-29)
 
 ## Phases
 
@@ -29,22 +29,22 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
 
 </details>
 
-### v7.0 UI Redesign — DAG-Centric Hybrid Console (Phases 57-62) — 📋 PLANNED
+### 🚧 v7.0 UI Redesign — DAG-Centric Hybrid Console (Phases 57-62) — ACTIVE
 
-> **Scoped 2026-06-28, activates after v6.0 ships.** Forward-looking roadmap produced via the `/gsd:new-milestone` scope-only path — the active milestone stays v6.0 (STATE.md not switched, v6.0 phase dirs not cleared). Replaces the MVP tab-sprawl UI with a **DAG-centric hybrid console**: the pipeline is the home and the navigation spine (three-column shell — DAG rail · stage workspace · per-file pane), local/A1/k8s are first-class Analyze lanes, and every human approval unifies behind one before→after diff/approve gate. Aesthetic = C3 "Evolved phaze" (keep Jura/blue/wave-logo/dark theme). IA/template rewrite over **existing** routers/services — no backend behavior change; depends on v6.0's local/A1/k8s routing targets. Design: `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype). Requirements: `.planning/REQUIREMENTS-v7.0.md` (25 reqs, 100% mapped). Each phase = own PR.
+> **Activated 2026-06-29** (v6.0 shipped + archived; STATE.md switched to v7.0). Replaces the MVP tab-sprawl UI with a **DAG-centric hybrid console**: the pipeline is the home and the navigation spine (three-column shell — DAG rail · stage workspace · per-file pane), local/A1/k8s are first-class Analyze lanes, and every human approval unifies behind one before→after diff/approve gate. Aesthetic = C3 "Evolved phaze" (keep Jura/blue/wave-logo/dark theme + light toggle). **IA/template rewrite over existing routers/services — no backend behavior change**; depends on and visualizes v6.0's local/A1/k8s routing targets. Stack stays server-rendered (FastAPI + Jinja2 + HTMX + Tailwind + Alpine, no SPA build); v7.0 bumps htmx→2.0.10 / Alpine→3.15.12 / Tailwind→4.3.2 (recompute SRI; stay on htmx 2.0.x — 4.0 is beta) and adds exactly one dep (`@alpinejs/focus@3.15.12`, Phase 61). Build order is **dependency-strict: 57 → 58 → 59 → 60 → 61 → 62** — Phase 57 is the load-bearing foundation and CUT-02 dead-code removal in Phase 62 is necessarily last. Design: `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype). Requirements: `.planning/REQUIREMENTS.md` (25 reqs, 25/25 mapped — no orphans, no duplicates). Each phase = own PR (worktree branch). Full per-phase detail in **Phase Details** below.
 
-- [ ] **Phase 57: Shell & rail** — three-column app shell, header + ⌘K bar, DAG rail as HTMX nav, `/` home (Analyze default), brand/theme preserved, old tab routes redirect into the shell (SHELL-01..05)
-  - Success: `/` renders the new home with no `/pipeline` redirect; rail click swaps the workspace without full-page nav; the legacy tab-bar is gone; dark/light + Jura/wave brand intact; old bookmarks resolve.
-- [ ] **Phase 58: Enrich + Analyze workspaces** — Discover/Metadata/Fingerprint/Analyze stage views; three Analyze lane cards (local/A1/k8s) with capacity + Kueue quota/Inadmissible; live stats-poll (WORK-01..05)
-  - Success: each stage shows its queue + manual trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update without reload.
-- [ ] **Phase 59: Identify workspaces** — Track-ID (AcoustID→MusicBrainz) + Tracklist Search→Scrape→Match inline 3-step (IDENT-01..02)
-  - Success: Track-ID shows match + confidence per file; Tracklist shows the 3-step sub-chain and per-set match progress from one surface.
-- [ ] **Phase 60: Review & Apply** — unified before→after diff + per-file Approve/Edit/Skip + bulk approve-high-conf for Rename/Tag/Move; Dedupe keeper-select; Cue preview; audit + reversible (REVIEW-01..05)
-  - Success: rename/tag/move each show diffs with per-file + bulk-high-conf approve; dedupe groups pick a keeper; cue previews + approves gated on a tracklist; applied changes land in the reversible audit log.
-- [ ] **Phase 61: Full record + ⌘K + Agents** — per-file record (multi-lane timeline, metadata diff, inline approvals, history); ⌘K palette; Agents page with ephemeral k8s identity; empty/scan first-run (RECORD-01..04)
-  - Success: a file opens to a full record; ⌘K searches files/tracklists/artists + commands; Agents shows local/A1 heartbeating and k8s as ephemeral Job-based (never DEAD); empty state guides the first scan.
-- [ ] **Phase 62: Polish & cutover** — a11y parity (keyboard rail + ⌘K, focus, skip-link, DAG ARIA); remove dead old-UI templates/routers; update docs + README; narrow-width rail collapse (CUT-01..04)
-  - Success: keyboard-navigable rail + palette with visible focus; no orphaned old-UI code; docs/README describe the new IA; rail collapses to icons at narrow widths.
+- [ ] **Phase 57: Shell & DAG rail** — three-column app shell, header + ⌘K affordance + status strip, DAG rail as HTMX nav, `/` home (Analyze default), brand/theme preserved, old tab routes redirect/render into the shell (SHELL-01..05)
+  - Success: `/` renders the three-column shell with Analyze selected (no `/pipeline` redirect); a rail click swaps only `#stage-workspace` with no full-page nav; the legacy tab-bar is gone; dark/light + Jura/wave brand intact; all 8 old routes resolve in ≤1 hop.
+- [ ] **Phase 58: Enrich + Analyze workspaces** — Discover/Metadata/Fingerprint/Analyze stage views; three Analyze lane cards (local/A1/k8s) with live capacity + Kueue quota-wait/Inadmissible; single-poll stats fanout (WORK-01..05)
+  - Success: each stage shows its queue + existing trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update with no manual reload and no second poll loop.
+- [ ] **Phase 59: Identify workspaces** — Track-ID surfacing **existing** audfprint+Panako fingerprint match/score + rapidfuzz tracklist confidence (NOT AcoustID/MusicBrainz — that is re-scoped to deferred IDENT-03); Tracklist Search→Scrape→Match inline 3-step (IDENT-01..02)
+  - Success: Track-ID shows each file's existing fingerprint + tracklist match state/confidence; Tracklist shows the visible 3-step sub-chain and per-set match progress from one surface.
+- [ ] **Phase 60: Review & Apply** — unified before→after diff + per-file Approve/Edit/Skip + server-evaluated bulk approve-high-confidence for Rename/Tag/Move; Dedupe keeper-select; Cue preview; audit + reversible (REVIEW-01..05)
+  - Success: rename/tag/move each show diffs with per-file + bulk-high-conf approve (server-side predicate, not a client id-list); dedupe groups pick a keeper; cue previews + approves gated on a matched tracklist; every applied change lands in the reversible audit log.
+- [ ] **Phase 61: Full record + ⌘K + Agents** — per-file record (multi-lane windowed timeline, metadata diff, inline approvals, history); ⌘K palette (`@alpinejs/focus`); Agents page with ephemeral k8s identity; first-run empty state (RECORD-01..04)
+  - Success: a file opens to a full record; ⌘K searches files/tracklists/artists + offers quick commands; Agents shows local/A1 heartbeating and k8s as ephemeral Job-based (never perpetually-DEAD); empty state guides the first scan.
+- [ ] **Phase 62: Polish & cutover** — a11y parity (keyboard rail + ⌘K, focus, skip-link, DAG ARIA); remove dead old-UI templates/routers (dead-template guard green); update docs + README; narrow-width rail collapse (CUT-01..04)
+  - Success: keyboard-navigable rail + palette with visible focus and skip link; no orphaned old-UI code (the Phase 57 dead-template guard is green); docs/README describe the new IA; the rail collapses to icons at narrow widths.
 
 <details>
 <summary>v1.0 MVP (Phases 1-11) -- SHIPPED 2026-03-30</summary>
@@ -182,6 +182,12 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
+| 57. Shell & DAG rail | v7.0 | 4/4 | Complete   | 2026-06-30 |
+| 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
+| 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
+| 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
+| 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
+| 62. Polish & cutover | v7.0 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -665,6 +671,118 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 51-03-PLAN.md — Docs: configuration.md knob table + new cloud-burst.md runbook + deployment.md pointer + README index (CLOUDDEPLOY-02/03/04 docs)
+
+### Phase 57: Shell & DAG rail
+
+**Goal**: Visiting `/` renders the three-column "Hybrid Console" shell with the DAG rail as the navigation spine and **Analyze selected by default**; clicking a rail stage swaps the center workspace via HTMX with no full-page reload; the legacy tab-bar is gone, brand/theme are preserved, and every old per-tab route resolves into the shell. This is the **load-bearing foundation** — it locks the cross-cutting contracts (swap target, OOB fanout, `$store` survival, history, focus/ARIA, theme) that Phases 58-62 all depend on.
+**Depends on**: Nothing (first v7.0 phase; sits on the unchanged v6.0 backend)
+**Requirements**: SHELL-01, SHELL-02, SHELL-03, SHELL-04, SHELL-05
+**Success Criteria** (what must be TRUE):
+
+  1. Visiting `/` renders the three-column shell (DAG rail · `#stage-workspace` · per-file pane) with the Analyze rail node marked `aria-current="page"` — no redirect to `/pipeline`, no landing on a secondary tab.
+  2. Clicking any rail stage swaps **only** `#stage-workspace` via HTMX (fragment response, never `extends base.html`) with `hx-push-url`; the header, rail, and pane survive the swap and `$store.pipeline` state persists across it.
+  3. The legacy top tab-bar is removed; global search is a ⌘K header affordance and compute/agent status shows in a header status strip — both fed by the single `/pipeline/stats` 5s poll fanned out via `hx-swap-oob` behind the `oob_counts` gate (no per-region poll loops).
+  4. The existing auto/dark/light theme toggle and the Jura/blue/wave-logo brand survive verbatim from `base.html`'s `<head>` (no FOUC, `dark:` utilities work, vendored Tailwind, recomputed SRI).
+  5. Each of the 8 legacy routes (`/pipeline`, `/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`, `/search`, `/preview`) resolves in ≤1 hop to a 200 with the matching rail node pre-selected (a redirect-loop test asserts this), and a **seeded dead-template AST guard test is green** (watched green through cutover).
+
+**Notes**: Risk phase — do not under-scope. Lock the single stable `#stage-workspace` swap-target id, the fragment-only stage-response convention, the OOB id registry + `oob_counts` gate, `$store.pipeline` consumption (not redefinition), the `htmx:historyRestore` re-init handler, and the focus-to-heading + skip-link (→ `#stage-workspace`) baseline. Stack: bump htmx→2.0.10 / Alpine→3.15.12 / Tailwind→4.3.2 and recompute every `integrity=` SRI hash (a stale hash silently blocks the script); stay on htmx 2.0.x (4.0 is beta). SHELL-05 is hybrid: canonical-URL routes render-in-shell, true renames (`/pipeline`→`/`, `/search`→⌘K) use `RedirectResponse` on the trailing-slash canonical form (FastAPI `redirect_slashes=True`). No phase research needed — all patterns are in-repo.**Plans**: 4 plans (4 waves)
+**Wave 1**
+
+- [x] 57-01-PLAN.md — Stack bumps (htmx 2.0.10 / Alpine 3.15.12 / Tailwind 4.3.2 + recomputed SRI) + seeded dead-template AST guard (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 57-02-PLAN.md — Shell router (`GET /` + `GET /s/{stage}`) + structural three-column shell + Analyze default + theme/brand preservation + `/pipeline`→`/` (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 57-03-PLAN.md — DAG rail nav spine + header status strip + ⌘K skeleton modal, wired into the shell (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 57-04-PLAN.md — Conditional legacy-route redirects (7 routers) + ≤1-hop redirect-resolution test (wave 4)
+
+**UI hint**: yes
+
+### Phase 58: Enrich + Analyze workspaces
+
+**Goal**: The shell's first real content — Discover, Metadata, Fingerprint, and Analyze stage workspaces over their **existing** endpoints, with the Analyze workspace presenting the three execution lanes (local / A1 / k8s) as first-class live-capacity cards. All live updates ride the one `/pipeline/stats` 5s poll established in Phase 57.
+**Depends on**: Phase 57 (every workspace swaps into the shell and consumes its `$store.pipeline` + OOB fanout)
+**Requirements**: WORK-01, WORK-02, WORK-03, WORK-04, WORK-05
+**Success Criteria** (what must be TRUE):
+
+  1. Selecting Discover shows recent scans plus the count of discovered-but-not-yet-enriched files, with a scan trigger.
+  2. Selecting Metadata or Fingerprint shows that stage's file queue with its existing manual trigger (metadata stays manual per the Phase 35 decision), backed by the existing endpoints.
+  3. The Analyze workspace shows three execution-lane cards — local / A1 / k8s — each with live capacity, and the k8s lane surfaces Kueue **quota-wait vs. Inadmissible** state.
+  4. Each in-flight Analyze file shows which lane (local/A1/k8s) it is running on and its windowed progress.
+  5. Stage workspaces refresh live via the existing stats-poll (no manual reload) — verifiably **one** request per 5s in the network tab, with a `visibilitychange` guard that sheds polling when the tab is backgrounded.
+
+**Notes**: WORK-05 is a discipline, not a feature — reuse the `stats_bar.html` OOB-seed contract for rail counts + header status strip and add **no second poll loop**. Data sources all exist (`pipeline.py`, `pipeline_scans.py`, `pipeline_stages.py`); the local/A1/k8s lane-card partials exist from v6.0. No phase research needed.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 59: Identify workspaces
+
+**Goal**: The Identify stages — a Track-ID workspace surfacing each file's **existing** identity signals, and a Tracklist workspace presenting the Search→Scrape→Match sub-chain inline as a visible 3-step. Presentation-only over existing data; no new identity backend.
+**Depends on**: Phase 58 (reuses the workspace pattern — header + counts + action + table — established there)
+**Requirements**: IDENT-01, IDENT-02
+**Success Criteria** (what must be TRUE):
+
+  1. The Track-ID workspace shows each file's existing identity signals — audfprint + Panako fingerprint match/score and rapidfuzz tracklist-match confidence — surfaced as match state and confidence.
+  2. The Tracklist workspace presents the Search→Scrape→Match sub-chain inline as a visible 3-step with per-set match progress, triggerable from one surface.
+
+**Notes**: **IDENT-01 re-scoped 2026-06-29** — the prototype's "AcoustID→MusicBrainz" label is dropped: `grep -ri 'acoustid|musicbrainz' src/phaze` is empty, so that backend does not exist and building it would violate the no-backend-change boundary. This phase ships the existing fingerprint + tracklist signals **only**; AcoustID/MusicBrainz is deferred to IDENT-03 (future milestone). Option 1 (re-label) is chosen → no phase research needed. (Verify what `models/fingerprint.py` persists at plan time so Track-ID surfaces the real stored fields.)
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 60: Review & Apply
+
+**Goal**: The highest-stakes interaction unified behind one gate — Rename/Path, Tag-write, and Move-files each as a before→after diff with per-file Approve/Edit/Skip and a **server-evaluated** bulk "approve all high-confidence"; Dedupe keeper-select; Cue preview/approve; every applied change audited and reversible. All over the existing approve/undo/execution endpoints — no backend behavior change.
+**Depends on**: Phase 58 (the file-row → pane plumbing used by Review is established there)
+**Requirements**: REVIEW-01, REVIEW-02, REVIEW-03, REVIEW-04, REVIEW-05
+**Success Criteria** (what must be TRUE):
+
+  1. Rename/Path, Tag-write, and Move-files each present pending changes as a before→after diff with per-file Approve / Edit / Skip (one Jinja diff partial over the three existing data sources).
+  2. Each of those queues offers a bulk "approve all high-confidence" action that sends a **server-evaluated predicate** (action + fixed threshold) — the server re-queries pending rows above threshold at submit time, never a client-built `selectedRows` id-list.
+  3. Dedupe presents duplicate groups with keeper-selection (others archived) and a bulk auto-keep-highest-quality action.
+  4. Cue-sheet generation is reviewable with a preview and approve, gated on a matched tracklist.
+  5. Every applied change (rename, tag-write, move, dedupe) writes an `ExecutionLog` audit row and is reversible (assert one audit row per apply).
+
+**Notes**: Most correctness-sensitive phase (irreplaceable archive). REVIEW-02 fixes the live-polling stale-bulk-approval hazard — pick a fixed server-side confidence threshold at plan time (REVIEW-06 defers configurable thresholds; check the `tracklists.py` `reject-low` endpoint as a reference value). The 5s diff-list poll must OOB-update counts **only** — never re-render the operator's in-progress selection subtree. No phase research needed.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 61: Full record + ⌘K + Agents
+
+**Goal**: Additive depth over the now-live shell — a full per-file record slide-in, the ⌘K command palette over the existing search service, an Agents page that models the k8s burst lane as an ephemeral Job-based identity, and a first-run empty state. Composes existing partials; introduces exactly one new CDN dep.
+**Depends on**: Phase 60 (the record slide-in links into workspace fragments — lane badges, pending-approval rows — that Phases 58-60 must have built first)
+**Requirements**: RECORD-01, RECORD-02, RECORD-03, RECORD-04
+**Success Criteria** (what must be TRUE):
+
+  1. Opening a file (from a row or ⌘K) shows a full per-file record: identity, metadata diff, windowed multi-lane analysis timeline, this file's pending approvals (inline-approvable), and history.
+  2. ⌘K opens a command palette searching files / tracklists / artists and offering quick commands (scan, jump to a stage or review queue) — funneled through the existing search service and `enqueue_router` guards.
+  3. The Agents page shows local and A1 as heartbeating agents and the k8s burst lane as an ephemeral, Job-based identity (liveness derived from in-flight Kueue workloads) — never a perpetually-DEAD agent (carries v6.0 KDEPLOY-04 intent into the new UI).
+  4. When no files exist, a first-run empty state guides the operator to point phaze at a directory and shows live scan progress.
+
+**Notes**: Introduce `@alpinejs/focus@3.15.12` here (the one new dep) — load the plugin `<script defer>` before Alpine core, version exactly matching Alpine core; use `x-trap.inert.noscroll` for the ⌘K palette and the slide-in panel focus-trap. The pane/record must ride the existing single poll — add no new loop. Verify the ⌘K "artists" facet maps to existing search fields at plan time (no backend change either way). No phase research needed.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 62: Polish & cutover
+
+**Goal**: Close the milestone — baseline accessibility at parity-or-better, removal of the dead legacy templates/routers now that every stage is superseded, updated docs/README, and a narrow-width rail-collapse. **CUT-02 is necessarily last**: dead-code removal is only safe after every legacy route is render-in-shell-or-redirected and every page is replaced.
+**Depends on**: Phase 61 (every workspace, the record, ⌘K, and Agents must all be live before legacy wrappers can be deleted without breaking SHELL-05 redirects)
+**Requirements**: CUT-01, CUT-02, CUT-03, CUT-04
+**Success Criteria** (what must be TRUE):
+
+  1. The redesigned UI meets baseline accessibility — keyboard navigation for the rail and ⌘K, visible focus states, a skip link, and ARIA on the DAG — at parity with or better than today (full a11y audit sign-off).
+  2. Dead templates, routers, and partials from the old tabbed UI are removed once superseded — the Phase 57 dead-template AST guard goes **green** after removing the legacy page wrappers; surviving `partials/` (now the shell's fragments) are kept.
+  3. User-facing docs and the per-service README are updated to describe the new information architecture.
+  4. The shell degrades reasonably at narrow widths — the rail collapses to icons — for the single-user desktop tool.
+
+**Notes**: CUT-02 deletes the legacy page wrappers (`proposals/list.html`, `tags/list.html`, `duplicates/list.html`, `cue/list.html`, `tracklists/list.html`, `search/page.html`, `preview/tree.html`, `pipeline/dashboard.html`, and the `base.html` nav block) via three-way grep + the dead-template test; **keep all `partials/`** — they became the shell's fragments. No phase research needed.
+**Plans**: TBD
+**UI hint**: yes
 
 ## Backlog (unscheduled — no phase number yet)
 
