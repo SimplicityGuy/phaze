@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
 status: executing
-last_updated: "2026-06-30T19:25:14.119Z"
+last_updated: "2026-06-30T19:46:08.700Z"
 last_activity: 2026-06-30
 progress:
   total_phases: 29
-  completed_phases: 1
-  total_plans: 8
-  completed_plans: 6
-  percent: 3
+  completed_phases: 2
+  total_plans: 12
+  completed_plans: 11
+  percent: 7
 ---
 
 # Project State
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 ## Current Position
 
 Phase: 58 (enrich-analyze-workspaces) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-06-30
 
-Progress: [████████░░] 75%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -97,6 +97,7 @@ Progress: [████████░░] 75%
 - [Phase 38]: 38-02: agent-chip NODE_LAYOUT gutter widened 182->276px (h 154->250) for the control row; overlap guard min_chip_height bumped 150->240; canvas/SVG grown 720->1000; col-0/col-2/col-3 nodes re-balanced to incoming-edge midpoints
 - [Phase ?]: Phase 46-01: agent liveness heartbeat runs as an asyncio background task launched in agent_worker startup (cancelled in shutdown), NOT a SAQ CronJob — a CronJob competed for worker_max_jobs dispatch slots and was starved by multi-hour process_file jobs (busy-agent-DEAD incident); heartbeat_tick kept as a back-compat shim; one-time DELETE of orphaned cron:heartbeat_tick row from saq_jobs documented for redeploy
 - [Phase 58]: 58-01: WORK-05 single-poll wired via htmx 'every 5s [document.visibilityState===visible]' trigger filter + visibilitychange foreground-resume listener (not hx-trigger=none toggle) — avoids htmx reprocess double-timer, keeps one poll element
+- [Phase ?]: 58-03: Metadata/Fingerprint ship ALL-only bulk triggers wired VERBATIM to existing POST /pipeline/extract-metadata + /pipeline/fingerprint (D-01); NO EXTRACT SELECTED / checkboxes / row-selection (D-02); zero backend change
 
 ### Pending Todos
 
@@ -152,6 +153,7 @@ None.
 | Phase 46 P01 | ~20min | 3 tasks | 8 files |
 | Phase 58 P01 | ~11min | 2 tasks | 3 files |
 | Phase 58 P02 | 35m | 3 tasks | 9 files |
+| Phase 58 P03 | 25min | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -181,7 +183,7 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-06-30T19:24:15.814Z
+Last session: 2026-06-30T19:46:04.275Z
 Stopped at: Completed 58-01-PLAN.md
 Resume file: None
 
