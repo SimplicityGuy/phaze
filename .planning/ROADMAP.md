@@ -182,7 +182,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
-| 57. Shell & DAG rail | v7.0 | 1/4 | In Progress|  |
+| 57. Shell & DAG rail | v7.0 | 2/4 | In Progress|  |
 | 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
@@ -692,7 +692,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 57-02-PLAN.md — Shell router (`GET /` + `GET /s/{stage}`) + structural three-column shell + Analyze default + theme/brand preservation + `/pipeline`→`/` (wave 2)
+- [x] 57-02-PLAN.md — Shell router (`GET /` + `GET /s/{stage}`) + structural three-column shell + Analyze default + theme/brand preservation + `/pipeline`→`/` (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
