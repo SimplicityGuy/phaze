@@ -92,6 +92,53 @@
         {% include "pipeline/partials/analyzing_cloud_card.html" %}
     </div>
 
-    {# (c) ANALYZE FILE TABLE INSERTION POINT -- the all-in-stage per-file lane + window table (D-03/D-04)
-       is added here by Plan-04 Task 3. #}
+    {# (c) the all-in-stage per-file lane + window table (D-03/D-04): ONE table covering EVERY
+       Analyze-stage file (queued · running · awaiting-cloud · done), each with a derived lane badge
+       + windowed-progress State cell, rendered through the reusable _file_table.html. Rows are inert
+       (D-06 / R-1): cursor-pointer + a stable id, but NO click binding in Phase 58 (row->record is
+       Phase 61). Reads the Phase-57.1 mid-flight signal (fine_windows_analyzed/total) only. #}
+    <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
+        {% set columns = ["File", "Duration", "Lane", "State"] %}
+        {% set lane_badges = {
+            'local': ('🖥️ local', 'text-emerald-600 dark:text-emerald-300'),
+            'a1': ('☁️ A1', 'text-blue-600 dark:text-blue-300'),
+            'k8s': ('⎈ k8s', 'text-amber-600 dark:text-amber-300'),
+        } %}
+        {% set ns = namespace(rows=[]) %}
+        {% for f in analyze_files %}
+            {% set badge_text, badge_color = lane_badges.get(f.lane, lane_badges['local']) %}
+            {% set duration_cell = ('%d:%02d' % ((f.duration | int) // 60, (f.duration | int) % 60)) if f.duration else '—' %}
+            {% if f.completed %}
+                {# Completed (ANALYZED): full window coverage from the aggregate. #}
+                {% set state_text = ('window %s/%s' % (f.fine_done, f.fine_total)) if f.fine_total else 'complete' %}
+                {% set state_color = 'text-emerald-600 dark:text-emerald-300' %}
+            {% elif f.state == 'awaiting_cloud' %}
+                {% set state_text = 'pending (quota)' %}
+                {% set state_color = 'text-amber-600 dark:text-amber-300' %}
+            {% elif f.state == 'analysis_failed' %}
+                {% set state_text = 'failed' %}
+                {% set state_color = 'text-rose-600 dark:text-rose-400' %}
+            {% elif f.fine_total %}
+                {# In-flight: render the merged 57.1 mid-flight N/M signal ALONGSIDE running (D-04) --
+                   NOT a bare "running" (the superseded pre-57.1 behavior). #}
+                {% set state_text = 'running · %s/%s windows' % (f.fine_done, f.fine_total) %}
+                {% set state_color = 'text-blue-600 dark:text-blue-300' %}
+            {% else %}
+                {% set state_text = 'running' %}
+                {% set state_color = 'text-blue-600 dark:text-blue-300' %}
+            {% endif %}
+            {% set _ = ns.rows.append([
+                {'text': f.filename, 'mono': True, 'title': f.path},
+                {'text': duration_cell, 'mono': True},
+                {'text': badge_text, 'color': badge_color},
+                {'text': state_text, 'color': state_color},
+            ]) %}
+        {% endfor %}
+        {% set rows = ns.rows %}
+        {% set empty_heading = "No files in flight" %}
+        {% set empty_body = "Route files into Analyze from Discover, or check lane capacity above." %}
+        {% set row_id_prefix = "analyze-row" %}
+        {% set table_id = "analyze-file-table" %}
+        {% include "pipeline/partials/_file_table.html" %}
+    </div>
 {% endcall %}

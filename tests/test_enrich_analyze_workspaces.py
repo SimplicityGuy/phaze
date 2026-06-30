@@ -327,7 +327,57 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="lands in Plan 58-04 (task 58-04-03)", strict=False)
-async def test_analyze_file_table_lane_and_windows(client: AsyncClient) -> None:
-    """WORK-04 -- per-file lane badge + mid-flight N/M windows (in-flight) / full coverage (completed)."""
-    raise NotImplementedError
+async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session: AsyncSession) -> None:
+    """WORK-04 / D-03 / D-04 -- per-file lane badge + mid-flight N/M (in-flight) / full coverage (completed).
+
+    ONE table covers ALL in-stage files (D-03). Per-file lane is DERIVED from the cloud_job sidecar
+    (no row -> local; cloud_phase NULL -> A1; cloud_phase set -> k8s). Windowed progress reads the
+    analysis aggregate: a completed (ANALYZED) row shows full ``window {a}/{total}`` coverage; an
+    in-flight row shows the merged 57.1 mid-flight ``N/M windows`` signal ALONGSIDE ``running`` --
+    a render that emits only a bare ``running`` MUST fail this test (B2 / 57.1 PROG-03 read). Rows
+    are inert-but-present (D-06): no ``hx-get`` / selected-state.
+    """
+    # Completed LOCAL file (no cloud_job): full window coverage from the aggregate.
+    done = await _seed_file(session, state=FileState.ANALYZED, original_filename="done.mp3")
+    await _seed_analysis(session, done.id, fine_done=41, fine_total=41)
+    # IN-FLIGHT file: a partial 57.1 analysis row (fine_done < fine_total), NOT yet ANALYZED.
+    inflight = await _seed_file(session, state=FileState.FINGERPRINTED, original_filename="inflight.mp3")
+    await _seed_analysis(session, inflight.id, fine_done=14, fine_total=41)
+    # A1 lane: cloud_job with cloud_phase NULL.
+    a1 = await _seed_file(session, state=FileState.PUSHED, original_filename="a1.mp3")
+    await _seed_cloud_job(session, a1.id, None)
+    # k8s lane: cloud_job with cloud_phase set.
+    k8s = await _seed_file(session, state=FileState.PUSHED, original_filename="k8s.mp3")
+    await _seed_cloud_job(session, k8s.id, CloudPhase.RUNNING.value)
+
+    resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    # Scope to the file table (below the lane-card grid, which carries its own lane glyphs).
+    assert 'id="analyze-file-table"' in body
+    tbl = body[body.index('id="analyze-file-table"') :]
+
+    # D-03: one table listing ALL in-stage files.
+    assert "done.mp3" in tbl
+    assert "inflight.mp3" in tbl
+
+    # Completed row: full window coverage from the aggregate.
+    assert "window 41/41" in tbl
+
+    # In-flight row: the mid-flight N/M signal AND running -- NOT a bare "running" (B2 / D-04).
+    assert "running" in tbl
+    assert "14/41" in tbl
+
+    # Per-file lane badge derivation (cloud_job rule): no row -> local; cloud_phase NULL -> A1; set -> k8s.
+    assert "local" in tbl
+    assert "A1" in tbl
+    assert "k8s" in tbl
+
+    # D-06: rows are inert-but-present -- cursor-pointer but NO click binding / selected-state.
+    assert "hx-get" not in tbl
+    assert "aria-selected" not in tbl
+
+    # WORK-05 / R-2: no second poll loop in the fragment.
+    assert 'hx-trigger="every' not in body
+    assert "setInterval" not in body
