@@ -420,6 +420,77 @@ async def test_analysis_empty_put_does_not_advance_state(
 
 
 @pytest.mark.asyncio
+async def test_analysis_put_stamps_completed_at(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 57.1 KEY RISK: a non-empty PUT stamps analysis_completed_at (the completion discriminator).
+
+    The discriminator is set in the SAME dumped-guarded txn that flips FileState.ANALYZED, so a
+    completed analysis row is distinguishable from an in-flight partial row (which leaves it NULL).
+    It is server-set via func.now() -- never wire-set -- so a client cannot forge completion.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"bpm": 128.0, "fine_windows_analyzed": 40, "fine_windows_total": 40},
+        )
+
+    assert response.status_code == 200, response.text
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.analysis_completed_at is not None, "a completed (non-empty) PUT must stamp analysis_completed_at"
+
+
+@pytest.mark.asyncio
+async def test_analysis_empty_put_leaves_completed_at_null(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 57.1: an empty-body PUT ({}) is a no-op -- no completion, so analysis_completed_at stays NULL.
+
+    This mirrors the ANALYZED-flip guard: `dumped` is falsy for an empty body, so the completion
+    branch (state flip + completed_at stamp) is skipped. A partial in-flight row therefore never
+    looks completed.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={})
+
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.analysis_completed_at is None, "an empty PUT (no completion) must leave analysis_completed_at NULL"
+
+
+@pytest.mark.asyncio
+async def test_analysis_completed_at_not_wire_settable(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 57.1 (T-57.1-12): analysis_completed_at is server-set only -- a client cannot forge it.
+
+    The wire payload uses extra='forbid', so a body carrying analysis_completed_at is a 422. This
+    locks the spoofing mitigation: completion cannot be claimed by the agent, only stamped by func.now().
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"bpm": 120.0, "analysis_completed_at": "2026-01-01T00:00:00Z"},
+        )
+
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
 async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """D-16: extra='forbid' rejects unknown fields (AUTH-01 -- no agent_id forgery)."""
     agent, raw_token = seed_test_agent
