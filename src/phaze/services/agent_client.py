@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_analysis import (
         AnalysisFailurePayload,
         AnalysisFailureResponse,
+        AnalysisProgressPayload,
         AnalysisWritePayload,
         AnalysisWriteResponse,
     )
@@ -535,6 +536,27 @@ class PhazeAgentClient:
         await self._request(
             "POST",
             f"/api/internal/agent/exec-batches/{batch_id}/progress",
+            json=payload.model_dump(mode="json"),
+        )
+        return None
+
+    async def post_analysis_progress(self, file_id: uuid.UUID, payload: AnalysisProgressPayload) -> None:
+        """POST /api/internal/agent/analysis/{file_id}/progress -- counter-only mid-flight bump (Phase 57.1, 03).
+
+        Best-effort: the CALLER swallows ``AgentApiError`` after retries (D-16) -- a
+        dropped progress POST must NEVER fail the analysis job; the completion
+        ``put_analysis`` writes the final count regardless, so the in-flight bar
+        reaches 100% from completion even if this POST is lost. Inherits the tenacity
+        retry policy (D-11) + exception hierarchy (D-12) via the ``_request`` funnel --
+        5xx retries up to the cap, 4xx surfaces immediately; no bespoke retry loop.
+        ``file_id`` rides the path only (AUTH-01); the body carries only the counts.
+        Returns ``None`` (the endpoint echoes ``{agent_id, file_id}`` but the bump is
+        fire-and-forget). httpx-only -- NO database import (agent worker stays
+        Postgres-free; tests/test_task_split.py).
+        """
+        await self._request(
+            "POST",
+            f"/api/internal/agent/analysis/{file_id}/progress",
             json=payload.model_dump(mode="json"),
         )
         return None

@@ -361,3 +361,48 @@ async def test_request_download_url_token_absent_from_warning_logs_on_500(client
 
     warning_text = "\n".join(rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING)
     assert _TOKEN not in warning_text, f"D-13 violation: bearer token appeared in WARNING log output: {warning_text!r}"
+
+
+# ---------------------------------------------------------------------------
+# post_analysis_progress -- counter-only mid-flight progress POST (Phase 57.1, 03).
+# Best-effort: routes through self._request (inherits retry + AgentApiError);
+# returns None; file_id rides the path only, body carries the counts.
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_post_analysis_progress_posts_path_verb_and_counts_body(client):  # type: ignore[no-untyped-def]
+    """post_analysis_progress POSTs the counts to /analysis/{file_id}/progress and returns None (path-only file_id)."""
+    import json
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}/progress").mock(
+        return_value=httpx.Response(200, json={"agent_id": "a1", "file_id": str(file_id)}),
+    )
+
+    result = await client.post_analysis_progress(file_id, AnalysisProgressPayload(fine_windows_analyzed=7, fine_windows_total=40))
+
+    assert result is None, "best-effort method must return None"
+    assert route.call_count == 1
+    sent = route.calls.last.request
+    assert sent.method == "POST"
+    assert sent.url.path == f"/api/internal/agent/analysis/{file_id}/progress"
+    assert sent.headers["Authorization"] == f"Bearer {_TOKEN}"
+    body = json.loads(sent.content)
+    assert body == {"fine_windows_analyzed": 7, "fine_windows_total": 40}, "body carries only the counts (no agent_id/file_id)"
+
+
+@respx.mock
+async def test_post_analysis_progress_4xx_surfaces_as_client_error(client):  # type: ignore[no-untyped-def]
+    """A 422 (bad body) surfaces immediately via the _request funnel (no bespoke retry); the CALLER swallows it (D-16)."""
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}/progress").mock(
+        return_value=httpx.Response(422, json={"detail": [{"msg": "bad"}]}),
+    )
+    with pytest.raises(AgentApiClientError):
+        await client.post_analysis_progress(file_id, AnalysisProgressPayload(fine_windows_analyzed=0, fine_windows_total=40))
+    assert route.call_count == 1, "4xx must NOT be retried"
