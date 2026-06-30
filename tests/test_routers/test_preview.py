@@ -57,7 +57,7 @@ async def _create_approved_proposal(
 @pytest.mark.asyncio
 async def test_preview_returns_200_with_heading(client: AsyncClient) -> None:
     """GET /preview/ returns 200 with Directory Preview heading."""
-    response = await client.get("/preview/")
+    response = await client.get("/preview/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Directory Preview" in response.text
@@ -66,7 +66,7 @@ async def test_preview_returns_200_with_heading(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_preview_empty_state(client: AsyncClient) -> None:
     """GET /preview/ with no approved proposals shows empty state."""
-    response = await client.get("/preview/")
+    response = await client.get("/preview/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "No approved proposals" in response.text
 
@@ -79,7 +79,7 @@ async def test_preview_renders_tree(client: AsyncClient, session: AsyncSession) 
         proposed_filename="Live.mp3",
         proposed_path="performances/artists/Disclosure",
     )
-    response = await client.get("/preview/")
+    response = await client.get("/preview/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Disclosure" in response.text
     assert "performances" in response.text

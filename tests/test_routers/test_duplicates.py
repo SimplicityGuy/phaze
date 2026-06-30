@@ -46,16 +46,20 @@ def _make_metadata(file_id: uuid.UUID, **kwargs) -> FileMetadata:
 
 @pytest.mark.asyncio
 async def test_list_duplicates_returns_html(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /duplicates/ with duplicate files in DB returns 200 with page heading."""
+    """Phase 57 (SHELL-05): a plain GET /duplicates/ 302-redirects into the shell.
+
+    The "Duplicate Resolution" heading + stats header are full-page chrome on the dedupe
+    workspace node (a Phase-57 placeholder; real content lands in 58-61). The in-page HX
+    group-list partial stays usable (test_list_duplicates_htmx_returns_partial covers it).
+    """
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
     session.add_all([f1, f2])
     await session.flush()
 
-    response = await client.get("/duplicates/")
-
-    assert response.status_code == 200
-    assert "Duplicate Resolution" in response.text
+    response = await client.get("/duplicates/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/dedupe"
 
 
 @pytest.mark.asyncio
@@ -83,7 +87,7 @@ async def test_empty_state(session: AsyncSession, client: AsyncClient) -> None:
     session.add(f1)
     await session.flush()
 
-    response = await client.get("/duplicates/")
+    response = await client.get("/duplicates/", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert "No duplicates found" in response.text
@@ -232,7 +236,7 @@ async def test_resolved_groups_not_shown(session: AsyncSession, client: AsyncCli
     )
 
     # Check listing
-    response = await client.get("/duplicates/")
+    response = await client.get("/duplicates/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert HASH_A[:12] not in response.text
     assert "No duplicates found" in response.text
@@ -249,11 +253,9 @@ async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -
     session.add_all([f1, f2, f3, f4])
     await session.flush()
 
-    response = await client.get("/duplicates/")
-    assert response.status_code == 200
-
-    # Stats header should show "2" groups and "4" total files
-    body = response.text
-    # The stats are rendered in the stats_header partial
-    assert "Groups" in body
-    assert "Total Files" in body
+    # Phase 57 (SHELL-05): the "Groups"/"Total Files" stats header is full-page chrome on
+    # the dedupe workspace node (a Phase-57 placeholder), so a plain GET /duplicates/ now
+    # 302-redirects into the shell.
+    response = await client.get("/duplicates/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/dedupe"

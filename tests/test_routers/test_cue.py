@@ -86,12 +86,16 @@ async def _create_approved_tracklist_with_file(
 
 @pytest.mark.asyncio
 async def test_cue_list_full_page(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /cue/ returns 200 with full page containing CUE Sheets heading."""
+    """Phase 57 (SHELL-05): a plain GET /cue/ 302-redirects into the shell.
+
+    The "CUE Sheets" heading + stats header + empty-state are full-page chrome on the cue
+    workspace node (a Phase-57 placeholder; real content lands in 58-61). The in-page HX
+    list partial stays usable (test_cue_list_htmx_partial covers it).
+    """
     await _create_approved_tracklist_with_file(session)
-    response = await client.get("/cue/")
-    assert response.status_code == 200
-    assert "CUE Sheets" in response.text
-    assert "<!DOCTYPE html>" in response.text
+    response = await client.get("/cue/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/cue"
 
 
 @pytest.mark.asyncio
@@ -105,21 +109,28 @@ async def test_cue_list_htmx_partial(client: AsyncClient, session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_cue_list_empty_state(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /cue/ with no eligible tracklists shows empty state."""
-    response = await client.get("/cue/")
-    assert response.status_code == 200
-    assert "No tracklists eligible for CUE generation" in response.text
+    """Phase 57 (SHELL-05): the cue empty-state moved to the shell workspace node.
+
+    The "No tracklists eligible for CUE generation" message is full-page chrome (the cue
+    node is a Phase-57 placeholder), so a plain GET /cue/ now 302-redirects into the shell.
+    """
+    response = await client.get("/cue/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/cue"
 
 
 @pytest.mark.asyncio
 async def test_cue_list_stats(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /cue/ shows correct stats: eligible count."""
+    """Phase 57 (SHELL-05): the cue stats header moved to the shell workspace node.
+
+    The "Eligible"/"Generated"/"Missing Timestamps" stats header is full-page chrome on the
+    cue workspace node (a Phase-57 placeholder), so a plain GET /cue/ now 302-redirects into
+    the shell.
+    """
     await _create_approved_tracklist_with_file(session)
-    response = await client.get("/cue/")
-    assert response.status_code == 200
-    assert "Eligible" in response.text
-    assert "Generated" in response.text
-    assert "Missing Timestamps" in response.text
+    response = await client.get("/cue/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/cue"
 
 
 @pytest.mark.asyncio
@@ -195,7 +206,7 @@ async def test_cue_list_shows_generated_count_after_generation(client: AsyncClie
     assert audio_path.with_suffix(".cue").exists()
 
     # Now list page should show generated count and CUE version
-    response = await client.get("/cue/")
+    response = await client.get("/cue/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "CUE v1" in response.text or "Regenerate" in response.text
 
@@ -217,7 +228,7 @@ async def test_cue_list_shows_version_after_regeneration(client: AsyncClient, se
     assert v2_path.exists()
 
     # List page should show version 2
-    response = await client.get("/cue/")
+    response = await client.get("/cue/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "CUE v2" in response.text
 
@@ -266,7 +277,7 @@ async def test_tracklist_list_shows_cue_version(client: AsyncClient, session: As
     assert audio_path.with_suffix(".cue").exists()
 
     # Tracklist list should return 200 with CUE version computed
-    response = await client.get("/tracklists/")
+    response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
 
 
@@ -315,7 +326,7 @@ async def test_generate_cue_regenerate_increments_version(client: AsyncClient, s
 async def test_cue_list_shows_source_badge(client: AsyncClient, session: AsyncSession) -> None:
     """GET /cue/ shows source badge for each tracklist."""
     await _create_approved_tracklist_with_file(session, source="1001tracklists")
-    response = await client.get("/cue/")
+    response = await client.get("/cue/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "1001tracklists" in response.text
 
@@ -325,7 +336,7 @@ async def test_cue_list_fingerprint_first(client: AsyncClient, session: AsyncSes
     """GET /cue/ sorts fingerprint-sourced tracklists before 1001tracklists."""
     await _create_approved_tracklist_with_file(session, artist="ZZZ Last", source="1001tracklists")
     await _create_approved_tracklist_with_file(session, artist="AAA First", source="fingerprint")
-    response = await client.get("/cue/")
+    response = await client.get("/cue/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     text = response.text
     # Fingerprint artist should appear before 1001tracklists artist
@@ -428,7 +439,7 @@ async def test_cue_list_pagination(client: AsyncClient, session: AsyncSession) -
     for i in range(3):
         await _create_approved_tracklist_with_file(session, artist=f"Artist {i}")
 
-    response = await client.get("/cue/?page=1&page_size=10")
+    response = await client.get("/cue/?page=1&page_size=10", headers={"HX-Request": "true"})
     assert response.status_code == 200
 
 
