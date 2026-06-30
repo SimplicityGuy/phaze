@@ -1,7 +1,7 @@
 ---
 phase: 58
 slug: enrich-analyze-workspaces
-status: ready
+status: validated
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-06-30
@@ -44,12 +44,14 @@ updated: 2026-06-30
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 58-02-03 | 58-02 | 2 | WORK-01 | T-57-01 | Discover fragment renders recent-scans table + discovered/not-yet-enriched sub-count; SCAN/RECOVER present; `dag-seed-notYetEnriched` placeholder present; stage name stays whitelisted (no path splice) | route/render | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_discover_workspace -x` | ✅ 58-01-00 | ⬜ pending |
-| 58-03-02 | 58-03 | 3 | WORK-02 | T-58-ENQ | Metadata/Fingerprint workspaces render queue + ALL button posting to existing `/pipeline/extract-metadata` and `/pipeline/fingerprint`; no `EXTRACT SELECTED`/checkbox (D-02); `count`/`no_active_agent` branches of `trigger_response.html` | route/render | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_metadata_trigger_all_wired -x` | ✅ 58-01-00 | ⬜ pending |
-| 58-04-02 | 58-04 | 4 | WORK-03 | T-58-ALERT, T-58-SEED | All 3 lane cards always render; `not configured` (no cloud_target) vs `offline` (no agent / localqueue_unreachable) labels + 0 capacity; Inadmissible carries `role="alert"`, admission card does NOT; `dag-seed-computeOnline` placeholder present so A1 numeral seeds | render + state | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_lane_cards_states -x` | ✅ 58-01-00 | ⬜ pending |
-| 58-04-03 | 58-04 | 4 | WORK-04 | T-58-XSS | In-flight row shows lane badge + `running` + the mid-flight `N/M windows` indicator (partial `fine_windows_analyzed`<`fine_windows_total`, 57.1 PR #184); completed row shows full `window {analyzed}/{total}` from aggregate; per-file lane derived from cloud_job; paths autoescaped. A render emitting only `running` MUST fail | render | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_analyze_file_table_lane_and_windows -x` | ✅ 58-01-00 | ⬜ pending |
-| 58-01-01 | 58-01 | 1 | WORK-05 | T-58-POLL | Shell fires exactly one `/pipeline/stats` poll from persistent chrome + `visibilitychange` shed; workspace fragments contain NO `hx-trigger="every"`/`setInterval`; live values update via OOB | structural assert | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_single_poll_discipline -x` | ✅ 58-01-00 | ⬜ pending |
-| 58-01-00 | 58-01 | 1 (Wave 0) | R-5 | T-57-01 | Workspace fragments are bare (no `<html>`/`extends`/second skip-link); dead-template AST guard green | structural | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_stage_fragment_is_bare -x` | ✅ 58-01-00 | ⬜ pending |
+| 58-02-03 | 58-02 | 2 | WORK-01 | T-57-01 | Discover fragment renders recent-scans table + discovered/not-yet-enriched sub-count; SCAN/RECOVER present; `dag-seed-notYetEnriched` placeholder present; stage name stays whitelisted (no path splice) | route/render | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_discover_workspace -x` | ✅ 58-01-00 | ✅ green |
+| 58-03-02 | 58-03 | 3 | WORK-02 | T-58-ENQ | Metadata/Fingerprint workspaces render queue + ALL button posting to existing `/pipeline/extract-metadata` and `/pipeline/fingerprint`; no `EXTRACT SELECTED`/checkbox (D-02); `count`/`no_active_agent` branches of `trigger_response.html` | route/render | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_metadata_trigger_all_wired -x` | ✅ 58-01-00 | ✅ green |
+| 58-04-02 | 58-04 | 4 | WORK-03 | T-58-ALERT, T-58-SEED | All 3 lane cards always render; `not configured` (no cloud_target) vs `offline` (no agent / localqueue_unreachable) labels + 0 capacity; Inadmissible carries `role="alert"`, admission card does NOT; `dag-seed-computeOnline` placeholder present so A1 numeral seeds | render + state | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_lane_cards_states -x` | ✅ 58-01-00 | ✅ green |
+| 58-04-03 | 58-04 | 4 | WORK-04 | T-58-XSS | In-flight row shows lane badge + `running` + the mid-flight `N/M windows` indicator (partial `fine_windows_analyzed`<`fine_windows_total`, 57.1 PR #184); completed row shows full `window {analyzed}/{total}` from aggregate; per-file lane derived from cloud_job; paths autoescaped. A render emitting only `running` MUST fail | render | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_analyze_file_table_lane_and_windows -x` | ✅ 58-01-00 | ✅ green |
+| 58-01-01 | 58-01 | 1 | WORK-05 | T-58-POLL | Shell fires exactly one `/pipeline/stats` poll from persistent chrome + `visibilitychange` shed; workspace fragments contain NO `hx-trigger="every"`/`setInterval`; live values update via OOB | structural assert | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_single_poll_discipline -x` | ✅ 58-01-00 | ✅ green |
+| 58-01-00 | 58-01 | 1 (Wave 0) | R-5 | T-57-01 | Workspace fragments are bare (no `<html>`/`extends`/second skip-link); dead-template AST guard green | structural | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_stage_fragment_is_bare -x` | ✅ 58-01-00 | ✅ green |
+| 58-04-fix | 58-04 | 4 | WORK-01/03/05 (W-1) | T-58-SEED | Shell's OWN Alpine store seeds `notYetEnriched: 0` + `computeOnline: 0` (no `undefined` initial-paint flash; base.html/shell.html store-divergence guard) | structural | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_shell_store_seeds_phase58_keys -x` | ✅ added in UAT | ✅ green |
+| 58-04-fix | 58-04 | 4 | WORK-05 | T-58-POLL | Shell carries a sink for the legacy `#straggler-failed-card` OOB fragment the shared poll re-emits (no per-poll htmx:oobErrorNoTarget) | structural | `uv run pytest tests/test_enrich_analyze_workspaces.py::test_shell_sinks_legacy_oob_fragments -x` | ✅ added in UAT | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -80,4 +82,20 @@ updated: 2026-06-30
 - [x] Feedback latency < 60s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** validated against plans 58-01..58-04 (planner revision 2026-06-30); per-task green status set during execution.
+**Approval:** validated against plans 58-01..58-04 (planner revision 2026-06-30); per-task green status confirmed post-execution.
+
+---
+
+## Validation Audit 2026-06-30
+
+State A audit (`/gsd:validate-phase 58`): every phase requirement maps to a named automated test that **exists and runs green** — no MISSING or PARTIAL gaps, so no test generation was required. All 8 mapped + bonus tests pass (`tests/test_enrich_analyze_workspaces.py`).
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 6 (WORK-01..05 + R-5) |
+| COVERED (green) | 6 |
+| PARTIAL | 0 |
+| MISSING | 0 |
+| Bonus regression tests (added in live UAT) | 2 |
+
+**Verdict:** Phase 58 is **Nyquist-compliant** — all requirements have automated verification; statuses flipped ⬜ pending → ✅ green.
