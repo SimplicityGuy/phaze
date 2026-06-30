@@ -318,6 +318,13 @@ C3 voice). Live numerals come from `$store.pipeline`; the strings below are the 
 | Fingerprint | **FINGERPRINT ALL** |
 | Analyze | **ROUTE RULES** · **PAUSE** |
 
+> **D-02 reconciliation (EXTRACT SELECTED + row-checkboxes DEFERRED):** the Metadata
+> **EXTRACT SELECTED** button and any per-file row-selection/checkbox model are **deferred from
+> Phase 58** — a subset-enqueue would require a new/extended backend endpoint (new query path +
+> payload validation), which bends the v7.0 no-backend-change rule. Phase 58 ships **EXTRACT ALL**
+> only (wired verbatim to the existing `POST /pipeline/extract-metadata`); there is no row-selection
+> state anywhere in this phase. See CONTEXT Deferred Ideas ("Per-file selection for Metadata/Fingerprint").
+
 > **Single-word CTA decision (SCAN · RECOVER · PAUSE):** These three are deliberately left as bare
 > verbs, with no noun object, under the locked **C3 operator-console voice** (terse, machine-room
 > labels on a single-user admin surface). In their on-screen context the object is unambiguous and
