@@ -71,4 +71,11 @@
     <p id="proposals-files-ready" class="hidden"></p>
     <p id="agent-busy-seed" class="hidden"></p>
     <p id="controller-busy-seed" class="hidden"></p>
+    {# Phase 58 (58-04 live-UAT): silent sink for the Phase-44 #straggler-failed-card the poll
+       re-emits OOB (stats_bar.html, hx-swap-oob="true"). Its visible home is the legacy
+       dashboard; the v7.0 shell has no Analysis Health surface yet (Phase 61 observability),
+       but now that 58-01 rides the shared /pipeline/stats poll the card arrives every tick —
+       without a target htmx logs htmx:oobErrorNoTarget each 5s. The outerHTML OOB swap replaces
+       this element but it stays inside the hidden parent above, absorbing the card invisibly. #}
+    <section id="straggler-failed-card"></section>
 </div>

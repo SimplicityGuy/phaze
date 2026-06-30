@@ -194,6 +194,21 @@ async def test_shell_store_seeds_phase58_keys(client: AsyncClient) -> None:
     assert "computeOnline: 0" in body, "shell store must seed computeOnline to int 0 (no undefined flash)"
 
 
+@pytest.mark.asyncio
+async def test_shell_sinks_legacy_oob_fragments(client: AsyncClient) -> None:
+    """WORK-05 -- the shell carries a target for every OOB fragment the shared poll re-emits.
+
+    ``stats_bar.html`` re-renders the Phase-44 ``#straggler-failed-card`` out-of-band on every
+    ``/pipeline/stats`` tick. The v7.0 shell has no Analysis Health surface (Phase 61 owns
+    observability), but once 58-01 wired the shared poll the card arrives each tick; without a
+    landing target htmx logs ``htmx:oobErrorNoTarget`` every 5s. The seed host provides a hidden
+    sink so the single poll stays clean (found in 58-04 live UAT).
+    """
+    shell = await client.get("/")
+    assert shell.status_code == 200
+    assert 'id="straggler-failed-card"' in shell.text, "shell must carry a sink for the legacy straggler-failed-card OOB fragment"
+
+
 # ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 58-VALIDATION.md Per-Task Verification Map)
