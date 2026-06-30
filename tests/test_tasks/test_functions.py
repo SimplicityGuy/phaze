@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
@@ -59,6 +60,7 @@ def _patch_agent_settings() -> Any:
     stub.analysis_inner_timeout_sec = 6600
     stub.analysis_fine_cap = 60
     stub.analysis_coarse_cap = 30
+    stub.analysis_progress_interval_sec = 5.0
     with patch("phaze.tasks.functions.get_settings", return_value=stub) as m:
         yield m
 
@@ -526,3 +528,139 @@ async def test_process_file_rejects_extra_kwargs(mock_pool: AsyncMock) -> None:
         await process_file(ctx, **bad_kwargs)
     mock_pool.assert_not_awaited()
     api.put_analysis.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Phase 57.1 (PROG-01): the pebble (local + A1) lane progress drainer bridge.
+# ---------------------------------------------------------------------------
+
+
+def _fake_pool_emitting(counts: list[tuple[int, int]], result: dict[str, Any] | None = None, raise_exc: BaseException | None = None):  # type: ignore[no-untyped-def]
+    """Build a fake ``run_in_process_pool`` that invokes the child ``progress_cb`` then returns/raises.
+
+    Mirrors the pebble call shape ``run_in_process_pool(ctx, func, *args, progress_cb=..., **kwargs)``;
+    the emitted counts go through the REAL ``_QueueProgressSink`` → Manager queue → parent drainer.
+    """
+
+    async def _fake(ctx, func, *args, progress_cb=None, **kwargs):  # type: ignore[no-untyped-def]
+        assert progress_cb is not None, "the bridge must thread a progress_cb into the pool"
+        for analyzed, total in counts:
+            progress_cb(analyzed, total)
+        if raise_exc is not None:
+            raise raise_exc
+        return result if result is not None else MOCK_ANALYSIS
+
+    return _fake
+
+
+@patch("phaze.tasks.functions.run_in_process_pool")
+async def test_process_file_posts_advancing_progress_and_final_flush(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+    """The drainer POSTs advancing (analyzed,total) counts and always flushes the final count."""
+    _patch_agent_settings.return_value.analysis_progress_interval_sec = 0.0  # no throttle: every count posts
+    mock_pool.side_effect = _fake_pool_emitting([(0, 3), (1, 3), (2, 3), (3, 3)])
+
+    file_id = uuid.uuid4()
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.post_analysis_progress = AsyncMock(return_value=None)
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result["status"] == "analyzed"
+    api.put_analysis.assert_awaited_once()  # completion path unchanged
+    # Extract the (analyzed, total) of every progress POST.
+    posted = [(call.args[1].fine_windows_analyzed, call.args[1].fine_windows_total) for call in api.post_analysis_progress.await_args_list]
+    assert posted, "at least one mid-flight progress POST must land"
+    analyzed_seq = [a for a, _t in posted]
+    assert analyzed_seq == sorted(analyzed_seq), "progress counts must be non-decreasing"
+    assert all(total == 3 for _a, total in posted), "denominator must be the fine_windows_total"
+    assert posted[0][0] == 0, "the START count (0, N) is posted first"
+    assert posted[-1] == (3, 3), "the final count is flushed"
+
+
+@patch("phaze.tasks.functions.run_in_process_pool")
+async def test_process_file_progress_throttle_collapses_bursts(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+    """A long throttle interval collapses a burst to the first post + the final flush."""
+    _patch_agent_settings.return_value.analysis_progress_interval_sec = 10_000.0  # effectively never re-post
+    mock_pool.side_effect = _fake_pool_emitting([(0, 4), (1, 4), (2, 4), (3, 4), (4, 4)])
+
+    file_id = uuid.uuid4()
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.post_analysis_progress = AsyncMock(return_value=None)
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result["status"] == "analyzed"
+    posted = [(call.args[1].fine_windows_analyzed, call.args[1].fine_windows_total) for call in api.post_analysis_progress.await_args_list]
+    # First emission always posts (initial last_post=0); the rest are throttled; the final count is flushed.
+    assert posted == [(0, 4), (4, 4)]
+
+
+@patch("phaze.tasks.functions.run_in_process_pool")
+async def test_process_file_progress_drainer_kill_safe_on_timeout(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+    """A SIGKILLed child (TimeoutError) tears the drainer down within a bounded deadline (no hang)."""
+    _patch_agent_settings.return_value.analysis_progress_interval_sec = 0.0
+    mock_pool.side_effect = _fake_pool_emitting([(0, 5), (1, 5)], raise_exc=TimeoutError())
+
+    file_id = uuid.uuid4()
+    api = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    api.post_analysis_progress = AsyncMock(return_value=None)
+    ctx = _make_ctx(api_client=api)
+
+    # The whole call must complete well under the drainer teardown deadline — proving no hang.
+    result = await asyncio.wait_for(process_file(ctx, **_make_payload_kwargs(file_id=file_id)), timeout=8.0)
+
+    assert result["status"] == "analysis_failed"
+    # Terminal mapping unchanged: a SIGKILL still reports "timeout".
+    failure = api.report_analysis_failed.await_args.args[1]
+    assert failure.reason == "timeout"
+
+
+@patch("phaze.tasks.functions.run_in_process_pool")
+async def test_process_file_progress_post_failure_swallowed(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+    """A failing progress POST never changes the terminal result (best-effort, D-16)."""
+    from phaze.services.agent_client import AgentApiServerError
+
+    _patch_agent_settings.return_value.analysis_progress_interval_sec = 0.0
+    mock_pool.side_effect = _fake_pool_emitting([(0, 2), (1, 2), (2, 2)])
+
+    file_id = uuid.uuid4()
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.post_analysis_progress = AsyncMock(side_effect=AgentApiServerError("503 after retries"))
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    # Progress POST raised on every call, yet the file still completes normally.
+    assert result["status"] == "analyzed"
+    api.put_analysis.assert_awaited_once()
+    assert api.post_analysis_progress.await_count >= 1
+
+
+def test_queue_progress_sink_is_picklable_module_level() -> None:
+    """The sink is a module-level picklable callable (no closure, no agent_client) — pebble can pickle it."""
+    import pickle
+
+    from phaze.tasks.functions import _QueueProgressSink
+
+    # Module-level qualname (no enclosing-function closure that would break pickling into the child).
+    assert _QueueProgressSink.__qualname__ == "_QueueProgressSink"
+    # An instance wrapping a picklable channel round-trips through pickle.
+    restored = pickle.loads(pickle.dumps(_QueueProgressSink([])))  # noqa: S301 - round-tripping our own trusted object
+    assert isinstance(restored, _QueueProgressSink)
+
+
+def test_analysis_child_path_imports_no_agent_client() -> None:
+    """Only an (int,int) count crosses into the child: analysis.py imports no httpx/agent_client."""
+    from pathlib import Path
+
+    import phaze.services.analysis as analysis_mod
+
+    src = Path(analysis_mod.__file__).read_text(encoding="utf-8")
+    assert "agent_client" not in src
+    assert "import httpx" not in src
