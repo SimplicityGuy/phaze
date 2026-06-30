@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
-status: verifying
-last_updated: "2026-06-30T15:49:34.945Z"
+status: "Phase 57.1 shipped — PR #184"
+last_updated: "2026-06-30T17:03:54.514Z"
 last_activity: 2026-06-30
 progress:
   total_phases: 29
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 Phase: 57.1 (Incremental window persistence & live analyze progress signal) — EXECUTING
 Plan: 4 of 4
-Status: Phase complete — ready for verification
+Status: Phase 57.1 shipped — PR #184
 Last activity: 2026-06-30
 
 Progress: [██████████] 100%
