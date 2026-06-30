@@ -223,7 +223,7 @@
 
         <!-- Center workspace — the single stable swap target every rail node innerHTML-swaps. -->
         <main class="flex-1 min-w-0 bg-white dark:bg-phaze-bg">
-            <div id="stage-workspace" class="h-full overflow-y-auto">{% include stage_partial %}</div>
+            <div id="stage-workspace" data-stage="{{ stage }}" class="h-full overflow-y-auto">{% include stage_partial %}</div>
         </main>
 
         <!-- Right detail pane (w-[350px]). Phase 57 placeholder; bridged content is a later phase. -->
