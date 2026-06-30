@@ -25,6 +25,7 @@ essentia models AND without importing the platform-gated essentia wheel. The
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -239,3 +240,105 @@ def test_no_monoloader_source_guard():  # type: ignore[no-untyped-def]
     assert "MonoLoader" not in src, "one-shot must use windowed analyze_file, not whole-file MonoLoader (KJOB-03)"
     assert "analyze_file" in src, "windowed analyze_file must be wired (KJOB-03)"
     assert "verify=False" not in src, "callback CA verification must never be disabled (KJOB-05)"
+
+
+# ---------------------------------------------------------------------------
+# Phase 57.1 (PROG-01): the k8s one-shot lane progress bridge.
+# ---------------------------------------------------------------------------
+
+
+def _emitting_analyze(counts):  # type: ignore[no-untyped-def]
+    """Build a fake ``analyze_file`` that invokes its ``progress_cb`` for each count, then returns."""
+
+    def _analyze(*_a, progress_cb=None, **_k):  # type: ignore[no-untyped-def]
+        assert progress_cb is not None, "the k8s bridge must thread a progress_cb into analyze_file"
+        for analyzed, total in counts:
+            progress_cb(analyzed, total)
+        return _fake_result()
+
+    return _analyze
+
+
+@respx.mock
+async def test_progress_posts_midflight_via_run_coroutine_threadsafe(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """≥2 mid-flight counter POSTs land during one run; analyze runs off-loop via to_thread (PROG-01)."""
+    monkeypatch.setenv("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "0")  # no throttle: every emitted count posts
+    from phaze.config import get_settings
+
+    get_settings.cache_clear()
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    progress = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/progress").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 3), (1, 3), (2, 3), (3, 3)]))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+    # Drain any progress tasks still scheduled via run_coroutine_threadsafe.
+    await asyncio.sleep(0.1)
+
+    assert exc.value.code == 0
+    assert progress.call_count >= 2, "at least two distinct mid-flight progress POSTs must land"
+    # The counter payloads carry the advancing fine counts (denominator == fine_windows_total).
+    bodies = [c.request.content for c in progress.calls]
+    assert any(b'"fine_windows_analyzed":0' in body for body in bodies), "the START count (0, N) must be posted"
+
+
+@respx.mock
+async def test_progress_failure_does_not_change_exit_code(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A failing progress POST is swallowed and never changes the success exit (best-effort, D-16)."""
+    monkeypatch.setenv("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "0")
+    from phaze.config import get_settings
+
+    get_settings.cache_clear()
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    # Every progress POST 500s (and keeps 500ing through the client's retries) — must NOT fail the job.
+    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/progress").mock(return_value=httpx.Response(500))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 2), (1, 2), (2, 2)]))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+    await asyncio.sleep(0.1)
+
+    # The completion path still wins: exit 0 despite the progress endpoint failing.
+    assert exc.value.code == 0
+
+
+def test_progress_bridge_source_guard():  # type: ignore[no-untyped-def]
+    """Source guard: analyze runs via to_thread; progress posts via run_coroutine_threadsafe, never .result()."""
+    import phaze.job_runner as jr
+
+    src = Path(jr.__file__).read_text(encoding="utf-8")
+    assert "asyncio.to_thread(" in src, "analyze_file must run off-loop via asyncio.to_thread (Pitfall 3)"
+    assert "run_coroutine_threadsafe" in src, "progress POSTs must schedule via run_coroutine_threadsafe"
+    # Fire-and-forget: the scheduled future must not be chained to .result() (that would deadlock the
+    # analysis thread on a saturated loop). The docstring legitimately names ``.result()`` in prose, so
+    # guard on the dangerous CALL form (a closing paren immediately followed by .result()).
+    assert ").result()" not in src, "the cb must be fire-and-forget — chaining .result() would deadlock the analysis thread"
+    assert "post_analysis_progress" in src, "the k8s lane must post counter-only progress"
