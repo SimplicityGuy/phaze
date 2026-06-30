@@ -220,10 +220,51 @@ async def test_discover_workspace(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="lands in Plan 58-03 (task 58-03-02)", strict=False)
 async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
-    """WORK-02 -- Metadata/Fingerprint ALL buttons post to the existing endpoints; no EXTRACT SELECTED (D-02)."""
-    raise NotImplementedError
+    """WORK-02 / D-01 / D-02 -- Metadata + Fingerprint ALL buttons post to the EXISTING endpoints.
+
+    Each enrich workspace is a sibling fragment: a single ALL-only bulk trigger wired VERBATIM to
+    its existing endpoint (D-01: ``POST /pipeline/extract-metadata`` / ``POST /pipeline/fingerprint``)
+    with the R-4 guard (hx-confirm + a ``:disabled`` busy-gate). D-02: there is NO ``EXTRACT SELECTED``
+    button and NO per-row checkbox/selection state anywhere. WORK-05: neither fragment starts a second
+    poll loop -- live values ride the single chrome poll.
+    """
+    # --- Metadata workspace (D-01 verbatim endpoint + R-4 guard) ---
+    md = await client.get("/s/metadata", headers={"HX-Request": "true"})
+    assert md.status_code == 200
+    md_body = md.text
+    # Scaffold focus target (exactly one h1 with tabindex=-1).
+    assert md_body.count('tabindex="-1"') == 1
+    # EXTRACT ALL wired VERBATIM to the existing endpoint (D-01).
+    assert 'hx-post="/pipeline/extract-metadata"' in md_body
+    assert "EXTRACT ALL" in md_body
+    # Trigger-response landing target present.
+    assert 'id="metadata-trigger-response"' in md_body
+    # R-4 bulk-enqueue guard: confirm + busy-disable on metadataBusy.
+    assert "hx-confirm" in md_body
+    assert "$store.pipeline.metadataBusy" in md_body
+    # D-02: NO EXTRACT SELECTED, NO row-selection / checkbox state.
+    assert "EXTRACT SELECTED" not in md_body
+    assert 'type="checkbox"' not in md_body
+    # WORK-05 / R-2: no second poll loop.
+    assert 'hx-trigger="every' not in md_body
+    assert "setInterval" not in md_body
+
+    # --- Fingerprint workspace (the sibling) ---
+    fp = await client.get("/s/fingerprint", headers={"HX-Request": "true"})
+    assert fp.status_code == 200
+    fp_body = fp.text
+    assert fp_body.count('tabindex="-1"') == 1
+    assert 'hx-post="/pipeline/fingerprint"' in fp_body
+    assert "FINGERPRINT ALL" in fp_body
+    assert 'id="fingerprint-trigger-response"' in fp_body
+    assert "hx-confirm" in fp_body
+    assert "$store.pipeline.fingerprintBusy" in fp_body
+    # D-02: no selection affordance on the sibling either.
+    assert 'type="checkbox"' not in fp_body
+    # WORK-05 / R-2: no second poll loop.
+    assert 'hx-trigger="every' not in fp_body
+    assert "setInterval" not in fp_body
 
 
 @pytest.mark.asyncio

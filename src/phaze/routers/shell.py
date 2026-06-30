@@ -56,8 +56,11 @@ STAGE_PARTIALS: dict[str, str] = {
     # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
     # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
     "discover": "pipeline/partials/discover_workspace.html",
-    "metadata": _STAGE_PLACEHOLDER,
-    "fingerprint": _STAGE_PLACEHOLDER,
+    # Phase 58 (58-03, WORK-02): the Metadata + Fingerprint enrich workspaces -- static literals
+    # (T-57-01: `stage` is never spliced into a template path). Supersede-in-place; legacy templates
+    # stay until CUT-02.
+    "metadata": "pipeline/partials/metadata_workspace.html",
+    "fingerprint": "pipeline/partials/fingerprint_workspace.html",
     "analyze": "pipeline/partials/dag_canvas.html",
     "trackid": _STAGE_PLACEHOLDER,
     "tracklist": _STAGE_PLACEHOLDER,
