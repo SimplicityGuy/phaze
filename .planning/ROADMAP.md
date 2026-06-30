@@ -774,11 +774,19 @@ Plans:
   2. The Tracklist workspace presents the Search→Scrape→Match sub-chain inline as a visible 3-step with per-set match progress, triggerable from one surface.
 
 **Notes**: **IDENT-01 re-scoped 2026-06-29** — the prototype's "AcoustID→MusicBrainz" label is dropped: `grep -ri 'acoustid|musicbrainz' src/phaze` is empty, so that backend does not exist and building it would violate the no-backend-change boundary. This phase ships the existing fingerprint + tracklist signals **only**; AcoustID/MusicBrainz is deferred to IDENT-03 (future milestone). Option 1 (re-label) is chosen → no phase research needed. (Verify what `models/fingerprint.py` persists at plan time so Track-ID surfaces the real stored fields.)
-**Plans**: 3 plans (3 waves — sequential; both workspaces touch shell.py + the shared test file)
-Plans:
+**Plans**: 3 plans (3 waves — sequential; both workspaces touch shell.py + the shared test file)Plans:
+**Wave 1**
+
 - [ ] 59-01-PLAN.md — Wave-0 test scaffold + the two read-only row-assembly helpers (get_trackid_stage_files / get_tracklist_set_rows)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 59-02-PLAN.md — Track-ID workspace (combined per-file identity table) + shell wiring
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 59-03-PLAN.md — Tracklist workspace (3 step cards + per-set coverage table) + shell wiring
+
 **UI hint**: yes
 
 ### Phase 60: Review & Apply
