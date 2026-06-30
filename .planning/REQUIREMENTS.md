@@ -91,19 +91,19 @@ Each v7.0 requirement maps to exactly one phase. **Coverage: 28/28 — no orphan
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHELL-01 | Phase 57 — Shell & DAG rail | Planned |
-| SHELL-02 | Phase 57 — Shell & DAG rail | Planned |
-| SHELL-03 | Phase 57 — Shell & DAG rail | Planned |
-| SHELL-04 | Phase 57 — Shell & DAG rail | Planned |
-| SHELL-05 | Phase 57 — Shell & DAG rail | Planned |
+| SHELL-01 | Phase 57 — Shell & DAG rail | Done |
+| SHELL-02 | Phase 57 — Shell & DAG rail | Done |
+| SHELL-03 | Phase 57 — Shell & DAG rail | Done |
+| SHELL-04 | Phase 57 — Shell & DAG rail | Done |
+| SHELL-05 | Phase 57 — Shell & DAG rail | Done |
 | PROG-01 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
 | PROG-02 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
 | PROG-03 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
-| WORK-01 | Phase 58 — Enrich + Analyze workspaces | Planned |
-| WORK-02 | Phase 58 — Enrich + Analyze workspaces | Planned |
-| WORK-03 | Phase 58 — Enrich + Analyze workspaces | Planned |
-| WORK-04 | Phase 58 — Enrich + Analyze workspaces | Planned |
-| WORK-05 | Phase 58 — Enrich + Analyze workspaces | Planned |
+| WORK-01 | Phase 58 — Enrich + Analyze workspaces | Done |
+| WORK-02 | Phase 58 — Enrich + Analyze workspaces | Done |
+| WORK-03 | Phase 58 — Enrich + Analyze workspaces | Done |
+| WORK-04 | Phase 58 — Enrich + Analyze workspaces | Done |
+| WORK-05 | Phase 58 — Enrich + Analyze workspaces | Done |
 | IDENT-01 | Phase 59 — Identify workspaces | Planned |
 | IDENT-02 | Phase 59 — Identify workspaces | Planned |
 | REVIEW-01 | Phase 60 — Review & Apply | Planned |
@@ -119,3 +119,8 @@ Each v7.0 requirement maps to exactly one phase. **Coverage: 28/28 — no orphan
 | CUT-02 | Phase 62 — Polish & cutover | Planned |
 | CUT-03 | Phase 62 — Polish & cutover | Planned |
 | CUT-04 | Phase 62 — Polish & cutover | Planned |
+| RECORD-05 | Future (deferred — v7.x) | Deferred |
+| SHELL-06 | Future (deferred — v7.x) | Deferred |
+| REVIEW-06 | Future (deferred — v7.0 ships fixed threshold) | Deferred |
+| WORK-06 | Future (deferred — future milestone) | Deferred |
+| IDENT-03 | Future (deferred — future milestone, net-new backend) | Deferred |
