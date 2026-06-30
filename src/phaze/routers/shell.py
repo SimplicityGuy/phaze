@@ -30,7 +30,7 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.services.pipeline import get_fingerprint_pending_files, get_metadata_pending_files
+from phaze.services.pipeline import get_fingerprint_pending_files, get_metadata_pending_files, get_trackid_stage_files
 
 from .pipeline import build_dashboard_context
 
@@ -66,7 +66,11 @@ STAGE_PARTIALS: dict[str, str] = {
     # `stage` is never spliced into a template path). dag_canvas.html stays reachable via the legacy
     # dashboard.html until CUT-02 (Phase 62), so the dead-template guard stays green (supersede-in-place).
     "analyze": "pipeline/partials/analyze_workspace.html",
-    "trackid": _STAGE_PLACEHOLDER,
+    # Phase 59 (59-02, IDENT-01): the real Track-ID workspace (one combined per-file identity table
+    # surfacing existing audfprint + Panako fingerprint state + tracklist match/confidence) supersedes
+    # the placeholder -- a STATIC string literal (T-57-01: `stage` is never spliced into a template
+    # path). Supersede-in-place; the legacy template stays reachable until CUT-02 (Phase 62).
+    "trackid": "pipeline/partials/trackid_workspace.html",
     "tracklist": _STAGE_PLACEHOLDER,
     "propose": _STAGE_PLACEHOLDER,
     "rename": _STAGE_PLACEHOLDER,
@@ -127,6 +131,14 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # METADATA_EXTRACTED plus failed-retry, deduped, D-01). Pitfall 5 (no prior context for this
         # stage). Existing read only; no new service fn, no enqueue change.
         context["fingerprint_files"] = await get_fingerprint_pending_files(session)
+    elif stage == "trackid":
+        # Phase 59 (59-02, IDENT-01): the Track-ID workspace renders the combined per-file identity
+        # table -- per-engine audfprint/Panako fingerprint state + tracklist match-state/confidence
+        # (get_trackid_stage_files: a read-only, degrade-safe assembly over the existing
+        # fingerprint_results + tracklists reads -- NO new query path, NO enqueue, NO backend change).
+        # The helper returns [] on any DB error, so no router try/except is needed; oob_counts stays
+        # False (Pitfall 5) -- the live sub-count refreshes via the single chrome poll's OOB seeds.
+        context["trackid_files"] = await get_trackid_stage_files(session)
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)

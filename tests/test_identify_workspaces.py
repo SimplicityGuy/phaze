@@ -211,34 +211,59 @@ async def test_identify_single_poll_discipline(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="filled by Plan 59-02 (IDENT-01 Track-ID workspace template/wire)", strict=False)
 async def test_trackid_table_signals(client: AsyncClient, session: AsyncSession) -> None:
     """IDENT-01 / D-01 / D-03 / D-04 -- one combined Track-ID table of per-file identity signals.
 
-    Filled by Plan 59-02: seed a file with audfprint/panako ``FingerprintResult`` rows + a linked
-    ``Tracklist`` (match_confidence), then assert the ``/s/trackid`` fragment renders ONE combined
-    table whose row carries the audfprint + Panako status words, the tracklist match state, and the
-    confidence -- with inert (no ``hx-get``) rows.
+    Seeds a LINKED file (audfprint ``success`` + panako ``failed`` + a linked ``Tracklist``) and a
+    CANDIDATE-only file (audfprint ``success``, no linked tracklist, but a system-wide unlinked
+    candidate exists), then asserts the ``/s/trackid`` fragment renders ONE combined table (D-03)
+    whose rows carry the per-engine status words (done/failed/pending, D-01), the tracklist
+    match-state words (matched/candidate, D-04), and the linked confidence as a percent (D-02 -- not
+    a fabricated fingerprint score) -- with inert (no ``hx-get``) rows.
     """
-    file = await _seed_file(session, original_filename="trackid.mp3")
-    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+    matched = await _seed_file(session, original_filename="matched.mp3")
+    await _seed_fingerprint_result(session, matched.id, "audfprint", "success")
+    await _seed_fingerprint_result(session, matched.id, "panako", "failed")
+    await _seed_tracklist(session, file_id=matched.id, match_confidence=90)
+
+    candidate = await _seed_file(session, original_filename="candidate.mp3")
+    await _seed_fingerprint_result(session, candidate.id, "audfprint", "success")
+    await _seed_tracklist(session, file_id=None, match_confidence=77)
+
     resp = await client.get("/s/trackid", headers={"HX-Request": "true"})
     assert resp.status_code == 200
-    # Plan 59-02 wires the combined table; the placeholder does not render it yet.
-    assert 'id="trackid-file-table"' in resp.text
+    body = resp.text
+    # D-03: exactly ONE combined per-file table (not two sub-sections).
+    assert body.count('id="trackid-file-table"') == 1
+    tbl = body[body.index('id="trackid-file-table"') :]
+    # D-01: per-engine status words -- matched file -> audfprint "done" + panako "failed"; the
+    # candidate file's panako has no row -> "pending" (absence == pending, Pitfall 2).
+    assert "done" in tbl
+    assert "failed" in tbl
+    assert "pending" in tbl
+    # D-04: tracklist match-state words for the linked + candidate files.
+    assert "matched" in tbl
+    assert "candidate" in tbl
+    # D-02/D-04: the linked tracklist confidence renders as a percent, not a fabricated score.
+    assert "90%" in tbl
+    # R-1 / D-06: rows are inert this phase (row->record is Phase 61; no row-click fetch wired).
+    assert "hx-get" not in tbl
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="filled by Plan 59-02 (IDENT-01 Pitfall-1 success->done guard)", strict=False)
 async def test_trackid_success_renders_done(client: AsyncClient, session: AsyncSession) -> None:
     """IDENT-01 (neg) / Pitfall 1 -- a ``status="success"`` row renders "done" (NOT "pending").
 
-    Filled by Plan 59-02: guards the Pitfall-1 vocabulary trap -- the done badge must key on
-    ``FingerprintResult.status == "success"`` (the value the engine adapters actually write), NOT
-    on ``"completed"`` (which ``get_stage_progress`` filters and which is never persisted here).
+    Guards the Pitfall-1 vocabulary trap -- the done badge must key on ``FingerprintResult.status
+    == "success"`` (the value the engine adapters actually write), NOT on ``"completed"`` (which
+    ``get_stage_progress`` filters and which is never persisted here). Both engines are seeded
+    ``success`` so a regression that maps success -> pending makes "done" vanish and "pending"
+    appear; with no tracklist the only other cells are "no match" + "—", so the table carries no
+    "pending" word when the mapping is correct.
     """
     file = await _seed_file(session, original_filename="done.mp3")
     await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+    await _seed_fingerprint_result(session, file.id, "panako", "success")
     resp = await client.get("/s/trackid", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     tbl = resp.text[resp.text.index('id="trackid-file-table"') :]

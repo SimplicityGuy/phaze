@@ -1,0 +1,70 @@
+{# Phase 59 (59-02, IDENT-01): the Track-ID stage workspace.
+
+   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
+   (_workspace_scaffold.html): its single focus-target heading + a live sub-count bound to
+   $store.pipeline (refreshed by the SINGLE chrome poll -- no second loop, WORK-05/R-2). It is a
+   READ-ONLY consolidated identity view: the scaffold `actions` slot is left EMPTY (D-03 has no
+   trigger -- the prototype's AcoustID IDENTIFY flow is the dropped IDENT-03; its signals are
+   produced by the Fingerprint + Tracklist workspaces, not here).
+
+   Body = ONE combined per-file identity table (D-03 -- NOT two sub-sections) over
+   get_trackid_stage_files (shell._render_stage -> trackid_files), rendered through the reusable
+   _file_table.html. Columns: File · audfprint · Panako · Tracklist · Confidence.
+
+   Per UI-SPEC (Track-ID Color): audfprint/Panako render the engine status WORD coloured (D-01,
+   never hue-only -- WCAG 1.4.1): done emerald / failed rose / pending gray. Tracklist renders the
+   match-state word: matched emerald / candidate amber / no match gray. Confidence is the tracklist
+   match_confidence int as `{n}%` (D-02 -- NOT a fabricated fingerprint score) tiered >=90 emerald /
+   70-89 amber / <70 gray, or "—" gray when none (D-04).
+
+   Rows are inert-but-present (D-06 / R-1): cursor-pointer + a stable id via row_id_prefix, but the
+   click is UNBOUND in Phase 59 (row->record is Phase 61). Every DB-sourced `text` crosses the
+   DB->render trust boundary through _file_table.html autoescape -- never the raw passthrough
+   filter (T-59-XSS).
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = '`${$store.pipeline.fingerprintDone} fingerprinted · ${$store.pipeline.tracklistDone} with a tracklist match`' %}
+{% set _engine_color = {
+    "done": "text-emerald-600 dark:text-emerald-300",
+    "failed": "text-rose-600 dark:text-rose-400",
+    "pending": "text-gray-500 dark:text-gray-400",
+} %}
+{% set _match_color = {
+    "matched": "text-emerald-600 dark:text-emerald-300",
+    "candidate": "text-amber-600 dark:text-amber-300",
+    "no match": "text-gray-500 dark:text-gray-400",
+} %}
+{% call ws.workspace(title="TRACK-ID", subcount=subcount) %}
+    <div class="p-6">
+        {% set columns = ["File", "audfprint", "Panako", "Tracklist", "Confidence"] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for f in trackid_files %}
+            {% if f.confidence is none %}
+                {% set conf_text = "—" %}
+                {% set conf_color = "text-gray-500 dark:text-gray-400" %}
+            {% else %}
+                {% set conf_text = "%d%%" | format(f.confidence) %}
+                {% if f.confidence >= 90 %}
+                    {% set conf_color = "text-emerald-600 dark:text-emerald-300" %}
+                {% elif f.confidence >= 70 %}
+                    {% set conf_color = "text-amber-600 dark:text-amber-300" %}
+                {% else %}
+                    {% set conf_color = "text-gray-500 dark:text-gray-400" %}
+                {% endif %}
+            {% endif %}
+            {% set _ = ns.rows.append([
+                {'text': f.filename, 'mono': True, 'title': f.path},
+                {'text': f.audfprint_status, 'color': _engine_color.get(f.audfprint_status, "text-gray-500 dark:text-gray-400")},
+                {'text': f.panako_status, 'color': _engine_color.get(f.panako_status, "text-gray-500 dark:text-gray-400")},
+                {'text': f.tracklist_state, 'color': _match_color.get(f.tracklist_state, "text-gray-500 dark:text-gray-400")},
+                {'text': conf_text, 'mono': True, 'color': conf_color},
+            ]) %}
+        {% endfor %}
+        {% set rows = ns.rows %}
+        {% set empty_heading = "Nothing to identify" %}
+        {% set empty_body = "No discovered files carry a fingerprint or tracklist signal yet. Run Fingerprint or Tracklist Search first." %}
+        {% set row_id_prefix = "trackid-row" %}
+        {% set table_id = "trackid-file-table" %}
+        {% include "pipeline/partials/_file_table.html" %}
+    </div>
+{% endcall %}
