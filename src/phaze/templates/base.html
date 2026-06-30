@@ -18,14 +18,13 @@
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
 
-    <!-- Tailwind CSS — self-hosted (NOT CDN). jsDelivr minifies the bare package URL
-         on the fly with per-edge Terser versions, so the served bytes (and thus the SRI
-         hash) differ across edges; that broke SRI verification and could block the
-         stylesheet for clients on a divergent edge. Vendoring the audited build
-         (@tailwindcss/browser@4.3.2/dist/index.global.min.js, sha384-shaHAtPg…) makes
-         delivery deterministic and works on an isolated/private network. To update:
-         re-download that exact file into static/vendor/ and bump the filename version. -->
-    <script src="/static/vendor/tailwindcss-browser-4.3.2.min.js"></script>
+    <!-- Tailwind CSS — pre-built at image-build time by the pinned standalone
+         Tailwind v4 binary (see Dockerfile css-builder stage / `just tailwind`).
+         Replaces the former in-browser compiler (@tailwindcss/browser): no
+         276 KB JS, no client-side compile pass. Theme config (@theme), the dark
+         variant, @source, and the plain rules all live in assets/src/app.css.
+         Self-hosted, deterministic, works on an isolated/private network. -->
+    <link rel="stylesheet" href="/static/css/app.css">
 
     <!-- Jura font (design language primary) + Inter (body) -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Jura:wght@300;500&display=swap" rel="stylesheet">
@@ -137,36 +136,6 @@
         });
     </script>
 
-    <style type="text/tailwindcss">
-        @custom-variant dark (&:where(.dark, .dark *));
-
-        @theme {
-            /* Phaze accent palette — replaces default blue */
-            --color-blue-50: #e6f7fb;
-            --color-blue-100: #b3e8f3;
-            --color-blue-200: #80d9eb;
-            --color-blue-300: #4dcae3;
-            --color-blue-400: #1abbdb;
-            --color-blue-500: #00b0d8;
-            --color-blue-600: #00b0d8;
-            --color-blue-700: #008caf;
-            --color-blue-800: #006882;
-            --color-blue-900: #004455;
-            --color-blue-950: #002233;
-
-            /* Phaze dark background shades */
-            --color-phaze-bg: #0a0c12;
-            --color-phaze-panel: #10141c;
-            --color-phaze-border: #232832;
-        }
-    </style>
-
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .font-jura { font-family: 'Jura', sans-serif; }
-        .htmx-indicator { opacity: 0; transition: opacity 200ms; }
-        .htmx-request .htmx-indicator { opacity: 1; }
-    </style>
 </head>
 <body class="bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-200 min-h-screen transition-colors duration-200">
 

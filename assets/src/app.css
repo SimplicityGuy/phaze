@@ -1,0 +1,42 @@
+/* Tailwind input — compiled to src/phaze/static/css/app.css by the pinned
+ * standalone Tailwind v4 binary (NO Node). Built at image-build time and via
+ * `just tailwind` for local dev. Replaces the former in-browser compiler
+ * (@tailwindcss/browser) and the inline <style type="text/tailwindcss"> blocks
+ * that used to live in base.html / shell.html.
+ *
+ * Keep the standalone binary version in sync with the justfile `tailwind`
+ * recipe and the Dockerfile css-build stage (currently v4.3.2).
+ */
+@import "tailwindcss";
+
+/* Scan every Jinja template for utility classes. All class strings are literal
+ * in these files (macro call sites pass literals; Alpine :class bindings inline
+ * literals), so no safelist is required. */
+@source "../../src/phaze/templates";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    /* Phaze accent palette — replaces default blue */
+    --color-blue-50: #e6f7fb;
+    --color-blue-100: #b3e8f3;
+    --color-blue-200: #80d9eb;
+    --color-blue-300: #4dcae3;
+    --color-blue-400: #1abbdb;
+    --color-blue-500: #00b0d8;
+    --color-blue-600: #00b0d8;
+    --color-blue-700: #008caf;
+    --color-blue-800: #006882;
+    --color-blue-900: #004455;
+    --color-blue-950: #002233;
+
+    /* Phaze dark background shades */
+    --color-phaze-bg: #0a0c12;
+    --color-phaze-panel: #10141c;
+    --color-phaze-border: #232832;
+}
+
+body { font-family: 'Inter', sans-serif; }
+.font-jura { font-family: 'Jura', sans-serif; }
+.htmx-indicator { opacity: 0; transition: opacity 200ms; }
+.htmx-request .htmx-indicator { opacity: 1; }

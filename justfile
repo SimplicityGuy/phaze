@@ -9,15 +9,18 @@ test_db_container := "phaze-test-db"
 test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
 # Fixed container name for the ephemeral integration-test Redis
 test_redis_container := "phaze-test-redis"
+# Standalone Tailwind CSS binary version. Keep in sync with the Dockerfile
+# css-build stage. NO Node — the standalone binary compiles assets/src/app.css.
+tailwind_version := "v4.3.2"
 
 [doc('Install all dependencies')]
 [group('dev')]
-install:
+install: tailwind
     uv sync
 
 [doc('Start all services in Docker')]
 [group('dev')]
-up:
+up: tailwind
     docker compose up -d
 
 [doc('Start file-server agent stack (standalone docker-compose.agent.yml)')]
@@ -52,8 +55,22 @@ logs:
 
 [doc('Rebuild and restart services')]
 [group('dev')]
-rebuild:
+rebuild: tailwind
     docker compose up -d --build
+
+[doc('Download the standalone Tailwind binary (NO Node) and rebuild app.css')]
+[group('build')]
+tailwind:
+    @mkdir -p src/phaze/static/css bin
+    @if [ ! -x ./bin/tailwindcss ]; then \
+        echo "⬇️  Downloading standalone Tailwind binary ({{ tailwind_version }})..."; \
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/'); \
+        ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
+        curl -fsSL --retry 3 --retry-delay 5 -o ./bin/tailwindcss \
+            "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}"; \
+        chmod +x ./bin/tailwindcss; \
+    fi
+    ./bin/tailwindcss -i assets/src/app.css -o src/phaze/static/css/app.css --minify
 
 [doc('Run all tests')]
 [group('test')]

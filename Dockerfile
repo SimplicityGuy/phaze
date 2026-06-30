@@ -1,3 +1,42 @@
+# ── CSS build stage ──────────────────────────────────────────────────────────
+# Compiles assets/src/app.css → src/phaze/static/css/app.css with the pinned
+# standalone Tailwind v4 binary (NO Node). Replaces the former in-browser
+# compiler (@tailwindcss/browser). Keep TAILWIND_VERSION in sync with the
+# justfile `tailwind` recipe. The final image copies only the generated CSS.
+FROM python:3.14-slim AS css-builder
+
+ARG TAILWIND_VERSION=v4.3.2
+ARG TARGETARCH
+
+WORKDIR /build
+
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# TARGETARCH is buildx's amd64/arm64; map to Tailwind's x64/arm64 asset names.
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      "amd64") TW_ARCH="x64" ;; \
+      "arm64") TW_ARCH="arm64" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 --retry-delay 5 \
+        -o /usr/local/bin/tailwindcss \
+        "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-${TW_ARCH}"; \
+    chmod +x /usr/local/bin/tailwindcss; \
+    /usr/local/bin/tailwindcss --help >/dev/null
+
+# app.css's @source scans ../../src/phaze/templates relative to the input file,
+# so the templates must sit at that same path inside the stage.
+COPY assets/ assets/
+COPY src/phaze/templates/ src/phaze/templates/
+RUN /usr/local/bin/tailwindcss \
+        -i assets/src/app.css \
+        -o src/phaze/static/css/app.css \
+        --minify
+
 FROM python:3.14-slim AS base
 
 WORKDIR /app
@@ -31,6 +70,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini ./
+
+# Build-time Tailwind CSS (replaces the in-browser compiler). Generated, not in
+# the repo, so it is copied from the css-builder stage rather than the context.
+COPY --from=css-builder /build/src/phaze/static/css/app.css src/phaze/static/css/app.css
 
 # Install project
 RUN uv sync --frozen --no-dev
