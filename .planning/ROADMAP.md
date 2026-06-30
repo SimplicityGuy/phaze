@@ -187,7 +187,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 58. Enrich + Analyze workspaces | v7.0 | 4/4 | Complete    | 2026-06-30 |
-| 59. Identify workspaces | v7.0 | 1/3 | In Progress|  |
+| 59. Identify workspaces | v7.0 | 2/3 | In Progress|  |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
 | 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
 | 62. Polish & cutover | v7.0 | 0/TBD | Not started | - |
@@ -781,7 +781,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 59-02-PLAN.md — Track-ID workspace (combined per-file identity table) + shell wiring
+- [x] 59-02-PLAN.md — Track-ID workspace (combined per-file identity table) + shell wiring
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
