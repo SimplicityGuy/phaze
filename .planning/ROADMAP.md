@@ -731,9 +731,16 @@ Plans:
   4. Each in-flight Analyze file shows which lane (local/A1/k8s) it is running on and its windowed progress.
   5. Stage workspaces refresh live via the existing stats-poll (no manual reload) — verifiably **one** request per 5s in the network tab, with a `visibilitychange` guard that sheds polling when the tab is backgrounded.
 
-**Notes**: WORK-05 is a discipline, not a feature — reuse the `stats_bar.html` OOB-seed contract for rail counts + header status strip and add **no second poll loop**. Data sources all exist (`pipeline.py`, `pipeline_scans.py`, `pipeline_stages.py`); the local/A1/k8s lane-card partials exist from v6.0. No phase research needed.
-**Plans**: TBD
+**Notes**: WORK-05 is a discipline, not a feature — reuse the `stats_bar.html` OOB-seed contract for rail counts + header status strip and add **no second poll loop**. Data sources all exist (`pipeline.py`, `pipeline_scans.py`, `pipeline_stages.py`); the local/A1/k8s lane-card partials exist from v6.0. No phase research needed. **Planning finding (2026-06-30):** the v7.0 shell has NO live `/pipeline/stats` poll element today (only the legacy `dashboard.html` does) — Plan 01 wires the single persistent poll + `visibilitychange` shed into shell chrome.
+**Plans**: 4 plans (sequential — shell.py STAGE_PARTIALS + the test file are shared chokepoints; one stage swapped per wave so the app stays usable at every commit)
 **UI hint**: yes
+
+Plans:
+
+- [ ] 58-01-PLAN.md — Live-poll foundation: persistent `#pipeline-stats` poll + `visibilitychange` shed in shell chrome + Phase-58 test scaffold + D-02 UI-SPEC reconciliation note (WORK-05) [Wave 1]
+- [ ] 58-02-PLAN.md — Shared scaffold/file-table/poll-seed-target partials + Discover workspace (recent scans + not-yet-enriched derived seed + SCAN/RECOVER) (WORK-01, WORK-05) [Wave 2]
+- [ ] 58-03-PLAN.md — Metadata + Fingerprint workspaces: queue tables + EXTRACT ALL / FINGERPRINT ALL wired verbatim to existing endpoints (D-01/D-02) (WORK-02, WORK-05) [Wave 3]
+- [ ] 58-04-PLAN.md — Analyze workspace: 3 always-render lane cards (local/A1/k8s) + reused cloud cards + all-in-stage file table with per-file lane badge + windowed progress (D-03/D-04/D-05/D-06) (WORK-03, WORK-04, WORK-05) [Wave 4]
 
 ### Phase 59: Identify workspaces
 
