@@ -186,7 +186,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 0/TBD | Not started | - |
-| 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
+| 58. Enrich + Analyze workspaces | v7.0 | 1/4 | In Progress|  |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
 | 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
@@ -737,7 +737,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 58-01-PLAN.md — Live-poll foundation: persistent `#pipeline-stats` poll + `visibilitychange` shed in shell chrome + Phase-58 test scaffold + D-02 UI-SPEC reconciliation note (WORK-05) [Wave 1]
+- [x] 58-01-PLAN.md — Live-poll foundation: persistent `#pipeline-stats` poll + `visibilitychange` shed in shell chrome + Phase-58 test scaffold + D-02 UI-SPEC reconciliation note (WORK-05) [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

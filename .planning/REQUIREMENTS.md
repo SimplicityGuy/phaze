@@ -40,7 +40,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 - [ ] **WORK-02**: Selecting Metadata or Fingerprint shows that stage's file queue with its manual trigger (metadata stays manual per the Phase 35 decision), backed by the existing endpoints.
 - [ ] **WORK-03**: The Analyze workspace shows three execution-lane cards — local / A1 / k8s — each with live capacity, and the k8s lane surfaces Kueue quota-wait vs. Inadmissible state.
 - [ ] **WORK-04**: Each in-flight Analyze file shows which lane (local/A1/k8s) it is running on and its windowed progress. (In-flight windowed progress reads the read-only mid-flight signal delivered by PROG-03 / Phase 57.1; completed files show full window coverage from the aggregate.)
-- [ ] **WORK-05**: Stage workspaces refresh live via the existing stats-poll pattern (no manual reload to see progress).
+- [x] **WORK-05**: Stage workspaces refresh live via the existing stats-poll pattern (no manual reload to see progress).
 
 ### Identify workspaces (IDENT)
 

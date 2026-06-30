@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
 status: executing
-last_updated: "2026-06-30T18:38:14.421Z"
-last_activity: 2026-06-30 -- Phase 58 planning complete
+last_updated: "2026-06-30T18:58:40.036Z"
+last_activity: 2026-06-30
 progress:
   total_phases: 29
   completed_phases: 1
   total_plans: 8
-  completed_plans: 4
+  completed_plans: 5
   percent: 3
 ---
 
@@ -20,16 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 58 — enrich + analyze workspaces
+**Current focus:** Phase 58 — enrich-analyze-workspaces
 
 ## Current Position
 
-Phase: 58
-Plan: Not started
+Phase: 58 (enrich-analyze-workspaces) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-06-30 -- Phase 58 planning complete
+Last activity: 2026-06-30
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████░░░░] 63%
 
 ## Performance Metrics
 
@@ -96,6 +96,7 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 38]: 38-02: stage_controls reusable Jinja macro (id=stage-controls-<stage>) on the 3 agent chips; pause/resume = TWO x-show-gated static-hx-post buttons (not a bound :hx-post), authoritative-only @htmx:after-request JSON-parse store write, no optimistic mutation (T-38-OOB)
 - [Phase 38]: 38-02: agent-chip NODE_LAYOUT gutter widened 182->276px (h 154->250) for the control row; overlap guard min_chip_height bumped 150->240; canvas/SVG grown 720->1000; col-0/col-2/col-3 nodes re-balanced to incoming-edge midpoints
 - [Phase ?]: Phase 46-01: agent liveness heartbeat runs as an asyncio background task launched in agent_worker startup (cancelled in shutdown), NOT a SAQ CronJob — a CronJob competed for worker_max_jobs dispatch slots and was starved by multi-hour process_file jobs (busy-agent-DEAD incident); heartbeat_tick kept as a back-compat shim; one-time DELETE of orphaned cron:heartbeat_tick row from saq_jobs documented for redeploy
+- [Phase 58]: 58-01: WORK-05 single-poll wired via htmx 'every 5s [document.visibilityState===visible]' trigger filter + visibilitychange foreground-resume listener (not hx-trigger=none toggle) — avoids htmx reprocess double-timer, keeps one poll element
 
 ### Pending Todos
 
@@ -149,6 +150,7 @@ None.
 | Phase 45 P05 | ~5 min | 1 tasks | 2 files |
 | Phase 45 P06 | ~25 min | 2 tasks | 12 files |
 | Phase 46 P01 | ~20min | 3 tasks | 8 files |
+| Phase 58 P01 | ~11min | 2 tasks | 3 files |
 
 ## Deferred Items
 
@@ -178,9 +180,9 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-06-30T04:46:38.994Z
-Stopped at: Phase 58 plan halted: inserted Phase 57.1 (incremental window progress, PROG-01..03) as scoped backend exception; plan 57.1 before 58
-Resume file: .planning/phases/57.1-incremental-window-persistence-live-analyze-progress-signal
+Last session: 2026-06-30T18:58:40.031Z
+Stopped at: Completed 58-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
