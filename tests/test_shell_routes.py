@@ -19,6 +19,7 @@ Function -> requirement map (see 57-VALIDATION.md "Per-Task Verification Map"):
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -26,6 +27,23 @@ import pytest
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
+
+
+# The 12 navigable rail-node ids (VERBATIM prototype RAIL order), each wired to /s/<id>.
+_RAIL_STAGES = [
+    "discover",
+    "metadata",
+    "fingerprint",
+    "analyze",
+    "trackid",
+    "tracklist",
+    "propose",
+    "rename",
+    "tagwrite",
+    "move",
+    "dedupe",
+    "cue",
+]
 
 
 @pytest.mark.asyncio
@@ -67,14 +85,61 @@ async def test_unknown_stage_404(client: AsyncClient) -> None:
     assert response.status_code == 404
 
 
-def test_rail_nodes_wired() -> None:
-    """SHELL-02 -- filled by Plan 57-03 Task 3."""
-    ...
+@pytest.mark.asyncio
+async def test_rail_nodes_wired(client: AsyncClient) -> None:
+    """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; analyze is active.
+
+    The DAG rail is the nav spine: each of the 12 prototype-order nodes swaps ONLY
+    ``#stage-workspace`` (innerHTML) via ``/s/<id>`` with ``hx-push-url``. The ``/`` default
+    marks the analyze node ``aria-current="page"``.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+
+    # Every navigable node carries hx-get="/s/<id>" for all 12 prototype-order stages.
+    for stage in _RAIL_STAGES:
+        assert f'hx-get="/s/{stage}"' in body, f"rail node {stage} missing hx-get wiring"
+
+    # The single stable swap target + push-url are present on the rail nodes.
+    assert 'hx-target="#stage-workspace"' in body
+    assert 'hx-swap="innerHTML"' in body
+    assert 'hx-push-url="true"' in body
+    # At least one swap-target attr per navigable node (12) -- the +Scan CTA adds one more.
+    assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES)
+
+    # The analyze node (the / default) is the active rail node: aria-current="page" sits on
+    # the same element carrying data-rail-stage="analyze".
+    assert re.search(r'data-rail-stage="analyze"[^>]*aria-current="page"', body), 'analyze rail node must carry aria-current="page" on the shell root'
 
 
-def test_tabbar_removed_header_present() -> None:
-    """SHELL-03 -- filled by Plan 57-03 Task 3."""
-    ...
+@pytest.mark.asyncio
+async def test_tabbar_removed_header_present(client: AsyncClient) -> None:
+    """SHELL-03 -- the legacy top <nav> tab-bar is gone; the ⌘K header + status strip is in.
+
+    The shell does NOT render ``base.html``, so the legacy ``aria-label="Main navigation"``
+    tab-bar and its tab hrefs are absent. The header instead carries the ⌘K command-palette
+    affordance, the agent status dots, and the Agents link to ``/admin/agents``.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+
+    # Legacy tab-bar removed: the base.html nav landmark + the legacy Search tab href are
+    # gone. (The /proposals/ href is NOT a valid marker -- the bridged Analyze dashboard
+    # content legitimately links to it; only base.html's nav landmark + /search/ tab are
+    # unique to the retired tab-bar.)
+    assert 'aria-label="Main navigation"' not in body
+    assert 'href="/search/"' not in body
+
+    # ⌘K header command bar present (the trigger button + the ⌘K chip).
+    assert 'id="cmdk-trigger"' in body
+    assert "⌘K" in body
+
+    # Agent status strip: the dot/count bind to the existing $store.pipeline.agentOnline key,
+    # and the Agents link points at the existing /admin/agents route.
+    assert "agentOnline" in body
+    assert 'href="/admin/agents"' in body
 
 
 @pytest.mark.asyncio
