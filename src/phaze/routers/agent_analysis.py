@@ -44,6 +44,8 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import (
     AnalysisFailurePayload,
     AnalysisFailureResponse,
+    AnalysisProgressPayload,
+    AnalysisProgressResponse,
     AnalysisWritePayload,
     AnalysisWriteResponse,
 )
@@ -238,6 +240,58 @@ async def put_analysis(
 
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
+
+
+@router.post("/{file_id}/progress", status_code=status.HTTP_200_OK, response_model=AnalysisProgressResponse)
+async def post_analysis_progress(
+    file_id: uuid.UUID,
+    body: AnalysisProgressPayload,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AnalysisProgressResponse:
+    """Counter-only mid-flight progress upsert -- a SIBLING of ``put_analysis``, NOT a call into it (Phase 57.1 D-01/D-02).
+
+    Upserts ONLY ``fine_windows_analyzed`` + ``fine_windows_total`` on the file's
+    ``analysis`` row (``file_id`` UQ natural key). The START call carries
+    ``(analyzed=0, total=N)``; bumps carry ``(analyzed=k, total=N)``. A second POST
+    for the same ``file_id`` overwrites the counts (idempotent counter, NO second row).
+
+    This handler reuses ``put_analysis``'s ``pg_insert…on_conflict_do_update``
+    *mechanism* but STRIPS every completion side effect (KEY RISK / T-57.1-03):
+    it does NOT flip ``FileState.ANALYZED``, does NOT write/replace
+    ``analysis_window`` rows, does NOT ``clear_ledger_entry``, does NOT
+    ``_delete_staged_object_if_cloud``, and does NOT stamp ``analysis_completed_at``.
+    The partial row it writes therefore leaves ``analysis_completed_at`` NULL, so the
+    proposal convergence gate (``analysis_completed_at IS NOT NULL``) keeps it out of
+    ``generate_proposals``. Completion stays solely on ``put_analysis``.
+
+    ``agent`` comes from ``get_authenticated_agent`` (token, NEVER body -- AUTH-01,
+    T-57.1-01); ``file_id`` rides the PATH only; ``extra='forbid'`` on the payload
+    makes a forged ``agent_id``/``file_id`` a 422 (T-57.1-02).
+    """
+    # Counter-only upsert: SET clause covers ONLY the two count columns. PK `id` is
+    # stamped explicitly because AnalysisResult.id has a Python-only default that
+    # pg_insert bypasses (mirrors put_analysis). file_id is the PATH value only.
+    payload = {
+        "fine_windows_analyzed": body.fine_windows_analyzed,
+        "fine_windows_total": body.fine_windows_total,
+        "file_id": file_id,
+        "id": uuid.uuid4(),
+    }
+    stmt = pg_insert(AnalysisResult).values([payload])
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["file_id"],
+        set_={
+            "fine_windows_analyzed": stmt.excluded.fine_windows_analyzed,
+            "fine_windows_total": stmt.excluded.fine_windows_total,
+        },
+    )
+    await session.execute(stmt)
+    # NO FileRecord state flip, NO AnalysisWindow delete/insert, NO ledger clear,
+    # NO staged-object delete, NO analysis_completed_at stamp -- this is what makes
+    # it a sibling, not a reuse (T-57.1-03).
+    await session.commit()
+    return AnalysisProgressResponse(agent_id=agent.id, file_id=file_id)
 
 
 @router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=AnalysisFailureResponse)
