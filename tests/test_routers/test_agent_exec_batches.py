@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 
 # Worktree-isolation note: Plan 28-02 runs in parallel with Plan 28-03. The two
 # pytest processes share the default `phaze_test` Postgres database, and the
