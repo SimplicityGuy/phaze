@@ -22,11 +22,11 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Application shell & DAG rail (SHELL)
 
-- [ ] **SHELL-01**: Visiting `/` renders the new DAG-centric home (three-column shell) with the Analyze stage selected by default — no redirect to `/pipeline`, no landing on a secondary tab.
-- [ ] **SHELL-02**: A persistent left DAG rail lists every pipeline stage (Discover; Enrich = Metadata/Fingerprint/Analyze; Identify = Track-ID/Tracklist; Propose; Review & Apply = Rename/Tag/Move/Dedupe/Cue) with live counts, and clicking a stage swaps the center workspace via HTMX without a full-page navigation.
-- [ ] **SHELL-03**: The legacy top tab-bar is removed; global search becomes a ⌘K command bar in the header and compute/agent status moves to a header status strip.
-- [ ] **SHELL-04**: The existing auto/dark/light theme toggle and the Jura/blue/wave-logo brand language are preserved in the new shell.
-- [ ] **SHELL-05**: Old per-tab routes (`/pipeline`, `/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`, `/search`, `/preview`) redirect into the corresponding shell stage state so existing bookmarks do not break.
+- [x] **SHELL-01**: Visiting `/` renders the new DAG-centric home (three-column shell) with the Analyze stage selected by default — no redirect to `/pipeline`, no landing on a secondary tab.
+- [x] **SHELL-02**: A persistent left DAG rail lists every pipeline stage (Discover; Enrich = Metadata/Fingerprint/Analyze; Identify = Track-ID/Tracklist; Propose; Review & Apply = Rename/Tag/Move/Dedupe/Cue) with live counts, and clicking a stage swaps the center workspace via HTMX without a full-page navigation.
+- [x] **SHELL-03**: The legacy top tab-bar is removed; global search becomes a ⌘K command bar in the header and compute/agent status moves to a header status strip.
+- [x] **SHELL-04**: The existing auto/dark/light theme toggle and the Jura/blue/wave-logo brand language are preserved in the new shell.
+- [x] **SHELL-05**: Old per-tab routes (`/pipeline`, `/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`, `/search`, `/preview`) redirect into the corresponding shell stage state so existing bookmarks do not break.
 
 ### Enrich & Analyze workspaces (WORK)
 

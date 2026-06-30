@@ -33,7 +33,7 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
 
 > **Activated 2026-06-29** (v6.0 shipped + archived; STATE.md switched to v7.0). Replaces the MVP tab-sprawl UI with a **DAG-centric hybrid console**: the pipeline is the home and the navigation spine (three-column shell — DAG rail · stage workspace · per-file pane), local/A1/k8s are first-class Analyze lanes, and every human approval unifies behind one before→after diff/approve gate. Aesthetic = C3 "Evolved phaze" (keep Jura/blue/wave-logo/dark theme + light toggle). **IA/template rewrite over existing routers/services — no backend behavior change**; depends on and visualizes v6.0's local/A1/k8s routing targets. Stack stays server-rendered (FastAPI + Jinja2 + HTMX + Tailwind + Alpine, no SPA build); v7.0 bumps htmx→2.0.10 / Alpine→3.15.12 / Tailwind→4.3.2 (recompute SRI; stay on htmx 2.0.x — 4.0 is beta) and adds exactly one dep (`@alpinejs/focus@3.15.12`, Phase 61). Build order is **dependency-strict: 57 → 58 → 59 → 60 → 61 → 62** — Phase 57 is the load-bearing foundation and CUT-02 dead-code removal in Phase 62 is necessarily last. Design: `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype). Requirements: `.planning/REQUIREMENTS.md` (25 reqs, 25/25 mapped — no orphans, no duplicates). Each phase = own PR (worktree branch). Full per-phase detail in **Phase Details** below.
 
-- [ ] **Phase 57: Shell & DAG rail** — three-column app shell, header + ⌘K affordance + status strip, DAG rail as HTMX nav, `/` home (Analyze default), brand/theme preserved, old tab routes redirect/render into the shell (SHELL-01..05)
+- [x] **Phase 57: Shell & DAG rail** — three-column app shell, header + ⌘K affordance + status strip, DAG rail as HTMX nav, `/` home (Analyze default), brand/theme preserved, old tab routes redirect/render into the shell (SHELL-01..05) (completed 2026-06-30)
   - Success: `/` renders the three-column shell with Analyze selected (no `/pipeline` redirect); a rail click swaps only `#stage-workspace` with no full-page nav; the legacy tab-bar is gone; dark/light + Jura/wave brand intact; all 8 old routes resolve in ≤1 hop.
 - [ ] **Phase 58: Enrich + Analyze workspaces** — Discover/Metadata/Fingerprint/Analyze stage views; three Analyze lane cards (local/A1/k8s) with live capacity + Kueue quota-wait/Inadmissible; single-poll stats fanout (WORK-01..05)
   - Success: each stage shows its queue + existing trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update with no manual reload and no second poll loop.
@@ -182,7 +182,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
-| 57. Shell & DAG rail | v7.0 | 4/4 | Complete   | 2026-06-30 |
+| 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
