@@ -185,7 +185,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
-| 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 0/4 | Planned | - |
+| 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 1/4 | In Progress|  |
 | 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
@@ -712,11 +712,11 @@ Plans:
 **Goal:** Persist `analysis_window` rows and bump `analysis.fine_windows_analyzed`/`fine_windows_total` **incrementally as each window completes** during `analyze_file`, instead of only atomically at completion — exposing a **read-only, per-file mid-flight progress signal** the Phase 58 Analyze workspace can display for in-flight files. Must remain **idempotent and safe under Phase 32 reboot re-enqueue**: a file killed mid-analysis leaves partial window rows that a re-run replaces cleanly (extend Phase 31's `put_analysis` replace-by-file semantics to the incremental write path). **Deliberate, scoped exception to the v7.0 "no backend behavior change" milestone rule** (approved 2026-06-29): this is the one analysis-pipeline change v7.0 makes, isolated here so the Phase 58 UI stays presentation-only. NO new queue/task/routing semantics; representative aggregates (median BPM, modal key, dominant mood/style) and the final `ANALYZED` flip are unchanged. First plan task is a spike confirming incremental persistence + crash-mid-run idempotency on a real long file.
 **Requirements**: PROG-01, PROG-02, PROG-03
 **Depends on:** Phase 57 (builds on Phase 31 windowed analysis + Phase 32 reboot resilience, both shipped)
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 57.1-01-PLAN.md — SPIKE: resolve the pebble/k8s transport fork + prove crash-mid-run idempotency on a real long file (PROG-01/02)
+- [x] 57.1-01-PLAN.md — SPIKE: resolve the pebble/k8s transport fork + prove crash-mid-run idempotency on a real long file (PROG-01/02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

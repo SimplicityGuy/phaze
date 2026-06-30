@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
 status: executing
-last_updated: "2026-06-30T05:32:19.111Z"
-last_activity: 2026-06-30 -- Phase 57.1 planning complete
+last_updated: "2026-06-30T14:51:14.907Z"
+last_activity: 2026-06-30
 progress:
   total_phases: 29
   completed_phases: 1
   total_plans: 8
-  completed_plans: 4
+  completed_plans: 5
   percent: 3
 ---
 
@@ -20,16 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 58 — enrich + analyze workspaces
+**Current focus:** Phase 57.1 — Incremental window persistence & live analyze progress signal
 
 ## Current Position
 
-Phase: 58
-Plan: Not started
+Phase: 57.1 (Incremental window persistence & live analyze progress signal) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-06-30 -- Phase 57.1 planning complete
+Last activity: 2026-06-30
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████░░░░] 63%
 
 ## Performance Metrics
 
@@ -176,11 +176,24 @@ Items acknowledged and deferred at the **v6.0** milestone close on 2026-06-29. A
 
 These are tracked for the v6.0 deploy; they are NOT blockers for the milestone record. The JOB-ENV-CONTRACT seam fix (quick 260628-wzq) makes the live E2E re-run especially important.
 
+Item acknowledged and deferred during **Phase 57.1 Plan 01** (the SPIKE) on 2026-06-30. The
+two load-bearing safety properties were proven on automated proxies (pebble Queue-drainer
+SIGKILL kill-safety + crash-mid-run idempotency on real Postgres); the operator approved Task 3
+as **deferred-to-live** ("approved — deferred to live"). Full record in
+`.planning/phases/57.1-incremental-window-persistence-live-analyze-progress-signal/57.1-01-SPIKE-FINDINGS.md` §3.
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 57.1-01 real multi-hour `kill -9` (local/A1 pebble lane) | deferred-to-live | The true crash-mid-essentia on a real multi-hour concert file cannot be unit-mocked; the mechanics (pebble SIGKILL→TimeoutError, drainer teardown, Phase 32 re-enqueue, identical re-run) are each proven in isolation. Verify at homelab rollout on a real concert set. |
+| uat | 57.1-01 k8s-lane live progress (Assumption A3) | deferred-to-live | essentia/TF thread-safety under `asyncio.to_thread` + `run_coroutine_threadsafe` pends a live Kueue cluster run — mirrors the v6.0 deferred K8s E2E pattern. The bridge is unit-coverable in Plan 04. |
+
+These are tracked for the v7.0 homelab/cluster rollout; they are NOT blockers for Phase 57.1. Transport decision (Option A Queue-drainer) is settled for Plan 04 regardless.
+
 ## Session Continuity
 
-Last session: 2026-06-30T04:55:06.287Z
+Last session: 2026-06-30T14:51:14.901Z
 Stopped at: Phase 57.1 context gathered
-Resume file: .planning/phases/57.1-incremental-window-persistence-live-analyze-progress-signal/57.1-CONTEXT.md
+Resume file: None
 
 ## Operator Next Steps
 
