@@ -105,6 +105,10 @@
             // `metadataExtracted`; the store keeps both, the gating swap lands in 35-05.
             Alpine.store('pipeline', {
                 discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
+                // Phase 58 (58-02, WORK-01): Discover "not yet enriched" backlog (discovered −
+                // metadataExtracted, clamped ≥0). A read-only derived int seeded onto the dag dict
+                // server-side; rides the existing dag.items() OOB loop onto dag-seed-notYetEnriched.
+                notYetEnriched: 0,
                 // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
                 // gate so each agent enqueue button gates on its OWN stage (run in parallel).
                 // agentBusy is kept — the queue_progress card path still reads agent_busy server-side.

@@ -25,8 +25,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 
 from phaze.database import get_session
+from phaze.models.agent import Agent
+from phaze.routers.pipeline_scans import build_recent_scans
 
 from .pipeline import build_dashboard_context
 
@@ -91,6 +94,15 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["stage"] = stage
         context["stage_partial"] = STAGE_PARTIALS[stage]
         context["oob_counts"] = False
+    elif stage == "discover":
+        # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
+        # data verbatim (build_recent_scans -- the SAME helper build_dashboard_context uses) and
+        # the non-revoked agent list driving the reused Trigger Scan form. Both reads degrade-safe
+        # at the service/ORM layer (no router try/except). oob_counts stays False on the stage
+        # render (Pitfall 3); the live sub-count refreshes via the single chrome poll's OOB seeds.
+        context["recent_scans"] = await build_recent_scans(session)
+        agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+        context["agents"] = (await session.execute(agents_stmt)).scalars().all()
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)

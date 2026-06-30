@@ -128,7 +128,9 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
     return min(fallback, stage_total) if stage_total > 0 else fallback
 
 
-async def _build_dag_context(app_state: Any, session: AsyncSession, activity: dict[str, int]) -> dict[str, dict[str, int]]:
+async def _build_dag_context(
+    app_state: Any, session: AsyncSession, activity: dict[str, int], stats: dict[str, int] | None = None
+) -> dict[str, dict[str, int]]:
     """Build the per-DAG-node store-key context consumed by stats_bar.html + the 35-05 canvas.
 
     Reconciles three sources (D-03): ``get_stage_progress`` (DB-truth ``done``/``total`` per
@@ -213,6 +215,15 @@ async def _build_dag_context(app_state: Any, session: AsyncSession, activity: di
     # matchDone are already seeded above; the gate derives pending = total - done client-side.)
     dag["scrapeBusy"] = int(await get_scrape_busy_count(session))
     dag["matchBusy"] = int(await get_match_busy_count(session))
+
+    # Phase 58 (58-02, WORK-01): the Discover "not yet enriched" backlog -- a READ-ONLY derived
+    # int (discovered files that have no extracted metadata yet), clamped >= 0. No new query path
+    # and no new poll: it reuses get_pipeline_stats (passed through by both poll/dashboard callers
+    # to avoid a duplicate query; read here if a direct caller omits it) and rides the existing
+    # dag.items() OOB seed loop onto the dag-seed-notYetEnriched placeholder the workspaces pre-mount.
+    if stats is None:
+        stats = await get_pipeline_stats(session)
+    dag["notYetEnriched"] = max(int(stats["discovered"]) - int(stats["metadata_extracted"]), 0)
 
     return {"dag": dag}
 
@@ -469,7 +480,8 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # (DB-truth) + the maintained completed counters (backstop) + the queue activity. The
     # 35-05 canvas seeds these into $store.pipeline on the full-page render; here they ride
     # the dashboard context. _build_dag_context isolates its own counter-source failures.
-    dag_ctx = await _build_dag_context(app_state, session, activity)
+    # stats is passed through so the Phase-58 notYetEnriched derived seed reuses it (no 2nd query).
+    dag_ctx = await _build_dag_context(app_state, session, activity, stats)
 
     # Phase 44 (44-04): the STRAGGLER count (long-running in-flight process_file jobs,
     # "still grinding") and the ANALYSIS_FAILED count ("gave up") -- two distinct buckets
@@ -585,7 +597,8 @@ async def pipeline_stats_partial(
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
     # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
-    dag_ctx = await _build_dag_context(request.app.state, session, activity)
+    # stats is passed through so the Phase-58 notYetEnriched derived seed reuses it (no 2nd query).
+    dag_ctx = await _build_dag_context(request.app.state, session, activity, stats)
     # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
     # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
     # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.

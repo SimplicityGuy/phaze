@@ -80,6 +80,10 @@ _NEW_STORE_KEYS = (
     # int-key context test, AND the OOB-seed test.
     "scrapeBusy",
     "matchBusy",
+    # Phase 58 (58-02, WORK-01): Discover "not yet enriched" derived backlog int (discovered -
+    # metadataExtracted, clamped >= 0). One edit drives the store-literal seed test, the int-key
+    # context test, AND the OOB-seed test -- it rides the same dag.items() seed/OOB loop.
+    "notYetEnriched",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.
