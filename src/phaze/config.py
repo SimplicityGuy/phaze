@@ -822,6 +822,18 @@ class AgentSettings(BaseSettings):
         description="Maximum number of COARSE-tier (mood/style/danceability) windows analyze_file decodes per file (Phase 43). ge=2: even-stride always keeps first+last, so a cap below 2 is invalid (and would divide-by-zero in _stride_to_cap).",
     )
 
+    # Phase 57.1 (PROG-01, D-04): the parent/loop-side throttle for the mid-flight analyze
+    # progress POST. analyze_file fires its progress_cb per FINE window, but the lane bridge
+    # (tasks/functions.py drainer + job_runner.py cb) collapses bursts to at most one POST per
+    # this interval (monotonic-keyed) and always flushes the final count. Given the Phase 31
+    # window caps (≤~60 fine windows/file) the throttle only matters for short/fast files.
+    analysis_progress_interval_sec: float = Field(
+        default=5.0,
+        ge=0.0,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "analysis_progress_interval_sec"),
+        description="Minimum seconds between mid-flight analyze-progress POSTs (Phase 57.1 D-04). The final count is always flushed regardless; 0 disables throttling.",
+    )
+
     # Phase 29 D-03: path to the operator-distributed CA cert that the agent's
     # httpx.AsyncClient uses to verify the application-server TLS endpoint.
     # Default `/certs/phaze-ca.crt` matches the bind-mount path inside agent
