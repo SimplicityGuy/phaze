@@ -177,6 +177,23 @@ async def test_single_poll_discipline(client: AsyncClient) -> None:
         assert "setInterval" not in frag.text, f"{stage} fragment must not use setInterval"
 
 
+@pytest.mark.asyncio
+async def test_shell_store_seeds_phase58_keys(client: AsyncClient) -> None:
+    """WORK-01/03/05 -- the v7.0 shell's OWN Alpine store seeds the Phase-58 derived keys.
+
+    The shell (``shell/shell.html``) carries a standalone ``Alpine.store('pipeline', {...})``
+    independent of the legacy ``base.html`` store. Phase-58 x-text bindings (Discover
+    ``notYetEnriched`` sub-count, A1 lane ``computeOnline`` capacity) must be seeded to int 0
+    there too, or they render ``undefined`` on initial paint until the first ~5s poll. Guards
+    the base.html/shell.html store-divergence defect (verification W-1).
+    """
+    shell = await client.get("/")
+    assert shell.status_code == 200
+    body = shell.text
+    assert "notYetEnriched: 0" in body, "shell store must seed notYetEnriched to int 0 (no undefined flash)"
+    assert "computeOnline: 0" in body, "shell store must seed computeOnline to int 0 (no undefined flash)"
+
+
 # ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 58-VALIDATION.md Per-Task Verification Map)
