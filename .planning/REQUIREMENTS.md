@@ -96,9 +96,9 @@ Each v7.0 requirement maps to exactly one phase. **Coverage: 28/28 — no orphan
 | SHELL-03 | Phase 57 — Shell & DAG rail | Planned |
 | SHELL-04 | Phase 57 — Shell & DAG rail | Planned |
 | SHELL-05 | Phase 57 — Shell & DAG rail | Planned |
-| PROG-01 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
-| PROG-02 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
-| PROG-03 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
+| PROG-01 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
+| PROG-02 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
+| PROG-03 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
 | WORK-01 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-02 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-03 | Phase 58 — Enrich + Analyze workspaces | Planned |
