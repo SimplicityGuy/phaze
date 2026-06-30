@@ -36,7 +36,7 @@
 | WORK-01 | Discover shows recent scans + count of discovered-but-not-yet-enriched, with scan trigger | Reuse `recent_scans_table.html` (fed by `build_recent_scans`, `pipeline_scans.py:229`); "discovered" count = `$store.pipeline.discovered`; "not yet enriched" derivable from `discovered − metadataExtracted` (read-only) or a new derived seed |
 | WORK-02 | Metadata/Fingerprint show stage queue + manual trigger over existing endpoints | `POST /pipeline/extract-metadata` (`:959`), `POST /pipeline/fingerprint` (`:1045`); both return `trigger_response.html`; queues read `get_metadata_pending_files`/`get_fingerprint_pending_files`. Queue listing reads `get_files_by_state` |
 | WORK-03 | Analyze: 3 lane cards (local/A1/k8s) w/ live capacity + Kueue quota-wait vs Inadmissible | local ← `agentOnline`/`analyzeBusy`/`analyzeActive` store keys (aggregate; needs kind-split derivation); A1 ← cloud-window counts; k8s ← cloud_phase counts + `inadmissible_card.html`/`localqueue_card.html`; "not configured" ← `settings.cloud_target` read |
-| WORK-04 | Each in-flight Analyze file shows lane + windowed progress | Window coverage = `analysis.fine_windows_analyzed/fine_windows_total` (aggregate columns). **CRITICAL:** windows land atomically at completion (see Pitfall 1) — no live mid-flight N/M exists in the DB |
+| WORK-04 | Each in-flight Analyze file shows lane + windowed progress | Window coverage = `analysis.fine_windows_analyzed/fine_windows_total` (aggregate columns). **Post-57.1 (PR #184, MERGED):** `fine_windows_analyzed` increments DURING flight, so in-flight rows show a live `N/M windows` indicator + `running`; completed rows show full coverage (see Pitfall 1) |
 | WORK-05 | Stage workspaces refresh live via the existing stats-poll (no manual reload) | Single `/pipeline/stats` 5s poll fanned out via `hx-swap-oob` behind `oob_counts` gate (`stats_bar.html`); poll element lives in persistent shell chrome, not in any swappable fragment |
 </phase_requirements>
 
@@ -48,7 +48,7 @@ Three findings dominate planning:
 
 1. **The v6.0 cloud lane data is NOT in `$store.pipeline`.** Unlike the DAG-node counts (which ride OOB `x-init` store writes via the `dag` dict), the A1/k8s cloud counts (`awaiting_cloud`, `pushing`, `analyzing_cloud`, `queued_behind_quota`/`admitted`/`running`/`finished`, `inadmissible`, `localqueue_unreachable`) are surfaced as **pre-rendered card partials swapped whole via `hx-swap-oob`** (id-per-card). The lane cards (WORK-03) therefore have two clean reuse paths: (a) place the existing card partials below/within the lane grid (they already ride the poll), and/or (b) add **new derived `dag`-dict seed keys** in the stats context builder for the lane-card capacity numerals. Both are read-only and allowed; (b) is required if a lane numeral must bind via `x-text` to `$store.pipeline`.
 
-2. **Windowed progress (WORK-04) is not live mid-flight.** `analysis_window` rows and the `analysis.fine_windows_analyzed/total` aggregate are written **atomically in one transaction at analysis completion** (`agent_analysis.py:205-220`), with the file advanced to `ANALYZED` in the same transaction. There is no incremental N-of-M progress reported during flight. A genuinely in-flight file has no window rows and no coverage aggregate. The "windows-done bar" can therefore only reflect *final* coverage for files that already completed; in-flight rows show `running` with 0/unknown windows until the result lands. Honor D-04 by reading the aggregate columns and treating "in flight" as `running` text, NOT a live counter (see Open Questions).
+2. **Windowed progress (WORK-04) IS live mid-flight (post-57.1).** Phase 57.1 (PR #184, MERGED to main) added incremental window persistence: `analysis.fine_windows_analyzed` now increments DURING flight (< `fine_windows_total`), not only atomically at completion. An in-flight file HAS an `analysis` row carrying a partial coverage count. The Analyze table MUST render this live `N/M windows` indicator alongside `running` for in-flight rows, and full coverage for completed (ANALYZED) rows. Honor D-04 by reading the aggregate columns and rendering the mid-flight count — do NOT collapse in-flight rows to a bare `running` (that is the superseded pre-57.1 behavior). Phase 58 only READS this signal; no schema/query change.
 
 3. **Per-file lane and "not configured" are derivations, not stored columns.** There is no `cloud_target` column on the file model — `cloud_target` is a single deployment-wide setting (`config.py:406`, `Literal["local","a1","k8s"]`). Per-file lane is derived from the `cloud_job` sidecar (no row → local; row with `cloud_phase IS NULL` → A1; row with `cloud_phase` set → k8s). "Not configured" lane state is derived from `settings.cloud_target`. All read-only.
 
@@ -62,7 +62,7 @@ Three findings dominate planning:
 | Live count refresh | Frontend Server (`/pipeline/stats` route) → Browser (Alpine `$store.pipeline`) | — | Single existing poll fans out via OOB; no client timers |
 | Lane capacity / cloud state derivation | API/Backend service reads (existing, degrade-safe) | Frontend Server (context assembly) | All reads already exist in `services/pipeline.py`; Phase 58 only assembles + presents them |
 | Manual trigger (Extract/Fingerprint ALL) | API/Backend (existing enqueue endpoints) | — | `POST /pipeline/extract-metadata` / `/pipeline/fingerprint` enqueue ALL pending; no change |
-| Windowed progress | Database (`analysis` aggregate columns) | Frontend Server (present) | Coverage written atomically at completion; read-only present |
+| Windowed progress | Database (`analysis` aggregate columns) | Frontend Server (present) | Post-57.1 the aggregate increments mid-flight; read-only present (in-flight N/M + completed full coverage) |
 | Row-click → record | — (DEFERRED Phase 61) | — | D-06: inert rows only |
 
 ## Standard Stack
@@ -74,7 +74,7 @@ Three findings dominate planning:
 | FastAPI + `Jinja2Templates` | Stage routes return `TemplateResponse` fragments | `shell.py`, `pipeline.py` |
 | HTMX 2.0.x | `hx-get` rail swaps, `hx-post` triggers, `hx-swap-oob` fanout | `stats_bar.html`, bumped in Phase 57 |
 | Alpine 3.15.x | `$store.pipeline` store, `x-text`/`x-init` bindings, `:disabled` gates | `base.html:106` |
-| Tailwind v4.3.2 (vendored browser build) | C3 utility classes + `dark:` variants | `shell.html` `@theme` |
+| Tailwind v4.3.2 (**pre-compiled at build time**, PR #181) | C3 utility classes + `dark:` variants | `assets/src/app.css` (`@theme` + `@source` templates) → `src/phaze/static/css/app.css` via `just tailwind`; `base.html` links `/static/css/app.css`. **New workspace utility/arbitrary-value classes only render after a `just tailwind` rebuild** — the `@source` glob already covers `pipeline/partials/`, so no input-css edit is needed, only the rebuild; `app.css` is a gitignored build artifact (never committed). |
 | SQLAlchemy 2.0 async + asyncpg | All reads via existing degrade-safe service functions | `services/pipeline.py` |
 
 **Installation:** none. `uv sync` already provides everything. All commands run via `uv run` per CLAUDE.md.
@@ -137,7 +137,7 @@ The lane-card capacity numbers (`8 / 8` local, `2 / 4` A1, `{n} pending` k8s) ar
 
 - Aggregate (1:1, `analysis` table, migration 021): `fine_windows_analyzed`, `fine_windows_total`, `coarse_windows_analyzed`, `coarse_windows_total`, `sampled` (all nullable). This is the cheapest source for `window {done}/{total}` — read `fine_windows_analyzed/fine_windows_total` directly off the `analysis` row.
 - Per-window (1:many, `analysis_window` table, `analysis.py:35`): `file_id` (indexed, not unique), `tier`, `window_index`, `start_sec`, `end_sec`, per-tier fields. Counting rows per `file_id` also yields N, but the aggregate columns are simpler and pre-computed.
-- **Write timing (CRITICAL):** both are written in ONE transaction at completion (`agent_analysis.py:205` deletes then bulk-inserts all windows; `:220` advances state to `ANALYZED`). No incremental progress. → present the bar from the aggregate for completed files; in-flight files show `running` only.
+- **Write timing (UPDATED post-57.1, PR #184):** the `analysis.fine_windows_analyzed` aggregate now increments DURING flight (incremental window persistence). → present the live `N/M windows` count from the aggregate for in-flight files (alongside `running`) and full coverage for completed (ANALYZED) files. The pre-57.1 atomic-only write is HISTORICAL.
 
 ## Architecture Patterns
 
@@ -190,17 +190,18 @@ The lane-card capacity numbers (`8 / 8` local, `2 / 4` A1, `{n} pending` k8s) ar
 | Recent-scans table | Fresh scan list query/markup | `recent_scans_table.html` + `build_recent_scans` | Already live, paginated to 10, with elapsed/stall attrs |
 | Kueue quota-wait vs Inadmissible UI | New alert components | `admission_state_card.html` (healthy) + `inadmissible_card.html`/`localqueue_card.html` (fault) | Encodes the exact WORK-03 distinction + `role="alert"` semantics |
 | Cloud capacity counts | New SQL/aggregation | `get_awaiting_cloud_count`/`get_pushing_count`/`get_pushed_count`/`get_cloud_phase_counts`/`get_inadmissible_count`/`get_localqueue_unreachable` | All degrade-safe (never-500), already wired into the poll |
-| Windowed coverage | Counting `analysis_window` rows live | `analysis.fine_windows_analyzed/total` columns | Pre-computed aggregate; live count is impossible anyway (atomic write) |
+| Windowed coverage | Counting `analysis_window` rows live | `analysis.fine_windows_analyzed/total` columns | The aggregate already increments mid-flight (57.1); read it directly — no need to count rows |
 | Compute-agent-online check | New liveness rule | `select_active_agent(session, kind="compute")` try/except (`enqueue_router.py:96`) | Matches the canonical liveness definition; don't invent a second one |
 
 **Key insight:** Almost every datum the four workspaces need already exists and already rides the 5s poll. The phase is plumbing + presentation, not computation. The only *new* server work is read-only context assembly (multi-state file list for the Analyze table; optional derived seed keys for lane numerals and `not_yet_enriched`).
 
 ## Common Pitfalls
 
-### Pitfall 1: Expecting live mid-flight windowed progress
-**What goes wrong:** Building a live `window N/M` counter for in-flight Analyze files.
-**Why:** `analysis_window` rows + `analysis.*_windows_*` aggregate are written in a single transaction at completion (`agent_analysis.py:205-220`); the file flips to `ANALYZED` simultaneously. In-flight files have no window rows.
-**How to avoid:** Read coverage from the `analysis` aggregate for files that have it; show `running` (text) for in-flight rows. Treat WORK-04's "windowed progress" as: lane badge + `running` state + final coverage once done (D-04's "simple bar"). Flag any desire for true live progress as a backend change (out of scope).
+### Pitfall 1: (RECONCILED post-57.1) — render the mid-flight signal, do NOT collapse it to `running`
+**Updated 2026-06-30:** Phase 57.1 (PR #184, MERGED to main) shipped incremental window persistence. `analysis.fine_windows_analyzed` now increments DURING flight, so the pre-57.1 "no live N/M" reality below is HISTORICAL.
+**What used to be true (pre-57.1):** `analysis_window` rows + the aggregate were written in a single transaction at completion (`agent_analysis.py:205-220`); in-flight files had no window rows, so only `running` could be shown.
+**What is true NOW (post-57.1):** an in-flight file HAS an `analysis` row whose `fine_windows_analyzed` increments mid-flight (< `fine_windows_total`). The Analyze table MUST render this live `N/M windows` indicator alongside `running` for in-flight rows; completed (ANALYZED) rows show full coverage. Phase 58 only READS this signal (D-04) — no schema/query change.
+**New failure mode to avoid:** implementing the pre-57.1 "running only" behavior silently under-delivers the load-bearing mid-flight progress Phase 57.1 was built for. Always render `running` + `{fine_windows_analyzed}/{fine_windows_total} windows` for in-flight; full coverage for completed.
 
 ### Pitfall 2: Cloud counts are not in `$store.pipeline`
 **What goes wrong:** Binding a lane numeral to a non-existent store key (e.g. `$store.pipeline.awaitingCloud`).
@@ -292,18 +293,19 @@ The lane-card capacity numbers (`8 / 8` local, `2 / 4` A1, `{n} pending` k8s) ar
 
 **These three need confirmation during planning/discuss before being locked.** All other claims are VERIFIED against in-repo code read this session.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **In-flight windowed progress (WORK-04 vs Pitfall 1).**
-   - Know: aggregate coverage exists only post-completion; writes are atomic.
-   - Unclear: does the UI-SPEC's `window 14/41` imply live mid-flight progress?
-   - Recommendation: satisfy D-04 with lane badge + `running` text + final coverage; explicitly note "live per-window progress requires an agent-side progress callback = backend change = deferred."
+1. **In-flight windowed progress (WORK-04) — RESOLVED by 57.1 (PR #184).**
+   - Know: post-57.1 the `analysis.fine_windows_analyzed` aggregate increments DURING flight (incremental window persistence).
+   - Resolution: the UI-SPEC's `window 14/41` IS satisfied live mid-flight. Render lane badge + `running` + the mid-flight `N/M windows` count for in-flight rows, full coverage for completed. Phase 58 only reads the signal — no backend change.
 
 2. **Lane-card capacity denominators (A2).**
-   - Recommendation: if the prototype numerals are load-bearing, add read-only derived seeds (`computeOnline`, k8s admission counts) to the `dag` dict; otherwise bind to existing aggregate keys and show in-flight only.
+   - RESOLVED (Plan 04): the A1 lane numeral binds to a read-only derived `computeOnline` seed added to the `dag` dict in `_build_dag_context` (with a pre-mounted `dag-seed-computeOnline` placeholder so the OOB seed lands); local binds to existing aggregate keys (`analyzeBusy`/`analyzeActive`/`agentOnline`) and k8s to the existing admission counts. No new poll, no new backend behavior.
+   - Recommendation (historical): if the prototype numerals are load-bearing, add read-only derived seeds (`computeOnline`, k8s admission counts) to the `dag` dict; otherwise bind to existing aggregate keys and show in-flight only.
 
 3. **Discover recent-scans self-poll (A3, Pitfall 4).**
-   - Recommendation: strip the partial's `hx-trigger="every 5s"` on reuse to honor R-2; refresh scan rows via the single poll or accept ≤5s staleness.
+   - RESOLVED (Plan 02): the Discover workspace reuses the recent-scans markup with its `hx-get`/`hx-trigger="every 5s"`/`hx-swap` self-poll STRIPPED (single `/pipeline/stats` chrome poll only, R-2); scan rows are accepted as ≤5s static-staleness per the locked R-2 single-poll tradeoff. `test_single_poll_discipline` asserts the fragment carries no `hx-trigger="every"`.
+   - Recommendation (historical): strip the partial's `hx-trigger="every 5s"` on reuse to honor R-2; refresh scan rows via the single poll or accept ≤5s staleness.
 
 ## Environment Availability
 
@@ -333,7 +335,7 @@ The lane-card capacity numbers (`8 / 8` local, `2 / 4` A1, `{n} pending` k8s) ar
 **Confidence breakdown:**
 - Data-wiring map (endpoints/store/partials): HIGH — read directly from current source
 - Lane capacity derivation: HIGH for sources, MEDIUM for the exact numeral denominators (A2/A3 need a planning decision)
-- Windowed-progress timing: HIGH — confirmed atomic write in `agent_analysis.py`
+- Windowed-progress timing: HIGH — post-57.1 (PR #184) the aggregate increments mid-flight; in-flight rows carry a live N/M count (pre-57.1 atomic-only write is historical)
 - No-backend-change boundary: HIGH — every recommended read is an existing degrade-safe service call or a config/flag read
 
 **Research date:** 2026-06-29

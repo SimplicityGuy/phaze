@@ -62,7 +62,7 @@ the rich record are **Phase 61** (see Interaction Contract note R-1).
 | Component library | none (hand-authored Jinja2 partials + Tailwind utilities) |
 | Icon library | inline SVG (Heroicons-style stroke paths) + emoji glyphs for lane/stage identity (🖥️ local · ☁️ A1 · ⎈ k8s · 🎵 file) per prototype |
 | Font | **Jura** (headings/labels/eyebrows, brand-locked) + **Inter** (body) — loaded in `base.html`/`shell.html`, unchanged |
-| CSS engine | Tailwind v4 vendored browser build (`@theme` tokens in `shell.html`); **no new vendor bump this phase** (Phase 57 already bumped to 4.3.2) |
+| CSS engine | Tailwind v4 **pre-compiled at build time** (PR #181): the pinned standalone Tailwind binary compiles `assets/src/app.css` → `src/phaze/static/css/app.css` via `just tailwind` (local) / the Dockerfile `css-builder` stage (image); `base.html` links the static `/static/css/app.css`. The `@theme` palette + `@source "../../src/phaze/templates"` now live in `assets/src/app.css` (NOT the former in-browser compiler / `@theme` in `shell.html`). **No new vendor bump this phase** (binary pinned at v4.3.2). **Consequence for new markup:** the stylesheet is built, not JIT-in-browser, so any NEW utility/arbitrary-value class a workspace introduces only renders after `just tailwind` regenerates `app.css`. The `@source` glob already covers the new `pipeline/partials/` templates, so no `assets/src/app.css` edit is needed — only a rebuild. `app.css` is a gitignored build artifact (never committed). |
 | Dark mode | `@custom-variant dark` + `.dark` class driven by `$store.theme` — unchanged. Every new workspace element MUST carry working `dark:` variants. |
 
 **Registry safety:** Not applicable — no shadcn registry, no third-party UI blocks, **no new CDN
@@ -380,7 +380,7 @@ destructive-style red confirmation. `Pause` is reversible (no confirm).
 |----------|-------------|-------------|
 | shadcn official | none | not applicable (not a shadcn project) |
 | third-party | none | not applicable |
-| CDN scripts (htmx, Alpine, Tailwind) | **none new** | unchanged from Phase 57; SRI gate `tests/test_base_html_sri.py` unaffected — Phase 58 adds no `<script>` |
+| CDN scripts (htmx, Alpine) | **none new** | unchanged from Phase 57; SRI gate `tests/test_base_html_sri.py` unaffected — Phase 58 adds no `<script>`. (Tailwind is no longer a CDN/in-browser script post-PR #181 — it is pre-compiled to `/static/css/app.css`; new utility classes require a `just tailwind` rebuild, see § Stack › CSS engine.) |
 
 No third-party UI component blocks enter this phase; the registry vetting gate is not triggered.
 

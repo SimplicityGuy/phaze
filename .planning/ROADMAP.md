@@ -734,12 +734,21 @@ Plans:
 **Notes**: WORK-05 is a discipline, not a feature — reuse the `stats_bar.html` OOB-seed contract for rail counts + header status strip and add **no second poll loop**. Data sources all exist (`pipeline.py`, `pipeline_scans.py`, `pipeline_stages.py`); the local/A1/k8s lane-card partials exist from v6.0. No phase research needed. **Planning finding (2026-06-30):** the v7.0 shell has NO live `/pipeline/stats` poll element today (only the legacy `dashboard.html` does) — Plan 01 wires the single persistent poll + `visibilitychange` shed into shell chrome.
 **Plans**: 4 plans (sequential — shell.py STAGE_PARTIALS + the test file are shared chokepoints; one stage swapped per wave so the app stays usable at every commit)
 **UI hint**: yes
-
 Plans:
+**Wave 1**
 
 - [ ] 58-01-PLAN.md — Live-poll foundation: persistent `#pipeline-stats` poll + `visibilitychange` shed in shell chrome + Phase-58 test scaffold + D-02 UI-SPEC reconciliation note (WORK-05) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 58-02-PLAN.md — Shared scaffold/file-table/poll-seed-target partials + Discover workspace (recent scans + not-yet-enriched derived seed + SCAN/RECOVER) (WORK-01, WORK-05) [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 58-03-PLAN.md — Metadata + Fingerprint workspaces: queue tables + EXTRACT ALL / FINGERPRINT ALL wired verbatim to existing endpoints (D-01/D-02) (WORK-02, WORK-05) [Wave 3]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 58-04-PLAN.md — Analyze workspace: 3 always-render lane cards (local/A1/k8s) + reused cloud cards + all-in-stage file table with per-file lane badge + windowed progress (D-03/D-04/D-05/D-06) (WORK-03, WORK-04, WORK-05) [Wave 4]
 
 ### Phase 59: Identify workspaces
