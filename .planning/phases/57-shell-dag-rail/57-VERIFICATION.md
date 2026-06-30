@@ -1,7 +1,9 @@
 ---
 phase: 57-shell-dag-rail
 verified: 2026-06-29T00:00:00Z
-status: human_needed
+status: passed
+human_verification_resolved: 2026-06-30T02:21:57Z
+human_verification_evidence: 57-HUMAN-UAT.md (5/5 passed, Claude-driven via Playwright on live app)
 score: 5/5 must-haves verified
 overrides_applied: 0
 re_verification: null
