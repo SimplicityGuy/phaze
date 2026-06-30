@@ -10,7 +10,6 @@ import pytest
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
-from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 
 
 if TYPE_CHECKING:
@@ -63,12 +62,16 @@ async def _create_executed_file(
 
 @pytest.mark.asyncio
 async def test_list_tags_full_page(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /tags/ without HX-Request returns 200 with full page."""
+    """Phase 57 (SHELL-05): a plain GET /tags/ 302-redirects into the shell.
+
+    The "Tag Review" heading + stats header + empty-state are full-page chrome on the
+    tagwrite workspace node (a Phase-57 placeholder; real content lands in 58-61). The
+    in-page HX list partial stays usable (test_list_tags_htmx_partial covers it).
+    """
     await _create_executed_file(session)
-    response = await client.get("/tags/")
-    assert response.status_code == 200
-    assert "Tag Review" in response.text
-    assert "<!DOCTYPE html>" in response.text
+    response = await client.get("/tags/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tagwrite"
 
 
 @pytest.mark.asyncio
@@ -82,10 +85,14 @@ async def test_list_tags_htmx_partial(client: AsyncClient, session: AsyncSession
 
 @pytest.mark.asyncio
 async def test_list_tags_empty_state(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /tags/ with no EXECUTED files returns empty state message."""
-    response = await client.get("/tags/")
-    assert response.status_code == 200
-    assert "No files ready for tag writing" in response.text
+    """Phase 57 (SHELL-05): the tags empty-state moved to the shell workspace node.
+
+    The "No files ready for tag writing" message is full-page chrome (the tagwrite node is
+    a Phase-57 placeholder), so a plain GET /tags/ now 302-redirects into the shell.
+    """
+    response = await client.get("/tags/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tagwrite"
 
 
 @pytest.mark.asyncio
@@ -170,30 +177,16 @@ async def test_write_tags_non_executed_rejected(client: AsyncClient, session: As
 
 @pytest.mark.asyncio
 async def test_stats_counts(client: AsyncClient, session: AsyncSession) -> None:
-    """Stats header shows correct pending/completed/discrepancy counts."""
-    # Create 2 executed files
-    file1, _ = await _create_executed_file(session, filename="file1.mp3")
-    _file2, _ = await _create_executed_file(session, filename="file2.mp3")
+    """Phase 57 (SHELL-05): the tags stats header moved to the shell workspace node.
 
-    # Create a completed write log for file1
-    log = TagWriteLog(
-        id=uuid.uuid4(),
-        file_id=file1.id,
-        before_tags={},
-        after_tags={"artist": "Test"},
-        source="proposal",
-        status=TagWriteStatus.COMPLETED,
-    )
-    session.add(log)
-    await session.commit()
-
-    response = await client.get("/tags/")
-    assert response.status_code == 200
-    # Should show 1 completed, 1 pending, 0 discrepancies in the stats
-    text = response.text
-    assert "Written" in text
-    assert "Pending" in text
-    assert "Discrepancies" in text
+    The pending/completed/discrepancy stats header ("Written" etc.) is full-page chrome on
+    the tagwrite workspace node (a Phase-57 placeholder), so a plain GET /tags/ now
+    302-redirects into the shell. The stats computation itself is covered by
+    ``_get_tag_stats`` service tests.
+    """
+    response = await client.get("/tags/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tagwrite"
 
 
 @pytest.mark.asyncio

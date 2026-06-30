@@ -76,18 +76,22 @@ async def create_test_proposal(
 
 @pytest.mark.asyncio
 async def test_proposals_list_returns_html(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/ returns 200 with text/html content type."""
+    """GET /proposals/ returns 200 with text/html content type.
+
+    Phase 57 (SHELL-05): a plain GET /proposals/ now 302-redirects into the shell; the
+    in-page HX filter request returns the proposals content partial (filter tabs + table).
+    """
     await create_test_proposal(session)
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "Proposal Review" in response.text
+    assert 'aria-label="Status filter tabs"' in response.text
 
 
 @pytest.mark.asyncio
 async def test_proposals_list_empty_state(client: AsyncClient) -> None:
     """GET /proposals/ with no proposals returns 200 with empty state message."""
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "No proposals yet" in response.text
 
@@ -96,7 +100,7 @@ async def test_proposals_list_empty_state(client: AsyncClient) -> None:
 async def test_proposals_list_shows_proposals(client: AsyncClient, session: AsyncSession) -> None:
     """GET /proposals/ with seeded proposals returns rows containing proposed_filename text."""
     await create_test_proposal(session, proposed_filename="DJ Shadow - Live @ Coachella 2025.mp3")
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "DJ Shadow - Live @ Coachella 2025.mp3" in response.text
 
@@ -120,7 +124,7 @@ async def test_proposals_pagination(client: AsyncClient, session: AsyncSession) 
             original_filename=f"file_{i:03d}.mp3",
             proposed_filename=f"Artist - Track {i:03d}.mp3",
         )
-    response = await client.get("/proposals/?status=all&page=2&page_size=25")
+    response = await client.get("/proposals/?status=all&page=2&page_size=25", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Showing 26-50" in response.text
 
@@ -132,7 +136,7 @@ async def test_filter_by_status(client: AsyncClient, session: AsyncSession) -> N
     await create_test_proposal(session, proposed_filename="Approved One.mp3", status=ProposalStatus.APPROVED, original_filename="a1.mp3")
     await create_test_proposal(session, proposed_filename="Rejected One.mp3", status=ProposalStatus.REJECTED, original_filename="r1.mp3")
 
-    response = await client.get("/proposals/?status=approved")
+    response = await client.get("/proposals/?status=approved", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Approved One.mp3" in response.text
     assert "Pending One.mp3" not in response.text
@@ -152,7 +156,7 @@ async def test_search_proposals(client: AsyncClient, session: AsyncSession) -> N
         original_filename="random_track.mp3",
         proposed_filename="Random Artist - Song.mp3",
     )
-    response = await client.get("/proposals/?status=all&q=coachella")
+    response = await client.get("/proposals/?status=all&q=coachella", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Coachella" in response.text
 
@@ -241,7 +245,7 @@ async def test_sort_by_confidence(client: AsyncClient, session: AsyncSession) ->
     await create_test_proposal(session, original_filename="low.mp3", proposed_filename="Low Conf.mp3", confidence=0.30)
     await create_test_proposal(session, original_filename="mid.mp3", proposed_filename="Mid Conf.mp3", confidence=0.60)
 
-    response = await client.get("/proposals/?status=all&sort=confidence&order=asc")
+    response = await client.get("/proposals/?status=all&sort=confidence&order=asc", headers={"HX-Request": "true"})
     assert response.status_code == 200
     text = response.text
     # Low confidence should appear before high confidence in ascending order
@@ -309,7 +313,7 @@ async def test_sort_by_original_filename(client: AsyncClient, session: AsyncSess
     await create_test_proposal(session, original_filename="zzz.mp3", proposed_filename="Z.mp3")
     await create_test_proposal(session, original_filename="aaa.mp3", proposed_filename="A.mp3")
 
-    response = await client.get("/proposals/?status=all&sort=original_filename&order=asc")
+    response = await client.get("/proposals/?status=all&sort=original_filename&order=asc", headers={"HX-Request": "true"})
     assert response.status_code == 200
     text = response.text
     assert text.find("aaa.mp3") < text.find("zzz.mp3")
@@ -319,7 +323,7 @@ async def test_sort_by_original_filename(client: AsyncClient, session: AsyncSess
 async def test_destination_column_header(client: AsyncClient, session: AsyncSession) -> None:
     """GET /proposals/ renders a Destination column header in the table."""
     await create_test_proposal(session)
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Destination" in response.text
 
@@ -332,7 +336,7 @@ async def test_destination_path_displayed(client: AsyncClient, session: AsyncSes
         proposed_path="performances/artists/Disclosure",
         proposed_filename="Disclosure - Live @ Coachella 2025.mp3",
     )
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "performances/artists/Disclosure" in response.text
 
@@ -341,7 +345,7 @@ async def test_destination_path_displayed(client: AsyncClient, session: AsyncSes
 async def test_destination_null_path_badge(client: AsyncClient, session: AsyncSession) -> None:
     """Proposal with null proposed_path renders 'No path' badge."""
     await create_test_proposal(session, proposed_path=None)
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "No path" in response.text
 
@@ -351,7 +355,7 @@ async def test_row_renders_sparkline_and_timeline_control(client: AsyncClient, s
     """The review row shows a BPM sparkline SVG and an HTMX timeline expand control."""
     proposal = await create_test_proposal(session)
     await add_analysis_windows(session, proposal.file_id)
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "<svg" in response.text
     assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text
@@ -364,7 +368,7 @@ async def test_row_renders_sparkline_and_timeline_control(client: AsyncClient, s
 async def test_row_sparkline_without_windows(client: AsyncClient, session: AsyncSession) -> None:
     """A file with no analysis windows still renders a (flat) sparkline + timeline control."""
     proposal = await create_test_proposal(session)
-    response = await client.get("/proposals/")
+    response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "<svg" in response.text
     assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text

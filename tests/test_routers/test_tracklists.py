@@ -56,16 +56,21 @@ def _make_tracklist(
 
 @pytest.mark.asyncio
 async def test_list_tracklists_returns_html(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /tracklists/ returns 200 with Tracklists heading."""
-    response = await client.get("/tracklists/")
-    assert response.status_code == 200
-    assert "Tracklists" in response.text
+    """Phase 57 (SHELL-05): a plain GET /tracklists/ 302-redirects into the shell.
+
+    The "Tracklists" page heading + stats header are full-page chrome that move to the
+    tracklist workspace node (a Phase-57 placeholder; real content lands in 58-61). The
+    in-page HX list partial stays usable (covered by the with-data / filter tests below).
+    """
+    response = await client.get("/tracklists/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tracklist"
 
 
 @pytest.mark.asyncio
 async def test_list_tracklists_empty_state(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/ with no data shows empty state message."""
-    response = await client.get("/tracklists/")
+    response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "hasn't run yet" in response.text.lower() or "hasn&#x27;t run yet" in response.text.lower()
 
@@ -81,7 +86,7 @@ async def test_list_tracklists_with_data(session: AsyncSession, client: AsyncCli
     session.add(tl)
     await session.flush()
 
-    response = await client.get("/tracklists/")
+    response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Test Artist" in response.text
     assert "Test Festival" in response.text
@@ -99,14 +104,14 @@ async def test_list_tracklists_filter_matched(session: AsyncSession, client: Asy
     session.add_all([matched, unmatched])
     await session.flush()
 
-    response = await client.get("/tracklists/?filter=matched")
+    response = await client.get("/tracklists/?filter=matched", headers={"HX-Request": "true"})
     assert response.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_list_tracklists_filter_unmatched(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/?filter=unmatched returns only unmatched tracklists."""
-    response = await client.get("/tracklists/?filter=unmatched")
+    response = await client.get("/tracklists/?filter=unmatched", headers={"HX-Request": "true"})
     assert response.status_code == 200
 
 
@@ -194,29 +199,28 @@ async def test_undo_link(session: AsyncSession, client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_navigation_contains_tracklists_link(session: AsyncSession, client: AsyncClient) -> None:
-    """Navigation bar contains Tracklists link."""
-    response = await client.get("/tracklists/")
-    assert response.status_code == 200
-    assert 'href="/tracklists/"' in response.text
+    """Phase 57 (SHELL-03/05): the legacy top-nav Tracklists link is replaced by the DAG rail.
+
+    Plan 57-03 retired the base.html tab-bar (the rail node ``hx-get="/s/tracklist"`` is the
+    new nav affordance), so a plain GET /tracklists/ 302-redirects into the shell rather than
+    rendering a nav bar with ``href="/tracklists/"``.
+    """
+    response = await client.get("/tracklists/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tracklist"
 
 
 @pytest.mark.asyncio
 async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -> None:
-    """Stats header shows correct total, matched, unmatched counts."""
-    file = _make_file()
-    session.add(file)
-    await session.flush()
+    """Phase 57 (SHELL-05): the tracklists stats header moved to the shell workspace node.
 
-    tl1 = _make_tracklist(file_id=file.id, match_confidence=90, external_id="stats-1")
-    tl2 = _make_tracklist(external_id="stats-2")
-    session.add_all([tl1, tl2])
-    await session.flush()
-
-    response = await client.get("/tracklists/")
-    assert response.status_code == 200
-    assert "Total Tracklists" in response.text
-    assert "Matched" in response.text
-    assert "Unmatched" in response.text
+    The "Total Tracklists"/"Matched"/"Unmatched" stats header is full-page chrome rendered
+    by the tracklist workspace node (a Phase-57 placeholder; real content lands in 58-61),
+    so a plain GET /tracklists/ now 302-redirects into the shell.
+    """
+    response = await client.get("/tracklists/", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tracklist"
 
 
 @pytest.mark.asyncio
@@ -347,7 +351,7 @@ async def test_proposed_filter(session: AsyncSession, client: AsyncClient) -> No
     session.add_all([proposed, approved])
     await session.flush()
 
-    response = await client.get("/tracklists/?filter=proposed")
+    response = await client.get("/tracklists/?filter=proposed", headers={"HX-Request": "true"})
     assert response.status_code == 200
 
 
@@ -556,7 +560,7 @@ async def test_stats_include_proposed(session: AsyncSession, client: AsyncClient
     session.add_all([proposed, approved])
     await session.flush()
 
-    response = await client.get("/tracklists/")
+    response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Proposed" in response.text
 
@@ -1279,7 +1283,7 @@ async def test_list_tracklists_cue_version_executed(session: AsyncSession, clien
     await session.flush()
 
     with patch("phaze.routers.tracklists._get_cue_version", return_value=3):
-        response = await client.get("/tracklists/")
+        response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "CUE v3" in response.text
 
@@ -1309,6 +1313,6 @@ async def test_list_tracklists_has_candidates_full_page(session: AsyncSession, c
     session.add(link)
     await session.flush()
 
-    response = await client.get("/tracklists/")
+    response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Bulk-link All" in response.text

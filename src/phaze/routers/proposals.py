@@ -126,7 +126,7 @@ async def list_proposals(
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
     if request.headers.get("HX-Request") != "true":
-        return RedirectResponse(url="/s/proposals", status_code=302)
+        return RedirectResponse(url="/s/propose", status_code=302)
 
     # Default to pending filter when no status param provided (D-09)
     effective_status = status if status is not None else "pending"
