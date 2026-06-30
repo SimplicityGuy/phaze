@@ -184,10 +184,39 @@ async def test_single_poll_discipline(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="lands in Plan 58-02 (task 58-02-03)", strict=False)
 async def test_discover_workspace(client: AsyncClient) -> None:
-    """WORK-01 -- Discover workspace: recent-scans table + not-yet-enriched sub-count + SCAN/RECOVER."""
-    raise NotImplementedError
+    """WORK-01 -- Discover workspace: recent-scans surface + not-yet-enriched sub-count + SCAN/RECOVER.
+
+    The HX fragment composes the shared scaffold (one ``tabindex="-1"`` h1 focus target), the
+    live sub-count bound to ``$store.pipeline`` (refreshed by the single chrome poll), the
+    recent-scans surface (or the "No scans yet" empty state with no rows seeded), and the
+    SCAN + RECOVER actions. It carries NO second poll loop (the reused recent-scans self-poll
+    is stripped, A3/Pitfall 4) and pre-mounts the ``dag-seed-notYetEnriched`` OOB target so the
+    derived sub-count seed has a landing spot.
+    """
+    resp = await client.get("/s/discover", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    # Scaffold focus target (exactly one h1 with tabindex=-1).
+    assert body.count('tabindex="-1"') == 1
+    # Recent-scans surface OR the locked empty-state copy (no scans seeded here -> empty state).
+    assert "No scans yet" in body
+    # Live sub-count present (the x-text frame binds discovered + notYetEnriched).
+    assert "not yet enriched" in body
+    # SCAN + RECOVER actions, wired to the existing endpoints (no new backend).
+    assert "SCAN" in body
+    assert "RECOVER" in body
+    assert "/pipeline/scans" in body
+    assert "/pipeline/recover" in body
+    # R-4: RECOVER carries a confirm + a busy-disable gate.
+    assert "hx-confirm" in body
+    assert ":disabled" in body
+    # WORK-05 / Pitfall 4: no second poll loop (the reused recent-scans self-poll is stripped).
+    assert 'hx-trigger="every' not in body
+    assert "setInterval" not in body
+    # T-58-SEED: the derived sub-count seed has a pre-mounted OOB landing target.
+    assert "dag-seed-notYetEnriched" in body
 
 
 @pytest.mark.asyncio

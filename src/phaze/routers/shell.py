@@ -52,7 +52,9 @@ router = APIRouter(tags=["shell"])
 # literals also act as the dead-template guard's entry roots, so each stays reachable.
 _STAGE_PLACEHOLDER = "shell/partials/_stage_placeholder.html"
 STAGE_PARTIALS: dict[str, str] = {
-    "discover": _STAGE_PLACEHOLDER,
+    # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
+    # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
+    "discover": "pipeline/partials/discover_workspace.html",
     "metadata": _STAGE_PLACEHOLDER,
     "fingerprint": _STAGE_PLACEHOLDER,
     "analyze": "pipeline/partials/dag_canvas.html",
