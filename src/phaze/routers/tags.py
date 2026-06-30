@@ -293,7 +293,7 @@ async def save_tag_field(
     current_val = getattr(file_record.file_metadata, field, None) if file_record.file_metadata else None
     changed = str(new_value) != str(current_val) if current_val is not None and new_value else (current_val is not None) != bool(new_value)
 
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; no raw/`| safe` interpolation of the form value, so this is not a direct tainted response.
         request=request,
         name="tags/partials/inline_display.html",
         context={
@@ -368,7 +368,7 @@ async def write_file_tags(
     comparison = _build_comparison(file_record.file_metadata, tags)
     changes = _count_changes(comparison)
 
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; the toast/comparison values are escaped on render (no raw/`| safe`), so this is not a direct tainted response.
         request=request,
         name="tags/partials/tag_row.html",
         context={

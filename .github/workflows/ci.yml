@@ -89,6 +89,7 @@ jobs:
     needs: [detect-changes, quality]
     if: needs.detect-changes.outputs.code-changed == 'true'
     uses: ./.github/workflows/tests.yml
+    # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit -- in-repo reusable workflow; inherit is intentional.
     secrets: inherit
 
   security:
@@ -163,6 +164,7 @@ jobs:
     needs: [detect-changes, aggregate-results]
     if: needs.detect-changes.outputs.code-changed == 'true'
     uses: ./.github/workflows/docker-publish.yml
+    # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit -- in-repo reusable workflow; inherit is intentional.
     secrets: inherit
     permissions:
       contents: read
