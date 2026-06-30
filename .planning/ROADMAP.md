@@ -182,7 +182,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 54. Kube submit/watch + reconcile cron | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
-| 57. Shell & DAG rail | v7.0 | 3/4 | In Progress|  |
+| 57. Shell & DAG rail | v7.0 | 4/4 | Complete   | 2026-06-30 |
 | 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
@@ -700,7 +700,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 57-04-PLAN.md — Conditional legacy-route redirects (7 routers) + ≤1-hop redirect-resolution test (wave 4)
+- [x] 57-04-PLAN.md — Conditional legacy-route redirects (7 routers) + ≤1-hop redirect-resolution test (wave 4)
 
 **UI hint**: yes
 
