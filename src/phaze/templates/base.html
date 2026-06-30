@@ -118,6 +118,10 @@
                 // Phase 40 (REQ-40-2/REQ-40-3): scan_live_set in-flight count ("Scan busy") + online-agent
                 // count ("Needs agent" when 0) gate the DAG Fingerprint-Scan node — same seed/OOB poll.
                 scanBusy: 0, agentOnline: 0,
+                // Phase 58 (58-04, WORK-03): the Analyze A1 lane "compute online" capacity numeral
+                // (kind="compute" online-agent count). A read-only derived int seeded onto the dag
+                // dict server-side; rides the existing dag.items() OOB loop onto dag-seed-computeOnline.
+                computeOnline: 0,
                 // Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight
                 // counts gate the DAG Scrape/Match trigger nodes ("Scraping…" / "Matching…") — same seed/OOB poll.
                 scrapeBusy: 0, matchBusy: 0,

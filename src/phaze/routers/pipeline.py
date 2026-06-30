@@ -26,6 +26,7 @@ from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
     get_analysis_failed_count,
+    get_analyze_stage_files,
     get_awaiting_cloud_count,
     get_backfill_candidates,
     get_cloud_phase_counts,
@@ -206,6 +207,14 @@ async def _build_dag_context(
     # is a count where 0 == "no online agent" (fail-safe default that leaves the node blocked).
     dag["scanBusy"] = int(await get_scan_busy_count(session))
     dag["agentOnline"] = int(await count_active_agents(session))
+
+    # Phase 58 (58-04, WORK-03): the Analyze A1 lane's "compute online" capacity numeral -- a
+    # READ-ONLY kind-scoped count of online compute agents, using the SAME liveness predicate as
+    # agentOnline (count_active_agents owns the never-500 SAVEPOINT degrade -> 0 on any DB error,
+    # so NO try/except here). It rides the existing dag.items() OOB seed loop onto the
+    # dag-seed-computeOnline placeholder the Analyze workspace pre-mounts (B1: an OOB seed lands
+    # only on an id already in the DOM) -- no second poll, no stats_bar.html edit, no new backend.
+    dag["computeOnline"] = int(await count_active_agents(session, kind="compute"))
 
     # Phase 41 (REQ-41-3): the scrape_and_store_tracklist / match_tracklist_to_discogs in-flight counts
     # gate the DAG Scrape/Match trigger nodes "busy" (Scraping… / Matching…). Both are controller tasks
@@ -523,6 +532,13 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
     cloud_phase_counts = await get_cloud_phase_counts(session)
 
+    # Phase 58 (58-04, WORK-04 / D-03): the all-in-stage Analyze file list (one table of queued ·
+    # running · awaiting-cloud · done) with each file's DERIVED lane + windowed coverage. ONE
+    # read-only multi-state SELECT (get_analyze_stage_files owns the never-500 SAVEPOINT degrade
+    # -> [] on any DB error, so NO try/except here -- same service-owns-degrade idiom as the cloud
+    # counts above). Pure read; no enqueue, no schema change.
+    analyze_files = await get_analyze_stage_files(session)
+
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
     # explains the Discovery COUNT(files) vs agent scan total gap as dedup, not lost work. The service
@@ -549,6 +565,11 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
+        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03) + the deployment-wide cloud
+        # target read (config.py:406, Literal["local","a1","k8s"]) that drives the D-05 "not
+        # configured" lane labels. Both read-only; no backend behavior change.
+        "analyze_files": analyze_files,
+        "cloud_target": settings.cloud_target,
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,

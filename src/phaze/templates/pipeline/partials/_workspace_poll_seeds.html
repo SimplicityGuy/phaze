@@ -34,6 +34,10 @@
     <p id="dag-seed-searchBusy" class="hidden"></p>
     <p id="dag-seed-scanBusy" class="hidden"></p>
     <p id="dag-seed-agentOnline" class="hidden"></p>
+    {# Phase 58 (58-04, WORK-03, B1): pre-mounted ahead of the poll -- computeOnline joins base.html's
+       store + the dag dict in Plan 04, but the OOB-target-must-pre-exist rule means this placeholder
+       must already be in the DOM before the first seed tick or the A1 lane numeral sticks at 0. #}
+    <p id="dag-seed-computeOnline" class="hidden"></p>
     <p id="dag-seed-scrapeBusy" class="hidden"></p>
     <p id="dag-seed-matchBusy" class="hidden"></p>
     <p id="dag-seed-metadataDone" class="hidden"></p>

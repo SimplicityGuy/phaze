@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from saq.utils import now as saq_now
-from sqlalchemy import String, cast, distinct, exists, func, select, text
+from sqlalchemy import String, cast, distinct, exists, func, or_, select, text
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -699,7 +699,7 @@ async def get_match_pending_tracklists(session: AsyncSession) -> list[Tracklist]
     return list(result.scalars().all())
 
 
-async def count_active_agents(session: AsyncSession) -> int:
+async def count_active_agents(session: AsyncSession, kind: str | None = None) -> int:
     """Return the number of online agents (``revoked_at IS NULL`` AND ``last_seen_at IS NOT NULL``).
 
     Counts agents matching :func:`phaze.services.enqueue_router.select_active_agent`'s EXACT
@@ -709,6 +709,13 @@ async def count_active_agents(session: AsyncSession) -> int:
     raises ``NoActiveAgentError`` when no agent is online, so the button must stay disabled until one
     is.
 
+    Phase 58 (58-04, WORK-03): when ``kind`` is given (``"compute"`` / ``"fileserver"``) the count is
+    scoped to agents of that ``Agent.kind`` -- the SAME liveness predicate, restricted to the kind.
+    This mirrors :func:`phaze.services.enqueue_router.select_active_agent`'s ``kind`` arg (the canonical
+    compute-online seam -- do NOT invent a second rule) and drives the Analyze A1 lane's ``computeOnline``
+    capacity numeral. ``kind=None`` preserves the original any-kind behavior, so every existing caller is
+    unchanged.
+
     Failure isolation (T-40-05): the read runs inside a SAVEPOINT (``session.begin_nested()``) so a
     DB hiccup on the hot 5s poll does NOT expire the dashboard's loaded ORM objects. On ANY exception
     it logs ``active_agent_count_degraded`` and returns 0. That degrade default is FAIL-SAFE:
@@ -717,7 +724,10 @@ async def count_active_agents(session: AsyncSession) -> int:
     """
     try:
         async with session.begin_nested():
-            count = (await session.execute(select(func.count(Agent.id)).where(Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None)))).scalar()
+            stmt = select(func.count(Agent.id)).where(Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None))
+            if kind is not None:
+                stmt = stmt.where(Agent.kind == kind)
+            count = (await session.execute(stmt)).scalar()
     except Exception:
         logger.warning("active_agent_count_degraded", exc_info=True)
         return 0
@@ -737,6 +747,92 @@ async def get_files_by_state(session: AsyncSession, state: FileState) -> list[Fi
     stmt = select(FileRecord).where(FileRecord.state == state)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# --- Phase 58 (58-04, WORK-04 / D-03) all-in-stage Analyze file table read ----------------
+#
+# The states surfaced in the D-03 "one table of ALL in-stage Analyze files" table: the done
+# bucket (ANALYZED), the three cloud lanes (AWAITING_CLOUD / PUSHING / PUSHED), and the
+# terminal-failure bucket (ANALYSIS_FAILED). In-flight files (a partial 57.1 analysis row,
+# not yet ANALYZED) are captured separately by the analysis-row-presence predicate below, so
+# a running file appears even while still in its pre-analyze state.
+_ANALYZE_STAGE_STATES = [
+    FileState.ANALYZED,
+    FileState.AWAITING_CLOUD,
+    FileState.PUSHING,
+    FileState.PUSHED,
+    FileState.ANALYSIS_FAILED,
+]
+
+
+async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]:
+    """Return the all-in-stage Analyze file rows for the workspace table (D-03), degrade-safe.
+
+    ONE read-only multi-state SELECT (a pure read -- NO behavior change) over FileRecord, LEFT
+    JOINing the per-file ``cloud_job`` sidecar (lane derivation), the 1:1 ``analysis`` aggregate
+    (windowed coverage / the 57.1 mid-flight signal), and ``metadata`` (duration). Returns every
+    file in the Analyze stage: queued/running (in-flight analysis row), awaiting-cloud, and done.
+
+    Per-file lane is DERIVED (RESEARCH A1, confirmed against
+    :func:`phaze.services.cloud_staging.stage_file_to_s3` -- the ONLY ``cloud_job`` writer, reached
+    only on a cloud route): no ``cloud_job`` row -> ``local``; ``cloud_job`` with ``cloud_phase IS
+    NULL`` -> ``a1``; ``cloud_job`` with ``cloud_phase`` set -> ``k8s``. A local-routed file never
+    enters ``stage_file_to_s3``, so it never carries a ``cloud_job`` row and cannot be mislabeled.
+
+    Window coverage reads ``analysis.fine_windows_analyzed`` / ``fine_windows_total``: a completed
+    (ANALYZED) row shows full coverage from the aggregate; an in-flight row shows the merged 57.1
+    mid-flight ``N/M`` signal (``fine_windows_analyzed < fine_windows_total``). Phase 58 only READS
+    this signal (D-04) -- no schema/query-semantics change.
+
+    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`count_active_agents`):
+    this read rides the hot dashboard context and must NEVER 500 the page / poll.
+    """
+    try:
+        async with session.begin_nested():
+            stmt = (
+                select(
+                    FileRecord.original_filename,
+                    FileRecord.original_path,
+                    FileRecord.state,
+                    CloudJob.id,
+                    CloudJob.cloud_phase,
+                    AnalysisResult.fine_windows_analyzed,
+                    AnalysisResult.fine_windows_total,
+                    FileMetadata.duration,
+                )
+                .select_from(FileRecord)
+                .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
+                .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
+                .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
+                .where(or_(FileRecord.state.in_(_ANALYZE_STAGE_STATES), AnalysisResult.id.is_not(None)))
+                .order_by(FileRecord.created_at.desc())
+            )
+            rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.warning("analyze_stage_files_degraded", exc_info=True)
+        return []
+
+    files: list[dict[str, Any]] = []
+    for filename, path, state, cloud_job_id, cloud_phase, fine_done, fine_total, duration in rows:
+        if cloud_job_id is None:
+            lane = "local"
+        elif cloud_phase is None:
+            lane = "a1"
+        else:
+            lane = "k8s"
+        files.append(
+            {
+                "filename": filename,
+                "path": path,
+                "state": state,
+                "lane": lane,
+                "fine_done": fine_done,
+                "fine_total": fine_total,
+                "duration": duration,
+                "completed": state == FileState.ANALYZED,
+            }
+        )
+    return files
 
 
 # --- ANALYSIS_FAILED bucket (Phase 44, D-02) --------------------------------------------
