@@ -36,6 +36,7 @@ import pytest
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.pipeline import get_trackid_stage_files, get_tracklist_set_rows
 
 
 if TYPE_CHECKING:
@@ -281,3 +282,150 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     assert resp.status_code == 200
     tbl = resp.text[resp.text.index('id="tracklist-set-table"') :]
     assert "1/2" in tbl
+
+
+# ---------------------------------------------------------------------------
+# Read-only row-assembly helper unit tests (Plan 59-01 Task 2).
+# These exercise the service helpers directly (no template wiring) so the data
+# contract Plans 02/03 render against is locked + degrade-safe NOW.
+# ---------------------------------------------------------------------------
+
+
+class _NullSavepoint:
+    """Async-context-manager stand-in for ``session.begin_nested()`` in the fake-session tests.
+
+    ``__aexit__`` returns ``False`` so an exception raised inside the ``async with`` block
+    propagates out to the helper's degrade ``except`` -- exactly as a real SAVEPOINT does after
+    ``ROLLBACK TO SAVEPOINT``.
+    """
+
+    async def __aenter__(self) -> _NullSavepoint:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+class _ExplodingSession:
+    """A fake session whose every ``execute`` raises -- exercises the helper degrade path."""
+
+    def begin_nested(self) -> _NullSavepoint:
+        return _NullSavepoint()
+
+    async def execute(self, *_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("forced DB error")
+
+
+@pytest.mark.asyncio
+async def test_get_trackid_stage_files_shape(session: AsyncSession) -> None:
+    """IDENT-01 / D-01 / D-04 -- the Track-ID row carries per-engine badges + tracklist match/conf.
+
+    A file with audfprint ``success`` + panako ``failed`` + a LINKED tracklist (match_confidence)
+    yields one dict: audfprint_status "done", panako_status "failed", tracklist_state "matched",
+    confidence = the linked value.
+    """
+    file = await _seed_file(session, original_filename="full.mp3")
+    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+    await _seed_fingerprint_result(session, file.id, "panako", "failed")
+    await _seed_tracklist(session, file_id=file.id, match_confidence=90)
+
+    rows = await get_trackid_stage_files(session)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["filename"] == "full.mp3"
+    assert row["path"] == "/test/music/full.mp3"
+    assert row["audfprint_status"] == "done"
+    assert row["panako_status"] == "failed"
+    assert row["tracklist_state"] == "matched"
+    assert row["confidence"] == 90
+
+
+@pytest.mark.asyncio
+async def test_get_trackid_stage_files_success_renders_done(session: AsyncSession) -> None:
+    """Pitfall 1 (the load-bearing guard) -- a ``status="success"`` row maps to "done", NOT "pending".
+
+    Guards against keying the done badge on ``"completed"`` (which ``get_stage_progress`` filters and
+    which is NEVER persisted by the engine adapter path) -- that bug would render every engine pending.
+    """
+    file = await _seed_file(session, original_filename="success.mp3")
+    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+
+    rows = await get_trackid_stage_files(session)
+    assert len(rows) == 1
+    assert rows[0]["audfprint_status"] == "done"
+    # panako has no row -> pending (Pitfall 2: absence == pending).
+    assert rows[0]["panako_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_get_trackid_stage_files_candidate_and_no_match(session: AsyncSession) -> None:
+    """D-04 -- the candidate fallback + the no-match branch.
+
+    A file with only a fingerprint and NO linked tracklist surfaces "candidate" + the system-wide
+    best candidate confidence when an unlinked candidate exists; with no candidate at all it is
+    "no match" + None.
+    """
+    # No-match: a fingerprinted file, no tracklists anywhere.
+    nomatch = await _seed_file(session, original_filename="nomatch.mp3")
+    await _seed_fingerprint_result(session, nomatch.id, "audfprint", "success")
+    rows = await get_trackid_stage_files(session)
+    assert len(rows) == 1
+    assert rows[0]["tracklist_state"] == "no match"
+    assert rows[0]["confidence"] is None
+
+    # Introduce an unlinked candidate tracklist -> the fingerprinted file now reads "candidate".
+    await _seed_tracklist(session, file_id=None, match_confidence=77)
+    rows = await get_trackid_stage_files(session)
+    by_name = {r["filename"]: r for r in rows}
+    assert by_name["nomatch.mp3"]["tracklist_state"] == "candidate"
+    assert by_name["nomatch.mp3"]["confidence"] == 77
+
+
+@pytest.mark.asyncio
+async def test_get_trackid_stage_files_degrades_to_empty() -> None:
+    """T-59-DOS -- a DB error degrades to ``[]`` (never raises into the render/poll)."""
+    assert await get_trackid_stage_files(_ExplodingSession()) == []  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_tracklist_set_rows_shape(session: AsyncSession) -> None:
+    """IDENT-02 / D-07 -- the per-set row carries N/M track coverage + match state.
+
+    A LINKED tracklist with a version of 1 confident (confidence set) + 1 unconfident (confidence
+    NULL) track yields tracks_confident=1, tracks_total=2, matched_to_file=True, state "matched".
+    """
+    file = await _seed_file(session, original_filename="set.mp3")
+    tl = await _seed_tracklist(session, file_id=file.id, match_confidence=88)
+    version = await _seed_tracklist_version(session, tl.id)
+    await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
+    await _seed_tracklist_track(session, version.id, position=2, confidence=None)
+
+    rows = await get_tracklist_set_rows(session)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["set_name"] == "set.mp3"
+    assert row["path"] == "/test/music/set.mp3"
+    assert row["tracklist_state"] == "matched"
+    assert row["matched_to_file"] is True
+    assert row["tracks_confident"] == 1
+    assert row["tracks_total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_tracklist_set_rows_candidate(session: AsyncSession) -> None:
+    """D-04/D-08 -- an unlinked tracklist is a "candidate" set with no file path and zero counts."""
+    await _seed_tracklist(session, file_id=None, match_confidence=None, external_id="cand-1")
+    rows = await get_tracklist_set_rows(session)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tracklist_state"] == "candidate"
+    assert row["matched_to_file"] is False
+    assert row["path"] is None
+    assert row["tracks_confident"] == 0
+    assert row["tracks_total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_tracklist_set_rows_degrades_to_empty() -> None:
+    """T-59-DOS -- a DB error degrades to ``[]`` (never raises into the render/poll)."""
+    assert await get_tracklist_set_rows(_ExplodingSession()) == []  # type: ignore[arg-type]
