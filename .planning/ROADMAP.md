@@ -185,7 +185,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
-| 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 1/4 | In Progress|  |
+| 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 2/4 | In Progress|  |
 | 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
@@ -720,7 +720,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 57.1-02-PLAN.md — Completion discriminator (analysis_completed_at, migration 028) + tighten the proposal convergence gate so a partial row never leaks (KEY RISK / PROG-03)
+- [x] 57.1-02-PLAN.md — Completion discriminator (analysis_completed_at, migration 028) + tighten the proposal convergence gate so a partial row never leaks (KEY RISK / PROG-03)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 

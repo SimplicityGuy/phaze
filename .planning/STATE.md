@@ -9,7 +9,7 @@ progress:
   total_phases: 29
   completed_phases: 1
   total_plans: 8
-  completed_plans: 5
+  completed_plans: 6
   percent: 3
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 ## Current Position
 
 Phase: 57.1 (Incremental window persistence & live analyze progress signal) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-06-30
 
-Progress: [██████░░░░] 63%
+Progress: [███████░░░] 75%
 
 ## Performance Metrics
 
@@ -95,6 +95,7 @@ Progress: [██████░░░░] 63%
 - [Phase 38]: 38-03: the 6 stage-control keys ride the existing dag.items() OOB loop with zero stats_bar.html edit; one _NEW_STORE_KEYS edit drives the store-literal, int-key, and OOB-seed tests
 - [Phase 38]: 38-02: stage_controls reusable Jinja macro (id=stage-controls-<stage>) on the 3 agent chips; pause/resume = TWO x-show-gated static-hx-post buttons (not a bound :hx-post), authoritative-only @htmx:after-request JSON-parse store write, no optimistic mutation (T-38-OOB)
 - [Phase 38]: 38-02: agent-chip NODE_LAYOUT gutter widened 182->276px (h 154->250) for the control row; overlap guard min_chip_height bumped 150->240; canvas/SVG grown 720->1000; col-0/col-2/col-3 nodes re-balanced to incoming-edge midpoints
+- [Phase 57.1]: 57.1-02: KEY RISK closed — added analysis_completed_at (migration 028, nullable timestamptz on analysis), stamped via func.now() ONLY in the existing put_analysis ANALYZED-flip branch (server-set, wire-excluded so a client cannot forge completion), and tightened get_proposal_pending_batches to require analysis_completed_at IS NOT NULL so a D-03 partial START row can never leak into generate_proposals with NULL aggregates. Discriminator lands wave 2, before any partial row is written. Regression placed in test_pipeline.py (where the convergence helper lives), not the plan-named test_proposal_queries.py.
 - [Phase ?]: Phase 46-01: agent liveness heartbeat runs as an asyncio background task launched in agent_worker startup (cancelled in shutdown), NOT a SAQ CronJob — a CronJob competed for worker_max_jobs dispatch slots and was starved by multi-hour process_file jobs (busy-agent-DEAD incident); heartbeat_tick kept as a back-compat shim; one-time DELETE of orphaned cron:heartbeat_tick row from saq_jobs documented for redeploy
 
 ### Pending Todos
@@ -149,6 +150,7 @@ None.
 | Phase 45 P05 | ~5 min | 1 tasks | 2 files |
 | Phase 45 P06 | ~25 min | 2 tasks | 12 files |
 | Phase 46 P01 | ~20min | 3 tasks | 8 files |
+| Phase 57.1 P02 | ~20min | 2 tasks | 6 files |
 
 ## Deferred Items
 
@@ -191,8 +193,8 @@ These are tracked for the v7.0 homelab/cluster rollout; they are NOT blockers fo
 
 ## Session Continuity
 
-Last session: 2026-06-30T14:51:14.901Z
-Stopped at: Phase 57.1 context gathered
+Last session: 2026-06-30T15:05:00.000Z
+Stopped at: Completed 57.1-02-PLAN.md (completion discriminator + KEY-RISK convergence-gate fix)
 Resume file: None
 
 ## Operator Next Steps
