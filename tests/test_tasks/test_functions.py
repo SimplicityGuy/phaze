@@ -664,3 +664,57 @@ def test_analysis_child_path_imports_no_agent_client() -> None:
     src = Path(analysis_mod.__file__).read_text(encoding="utf-8")
     assert "agent_client" not in src
     assert "import httpx" not in src
+
+
+class _FakeDrainQueue:
+    """Minimal blocking-queue stand-in for ``_drain_progress`` unit coverage.
+
+    Each ``get`` pops the next scripted item; an ``Empty`` class in the script raises
+    ``queue.Empty`` (the drainer's timeout-retry path), an exception class raises that
+    exception (the manager-gone path), anything else is returned as a real item.
+    """
+
+    def __init__(self, script: list[Any]) -> None:
+        self._script = list(script)
+
+    def get(self, _block: bool, _timeout: float) -> Any:
+        from queue import Empty as _Empty
+
+        if not self._script:
+            raise _Empty
+        item = self._script.pop(0)
+        if isinstance(item, type) and issubclass(item, BaseException):
+            raise item
+        return item
+
+
+async def test_drain_progress_skips_empty_then_posts_and_flushes() -> None:
+    """The drainer retries past a queue.Empty timeout, posts counts, and flushes the final one."""
+    from queue import Empty
+
+    from phaze.tasks.functions import _PROGRESS_SENTINEL, _drain_progress
+
+    api = AsyncMock()
+    api.post_analysis_progress = AsyncMock(return_value=None)
+    file_id = uuid.uuid4()
+    queue = _FakeDrainQueue([Empty, (0, 2), (1, 2), _PROGRESS_SENTINEL])
+
+    await _drain_progress(queue, api, file_id, 0.0)
+
+    posted = [(c.args[1].fine_windows_analyzed, c.args[1].fine_windows_total) for c in api.post_analysis_progress.await_args_list]
+    # (0,2) and (1,2) posted live; (1,2) flushed again at sentinel.
+    assert posted == [(0, 2), (1, 2), (1, 2)]
+
+
+async def test_drain_progress_stops_when_manager_gone() -> None:
+    """An EOFError/OSError from the queue (manager shut down) stops the drainer without posting."""
+    from phaze.tasks.functions import _drain_progress
+
+    api = AsyncMock()
+    api.post_analysis_progress = AsyncMock(return_value=None)
+    file_id = uuid.uuid4()
+    queue = _FakeDrainQueue([EOFError])
+
+    await _drain_progress(queue, api, file_id, 0.0)
+
+    api.post_analysis_progress.assert_not_awaited()
