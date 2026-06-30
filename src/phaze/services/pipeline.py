@@ -6,7 +6,8 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from saq.utils import now as saq_now
-from sqlalchemy import String, cast, distinct, exists, func, or_, select, text
+from sqlalchemy import String, and_, cast, distinct, exists, func, or_, select, text
+from sqlalchemy.orm import aliased
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
@@ -833,6 +834,204 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
             }
         )
     return files
+
+
+# --- Phase 59 (59-01, IDENT-01/IDENT-02) Identify-workspace read-only row assembly ----------
+#
+# The two genuinely-new pieces of Phase 59 (RESEARCH "Don't Hand-Roll" key insight): per-row
+# presentation data for the Track-ID combined table and the Tracklist per-set table. Both are
+# PURE READS over existing, already-populated tables (no enqueue, no commit, no schema change) and
+# both degrade to ``[]`` inside a SAVEPOINT on any error, mirroring :func:`get_analyze_stage_files`
+# -- they ride the hot render/poll path and must NEVER 500 the page.
+
+# The PERSISTED lowercase engine vocab (RESEARCH Pitfall 1, traced adapter -> API -> DB write):
+# AudfprintAdapter.name / PanakoAdapter.name. The UI label is "Panako" but the stored value is
+# lowercase "panako". Used as the per-engine join keys for the Track-ID badges.
+_TRACKID_ENGINE_AUDFPRINT = "audfprint"
+_TRACKID_ENGINE_PANAKO = "panako"
+
+
+def _trackid_engine_badge(status: str | None) -> str:
+    """Map a persisted ``FingerprintResult.status`` to the D-01 per-engine badge word.
+
+    done <=> ``status == "success"`` (the value the engine adapters actually write via
+    ``put_fingerprint``; ``"completed"`` is tolerated defensively but is NEVER written by that
+    path -- RESEARCH Pitfall 1); failed <=> ``"failed"``; pending <=> no row for ``(file, engine)``
+    (a missing join -> ``status is None`` -- RESEARCH Pitfall 2).
+    """
+    if status in ("success", "completed"):
+        return "done"
+    if status == "failed":
+        return "failed"
+    return "pending"
+
+
+async def get_trackid_stage_files(session: AsyncSession) -> list[dict[str, Any]]:
+    """Return the per-file Track-ID identity-signal rows for the combined table (IDENT-01), degrade-safe.
+
+    ONE read-only SELECT (a pure read -- NO behavior change) over the signal-bearing set: music/video
+    files that carry at least one ``FingerprintResult`` row OR a linked ``Tracklist`` (RESEARCH
+    Open-Q2). Each row carries the per-engine fingerprint badge words (audfprint / panako, D-01) and
+    the tracklist match-state + confidence (D-04).
+
+    Per-engine badge (D-01, Pitfall 1/2): two aliased LEFT joins keyed on the lowercase persisted
+    ``engine`` values map ``status == "success"`` -> ``"done"``, ``"failed"`` -> ``"failed"``, and a
+    missing row -> ``"pending"`` (see :func:`_trackid_engine_badge`).
+
+    Tracklist match-state (D-04): a tracklist LINKED to this file (``Tracklist.file_id == files.id``)
+    -> ``"matched"`` + that linked tracklist's ``match_confidence`` (best via
+    ``match_confidence desc nulls_last``); else, if any unlinked candidate tracklist exists in the
+    system -> ``"candidate"`` + the global best candidate ``match_confidence`` (the
+    ``match_confidence.desc().nulls_last()`` ordering ``list_tracklists`` already uses); else
+    ``"no match"`` with confidence ``None``. NOTE: with the current schema a candidate
+    (``file_id IS NULL``) is not tied to a specific file, so the candidate fallback surfaces the
+    system-wide best candidate -- the literal D-04 reading; Plan 59-02 renders it and may refine if
+    UI-SPEC requires per-file candidates.
+
+    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_stage_files`).
+    """
+    try:
+        async with session.begin_nested():
+            # D-04 fallback: the system-wide best unlinked candidate (highest match_confidence).
+            best_candidate = (
+                await session.execute(
+                    select(Tracklist.match_confidence)
+                    .where(Tracklist.file_id.is_(None))
+                    .order_by(Tracklist.match_confidence.desc().nulls_last())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            has_candidate = bool((await session.execute(select(exists(select(Tracklist.id).where(Tracklist.file_id.is_(None)))))).scalar())
+
+            # Per-file best LINKED tracklist confidence (D-04 "matched" branch).
+            linked_conf_subq = (
+                select(
+                    Tracklist.file_id.label("file_id"),
+                    func.max(Tracklist.match_confidence).label("conf"),
+                )
+                .where(Tracklist.file_id.is_not(None))
+                .group_by(Tracklist.file_id)
+                .subquery()
+            )
+
+            audfprint = aliased(FingerprintResult)
+            panako = aliased(FingerprintResult)
+            stmt = (
+                select(
+                    FileRecord.original_filename,
+                    FileRecord.original_path,
+                    audfprint.status,
+                    panako.status,
+                    linked_conf_subq.c.file_id,
+                    linked_conf_subq.c.conf,
+                )
+                .select_from(FileRecord)
+                .outerjoin(audfprint, and_(audfprint.file_id == FileRecord.id, audfprint.engine == _TRACKID_ENGINE_AUDFPRINT))
+                .outerjoin(panako, and_(panako.file_id == FileRecord.id, panako.engine == _TRACKID_ENGINE_PANAKO))
+                .outerjoin(linked_conf_subq, linked_conf_subq.c.file_id == FileRecord.id)
+                .where(
+                    FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+                    or_(
+                        exists(select(FingerprintResult.id).where(FingerprintResult.file_id == FileRecord.id)),
+                        exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
+                    ),
+                )
+                .order_by(FileRecord.created_at.desc())
+            )
+            rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.warning("trackid_stage_files_degraded", exc_info=True)
+        return []
+
+    files: list[dict[str, Any]] = []
+    for filename, path, af_status, pk_status, linked_file_id, linked_conf in rows:
+        if linked_file_id is not None:
+            tracklist_state = "matched"
+            confidence = linked_conf
+        elif has_candidate:
+            tracklist_state = "candidate"
+            confidence = best_candidate
+        else:
+            tracklist_state = "no match"
+            confidence = None
+        files.append(
+            {
+                "filename": filename,
+                "path": path,
+                "audfprint_status": _trackid_engine_badge(af_status),
+                "panako_status": _trackid_engine_badge(pk_status),
+                "tracklist_state": tracklist_state,
+                "confidence": confidence,
+            }
+        )
+    return files
+
+
+async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
+    """Return the per-set Tracklist rows for the per-set coverage table (IDENT-02 / D-07/D-08), degrade-safe.
+
+    ONE read-only SELECT (a pure read -- NO behavior change), one row per ``Tracklist`` (a "set").
+    Each row carries the set name + path, the match-state + ``matched_to_file`` flag, and the D-07
+    per-set track coverage: ``tracks_confident`` of ``tracks_total`` derived from
+    ``TracklistTrack.confidence`` over the tracklist's versioned tracks (``COUNT(confidence)`` counts
+    only non-NULL confidences -> the confident N; ``COUNT(id)`` -> the total M).
+
+    A tracklist LINKED to a file (``file_id IS NOT NULL``) -> ``"matched"`` + the file's name/path;
+    an unlinked tracklist -> ``"candidate"`` (set name falls back to artist / event / external_id,
+    path ``None``). The track counts are summed across the tracklist's versions (a freshly scraped
+    tracklist has a single version).
+
+    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_stage_files`).
+    """
+    try:
+        async with session.begin_nested():
+            track_counts_subq = (
+                select(
+                    TracklistVersion.tracklist_id.label("tracklist_id"),
+                    func.count(TracklistTrack.id).label("total"),
+                    func.count(TracklistTrack.confidence).label("confident"),
+                )
+                .select_from(TracklistVersion)
+                .join(TracklistTrack, TracklistTrack.version_id == TracklistVersion.id)
+                .group_by(TracklistVersion.tracklist_id)
+                .subquery()
+            )
+            stmt = (
+                select(
+                    Tracklist.external_id,
+                    Tracklist.artist,
+                    Tracklist.event,
+                    Tracklist.file_id,
+                    FileRecord.original_filename,
+                    FileRecord.original_path,
+                    track_counts_subq.c.total,
+                    track_counts_subq.c.confident,
+                )
+                .select_from(Tracklist)
+                .outerjoin(FileRecord, FileRecord.id == Tracklist.file_id)
+                .outerjoin(track_counts_subq, track_counts_subq.c.tracklist_id == Tracklist.id)
+                .order_by(Tracklist.created_at.desc())
+            )
+            rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.warning("tracklist_set_rows_degraded", exc_info=True)
+        return []
+
+    sets: list[dict[str, Any]] = []
+    for external_id, artist, event, file_id, filename, path, total, confident in rows:
+        matched = file_id is not None
+        set_name = filename if matched else (artist or event or external_id)
+        sets.append(
+            {
+                "set_name": set_name,
+                "path": path,
+                "tracklist_state": "matched" if matched else "candidate",
+                "tracks_confident": int(confident or 0),
+                "tracks_total": int(total or 0),
+                "matched_to_file": matched,
+            }
+        )
+    return sets
 
 
 # --- ANALYSIS_FAILED bucket (Phase 44, D-02) --------------------------------------------
