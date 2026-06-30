@@ -713,12 +713,21 @@ Plans:
 **Requirements**: PROG-01, PROG-02, PROG-03
 **Depends on:** Phase 57 (builds on Phase 31 windowed analysis + Phase 32 reboot resilience, both shipped)
 **Plans:** 4 plans
-
 Plans:
+**Wave 1**
 
 - [ ] 57.1-01-PLAN.md — SPIKE: resolve the pebble/k8s transport fork + prove crash-mid-run idempotency on a real long file (PROG-01/02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 57.1-02-PLAN.md — Completion discriminator (analysis_completed_at, migration 028) + tighten the proposal convergence gate so a partial row never leaks (KEY RISK / PROG-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 57.1-03-PLAN.md — Counter-only progress endpoint + AnalysisProgressPayload + agent_client.post_analysis_progress (fine-only; PROG-01/03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 57.1-04-PLAN.md — Thread progress_cb through analyze_file + wire the pebble Queue-drainer and k8s to_thread bridges + throttle knob (PROG-01/02)
 
 ### Phase 58: Enrich + Analyze workspaces
