@@ -150,7 +150,11 @@ async def _drain_progress(progress_queue: Any, api: PhazeAgentClient, file_id: u
     — which the analysis-future done-callback pushes on success OR SIGKILL — so a killed child can
     never hang the drainer (T-57.1-22 kill-safety, proven in 57.1-01-SPIKE-FINDINGS).
     """
-    last_post = 0.0
+    # ``None`` (not 0.0) so the FIRST emission always posts regardless of the monotonic-clock
+    # magnitude: ``time.monotonic()`` is seconds from an arbitrary epoch, so on a freshly-booted
+    # host (e.g. a CI runner) ``now`` can be smaller than ``interval_sec`` and a ``0.0`` baseline
+    # would throttle away the START (0, N). The sentinel makes the first post deterministic.
+    last_post: float | None = None
     last_count: tuple[int, int] | None = None
     while True:
         try:
@@ -164,7 +168,7 @@ async def _drain_progress(progress_queue: Any, api: PhazeAgentClient, file_id: u
             break
         last_count = item
         now = time.monotonic()
-        if interval_sec <= 0.0 or (now - last_post) >= interval_sec:
+        if interval_sec <= 0.0 or last_post is None or (now - last_post) >= interval_sec:
             await _post_progress_count(api, file_id, item)
             last_post = now
     if last_count is not None:
