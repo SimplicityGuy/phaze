@@ -243,7 +243,7 @@ elif stage == "fingerprint":
 ```jinja
 {# rows = list of [ {text, mono?, title?, color?}, ... ];  text ALWAYS autoescaped #}
 {% set _ = ns.rows.append([
-    {'text': f.original_filename, 'mono': True, 'title': f.original_path},
+    {'text': f.filename, 'mono': True, 'title': f.path},   {# helper row keys: filename / path (match Plan 01 dict shape) #}
     {'text': af_word, 'color': af_color},      {# audfprint status word #}
     {'text': pk_word, 'color': pk_color},      {# panako status word #}
     {'text': match_word, 'color': match_color},
@@ -275,17 +275,19 @@ elif stage == "fingerprint":
 
 *All other claims are `[VERIFIED: source]` against the live tree this session.*
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Helper vs inline assembly for the two new row shapes.**
    - Known: no existing helper returns either shape; both are pure read-only SELECTs over existing tables.
    - Unclear: whether to add `get_trackid_stage_files` / `get_tracklist_set_rows` service helpers (degrade-safe, unit-testable, `get_analyze_stage_files` precedent) or compose inline in `_render_stage`.
    - Recommendation: **add degrade-safe service helpers** (matches Phase 58, gives unit-testable read paths for the Validation Architecture), but flag as A1 — either satisfies the no-behavior-change rule.
+   - RESOLVED: service helpers chosen — Plan 59-01 creates both `get_trackid_stage_files` and `get_tracklist_set_rows` in `src/phaze/services/pipeline.py`.
 
 2. **Which file set scopes the Track-ID table?**
    - Known: Phase 58 Fingerprint shows the *pending* queue; Track-ID is a *consolidated identity view* over files that carry a fingerprint or tracklist signal.
    - Unclear: exact membership (all music/video files? only files with ≥1 `FingerprintResult` or a tracklist?). UI-SPEC empty-state copy ("No discovered files carry a fingerprint or tracklist signal yet") implies the signal-bearing set.
    - Recommendation: scope to music/video files that have at least one `FingerprintResult` row OR a linked/candidate `Tracklist`; confirm against UI-SPEC empty-state intent at plan time. Read-only either way.
+   - RESOLVED: scoped to music/video files with ≥1 `FingerprintResult` OR a linked/candidate `Tracklist` — implemented in Plan 59-01 Task 2 (`get_trackid_stage_files`).
 
 ## Environment Availability
 
