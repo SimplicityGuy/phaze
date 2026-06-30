@@ -79,3 +79,19 @@
        this element but it stays inside the hidden parent above, absorbing the card invisibly. #}
     <section id="straggler-failed-card"></section>
 </div>
+{# Phase 58 (58-04 live-UAT): the shared /pipeline/stats poll also re-emits the SIX v6.0
+   cloud-state cards OOB every tick (stats_bar.html). Only the Analyze workspace renders their
+   real targets; on Discover/Metadata/Fingerprint they'd log htmx:oobErrorNoTarget every 5s.
+   Sink them invisibly here (hidden parent absorbs each outerHTML OOB swap). Analyze passes
+   `cloud_cards=true` → these sinks are skipped so its real cards keep the ids (a duplicate id
+   would steal the live swap). #}
+{% if not workspace_has_cloud_cards %}
+<div class="hidden" aria-hidden="true">
+    <section id="admission-state-card"></section>
+    <section id="inadmissible-card"></section>
+    <section id="localqueue-card"></section>
+    <section id="awaiting-cloud-card"></section>
+    <section id="analyzing-cloud-card"></section>
+    <section id="staged-pushing-card"></section>
+</div>
+{% endif %}

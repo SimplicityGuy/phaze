@@ -209,6 +209,32 @@ async def test_shell_sinks_legacy_oob_fragments(client: AsyncClient) -> None:
     assert 'id="straggler-failed-card"' in shell.text, "shell must carry a sink for the legacy straggler-failed-card OOB fragment"
 
 
+@pytest.mark.asyncio
+async def test_workspaces_sink_cloud_card_oob_fragments(client: AsyncClient) -> None:
+    """WORK-05 -- every workspace has exactly one target for each cloud-state OOB card.
+
+    The shared `/pipeline/stats` poll re-emits the six v6.0 cloud-state cards OOB every tick.
+    Only the Analyze workspace renders their REAL targets; Discover/Metadata/Fingerprint must
+    carry a hidden sink for each or htmx logs `htmx:oobErrorNoTarget` 6x/poll (found in 58-04
+    live UAT). Analyze must have EXACTLY ONE of each id (the real card) -- the sink is skipped
+    there via `cloud_cards=true` so a duplicate id can't steal the live swap.
+    """
+    cloud_ids = [
+        "admission-state-card",
+        "inadmissible-card",
+        "localqueue-card",
+        "awaiting-cloud-card",
+        "analyzing-cloud-card",
+        "staged-pushing-card",
+    ]
+    for stage in ("discover", "metadata", "fingerprint", "analyze"):
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200
+        for cid in cloud_ids:
+            count = frag.text.count(f'id="{cid}"')
+            assert count == 1, f"{stage} fragment must have exactly one #{cid} target (found {count})"
+
+
 # ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 58-VALIDATION.md Per-Task Verification Map)

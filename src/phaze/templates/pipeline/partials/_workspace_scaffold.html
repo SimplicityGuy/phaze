@@ -21,7 +21,7 @@
        which is reserved for the rail "+ Scan").
      * Always includes _workspace_poll_seeds.html so the OOB store seeds have landing targets.
 #}
-{% macro workspace(title, subcount='', actions='', x_data='') %}
+{% macro workspace(title, subcount='', actions='', x_data='', cloud_cards=false) %}
 <section{% if x_data %} x-data="{{ x_data }}"{% endif %} class="flex flex-col">
     {# Workspace header bar. A <div> (not the semantic <header> element) is used deliberately:
        the Phase-57 bare-fragment guard asserts the substring "<head" is absent from a stage
@@ -34,6 +34,9 @@
         {% if actions %}<div class="flex shrink-0 items-center gap-2">{{ actions }}</div>{% endif %}
     </div>
     {{ caller() }}
-    {% include "pipeline/partials/_workspace_poll_seeds.html" %}
+    {# `cloud_cards`: true ONLY for the Analyze workspace, which renders the six real v6.0
+       cloud-state cards. The seed host omits its hidden cloud-card sinks when true so we don't
+       create duplicate ids that would steal the live OOB swap from the real cards. #}
+    {% with workspace_has_cloud_cards = cloud_cards %}{% include "pipeline/partials/_workspace_poll_seeds.html" %}{% endwith %}
 </section>
 {% endmacro %}

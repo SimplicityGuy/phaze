@@ -35,7 +35,7 @@
     <button type="button" class="{{ _btn }}">ROUTE RULES</button>
     <button type="button" class="{{ _btn }}">PAUSE</button>
 {% endset %}
-{% call ws.workspace(title="ANALYZE", subcount=subcount, actions=actions) %}
+{% call ws.workspace(title="ANALYZE", subcount=subcount, actions=actions, cloud_cards=true) %}
     {# (a) THREE execution-lane cards -- ALWAYS render all three (D-05). #}
     <div id="analyze-lanes" class="grid grid-cols-3 gap-4 p-6">
         {# 🖥️ local -- configured on-prem worker; offline when no online agent. #}
