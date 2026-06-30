@@ -1,0 +1,138 @@
+{# Phase 59 (59-03, IDENT-02): the Tracklist stage workspace.
+
+   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
+   (_workspace_scaffold.html): its single focus-target heading + a live sub-count bound to
+   $store.pipeline (refreshed by the SINGLE chrome poll -- no second loop, WORK-05/R-2).
+
+   Body (a) -- THREE sequential step cards (Search · Scrape · Match) in a grid grid-cols-3
+   following the Phase-58 lane-card visual shape (rounded-xl border bg p-4), NOT a horizontal
+   breadcrumb stepper (D-05). Each card carries its OWN per-step ALL trigger (D-06) wired
+   VERBATIM to its existing bulk endpoint -- there is NO single run-chain button (no backend
+   change). Counts are server-rendered from the _render_stage tracklist context (tracklist_steps
+   + the three pending counts); the live busy pill binds to the EXISTING searchBusy / scrapeBusy /
+   matchBusy store keys (Pitfall 3 -- no new store key, no second poll). Each ALL trigger carries
+   the R-4 bulk-enqueue guard (hx-confirm + a :disabled busy-gate on its *Busy count). Pitfall 4 --
+   the trigger partials are asymmetric: SEARCH returns trigger_response.html (has a no_active_agent
+   branch), SCRAPE/MATCH return trigger_tracklist_response.html (controller tasks, no agent branch);
+   each lands in its own local *-trigger-response sink.
+
+   Body (b) -- the per-set table (D-08: aggregate cards on top, per-set detail below), rendered
+   through the reusable _file_table.html over get_tracklist_set_rows (tracklist_sets). Columns:
+   Set · Tracklist · Tracks · Matched to file. The Tracks cell is the D-07 N/M track-level coverage
+   (confident/total) from TracklistTrack.confidence. Rows are inert-but-present (D-06 / R-1): a
+   stable id via row_id_prefix, but the click is UNBOUND in Phase 59 (row->record is Phase 61).
+   Every DB-sourced `text` crosses the DB->render trust boundary through _file_table.html autoescape
+   -- never the raw passthrough filter (T-59-XSS).
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = '`${$store.pipeline.tracklistDone} sets matched · 1001Tracklists`' %}
+{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _match_color = {
+    "matched": "text-emerald-600 dark:text-emerald-300",
+    "candidate": "text-amber-600 dark:text-amber-300",
+} %}
+{% call ws.workspace(title="TRACKLIST", subcount=subcount) %}
+    {# (a) THREE sequential step cards (D-05) -- lane-card visual shape + a per-step ALL trigger (D-06). #}
+    <div class="grid grid-cols-3 gap-4 p-6">
+        {# 1 · 🔎 SEARCH -- POST /pipeline/search-tracklists (Pitfall 4: returns trigger_response.html). #}
+        <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <div class="flex items-center justify-between gap-2">
+                <span class="text-sm text-gray-700 dark:text-gray-200">1 · 🔎 SEARCH</span>
+                <span class="font-mono text-sm font-medium text-gray-700 dark:text-gray-300">{{ tracklist_steps.scan_search.done }} / —</span>
+            </div>
+            <div class="mt-2 text-xs text-gray-500 dark:text-gray-500">
+                {{ tracklist_search_pending }} pending
+                <span x-show="$store.pipeline.searchBusy > 0" class="text-blue-600 dark:text-blue-300">· running…</span>
+            </div>
+            <div class="mt-3">
+                <button type="button"
+                        hx-post="/pipeline/search-tracklists" hx-target="#search-trigger-response" hx-swap="innerHTML"
+                        hx-confirm="Enqueue tracklist search for all pending files?"
+                        :disabled="$store.pipeline.searchBusy > 0"
+                        aria-label="Search tracklists for all pending files"
+                        class="{{ _btn }}">SEARCH ALL</button>
+            </div>
+            <div id="search-trigger-response" class="mt-3 text-xs empty:hidden"></div>
+        </div>
+
+        {# 2 · 📄 SCRAPE -- POST /pipeline/scrape-tracklists (Pitfall 4: returns trigger_tracklist_response.html). #}
+        <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <div class="flex items-center justify-between gap-2">
+                <span class="text-sm text-gray-700 dark:text-gray-200">2 · 📄 SCRAPE</span>
+                <span class="font-mono text-sm font-medium text-gray-700 dark:text-gray-300">{{ tracklist_steps.scrape.done }} / {{ tracklist_steps.scrape.total }}</span>
+            </div>
+            <div class="mt-2 text-xs text-gray-500 dark:text-gray-500">
+                {{ tracklist_scrape_pending }} pending
+                <span x-show="$store.pipeline.scrapeBusy > 0" class="text-blue-600 dark:text-blue-300">· running…</span>
+            </div>
+            <div class="mt-3">
+                <button type="button"
+                        hx-post="/pipeline/scrape-tracklists" hx-target="#scrape-trigger-response" hx-swap="innerHTML"
+                        hx-confirm="Enqueue scraping for all pending tracklists?"
+                        :disabled="$store.pipeline.scrapeBusy > 0"
+                        aria-label="Scrape all pending tracklists"
+                        class="{{ _btn }}">SCRAPE ALL</button>
+            </div>
+            <div id="scrape-trigger-response" class="mt-3 text-xs empty:hidden"></div>
+        </div>
+
+        {# 3 · 🔗 MATCH -- POST /pipeline/match-tracklists (Pitfall 4: returns trigger_tracklist_response.html). #}
+        <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <div class="flex items-center justify-between gap-2">
+                <span class="text-sm text-gray-700 dark:text-gray-200">3 · 🔗 MATCH</span>
+                <span class="font-mono text-sm font-medium text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done }} / {{ tracklist_steps.match.total }}</span>
+            </div>
+            <div class="mt-2 text-xs text-gray-500 dark:text-gray-500">
+                {{ tracklist_match_pending }} pending
+                <span x-show="$store.pipeline.matchBusy > 0" class="text-blue-600 dark:text-blue-300">· running…</span>
+            </div>
+            <div class="mt-3">
+                <button type="button"
+                        hx-post="/pipeline/match-tracklists" hx-target="#match-trigger-response" hx-swap="innerHTML"
+                        hx-confirm="Enqueue matching for all pending tracklists?"
+                        :disabled="$store.pipeline.matchBusy > 0"
+                        aria-label="Match all pending tracklists"
+                        class="{{ _btn }}">MATCH ALL</button>
+            </div>
+            <div id="match-trigger-response" class="mt-3 text-xs empty:hidden"></div>
+        </div>
+    </div>
+
+    {# (b) the per-set table (D-07/D-08) -- N/M track coverage below the aggregate step cards. #}
+    <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
+        {% set columns = ["Set", "Tracklist", "Tracks", "Matched to file"] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for s in tracklist_sets %}
+            {% if s.tracks_total == 0 %}
+                {% set coverage_text = "—" %}
+                {% set coverage_color = "text-gray-500 dark:text-gray-400" %}
+            {% else %}
+                {% set coverage_text = "%d/%d" | format(s.tracks_confident, s.tracks_total) %}
+                {% if s.tracks_confident == s.tracks_total %}
+                    {% set coverage_color = "text-emerald-600 dark:text-emerald-300" %}
+                {% else %}
+                    {% set coverage_color = "text-blue-600 dark:text-blue-300" %}
+                {% endif %}
+            {% endif %}
+            {% if s.matched_to_file %}
+                {% set matched_text = "matched" %}
+                {% set matched_color = "text-emerald-600 dark:text-emerald-300" %}
+            {% else %}
+                {% set matched_text = "—" %}
+                {% set matched_color = "text-gray-500 dark:text-gray-400" %}
+            {% endif %}
+            {% set _ = ns.rows.append([
+                {'text': s.set_name, 'mono': True, 'title': s.path},
+                {'text': s.tracklist_state, 'color': _match_color.get(s.tracklist_state, "text-gray-500 dark:text-gray-400")},
+                {'text': coverage_text, 'mono': True, 'color': coverage_color},
+                {'text': matched_text, 'color': matched_color},
+            ]) %}
+        {% endfor %}
+        {% set rows = ns.rows %}
+        {% set empty_heading = "No tracklists yet" %}
+        {% set empty_body = "Run SEARCH ALL to discover 1001Tracklists matches for your live sets." %}
+        {% set row_id_prefix = "tracklist-row" %}
+        {% set table_id = "tracklist-set-table" %}
+        {% include "pipeline/partials/_file_table.html" %}
+    </div>
+{% endcall %}

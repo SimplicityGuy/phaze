@@ -30,7 +30,16 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.services.pipeline import get_fingerprint_pending_files, get_metadata_pending_files, get_trackid_stage_files
+from phaze.services.pipeline import (
+    get_fingerprint_pending_files,
+    get_match_pending_tracklists,
+    get_metadata_pending_files,
+    get_scrape_pending_tracklists,
+    get_stage_progress,
+    get_trackid_stage_files,
+    get_tracklist_set_rows,
+    get_untracked_files,
+)
 
 from .pipeline import build_dashboard_context
 
@@ -71,7 +80,11 @@ STAGE_PARTIALS: dict[str, str] = {
     # the placeholder -- a STATIC string literal (T-57-01: `stage` is never spliced into a template
     # path). Supersede-in-place; the legacy template stays reachable until CUT-02 (Phase 62).
     "trackid": "pipeline/partials/trackid_workspace.html",
-    "tracklist": _STAGE_PLACEHOLDER,
+    # Phase 59 (59-03, IDENT-02): the real Tracklist workspace (three Search/Scrape/Match step cards
+    # with per-step ALL triggers over the existing bulk endpoints + a per-set N/M track-coverage
+    # table) supersedes the placeholder -- a STATIC string literal (T-57-01: `stage` is never spliced
+    # into a template path). Supersede-in-place; the legacy template stays reachable until CUT-02.
+    "tracklist": "pipeline/partials/tracklist_workspace.html",
     "propose": _STAGE_PLACEHOLDER,
     "rename": _STAGE_PLACEHOLDER,
     "tagwrite": _STAGE_PLACEHOLDER,
@@ -139,6 +152,19 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # The helper returns [] on any DB error, so no router try/except is needed; oob_counts stays
         # False (Pitfall 5) -- the live sub-count refreshes via the single chrome poll's OOB seeds.
         context["trackid_files"] = await get_trackid_stage_files(session)
+    elif stage == "tracklist":
+        # Phase 59 (59-03, IDENT-02): the Tracklist workspace renders three Search/Scrape/Match step
+        # cards (server-rendered done/total + pending counts) over the per-step ALL triggers, plus the
+        # per-set N/M track-coverage table. get_stage_progress + get_tracklist_set_rows + the three
+        # pending-set helpers are read-only, degrade-safe assemblies over the existing tracklist reads
+        # (NO new query path, NO enqueue, NO backend change). The busy pills bind to the existing
+        # searchBusy/scrapeBusy/matchBusy store keys (Pitfall 3 -- no new key, no second poll), so
+        # oob_counts stays False (Pitfall 5); the live values ride the single chrome poll's OOB seeds.
+        context["tracklist_steps"] = await get_stage_progress(session)
+        context["tracklist_search_pending"] = len(await get_untracked_files(session))
+        context["tracklist_scrape_pending"] = len(await get_scrape_pending_tracklists(session))
+        context["tracklist_match_pending"] = len(await get_match_pending_tracklists(session))
+        context["tracklist_sets"] = await get_tracklist_set_rows(session)
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)

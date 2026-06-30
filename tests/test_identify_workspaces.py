@@ -272,31 +272,42 @@ async def test_trackid_success_renders_done(client: AsyncClient, session: AsyncS
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="filled by Plan 59-03 (IDENT-02 Tracklist 3-step cards + triggers)", strict=False)
 async def test_tracklist_step_cards_and_triggers(client: AsyncClient) -> None:
     """IDENT-02 / D-05 / D-06 -- three sequential step cards with per-step ALL triggers.
 
-    Filled by Plan 59-03: the ``/s/tracklist`` fragment renders Search/Scrape/Match step cards,
-    each with its own ALL trigger wired VERBATIM to the existing endpoint
-    (``/pipeline/search-tracklists`` / ``scrape-tracklists`` / ``match-tracklists``) under the R-4
-    guard (``hx-confirm`` + ``:disabled`` on the matching ``*Busy``), with NO single chain button.
+    The ``/s/tracklist`` fragment renders Search/Scrape/Match step cards, each with its own ALL
+    trigger wired VERBATIM to the existing endpoint (``/pipeline/search-tracklists`` /
+    ``scrape-tracklists`` / ``match-tracklists``) under the R-4 guard (``hx-confirm`` + ``:disabled``
+    on the matching ``*Busy``), with NO single chain button.
     """
     resp = await client.get("/s/tracklist", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     body = resp.text
+    # D-06: each step card posts to its own existing bulk endpoint (no single run-chain button).
     assert 'hx-post="/pipeline/search-tracklists"' in body
     assert 'hx-post="/pipeline/scrape-tracklists"' in body
     assert 'hx-post="/pipeline/match-tracklists"' in body
+    # R-4: every ALL trigger carries an hx-confirm + a :disabled busy-gate on its matching *Busy key.
+    assert body.count("hx-confirm=") >= 3
+    assert ':disabled="$store.pipeline.searchBusy > 0"' in body
+    assert ':disabled="$store.pipeline.scrapeBusy > 0"' in body
+    assert ':disabled="$store.pipeline.matchBusy > 0"' in body
+    # D-06: the three ALL-trigger labels are present (Search/Scrape/Match cards).
+    assert "SEARCH ALL" in body
+    assert "SCRAPE ALL" in body
+    assert "MATCH ALL" in body
+    # D-05: NO single run-chain orchestrator button (no backend endpoint runs all three).
+    assert "run-chain" not in body
+    assert "RUN CHAIN" not in body
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="filled by Plan 59-03 (IDENT-02 per-set N/M track coverage)", strict=False)
 async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSession) -> None:
     """IDENT-02 / D-07 / D-08 -- per-set table renders N/M track coverage; inert rows.
 
-    Filled by Plan 59-03: seed a linked tracklist with a version + N confident / M total tracks,
-    then assert the per-set table below the step cards renders the ``N/M`` coverage from
-    ``TracklistTrack.confidence`` with inert (no ``hx-get``) rows.
+    Seed a linked tracklist with a version + N confident / M total tracks, then assert the per-set
+    table below the step cards renders the ``N/M`` coverage from ``TracklistTrack.confidence`` with
+    inert (no ``hx-get``) rows.
     """
     file = await _seed_file(session, original_filename="set.mp3")
     tl = await _seed_tracklist(session, file_id=file.id, match_confidence=88)
@@ -305,8 +316,17 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     await _seed_tracklist_track(session, version.id, position=2, confidence=None)
     resp = await client.get("/s/tracklist", headers={"HX-Request": "true"})
     assert resp.status_code == 200
-    tbl = resp.text[resp.text.index('id="tracklist-set-table"') :]
+    body = resp.text
+    # D-08: the per-set table sits below the three step cards (aggregate on top, detail below).
+    assert "tracklist-set-table" in body
+    assert body.index("grid grid-cols-3") < body.index('id="tracklist-set-table"')
+    tbl = body[body.index('id="tracklist-set-table"') :]
+    # D-07: N/M track-level coverage from TracklistTrack.confidence (1 confident of 2 total).
     assert "1/2" in tbl
+    # D-04/D-08: a linked tracklist reads "matched" to its file.
+    assert "matched" in tbl
+    # R-1 / D-06: rows are inert this phase (row->record is Phase 61; no row-click fetch wired).
+    assert "hx-get" not in tbl
 
 
 # ---------------------------------------------------------------------------
