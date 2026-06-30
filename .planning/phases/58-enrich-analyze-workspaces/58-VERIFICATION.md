@@ -1,7 +1,7 @@
 ---
 phase: 58-enrich-analyze-workspaces
 verified: 2026-06-30T21:42:00Z
-status: human_needed
+status: passed
 score: 5/5 must-haves verified
 overrides_applied: 0
 re_verification:
@@ -9,12 +9,16 @@ re_verification:
   previous_score: 5/5
   gaps_closed:
     - "W-1 — new derived store keys notYetEnriched/computeOnline now seeded in shell.html's own Alpine store (commit 24f70be); regression test test_shell_store_seeds_phase58_keys added and passing"
+    - "Live single-poll + windowed-progress UAT performed via Playwright on the running app (2026-06-30) — both items PASS; status flipped human_needed→passed"
   gaps_remaining: []
   regressions: []
-human_verification:
-  - test: "Open the v7.0 shell at /s/analyze with files in flight; watch the network tab for ~15s."
-    expected: "Exactly ONE /pipeline/stats request every 5s; lane-capacity numerals and the per-file N/M windows count refresh in place with no manual reload; polling pauses (no request fires) while the tab is backgrounded and resumes on foreground."
-    why_human: "End-to-end browser timing + visibilitychange behaviour; the structural single-poll assertion proves no second loop but cannot observe live in-browser refresh/poll-shedding. No Alpine runtime in httpx tests. Deferred-to-live (same class as Phase 57.1 deferred-to-live items), deployment-gated — not a code gap."
+live_uat:
+  performed: 2026-06-30
+  method: "Claude-driven Playwright on local uvicorn (just test-db PG 5433 / Redis 6380, dedicated phaze_uat DB, seeded in-flight 14/41 + completed 41/41 rows)"
+  results:
+    - "Single-poll discipline (WORK-05) PASS — exactly one #pipeline-stats element; 27 /pipeline/stats requests evenly spaced one per 5s (no double-poll); every-5s [visibilityState==='visible'] trigger filter + visibilitychange listener present; no `undefined` initial-paint flash (W-1 fix confirmed live)"
+    - "Windowed progress + lanes (WORK-03/04) PASS — all 3 lane cards render (local/A1/k8s) with offline/not-configured states; in-flight row shows 'running · 14/41 windows' (real 57.1 mid-flight signal, not bare running); completed row shows 'window 41/41'"
+    - "Found + fixed during UAT: htmx:oobErrorNoTarget for the legacy Phase-44 #straggler-failed-card emitted OOB each poll — added a hidden sink in _workspace_poll_seeds.html (commit c6e6b70); console now 0 errors over multiple poll cycles"
 ---
 
 # Phase 58: Enrich + Analyze workspaces — Verification Report
