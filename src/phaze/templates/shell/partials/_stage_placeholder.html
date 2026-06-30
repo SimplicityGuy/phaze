@@ -1,0 +1,11 @@
+{# Phase 57 minimal stage placeholder.
+
+   Every non-Analyze rail node renders this inert panel so the shell is fully navigable
+   before the redesigned per-stage workspaces (and their live content bridges) land in
+   Phases 58-61. The <h1 tabindex="-1"> is the focus target the shell's htmx:afterSwap /
+   htmx:historyRestore handlers move keyboard focus to after a rail swap (Focus/ARIA
+   baseline). `stage` is the active rail-node id (autoescaped — never raw HTML). #}
+<section class="px-6 py-6">
+    <h1 tabindex="-1" class="font-jura text-lg font-medium uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ stage }}</h1>
+    <p class="mt-3 text-sm text-gray-600 dark:text-gray-400">This workspace arrives in a later phase. Pick a stage from the rail, or go to Analyze.</p>
+</section>

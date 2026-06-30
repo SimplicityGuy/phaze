@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 import structlog
@@ -431,19 +431,18 @@ async def trigger_proposals(
     }
 
 
-@router.get("/pipeline/", response_class=HTMLResponse)
-async def dashboard(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Render the pipeline dashboard page (per D-03).
+async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
+    """Build the pipeline-dashboard render context, shared by ``/pipeline/`` and the shell ``/`` Analyze node.
 
-    Phase 27 D-05/D-06 extension: the dashboard now exposes ``agents`` (the
-    non-revoked agent list driving the Trigger Scan card dropdown) and
-    ``recent_scans`` (the last 10 non-LIVE ScanBatches with ``agent_name`` +
-    ``elapsed_seconds`` attached for the Recent Scans mini-table). The LIVE
-    sentinel batches are excluded -- they are an internal watcher-ingestion
-    state, not an operator-triggered event.
+    Factored out of :func:`dashboard` (Phase 57, RESEARCH Open-Q2 / D-01) so the legacy
+    dashboard page and the v7.0 shell's Analyze default render the SAME DAG content from a
+    SINGLE source — there is no duplicated query logic that could drift between the two
+    entry points. Returns every context key the dashboard template tree consumes EXCEPT
+    ``request`` (each caller injects its own). ``app_state`` is ``request.app.state``.
+
+    Every read here is degrade-safe at the service layer (the services own their never-500
+    SAVEPOINT/``_safe_count`` fallbacks and the queue/counter reads isolate their own
+    failures), so this builder never 500s the page.
     """
     stats = await get_pipeline_stats(session)
 
@@ -463,14 +462,14 @@ async def dashboard(
     # degrades to zeros, so no try/except is added here. queue_progress_percent precomputes
     # the DB-derived "Processing" bar percent (guarded against divide-by-zero) server-side
     # for unit-testability; the card (Plan 03) and the button gating (Plan 04) consume these.
-    activity = await get_queue_activity(request.app.state, session)
+    activity = await get_queue_activity(app_state, session)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
 
     # Phase 35 (35-04): per-DAG-node done/total/active reconciled from get_stage_progress
     # (DB-truth) + the maintained completed counters (backstop) + the queue activity. The
     # 35-05 canvas seeds these into $store.pipeline on the full-page render; here they ride
     # the dashboard context. _build_dag_context isolates its own counter-source failures.
-    dag_ctx = await _build_dag_context(request.app.state, session, activity)
+    dag_ctx = await _build_dag_context(app_state, session, activity)
 
     # Phase 44 (44-04): the STRAGGLER count (long-running in-flight process_file jobs,
     # "still grinding") and the ANALYSIS_FAILED count ("gave up") -- two distinct buckets
@@ -504,7 +503,7 @@ async def dashboard(
     # get_localqueue_unreachable owns the never-500 degrade (returns False on a missing handle / any Redis
     # error), so NO try/except here -- the redis handle is read off app.state like the queue counters.
     # Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
-    localqueue_unreachable = await get_localqueue_unreachable(getattr(request.app.state, "redis", None))
+    localqueue_unreachable = await get_localqueue_unreachable(getattr(app_state, "redis", None))
 
     # Phase 55 (55-05, D-04, KROUTE-06): the four per-cloud_phase admission-state counts driving the
     # admission_state_card. get_cloud_phase_counts owns the never-500 _safe_count degrade per phase
@@ -519,8 +518,7 @@ async def dashboard(
     # try/except here — same wiring idiom as get_queue_activity / dag_ctx above.
     recon = await get_global_reconciliation(session)
 
-    context = {
-        "request": request,
+    return {
         "stats": stats,
         "current_page": "pipeline",
         "settings_batch_size": settings.llm_batch_size,
@@ -543,6 +541,30 @@ async def dashboard(
         **dag_ctx,
         "queue_progress_percent": queue_progress,
     }
+
+
+@router.get("/pipeline/", response_class=HTMLResponse)
+async def dashboard(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Render the pipeline dashboard page (per D-03), or 302-redirect to the shell root.
+
+    Phase 57 (SHELL-01 / D-03 true rename): ``/pipeline/`` is renamed to the v7.0 shell
+    root ``/`` (whose Analyze default embeds THIS dashboard's DAG content via the shared
+    :func:`build_dashboard_context`). A plain (non-HX) browser navigation / bookmark
+    302-redirects to ``/``; the conditional form (``HX-Request != "true"``) preserves the
+    in-page render path for HX callers and is uniform with the Plan-04 legacy redirects.
+
+    Phase 27 D-05/D-06 extension: the dashboard exposes ``agents`` (the non-revoked agent
+    list driving the Trigger Scan card dropdown) and ``recent_scans`` (the last 10 non-LIVE
+    ScanBatches with ``agent_name`` + ``elapsed_seconds`` attached for the Recent Scans
+    mini-table). The LIVE sentinel batches are excluded -- they are an internal
+    watcher-ingestion state, not an operator-triggered event.
+    """
+    if request.headers.get("HX-Request") != "true":
+        return RedirectResponse(url="/", status_code=302)
+    context = {"request": request, **await build_dashboard_context(request.app.state, session)}
     return templates.TemplateResponse(request=request, name="pipeline/dashboard.html", context=context)
 
 

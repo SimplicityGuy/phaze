@@ -799,7 +799,7 @@ async def test_dashboard_renders_trigger_scan_card(
     """GET /pipeline/ surfaces the Trigger Scan card heading + agent dropdown + picker slot."""
     ac, _ = smoke
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'id="trigger-scan-heading"' in response.text
     assert ">Trigger Scan</h2>" in response.text
@@ -816,7 +816,7 @@ async def test_dashboard_renders_recent_scans_section(
     """GET /pipeline/ surfaces the Recent Scans heading + empty state when no batches."""
     ac, _ = smoke
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'id="recent-scans-heading"' in response.text
     assert ">Recent Scans</h2>" in response.text
@@ -843,7 +843,7 @@ async def test_dashboard_recent_scans_shows_failed_row_with_inline_error(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # PR5 added an Actions column, so the inline-error row spans 7 columns.
     assert 'colspan="7"' in response.text
@@ -869,7 +869,7 @@ async def test_dashboard_recent_scans_excludes_live_batches(
     session.add(live_batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # The LIVE sentinel must not surface; the table renders the empty state.
     assert "<watcher>" not in response.text
@@ -894,7 +894,7 @@ async def test_status_pill_running_uses_blue_surface(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-blue-100 dark:bg-blue-950" in response.text
     assert 'aria-label="Status: running"' in response.text
@@ -918,7 +918,7 @@ async def test_status_pill_completed_uses_green_surface(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-green-100" in response.text
     assert 'aria-label="Status: completed"' in response.text
@@ -943,7 +943,7 @@ async def test_status_pill_failed_uses_red_surface(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-red-100" in response.text
     assert 'aria-label="Status: failed"' in response.text
@@ -1098,7 +1098,7 @@ async def test_dashboard_full_page_omits_oob_counts(
     each "files ready" id appears exactly once (the in-place stage-card copy).
     """
     ac, _ = smoke
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # No OOB markup leaks into the full-page render.
     assert "hx-swap-oob" not in response.text
@@ -1137,7 +1137,7 @@ async def test_dashboard_renders_one_button_per_action(
     duplicate (or drop) the interactive button subtree.
     """
     ac, _ = smoke
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # Exactly one hx-post button per action (robust to the heading also reading
     # "Generate Proposals"): count the unique enqueue endpoints.
@@ -1167,7 +1167,7 @@ async def test_button_disabled_binds_to_store_not_frozen_literal(
     await session.commit()
 
     ac, _ = smoke
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # Triggers bind to the reactive store-derived node state, the single source of truth.
     assert ':disabled="loading || nodes.analyze.blocked"' in response.text
@@ -1196,7 +1196,7 @@ async def test_dashboard_seeds_pipeline_store_from_server_count(
     await session.commit()
 
     ac, _ = smoke
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # discovered == 2 at render: the store is seeded with that exact value.
     assert 'x-init="$store.pipeline.discovered = 2"' in response.text
@@ -1323,7 +1323,7 @@ async def test_recent_scans_table_delete_control_on_terminal_rows_only(
     await session.commit()
     completed_id, running_id = completed.id, running.id
 
-    response = await ac.get("/pipeline/")
+    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # Actions column header present.
     assert ">Actions</th>" in response.text
