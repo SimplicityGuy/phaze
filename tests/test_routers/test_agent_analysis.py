@@ -507,6 +507,51 @@ async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], sess
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
 
 
+# ---------------------------------------------------------------------------
+# Phase 57.1 (Plan 03): AnalysisProgressPayload schema validation
+# ---------------------------------------------------------------------------
+
+
+def test_progress_schema_rejects_extra_key() -> None:
+    """AnalysisProgressPayload uses extra='forbid' -- a ride-along agent_id/file_id is a ValidationError (AUTH-01, T-57.1-02)."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError):
+        AnalysisProgressPayload(fine_windows_analyzed=1, fine_windows_total=40, agent_id="spoofed-agent")  # type: ignore[call-arg]
+
+
+def test_progress_schema_rejects_negative_count() -> None:
+    """AnalysisProgressPayload counts are ge=0 -- a negative count is a ValidationError."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError):
+        AnalysisProgressPayload(fine_windows_analyzed=-1, fine_windows_total=40)
+
+
+def test_progress_schema_requires_both_counts() -> None:
+    """Both fine counts are REQUIRED (no default) -- a progress POST always carries both."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError):
+        AnalysisProgressPayload(fine_windows_total=40)  # type: ignore[call-arg]
+
+
+def test_progress_schema_response_exposes_agent_and_file_id() -> None:
+    """AnalysisProgressResponse mirrors AnalysisWriteResponse: {agent_id, file_id}."""
+    from phaze.schemas.agent_analysis import AnalysisProgressResponse
+
+    fid = uuid.uuid4()
+    resp = AnalysisProgressResponse(agent_id="a1", file_id=fid)
+    assert resp.agent_id == "a1"
+    assert resp.file_id == fid
+
+
 @pytest.mark.asyncio
 async def test_analysis_failed_sets_state(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """POST /{file_id}/failed advances files.state to 'analysis_failed' and echoes agent_id/file_id."""
