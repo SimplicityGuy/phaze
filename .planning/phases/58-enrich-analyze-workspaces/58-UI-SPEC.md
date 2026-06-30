@@ -1,10 +1,11 @@
 ---
 phase: 58
 slug: enrich-analyze-workspaces
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-06-29
+reviewed_at: 2026-06-29
 inherits: 57-shell-dag-rail/57-UI-SPEC.md
 ---
 
