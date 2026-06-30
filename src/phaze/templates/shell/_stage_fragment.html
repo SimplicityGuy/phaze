@@ -1,0 +1,9 @@
+{# Bare stage fragment (D-01): the HX rail-swap body for #stage-workspace.
+
+   Content-only. This template NEVER uses {% extends %} and carries no full-document
+   wrapper or document head — a fragment with shell chrome would corrupt the surrounding
+   shell and inject duplicate landmarks/skip-links (a ROADMAP-locked anti-pattern, and an
+   a11y contract). It is exactly the same {% include %} the full shell.html uses inside
+   #stage-workspace, so a direct navigation and a rail swap render byte-identical center
+   content. #}
+{% include stage_partial %}
