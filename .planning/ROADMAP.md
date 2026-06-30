@@ -35,7 +35,7 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
 
 - [x] **Phase 57: Shell & DAG rail** — three-column app shell, header + ⌘K affordance + status strip, DAG rail as HTMX nav, `/` home (Analyze default), brand/theme preserved, old tab routes redirect/render into the shell (SHELL-01..05) (completed 2026-06-30)
   - Success: `/` renders the three-column shell with Analyze selected (no `/pipeline` redirect); a rail click swaps only `#stage-workspace` with no full-page nav; the legacy tab-bar is gone; dark/light + Jura/wave brand intact; all 8 old routes resolve in ≤1 hop.
-- [ ] **Phase 57.1: Incremental window persistence & live analyze progress signal** — analyze writes window rows + `fine_windows_analyzed` incrementally mid-flight (idempotent under Phase 32 re-enqueue), exposing a read-only per-file progress signal for the Phase 58 Analyze workspace; scoped exception to the v7.0 no-backend-change rule (PROG-01..03)
+- [x] **Phase 57.1: Incremental window persistence & live analyze progress signal** — analyze writes window rows + `fine_windows_analyzed` incrementally mid-flight (idempotent under Phase 32 re-enqueue), exposing a read-only per-file progress signal for the Phase 58 Analyze workspace; scoped exception to the v7.0 no-backend-change rule (PROG-01..03) (completed 2026-06-30)
   - Success: an in-flight file's `fine_windows_analyzed/total` advances during the run; a file killed mid-analysis re-runs cleanly with no duplicate/partial window corruption; aggregates + `ANALYZED` flip unchanged; no new queue/routing semantics.
 - [ ] **Phase 58: Enrich + Analyze workspaces** — Discover/Metadata/Fingerprint/Analyze stage views; three Analyze lane cards (local/A1/k8s) with live capacity + Kueue quota-wait/Inadmissible; single-poll stats fanout (WORK-01..05)
   - Success: each stage shows its queue + existing trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update with no manual reload and no second poll loop.
@@ -186,7 +186,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 4/4 | Complete    | 2026-06-30 |
-| 58. Enrich + Analyze workspaces | v7.0 | 4/4 | Complete   | 2026-06-30 |
+| 58. Enrich + Analyze workspaces | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
 | 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
