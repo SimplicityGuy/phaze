@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from phaze.models.agent import Agent
 
 
-_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 
 
 @pytest_asyncio.fixture

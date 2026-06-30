@@ -100,7 +100,9 @@ def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[Fil
         file_size=1000,
         state=state,
     )
-    analysis = AnalysisResult(file_id=uid, bpm=128.0, musical_key="Cm")
+    # Phase 57.1: a COMPLETED analysis row carries analysis_completed_at -- the tightened
+    # proposal-convergence gate (analysis_completed_at IS NOT NULL) excludes in-progress partial rows.
+    analysis = AnalysisResult(file_id=uid, bpm=128.0, musical_key="Cm", analysis_completed_at=datetime.now(UTC))
     metadata = FileMetadata(file_id=uid, artist="Test", title="Track")
     return file_rec, analysis, metadata
 

@@ -420,6 +420,77 @@ async def test_analysis_empty_put_does_not_advance_state(
 
 
 @pytest.mark.asyncio
+async def test_analysis_put_stamps_completed_at(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 57.1 KEY RISK: a non-empty PUT stamps analysis_completed_at (the completion discriminator).
+
+    The discriminator is set in the SAME dumped-guarded txn that flips FileState.ANALYZED, so a
+    completed analysis row is distinguishable from an in-flight partial row (which leaves it NULL).
+    It is server-set via func.now() -- never wire-set -- so a client cannot forge completion.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"bpm": 128.0, "fine_windows_analyzed": 40, "fine_windows_total": 40},
+        )
+
+    assert response.status_code == 200, response.text
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.analysis_completed_at is not None, "a completed (non-empty) PUT must stamp analysis_completed_at"
+
+
+@pytest.mark.asyncio
+async def test_analysis_empty_put_leaves_completed_at_null(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 57.1: an empty-body PUT ({}) is a no-op -- no completion, so analysis_completed_at stays NULL.
+
+    This mirrors the ANALYZED-flip guard: `dumped` is falsy for an empty body, so the completion
+    branch (state flip + completed_at stamp) is skipped. A partial in-flight row therefore never
+    looks completed.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={})
+
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.analysis_completed_at is None, "an empty PUT (no completion) must leave analysis_completed_at NULL"
+
+
+@pytest.mark.asyncio
+async def test_analysis_completed_at_not_wire_settable(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 57.1 (T-57.1-12): analysis_completed_at is server-set only -- a client cannot forge it.
+
+    The wire payload uses extra='forbid', so a body carrying analysis_completed_at is a 422. This
+    locks the spoofing mitigation: completion cannot be claimed by the agent, only stamped by func.now().
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"bpm": 120.0, "analysis_completed_at": "2026-01-01T00:00:00Z"},
+        )
+
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
 async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """D-16: extra='forbid' rejects unknown fields (AUTH-01 -- no agent_id forgery)."""
     agent, raw_token = seed_test_agent
@@ -433,6 +504,156 @@ async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], sess
 
     assert response.status_code == 422
     errors = response.json()["detail"]
+    assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# Phase 57.1 (Plan 03): AnalysisProgressPayload schema validation
+# ---------------------------------------------------------------------------
+
+
+def test_progress_schema_rejects_extra_key() -> None:
+    """AnalysisProgressPayload uses extra='forbid' -- a ride-along agent_id/file_id is a ValidationError (AUTH-01, T-57.1-02)."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError):
+        AnalysisProgressPayload(fine_windows_analyzed=1, fine_windows_total=40, agent_id="spoofed-agent")  # type: ignore[call-arg]
+
+
+def test_progress_schema_rejects_negative_count() -> None:
+    """AnalysisProgressPayload counts are ge=0 -- a negative count is a ValidationError."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError):
+        AnalysisProgressPayload(fine_windows_analyzed=-1, fine_windows_total=40)
+
+
+def test_progress_schema_requires_both_counts() -> None:
+    """Both fine counts are REQUIRED (no default) -- a progress POST always carries both."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError):
+        AnalysisProgressPayload(fine_windows_total=40)  # type: ignore[call-arg]
+
+
+def test_progress_schema_response_exposes_agent_and_file_id() -> None:
+    """AnalysisProgressResponse mirrors AnalysisWriteResponse: {agent_id, file_id}."""
+    from phaze.schemas.agent_analysis import AnalysisProgressResponse
+
+    fid = uuid.uuid4()
+    resp = AnalysisProgressResponse(agent_id="a1", file_id=fid)
+    assert resp.agent_id == "a1"
+    assert resp.file_id == fid
+
+
+# ---------------------------------------------------------------------------
+# Phase 57.1 (Plan 03): POST /{file_id}/progress -- counter-only sibling handler
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_progress_post_start_then_bump_single_row_advancing(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """START(0,N) then bump(k,N) upserts ONE analysis row with fine_windows_analyzed advancing (idempotent counter)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r_start = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 0, "fine_windows_total": 40},
+        )
+        assert r_start.status_code == 200, r_start.text
+        body = r_start.json()
+        assert body["agent_id"] == agent.id
+        assert body["file_id"] == str(file_id)
+
+        r_bump = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 17, "fine_windows_total": 40},
+        )
+        assert r_bump.status_code == 200, r_bump.text
+
+    session.expire_all()
+    rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalars().all()
+    assert len(rows) == 1, "progress POSTs must upsert ONE row per file_id, never append"
+    assert rows[0].fine_windows_analyzed == 17, "counter must advance to the latest bump"
+    assert rows[0].fine_windows_total == 40
+
+
+@pytest.mark.asyncio
+async def test_progress_post_has_no_completion_side_effects(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """A progress POST writes ONLY the counts: state unchanged, no windows, ledger intact, completed_at NULL (T-57.1-03)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    await _seed_ledger(session, key, "process_file", file_id)
+    assert await _ledger_present(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 5, "fine_windows_total": 40},
+        )
+
+    assert r.status_code == 200, r.text
+    session.expire_all()
+
+    # FileState NEVER flips (KEY RISK -- completion stays solely on put_analysis).
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.DISCOVERED, "progress POST must NOT advance FileState"
+
+    # analysis_completed_at stays NULL -> the convergence gate keeps the partial row out of proposals.
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.analysis_completed_at is None, "progress POST must leave analysis_completed_at NULL"
+
+    # No analysis_window detail rows written (D-01 -- detail stays atomic at completion).
+    assert len(await _window_rows(session, file_id)) == 0, "progress POST must NOT write analysis_window rows"
+
+    # Scheduling ledger NOT cleared (completion-only side effect).
+    assert await _ledger_present(session, key), "progress POST must NOT clear the scheduling ledger"
+
+
+@pytest.mark.asyncio
+async def test_progress_post_missing_auth_returns_401(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """No Authorization header on the progress endpoint -> 401 (HTTPBearer auto_error)."""
+    agent, _ = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, token=None) as ac:
+        r = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 0, "fine_windows_total": 40},
+        )
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_progress_post_forged_body_key_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """extra='forbid' rejects a body smuggling agent_id/file_id (AUTH-01, T-57.1-02)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 0, "fine_windows_total": 40, "agent_id": "spoofed-agent"},
+        )
+
+    assert r.status_code == 422
+    errors = r.json()["detail"]
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
 
 

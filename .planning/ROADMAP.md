@@ -185,8 +185,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
-| 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 0/TBD | Not started | - |
-| 58. Enrich + Analyze workspaces | v7.0 | 2/4 | In Progress|  |
+| 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 4/4 | Complete    | 2026-06-30 |
+| 58. Enrich + Analyze workspaces | v7.0 | 2/4 | In Progress |  |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
 | 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
@@ -709,14 +709,26 @@ Plans:
 
 ### Phase 57.1: Incremental window persistence & live analyze progress signal (INSERTED)
 
-**Goal:** Persist `analysis_window` rows and bump `analysis.fine_windows_analyzed`/`fine_windows_total` **incrementally as each window completes** during `analyze_file`, instead of only atomically at completion — exposing a **read-only, per-file mid-flight progress signal** the Phase 58 Analyze workspace can display for in-flight files. Must remain **idempotent and safe under Phase 32 reboot re-enqueue**: a file killed mid-analysis leaves partial window rows that a re-run replaces cleanly (extend Phase 31's `put_analysis` replace-by-file semantics to the incremental write path). **Deliberate, scoped exception to the v7.0 "no backend behavior change" milestone rule** (approved 2026-06-29): this is the one analysis-pipeline change v7.0 makes, isolated here so the Phase 58 UI stays presentation-only. NO new queue/task/routing semantics; representative aggregates (median BPM, modal key, dominant mood/style) and the final `ANALYZED` flip are unchanged. First plan task is a spike confirming incremental persistence + crash-mid-run idempotency on a real long file.
+**Goal:** Bump a progress **count** (`analysis.fine_windows_analyzed`/`fine_windows_total`) **incrementally as each window completes** during `analyze_file`, instead of only atomically at completion — exposing a **read-only, per-file mid-flight progress signal** the Phase 58 Analyze workspace can display for in-flight files. **Counter-only (57.1-CONTEXT D-01):** the `analysis_window` **detail** rows continue to land atomically at completion via `put_analysis`; they are NOT written incrementally — so the mid-flight write is a lightweight counter on a partial `analysis` row. Must remain **idempotent and safe under Phase 32 reboot re-enqueue**: a file killed mid-analysis leaves only a partial `analysis` row whose counter a re-run overwrites cleanly (reusing `put_analysis`'s file_id-keyed replace). A partial in-progress row must NOT be treated as a completed analysis by proposals/search/sort — gated on a new `analysis_completed_at` completion discriminator (the KEY RISK). **Deliberate, scoped exception to the v7.0 "no backend behavior change" milestone rule** (approved 2026-06-29): this is the one analysis-pipeline change v7.0 makes, isolated here so the Phase 58 UI stays presentation-only. NO new queue/task/routing semantics; representative aggregates (median BPM, modal key, dominant mood/style), the `analysis_window` rows, and the final `ANALYZED` flip are unchanged. First plan task is a spike confirming incremental counter persistence + crash-mid-run idempotency on a real long file.
 **Requirements**: PROG-01, PROG-02, PROG-03
 **Depends on:** Phase 57 (builds on Phase 31 windowed analysis + Phase 32 reboot resilience, both shipped)
-**Plans:** 0 plans
-
+**Plans:** 4/4 plans complete
 Plans:
+**Wave 1**
 
-- [ ] TBD (run /gsd:plan-phase 57.1 to break down)
+- [x] 57.1-01-PLAN.md — SPIKE: resolve the pebble/k8s transport fork + prove crash-mid-run idempotency on a real long file (PROG-01/02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 57.1-02-PLAN.md — Completion discriminator (analysis_completed_at, migration 028) + tighten the proposal convergence gate so a partial row never leaks (KEY RISK / PROG-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 57.1-03-PLAN.md — Counter-only progress endpoint + AnalysisProgressPayload + agent_client.post_analysis_progress (fine-only; PROG-01/03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 57.1-04-PLAN.md — Thread progress_cb through analyze_file + wire the pebble Queue-drainer and k8s to_thread bridges + throttle knob (PROG-01/02)
 
 ### Phase 58: Enrich + Analyze workspaces
 
@@ -817,3 +829,6 @@ Plans:
 ## Backlog (unscheduled — no phase number yet)
 
 - **Distributed cloud analysis (burst the backlog).** _[SCHEDULED as v5.0 Cloud Burst Analysis, Phases 47-51 — narrowed to rsync-over-Tailscale to a free arm64 OCI A1 (essentia built from source), no object storage. See Phase Details (v5.0).]_ Offload long-file analysis to cloud x86 workers via the existing agent model: stage file to object storage → cloud worker pulls (presigned GET) → analyzes → PUTs result; **reconcile by `file_id`** (already end-to-end), sha256 for download integrity. Only new pieces: optional `source_url`+`sha256` on `ProcessFilePayload` + a "stager". essentia is **x86-only** (no aarch64 wheel; source build infeasible). Best near-free path = **GCP $300/90-day trial, x86 e2 spot, GCS same-region** (≈$0 out of pocket); min-cost paid = OCI E5 preemptible (~$100, free egress). **Gate: only pursue if nox throughput is still insufficient after the Phase 43 redeploy + re-measure** — bounding may make this moot. Full design: memory `reference-essentia-arm64-cloud-burst` + `project-analyze-4h-timeout-incident`.
+- **Partition the test suite for parallel CI.** Split the ~1750-test pytest suite into independently-runnable buckets so CI fans them out across parallel jobs instead of one serial run. Partition by **pipeline workflow-step** (discovery, metadata, fingerprint, analyze, identify/tracklist, review/apply, agents/distributed) plus a **generic/shared** bucket (schema, config, helpers, routing). Open questions to resolve at planning: marker-based selection (`@pytest.mark.<step>`) vs directory layout vs `pytest-xdist` sharding vs a CI job matrix; how to keep coverage aggregation correct across shards (combine `.coverage` files → single Codecov upload) and preserve the 85% gate; real-Postgres integration tests likely need their own bucket. Goal: cut wall-clock CI time without losing the single coverage report.
+- **Adopt CalVer ([calver.org](https://calver.org/)) for release versioning.** Replace the current milestone-aligned `vN.M` scheme (now at v7.0) with a calendar-based version. Decide the exact scheme at planning (e.g. `YYYY.MM.MICRO` or `YY.MM.MICRO`) and how it coexists with the milestone narrative (milestones become named, versions become dated). Update: the release procedure (pyproject `version` + `uv.lock` bump → annotated tag PUSH → GHCR publish — see memory `project-release-procedure`), README/version badges (one-line badge style), the milestone↔version mapping in ROADMAP/MILESTONES, and any image tags / compose references. Note the prior cadence shipped many `v4.0.x` patch releases — pick a MICRO convention that supports same-month patches.
+- **CI builds only when code changes.** Stop running the full build/test/security CI on docs- and planning-only changes (e.g. `.planning/**`, `*.md`) so commits like these backlog/requirements edits don't trigger the whole pipeline. Decide the mechanism at planning: workflow `paths`/`paths-ignore` filters vs a changed-files detection job that gates downstream jobs (the latter avoids the "required check never runs → PR can't merge" branch-protection trap that bare `paths-ignore` causes). Must keep the required status checks satisfiable on doc-only PRs (skip-with-success, not skip-absent). Pairs with the "partition test suite for parallel CI" item.

@@ -31,8 +31,8 @@ from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
 
-_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
-"""Cache-Redis DSN. Override via `PHAZE_REDIS_URL=redis://...:6379/0 uv run pytest ...`."""
+_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
+"""Cache-Redis DSN. Override via `PHAZE_REDIS_URL=redis://...:6380/0 uv run pytest ...`."""
 
 _QUEUE_URL = os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze").replace(
     "postgresql+asyncpg://", "postgresql://"

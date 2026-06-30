@@ -79,6 +79,38 @@ class AnalysisWriteResponse(BaseModel):
     file_id: uuid.UUID
 
 
+class AnalysisProgressPayload(BaseModel):
+    """Counter-only mid-flight progress body (Phase 57.1 D-01/D-02).
+
+    Carries ONLY the two fine-window counts that advance during an in-flight
+    analysis run. Unlike ``AnalysisWritePayload`` the counts are REQUIRED (no
+    ``| None``, no default) -- a progress POST always carries both (the START
+    call sends ``analyzed=0, total=N``; bumps send ``analyzed=k, total=N``).
+    ``extra='forbid'`` rejects any attempt to ride an ``agent_id``/``file_id``
+    along in the body (AUTH-01, T-57.1-02 -> 422 at the route); the ``ge=0``
+    guards bound malformed counts at the wire boundary.
+
+    Fine-only per Claude's Discretion (CONTEXT D-01): fine-only satisfies
+    WORK-04; coarse counts are intentionally omitted (do NOT add coarse fields).
+    """
+
+    model_config = ConfigDict(extra="forbid")  # strict body parsing -- forged agent_id/file_id -> 422
+
+    fine_windows_analyzed: int = Field(ge=0)
+    fine_windows_total: int = Field(ge=0)
+
+
+class AnalysisProgressResponse(BaseModel):
+    """Minimal echo confirming the counter-only progress upsert (Phase 57.1).
+
+    Mirrors ``AnalysisWriteResponse`` verbatim: ``agent_id`` comes from the auth
+    dep (NEVER the body) and ``file_id`` is the PATH value.
+    """
+
+    agent_id: str
+    file_id: uuid.UUID
+
+
 class AnalysisFailurePayload(BaseModel):
     """Terminal analysis-failure report body (Phase 43).
 

@@ -52,7 +52,7 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import configure_logging
-from phaze.schemas.agent_analysis import AnalysisWindowPayload, AnalysisWritePayload
+from phaze.schemas.agent_analysis import AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
 from phaze.services.hashing import compute_sha256
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client
@@ -114,6 +114,48 @@ async def _download_to(url: str, dest: Path) -> None:
         with dest.open("wb") as fh:
             async for chunk in resp.aiter_bytes(_DOWNLOAD_CHUNK_BYTES):
                 fh.write(chunk)
+
+
+async def _safe_post_progress(client: Any, file_id: uuid.UUID, payload: AnalysisProgressPayload) -> None:
+    """Best-effort counter-only progress POST (Phase 57.1, D-16).
+
+    Swallows ANY error (the ``AgentApiError`` hierarchy after the client's tenacity retries, plus
+    anything unexpected) so a dropped progress POST can never change the one-shot exit code — the
+    completion ``put_analysis`` writes the final count regardless, so the bar reaches 100% from
+    completion. This runs as a ``run_coroutine_threadsafe`` task scheduled from the analysis thread.
+    """
+    try:
+        await client.post_analysis_progress(file_id, payload)
+    except Exception:  # best-effort: progress never alters the EXIT_ANALYSIS/EXIT_CALLBACK contract
+        log.debug("job_runner_progress_dropped", file_id=str(file_id))
+
+
+def _make_progress_cb(client: Any, file_id: uuid.UUID, loop: asyncio.AbstractEventLoop, interval_sec: float) -> Any:
+    """Build the sync ``progress_cb`` that the threaded ``analyze_file`` calls per FINE window.
+
+    The blocking ``analyze_file`` runs in ``asyncio.to_thread`` so the loop stays free; the callback
+    fires fire-and-forget ``run_coroutine_threadsafe(_safe_post_progress(...), loop)`` — it NEVER calls
+    ``.result()`` (blocking the analysis thread on a saturated loop would deadlock). Throttled to
+    ``interval_sec`` (``monotonic()``-keyed); the START count and the final count (``analyzed >= total``)
+    always post so the bar gets an early total and a final value even inside the throttle window. Any
+    exception is swallowed so a progress failure can never escape the analysis thread (KJOB-04 contract).
+    """
+    state = {"last_post": 0.0}
+
+    def _cb(analyzed: int, total: int) -> None:
+        try:
+            now = time.monotonic()
+            is_final = total > 0 and analyzed >= total
+            if interval_sec > 0.0 and not is_final and (now - state["last_post"]) < interval_sec:
+                return
+            state["last_post"] = now
+            payload = AnalysisProgressPayload(fine_windows_analyzed=analyzed, fine_windows_total=total)
+            # Fire-and-forget: schedule onto the captured loop; do NOT call .result() (deadlock risk).
+            asyncio.run_coroutine_threadsafe(_safe_post_progress(client, file_id, payload), loop)
+        except Exception:  # a progress-cb error must never escape the analysis thread
+            log.debug("job_runner_progress_cb_error", file_id=str(file_id))
+
+    return _cb
 
 
 def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
@@ -217,8 +259,21 @@ async def run() -> None:
         # (12); the contract docstring above documents this delegation (WR-04).
         analyze_file = _load_analyze_file()
         t_analyze = time.monotonic()
+        # Phase 57.1 (PROG-01): capture the loop BEFORE the offload, then run the blocking
+        # analyze_file in asyncio.to_thread so the loop stays free for the cb's fire-and-forget
+        # run_coroutine_threadsafe progress POSTs. A progress failure is best-effort and NEVER
+        # changes the EXIT_ANALYSIS / EXIT_CALLBACK exit-code contract (KJOB-04).
+        loop = asyncio.get_running_loop()
+        progress_cb = _make_progress_cb(client, file_id, loop, cfg.analysis_progress_interval_sec)
         try:
-            result = analyze_file(str(tmp_path), models_dir, fine_cap=cfg.analysis_fine_cap, coarse_cap=cfg.analysis_coarse_cap)
+            result = await asyncio.to_thread(
+                analyze_file,
+                str(tmp_path),
+                models_dir,
+                fine_cap=cfg.analysis_fine_cap,
+                coarse_cap=cfg.analysis_coarse_cap,
+                progress_cb=progress_cb,
+            )
             # Payload construction is part of the analyze step (NOT the callback
             # step): a malformed analyze result (non-dict, windows present-but-
             # None, or an unexpected window key) is a bad-analysis-output failure

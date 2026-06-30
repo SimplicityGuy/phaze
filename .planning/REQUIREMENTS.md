@@ -30,9 +30,9 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Live analyze progress (PROG) — Phase 57.1 (scoped backend exception)
 
-- [ ] **PROG-01**: `analyze_file` persists `analysis_window` rows and bumps `analysis.fine_windows_analyzed`/`fine_windows_total` incrementally as each window completes during the run — not only atomically at completion — so an in-flight file exposes a real per-window progress count.
-- [ ] **PROG-02**: Incremental persistence is idempotent and safe under Phase 32 reboot/re-enqueue: a file interrupted mid-analysis leaves partial window rows that a re-run replaces cleanly (extends Phase 31 `put_analysis` replace-by-file semantics), with no duplicate or orphaned windows and no change to the final aggregates or the `ANALYZED` state flip.
-- [ ] **PROG-03**: The incremental progress is readable as a per-file, read-only mid-flight signal (e.g. `fine_windows_analyzed`/`fine_windows_total` on the file's in-progress analysis row) that the Phase 58 Analyze workspace can surface without any further backend change.
+- [x] **PROG-01**: `analyze_file` bumps a progress **count** (`analysis.fine_windows_analyzed`/`fine_windows_total`) incrementally as each window completes during the run — not only atomically at completion — so an in-flight file exposes a real per-window progress count. (Counter-only per 57.1-CONTEXT D-01: the `analysis_window` **detail** rows continue to land atomically at completion via `put_analysis`; they are NOT written incrementally.)
+- [x] **PROG-02**: The incremental counter is idempotent and safe under Phase 32 reboot/re-enqueue: a file interrupted mid-analysis leaves only a partial `analysis` row whose counter a re-run overwrites cleanly (reusing the `put_analysis` file_id-keyed replace), with no duplicate/orphaned state and no change to the final aggregates, the `analysis_window` rows, or the `ANALYZED` state flip.
+- [x] **PROG-03**: The incremental progress is readable as a per-file, read-only mid-flight signal (`fine_windows_analyzed`/`fine_windows_total` on the file's in-progress `analysis` row) that the Phase 58 Analyze workspace can surface without any further backend change — and a partial in-progress row must NOT be treated as a completed analysis by proposals/search/sort (gated on a completion discriminator, not bare row existence).
 
 ### Enrich & Analyze workspaces (WORK)
 
@@ -72,7 +72,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 ## Future Requirements (deferred)
 
 - **RECORD-05**: Light-theme gets a full first-class C3 treatment (v7.x — dark is primary for v7.0).
-- **SHELL-06**: Mobile/touch layout beyond narrow-desktop collapse (single-user desktop tool — low priority).
+- **SHELL-06**: Touch-input support for the three-column shell down to tablet form factor (iPad is the smallest target — **no phone UI**): tap targets, touch-friendly DAG rail + ⌘K, and the approve/edit/skip review gate usable without a pointer. Excludes phone layouts; desktop pointer remains primary.
 - **REVIEW-06**: Per-stage configurable confidence thresholds + override UI for "approve all high-confidence" (v7.0 ships a sensible fixed threshold).
 - **WORK-06**: Pipeline admission-state cards driven by `cloud_phase` (the v6.0 deferred KROUTE-06) surfaced as Analyze-lane sub-states.
 - **IDENT-03**: AcoustID acoustic-fingerprint lookup + MusicBrainz recording resolution as a new identity backend, then surfaced in the Track-ID workspace (a future milestone — requires net-new backend, out of v7.0's presentation-only scope; IDENT-01 ships the existing fingerprint + tracklist signals instead).
@@ -96,9 +96,9 @@ Each v7.0 requirement maps to exactly one phase. **Coverage: 28/28 — no orphan
 | SHELL-03 | Phase 57 — Shell & DAG rail | Planned |
 | SHELL-04 | Phase 57 — Shell & DAG rail | Planned |
 | SHELL-05 | Phase 57 — Shell & DAG rail | Planned |
-| PROG-01 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
-| PROG-02 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
-| PROG-03 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
+| PROG-01 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
+| PROG-02 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
+| PROG-03 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Done |
 | WORK-01 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-02 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-03 | Phase 58 — Enrich + Analyze workspaces | Planned |

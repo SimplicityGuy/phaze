@@ -3,8 +3,15 @@
 When a `<script src=...>` tag uses Subresource Integrity (SRI), the browser
 refuses to execute the script if the served file's SHA hash does not match
 the `integrity` attribute. For the phaze admin UI this means: if any pinned
-SRI hash drifts out of sync with the actual CDN content, the entire page
-renders unstyled (Tailwind blocked) or non-interactive (HTMX/Alpine blocked).
+SRI hash drifts out of sync with the actual CDN content, the page is left
+non-interactive (HTMX/Alpine blocked).
+
+NOTE: Tailwind is no longer a CDN `<script>` — it is compiled at image-build
+time by the standalone Tailwind binary and served as a same-origin
+`/static/css/app.css` `<link>` (no SRI needed). The `@tailwindcss/browser@4`
+examples below are retained as the *historical* motivation for the version-pin
+rule; the assertions now cover only the remaining CDN scripts (HTMX, the HTMX
+SSE extension, and Alpine).
 
 Two failure modes the tests below cover:
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -694,6 +695,74 @@ def test_analyze_file_sampled_true_if_either_pass_strided(_mock_es: MagicMock, m
     assert result["fine_windows_analyzed"] <= 5
     assert result["coarse_windows_analyzed"] == 4
     assert result["sampled"] is True
+
+
+# Phase 57.1 (PROG-01): the analyze_file progress_cb seam.
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_progress_cb_start_then_bumps(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """progress_cb fires START(0, natural_total) then non-decreasing bumps up to len(fine).
+
+    600s @ 30s fine windows = 20 natural windows; under the default cap none are strided,
+    so the START carries (0, 20) and the final bump carries (20, 20). Every call's
+    denominator is the natural pre-stride count — identical to the completion PUT's
+    fine_windows_total (the denominator invariant the in-flight bar depends on).
+    """
+    mock_get_labels.side_effect = _mock_labels_file
+    calls: list[tuple[int, int]] = []
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models", progress_cb=lambda a, t: calls.append((a, t)))
+
+    natural_total = result["fine_windows_total"]
+    assert calls, "progress_cb must be invoked at least for the START signal"
+    # START signal first.
+    assert calls[0] == (0, natural_total)
+    # Every call carries the same denominator == the completion PUT's fine_windows_total.
+    assert all(total == natural_total for _a, total in calls)
+    # analyzed is non-decreasing and never exceeds the analyzed count.
+    analyzed_seq = [a for a, _t in calls]
+    assert analyzed_seq == sorted(analyzed_seq)
+    assert max(analyzed_seq) == result["fine_windows_analyzed"]
+    # A bump landed after the START (mid-flight progress was emitted, not just START).
+    assert len(calls) >= 2
+    assert calls[-1] == (result["fine_windows_analyzed"], natural_total)
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_progress_cb_default_none_is_inert(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """progress_cb=None (default) leaves the result shape byte-identical (no emission, no error)."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    with_none = analyze_file("/fake/audio.mp3", "/fake/models")
+    with_cb = analyze_file("/fake/audio.mp3", "/fake/models", progress_cb=lambda _a, _t: None)
+
+    # Same coverage contract regardless of whether a callback was supplied.
+    for key in ("fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total", "sampled"):
+        assert with_none[key] == with_cb[key]
+
+
+def test_analysis_progress_interval_sec_config_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The parent-side throttle knob exists on AgentSettings with a ~5s default (Phase 57.1 D-04)."""
+    from phaze.config import AgentSettings
+
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
+    cfg = AgentSettings()
+    assert cfg.analysis_progress_interval_sec == 5.0
+
+
+def test_analysis_module_has_no_http_client_import() -> None:
+    """analysis.py stays HTTP/pickle-free: no httpx / agent_client import crosses the compute seam."""
+    src = Path(__file__).resolve().parents[2] / "src" / "phaze" / "services" / "analysis.py"
+    text = src.read_text(encoding="utf-8")
+    assert "import httpx" not in text
+    assert "agent_client" not in text
 
 
 def test_aggregates_valid_over_strided_subset() -> None:
