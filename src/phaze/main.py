@@ -40,6 +40,7 @@ from phaze.routers import (
     proposals,
     scan,
     search,
+    shell,
     tags,
     tracklists,
 )
@@ -191,6 +192,11 @@ def create_app() -> FastAPI:
     app.include_router(duplicates.router)
     app.include_router(tracklists.router)
     app.include_router(pipeline.router)
+    # Phase 57 (SHELL-01): the v7.0 shell router owns GET / (Analyze default) + GET
+    # /s/{stage}. Prefix-less (like pipeline.router) so it can claim the root path; the
+    # legacy /pipeline/ now 302-redirects here. NO extra prefix= (required by
+    # tests/_route_introspection.iter_effective_routes).
+    app.include_router(shell.router)
     # Phase 37: per-stage control-plane endpoints (POST /pipeline/stages/{stage}/
     # {priority,pause,resume}). Distinct from `pipeline.router` (dashboard + triggers);
     # mutates the pipeline_stage_control intent row + the live saq_jobs backlog together.

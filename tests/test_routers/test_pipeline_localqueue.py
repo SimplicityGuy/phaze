@@ -44,7 +44,7 @@ async def test_localqueue_alert_empty_when_reachable(client: AsyncClient, monkey
     """Reachable (flag absent) -> the dashboard renders 200 with NO amber alert body (degrade-safe silent)."""
     _patch_flag(monkeypatch, unreachable=False)
 
-    response = await client.get("/pipeline/")
+    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert _ALERT_COPY not in response.text
@@ -55,7 +55,7 @@ async def test_localqueue_alert_renders_when_flagged(client: AsyncClient, monkey
     """Flagged unreachable -> the locked amber copy "K8s LocalQueue unreachable" appears on first load."""
     _patch_flag(monkeypatch, unreachable=True)
 
-    response = await client.get("/pipeline/")
+    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert _CARD_ID in response.text
@@ -67,7 +67,7 @@ async def test_localqueue_alert_oob_on_stats(client: AsyncClient, monkeypatch: p
     """The card carrier has a stable id on BOTH first-load GET /pipeline and the 5s OOB GET /pipeline/stats."""
     _patch_flag(monkeypatch, unreachable=True)
 
-    first = await client.get("/pipeline/")
+    first = await client.get("/pipeline/", headers={"HX-Request": "true"})
     stats = await client.get("/pipeline/stats")
 
     assert first.status_code == 200
