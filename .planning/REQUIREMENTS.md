@@ -13,7 +13,7 @@
 - **Full tab collapse:** the ~10 legacy sibling tabs become pipeline stages; Search → ⌘K command bar; Agents/health → header status strip + Agents page.
 - **Aesthetic:** C3 "Evolved phaze" — preserve the existing brand (Jura headings, blue accent, wave logo, dark `phaze-bg` theme + light toggle). Evolve, don't reskin.
 - **Approvals:** one consistent before→after diff + per-file Approve/Edit/Skip + bulk "approve all high-confidence" across Rename/Tag/Move; keeper-select for Dedupe; preview for Cue.
-- **Stack unchanged:** FastAPI + Jinja2 + HTMX + Tailwind + Alpine, server-rendered, no SPA build. This is an IA/template rewrite that **reuses existing routers and services** — no backend behavior change.
+- **Stack unchanged:** FastAPI + Jinja2 + HTMX + Tailwind + Alpine, server-rendered, no SPA build. This is an IA/template rewrite that **reuses existing routers and services** — no backend behavior change, **with one deliberate scoped exception: Phase 57.1** (incremental window persistence) makes the single analysis-pipeline change v7.0 needs so WORK-04's in-flight progress is real; it is isolated to its own phase so every UI phase stays presentation-only (approved 2026-06-29).
 - **Depends on v6.0:** visualizes the local / A1 / k8s routing targets that v6.0 (Phases 52–56) delivers; does not modify v6.0 backend behavior.
 
 ## v7.0 Requirements
@@ -28,12 +28,18 @@ Each maps to exactly one roadmap phase (Traceability below).
 - [x] **SHELL-04**: The existing auto/dark/light theme toggle and the Jura/blue/wave-logo brand language are preserved in the new shell.
 - [x] **SHELL-05**: Old per-tab routes (`/pipeline`, `/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`, `/search`, `/preview`) redirect into the corresponding shell stage state so existing bookmarks do not break.
 
+### Live analyze progress (PROG) — Phase 57.1 (scoped backend exception)
+
+- [ ] **PROG-01**: `analyze_file` persists `analysis_window` rows and bumps `analysis.fine_windows_analyzed`/`fine_windows_total` incrementally as each window completes during the run — not only atomically at completion — so an in-flight file exposes a real per-window progress count.
+- [ ] **PROG-02**: Incremental persistence is idempotent and safe under Phase 32 reboot/re-enqueue: a file interrupted mid-analysis leaves partial window rows that a re-run replaces cleanly (extends Phase 31 `put_analysis` replace-by-file semantics), with no duplicate or orphaned windows and no change to the final aggregates or the `ANALYZED` state flip.
+- [ ] **PROG-03**: The incremental progress is readable as a per-file, read-only mid-flight signal (e.g. `fine_windows_analyzed`/`fine_windows_total` on the file's in-progress analysis row) that the Phase 58 Analyze workspace can surface without any further backend change.
+
 ### Enrich & Analyze workspaces (WORK)
 
 - [ ] **WORK-01**: Selecting Discover shows recent scans and the count of discovered-but-not-yet-enriched files, with a scan trigger.
 - [ ] **WORK-02**: Selecting Metadata or Fingerprint shows that stage's file queue with its manual trigger (metadata stays manual per the Phase 35 decision), backed by the existing endpoints.
 - [ ] **WORK-03**: The Analyze workspace shows three execution-lane cards — local / A1 / k8s — each with live capacity, and the k8s lane surfaces Kueue quota-wait vs. Inadmissible state.
-- [ ] **WORK-04**: Each in-flight Analyze file shows which lane (local/A1/k8s) it is running on and its windowed progress.
+- [ ] **WORK-04**: Each in-flight Analyze file shows which lane (local/A1/k8s) it is running on and its windowed progress. (In-flight windowed progress reads the read-only mid-flight signal delivered by PROG-03 / Phase 57.1; completed files show full window coverage from the aggregate.)
 - [ ] **WORK-05**: Stage workspaces refresh live via the existing stats-poll pattern (no manual reload to see progress).
 
 ### Identify workspaces (IDENT)
@@ -81,7 +87,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ## Traceability
 
-Each v7.0 requirement maps to exactly one phase. **Coverage: 25/25 — no orphans, no duplicates.** ROADMAP.md (created 2026-06-29) carries the per-phase goal, dependency order (57→58→59→60→61→62), and 2-5 success criteria for each phase. Note: **IDENT-01 was re-scoped 2026-06-29** to surface only the existing audfprint+Panako fingerprint + rapidfuzz tracklist signals — the prototype's AcoustID→MusicBrainz label is dropped (that backend does not exist; building it is out of this presentation-only milestone, deferred to IDENT-03).
+Each v7.0 requirement maps to exactly one phase. **Coverage: 28/28 — no orphans, no duplicates.** ROADMAP.md (created 2026-06-29) carries the per-phase goal, dependency order (57→57.1→58→59→60→61→62), and 2-5 success criteria for each phase. **PROG-01..03 / Phase 57.1 added 2026-06-29** — the scoped backend exception that makes WORK-04's in-flight progress real (see Design spine note). Note: **IDENT-01 was re-scoped 2026-06-29** to surface only the existing audfprint+Panako fingerprint + rapidfuzz tracklist signals — the prototype's AcoustID→MusicBrainz label is dropped (that backend does not exist; building it is out of this presentation-only milestone, deferred to IDENT-03).
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
@@ -90,6 +96,9 @@ Each v7.0 requirement maps to exactly one phase. **Coverage: 25/25 — no orphan
 | SHELL-03 | Phase 57 — Shell & DAG rail | Planned |
 | SHELL-04 | Phase 57 — Shell & DAG rail | Planned |
 | SHELL-05 | Phase 57 — Shell & DAG rail | Planned |
+| PROG-01 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
+| PROG-02 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
+| PROG-03 | Phase 57.1 — Incremental window persistence & live analyze progress signal | Planned |
 | WORK-01 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-02 | Phase 58 — Enrich + Analyze workspaces | Planned |
 | WORK-03 | Phase 58 — Enrich + Analyze workspaces | Planned |
