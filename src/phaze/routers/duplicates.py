@@ -6,7 +6,7 @@ from typing import Any
 import uuid
 
 from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,8 +82,13 @@ async def list_duplicates(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=10, le=100),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the duplicate groups list page, or an HTMX group list fragment."""
+    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
+    # The in-page HX filter branch below is left intact so the app stays usable (D-01).
+    if request.headers.get("HX-Request") != "true":
+        return RedirectResponse(url="/s/dedupe", status_code=302)
+
     offset = (page - 1) * page_size
     groups = await find_duplicate_groups_with_metadata(session, limit=page_size, offset=offset)
     stats = await get_duplicate_stats(session)

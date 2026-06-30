@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -37,8 +37,14 @@ def _count_dirs(node: TreeNode) -> int:
 async def tree_preview(
     request: Request,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the directory tree preview page for approved proposals."""
+    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
+    # tree_preview has no in-page HX filter; the conditional form is used for uniformity
+    # (a plain GET redirects; the page body below is unreachable for non-HX requests).
+    if request.headers.get("HX-Request") != "true":
+        return RedirectResponse(url="/s/move", status_code=302)
+
     stmt = select(RenameProposal).where(RenameProposal.status == ProposalStatus.APPROVED).options(selectinload(RenameProposal.file))
     result = await session.execute(stmt)
     proposals = list(result.scalars().all())

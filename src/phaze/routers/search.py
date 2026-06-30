@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,8 +30,15 @@ async def search_page(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=10, le=100),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the search page, or an HTMX results fragment."""
+    # SHELL-05 (D-03/D-04): /search is renamed to the v7.0 ⌘K command palette. A plain
+    # (non-HX) GET / bookmark redirects to the shell root with ?palette=1, which the shell
+    # Alpine reads to auto-open the palette. The in-page HX results fragment branch below
+    # is left intact so live search-as-you-type still works (D-01).
+    if request.headers.get("HX-Request") != "true":
+        return RedirectResponse(url="/?palette=1", status_code=302)
+
     results: list[SearchResult] = []
     pagination = None
     counts: dict[str, int] | None = None
