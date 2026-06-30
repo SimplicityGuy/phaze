@@ -210,6 +210,33 @@ async def test_search_bpm_filter(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_bpm_filter_excludes_partial_analysis_row(session: AsyncSession) -> None:
+    """Phase 57.1 (T-57.1-11): a bpm-filtered search excludes a partial (in-flight) analysis row.
+
+    Locks the LOW-risk search invariant: a partial row has bpm NULL, so the `bpm >= bpm_min`
+    comparison is unknown -> the row is dropped, exactly like an unanalyzed file. No code change in
+    search_queries.py -- this assertion only locks that the NULL-bpm exclusion holds, so an in-flight
+    file never surfaces in a bpm-filtered result the way a completed one would.
+    """
+    # Searchable file with a PARTIAL in-flight analysis row (NULL bpm, analyzed < total, not completed).
+    partial_file = await create_test_file(session, original_filename="dj_partial_inflight.mp3", artist="DJ Partial")
+    session.add(
+        AnalysisResult(
+            id=uuid.uuid4(),
+            file_id=partial_file.id,
+            bpm=None,
+            fine_windows_analyzed=2,
+            fine_windows_total=40,
+            analysis_completed_at=None,
+        )
+    )
+    await session.commit()
+
+    results, _pagination = await search(session, "dj", bpm_min=120.0, bpm_max=130.0)
+    assert not any("partial" in r.title.lower() for r in results), "a NULL-bpm partial row must not surface in a bpm-filtered search"
+
+
+@pytest.mark.asyncio
 async def test_search_file_state_filter(session: AsyncSession) -> None:
     """Passing file_state='approved' narrows to that state."""
     await create_test_file(session, original_filename="approved_track.mp3", artist="DJ App", state=FileState.APPROVED)
