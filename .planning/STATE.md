@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
-status: executing
-last_updated: "2026-06-30T19:46:08.700Z"
+status: verifying
+last_updated: "2026-06-30T20:14:55.675Z"
 last_activity: 2026-06-30
 progress:
   total_phases: 29
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 12
-  completed_plans: 11
-  percent: 7
+  completed_plans: 12
+  percent: 10
 ---
 
 # Project State
@@ -26,10 +26,10 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 Phase: 58 (enrich-analyze-workspaces) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-30
 
-Progress: [█████████░] 92%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -98,6 +98,9 @@ Progress: [█████████░] 92%
 - [Phase ?]: Phase 46-01: agent liveness heartbeat runs as an asyncio background task launched in agent_worker startup (cancelled in shutdown), NOT a SAQ CronJob — a CronJob competed for worker_max_jobs dispatch slots and was starved by multi-hour process_file jobs (busy-agent-DEAD incident); heartbeat_tick kept as a back-compat shim; one-time DELETE of orphaned cron:heartbeat_tick row from saq_jobs documented for redeploy
 - [Phase 58]: 58-01: WORK-05 single-poll wired via htmx 'every 5s [document.visibilityState===visible]' trigger filter + visibilitychange foreground-resume listener (not hx-trigger=none toggle) — avoids htmx reprocess double-timer, keeps one poll element
 - [Phase ?]: 58-03: Metadata/Fingerprint ship ALL-only bulk triggers wired VERBATIM to existing POST /pipeline/extract-metadata + /pipeline/fingerprint (D-01); NO EXTRACT SELECTED / checkboxes / row-selection (D-02); zero backend change
+- [Phase 58]: 58-04: per-file lane is DERIVED from the cloud_job sidecar (no row->local / cloud_phase NULL->a1 / set->k8s); sound because cloud_job rows are written ONLY in cloud_staging.stage_file_to_s3, so a local file never carries one (RESEARCH A1 confirmed)
+- [Phase 58]: 58-04: computeOnline added by extending count_active_agents with an optional kind= filter (no second liveness rule); rides the dag.items() OOB loop onto a pre-mounted dag-seed-computeOnline placeholder (B1)
+- [Phase 58]: 58-04: the six v6.0 cloud cards reused VERBATIM preserve the quota-wait-vs-Inadmissible role=alert distinction; in-flight rows render the 57.1 mid-flight N/M signal alongside running (D-04), not a bare running
 
 ### Pending Todos
 
@@ -154,6 +157,7 @@ None.
 | Phase 58 P01 | ~11min | 2 tasks | 3 files |
 | Phase 58 P02 | 35m | 3 tasks | 9 files |
 | Phase 58 P03 | 25min | 2 tasks | 4 files |
+| Phase 58 P04 | 8min | 3 tasks | 9 files |
 
 ## Deferred Items
 
@@ -183,7 +187,7 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-06-30T19:46:04.275Z
+Last session: 2026-06-30T20:14:39.430Z
 Stopped at: Completed 58-01-PLAN.md
 Resume file: None
 
