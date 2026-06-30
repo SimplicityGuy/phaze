@@ -30,6 +30,7 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.services.pipeline import get_fingerprint_pending_files, get_metadata_pending_files
 
 from .pipeline import build_dashboard_context
 
@@ -105,6 +106,20 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["recent_scans"] = await build_recent_scans(session)
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
         context["agents"] = (await session.execute(agents_stmt)).scalars().all()
+    elif stage == "metadata":
+        # Phase 58 (58-03, WORK-02): the Metadata workspace renders the metadata-pending queue --
+        # the EXACT set its EXTRACT ALL button enqueues (get_metadata_pending_files: every
+        # music/video FileRecord, D-01). Pitfall 5 -- the metadata stage had NO DB context before
+        # this plan (only analyze/discover did). Reuses the existing shared pending-set helper (no
+        # new service fn, no enqueue change). oob_counts stays False; the live sub-count refreshes
+        # via the single chrome poll's OOB seeds.
+        context["metadata_files"] = await get_metadata_pending_files(session)
+    elif stage == "fingerprint":
+        # Phase 58 (58-03, WORK-02): the Fingerprint workspace renders the fingerprint-pending
+        # queue -- the EXACT set its FINGERPRINT ALL button enqueues (get_fingerprint_pending_files:
+        # METADATA_EXTRACTED plus failed-retry, deduped, D-01). Pitfall 5 (no prior context for this
+        # stage). Existing read only; no new service fn, no enqueue change.
+        context["fingerprint_files"] = await get_fingerprint_pending_files(session)
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)
