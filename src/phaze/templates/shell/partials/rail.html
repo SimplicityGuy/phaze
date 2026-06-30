@@ -1,0 +1,153 @@
+{#
+  v7.0 DAG rail — the navigation spine (SHELL-02). Replaces the Plan-02 placeholder
+  <aside> in shell.html via {% include %}. Node order is VERBATIM from the prototype RAIL
+  config (docs/.../prototype.html:97-116) and the 57-UI-SPEC "DAG Rail" table:
+
+      1 discover (live: discovered)
+      group Enrich · parallel: metadata (metadataDone) · fingerprint (fingerprintDone)
+                             · analyze (analyzeActive, blue-pulse, = / default)
+      group Identify: trackid (STATIC label — no store key) · tracklist (tracklistDone)
+      propose (proposalsDone)
+      group Review & Apply (AMBER): rename · tagwrite · move · dedupe · cue (all STATIC)
+      below-the-line (border-t): audit → /audit/ , agents → /admin/agents (plain links)
+
+  Live-vs-static rule (locked): an x-text count renders ONLY for a node whose key already
+  exists in $store.pipeline (base.html:106-136). trackid + the five Review & Apply items
+  carry NO count. NEVER add a store key. Counts are numeric server/store values only.
+
+  HTMX wiring (every navigable node): hx-get="/s/<id>" hx-target="#stage-workspace"
+  hx-swap="innerHTML" hx-push-url="true". The active node (node id == the shell `stage`
+  context var) carries aria-current="page"; the active visual (blue tint + inset bar) is
+  driven entirely from that attribute via the aria-[current=page] variant, so the
+  history-restore / afterSwap handler only needs to toggle the attribute (syncRailSelection).
+  data-rail-stage="<id>" is the JS hook (distinct from #stage-workspace's data-stage).
+#}
+<aside class="w-[280px] shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel py-4" aria-label="Pipeline navigation">
+
+    {# Eyebrow + primary "+ Scan" CTA (opens the Discover/scan surface). #}
+    <div class="px-4 pb-2 flex items-center justify-between">
+        <span class="font-jura text-[11px] uppercase tracking-[0.25em] text-blue-500 dark:text-blue-400/80">Pipeline</span>
+        <button type="button"
+                hx-get="/s/discover" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                class="font-jura tracking-wider text-xs px-2.5 h-6 rounded bg-blue-600 text-white font-medium hover:bg-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-phaze-panel">+ Scan</button>
+    </div>
+
+    <nav aria-label="Pipeline stages">
+
+        {# 1 — Discover (top-level node · done) #}
+        <button type="button"
+                data-rail-stage="discover"
+                hx-get="/s/discover" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                {% if stage == 'discover' %}aria-current="page"{% endif %}
+                class="rail-node w-[calc(100%-1rem)] mx-2 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+            <span class="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-400 grid place-items-center text-[10px] shrink-0">✓</span>
+            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200">Discover</span>
+            <span class="font-mono text-xs text-gray-500" x-text="$store.pipeline.discovered">0</span>
+        </button>
+
+        {# 2 — Enrich · parallel (group) #}
+        <div class="mx-2 mt-1.5 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5">
+            <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1">Enrich · parallel</div>
+
+            {# 2a — Metadata (done) #}
+            <button type="button"
+                    data-rail-stage="metadata"
+                    hx-get="/s/metadata" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    {% if stage == 'metadata' %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300">Metadata</span>
+                <span class="font-mono text-xs text-gray-500" x-text="$store.pipeline.metadataDone">0</span>
+            </button>
+
+            {# 2b — Fingerprint (done) #}
+            <button type="button"
+                    data-rail-stage="fingerprint"
+                    hx-get="/s/fingerprint" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    {% if stage == 'fingerprint' %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300">Fingerprint</span>
+                <span class="font-mono text-xs text-gray-500" x-text="$store.pipeline.fingerprintDone">0</span>
+            </button>
+
+            {# 2c — Analyze (live · blue pulse · the / default node) #}
+            <button type="button"
+                    data-rail-stage="analyze"
+                    hx-get="/s/analyze" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    {% if stage == 'analyze' %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0"></span>
+                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300">Analyze</span>
+                <span class="font-mono text-xs text-gray-500" x-text="$store.pipeline.analyzeActive">0</span>
+            </button>
+        </div>
+
+        {# 3 — Identify (group) #}
+        <div class="mx-2 mt-1.5 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5">
+            <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1">Identify</div>
+
+            {# 3a — Track-ID (idle · STATIC label, no backing store key in 57) #}
+            <button type="button"
+                    data-rail-stage="trackid"
+                    hx-get="/s/trackid" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    {% if stage == 'trackid' %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600 shrink-0"></span>
+                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300">Track-ID</span>
+            </button>
+
+            {# 3b — Tracklist (idle · live tracklistDone) #}
+            <button type="button"
+                    data-rail-stage="tracklist"
+                    hx-get="/s/tracklist" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    {% if stage == 'tracklist' %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600 shrink-0"></span>
+                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300">Tracklist</span>
+                <span class="font-mono text-xs text-gray-500" x-text="$store.pipeline.tracklistDone">0</span>
+            </button>
+        </div>
+
+        {# 4 — Propose (top-level node · idle) #}
+        <button type="button"
+                data-rail-stage="propose"
+                hx-get="/s/propose" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                {% if stage == 'propose' %}aria-current="page"{% endif %}
+                class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+            <span class="w-5 h-5 rounded-full bg-gray-200 dark:bg-gray-700/50 text-gray-500 dark:text-gray-400 grid place-items-center text-[10px] shrink-0">∿</span>
+            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200">Propose</span>
+            <span class="font-mono text-xs text-gray-500" x-text="$store.pipeline.proposalsDone">0</span>
+        </button>
+
+        {# 5 — Review & Apply (AMBER group · all items STATIC, no store keys in 57) #}
+        <div class="mx-2 mt-1.5 rounded-lg border bg-amber-500/[0.06] border-amber-500/25 px-2 py-1.5">
+            <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400/80 px-1.5 mb-1">Review &amp; Apply</div>
+
+            {% for item in [
+                {'id': 'rename', 'label': 'Rename / Path'},
+                {'id': 'tagwrite', 'label': 'Tag write'},
+                {'id': 'move', 'label': 'Move files'},
+                {'id': 'dedupe', 'label': 'Dedupe'},
+                {'id': 'cue', 'label': 'Cue sheets'}
+            ] %}
+            <button type="button"
+                    data-rail-stage="{{ item.id }}"
+                    hx-get="/s/{{ item.id }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    {% if stage == item.id %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]">
+                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300">{{ item.label }}</span>
+            </button>
+            {% endfor %}
+        </div>
+    </nav>
+
+    {# Below-the-line — plain links to existing routes (NOT /s/ stages). #}
+    <div class="mx-2 mt-3 pt-3 border-t border-gray-200 dark:border-phaze-border">
+        <a href="/audit/"
+           class="rail-node block rounded-md px-2.5 py-1.5 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Audit log</a>
+        <a href="/admin/agents"
+           class="rail-node block rounded-md px-2.5 py-1.5 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Compute / agents</a>
+    </div>
+
+</aside>

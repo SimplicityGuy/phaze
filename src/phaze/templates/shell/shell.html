@@ -173,53 +173,13 @@
     <!-- Skip link → the stable swap target (Focus/ARIA baseline) -->
     <a href="#stage-workspace" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to workspace</a>
 
-    <!-- Header (h-14). Phase 57 placeholder: carries the wave brand + theme toggle.
-         Plan 03 replaces this body with {% raw %}{% include "shell/partials/header.html" %}{% endraw %}
-         (⌘K affordance + agent status strip). -->
-    <header class="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
-        <!-- Phaze wave logo mark (brand-locked, links to /) -->
-        <a href="/" class="flex items-center gap-2" aria-label="Phaze home">
-            <svg width="28" height="28" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" class="text-blue-500 dark:text-blue-400">
-                <circle cx="50" cy="50" r="34" stroke="currentColor" stroke-width="3" fill="none"/>
-                <path d="M50 8 C44 25, 38 38, 38 50 C38 62, 44 75, 50 92" stroke="currentColor" stroke-width="3.5" fill="none" class="text-blue-400 dark:text-blue-300" stroke-linecap="round"/>
-                <circle cx="50" cy="50" r="3" fill="currentColor" class="text-blue-400 dark:text-blue-300"/>
-            </svg>
-            <span class="font-jura font-medium text-sm tracking-[0.25em] text-gray-800 dark:text-gray-200 hidden sm:inline">PHAZE</span>
-        </a>
-
-        <!-- Theme toggle (auto/dark/light) — lifted verbatim from base.html (SHELL-04) -->
-        <div class="ml-auto" x-data>
-            <button
-                @click="
-                    const modes = ['auto', 'dark', 'light'];
-                    const next = modes[(modes.indexOf($store.theme.mode) + 1) % 3];
-                    $store.theme.set(next);
-                "
-                class="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-phaze-panel transition-colors"
-                :title="'Theme: ' + $store.theme.mode"
-                aria-label="Toggle theme"
-            >
-                <!-- Auto icon -->
-                <svg x-show="$store.theme.mode === 'auto'" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-                <!-- Dark icon (moon) -->
-                <svg x-show="$store.theme.mode === 'dark'" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" x-cloak>
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
-                </svg>
-                <!-- Light icon (sun) -->
-                <svg x-show="$store.theme.mode === 'light'" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" x-cloak>
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
-                </svg>
-            </button>
-        </div>
-    </header>
+    <!-- Header (h-14): wave logo · ⌘K affordance · D-05 agent status strip · theme toggle. -->
+    {% include "shell/partials/header.html" %}
 
     <!-- Three-column body row. Each column scrolls independently. -->
     <div class="flex flex-1 min-h-0">
-        <!-- DAG rail (w-[280px]). Phase 57 placeholder; Plan 03 replaces the body with
-             {% raw %}{% include "shell/partials/rail.html" %}{% endraw %} (the nav spine + live counts). -->
-        <aside class="w-[280px] shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel" aria-label="Pipeline navigation"></aside>
+        <!-- DAG rail (w-[280px]): the nav spine + live counts (SHELL-02). -->
+        {% include "shell/partials/rail.html" %}
 
         <!-- Center workspace — the single stable swap target every rail node innerHTML-swaps. -->
         <main class="flex-1 min-w-0 bg-white dark:bg-phaze-bg">
@@ -233,8 +193,9 @@
     <!-- Toast container -->
     <div id="toast-container" aria-live="polite" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
 
-    <!-- ⌘K skeleton modal lands in Plan 03:
-         {% raw %}{% include "shell/partials/cmdk_modal.html" %}{% endraw %} -->
+    <!-- ⌘K skeleton command palette (D-04). Its x-init also reads the `palette` query param
+         (the /search → /?palette=1 rename target, Plan 04) to auto-open on load (A3). -->
+    {% include "shell/partials/cmdk_modal.html" %}
 
     <!-- History restore + focus-to-heading re-init (Phase 57 Focus/ARIA baseline).
          htmx snapshots #stage-workspace innerHTML into its history cache and restores it on
@@ -244,9 +205,25 @@
          keyboard/SR users land in the new content. syncRailSelection is completed in Plan 03. -->
     <script>
         function syncRailSelection(path) {
-            // Plan 03 completes this: re-apply aria-current / selected class to the rail
-            // node whose hx-get target matches `path`. Stubbed here so the history handler
-            // is wired now and the rail wiring drops in without touching shell.html.
+            // Re-apply aria-current="page" to the rail node matching `path`; the active
+            // visual (blue tint + inset bar) follows from that attribute via the rail's
+            // aria-[current=page] variant. Map: "/" → analyze (the default node); "/s/<id>"
+            // → <id>. data-rail-stage is the rail-node hook (distinct from #stage-workspace's
+            // own data-stage marker, so the workspace div is never mis-selected).
+            var stage = null;
+            if (path === '/' || path === '') {
+                stage = 'analyze';
+            } else {
+                var m = path.match(/^\/s\/([^/?#]+)/);
+                if (m) stage = m[1];
+            }
+            document.querySelectorAll('[data-rail-stage]').forEach(function (node) {
+                if (node.getAttribute('data-rail-stage') === stage) {
+                    node.setAttribute('aria-current', 'page');
+                } else {
+                    node.removeAttribute('aria-current');
+                }
+            });
         }
         function _focusStageHeading() {
             const ws = document.getElementById('stage-workspace');
@@ -267,7 +244,13 @@
             // htmx:afterSwap exposes the request target as event.detail.target (htmx 2.0.10);
             // fall back to event.target for the element the bubbling event fired on.
             const tgt = (event.detail && event.detail.target) || event.target;
-            if (tgt && tgt.id === 'stage-workspace') _focusStageHeading();
+            if (tgt && tgt.id === 'stage-workspace') {
+                // A rail swap only replaces #stage-workspace; the rail itself is not
+                // re-rendered, so re-sync the active node from the just-pushed URL
+                // (hx-push-url has updated location.pathname by afterSwap).
+                syncRailSelection(location.pathname);
+                _focusStageHeading();
+            }
         });
     </script>
 

@@ -1,0 +1,68 @@
+{#
+  ⌘K command palette — SKELETON modal only (D-04). Affordance + keybinding + full
+  open/close/focus contract; NO search or command wiring (that is Phase 61). Core Alpine
+  only — the dedicated focus-trap plugin lands in Phase 61, so this modal uses basic focus
+  management (focus the input on open, return focus to the trigger on close).
+
+  Open:  the header ⌘K button ($dispatch('cmdk:open') → @cmdk:open.window), the ⌘K / Ctrl+K
+         keybinding, OR the ?palette=1 query param on load (A3 — the /search → /?palette=1
+         rename target landed by Plan 04). On open, focus the input via $nextTick.
+  Close: ESC (@keydown.escape) or backdrop click; returns focus to the #cmdk-trigger button.
+  ARIA:  role="dialog" aria-modal="true" aria-label="Command palette".
+
+  The root is hidden (inline display:none) until Alpine evaluates x-show, so there is no
+  flash before init and no dependency on a global [x-cloak] rule.
+#}
+<div x-data="{
+        open: false,
+        show() {
+            this.open = true;
+            this.$nextTick(() => { if (this.$refs.input) this.$refs.input.focus(); });
+        },
+        hide() {
+            this.open = false;
+            const trigger = document.getElementById('cmdk-trigger');
+            if (trigger) trigger.focus();
+        }
+     }"
+     x-init="if (new URLSearchParams(window.location.search).has('palette')) show()"
+     @cmdk:open.window="show()"
+     @keydown.window.cmd.k.prevent="show()"
+     @keydown.window.ctrl.k.prevent="show()"
+     @keydown.escape.window="if (open) hide()">
+
+    <div x-show="open"
+         style="display:none"
+         class="fixed inset-0 z-50"
+         role="dialog"
+         aria-modal="true"
+         aria-label="Command palette">
+
+        {# Backdrop — click to close. #}
+        <div class="absolute inset-0 bg-black/60" @click="hide()"></div>
+
+        {# Panel — centered-top, 640px (max 92vw). #}
+        <div class="absolute left-1/2 top-24 -translate-x-1/2 w-[640px] max-w-[92vw] bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border rounded-2xl shadow-2xl overflow-hidden">
+
+            {# Header row: search icon + input + esc hint. #}
+            <div class="flex items-center gap-3 px-4 h-14 border-b border-gray-200 dark:border-phaze-border">
+                <svg class="w-5 h-5 text-gray-400 dark:text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/>
+                </svg>
+                <input x-ref="input"
+                       type="text"
+                       placeholder="Search files, artists, tracklists — or type a command…"
+                       class="flex-1 bg-transparent outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-600">
+                <span class="font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-500 shrink-0">esc</span>
+            </div>
+
+            {# Skeleton body (Phase 57): a single muted placeholder line — no result rows,
+               no command list, no fetch (D-04). #}
+            <div class="p-6 text-sm text-gray-500 dark:text-gray-500">
+                Search and commands arrive in a later phase. Press
+                <kbd class="font-mono text-xs px-1 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-600 dark:text-gray-400">Esc</kbd>
+                to close.
+            </div>
+        </div>
+    </div>
+</div>
