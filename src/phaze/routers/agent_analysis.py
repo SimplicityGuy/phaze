@@ -30,7 +30,7 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -218,6 +218,12 @@ async def put_analysis(
     # state is preserved. `file_id` is the PATH value only (AUTH-01).
     if dumped:
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYZED))
+        # Phase 57.1 (D-03 KEY RISK): stamp the completion discriminator in the SAME txn as the
+        # ANALYZED flip. Server-set via func.now() ONLY -- analysis_completed_at is excluded from the
+        # wire payload + _ANALYSIS_COLUMN_FIELDS, so a client cannot forge completion (T-57.1-12).
+        # An in-flight/partial row (D-03 START upsert) skips this branch -> stays NULL, so the
+        # proposal convergence gate (analysis_completed_at IS NOT NULL) can never batch it.
+        await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(analysis_completed_at=func.now()))
 
     # Phase 45 (L-02): clear the agent-stage scheduling-ledger row in the SAME transaction
     # as the result write. The agent worker is Postgres-free, so this control-side callback
