@@ -36,7 +36,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Enrich & Analyze workspaces (WORK)
 
-- [ ] **WORK-01**: Selecting Discover shows recent scans and the count of discovered-but-not-yet-enriched files, with a scan trigger.
+- [x] **WORK-01**: Selecting Discover shows recent scans and the count of discovered-but-not-yet-enriched files, with a scan trigger.
 - [ ] **WORK-02**: Selecting Metadata or Fingerprint shows that stage's file queue with its manual trigger (metadata stays manual per the Phase 35 decision), backed by the existing endpoints.
 - [ ] **WORK-03**: The Analyze workspace shows three execution-lane cards — local / A1 / k8s — each with live capacity, and the k8s lane surfaces Kueue quota-wait vs. Inadmissible state.
 - [ ] **WORK-04**: Each in-flight Analyze file shows which lane (local/A1/k8s) it is running on and its windowed progress. (In-flight windowed progress reads the read-only mid-flight signal delivered by PROG-03 / Phase 57.1; completed files show full window coverage from the aggregate.)
