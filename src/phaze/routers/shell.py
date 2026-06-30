@@ -61,7 +61,11 @@ STAGE_PARTIALS: dict[str, str] = {
     # stay until CUT-02.
     "metadata": "pipeline/partials/metadata_workspace.html",
     "fingerprint": "pipeline/partials/fingerprint_workspace.html",
-    "analyze": "pipeline/partials/dag_canvas.html",
+    # Phase 58 (58-04, WORK-03/04): the real Analyze workspace (3 lane cards + reused cloud cards +
+    # per-file lane/window table) supersedes the bridged dag_canvas.html -- a static literal (T-57-01:
+    # `stage` is never spliced into a template path). dag_canvas.html stays reachable via the legacy
+    # dashboard.html until CUT-02 (Phase 62), so the dead-template guard stays green (supersede-in-place).
+    "analyze": "pipeline/partials/analyze_workspace.html",
     "trackid": _STAGE_PLACEHOLDER,
     "tracklist": _STAGE_PLACEHOLDER,
     "propose": _STAGE_PLACEHOLDER,

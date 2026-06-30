@@ -1,0 +1,97 @@
+{# Phase 58 (58-04, WORK-03/04): the Analyze stage workspace.
+
+   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
+   (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a live sub-count bound to
+   $store.pipeline (refreshed by the SINGLE chrome poll -- no second loop, WORK-05/R-2) + a
+   secondary-style action row + body. The OOB seed-target host (incl. the new
+   dag-seed-computeOnline placeholder) rides in via the scaffold.
+
+   Body (a) -- THREE execution-lane cards (local / A1 / k8s) in a grid grid-cols-3 grid, ALWAYS
+   rendered (D-05): a down/unconfigured lane greys out with 0 capacity + an explicit
+   "offline" vs "not configured" word. Capacity numerals bind to EXISTING $store.pipeline keys
+   (analyzeBusy / agentOnline / the new computeOnline) for local/A1; k8s uses the render-time
+   admission counts (NOT store keys -- they arrive as OOB card swaps, Pitfall 2).
+
+   Body (b) -- the SIX existing v6.0 cloud-state cards included VERBATIM below the lane grid
+   (do NOT restyle): admission_state_card (k8s healthy progression -- NO role=alert),
+   inadmissible_card / localqueue_card (k8s faults -- role="alert"), awaiting_cloud_card /
+   staged_pushing_card / analyzing_cloud_card (A1 sub-states). They carry their own ids so the
+   poll's OOB swaps land here, and they encode the load-bearing quota-wait-vs-Inadmissible
+   distinction (WORK-03).
+
+   Body (c) -- the all-in-stage per-file lane + window table (D-03/D-04). Added by Plan-04 Task 3
+   at the insertion point below; this fragment stays valid on its own without it.
+
+   Lane state derivation (read-only, render-time): cloud_target (config.py:406) gives the
+   "not configured" labels; dag.agentOnline / dag.computeOnline / localqueue_unreachable give
+   "offline". No backend behavior change -- presentation over existing degrade-safe reads.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = '`${$store.pipeline.analyzeActive} files in flight across 3 lanes`' %}
+{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    {# UI-SPEC Copywriting: ROUTE RULES + PAUSE (PAUSE is reversible -- no confirm, R-4). Presentation
+       row per the prototype; the live per-stage pause/route controls remain on the DAG canvas. #}
+    <button type="button" class="{{ _btn }}">ROUTE RULES</button>
+    <button type="button" class="{{ _btn }}">PAUSE</button>
+{% endset %}
+{% call ws.workspace(title="ANALYZE", subcount=subcount, actions=actions) %}
+    {# (a) THREE execution-lane cards -- ALWAYS render all three (D-05). #}
+    <div id="analyze-lanes" class="grid grid-cols-3 gap-4 p-6">
+        {# 🖥️ local -- configured on-prem worker; offline when no online agent. #}
+        {% set lane_emoji = "🖥️" %}
+        {% set lane_title = "LOCAL · nox" %}
+        {% set lane_border = "border-gray-200 dark:border-phaze-border" %}
+        {% set lane_color = "text-emerald-600 dark:text-emerald-300" %}
+        {% set lane_bar = "bg-emerald-400" %}
+        {% set lane_state = 'online' if dag.agentOnline > 0 else 'offline' %}
+        {% set capacity_expr = '`${$store.pipeline.analyzeBusy} running`' %}
+        {% set capacity_value = '' %}
+        {% set capacity_pct_expr = '`width: ${$store.pipeline.agentOnline > 0 ? Math.min(100, $store.pipeline.analyzeBusy / $store.pipeline.agentOnline * 100) : 0}%`' %}
+        {% set sub_label = "short sets < 90 min" %}
+        {% include "pipeline/partials/_lane_card.html" %}
+
+        {# ☁️ A1 -- arm64 cloud; not configured unless cloud_target=='a1', offline when no compute agent. #}
+        {% set lane_emoji = "☁️" %}
+        {% set lane_title = "A1 · arm64" %}
+        {% set lane_border = "border-gray-200 dark:border-phaze-border" %}
+        {% set lane_color = "text-blue-600 dark:text-blue-300" %}
+        {% set lane_bar = "bg-blue-400" %}
+        {% set lane_state = ('online' if dag.computeOnline > 0 else 'offline') if cloud_target == 'a1' else 'not configured' %}
+        {% set capacity_expr = '`${$store.pipeline.computeOnline} online`' %}
+        {% set capacity_value = '' %}
+        {% set capacity_pct_expr = '`width: ${$store.pipeline.computeOnline > 0 ? 100 : 0}%`' %}
+        {% set sub_label = "long sets ≥ 90 min" %}
+        {% include "pipeline/partials/_lane_card.html" %}
+
+        {# ⎈ k8s -- Kueue burst; not configured unless cloud_target=='k8s', offline when LocalQueue unreachable.
+           Capacity = render-time admission pending count (NOT a store key -- the admission_state_card below
+           carries the live detail on the poll). #}
+        {% set lane_emoji = "⎈" %}
+        {% set lane_title = "K8S · burst" %}
+        {% set lane_border = "border-amber-500/30" %}
+        {% set lane_color = "text-amber-600 dark:text-amber-300" %}
+        {% set lane_bar = "bg-amber-400" %}
+        {% set lane_state = ('offline' if localqueue_unreachable else 'online') if cloud_target == 'k8s' else 'not configured' %}
+        {% set capacity_expr = '' %}
+        {% set capacity_value = (queued_behind_quota_count + admitted_count) ~ ' pending' %}
+        {% set capacity_pct_expr = '' %}
+        {% set sub_label = "Kueue quota wait · admitting" %}
+        {% include "pipeline/partials/_lane_card.html" %}
+    </div>
+
+    {# (b) the SIX existing cloud-state cards VERBATIM (do NOT restyle). They carry their own ids so the
+       /pipeline/stats OOB swaps land here, and they encode the quota-wait-vs-Inadmissible alert
+       distinction (WORK-03). `oob` is unset here, so each renders its quiet always-on carrier. #}
+    <div class="grid grid-cols-1 gap-4 px-6 pb-6 sm:grid-cols-2">
+        {% include "pipeline/partials/admission_state_card.html" %}
+        {% include "pipeline/partials/inadmissible_card.html" %}
+        {% include "pipeline/partials/localqueue_card.html" %}
+        {% include "pipeline/partials/awaiting_cloud_card.html" %}
+        {% include "pipeline/partials/staged_pushing_card.html" %}
+        {% include "pipeline/partials/analyzing_cloud_card.html" %}
+    </div>
+
+    {# (c) ANALYZE FILE TABLE INSERTION POINT -- the all-in-stage per-file lane + window table (D-03/D-04)
+       is added here by Plan-04 Task 3. #}
+{% endcall %}

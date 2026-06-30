@@ -31,7 +31,7 @@ import uuid
 import pytest
 
 from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 
 
@@ -268,10 +268,62 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="lands in Plan 58-04 (task 58-04-02)", strict=False)
-async def test_lane_cards_states(client: AsyncClient) -> None:
-    """WORK-03 -- all 3 lane cards always render; not-configured vs offline labels; Inadmissible role=alert."""
-    raise NotImplementedError
+async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> None:
+    """WORK-03 / D-05 -- all 3 lane cards always render; not-configured vs offline; Inadmissible role=alert.
+
+    The Analyze workspace ALWAYS renders all three execution-lane cards (local / A1 / k8s). On the
+    default test deploy (``cloud_target == "local"``, no online agents) the local lane is configured
+    but has no online agent (``offline``) while A1 + k8s are ``not configured`` -- a down lane is never
+    hidden, it is greyed + labelled (D-05). The load-bearing WORK-03 distinction: the Inadmissible
+    fault card carries ``role="alert"`` while the healthy admission-state card does NOT. B1: the A1
+    lane numeral has a pre-mounted ``dag-seed-computeOnline`` OOB target so it is not stuck at 0.
+    """
+    # Seed a k8s cloud_job flagged Inadmissible (status RUNNING so get_inadmissible_count counts it)
+    # so the fault banner renders, AND its cloud_phase makes the healthy admission-state card render.
+    fault = await _seed_file(session, state=FileState.PUSHED, original_filename="fault.mp3")
+    await _seed_cloud_job(
+        session,
+        fault.id,
+        CloudPhase.QUEUED_BEHIND_QUOTA.value,
+        status=CloudJobStatus.RUNNING,
+        inadmissible=True,
+    )
+
+    resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    # Bare fragment + exactly one scaffold focus target.
+    assert "<html" not in body
+    assert "<head" not in body
+    assert body.count('tabindex="-1"') == 1
+
+    # D-05: ALL three lane cards always render (the lane grid host id is stable).
+    assert 'id="analyze-lanes"' in body
+    # Lane identities (a word + glyph -- never hue-only).
+    assert "LOCAL" in body
+    assert "A1" in body
+    assert "K8S" in body
+
+    # Default test deploy: local configured-but-no-agent -> "offline"; A1 + k8s -> "not configured".
+    assert "offline" in body
+    assert "not configured" in body
+
+    # WORK-03 load-bearing distinction: the Inadmissible FAULT carries role="alert"; the HEALTHY
+    # admission-state card does NOT (the fault can never be collapsed into healthy progression).
+    assert 'role="alert"' in body
+    assert "K8s Jobs not admitting" in body  # inadmissible_card copy
+    assert 'id="admission-state-card"' in body
+    admission = body[body.index('id="admission-state-card"') :]
+    admission_section = admission[: admission.index("</section>")]
+    assert 'role="alert"' not in admission_section
+
+    # B1 regression guard: the A1 lane numeral has a live OOB seed target (not a permanent 0).
+    assert "dag-seed-computeOnline" in body
+
+    # WORK-05 / R-2: no second poll loop in the workspace fragment.
+    assert 'hx-trigger="every' not in body
+    assert "setInterval" not in body
 
 
 @pytest.mark.asyncio
