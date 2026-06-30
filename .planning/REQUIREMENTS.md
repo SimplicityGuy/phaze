@@ -66,7 +66,7 @@ Each maps to exactly one roadmap phase (Traceability below).
 ## Future Requirements (deferred)
 
 - **RECORD-05**: Light-theme gets a full first-class C3 treatment (v7.x — dark is primary for v7.0).
-- **SHELL-06**: Mobile/touch layout beyond narrow-desktop collapse (single-user desktop tool — low priority).
+- **SHELL-06**: Touch-input support for the three-column shell down to tablet form factor (iPad is the smallest target — **no phone UI**): tap targets, touch-friendly DAG rail + ⌘K, and the approve/edit/skip review gate usable without a pointer. Excludes phone layouts; desktop pointer remains primary.
 - **REVIEW-06**: Per-stage configurable confidence thresholds + override UI for "approve all high-confidence" (v7.0 ships a sensible fixed threshold).
 - **WORK-06**: Pipeline admission-state cards driven by `cloud_phase` (the v6.0 deferred KROUTE-06) surfaced as Analyze-lane sub-states.
 - **IDENT-03**: AcoustID acoustic-fingerprint lookup + MusicBrainz recording resolution as a new identity backend, then surfaced in the Track-ID workspace (a future milestone — requires net-new backend, out of v7.0's presentation-only scope; IDENT-01 ships the existing fingerprint + tracklist signals instead).
