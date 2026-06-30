@@ -108,12 +108,14 @@ size or weight is introduced. Role assignments specific to the workspaces:
 | Lane-card title | Body — Inter 14px / 400 | `text-gray-200` with emoji prefix |
 | Stage-action button label | Label — Jura 11–12px / 500 | uppercase `tracking-wider` (matches Phase-57 "+ Scan" CTA treatment) |
 
-> **Note (Inter 600):** Phase 57 explicitly deferred Inter 600 (semibold) to "Phase 58+ workspaces."
-> The existing reused v6.0 cards (`admission_state_card.html` etc.) use `font-semibold`/`font-bold` on
-> their count numerals. Phase 58 **adopts Inter 600 (semibold)** for emphasis numerals inside reused
-> cards and lane-card capacity values — this is the planned third weight arriving exactly where Phase
-> 57 said it would. **Declared weights for Phase 58 = three: 400 / 500 / 600.** Do not introduce Jura
-> 700/bold.
+> **Note (Inter 600 / weight count):** Phase 57 deferred the question of where Inter 600 (semibold)
+> would first appear to "Phase 58+ workspaces." **Resolution:** Inter 600 enters Phase 58 ONLY via
+> pre-existing, **unchanged v6.0 card partials** (e.g. `admission_state_card.html`, which uses
+> `font-semibold`/`font-bold` on its count numerals). Those partials are **external, reused-verbatim
+> components — not new Phase 58 type declarations**, so they do not add a third weight to this phase's
+> contract. All NEW Phase 58 markup uses only **400 / 500**; the lane-card capacity numeral
+> (NEW Pattern 3) uses `font-medium` (Inter **500**). **Declared weights for Phase 58 = two: 400 / 500.**
+> Do not introduce Jura 700/bold, and do not author any new Inter 600 declarations in Phase 58 markup.
 
 ---
 
@@ -244,7 +246,7 @@ prototype `lane()` helper. Each card:
 <div rounded-xl bg phaze-panel border {lane-border} p-4>
   <div flex justify-between>
     <span text-gray-200>{🖥️/☁️/⎈ LANE · NODE}</span>
-    <span mono text-sm font-semibold {capacity-color}>{N / M  or  "12 pending"}</span>
+    <span mono text-sm font-medium {capacity-color}>{N / M  or  "12 pending"}</span>
   </div>
   <div mt-3 h-1.5 rounded-full bg-phaze-border>          {# capacity track #}
     <div h-full rounded-full {lane-bar} style="width:{pct}%"></div>
@@ -252,6 +254,9 @@ prototype `lane()` helper. Each card:
   <div text-xs text-gray-500 mt-2>{SUB-LABEL}</div>
 </div>
 ```
+
+The capacity numeral uses `font-medium` (Inter **500**) — NOT `font-semibold` — to stay within the
+two-weight Phase-58 contract (see Typography note).
 
 | Lane card | Border | Bar / capacity color | Capacity value (live) | Sub-label |
 |-----------|--------|----------------------|------------------------|-----------|
@@ -311,6 +316,18 @@ C3 voice). Live numerals come from `$store.pipeline`; the strings below are the 
 | Metadata | **EXTRACT SELECTED** · **EXTRACT ALL** |
 | Fingerprint | **FINGERPRINT ALL** |
 | Analyze | **ROUTE RULES** · **PAUSE** |
+
+> **Single-word CTA decision (SCAN · RECOVER · PAUSE):** These three are deliberately left as bare
+> verbs, with no noun object, under the locked **C3 operator-console voice** (terse, machine-room
+> labels on a single-user admin surface). In their on-screen context the object is unambiguous and
+> already named by the workspace `<h1>` and the adjacent stage rail node — `SCAN` acts on the Discover
+> stage's scan target, `RECOVER` on its orphaned-work backlog, `PAUSE` drains the Analyze stage. None
+> is a generic/ambiguous label (no bare "Submit"/"OK"/"Click here"), and the verb-only form keeps the
+> stage-action button row scannable at a glance, matching the prototype's terse `head()` action chips.
+> This is a deliberate, documented exception to the verb+noun CTA convention for these specific
+> operator controls — not an oversight. The longer two-word actions (`EXTRACT SELECTED`/`EXTRACT ALL`,
+> `FINGERPRINT ALL`, `ROUTE RULES`) keep their objects because their scope (selected-vs-all, rules) is
+> NOT otherwise visible from context.
 
 ### Sub-count lines (live frame)
 
@@ -373,7 +390,7 @@ No third-party UI component blocks enter this phase; the registry vetting gate i
 | Concern | Locked in |
 |---------|-----------|
 | Spacing scale + fixed dims + half-step exceptions | 57-UI-SPEC § Spacing Scale |
-| Typography families / sizes / weights (400·500; 600 noted-deferred → adopted here) | 57-UI-SPEC § Typography |
+| Typography families / sizes / weights (400·500 only; Inter 600 appears in Phase 58 solely via unchanged v6.0 partials, not new declarations) | 57-UI-SPEC § Typography |
 | Color base (60/30/10, semantic emerald/amber, no destructive) | 57-UI-SPEC § Color |
 | Shell chrome, DAG rail, header status strip, ⌘K modal, theme | 57-UI-SPEC §§ DAG Rail / Header / ⌘K / Theme |
 | OOB single-poll fanout + `$store.pipeline` consume-not-redefine | 57-UI-SPEC § Header / 57-CONTEXT D-05 |
