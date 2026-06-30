@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
-status: ready_to_plan
-last_updated: 2026-06-30T03:51:53.988Z
-last_activity: 2026-06-29
+status: "Phase 57.1 shipped — PR #184"
+last_updated: "2026-06-30T17:03:54.514Z"
+last_activity: 2026-06-30
 progress:
-  total_phases: 28
-  completed_phases: 0
-  total_plans: 4
-  completed_plans: 4
-  percent: 0
-stopped_at: Phase 57 complete (4/4) — ready to discuss Phase 58
+  total_phases: 29
+  completed_phases: 2
+  total_plans: 8
+  completed_plans: 8
+  percent: 7
 ---
 
 # Project State
@@ -21,16 +20,16 @@ stopped_at: Phase 57 complete (4/4) — ready to discuss Phase 58
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 58 — enrich + analyze workspaces
+**Current focus:** Phase 57.1 — Incremental window persistence & live analyze progress signal
 
 ## Current Position
 
-Phase: 58
-Plan: Not started
-Status: Ready to plan
+Phase: 57.1 (Incremental window persistence & live analyze progress signal) — EXECUTING
+Plan: 4 of 4
+Status: Phase 57.1 shipped — PR #184
 Last activity: 2026-06-30
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -96,7 +95,10 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 38]: 38-03: the 6 stage-control keys ride the existing dag.items() OOB loop with zero stats_bar.html edit; one _NEW_STORE_KEYS edit drives the store-literal, int-key, and OOB-seed tests
 - [Phase 38]: 38-02: stage_controls reusable Jinja macro (id=stage-controls-<stage>) on the 3 agent chips; pause/resume = TWO x-show-gated static-hx-post buttons (not a bound :hx-post), authoritative-only @htmx:after-request JSON-parse store write, no optimistic mutation (T-38-OOB)
 - [Phase 38]: 38-02: agent-chip NODE_LAYOUT gutter widened 182->276px (h 154->250) for the control row; overlap guard min_chip_height bumped 150->240; canvas/SVG grown 720->1000; col-0/col-2/col-3 nodes re-balanced to incoming-edge midpoints
+- [Phase 57.1]: 57.1-02: KEY RISK closed — added analysis_completed_at (migration 028, nullable timestamptz on analysis), stamped via func.now() ONLY in the existing put_analysis ANALYZED-flip branch (server-set, wire-excluded so a client cannot forge completion), and tightened get_proposal_pending_batches to require analysis_completed_at IS NOT NULL so a D-03 partial START row can never leak into generate_proposals with NULL aggregates. Discriminator lands wave 2, before any partial row is written. Regression placed in test_pipeline.py (where the convergence helper lives), not the plan-named test_proposal_queries.py.
 - [Phase ?]: Phase 46-01: agent liveness heartbeat runs as an asyncio background task launched in agent_worker startup (cancelled in shutdown), NOT a SAQ CronJob — a CronJob competed for worker_max_jobs dispatch slots and was starved by multi-hour process_file jobs (busy-agent-DEAD incident); heartbeat_tick kept as a back-compat shim; one-time DELETE of orphaned cron:heartbeat_tick row from saq_jobs documented for redeploy
+- [Phase ?]: 57.1-03: counter-only POST /api/internal/agent/analysis/{file_id}/progress is a SIBLING of put_analysis (lifts the on_conflict_do_update upsert on the file_id UQ but writes ONLY fine_windows_analyzed/total) — NO FileState flip, NO analysis_window rows, NO ledger clear, NO staged-S3 delete, NO analysis_completed_at stamp; the partial START row stays completed_at-NULL so the Plan 02 convergence gate keeps it out of proposals (T-57.1-03). AnalysisProgressPayload extra=forbid + required ge=0 fine-only counts, agent_id from auth dep; agent_client.post_analysis_progress is best-effort (returns None, caller swallows after retries, D-16).
+- [Phase ?]: 57.1-04: wired the live analyze progress_cb seam across all three lanes — analyze_file emits START(0,len(natural))+per-window bumps (denominator==completion fine_windows_total), HTTP/pickle-free; pebble (local+A1) lane bridges via a picklable Manager().Queue() sink → kill-safe parent-side drainer (future-done sentinel per 57.1-01 spike) → best-effort post_analysis_progress; k8s lane runs analyze_file in asyncio.to_thread with a run_coroutine_threadsafe fire-and-forget cb (never .result()). Throttle = analysis_progress_interval_sec (default 5s, D-04); first+final counts always post; a dropped POST never fails the job nor alters the TimeoutError/ProcessExpired or EXIT_ANALYSIS/EXIT_CALLBACK contracts. Fine-only (D-01).
 
 ### Pending Todos
 
@@ -150,6 +152,9 @@ None.
 | Phase 45 P05 | ~5 min | 1 tasks | 2 files |
 | Phase 45 P06 | ~25 min | 2 tasks | 12 files |
 | Phase 46 P01 | ~20min | 3 tasks | 8 files |
+| Phase 57.1 P02 | ~20min | 2 tasks | 6 files |
+| Phase 57.1 P03 | 15min | 3 tasks | 5 files |
+| Phase 57.1 P04 | 50min | 3 tasks | 7 files |
 
 ## Deferred Items
 
@@ -177,11 +182,24 @@ Items acknowledged and deferred at the **v6.0** milestone close on 2026-06-29. A
 
 These are tracked for the v6.0 deploy; they are NOT blockers for the milestone record. The JOB-ENV-CONTRACT seam fix (quick 260628-wzq) makes the live E2E re-run especially important.
 
+Item acknowledged and deferred during **Phase 57.1 Plan 01** (the SPIKE) on 2026-06-30. The
+two load-bearing safety properties were proven on automated proxies (pebble Queue-drainer
+SIGKILL kill-safety + crash-mid-run idempotency on real Postgres); the operator approved Task 3
+as **deferred-to-live** ("approved — deferred to live"). Full record in
+`.planning/phases/57.1-incremental-window-persistence-live-analyze-progress-signal/57.1-01-SPIKE-FINDINGS.md` §3.
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 57.1-01 real multi-hour `kill -9` (local/A1 pebble lane) | deferred-to-live | The true crash-mid-essentia on a real multi-hour concert file cannot be unit-mocked; the mechanics (pebble SIGKILL→TimeoutError, drainer teardown, Phase 32 re-enqueue, identical re-run) are each proven in isolation. Verify at homelab rollout on a real concert set. |
+| uat | 57.1-01 k8s-lane live progress (Assumption A3) | deferred-to-live | essentia/TF thread-safety under `asyncio.to_thread` + `run_coroutine_threadsafe` pends a live Kueue cluster run — mirrors the v6.0 deferred K8s E2E pattern. The bridge is unit-coverable in Plan 04. |
+
+These are tracked for the v7.0 homelab/cluster rollout; they are NOT blockers for Phase 57.1. Transport decision (Option A Queue-drainer) is settled for Plan 04 regardless.
+
 ## Session Continuity
 
-Last session: 2026-06-29T22:39:09.054Z
-Stopped at: Phase 57 UI-SPEC approved
-Resume file: .planning/phases/57-shell-dag-rail/57-UI-SPEC.md
+Last session: 2026-06-30T15:49:01.258Z
+Stopped at: Completed 57.1-02-PLAN.md (completion discriminator + KEY-RISK convergence-gate fix)
+Resume file: None
 
 ## Operator Next Steps
 

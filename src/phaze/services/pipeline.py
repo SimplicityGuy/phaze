@@ -1119,7 +1119,20 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
         select(FileRecord)
         .where(FileRecord.state.in_([FileState.ANALYZED, FileState.METADATA_EXTRACTED]))
         .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+        # Phase 57.1 (D-03 KEY RISK): require the COMPLETION discriminator, not bare row-existence.
+        # D-03 upserts a partial `analysis` row at analysis START (NULL aggregates, completed_at NULL)
+        # while the file is still METADATA_EXTRACTED -- bare `exists(AnalysisResult)` would batch that
+        # partial row into generate_proposals with NULL bpm/key/mood. `analysis_completed_at IS NOT
+        # NULL` (stamped only in the put_analysis completion branch) gates it out; in-flight rows have
+        # completed_at NULL.
+        .where(
+            exists(
+                select(AnalysisResult.id).where(
+                    AnalysisResult.file_id == FileRecord.id,
+                    AnalysisResult.analysis_completed_at.isnot(None),
+                )
+            )
+        )
     )
     result = await session.execute(stmt)
     file_ids = sorted(str(f.id) for f in result.scalars().all())

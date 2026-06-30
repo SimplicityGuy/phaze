@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 _OVERRIDE_DB_URL = os.environ.get("PHAZE_TEST_DATABASE_URL_28_04")
 
 

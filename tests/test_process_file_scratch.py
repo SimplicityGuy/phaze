@@ -54,6 +54,7 @@ def _patch_agent_settings() -> Any:
     stub.analysis_inner_timeout_sec = 6600
     stub.analysis_fine_cap = 60
     stub.analysis_coarse_cap = 30
+    stub.analysis_progress_interval_sec = 5.0  # Phase 57.1: process_file's progress bridge reads this throttle knob
     with patch("phaze.tasks.functions.get_settings", return_value=stub) as m:
         yield m
 

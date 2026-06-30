@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -926,7 +927,9 @@ async def test_get_proposal_pending_batches_sorts_then_chunks(session: AsyncSess
     related: list[object] = []
     for f in files:
         related.append(FileMetadata(file_id=f.id, artist="A", title="T"))
-        related.append(AnalysisResult(file_id=f.id, bpm=120.0))
+        # Phase 57.1: a COMPLETED analysis row carries analysis_completed_at -- the convergence
+        # gate now requires it IS NOT NULL, so the positive control must stamp it.
+        related.append(AnalysisResult(file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
     session.add_all(related)
     await session.flush()
 
@@ -950,6 +953,38 @@ async def test_get_proposal_pending_batches_excludes_files_missing_metadata_or_a
     batches = await get_proposal_pending_batches(session, 10)
     flat = [fid for batch in batches for fid in batch]
     assert str(only_metadata.id) not in flat
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_excludes_partial_analysis_row(session: AsyncSession) -> None:
+    """Phase 57.1 KEY RISK: a METADATA_EXTRACTED file with a PARTIAL analysis row is NOT batched.
+
+    Under D-03 an `analysis` row is upserted at analysis START (NULL aggregates, fine_windows_analyzed
+    < total, analysis_completed_at NULL) while the file is still METADATA_EXTRACTED. That row would
+    satisfy the old bare `exists(AnalysisResult)` gate and leak into generate_proposals with NULL
+    bpm/key/mood. The tightened gate (analysis_completed_at IS NOT NULL) must return it in ZERO batches.
+    Positive control: once analysis_completed_at is stamped, the SAME file appears -- proving the
+    tighten did not over-exclude legitimate completed files.
+    """
+    pending = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
+    session.add(pending)
+    await session.flush()
+    session.add(FileMetadata(file_id=pending.id, artist="A", title="T"))
+    # Partial in-flight row: NULL bpm, analyzed < total, NO completion stamp.
+    partial = AnalysisResult(file_id=pending.id, bpm=None, fine_windows_analyzed=3, fine_windows_total=40, analysis_completed_at=None)
+    session.add(partial)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 10)
+    flat = [fid for batch in batches for fid in batch]
+    assert str(pending.id) not in flat, "a partial (in-flight) analysis row must NOT leak into proposal batches"
+
+    # Positive control: stamping completion makes the same file eligible.
+    partial.analysis_completed_at = datetime.now(UTC)
+    await session.flush()
+    batches_after = await get_proposal_pending_batches(session, 10)
+    flat_after = [fid for batch in batches_after for fid in batch]
+    assert str(pending.id) in flat_after, "a completed analysis row MUST appear (tighten did not over-exclude)"
 
 
 @pytest.mark.asyncio

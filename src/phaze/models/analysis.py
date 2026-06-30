@@ -1,8 +1,9 @@
 """AnalysisResult model - audio analysis results."""
 
+from datetime import datetime
 import uuid
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +31,11 @@ class AnalysisResult(TimestampMixin, Base):
     coarse_windows_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     coarse_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sampled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Phase 57.1 completion discriminator (migration 028). NULL while a partial in-flight
+    # row exists (D-03 upserts one at analysis START); stamped via func.now() ONLY in the
+    # put_analysis completion branch that flips FileState.ANALYZED. The proposal convergence
+    # gate requires this IS NOT NULL so a partial row can never leak in with NULL aggregates.
+    analysis_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AnalysisWindow(TimestampMixin, Base):

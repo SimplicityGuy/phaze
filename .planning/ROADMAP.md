@@ -35,6 +35,8 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
 
 - [x] **Phase 57: Shell & DAG rail** — three-column app shell, header + ⌘K affordance + status strip, DAG rail as HTMX nav, `/` home (Analyze default), brand/theme preserved, old tab routes redirect/render into the shell (SHELL-01..05) (completed 2026-06-30)
   - Success: `/` renders the three-column shell with Analyze selected (no `/pipeline` redirect); a rail click swaps only `#stage-workspace` with no full-page nav; the legacy tab-bar is gone; dark/light + Jura/wave brand intact; all 8 old routes resolve in ≤1 hop.
+- [ ] **Phase 57.1: Incremental window persistence & live analyze progress signal** — analyze writes window rows + `fine_windows_analyzed` incrementally mid-flight (idempotent under Phase 32 re-enqueue), exposing a read-only per-file progress signal for the Phase 58 Analyze workspace; scoped exception to the v7.0 no-backend-change rule (PROG-01..03)
+  - Success: an in-flight file's `fine_windows_analyzed/total` advances during the run; a file killed mid-analysis re-runs cleanly with no duplicate/partial window corruption; aggregates + `ANALYZED` flip unchanged; no new queue/routing semantics.
 - [ ] **Phase 58: Enrich + Analyze workspaces** — Discover/Metadata/Fingerprint/Analyze stage views; three Analyze lane cards (local/A1/k8s) with live capacity + Kueue quota-wait/Inadmissible; single-poll stats fanout (WORK-01..05)
   - Success: each stage shows its queue + existing trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update with no manual reload and no second poll loop.
 - [ ] **Phase 59: Identify workspaces** — Track-ID surfacing **existing** audfprint+Panako fingerprint match/score + rapidfuzz tracklist confidence (NOT AcoustID/MusicBrainz — that is re-scoped to deferred IDENT-03); Tracklist Search→Scrape→Match inline 3-step (IDENT-01..02)
@@ -183,6 +185,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 55. Routing, state & ledger integration | v6.0 | 6/6 | Complete    | 2026-06-28 |
 | 56. Deployment, runbook, config & docs | v6.0 | 7/7 | Complete    | 2026-06-29 |
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
+| 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 4/4 | Complete   | 2026-06-30 |
 | 58. Enrich + Analyze workspaces | v7.0 | 0/TBD | Not started | - |
 | 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
@@ -704,10 +707,33 @@ Plans:
 
 **UI hint**: yes
 
+### Phase 57.1: Incremental window persistence & live analyze progress signal (INSERTED)
+
+**Goal:** Bump a progress **count** (`analysis.fine_windows_analyzed`/`fine_windows_total`) **incrementally as each window completes** during `analyze_file`, instead of only atomically at completion — exposing a **read-only, per-file mid-flight progress signal** the Phase 58 Analyze workspace can display for in-flight files. **Counter-only (57.1-CONTEXT D-01):** the `analysis_window` **detail** rows continue to land atomically at completion via `put_analysis`; they are NOT written incrementally — so the mid-flight write is a lightweight counter on a partial `analysis` row. Must remain **idempotent and safe under Phase 32 reboot re-enqueue**: a file killed mid-analysis leaves only a partial `analysis` row whose counter a re-run overwrites cleanly (reusing `put_analysis`'s file_id-keyed replace). A partial in-progress row must NOT be treated as a completed analysis by proposals/search/sort — gated on a new `analysis_completed_at` completion discriminator (the KEY RISK). **Deliberate, scoped exception to the v7.0 "no backend behavior change" milestone rule** (approved 2026-06-29): this is the one analysis-pipeline change v7.0 makes, isolated here so the Phase 58 UI stays presentation-only. NO new queue/task/routing semantics; representative aggregates (median BPM, modal key, dominant mood/style), the `analysis_window` rows, and the final `ANALYZED` flip are unchanged. First plan task is a spike confirming incremental counter persistence + crash-mid-run idempotency on a real long file.
+**Requirements**: PROG-01, PROG-02, PROG-03
+**Depends on:** Phase 57 (builds on Phase 31 windowed analysis + Phase 32 reboot resilience, both shipped)
+**Plans:** 4/4 plans complete
+Plans:
+**Wave 1**
+
+- [x] 57.1-01-PLAN.md — SPIKE: resolve the pebble/k8s transport fork + prove crash-mid-run idempotency on a real long file (PROG-01/02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 57.1-02-PLAN.md — Completion discriminator (analysis_completed_at, migration 028) + tighten the proposal convergence gate so a partial row never leaks (KEY RISK / PROG-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 57.1-03-PLAN.md — Counter-only progress endpoint + AnalysisProgressPayload + agent_client.post_analysis_progress (fine-only; PROG-01/03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 57.1-04-PLAN.md — Thread progress_cb through analyze_file + wire the pebble Queue-drainer and k8s to_thread bridges + throttle knob (PROG-01/02)
+
 ### Phase 58: Enrich + Analyze workspaces
 
 **Goal**: The shell's first real content — Discover, Metadata, Fingerprint, and Analyze stage workspaces over their **existing** endpoints, with the Analyze workspace presenting the three execution lanes (local / A1 / k8s) as first-class live-capacity cards. All live updates ride the one `/pipeline/stats` 5s poll established in Phase 57.
-**Depends on**: Phase 57 (every workspace swaps into the shell and consumes its `$store.pipeline` + OOB fanout)
+**Depends on**: Phase 57 (every workspace swaps into the shell and consumes its `$store.pipeline` + OOB fanout); Phase 57.1 (WORK-04's in-flight windowed-progress reads the read-only mid-flight signal PROG-03 delivers)
 **Requirements**: WORK-01, WORK-02, WORK-03, WORK-04, WORK-05
 **Success Criteria** (what must be TRUE):
 

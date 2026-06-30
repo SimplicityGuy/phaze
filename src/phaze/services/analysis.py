@@ -8,9 +8,13 @@ import logging
 import os
 from pathlib import Path
 from statistics import mean, median
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 # Suppress TF C++ logging before any essentia/TF import
@@ -441,16 +445,35 @@ def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
     return features
 
 
-def _analyze_fine_windows(file_path: str, total_sec: float, win_sec: int, min_sec: int, cap: int) -> tuple[list[FineWindow], int, bool]:
+def _analyze_fine_windows(
+    file_path: str,
+    total_sec: float,
+    win_sec: int,
+    min_sec: int,
+    cap: int,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> tuple[list[FineWindow], int, bool]:
     """FINE pass: BPM + key per ``win_sec`` window via segmented EasyLoader decode.
 
     Returns ``(windows, total, sampled)`` where ``total`` is the natural window
     count BEFORE striding and ``sampled`` is True when the cap forced an even
     stride. ``len(windows)`` (analyzed) counts successful appends; per-window
     failures are skipped, so it may be below the post-stride target.
+
+    Phase 57.1 (PROG-01): when ``progress_cb`` is provided it fires a START signal
+    ``progress_cb(0, len(natural))`` BEFORE the loop and then ``progress_cb(len(fine_windows),
+    len(natural))`` after every successful append. The denominator is ``len(natural)`` —
+    the pre-stride natural count — IDENTICAL to the ``fine_windows_total`` the completion
+    PUT reports, so the in-flight bar and final coverage agree (denominator invariant).
+    This seam emits only an ``(int, int)`` count and does NO I/O; throttling and transport
+    live DOWNSTREAM in the lane bridge, never here (keeps the compute seam HTTP/pickle-free).
+    ``progress_cb=None`` (the default) leaves behavior byte-identical to before.
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
     kept, sampled = _stride_to_cap(natural, cap)
+    if progress_cb is not None:
+        progress_cb(0, len(natural))  # START: analyzed=0, total=natural pre-stride
     fine_windows: list[FineWindow] = []
     for idx, start, end in kept:
         try:
@@ -470,6 +493,8 @@ def _analyze_fine_windows(file_path: str, total_sec: float, win_sec: int, min_se
         except Exception:  # per-window failure isolation: skip, never fail the file
             log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
             continue
+        if progress_cb is not None:
+            progress_cb(len(fine_windows), len(natural))  # bump (throttle lives downstream, not here)
     return fine_windows, len(natural), sampled
 
 
@@ -526,6 +551,7 @@ def analyze_file(
     fine_min_sec: int = _DEFAULT_FINE_MIN_SEC,
     fine_cap: int = _DEFAULT_FINE_CAP,
     coarse_cap: int = _DEFAULT_COARSE_CAP,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Analyze a single audio file via essentia as a two-tier time-series.
 
@@ -561,12 +587,22 @@ def analyze_file(
     later (Phase 44). ``*_total`` is the natural pre-stride window count;
     ``*_analyzed`` is the count actually analyzed (post-stride, minus per-window
     skips); ``sampled`` is True when either pass was strided.
+
+    Phase 57.1 (PROG-01): an optional sync ``progress_cb(analyzed, total)`` is threaded
+    into the FINE per-window loop (``_analyze_fine_windows``) — a START signal then a
+    per-window bump up to ``(len(fine_windows), fine_windows_total)``. The callback emits
+    only an ``(int, int)`` count; ``analyze_file`` itself does NO I/O and imports no HTTP
+    client (the pebble pickle boundary + the ``tests/test_task_split.py`` essentia import
+    boundary stay intact). Transport + throttle are the LANE's job. Fine-only is sufficient
+    for the in-flight bar (WORK-04); the COARSE pass is intentionally not instrumented.
     """
     _suppress_essentia_logging()
 
     total_sec = _probe_duration_sec(file_path)
 
-    fine_windows, fine_total, fine_sampled = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec, fine_cap)
+    fine_windows, fine_total, fine_sampled = _analyze_fine_windows(
+        file_path, total_sec, fine_window_sec, fine_min_sec, fine_cap, progress_cb=progress_cb
+    )
     coarse_windows, coarse_total, coarse_sampled = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, coarse_cap)
 
     windows: list[dict[str, Any]] = [w.as_payload_dict() for w in fine_windows]
