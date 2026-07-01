@@ -188,7 +188,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 58. Enrich + Analyze workspaces | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
-| 60. Review & Apply | v7.0 | 3/4 | In Progress|  |
+| 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
 | 62. Polish & cutover | v7.0 | 0/TBD | Not started | - |
 

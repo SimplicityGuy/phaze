@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
-status: executing
-last_updated: "2026-07-01T18:41:58.198Z"
+status: verifying
+last_updated: "2026-07-01T19:05:59.520Z"
 last_activity: 2026-07-01
 progress:
   total_phases: 29
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 19
-  completed_plans: 18
-  percent: 14
+  completed_plans: 19
+  percent: 17
 ---
 
 # Project State
@@ -26,10 +26,10 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 Phase: 60 (review-apply) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-01
 
-Progress: [██████████] 95%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -105,6 +105,9 @@ Progress: [██████████] 95%
 - [Phase 60]: 60-01: scope refined 2->4 thin routes (all over unchanged logic) — tag-bulk (D-03) + tag-undo (REVIEW-05) have no existing endpoint; both live in tags.py since tags are computed, not RenameProposal rows
 - [Phase ?]: Phase 60-03: tag-write reuses shared _diff_row.html via backward-compatible show_edit/show_skip/show_undo flags; Tag SKIP omitted (no tag-skip route), UNDO surfaced in pending cluster
 - [Phase ?]: Phase 60-03: Propose is a GENERATION view (reuses _file_table.html over get_pending_proposal_rows, Model = configured settings.llm_model A1), not a diff
+- [Phase ?]: Phase 60-04: dedupe/cue wired to VERIFIED endpoints not the UI-SPEC sketch — resolve uses Form canonical_id + sha256_hash key (not group_id/keeper_id); cue APPROVE posts /cue/{id}/generate (generate IS the write, no /approve route)
+- [Phase ?]: Phase 60-04: get_cue_review_cards builds the .cue preview via generate_cue_content ONLY (no write_cue_file) — render never writes disk (T-60-CUE); dedupe UNDO rides the existing resolve_response.html OOB toast file_states round-trip, no new template
+- [Phase ?]: Phase 60-04: _STAGE_PLACEHOLDER constant retained in shell.py (unused) so the _stage_placeholder.html literal stays in router source and the dead-template guard keeps it reachable until CUT-02 (Phase 62)
 
 ### Pending Todos
 
@@ -165,6 +168,7 @@ None.
 | Phase 60 P01 | 45min | 3 tasks | 7 files |
 | Phase 60 P02 | 20min | 3 tasks | 6 files |
 | Phase 60 P03 | 25min | 3 tasks | 6 files |
+| Phase 60 P04 | 35min | 3 tasks | 7 files |
 
 ## Deferred Items
 
@@ -194,7 +198,7 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-07-01T18:41:58.193Z
+Last session: 2026-07-01T19:05:47.035Z
 Stopped at: Completed 60-03-PLAN.md
 Resume file: None
 
