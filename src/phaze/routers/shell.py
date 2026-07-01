@@ -40,6 +40,7 @@ from phaze.services.pipeline import (
     get_tracklist_set_rows,
     get_untracked_files,
 )
+from phaze.services.review import get_pending_proposal_rows
 
 from .pipeline import build_dashboard_context
 
@@ -86,9 +87,13 @@ STAGE_PARTIALS: dict[str, str] = {
     # into a template path). Supersede-in-place; the legacy template stays reachable until CUT-02.
     "tracklist": "pipeline/partials/tracklist_workspace.html",
     "propose": _STAGE_PLACEHOLDER,
-    "rename": _STAGE_PLACEHOLDER,
+    # Phase 60 (60-02, REVIEW-01/REVIEW-02): the real Rename/Path + Move-files review diff workspaces
+    # (the ONE shared _diff_row.html over pending RenameProposal rows -- filename facet vs proposed_path
+    # facet, D-06) supersede the placeholders -- STATIC string literals (T-57-01: `stage` is never
+    # spliced into a template path). Supersede-in-place; the legacy templates stay reachable until CUT-02.
+    "rename": "pipeline/partials/rename_workspace.html",
     "tagwrite": _STAGE_PLACEHOLDER,
-    "move": _STAGE_PLACEHOLDER,
+    "move": "pipeline/partials/move_workspace.html",
     "dedupe": _STAGE_PLACEHOLDER,
     "cue": _STAGE_PLACEHOLDER,
 }
@@ -165,6 +170,19 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["tracklist_scrape_pending"] = len(await get_scrape_pending_tracklists(session))
         context["tracklist_match_pending"] = len(await get_match_pending_tracklists(session))
         context["tracklist_sets"] = await get_tracklist_set_rows(session)
+    elif stage == "rename":
+        # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename/Path review workspace renders the pending
+        # RenameProposal rows (filename facet) through the shared _diff_row.html. get_pending_proposal_rows
+        # is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the existing proposal reads (NO
+        # new query path, NO enqueue, NO backend change) that returns [] on any DB error, so no router
+        # try/except is needed; oob_counts stays False (Pitfall 5) -- the live sub-count would ride the
+        # single chrome poll's OOB seeds.
+        context["rename_proposals"] = await get_pending_proposal_rows(session)
+    elif stage == "move":
+        # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Move-files review workspace -- the SIBLING of rename
+        # over the SAME pending RenameProposal source (proposed_path facet, D-06). Same degrade-safe helper;
+        # oob_counts stays False (Pitfall 5).
+        context["move_proposals"] = await get_pending_proposal_rows(session)
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)

@@ -141,6 +141,11 @@ async def test_bulk_approve_high_confidence_server_predicate(
     assert p_mid.status == ProposalStatus.PENDING.value, "the client id-list must not approve the 0.50 row"
     assert p_null.status == ProposalStatus.PENDING.value, "NULL confidence is excluded by the SQL predicate"
 
+    # The Rename workspace header wires this id-less server predicate -- no client id-list markup (D-02).
+    frag = await client.get("/s/rename", headers={"HX-Request": "true"})
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' in frag.text
+    assert "proposal_ids" not in frag.text, "the bulk button carries no client-built id-list"
+
 
 @pytest.mark.asyncio
 async def test_edit_patch_targets_own_row(
@@ -176,6 +181,12 @@ async def test_edit_patch_targets_own_row(
         assert bad_resp.status_code == 400, f"{bad!r} must be rejected"
     await session.refresh(proposal)
     assert proposal.proposed_filename == "Edited Name.mp3", "rejected edits leave the row unchanged"
+
+    # The workspace SAVE EDIT targets ONLY its own row (R-6): the diff-row id + an outerHTML swap.
+    frag = await client.get("/s/rename", headers={"HX-Request": "true"})
+    assert f'hx-patch="/proposals/{proposal.id}/edit"' in frag.text
+    assert f'hx-target="#rename-row-{proposal.id}"' in frag.text
+    assert 'hx-swap="outerHTML"' in frag.text
 
 
 @pytest.mark.asyncio
@@ -240,44 +251,46 @@ async def test_review_audit_one_row(
     assert (await session.execute(stmt)).scalar_one() == 1, "exactly one TagWriteLog per apply"
 
 
-def test_diff_row_before_after() -> None:
-    """REVIEW-01 / D-06 -- the shared diff row renders before->after with the verified PATCH verbs.
+@pytest.mark.asyncio
+async def test_diff_row_before_after(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """REVIEW-01 / D-06 -- ``/s/rename`` and ``/s/move`` render the ONE shared diff row over both facets.
 
-    Renders ``_diff_row.html`` directly with a stub facet context (no DB/HTTP needed): the rose-struck
-    BEFORE + emerald AFTER cells, the fixed ``1fr_auto_1fr`` grid, the APPROVE ``hx-patch`` (never
-    ``hx-post``), the Alpine ``x-data`` inline-edit island with its ``name="proposed"`` input, and the
-    R-6 own-row SAVE EDIT (``hx-target`` = the row id + ``hx-swap="outerHTML"``). The workspace-level
-    wiring (``GET /s/rename`` · ``/s/move``) is asserted in Task 3's fragment tests.
+    One pending proposal seeds both queues (same ``RenameProposal`` source). ``/s/rename`` renders the
+    filename facet: the rose-struck BEFORE + emerald AFTER over the fixed ``1fr_auto_1fr`` grid, the
+    APPROVE ``hx-patch`` (never ``hx-post``), the Alpine inline-edit island with its ``name="proposed"``
+    input, the stable ``rename-row-{id}`` id, and the ``facet=filename`` hidden field. ``/s/move`` renders
+    the SAME partial over the ``proposed_path`` facet (``facet=path``) -- proving D-06's single partial.
     """
-    from phaze.routers.shell import templates
-
-    html = templates.env.get_template("pipeline/partials/_diff_row.html").render(
-        row_id_prefix="rename-row",
-        pid="abc123",
-        file="messy set.mp3",
-        original_path="/music/messy set.mp3",
-        before="messy set.mp3",
-        after="Artist - Title.mp3",
-        approve_url="/proposals/abc123/approve",
-        skip_url="/proposals/abc123/reject",
-        undo_url="/proposals/abc123/undo",
-        edit_url="/proposals/abc123/edit",
-        edit_facet="filename",
+    p = await seed_pending_proposal(
+        0.95,
+        proposed_filename="Renamed.mp3",
+        proposed_path="Artist/Album/Renamed.mp3",
+        original_filename="messy.mp3",
     )
-    # rose struck BEFORE + emerald AFTER over the fixed load-bearing diff grid (never hue-only).
-    assert "line-through" in html and "rose" in html
-    assert "emerald" in html
-    assert "grid-cols-[1fr_auto_1fr]" in html
-    assert "messy set.mp3" in html and "Artist - Title.mp3" in html
-    # verified PATCH verbs (NO hx-post) + the Alpine inline-edit island + its name="proposed" input.
-    assert 'hx-patch="/proposals/abc123/approve"' in html
-    assert "hx-post" not in html
-    assert 'x-data="{ editing' in html
-    assert 'name="proposed"' in html
-    # SAVE EDIT targets ONLY its own row (R-6): the row id + outerHTML swap.
-    assert 'hx-patch="/proposals/abc123/edit"' in html
-    assert 'hx-target="#rename-row-abc123"' in html
-    assert 'hx-swap="outerHTML"' in html
+
+    rn = await client.get("/s/rename", headers={"HX-Request": "true"})
+    assert rn.status_code == 200
+    body = rn.text
+    assert "line-through" in body and "rose" in body and "emerald" in body
+    assert "grid-cols-[1fr_auto_1fr]" in body
+    assert "messy.mp3" in body and "Renamed.mp3" in body
+    assert f'hx-patch="/proposals/{p.id}/approve"' in body
+    assert "hx-post" not in body
+    assert 'x-data="{ editing' in body
+    assert 'name="proposed"' in body
+    assert f'id="rename-row-{p.id}"' in body
+    assert 'value="filename"' in body
+
+    mv = await client.get("/s/move", headers={"HX-Request": "true"})
+    assert mv.status_code == 200
+    mbody = mv.text
+    assert "Artist/Album/Renamed.mp3" in mbody, "move renders the proposed_path facet (after value)"
+    assert f'id="move-row-{p.id}"' in mbody
+    assert 'value="path"' in mbody
+    assert "hx-post" not in mbody
 
 
 @pytest.mark.xfail(reason="converted to real assertions by the dedupe workspace plan (REVIEW-03)", strict=False)
