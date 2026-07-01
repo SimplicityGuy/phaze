@@ -119,7 +119,7 @@ new size or weight is introduced.** Role assignments specific to the Review work
 | Workspace sub-count line | Body — Inter 14px / 400 / 1.5 | muted `text-gray-500`; live "{n} awaiting approval · …" summary |
 | Diff-row file name | Body — Inter 14px / 400 / 1.5 | `text-gray-200 truncate`, `title=` full path |
 | Diff before/after values | Mono counts — 12px / 400 / 1.4 | `<code>` at `text-xs` mono so path/tag columns align (the `.del`/`.add` treatment below); `block truncate` |
-| In-row action labels (APPROVE / EDIT / SKIP / SAVE / CANCEL / UNDO) | Label — Jura 11–12px / 500 | uppercase `tracking-wider` (the inherited secondary-button treatment) |
+| In-row action labels (APPROVE / EDIT / SKIP / SAVE EDIT / DISCARD / UNDO) | Label — Jura 11–12px / 500 | uppercase `tracking-wider` (the inherited secondary-button treatment) |
 | Bulk header action label | Label — Jura 11–12px / 500 | uppercase `tracking-wider` |
 | Propose table cells / Conf numeral | Body 14 / Mono 12 | reuse `_file_table.html`; `Conf` is `mono {n}%` colored by tier |
 | Dedupe group title | Label — Jura 11px / 500 | uppercase `tracking-wider` + a `text-gray-600 normal-case` "· {n} copies" suffix |
@@ -252,17 +252,17 @@ authoritative Review interaction. Tokenized from the prototype `diffRow()`:
 ### Inline Edit affordance (D-05 — LOCKED: in-place field, NOT a modal)
 
 **EDIT expands the row in place** — the AFTER `<code>` is swapped (Alpine `x-if`) for a text `<input>`
-pre-filled with the proposed value, and the action cluster swaps Approve/Edit/Skip → **SAVE / CANCEL**.
+pre-filled with the proposed value, and the action cluster swaps Approve/Edit/Skip → **SAVE EDIT / DISCARD**.
 This is a **small inline form**, not a modal and not a row-expansion panel — it reuses the row's own
 before/after grid cell:
 
 - Alpine **local** row state `x-data="{ editing, val }"` (per-row island); focus moves to the input on
   open via `$nextTick`. No `@alpinejs/focus` (Phase-61 dep) — plain `.focus()`.
-- **SAVE** → `hx-patch` to the D-05 endpoint updating `proposed_filename` (Rename) / `proposed_path`
+- **SAVE EDIT** → `hx-patch` to the D-05 endpoint updating `proposed_filename` (Rename) / `proposed_path`
   (Move) — the Tag queue's Edit is out of the initial cut unless the tag PATCH is trivially symmetric;
   planner decides, but the **UI shape is identical**. Targets **only its own row** (`hx-target` = the row
   id, `hx-swap="outerHTML"`) so the swap never touches sibling rows or the operator's scroll.
-- **CANCEL** resets `val` and closes — no request.
+- **DISCARD** resets `val` and closes — no request.
 - The edited value is validated/persisted server-side (thin PATCH over the existing status-update path,
   D-05); the UI does not re-run the LLM.
 
@@ -435,7 +435,7 @@ node is deferred; Phase 57 already links the existing `/audit/` page below the l
 | **R-3** | **`visibilitychange` shed** — inherited from the shell chrome (Phase 58 WORK-05); Phase 60 adds **no new client polling behavior**. |
 | **R-4** | **Bulk / mass-action guard.** The bulk **APPROVE ALL ≥90% CONFIDENCE** / **APPROVE ALL WITH NO DISCREPANCIES** / **AUTO-KEEP HIGHEST QUALITY** and **GENERATE ALL** actions MUST each carry `hx-confirm` (naming the predicate + live count) + a `:disabled` busy-gate bound to the relevant `$store.pipeline.*Busy` count (the over-enqueue + Phase-34 double-enqueue precedent). Per-row APPROVE / SKIP / keeper-radio / per-card cue APPROVE are single-item and undoable — no confirm required (SKIP gets a light `hx-confirm` since it rejects). |
 | **R-5** | **Fragment correctness + supersede-in-place.** Every Review workspace response is content-only (`#stage-workspace` innerHTML); each MUST NOT contain `<html>`/`<head>`/`<header`/`{% extends "base.html" %}` or a second skip-link/landmark. The dead-template AST guard (seeded Phase 57) stays green. Supersede the six `_STAGE_PLACEHOLDER` values (`propose`/`rename`/`tagwrite`/`move`/`dedupe`/`cue`) in `STAGE_PARTIALS` with **static string literal** template paths (T-57-01); add their `_render_stage` DB-context branches mirroring the 58/59 branches. Do not delete legacy templates (removal = CUT-02/Phase 62). |
-| **R-6** | **Inline-edit isolation (D-05).** The inline Edit is per-row Alpine LOCAL state; its SAVE PATCH targets **only its own row** (`hx-target` = the row id, `hx-swap="outerHTML"`). It never re-renders siblings, and the counts-only poll never touches it (R-2). |
+| **R-6** | **Inline-edit isolation (D-05).** The inline Edit is per-row Alpine LOCAL state; its SAVE-EDIT PATCH targets **only its own row** (`hx-target` = the row id, `hx-swap="outerHTML"`). It never re-renders siblings, and the counts-only poll never touches it (R-2). |
 
 **OOB seed targets (Claude's discretion per CONTEXT — locked here):** the Review sub-counts and rail
 chips are **server-rendered at fragment render** and, if live-refreshed, ride the **existing
