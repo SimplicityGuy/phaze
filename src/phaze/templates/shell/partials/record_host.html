@@ -1,0 +1,72 @@
+{#
+  Phase 61 (61-02, RECORD-01 / D-01): the persistent full-record slide-in HOST.
+
+  A NEW persistent {% include %} sibling of cmdk_modal.html — it lives in the shell chrome OUTSIDE
+  #stage-workspace, so a rail swap never re-renders, duplicates, or destroys it. It is the stable
+  host for the wide, right-anchored record slide-in; the body content is HTMX-fetched from
+  GET /record/{file_id} and innerHTML-swapped into #record-body.
+
+  Open:  the `record:open` window event ($dispatch from a file row / ⌘K Files row; the opener
+         element is passed in $event.detail.el so focus can return to it on close).
+  Close: Esc (@keydown.escape), backdrop click, or the body's ✕ (which calls hide()); returns
+         focus to the recorded opener, falling back to #stage-workspace.
+  ARIA:  role="dialog" aria-modal="true"; aria-label starts "File record" and is refined to the
+         loaded file name after the body swaps in (via textContent — inherently XSS-safe, no |e).
+  Focus: @alpinejs/focus x-trap.inert.noscroll traps focus in the open panel, inert-s the shell
+         behind it, and locks body scroll. On open, focus moves to the record <h2> (tabindex=-1).
+
+  Pitfall 3 (RESEARCH): shell.html's htmx:afterSwap re-inits Alpine ONLY for #stage-workspace, so
+  the record host is NOT covered — hence the per-host hx-on::after-swap Alpine.initTree on
+  #record-body, which re-initialises the swapped _diff_row.html x-data islands.
+
+  The root is hidden (inline display:none) until Alpine evaluates x-show, so there is no flash
+  before init and no dependency on a global [x-cloak] rule (matches cmdk_modal.html).
+#}
+<div x-data="{
+        open: false,
+        opener: null,
+        show(el) {
+            this.opener = el || null;
+            this.open = true;
+            this.$nextTick(() => {
+                const panel = this.$refs.panel;
+                const heading = panel && panel.querySelector('h2');
+                if (heading) heading.focus();
+            });
+        },
+        hide() {
+            this.open = false;
+            const target = this.opener || document.getElementById('stage-workspace');
+            if (target && typeof target.focus === 'function') target.focus();
+            this.opener = null;
+        }
+     }"
+     @record:open.window="show($event.detail && $event.detail.el)"
+     @keydown.escape.window="if (open) hide()">
+
+    <div x-show="open"
+         style="display:none"
+         class="fixed inset-0 z-40">
+
+        {# Backdrop — click closes. #}
+        <div class="absolute inset-0 bg-black/60" @click="hide()"></div>
+
+        {# Panel — right-anchored, 760px (max 94vw). #}
+        <div x-ref="panel"
+             role="dialog"
+             aria-modal="true"
+             aria-label="File record"
+             x-trap.inert.noscroll="open"
+             class="absolute inset-y-4 right-4 w-[760px] max-w-[94vw] overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-phaze-border dark:bg-phaze-bg">
+
+            {# #record-body — the HTMX innerHTML swap target for GET /record/{file_id}. After each
+               swap, re-init Alpine on the subtree (Pitfall 3) and refine the dialog aria-label to
+               the loaded file name (textContent is XSS-safe — no |e / no |tojson needed). #}
+            <div id="record-body"
+                 hx-on::after-swap="if (window.Alpine) Alpine.initTree(this);
+                                    const h = this.querySelector('h2');
+                                    const dialog = this.closest('[role=dialog]');
+                                    if (h && dialog) dialog.setAttribute('aria-label', 'File record: ' + h.textContent.trim());"></div>
+        </div>
+    </div>
+</div>
