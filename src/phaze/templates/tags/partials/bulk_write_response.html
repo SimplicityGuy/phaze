@@ -1,0 +1,14 @@
+{# Phase 60 (60-01, D-03): no-discrepancies bulk tag-write response.
+
+   Reuses the EXISTING inline toast markup (see tags/partials/tag_row.html) -- an OOB toast
+   carrying the written count. The live pending/completed tag counts refresh via the single
+   /pipeline/stats poll (R-2, counts-only), NOT from this response, so there is no row/table
+   re-render here. `toast_message` is autoescaped (never `| safe`). #}
+<div hx-swap-oob="beforeend:#toast-container">
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg"
+         role="status"
+         x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
+         x-transition>
+        {{ toast_message }}
+    </div>
+</div>

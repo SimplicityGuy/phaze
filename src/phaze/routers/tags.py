@@ -130,6 +130,23 @@ def _count_changes(comparison: list[dict[str, Any]]) -> int:
     return sum(1 for c in comparison if c["changed"])
 
 
+def _qualifies_for_bulk_write(comparison: list[dict[str, Any]]) -> bool:
+    """LOCKED D-03 / OQ-1 predicate for the no-discrepancies bulk tag write.
+
+    A file qualifies iff its server-computed comparison has ``>= 1`` changed field (there IS
+    something to write) AND no field would blank an existing tag (``current is not None and
+    proposed is None``) -- a bulk write NEVER erases an existing tag. Files failing either clause
+    stay per-file Approve/Edit/Skip.
+
+    The blank clause is defensive: ``compute_proposed_tags`` copies every non-None metadata field
+    into the proposal, so a server-computed comparison never blanks a tag. The guard makes that
+    invariant explicit + future-proof, and is asserted directly at the unit level.
+    """
+    if _count_changes(comparison) < 1:
+        return False
+    return not any(c["current"] is not None and c["proposed"] is None for c in comparison)
+
+
 def _determine_file_status(write_log: TagWriteLog | None) -> str:
     """Determine the tag write status for a file."""
     if write_log is None:
@@ -381,5 +398,102 @@ async def write_file_tags(
                 "status": status,
             },
             "toast_message": toast_message,
+        },
+    )
+
+
+@router.post("/bulk-write-no-discrepancies", response_class=HTMLResponse)
+async def bulk_write_no_discrepancies(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """REVIEW-02 (D-03 / OQ-1): write tags for every qualifying EXECUTED file, server-re-queried.
+
+    Mirrors ``tracklists.reject_low_confidence`` discipline -- the server re-queries the candidate
+    set at submit (EXECUTED files with metadata that have NO COMPLETED ``TagWriteLog``) and applies
+    the LOCKED D-03 / OQ-1 predicate (:func:`_qualifies_for_bulk_write`): ``>= 1`` changed field AND
+    no field that would blank an existing tag. It reads NO client-supplied id-list, so a stale or
+    forged selection can never mass-apply. Non-qualifying files stay per-file Approve/Edit/Skip.
+    Each qualifying file is written via the EXISTING :func:`execute_tag_write` (no new apply logic).
+    """
+    completed_subq = select(TagWriteLog.file_id).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
+    stmt = (
+        select(FileRecord)
+        .options(selectinload(FileRecord.file_metadata))
+        .where(FileRecord.state == FileState.EXECUTED, FileRecord.id.not_in(completed_subq))
+        .order_by(FileRecord.original_filename)
+    )
+    file_records = list((await session.execute(stmt)).scalars().all())
+
+    written = 0
+    for fr in file_records:
+        tracklist = await _get_tracklist_for_file(session, fr.id)
+        discogs_link = await _get_accepted_discogs_link(session, fr.id)
+        proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
+        comparison = _build_comparison(fr.file_metadata, proposed)
+        if not _qualifies_for_bulk_write(comparison):
+            continue
+        tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
+        await execute_tag_write(session, fr, tags, source="proposal")
+        written += 1
+    await session.commit()
+
+    stats = await _get_tag_stats(session)
+    toast_message = (
+        f"{written} files tagged (no discrepancies)."
+        if written
+        else "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="tags/partials/bulk_write_response.html",
+        context={"request": request, "stats": stats, "written": written, "toast_message": toast_message},
+    )
+
+
+@router.post("/{file_id}/undo", response_class=HTMLResponse)
+async def undo_tag_write(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """REVIEW-05 (D-04): revert a tag write by re-applying ``TagWriteLog.before_tags``.
+
+    Reuses the EXISTING :func:`execute_tag_write` mutagen path (``source="undo"``) to restore the
+    snapshot captured before the latest write -- NO new apply/undo logic. Returns 404 when the file
+    has no prior write log. Appends one further ``TagWriteLog`` so the append-only audit trail stays
+    coherent (REVIEW-05: every apply, including a reversal, is one audit row).
+    """
+    file_record = await _get_file_with_metadata(session, file_id)
+    if file_record is None:
+        return HTMLResponse(content="File not found", status_code=404)
+
+    latest = await _get_latest_write_log(session, file_id)
+    if latest is None:
+        return HTMLResponse(content="No prior tag write to undo", status_code=404)
+
+    log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
+    await session.commit()
+
+    # Rebuild the row for the outerHTML swap.
+    tracklist = await _get_tracklist_for_file(session, file_id)
+    discogs_link = await _get_accepted_discogs_link(session, file_id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
+    comparison = _build_comparison(file_record.file_metadata, proposed)
+    changes = _count_changes(comparison)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="tags/partials/tag_row.html",
+        context={
+            "request": request,
+            "file": {
+                "id": file_record.id,
+                "filename": file_record.original_filename,
+                "file_type": file_record.file_type,
+                "changes": changes,
+                "status": log_entry.status,
+            },
+            "toast_message": f"Reverted tags for {file_record.original_filename}.",
         },
     )

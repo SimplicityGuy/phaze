@@ -1,0 +1,86 @@
+{# Phase 60 (60-02, REVIEW-01 / D-06): the ONE shared before->after diff row.
+
+   ONE partial, parameterized by facet vars the caller passes -- reused across the Rename/Path
+   (proposed_filename facet) and Move-files (proposed_path facet) diff workspaces over the SAME
+   RenameProposal source (D-06 LOCKED), and reusable by the Tag-write workspace (Plan 60-03).
+
+   Context contract (all caller-supplied):
+     * row_id_prefix  -- stable id stem ("rename-row" / "move-row" / "tag-row"). The row id is
+                         `{row_id_prefix}-{pid}`; every in-row control hx-targets THIS id only (R-6).
+     * pid            -- the proposal (or file) id.
+     * file           -- display name (truncating first line); original_path = its title tooltip.
+     * before / after -- the current (struck rose) and proposed (emerald) values.
+     * approve_url / skip_url / undo_url / edit_url -- the VERIFIED routes (rename/move = PATCH).
+     * approve_method -- the APPROVE verb, templated so a later facet (Tag, Plan 60-03) can pass
+                         "post" WITHOUT editing this literal; rename/move leave it defaulted to patch.
+     * edit_facet     -- "filename" or "path"; posted as the hidden `facet` field on SAVE EDIT.
+     * row_state      -- "pending" (default) shows Approve/Edit/Skip; "approved"/"applied" show the
+                         emerald lifecycle word + a neutral UNDO (Pattern 6). get_pending_proposal_rows
+                         returns only PENDING rows, so the workspaces render the pending branch.
+
+   Trust boundary: every before/after/file cell is autoescaped by Jinja and is NEVER rendered raw or
+   unescaped -- DB-sourced filenames/paths cross into rendered HTML (T-60-XSS). Colour is a static
+   caller class string, not user data. Row-body click is UNBOUND (R-1 -- record is Phase 61); only the
+   in-row controls are live. Rename/Move controls all use the PATCH verb (no POST); the row starts no
+   second poll and is never an out-of-band swap target (R-2 counts-only -- the chrome poll must never
+   re-render this subtree, so an in-progress inline edit is never clobbered).
+#}
+{% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-emerald-600/90 hover:bg-emerald-500 text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
+{% set _sec = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500' %}
+<div id="{{ row_id_prefix }}-{{ pid }}"
+     class="px-6 py-3 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
+     x-data='{ editing:false, val:{{ after|tojson }} }'>
+    <div class="flex items-center justify-between">
+        <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ original_path }}">{{ file }}</div>
+        {% if row_state and row_state != 'pending' %}
+        {# Applied/approved lifecycle (Pattern 6): emerald status word + neutral UNDO (never destructive-red). #}
+        <div class="flex items-center gap-1.5 shrink-0 ml-4">
+            <span class="font-jura text-[11px] font-medium uppercase tracking-wider text-emerald-600 dark:text-emerald-300">{{ 'applied ✓' if row_state == 'applied' else 'approved' }}</span>
+            <button type="button" hx-patch="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">UNDO</button>
+        </div>
+        {% else %}
+        {# Pending action cluster -- Alpine LOCAL island (x-data above); swaps to Save edit / Discard while editing.
+           show_edit / show_skip (default TRUE) let a facet suppress a control WITHOUT editing the callers that
+           don't pass them (rename/move keep Approve/Edit/Skip); show_undo (default FALSE) surfaces a per-row UNDO
+           in the pending cluster for the Tag facet (Plan 60-03: tag inline-edit is out of cut, but a written tag
+           is reversible via /tags/{id}/undo). The APPROVE + UNDO verbs are templated (hx-{{ *_method }}) so the
+           Tag facet can POST while rename/move stay PATCH. #}
+        <div class="flex gap-1.5 shrink-0 ml-4" x-show="!editing">
+            <button type="button" hx-{{ approve_method|default('patch') }}="{{ approve_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _primary }}">APPROVE</button>
+            {% if show_edit|default(true) %}
+            <button type="button" @click="editing=true; $nextTick(()=>$refs.edit.focus())" class="{{ _sec }}">EDIT</button>
+            {% endif %}
+            {% if show_skip|default(true) %}
+            <button type="button" hx-patch="{{ skip_url }}" hx-confirm="Skip this proposal?" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">SKIP</button>
+            {% endif %}
+            {% if show_undo|default(false) %}
+            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">UNDO</button>
+            {% endif %}
+        </div>
+        {% if show_edit|default(true) %}
+        <div class="flex gap-1.5 shrink-0 ml-4" x-show="editing">
+            {# SAVE EDIT targets ONLY its own row (R-6); hx-include pulls this row's `proposed` + `facet` inputs. #}
+            <button type="button" hx-patch="{{ edit_url }}" hx-include="#{{ row_id_prefix }}-{{ pid }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _primary }}">SAVE EDIT</button>
+            <button type="button" @click='editing=false; val={{ after|tojson }}' class="{{ _sec }}">DISCARD</button>
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+    <div class="mt-2 grid grid-cols-[1fr_auto_1fr] gap-3 items-center text-xs">
+        {# BEFORE -- current value, struck rose (removed/old = rose status tint + line-through, WCAG 1.4.1). #}
+        <code class="block truncate rounded px-2 py-1 font-mono bg-rose-50 text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ before }}</code>
+        <span class="text-gray-400 dark:text-gray-600">&rarr;</span>
+        {# AFTER -- proposed value (emerald); swapped for the inline edit input while editing. #}
+        <template x-if="!editing"><code class="block truncate rounded px-2 py-1 font-mono bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ after }}</code></template>
+        {% if show_edit|default(true) %}
+        <template x-if="editing">
+            <input x-ref="edit" x-model="val" name="proposed"
+                   class="w-full rounded border border-gray-300 bg-white px-2 py-1 font-mono text-xs outline-none focus:ring-2 focus:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-200">
+        </template>
+        {% endif %}
+    </div>
+    {% if show_edit|default(true) %}
+    {# Hidden facet field -- SAVE EDIT posts it so the endpoint edits proposed_filename vs proposed_path. #}
+    <input type="hidden" name="facet" value="{{ edit_facet }}">
+    {% endif %}
+</div>

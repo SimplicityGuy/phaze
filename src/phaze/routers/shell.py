@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
+from phaze.config import settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.pipeline_scans import build_recent_scans
@@ -39,6 +40,12 @@ from phaze.services.pipeline import (
     get_trackid_stage_files,
     get_tracklist_set_rows,
     get_untracked_files,
+)
+from phaze.services.review import (
+    get_cue_review_cards,
+    get_dedupe_groups,
+    get_pending_proposal_rows,
+    get_tagwrite_review_rows,
 )
 
 from .pipeline import build_dashboard_context
@@ -85,12 +92,30 @@ STAGE_PARTIALS: dict[str, str] = {
     # table) supersedes the placeholder -- a STATIC string literal (T-57-01: `stage` is never spliced
     # into a template path). Supersede-in-place; the legacy template stays reachable until CUT-02.
     "tracklist": "pipeline/partials/tracklist_workspace.html",
-    "propose": _STAGE_PLACEHOLDER,
-    "rename": _STAGE_PLACEHOLDER,
-    "tagwrite": _STAGE_PLACEHOLDER,
-    "move": _STAGE_PLACEHOLDER,
-    "dedupe": _STAGE_PLACEHOLDER,
-    "cue": _STAGE_PLACEHOLDER,
+    # Phase 60 (60-03, D-01): the real Propose generation view (the pending RenameProposal list + Model +
+    # Conf + a GENERATE ALL trigger over the existing POST /pipeline/proposals) supersedes the placeholder
+    # -- a STATIC string literal (T-57-01: `stage` is never spliced into a template path). Supersede-in-place.
+    "propose": "pipeline/partials/propose_workspace.html",
+    # Phase 60 (60-02, REVIEW-01/REVIEW-02): the real Rename/Path + Move-files review diff workspaces
+    # (the ONE shared _diff_row.html over pending RenameProposal rows -- filename facet vs proposed_path
+    # facet, D-06) supersede the placeholders -- STATIC string literals (T-57-01: `stage` is never
+    # spliced into a template path). Supersede-in-place; the legacy templates stay reachable until CUT-02.
+    "rename": "pipeline/partials/rename_workspace.html",
+    # Phase 60 (60-03, REVIEW-01/REVIEW-02): the real Tag-write review workspace (the shared _diff_row.html
+    # over the computed tag comparison -- APPROVE POSTs /tags/{id}/write, bulk POSTs the D-03 server-predicate
+    # /tags/bulk-write-no-discrepancies) supersedes the placeholder -- a STATIC string literal (T-57-01).
+    "tagwrite": "pipeline/partials/tagwrite_workspace.html",
+    "move": "pipeline/partials/move_workspace.html",
+    # Phase 60 (60-04, REVIEW-03/REVIEW-05): the real Dedupe keeper-select workspace (duplicate-group
+    # cards + a keeper radio wired to the VERIFIED /duplicates/{sha256_hash}/resolve contract + page-scoped
+    # AUTO-KEEP + the file_states undo round-trip) supersedes the placeholder -- a STATIC string literal
+    # (T-57-01: `stage` is never spliced into a template path). Supersede-in-place; legacy templates stay.
+    "dedupe": "pipeline/partials/dedupe_workspace.html",
+    # Phase 60 (60-04, REVIEW-04): the real Cue preview workspace (in-memory .cue preview cards + an
+    # APPROVE wired to /cue/{id}/generate + visibly gated ineligible cards) supersedes the placeholder --
+    # a STATIC string literal (T-57-01). This is the LAST of the six Review workspaces; every placeholder
+    # is now superseded. Supersede-in-place; the legacy template stays reachable until CUT-02 (Phase 62).
+    "cue": "pipeline/partials/cue_workspace.html",
 }
 
 
@@ -165,6 +190,48 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["tracklist_scrape_pending"] = len(await get_scrape_pending_tracklists(session))
         context["tracklist_match_pending"] = len(await get_match_pending_tracklists(session))
         context["tracklist_sets"] = await get_tracklist_set_rows(session)
+    elif stage == "rename":
+        # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename/Path review workspace renders the pending
+        # RenameProposal rows (filename facet) through the shared _diff_row.html. get_pending_proposal_rows
+        # is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the existing proposal reads (NO
+        # new query path, NO enqueue, NO backend change) that returns [] on any DB error, so no router
+        # try/except is needed; oob_counts stays False (Pitfall 5) -- the live sub-count would ride the
+        # single chrome poll's OOB seeds.
+        context["rename_proposals"] = await get_pending_proposal_rows(session)
+    elif stage == "move":
+        # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Move-files review workspace -- the SIBLING of rename
+        # over the SAME pending RenameProposal source (proposed_path facet, D-06). Same degrade-safe helper;
+        # oob_counts stays False (Pitfall 5).
+        context["move_proposals"] = await get_pending_proposal_rows(session)
+    elif stage == "propose":
+        # Phase 60 (60-03, D-01): the Propose generation view reuses the SAME degrade-safe pending-proposal
+        # read as Rename/Move (it is a generation view over the shared RenameProposal source, NOT a diff).
+        # The Model column renders the CONFIGURED settings.llm_model (A1 -- one model per run, not a per-row
+        # value); it is a plain str read off the module-level ControlSettings singleton (no DB, no enqueue).
+        # oob_counts stays False (Pitfall 5); the live sub-count would ride the single chrome poll's OOB seeds.
+        context["propose_proposals"] = await get_pending_proposal_rows(session)
+        context["llm_model"] = settings.llm_model
+    elif stage == "tagwrite":
+        # Phase 60 (60-03, REVIEW-01/REVIEW-02): the Tag-write review workspace renders the computed tag
+        # comparison for EXECUTED files without a COMPLETED TagWriteLog (Pitfall 3 -- an empty queue while
+        # files await a move is CORRECT). get_tagwrite_review_rows is a read-only, SAVEPOINT-wrapped,
+        # degrade-safe assembly that returns [] on any DB error, so no router try/except is needed;
+        # oob_counts stays False (Pitfall 5).
+        context["tagwrite_files"] = await get_tagwrite_review_rows(session)
+    elif stage == "dedupe":
+        # Phase 60 (60-04, REVIEW-03/REVIEW-05): the Dedupe keeper-select workspace renders the scored
+        # duplicate groups (each keeper == score_group's canonical_id). get_dedupe_groups is a read-only,
+        # SAVEPOINT-wrapped, degrade-safe assembly over the existing dedup reads (NO new query path, NO
+        # enqueue, NO backend change) that returns [] on any DB error, so no router try/except is needed;
+        # oob_counts stays False (Pitfall 5) -- the live sub-count would ride the single chrome poll's OOB seeds.
+        context["dedupe_groups"] = await get_dedupe_groups(session)
+    elif stage == "cue":
+        # Phase 60 (60-04, REVIEW-04): the Cue preview workspace renders eligible + gated cue cards. Each
+        # eligible card's .cue preview is built IN MEMORY (generate_cue_content, no disk write). get_cue_review_cards
+        # is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the existing cue reads (NO write_cue_file,
+        # NO enqueue, NO backend change) that returns [] on any DB error, so no router try/except is needed;
+        # oob_counts stays False (Pitfall 5).
+        context["cue_cards"] = await get_cue_review_cards(session)
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)

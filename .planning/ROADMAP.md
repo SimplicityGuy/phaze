@@ -41,7 +41,7 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
   - Success: each stage shows its queue + existing trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update with no manual reload and no second poll loop.
 - [x] **Phase 59: Identify workspaces** — Track-ID surfacing **existing** audfprint+Panako fingerprint match/score + rapidfuzz tracklist confidence (NOT AcoustID/MusicBrainz — that is re-scoped to deferred IDENT-03); Tracklist Search→Scrape→Match inline 3-step (IDENT-01..02) (completed 2026-07-01)
   - Success: Track-ID shows each file's existing fingerprint + tracklist match state/confidence; Tracklist shows the visible 3-step sub-chain and per-set match progress from one surface.
-- [ ] **Phase 60: Review & Apply** — unified before→after diff + per-file Approve/Edit/Skip + server-evaluated bulk approve-high-confidence for Rename/Tag/Move; Dedupe keeper-select; Cue preview; audit + reversible (REVIEW-01..05)
+- [x] **Phase 60: Review & Apply** — unified before→after diff + per-file Approve/Edit/Skip + server-evaluated bulk approve-high-confidence for Rename/Tag/Move; Dedupe keeper-select; Cue preview; audit + reversible (REVIEW-01..05) (completed 2026-07-01)
   - Success: rename/tag/move each show diffs with per-file + bulk-high-conf approve (server-side predicate, not a client id-list); dedupe groups pick a keeper; cue previews + approves gated on a matched tracklist; every applied change lands in the reversible audit log.
 - [ ] **Phase 61: Full record + ⌘K + Agents** — per-file record (multi-lane windowed timeline, metadata diff, inline approvals, history); ⌘K palette (`@alpinejs/focus`); Agents page with ephemeral k8s identity; first-run empty state (RECORD-01..04)
   - Success: a file opens to a full record; ⌘K searches files/tracklists/artists + offers quick commands; Agents shows local/A1 heartbeating and k8s as ephemeral Job-based (never perpetually-DEAD); empty state guides the first scan.
@@ -188,7 +188,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 58. Enrich + Analyze workspaces | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
-| 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
+| 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
 | 62. Polish & cutover | v7.0 | 0/TBD | Not started | - |
 

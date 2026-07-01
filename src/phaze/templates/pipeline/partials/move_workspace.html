@@ -1,0 +1,54 @@
+{# Phase 60 (60-02, REVIEW-01/REVIEW-02): the Move-files review diff workspace.
+
+   Content-only fragment swapped into #stage-workspace -- the SIBLING of rename_workspace.html over the
+   SAME RenameProposal source (D-06 LOCKED: two separate rail-node workspaces, NOT a name/path toggle).
+   The only differences are the facet (proposed_path: before=current path, after=proposed path,
+   edit_facet="path") and the copy. Composes the shared scaffold + the ONE shared _diff_row.html
+   partial, driven by shell._render_stage -> move_proposals (services/review.get_pending_proposal_rows).
+
+   Bulk header (REVIEW-02 / D-02): APPROVE ALL >=90% CONFIDENCE rides the SAME id-less/threshold-less
+   PATCH /proposals/bulk-approve-high-confidence (Move rides RenameProposal.confidence too). R-4 guard:
+   hx-confirm + hx-disabled-elt + controllerBusy :disabled busy-gate. NO second poll (R-2); rows inert
+   (R-1); every path value autoescapes through _diff_row.html (T-60-XSS -- never raw).
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = "'" ~ (move_proposals | length) ~ " awaiting approval · physical file moves on the file server'" %}
+{% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    <button type="button"
+            hx-patch="/proposals/bulk-approve-high-confidence" hx-target="#move-trigger-response" hx-swap="innerHTML"
+            hx-confirm="Approve all pending proposals at ≥90% confidence? The server re-checks confidence at submit — {{ move_proposals | length }} match now. Every apply is audited and reversible."
+            hx-disabled-elt="this"
+            :disabled="$store.pipeline.controllerBusy > 0"
+            aria-label="Approve all pending proposals at or above 90 percent confidence"
+            class="{{ _bulk_btn }}">APPROVE ALL ≥90% CONFIDENCE</button>
+{% endset %}
+{% call ws.workspace(title="Review & Apply · Move files", subcount=subcount, actions=actions) %}
+    {# Bulk-approve response (approve_response.html toast) lands here; empty:hidden until it fires. #}
+    <div id="move-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+    {% if move_proposals %}
+    <div>
+        {% for p in move_proposals %}
+            {% with row_id_prefix="move-row",
+                    pid=p.id,
+                    file=p.filename,
+                    original_path=p.original_path,
+                    before=p.original_path,
+                    after=(p.proposed_path or ""),
+                    approve_url="/proposals/" ~ p.id ~ "/approve",
+                    skip_url="/proposals/" ~ p.id ~ "/reject",
+                    undo_url="/proposals/" ~ p.id ~ "/undo",
+                    edit_url="/proposals/" ~ p.id ~ "/edit",
+                    edit_facet="path",
+                    row_state="pending" %}
+                {% include "pipeline/partials/_diff_row.html" %}
+            {% endwith %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="px-6 py-12 text-center">
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Nothing to move</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">No pending file moves. Approve rename proposals to queue moves.</p>
+    </div>
+    {% endif %}
+{% endcall %}

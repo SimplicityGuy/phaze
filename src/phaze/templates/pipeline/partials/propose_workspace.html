@@ -1,0 +1,76 @@
+{# Phase 60 (60-03, D-01): the Propose generation workspace -- a thin GENERATION view.
+
+   Content-only fragment swapped into #stage-workspace. UNLIKE Rename/Move (which are before->after
+   diff workspaces), Propose is a LIGHT generation view over the SAME RenameProposal source (D-01): it
+   lists the pending proposals (proposed name + path + model + confidence) and offers ONE GENERATE ALL
+   trigger that generates proposals for the still-pending files. It is NOT a diff -- per-file
+   Approve/Edit/Skip lives on the Rename/Path + Move review workspaces, NOT here.
+
+   Composes the shared scaffold (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a
+   sub-count + a secondary-style GENERATE ALL action + body. The body reuses the SAME _file_table.html
+   the enrich/analyze workspaces use (columns File / Proposed name / Proposed path / Model / Conf).
+
+   Trigger (D-01, reused VERBATIM): ONE GENERATE ALL button posting to the EXISTING
+   POST /pipeline/proposals (routers/pipeline.py:913 trigger_proposals_ui), which enqueues the
+   proposal-pending batches and returns pipeline/partials/trigger_response.html into
+   #propose-trigger-response. R-4 bulk-enqueue guard: hx-confirm naming the scope + a :disabled
+   busy-gate on $store.pipeline.proposalsBusy (don't double-enqueue while litellm jobs churn).
+
+   Model column (A1): the CONFIGURED settings.llm_model id (shell._render_stage -> llm_model), NOT a
+   per-row value -- every proposal in a run is produced by the one configured model. Conf tier reuses
+   the Phase-59 confidence palette: >=90 emerald / 70-89 amber / <70 gray.
+
+   Rows are inert-but-present (R-1): stable row_id_prefix="propose-row"; the row-body click is UNBOUND
+   (record is Phase 61). Every DB-sourced value autoescapes through _file_table.html (T-60-XSS -- never
+   raw / never `| safe`). NO second poll (R-2); the live sub-count would ride the single chrome poll.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = "'" ~ (propose_proposals | length) ~ " proposals ready · litellm'" %}
+{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't double-enqueue litellm jobs). #}
+    <button type="button"
+            hx-post="/pipeline/proposals" hx-target="#propose-trigger-response" hx-swap="innerHTML"
+            hx-confirm="Generate AI proposals for all {{ propose_proposals | length }} pending files? This enqueues {{ propose_proposals | length }} litellm jobs."
+            hx-indicator="#propose-trigger-spinner"
+            :disabled="$store.pipeline.proposalsBusy > 0"
+            aria-label="Generate AI proposals for all pending files"
+            class="{{ _btn }}">GENERATE ALL</button>
+    <span id="propose-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+{% endset %}
+{% call ws.workspace(title="Propose", subcount=subcount, actions=actions) %}
+    {# Trigger response lands here (trigger_response.html branches: count>0 / none ready). #}
+    <div id="propose-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+    <div class="p-6">
+        {% set columns = ["File", "Proposed name", "Proposed path", "Model", "Conf"] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for p in propose_proposals %}
+            {% if p.confidence is none %}
+                {% set _conf_text = "—" %}
+                {% set _conf_color = "text-gray-500" %}
+            {% else %}
+                {% set _pct = (p.confidence * 100) | round | int %}
+                {% set _conf_text = _pct ~ "%" %}
+                {% if _pct >= 90 %}
+                    {% set _conf_color = "text-emerald-600 dark:text-emerald-300" %}
+                {% elif _pct >= 70 %}
+                    {% set _conf_color = "text-amber-600 dark:text-amber-300" %}
+                {% else %}
+                    {% set _conf_color = "text-gray-500" %}
+                {% endif %}
+            {% endif %}
+            {% set _ = ns.rows.append([
+                {'text': p.filename, 'mono': True, 'title': p.original_path},
+                {'text': p.proposed_filename},
+                {'text': (p.proposed_path or "—"), 'mono': True},
+                {'text': llm_model, 'mono': True, 'color': 'text-gray-500 dark:text-gray-500'},
+                {'text': _conf_text, 'mono': True, 'color': _conf_color},
+            ]) %}
+        {% endfor %}
+        {% set rows = ns.rows %}
+        {% set empty_heading = "Nothing to propose" %}
+        {% set empty_body = "Every discovered file already has a rename proposal. Run enrichment first to surface more." %}
+        {% set row_id_prefix = "propose-row" %}
+        {% include "pipeline/partials/_file_table.html" %}
+    </div>
+{% endcall %}
