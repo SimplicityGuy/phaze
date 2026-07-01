@@ -27,12 +27,15 @@ import structlog
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.routers.cue import _build_cue_tracks, _get_eligible_tracklist_query
 from phaze.routers.tags import (
     _build_comparison,
     _count_changes,
     _get_accepted_discogs_link,
     _get_tracklist_for_file,
 )
+from phaze.services.cue_generator import generate_cue_content
 from phaze.services.dedup import find_duplicate_groups_with_metadata, score_group
 from phaze.services.proposal_queries import get_proposals_page
 from phaze.services.tag_proposal import compute_proposed_tags
@@ -193,4 +196,74 @@ async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
             return cards
     except Exception:
         logger.warning("dedupe_groups_degraded", exc_info=True)
+        return []
+
+
+async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
+    """Return eligible + gated cue cards for the Cue preview workspace (degrade-safe, NO disk write).
+
+    Surfaces two sets, both approved tracklists on an EXECUTED file:
+
+    * **eligible** -- ``>= 1`` timestamped track (``_get_eligible_tracklist_query``). For each, the ``.cue``
+      preview text is built ENTIRELY IN MEMORY via ``_build_cue_tracks`` + ``generate_cue_content`` -- the
+      render NEVER calls ``write_cue_file`` and NEVER touches disk (T-60-CUE; the write happens only on an
+      explicit APPROVE -> ``POST /cue/{id}/generate``, which IS the approve/write -- there is no /approve route).
+    * **gated** -- approved + EXECUTED but NO timestamped track (the "awaiting tracklist match…" ineligible
+      card, rendered ``opacity-60`` with no approve control).
+
+    The whole read runs inside a ``session.begin_nested()`` SAVEPOINT and returns ``[]`` on any error so the
+    render/poll path degrades instead of 500ing (no router try/except needed). Per card:
+    ``tracklist_id`` · ``set_name`` (the audio file stem, matching the generated ``.cue`` name) ·
+    ``eligible`` (bool) · ``cue_text`` (the in-memory ``.cue`` string, or ``None`` for a gated card).
+    """
+    try:
+        async with session.begin_nested():
+            cards: list[dict[str, Any]] = []
+
+            for tracklist, file_record in await _get_eligible_tracklist_query(session):
+                cue_text: str | None = None
+                if tracklist.latest_version_id:
+                    cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
+                    audio_name = Path(file_record.current_path).name
+                    cue_text = generate_cue_content(audio_name, file_record.file_type, cue_tracks)
+                cards.append(
+                    {
+                        "tracklist_id": tracklist.id,
+                        "set_name": Path(file_record.current_path).stem,
+                        "eligible": True,
+                        "cue_text": cue_text,
+                    }
+                )
+
+            # Gated: approved + EXECUTED file but NO timestamped track (mirrors cue._get_cue_stats missing set).
+            has_timestamp_subq = (
+                select(TracklistVersion.tracklist_id)
+                .join(TracklistTrack, TracklistTrack.version_id == TracklistVersion.id)
+                .where(TracklistTrack.timestamp.is_not(None))
+                .distinct()
+            )
+            gated_stmt = (
+                select(Tracklist, FileRecord)
+                .join(FileRecord, Tracklist.file_id == FileRecord.id)
+                .where(
+                    Tracklist.status == "approved",
+                    Tracklist.file_id.is_not(None),
+                    FileRecord.state == FileState.EXECUTED,
+                    Tracklist.id.not_in(has_timestamp_subq),
+                )
+                .order_by(Tracklist.artist, Tracklist.event)
+            )
+            for tracklist, file_record in (await session.execute(gated_stmt)).tuples().all():
+                cards.append(
+                    {
+                        "tracklist_id": tracklist.id,
+                        "set_name": Path(file_record.current_path).stem,
+                        "eligible": False,
+                        "cue_text": None,
+                    }
+                )
+
+            return cards
+    except Exception:
+        logger.warning("cue_review_cards_degraded", exc_info=True)
         return []

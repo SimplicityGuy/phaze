@@ -1,0 +1,31 @@
+{# Phase 60 (60-04, REVIEW-04/D-08): the Cue preview workspace.
+
+   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
+   (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a live sub-count + a two-column
+   grid of preview cards. Body = the eligible + gated cue cards (shell._render_stage -> cue_cards, via
+   services/review.get_cue_review_cards). Each card renders through _cue_preview.html: an eligible card
+   shows the IN-MEMORY `.cue` preview + APPROVE (POST /cue/{id}/generate -- generate IS approve/write,
+   NO /approve route); a gated card is opacity-60 with "awaiting tracklist match…" and no approve control.
+
+   NO bulk header (REVIEW-04 requires none -- the prototype's EXPORT APPROVED maps to no existing
+   endpoint, omitted). NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB
+   seeds); NO | safe (the DB+filesystem-derived cue text autoescapes through the <pre>, T-60-XSS). The
+   `.cue` preview is a read-time reuse of the generation helpers -- the render NEVER writes disk (T-60-CUE). #}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = "'" ~ (cue_cards | selectattr('eligible') | list | length) ~ " generated from matched tracklists'" %}
+{% call ws.workspace(title="Review & Apply · Cue sheets", subcount=subcount) %}
+    {# Landing target for the generate response's OOB toast (cue_row.html). #}
+    <div id="toast-container" class="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2 [&>*]:pointer-events-auto"></div>
+    {% if cue_cards %}
+    <div class="grid grid-cols-2 gap-4 p-6">
+        {% for card in cue_cards %}
+            {% include "pipeline/partials/_cue_preview.html" %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="px-6 py-12 text-center">
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No cue sheets yet</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Cue sheets generate once a set has a matched, approved tracklist with timestamped tracks.</p>
+    </div>
+    {% endif %}
+{% endcall %}
