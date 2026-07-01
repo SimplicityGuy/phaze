@@ -358,19 +358,21 @@ Not applicable — no library/version churn. The stack is CLAUDE.md-locked; the 
 | A3 | The Agents page keeps its own single `/admin/agents/_table` 5s self-poll (refreshing both sections), satisfying D-07's "no manual reload" intent, rather than being re-homed onto `/pipeline/stats`. | OQ-1 | Medium — if the planner instead promotes Agents into the shell, the poll/seed wiring differs. Both are single-loop; recommend the standalone path for scope discipline. |
 | A4 | The record's live badges bind to GLOBAL `$store.pipeline` keys (or accept staleness until reopened); `/pipeline/stats` is NOT made file-aware. | OQ-2 | Medium — D-02's "this file's … pending-approval count" has no clean per-file source on a global poll. Snapshot-only is the faithful reading; a per-file OOB would require a file-aware poll (rejected). |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **OQ-1 — Is the Agents page a shell surface or the existing standalone `/admin/agents` page?**
+   - **RESOLVED:** restyle the standalone `/admin/agents` in place (two-section C3 layout on its existing `_table` self-poll) — adopted by plan 61-04.
    - What we know: `/admin/agents` is a standalone full page (extends `base.html`) with its OWN single `/admin/agents/_table` 5s self-poll, and already carries a static k8s note (Phase 56). It is NOT in `STAGE_PARTIALS`; the header status strip links to `/admin/agents`. The ⌘K "Open Agents" command (D-03) would navigate there.
    - What's unclear: whether RECORD-03 restyles the standalone page in place, or promotes Agents into the shell chrome (new `STAGE_PARTIALS` entry / route riding the single `/pipeline/stats` poll).
    - Recommendation: **restyle the standalone `/admin/agents` in place** (two-section C3 layout; Section 2 = live CloudJob liveness on the SAME existing `_table` poll). Lowest risk, faithful to "no manual reload / no second loop", keeps backend untouched. Phase 62 (CUT) can re-home it into the shell if desired. D-07's "/pipeline/stats" phrasing reads as intent, not a literal requirement.
 
 2. **OQ-2 — How do the open record's "counts/status" bits (D-02) get live updates from a file-agnostic global poll?**
+   - **RESOLVED:** keep the record a true snapshot binding only global `$store.pipeline` keys; register no new per-file OOB ids — adopted by plan 61-02.
    - What we know: `/pipeline/stats` fans out `dag-seed-*` → `$store.pipeline` (global). `stats_bar.html` does not know which file's record is open.
    - What's unclear: how "this file's stage chips / pending-approval count" tick off a global poll without a file-aware request.
    - Recommendation: keep the record a true **snapshot**; bind only bits that map to a GLOBAL `$store.pipeline` key (e.g. a global pending count), and let per-file specifics be point-in-time (refreshed on reopen). Register NO new per-file OOB ids unless a clean global mapping exists. This preserves R-2/no-new-loop and matches "snapshot body renders once." The CONTEXT marks the record's OOB ids as discretion — this is the safe resolution.
 
-3. **OQ-3 — Record route shape (discretion).** Recommendation: a dedicated `GET /record/{file_id}` (typed UUID path param, FastAPI-validated; scope all reads by that `file_id` — broken-access-control mitigation, mirroring `proposals.py:257` T-31-06-02). A missing/de-duplicated file → 404 with the friendly fragment (UI-SPEC copy), rendered inside the host; the close/focus-return contract still applies. Cleaner than overloading `/s/…` (which is the rail-stage whitelist).
+3. **OQ-3 — Record route shape (discretion).** **RESOLVED:** dedicated `GET /record/{file_id}` (typed UUID, file_id-scoped, 404 friendly fragment) — adopted by plan 61-02. Recommendation: a dedicated `GET /record/{file_id}` (typed UUID path param, FastAPI-validated; scope all reads by that `file_id` — broken-access-control mitigation, mirroring `proposals.py:257` T-31-06-02). A missing/de-duplicated file → 404 with the friendly fragment (UI-SPEC copy), rendered inside the host; the close/focus-return contract still applies. Cleaner than overloading `/s/…` (which is the rail-stage whitelist).
 
 ## Environment Availability
 
