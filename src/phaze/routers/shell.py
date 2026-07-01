@@ -25,11 +25,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from phaze.config import settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.file import FileRecord
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.services.pipeline import (
     get_fingerprint_pending_files,
@@ -119,6 +120,27 @@ STAGE_PARTIALS: dict[str, str] = {
 }
 
 
+# Phase 61 (61-05, RECORD-04): the first-run empty-state guide. A STATIC string literal
+# (T-57-01: `stage` is never spliced into a template path) the analyze render swaps `stage_partial`
+# to when the file count is exactly 0. The guide lists each agent's already-configured `scan_roots`
+# and posts the DISCOVERY scan (POST /pipeline/scans) — zero new input surface (D-08).
+_EMPTY_STATE_PARTIAL = "pipeline/partials/empty_state.html"
+
+
+async def _analyze_file_count(session: AsyncSession) -> int:
+    """Return the total ``FileRecord`` count, degrade-safe (RECORD-04).
+
+    A lightweight ``COUNT(*)`` read. On ANY error it returns a non-zero sentinel so a
+    transient DB issue can NEVER falsely trip the first-run empty state (better to show
+    the normal dashboard than to wrongly claim the archive is empty).
+    """
+    try:
+        result = await session.execute(select(func.count(FileRecord.id)))
+    except Exception:
+        return 1
+    return int(result.scalar() or 0)
+
+
 async def _render_stage(request: Request, stage: str, session: AsyncSession) -> HTMLResponse:
     """Render ``stage`` as the full shell (direct nav) or a bare fragment (HX rail swap).
 
@@ -146,6 +168,15 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["stage"] = stage
         context["stage_partial"] = STAGE_PARTIALS[stage]
         context["oob_counts"] = False
+        # Phase 61 (61-05, RECORD-04): first-run empty state. When NO files exist, swap the
+        # analyze stage_partial to the empty-state guide and inject the non-revoked agent list
+        # (for the agent-roots cards). file_count>0 leaves the dashboard render untouched; the
+        # fragment fork + oob_counts=False discipline stays intact (analyze_workspace.html is NOT
+        # edited — the swap is purely via stage_partial).
+        if await _analyze_file_count(session) == 0:
+            context["stage_partial"] = _EMPTY_STATE_PARTIAL
+            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+            context["agents"] = (await session.execute(agents_stmt)).scalars().all()
     elif stage == "discover":
         # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
         # data verbatim (build_recent_scans -- the SAME helper build_dashboard_context uses) and
