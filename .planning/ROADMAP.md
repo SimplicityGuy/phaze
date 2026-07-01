@@ -189,7 +189,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 58. Enrich + Analyze workspaces | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
 | 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
-| 61. Full record + ⌘K + Agents | v7.0 | 1/5 | In Progress|  |
+| 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete   | 2026-07-01 |
 | 62. Polish & cutover | v7.0 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -805,10 +805,10 @@ Plans:
 **Notes**: Most correctness-sensitive phase (irreplaceable archive). REVIEW-02 fixes the live-polling stale-bulk-approval hazard — pick a fixed server-side confidence threshold at plan time (REVIEW-06 defers configurable thresholds; check the `tracklists.py` `reject-low` endpoint as a reference value). The 5s diff-list poll must OOB-update counts **only** — never re-render the operator's in-progress selection subtree. No phase research needed.
 **Plans**: 5 plans in 2 waves
 - [x] 61-01-PLAN.md — Foundation: @alpinejs/focus dep + SRI gate (shell.html+base.html) + Wave-0 tests/fixtures
-- [ ] 61-02-PLAN.md — Full-record slide-in (RECORD-01): GET /record/{file_id} fragment, persistent x-trap host, composed body, row/⌘K open
-- [ ] 61-03-PLAN.md — ⌘K command palette (RECORD-02): distinct_artists() + grouped results + roving arrow-nav + x-trap
-- [ ] 61-04-PLAN.md — Agents page (RECORD-03): heartbeating section + ephemeral compute lanes (classify_compute_lanes, never DEAD)
-- [ ] 61-05-PLAN.md — First-run empty state (RECORD-04): agent-roots guide + DISCOVERY scan (POST /pipeline/scans)
+- [x] 61-02-PLAN.md — Full-record slide-in (RECORD-01): GET /record/{file_id} fragment, persistent x-trap host, composed body, row/⌘K open
+- [x] 61-03-PLAN.md — ⌘K command palette (RECORD-02): distinct_artists() + grouped results + roving arrow-nav + x-trap
+- [x] 61-04-PLAN.md — Agents page (RECORD-03): heartbeating section + ephemeral compute lanes (classify_compute_lanes, never DEAD)
+- [x] 61-05-PLAN.md — First-run empty state (RECORD-04): agent-roots guide + DISCOVERY scan (POST /pipeline/scans)
 **UI hint**: yes
 
 ### Phase 61: Full record + ⌘K + Agents
