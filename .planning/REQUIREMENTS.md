@@ -44,8 +44,8 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Identify workspaces (IDENT)
 
-- [ ] **IDENT-01**: The Track-ID workspace shows each file's **existing** identity signals — audfprint + Panako fingerprint match/score and rapidfuzz tracklist-match confidence — surfaced as match state and confidence. (Re-scoped 2026-06-29 from the prototype's "AcoustID→MusicBrainz" label: that lookup backend does not exist, so building it is out of this presentation-only milestone — deferred to IDENT-03 below. Confirmed by research: `grep -ri 'acoustid|musicbrainz' src/phaze` is empty.)
-- [ ] **IDENT-02**: The Tracklist workspace presents the Search→Scrape→Match sub-chain inline as a visible 3-step with per-set match progress, triggerable from one surface.
+- [x] **IDENT-01**: The Track-ID workspace shows each file's **existing** identity signals — audfprint + Panako fingerprint match/score and rapidfuzz tracklist-match confidence — surfaced as match state and confidence. (Re-scoped 2026-06-29 from the prototype's "AcoustID→MusicBrainz" label: that lookup backend does not exist, so building it is out of this presentation-only milestone — deferred to IDENT-03 below. Confirmed by research: `grep -ri 'acoustid|musicbrainz' src/phaze` is empty.)
+- [x] **IDENT-02**: The Tracklist workspace presents the Search→Scrape→Match sub-chain inline as a visible 3-step with per-set match progress, triggerable from one surface.
 
 ### Review & Apply (REVIEW)
 

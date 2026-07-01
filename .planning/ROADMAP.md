@@ -39,7 +39,7 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
   - Success: an in-flight file's `fine_windows_analyzed/total` advances during the run; a file killed mid-analysis re-runs cleanly with no duplicate/partial window corruption; aggregates + `ANALYZED` flip unchanged; no new queue/routing semantics.
 - [ ] **Phase 58: Enrich + Analyze workspaces** — Discover/Metadata/Fingerprint/Analyze stage views; three Analyze lane cards (local/A1/k8s) with live capacity + Kueue quota-wait/Inadmissible; single-poll stats fanout (WORK-01..05)
   - Success: each stage shows its queue + existing trigger; Analyze shows 3 lanes with live capacity; each in-flight file shows its lane + windowed progress; views update with no manual reload and no second poll loop.
-- [ ] **Phase 59: Identify workspaces** — Track-ID surfacing **existing** audfprint+Panako fingerprint match/score + rapidfuzz tracklist confidence (NOT AcoustID/MusicBrainz — that is re-scoped to deferred IDENT-03); Tracklist Search→Scrape→Match inline 3-step (IDENT-01..02)
+- [x] **Phase 59: Identify workspaces** — Track-ID surfacing **existing** audfprint+Panako fingerprint match/score + rapidfuzz tracklist confidence (NOT AcoustID/MusicBrainz — that is re-scoped to deferred IDENT-03); Tracklist Search→Scrape→Match inline 3-step (IDENT-01..02) (completed 2026-07-01)
   - Success: Track-ID shows each file's existing fingerprint + tracklist match state/confidence; Tracklist shows the visible 3-step sub-chain and per-set match progress from one surface.
 - [ ] **Phase 60: Review & Apply** — unified before→after diff + per-file Approve/Edit/Skip + server-evaluated bulk approve-high-confidence for Rename/Tag/Move; Dedupe keeper-select; Cue preview; audit + reversible (REVIEW-01..05)
   - Success: rename/tag/move each show diffs with per-file + bulk-high-conf approve (server-side predicate, not a client id-list); dedupe groups pick a keeper; cue previews + approves gated on a matched tracklist; every applied change lands in the reversible audit log.
@@ -187,7 +187,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 57. Shell & DAG rail | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 57.1. Incremental window persistence & live analyze progress signal | v7.0 | 4/4 | Complete    | 2026-06-30 |
 | 58. Enrich + Analyze workspaces | v7.0 | 4/4 | Complete    | 2026-06-30 |
-| 59. Identify workspaces | v7.0 | 0/TBD | Not started | - |
+| 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
 | 60. Review & Apply | v7.0 | 0/TBD | Not started | - |
 | 61. Full record + ⌘K + Agents | v7.0 | 0/TBD | Not started | - |
 | 62. Polish & cutover | v7.0 | 0/TBD | Not started | - |
@@ -774,7 +774,19 @@ Plans:
   2. The Tracklist workspace presents the Search→Scrape→Match sub-chain inline as a visible 3-step with per-set match progress, triggerable from one surface.
 
 **Notes**: **IDENT-01 re-scoped 2026-06-29** — the prototype's "AcoustID→MusicBrainz" label is dropped: `grep -ri 'acoustid|musicbrainz' src/phaze` is empty, so that backend does not exist and building it would violate the no-backend-change boundary. This phase ships the existing fingerprint + tracklist signals **only**; AcoustID/MusicBrainz is deferred to IDENT-03 (future milestone). Option 1 (re-label) is chosen → no phase research needed. (Verify what `models/fingerprint.py` persists at plan time so Track-ID surfaces the real stored fields.)
-**Plans**: TBD
+**Plans**: 3 plans (3 waves — sequential; both workspaces touch shell.py + the shared test file)Plans:
+**Wave 1**
+
+- [x] 59-01-PLAN.md — Wave-0 test scaffold + the two read-only row-assembly helpers (get_trackid_stage_files / get_tracklist_set_rows)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 59-02-PLAN.md — Track-ID workspace (combined per-file identity table) + shell wiring
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 59-03-PLAN.md — Tracklist workspace (3 step cards + per-set coverage table) + shell wiring
+
 **UI hint**: yes
 
 ### Phase 60: Review & Apply
