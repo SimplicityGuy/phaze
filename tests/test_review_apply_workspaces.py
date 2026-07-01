@@ -379,17 +379,66 @@ async def test_propose_workspace_generate_and_model(
     assert f"/proposals/{p.id}/approve" not in body, "Propose is a generation view -- no per-row approve here"
 
 
-@pytest.mark.xfail(reason="converted to real assertions by the dedupe workspace plan (REVIEW-03)", strict=False)
 @pytest.mark.asyncio
-async def test_dedupe_keeper_resolve_wiring(client: AsyncClient) -> None:
-    """REVIEW-03 -- keeper radio posts /duplicates/{sha256}/resolve with canonical_id; UNDO round-trips."""
-    resp = await client.get("/s/dedupe", headers={"HX-Request": "true"})
-    assert 'name="canonical_id"' in resp.text
+async def test_dedupe_keeper_resolve_wiring(
+    client: AsyncClient,
+    seed_duplicate_group: Callable[..., Awaitable[list[FileRecord]]],
+) -> None:
+    """REVIEW-03/REVIEW-05 -- ``/s/dedupe`` keeper radio resolves via ``canonical_id``; resolve round-trips file_states.
+
+    A seeded duplicate group (two EXECUTED files sharing one sha256) surfaces as a keeper-select card. The
+    radio POSTs the VERIFIED contract ``/duplicates/{sha256}/resolve`` with the ``canonical_id`` field (via
+    hx-vals -- NOT the UI-SPEC sketch's ``group_id``/``keeper_id``), the group key is the ``sha256_hash``, and
+    exactly one copy is the emerald KEEP (the others carry the ``archive`` text tag, never hue-only). POSTing
+    the resolve then returns the resolved state whose UNDO round-trips ``file_states`` to
+    ``/duplicates/{sha256}/undo`` (REVIEW-05 -- undo reconstructs prior state FROM that blob).
+    """
+    files = await seed_duplicate_group(count=2)
+    sha = files[0].sha256_hash
+
+    frag = await client.get("/s/dedupe", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+
+    # Keeper radio wires the VERIFIED resolve contract (canonical_id via hx-vals), NOT the sketch's fields.
+    assert f'hx-post="/duplicates/{sha}/resolve"' in body, "keeper radio posts the sha256-keyed resolve route"
+    assert "canonical_id" in body, "the resolve carries the canonical_id field (hx-vals)"
+    assert "group_id" not in body and "keeper_id" not in body, "the UI-SPEC sketch's group_id/keeper_id must NOT appear"
+    # KEEP/archive are text tags, never hue-only (WCAG 1.4.1); exactly one keeper per group.
+    assert ">KEEP<" in body and ">archive<" in body
+    assert body.count("checked") == 1, "exactly one keeper radio is pre-selected per group"
+
+    # Resolving round-trips file_states on UNDO over the existing resolve_response.html toast (REVIEW-05).
+    resolved = await client.post(f"/duplicates/{sha}/resolve", data={"canonical_id": str(files[0].id)})
+    assert resolved.status_code == 200
+    assert f'hx-post="/duplicates/{sha}/undo"' in resolved.text, "the resolved state's UNDO posts the undo route"
+    assert 'name="file_states"' in resolved.text, "UNDO carries the file_states blob for a stateful reversal"
 
 
-@pytest.mark.xfail(reason="converted to real assertions by the cue workspace plan (REVIEW-04)", strict=False)
 @pytest.mark.asyncio
-async def test_cue_gate_and_preview(client: AsyncClient) -> None:
-    """REVIEW-04 -- eligible sets render a preview + APPROVE->/cue/{id}/generate; ineligible are gated."""
-    resp = await client.get("/s/cue", headers={"HX-Request": "true"})
-    assert "/generate" in resp.text
+async def test_cue_gate_and_preview(
+    client: AsyncClient,
+    seed_cue_set: Callable[..., Awaitable[object]],
+) -> None:
+    """REVIEW-04 -- ``/s/cue`` shows an eligible preview + APPROVE->``/cue/{id}/generate``; the ineligible card is gated.
+
+    One eligible set (approved tracklist, EXECUTED file, a timestamped track) and one ineligible set (no
+    timestamped track) are seeded. The eligible card renders the in-memory ``.cue`` preview ``<pre>`` and an
+    APPROVE that POSTs ``/cue/{id}/generate`` (generate IS approve/write -- there is NO ``/approve`` route);
+    the ineligible card is ``opacity-60`` with "awaiting tracklist match…" and NO approve control.
+    """
+    eligible = await seed_cue_set(eligible=True)
+    _gated = await seed_cue_set(eligible=False)
+    eligible_tracklist_id = eligible[1].id  # (file, tracklist, version)
+
+    frag = await client.get("/s/cue", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+
+    # Eligible card: the in-memory .cue preview + APPROVE -> generate (NO /approve route anywhere).
+    assert "<pre" in body, "the eligible card renders the in-memory .cue preview block"
+    assert f'hx-post="/cue/{eligible_tracklist_id}/generate"' in body, "APPROVE posts the generate route (generate IS approve)"
+    assert "/approve" not in body, "there is no /cue/{id}/approve route -- generate IS the write"
+    # Gated card: opacity-60 + the awaiting-match copy, and no second approve control.
+    assert "opacity-60" in body and "awaiting tracklist match" in body
+    assert body.count("APPROVE") == 1, "only the eligible card carries an APPROVE control"
