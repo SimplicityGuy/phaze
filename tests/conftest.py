@@ -15,6 +15,10 @@ from phaze.database import get_session
 from phaze.main import create_app
 from phaze.models.agent import LEGACY_AGENT_ID, Agent
 from phaze.models.base import Base
+from phaze.models.file import FileRecord, FileState
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test")
@@ -328,3 +332,164 @@ def kube_respx(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
         )
         router.get(url__regex=rf"^{base}/apis/?$").mock(return_value=Response(200, json={"kind": "APIGroupList", "groups": []}))
         yield router
+
+
+# ---------------------------------------------------------------------------
+# Phase 60 (Plan 60-01): Review & Apply seed factories.
+#
+# Async ORM insert factories (test fixtures only -- no backend change) that the
+# Wave-0 scaffold and every later Review workspace plan build their assertions on.
+# Each fixture returns an async callable bound to the shared test ``session`` (the
+# SAME object the ``client`` fixture overrides ``get_session`` with, so seeded rows
+# are visible to HX requests). Values are kept ASCII-safe and built through the real
+# model constructors; the legacy agent is already seeded by ``async_engine`` so a
+# bare ``FileRecord`` satisfies its NOT NULL + FK ``agent_id`` default.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+def make_file(session: AsyncSession):  # type: ignore[no-untyped-def]
+    """Return an async factory inserting one ``FileRecord`` (unique path per call)."""
+
+    async def _make(
+        *,
+        state: str = FileState.DISCOVERED,
+        original_filename: str = "set.mp3",
+        file_type: str = "mp3",
+        sha256: str | None = None,
+    ) -> FileRecord:
+        # Unique path segment so the (agent_id, original_path) unique index never collides.
+        record = FileRecord(
+            id=uuid.uuid4(),
+            sha256_hash=sha256 or (uuid.uuid4().hex + uuid.uuid4().hex),  # 64 hex chars
+            original_path=f"/test/music/{uuid.uuid4().hex}/{original_filename}",
+            original_filename=original_filename,
+            current_path=f"/test/music/{original_filename}",
+            file_type=file_type,
+            file_size=1024,
+            state=state,
+        )
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        return record
+
+    return _make
+
+
+@pytest_asyncio.fixture
+def seed_pending_proposal(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
+    """Return an async factory inserting a PROPOSAL_GENERATED file + one PENDING proposal.
+
+    ``confidence`` may be ``None`` (the NULLABLE column) to seed the Pitfall-2 case that the
+    ``confidence >= 0.9`` SQL predicate must exclude.
+    """
+
+    async def _make(
+        confidence: float | None,
+        *,
+        proposed_filename: str = "Renamed Set.mp3",
+        proposed_path: str | None = None,
+        original_filename: str = "orig.mp3",
+    ) -> RenameProposal:
+        file = await make_file(state=FileState.PROPOSAL_GENERATED, original_filename=original_filename)
+        proposal = RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            proposed_filename=proposed_filename,
+            proposed_path=proposed_path,
+            confidence=confidence,
+            status=ProposalStatus.PENDING.value,
+        )
+        session.add(proposal)
+        await session.commit()
+        await session.refresh(proposal)
+        return proposal
+
+    return _make
+
+
+@pytest_asyncio.fixture
+def seed_executed_file_with_metadata(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
+    """Return an async factory inserting an EXECUTED file + its FileMetadata (tag-compare source)."""
+
+    async def _make(
+        *,
+        original_filename: str = "executed.mp3",
+        artist: str | None = "Old Artist",
+        title: str | None = "Old Title",
+        album: str | None = None,
+        year: int | None = None,
+        genre: str | None = None,
+        track_number: int | None = None,
+    ) -> tuple[FileRecord, FileMetadata]:
+        file = await make_file(state=FileState.EXECUTED, original_filename=original_filename)
+        md = FileMetadata(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            artist=artist,
+            title=title,
+            album=album,
+            year=year,
+            genre=genre,
+            track_number=track_number,
+        )
+        session.add(md)
+        await session.commit()
+        await session.refresh(file)
+        return file, md
+
+    return _make
+
+
+@pytest_asyncio.fixture
+def seed_duplicate_group(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
+    """Return an async factory inserting ``count`` EXECUTED files that share one sha256 (a dupe group)."""
+
+    async def _make(*, count: int = 2, sha256: str | None = None) -> list[FileRecord]:
+        shared = sha256 or (uuid.uuid4().hex + uuid.uuid4().hex)
+        files: list[FileRecord] = []
+        for i in range(count):
+            files.append(await make_file(state=FileState.EXECUTED, original_filename=f"dupe-{i}.mp3", sha256=shared))
+        return files
+
+    return _make
+
+
+@pytest_asyncio.fixture
+def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
+    """Return an async factory inserting an EXECUTED file + approved Tracklist + a version/track.
+
+    ``eligible=True`` seeds >=1 timestamped track (the cue eligibility gate); ``eligible=False``
+    seeds a track with NO timestamp (the ineligible "awaiting tracklist match" card).
+    """
+
+    async def _make(*, eligible: bool = True, original_filename: str | None = None) -> tuple[FileRecord, Tracklist, TracklistVersion]:
+        fname = original_filename or ("cue-eligible.mp3" if eligible else "cue-ineligible.mp3")
+        file = await make_file(state=FileState.EXECUTED, original_filename=fname)
+        tracklist = Tracklist(
+            id=uuid.uuid4(),
+            external_id=f"ext-{uuid.uuid4().hex[:12]}",
+            source_url="https://example.test/tracklist",
+            file_id=file.id,
+            status="approved",
+        )
+        session.add(tracklist)
+        await session.commit()
+        version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tracklist.id, version_number=1)
+        session.add(version)
+        await session.commit()
+        track = TracklistTrack(
+            id=uuid.uuid4(),
+            version_id=version.id,
+            position=1,
+            title="Track 1",
+            artist="Artist",
+            timestamp="00:00:00" if eligible else None,
+        )
+        session.add(track)
+        tracklist.latest_version_id = version.id
+        await session.commit()
+        return file, tracklist, version
+
+    return _make
