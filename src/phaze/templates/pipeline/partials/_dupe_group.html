@@ -1,0 +1,36 @@
+{# Phase 60 (60-04, REVIEW-03/D-07): one duplicate-group keeper-select card.
+
+   Reuses NO diff partial (dedupe is a distinct interaction shape, D-06). One card per group;
+   each file is a radio row in a mutually-exclusive `name="group-{sha256}"` radio group. Selecting a
+   radio POSTs `/duplicates/{{ group.sha256_hash }}/resolve` with Form `canonical_id` (via hx-vals --
+   ⚠️ the field is canonical_id, NOT group_id/keeper_id from the UI-SPEC sketch; the group key is the
+   sha256_hash) and swaps the whole card (outerHTML) to the resolve_response.html resolved state, whose
+   OOB toast carries the resolved_file_states JSON blob so UNDO round-trips it to /duplicates/{hash}/undo
+   (REVIEW-05 -- undo reconstructs prior state FROM that blob, not a fresh query). The keeper copy is
+   emerald-tinted with a KEEP text tag; the others are the neutral surface with a muted archive text tag
+   (text tags, NEVER hue-only -- WCAG 1.4.1). Every DB-sourced file name/quality autoescapes (T-60-XSS).
+   NO hx-swap-oob on the card (R-2 counts-only); NO | safe. #}
+<div id="dupe-group-{{ group.sha256_hash }}" class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+    <div class="mb-2 font-jura text-[11px] font-medium uppercase tracking-wider text-gray-700 dark:text-gray-200">
+        {{ group.group_name }} <span class="normal-case text-gray-500 dark:text-gray-500">· {{ group.count }} copies</span>
+    </div>
+    <div class="space-y-1.5">
+        {% for f in group.files %}
+        <label class="flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 {{ 'border-emerald-500/30 bg-emerald-500/10' if f.keeper else 'border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel' }}">
+            <input type="radio" name="group-{{ group.sha256_hash }}" value="{{ f.id }}"{% if f.keeper %} checked{% endif %}
+                   hx-post="/duplicates/{{ group.sha256_hash }}/resolve"
+                   hx-vals='{"canonical_id":"{{ f.id }}"}'
+                   hx-target="#dupe-group-{{ group.sha256_hash }}"
+                   hx-swap="outerHTML"
+                   class="h-4 w-4 accent-emerald-500">
+            <span class="flex-1 truncate text-sm {{ 'text-emerald-700 dark:text-emerald-200' if f.keeper else 'text-gray-700 dark:text-gray-300' }}">{{ f.name }}</span>
+            <span class="shrink-0 font-mono text-xs text-gray-500 dark:text-gray-500">{{ f.quality }}</span>
+            {% if f.keeper %}
+            <span class="shrink-0 font-jura text-[11px] uppercase tracking-wider text-emerald-600 dark:text-emerald-300">KEEP</span>
+            {% else %}
+            <span class="shrink-0 font-jura text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-600">archive</span>
+            {% endif %}
+        </label>
+        {% endfor %}
+    </div>
+</div>

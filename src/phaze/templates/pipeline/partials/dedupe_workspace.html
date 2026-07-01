@@ -1,0 +1,49 @@
+{# Phase 60 (60-04, REVIEW-03/REVIEW-05, D-07): the Dedupe keeper-select workspace.
+
+   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
+   (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a live sub-count + a
+   secondary/attention action row + the keeper-group card list. Body = the scored duplicate groups
+   (shell._render_stage -> dedupe_groups, via services/review.get_dedupe_groups). Each group renders
+   through _dupe_group.html: a radio keeper-select wired to the VERIFIED resolve contract
+   (POST /duplicates/{sha256_hash}/resolve, Form canonical_id) -- NOT the UI-SPEC sketch's group_id/
+   keeper_id. Resolving swaps the card to resolve_response.html, whose OOB toast carries the
+   resolved_file_states blob so UNDO round-trips it to /duplicates/{hash}/undo (REVIEW-05).
+
+   Bulk header (D-07): AUTO-KEEP HIGHEST QUALITY POSTs the page-scoped /duplicates/resolve-all (the
+   server re-scores every group on the page and archives the non-keepers) with the R-4 mass-action
+   guard (hx-confirm naming the count + hx-disabled-elt so a second bulk write can't fire mid-run).
+   Its response's OOB bulk toast carries all_file_states for a reversible UNDO ALL.
+
+   NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB seeds); NO
+   hx-swap-oob on any group card; NO | safe. KEEP/archive are text tags, never hue-only (WCAG 1.4.1). #}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = "'" ~ (dedupe_groups | length) ~ " duplicate groups · pick the keeper, others archived'" %}
+{% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    <button type="button"
+            hx-post="/duplicates/resolve-all"
+            hx-vals='{"page":"1","page_size":"100"}'
+            hx-target="#dedupe-bulk-response" hx-swap="innerHTML"
+            hx-confirm="Auto-keep the highest-quality copy in every duplicate group and archive the rest? {{ dedupe_groups | length }} groups · reversible via undo."
+            hx-disabled-elt="this"
+            aria-label="Auto-keep the highest-quality copy in every duplicate group"
+            class="{{ _bulk_btn }}">AUTO-KEEP HIGHEST QUALITY</button>
+{% endset %}
+{% call ws.workspace(title="Review & Apply · Dedupe", subcount=subcount, actions=actions) %}
+    {# Bulk-resolve response (bulk_resolve_response.html) lands here; empty:hidden until it fires. #}
+    <div id="dedupe-bulk-response" class="px-6 pt-4 empty:hidden"></div>
+    {# Landing target for the resolve/resolve-all OOB undo toasts (mirrors the duplicates page). #}
+    <div id="toast-container" class="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2 [&>*]:pointer-events-auto"></div>
+    {% if dedupe_groups %}
+    <div class="space-y-3 p-6">
+        {% for group in dedupe_groups %}
+            {% include "pipeline/partials/_dupe_group.html" %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="px-6 py-12 text-center">
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No duplicates found</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Fingerprinting surfaced no duplicate groups. Nothing to reconcile.</p>
+    </div>
+    {% endif %}
+{% endcall %}
