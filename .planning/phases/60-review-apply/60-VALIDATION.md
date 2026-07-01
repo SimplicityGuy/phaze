@@ -40,11 +40,11 @@ created: 2026-07-01
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 60-XX-XX | XX | X | REVIEW-01 | — | Rename/Tag/Move before→after diff renders with per-file Approve/Edit/Skip | integration | `uv run pytest tests/routers/test_shell.py -q` | ❌ W0 | ⬜ pending |
-| 60-XX-XX | XX | X | REVIEW-02 | — | Bulk-approve re-queries server-side (confidence≥0.9 / zero-discrepancies); never trusts a client id-list | integration | `uv run pytest tests/routers/test_proposals.py -q` | ❌ W0 | ⬜ pending |
-| 60-XX-XX | XX | X | REVIEW-03 | — | Dedupe keeper-select resolves via `canonical_id`; auto-keep bulk + reversible undo | integration | `uv run pytest tests/routers/test_duplicates.py -q` | ❌ W0 | ⬜ pending |
-| 60-XX-XX | XX | X | REVIEW-04 | — | Cue preview renders + approve gated on matched tracklist (`POST /cue/{id}/generate`) | integration | `uv run pytest tests/routers/test_cue.py -q` | ❌ W0 | ⬜ pending |
-| 60-XX-XX | XX | X | REVIEW-05 | — | Exactly one audit row (ExecutionLog/TagWriteLog/dedupe-resolution) per applied change; reversible | integration | `uv run pytest tests/routers/test_execution.py -q` | ❌ W0 | ⬜ pending |
+| 60-02/03 | 02, 03 | 2-3 | REVIEW-01 | — | Rename/Tag/Move before→after diff renders as a bare fragment with per-file Approve/Edit/Skip | unit (route+template) | `uv run pytest tests/test_review_apply_workspaces.py -q` | ❌ W0 | ⬜ pending |
+| 60-01 T2/T3 | 01 | 1 | REVIEW-02 | T-60-01/02 | Bulk-approve re-queries server-side (confidence≥0.9 / no-discrepancies predicate); never trusts a client id-list | unit (behavioral) | `uv run pytest tests/test_review_apply_workspaces.py -q` | ❌ W0 | ⬜ pending |
+| 60-04 T1 | 04 | 4 | REVIEW-03 | — | Dedupe keeper-select resolves via `canonical_id`; auto-keep bulk + reversible undo (`file_states` round-trip) | unit | `uv run pytest tests/test_review_apply_workspaces.py -q` | ❌ W0 | ⬜ pending |
+| 60-04 T2 | 04 | 4 | REVIEW-04 | — | Cue preview renders + approve gated on matched tracklist (`POST /cue/{id}/generate`) | unit | `uv run pytest tests/test_review_apply_workspaces.py -q` | ❌ W0 | ⬜ pending |
+| 60-01 T3 + 60-04 T1 | 01, 04 | 1, 4 | REVIEW-05 | — | Exactly one audit row (ExecutionLog/TagWriteLog/dedupe-resolution) per applied change; reversible | integration | `uv run pytest tests/integration/test_review_audit.py -q` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 

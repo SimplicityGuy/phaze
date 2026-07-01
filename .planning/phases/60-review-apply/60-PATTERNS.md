@@ -167,7 +167,7 @@ async def edit_proposal(
 **Analog:** `fingerprint_workspace.html` — scaffold + ONE header trigger + `_file_table.html`. **Not a diff** (D-01: Propose is a thin generation view over the SAME `RenameProposal` source as Rename).
 
 - **Header action GENERATE ALL** — copy the `fingerprint_workspace.html:23-33` `actions` block VERBATIM, swap endpoint→**`POST /pipeline/proposals`** (`pipeline.py:913`, the existing UI trigger returning `trigger_response.html`), target `#propose-trigger-response`, busy-gate `:disabled="$store.pipeline.proposalsBusy > 0"`, `hx-confirm` per Copywriting ("Generate AI proposals for all {n} pending files?"). ⚠️ Note: `proposalsDone` is a BATCH counter (`pipeline.py:79-82`) — surfaces batches-done, not files; use the DB `proposalsTotal` for the sub-count numeral.
-- **Table** — reuse `_file_table.html` with columns `["File","Proposed name","Proposed path","Model","Conf"]` (UI-SPEC Pattern 2). `Conf` = `mono {n}%` tier-colored (≥90 emerald / 70-89 amber / <70 gray). Model = the litellm id (from `RenameProposal.context_used` JSONB, if present). Rows inert (`row_id_prefix="propose-row"`).
+- **Table** — reuse `_file_table.html` with columns `["File","Proposed name","Proposed path","Model","Conf"]` (UI-SPEC Pattern 2). `Conf` = `mono {n}%` tier-colored (≥90 emerald / 70-89 amber / <70 gray). Model = `settings.llm_model` (the configured value, NOT a per-row field — `RenameProposal.context_used` holds the LLM *input context*, not the model name; see RESEARCH.md OQ-2 resolution and `config.py:363`). Rows inert (`row_id_prefix="propose-row"`).
 
 ---
 

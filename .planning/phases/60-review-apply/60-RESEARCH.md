@@ -330,9 +330,11 @@ Not applicable — no library/version churn this phase. The "current approach" i
 | A1 | The Propose "Model" column should render the configured `settings.llm_model` (`config.py:363`), because `RenameProposal` does NOT persist a per-row model id (`context_used` holds LLM *input* context, not the model name). | Verified References / OQ-2 | Low — a display value; if a per-row model is desired later it needs a schema change (out of scope). Tagged ASSUMED because it changes the UI-SPEC "Model" column semantics. |
 | A2 | Cue "approve" returning through the non-`tracklist-` `HX-Target` branch of `generate_cue` renders acceptably in the new workspace. | Verified References (cue) | Medium — must verify the fall-through branch's template; may need the workspace to send `HX-Target` matching an existing branch or accept the default row/toast. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **OQ-1 (BLOCKING for the Tag bulk action) — What is the Tag "no discrepancies" predicate against live code?**
+> **Resolution status (recorded at plan time, 2026-07-01):** OQ-1 is resolved in Plan `60-01` Task 3 — the locked D-03/OQ-1 predicate (below, "≥1 `changed` field AND never blanks an existing tag") is documented verbatim in the tag-bulk route docstring and enforced by `test_tag_bulk_no_discrepancy_predicate`. OQ-2/OQ-3 resolved inline below and implemented in the plans. OQ-4 is **out of Phase 60 scope** (see the OQ-4 note).
+
+1. **OQ-1 (RESOLVED — Plan 60-01/T3) — What is the Tag "no discrepancies" predicate against live code?**
    - What we know: D-03 says bulk-write "pending tag-write files whose comparison has zero discrepancies." But `_build_comparison` (`tags.py:102`) emits a `changed` boolean (pre-write field diff), and `TagWriteLog.discrepancies` (`tag_write_log.py:44`) is a **post-write** re-read mismatch (JSONB) — it does not exist until *after* a write. So there is **no pre-write "discrepancies" signal** to gate on.
    - What's unclear: "zero discrepancies" literally would mean `_count_changes == 0` = *nothing to write* (useless as a bulk-write target).
    - Recommendation: Define the Tag bulk predicate as **pending (EXECUTED, no completed `TagWriteLog`) files whose computed comparison has ≥1 `changed` field AND no field whose proposed value is null-but-current-non-null** (i.e., a bulk write never *erases* an existing tag). Files that would blank an existing tag, or have conflicting/partial proposals, stay per-file Approve/Edit/Skip. This is the conservative "high-confidence" analog and is implementable from existing data. **Confirm this in discuss-phase / at plan time before implementing the Tag bulk endpoint.**
@@ -341,7 +343,7 @@ Not applicable — no library/version churn this phase. The "current approach" i
 
 3. **OQ-3 — Do the new Review sub-counts need live 5s refresh, or is static server-render sufficient?** Recommendation: static server-render (Pattern 3b) for dedupe-groups / eligible-cues / pending-tag / pending-rename; reuse `proposalsTotal`/`approved` store keys where they fit. Matches 59; avoids store surface growth. (CONTEXT marks OOB ids as discretion.)
 
-4. **OQ-4 — Where is `POST /execution/start` triggered in the v7.0 shell?** Approve only queues; the physical move + ExecutionLog is a separate batch. The Move workspace likely needs an "apply approved" affordance (or it lives on Analyze). Verify the current trigger location so the row `applied ✓` lifecycle is coherent. Not a new endpoint — a wiring question.
+4. **OQ-4 (OUT OF PHASE 60 SCOPE) — Where is `POST /execution/start` triggered in the v7.0 shell?** Approve only queues; the physical move + ExecutionLog is a separate batch. **Resolution:** Phase 60 delivers the per-row **Approve** affordance only — it sets `status=APPROVED`; it does NOT add or relocate the execution trigger (that affordance is an existing/prior-phase concern, per Pitfall 6 "Approve ≠ Applied"). The `pending → approved → applied ✓` lifecycle's final `applied` transition remains owned outside this phase; no Phase 60 plan wires `/execution/start`. Not a new endpoint — a wiring question deferred to whichever phase owns the "apply approved" batch trigger.
 
 ## Environment Availability
 
