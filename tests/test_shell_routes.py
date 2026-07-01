@@ -47,8 +47,11 @@ _RAIL_STAGES = [
 
 
 @pytest.mark.asyncio
-async def test_root_renders_shell_analyze_default(client: AsyncClient) -> None:
+async def test_root_renders_shell_analyze_default(client: AsyncClient, make_file) -> None:  # type: ignore[no-untyped-def]
     """SHELL-01 -- GET / renders the shell with Analyze as the default active stage (no redirect)."""
+    # Phase 61 (61-05, RECORD-04): with 0 files GET / renders the first-run empty state; seed a
+    # file so this test exercises its actual intent -- the Analyze dashboard as the default stage.
+    await make_file()
     response = await client.get("/")
     # A plain GET / is the shell root itself -- it must render, NOT redirect anywhere.
     assert response.status_code == 200

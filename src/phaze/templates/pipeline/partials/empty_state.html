@@ -100,4 +100,12 @@
             </p>
         </div>
     </div>
+
+    {# The empty state renders where the Analyze dashboard normally sits, so the shell's single
+       persistent /pipeline/stats poll (shell.html chrome) still ticks. On each tick stats_bar.html
+       re-emits the OOB store seeds + the #straggler-failed-card + the six v6.0 cloud-state cards.
+       Without landing targets htmx logs htmx:oobErrorNoTarget every 5s (SP-6 / WORK-05 single-poll
+       cleanliness). Include the SAME hidden seed host every workspace scaffold uses (cloud-card
+       sinks ON — the empty state renders no real cloud cards). NO poll loop is added here. #}
+    {% with workspace_has_cloud_cards = false %}{% include "pipeline/partials/_workspace_poll_seeds.html" %}{% endwith %}
 </div>
