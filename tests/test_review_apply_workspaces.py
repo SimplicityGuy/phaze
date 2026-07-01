@@ -33,10 +33,13 @@ The per-shape ORM seed factories live in ``tests/conftest.py`` (``make_file``,
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
+from sqlalchemy import func, select
 
 from phaze.models.proposal import ProposalStatus
+from phaze.models.tag_write_log import TagWriteLog
 
 
 if TYPE_CHECKING:
@@ -45,6 +48,8 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.models.file import FileRecord
+    from phaze.models.metadata import FileMetadata
     from phaze.models.proposal import RenameProposal
 
 
@@ -173,19 +178,66 @@ async def test_edit_patch_targets_own_row(
     assert proposal.proposed_filename == "Edited Name.mp3", "rejected edits leave the row unchanged"
 
 
-@pytest.mark.xfail(reason="converted to real assertions by Plan 60-01 Task 3 (D-03/OQ-1 tag predicate)", strict=False)
 @pytest.mark.asyncio
-async def test_tag_bulk_no_discrepancy_predicate(client: AsyncClient) -> None:
-    """REVIEW-02 / D-03 / OQ-1 -- tag bulk writes only the qualifying no-blank, >=1-change set."""
+async def test_tag_bulk_no_discrepancy_predicate(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """REVIEW-02 / D-03 / OQ-1 -- tag bulk writes ONLY the qualifying no-blank, >=1-change set.
+
+    A clean-change file (filename parses to a new artist+title absent from metadata, an existing
+    album preserved) qualifies and is written exactly once; a zero-change file is untouched. The
+    blank-guard clause (never erase an existing tag) is asserted directly on
+    :func:`_qualifies_for_bulk_write` -- ``compute_proposed_tags`` copies every non-None metadata
+    field, so a server-computed comparison structurally never blanks, making the guard defensive.
+    """
+    from phaze.routers.tags import _qualifies_for_bulk_write
+
+    clean, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None, album="Keep Album")
+    zero, _ = await seed_executed_file_with_metadata(
+        original_filename="plain.mp3", artist=None, title=None, album=None, year=None, genre=None, track_number=None
+    )
+
     resp = await client.post("/tags/bulk-write-no-discrepancies")
     assert resp.status_code == 200
 
+    async def _log_count(file_id: object) -> int:
+        stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id)
+        return (await session.execute(stmt)).scalar_one()
 
-@pytest.mark.xfail(reason="converted to real assertions by Plan 60-01 Task 3 (REVIEW-05 audit)", strict=False)
+    assert await _log_count(clean.id) == 1, "a clean >=1-change file is written exactly once"
+    assert await _log_count(zero.id) == 0, "a zero-change file is not written"
+
+    # Blank-guard clause: a comparison that would erase an existing tag never qualifies.
+    blanking = [{"field": "artist", "label": "Artist", "current": "Existing", "proposed": None, "changed": True}]
+    assert _qualifies_for_bulk_write(blanking) is False
+    clean_cmp = [{"field": "artist", "label": "Artist", "current": None, "proposed": "New", "changed": True}]
+    assert _qualifies_for_bulk_write(clean_cmp) is True
+
+
 @pytest.mark.asyncio
-async def test_review_audit_one_row(client: AsyncClient) -> None:
-    """REVIEW-05 -- each apply writes exactly one audit row and is reversible (integration-level)."""
-    raise AssertionError("audit reversibility asserted in tests/integration/test_review_audit.py")
+async def test_review_audit_one_row(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """REVIEW-05 -- a single tag apply writes exactly ONE audit row (the append-only trail).
+
+    The full reversibility + dedupe-resolution round-trip is proven in
+    ``tests/integration/test_review_audit.py``; this guards the one-row-per-apply core at the
+    workspace level. The mutagen write is patched so the DB audit row is exercised without a file.
+    """
+    file, _ = await seed_executed_file_with_metadata(artist="Original Artist")
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        resp = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    assert resp.status_code == 200
+    stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file.id)
+    assert (await session.execute(stmt)).scalar_one() == 1, "exactly one TagWriteLog per apply"
 
 
 @pytest.mark.xfail(reason="converted to real assertions by Plan 60-02 (shared _diff_row.html)", strict=False)
