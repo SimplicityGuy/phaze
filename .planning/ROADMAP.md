@@ -803,7 +803,12 @@ Plans:
   5. Every applied change (rename, tag-write, move, dedupe) writes an `ExecutionLog` audit row and is reversible (assert one audit row per apply).
 
 **Notes**: Most correctness-sensitive phase (irreplaceable archive). REVIEW-02 fixes the live-polling stale-bulk-approval hazard — pick a fixed server-side confidence threshold at plan time (REVIEW-06 defers configurable thresholds; check the `tracklists.py` `reject-low` endpoint as a reference value). The 5s diff-list poll must OOB-update counts **only** — never re-render the operator's in-progress selection subtree. No phase research needed.
-**Plans**: TBD
+**Plans**: 5 plans in 2 waves
+- [ ] 61-01-PLAN.md — Foundation: @alpinejs/focus dep + SRI gate (shell.html+base.html) + Wave-0 tests/fixtures
+- [ ] 61-02-PLAN.md — Full-record slide-in (RECORD-01): GET /record/{file_id} fragment, persistent x-trap host, composed body, row/⌘K open
+- [ ] 61-03-PLAN.md — ⌘K command palette (RECORD-02): distinct_artists() + grouped results + roving arrow-nav + x-trap
+- [ ] 61-04-PLAN.md — Agents page (RECORD-03): heartbeating section + ephemeral compute lanes (classify_compute_lanes, never DEAD)
+- [ ] 61-05-PLAN.md — First-run empty state (RECORD-04): agent-roots guide + DISCOVERY scan (POST /pipeline/scans)
 **UI hint**: yes
 
 ### Phase 61: Full record + ⌘K + Agents
