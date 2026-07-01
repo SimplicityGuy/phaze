@@ -240,12 +240,44 @@ async def test_review_audit_one_row(
     assert (await session.execute(stmt)).scalar_one() == 1, "exactly one TagWriteLog per apply"
 
 
-@pytest.mark.xfail(reason="converted to real assertions by Plan 60-02 (shared _diff_row.html)", strict=False)
-@pytest.mark.asyncio
-async def test_diff_row_before_after(client: AsyncClient) -> None:
-    """REVIEW-01 -- the shared diff row renders before->after with an inline-edit ``name="proposed"``."""
-    resp = await client.get("/s/rename", headers={"HX-Request": "true"})
-    assert 'name="proposed"' in resp.text
+def test_diff_row_before_after() -> None:
+    """REVIEW-01 / D-06 -- the shared diff row renders before->after with the verified PATCH verbs.
+
+    Renders ``_diff_row.html`` directly with a stub facet context (no DB/HTTP needed): the rose-struck
+    BEFORE + emerald AFTER cells, the fixed ``1fr_auto_1fr`` grid, the APPROVE ``hx-patch`` (never
+    ``hx-post``), the Alpine ``x-data`` inline-edit island with its ``name="proposed"`` input, and the
+    R-6 own-row SAVE EDIT (``hx-target`` = the row id + ``hx-swap="outerHTML"``). The workspace-level
+    wiring (``GET /s/rename`` · ``/s/move``) is asserted in Task 3's fragment tests.
+    """
+    from phaze.routers.shell import templates
+
+    html = templates.env.get_template("pipeline/partials/_diff_row.html").render(
+        row_id_prefix="rename-row",
+        pid="abc123",
+        file="messy set.mp3",
+        original_path="/music/messy set.mp3",
+        before="messy set.mp3",
+        after="Artist - Title.mp3",
+        approve_url="/proposals/abc123/approve",
+        skip_url="/proposals/abc123/reject",
+        undo_url="/proposals/abc123/undo",
+        edit_url="/proposals/abc123/edit",
+        edit_facet="filename",
+    )
+    # rose struck BEFORE + emerald AFTER over the fixed load-bearing diff grid (never hue-only).
+    assert "line-through" in html and "rose" in html
+    assert "emerald" in html
+    assert "grid-cols-[1fr_auto_1fr]" in html
+    assert "messy set.mp3" in html and "Artist - Title.mp3" in html
+    # verified PATCH verbs (NO hx-post) + the Alpine inline-edit island + its name="proposed" input.
+    assert 'hx-patch="/proposals/abc123/approve"' in html
+    assert "hx-post" not in html
+    assert 'x-data="{ editing' in html
+    assert 'name="proposed"' in html
+    # SAVE EDIT targets ONLY its own row (R-6): the row id + outerHTML swap.
+    assert 'hx-patch="/proposals/abc123/edit"' in html
+    assert 'hx-target="#rename-row-abc123"' in html
+    assert 'hx-swap="outerHTML"' in html
 
 
 @pytest.mark.xfail(reason="converted to real assertions by the dedupe workspace plan (REVIEW-03)", strict=False)
