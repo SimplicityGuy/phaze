@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
+from sqlalchemy import update
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
@@ -133,12 +134,22 @@ async def _seed_tracklist_version(
     tracklist_id: uuid.UUID,
     *,
     version_number: int = 1,
+    set_latest: bool = True,
 ) -> TracklistVersion:
-    """Insert one ``tracklist_versions`` row for ``tracklist_id`` (the per-set track container)."""
+    """Insert one ``tracklist_versions`` row for ``tracklist_id`` (the per-set track container).
+
+    ``set_latest`` (default True) points the parent ``Tracklist.latest_version_id`` at this version,
+    mirroring the scraper task (``tasks/tracklist.py`` sets ``latest_version_id`` on each new version).
+    Per-set coverage is scoped to the latest version only (D-07), so tests seeding multiple versions
+    pass ``set_latest=False`` on the stale ones.
+    """
     version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tracklist_id, version_number=version_number)
     session.add(version)
     await session.commit()
     await session.refresh(version)
+    if set_latest:
+        await session.execute(update(Tracklist).where(Tracklist.id == tracklist_id).values(latest_version_id=version.id))
+        await session.commit()
     return version
 
 
@@ -452,6 +463,29 @@ async def test_get_tracklist_set_rows_shape(session: AsyncSession) -> None:
     assert row["path"] == "/test/music/set.mp3"
     assert row["tracklist_state"] == "matched"
     assert row["matched_to_file"] is True
+    assert row["tracks_confident"] == 1
+    assert row["tracks_total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_tracklist_set_rows_counts_latest_version_only(session: AsyncSession) -> None:
+    """WR-01 regression -- a re-scraped (multi-version) tracklist counts ONLY its latest version.
+
+    Coverage must NOT sum tracks across versions: a stale v1 (3 tracks) plus a latest v2 (2 tracks,
+    1 confident) yields tracks_confident=1, tracks_total=2 -- not 4/5 across both versions.
+    """
+    file = await _seed_file(session, original_filename="reset.mp3")
+    tl = await _seed_tracklist(session, file_id=file.id, match_confidence=91)
+    stale = await _seed_tracklist_version(session, tl.id, version_number=1, set_latest=False)
+    for pos in (1, 2, 3):
+        await _seed_tracklist_track(session, stale.id, position=pos, confidence=0.8)
+    latest = await _seed_tracklist_version(session, tl.id, version_number=2, set_latest=True)
+    await _seed_tracklist_track(session, latest.id, position=1, confidence=0.95)
+    await _seed_tracklist_track(session, latest.id, position=2, confidence=None)
+
+    rows = await get_tracklist_set_rows(session)
+    assert len(rows) == 1
+    row = rows[0]
     assert row["tracks_confident"] == 1
     assert row["tracks_total"] == 2
 

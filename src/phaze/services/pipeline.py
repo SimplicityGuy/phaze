@@ -978,8 +978,10 @@ async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
 
     A tracklist LINKED to a file (``file_id IS NOT NULL``) -> ``"matched"`` + the file's name/path;
     an unlinked tracklist -> ``"candidate"`` (set name falls back to artist / event / external_id,
-    path ``None``). The track counts are summed across the tracklist's versions (a freshly scraped
-    tracklist has a single version).
+    path ``None``). The track counts are scoped to the tracklist's ``latest_version_id`` only (the
+    same convention the tracklists router uses) -- a re-scraped tracklist with multiple versions must
+    NOT sum coverage across versions, which would inflate the D-07 N/M. A tracklist whose
+    ``latest_version_id`` is NULL reports 0/0.
 
     Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_stage_files`).
     """
@@ -987,13 +989,11 @@ async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
         async with session.begin_nested():
             track_counts_subq = (
                 select(
-                    TracklistVersion.tracklist_id.label("tracklist_id"),
+                    TracklistTrack.version_id.label("version_id"),
                     func.count(TracklistTrack.id).label("total"),
                     func.count(TracklistTrack.confidence).label("confident"),
                 )
-                .select_from(TracklistVersion)
-                .join(TracklistTrack, TracklistTrack.version_id == TracklistVersion.id)
-                .group_by(TracklistVersion.tracklist_id)
+                .group_by(TracklistTrack.version_id)
                 .subquery()
             )
             stmt = (
@@ -1009,7 +1009,7 @@ async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
                 )
                 .select_from(Tracklist)
                 .outerjoin(FileRecord, FileRecord.id == Tracklist.file_id)
-                .outerjoin(track_counts_subq, track_counts_subq.c.tracklist_id == Tracklist.id)
+                .outerjoin(track_counts_subq, track_counts_subq.c.version_id == Tracklist.latest_version_id)
                 .order_by(Tracklist.created_at.desc())
             )
             rows = (await session.execute(stmt)).all()
