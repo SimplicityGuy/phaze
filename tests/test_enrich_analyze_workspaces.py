@@ -392,8 +392,9 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     (no row -> local; cloud_phase NULL -> A1; cloud_phase set -> k8s). Windowed progress reads the
     analysis aggregate: a completed (ANALYZED) row shows full ``window {a}/{total}`` coverage; an
     in-flight row shows the merged 57.1 mid-flight ``N/M windows`` signal ALONGSIDE ``running`` --
-    a render that emits only a bare ``running`` MUST fail this test (B2 / 57.1 PROG-03 read). Rows
-    are inert-but-present (D-06): no ``hx-get`` / selected-state.
+    a render that emits only a bare ``running`` MUST fail this test (B2 / 57.1 PROG-03 read). Phase
+    61 (RECORD-01) supersedes the Phase-58 click-unbound invariant: each row now opens the
+    full-record slide-in (``hx-get="/record/{file_id}"`` + a ``record:open`` dispatch).
     """
     # Completed LOCAL file (no cloud_job): full window coverage from the aggregate.
     done = await _seed_file(session, state=FileState.ANALYZED, original_filename="done.mp3")
@@ -432,8 +433,12 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     assert "A1" in tbl
     assert "k8s" in tbl
 
-    # D-06: rows are inert-but-present -- cursor-pointer but NO click binding / selected-state.
-    assert "hx-get" not in tbl
+    # Phase 61 (RECORD-01 / D-06 supersession): rows now open the full-record slide-in --
+    # hx-get="/record/{file_id}" into #record-body + a record:open dispatch. (The Phase-58
+    # click-unbound invariant is intentionally superseded; no selected-state is introduced.)
+    assert 'hx-get="/record/' in tbl
+    assert 'hx-target="#record-body"' in tbl
+    assert "record:open" in tbl
     assert "aria-selected" not in tbl
 
     # WORK-05 / R-2: no second poll loop in the fragment.

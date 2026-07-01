@@ -176,6 +176,13 @@
          (the /search → /?palette=1 rename target, Plan 04) to auto-open on load (A3). -->
     {% include "shell/partials/cmdk_modal.html" %}
 
+    <!-- Phase 61 (RECORD-01 / D-01): the persistent full-record slide-in host. A sibling of the
+         cmdk modal, it lives OUTSIDE #stage-workspace so a rail swap never re-renders or destroys
+         it. Opened via the `record:open` window event ($dispatch from a file row / ⌘K Files row);
+         its #record-body is the HTMX innerHTML swap target for GET /record/{file_id}. Does NOT use
+         the empty 350px right <aside> above (its removal is Phase 62). -->
+    {% include "shell/partials/record_host.html" %}
+
     <!-- Single persistent live-refresh poll (WORK-05 / R-2 / R-3). Lives in chrome OUTSIDE
          #stage-workspace, so a rail swap never re-renders, duplicates, or stops it — there is
          exactly ONE /pipeline/stats poll for the whole shell (the v7.0 shell had no live poll

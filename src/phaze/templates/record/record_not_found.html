@@ -1,0 +1,16 @@
+{# Phase 61 (61-02, RECORD-01 / T-61-05): the friendly 404 fragment for a missing / de-duplicated file.
+
+   A BARE fragment (no extends base.html) rendered INSIDE the record_host panel with a 404 status. No
+   stack trace / filesystem detail leaks (T-61-05). The close/focus-return contract still applies -- the
+   ✕ calls the host's hide() (return focus to the opener). Copy is the UI-SPEC Copywriting Contract line.
+#}
+<div data-record-not-found class="flex flex-col">
+    <div class="sticky top-0 z-10 flex items-center justify-end border-b border-gray-200 bg-white px-6 py-4 dark:border-phaze-border dark:bg-phaze-bg">
+        <button type="button" @click="hide()" aria-label="Close record"
+                class="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-400 dark:hover:bg-white/5">✕</button>
+    </div>
+    <div class="flex flex-col items-center justify-center px-6 py-20 text-center">
+        <p class="font-jura text-[15px] uppercase tracking-[0.15em] text-gray-800 dark:text-gray-100">That file no longer exists.</p>
+        <p class="mt-3 max-w-sm text-sm text-gray-500 dark:text-gray-400">It may have been moved or de-duplicated. Close this record and pick another from the list.</p>
+    </div>
+</div>

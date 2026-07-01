@@ -1,0 +1,131 @@
+{# Phase 61 (61-02, RECORD-01 / D-01/D-02): the composed, read-only full-record body.
+
+   A BARE fragment (NO extends base.html) swapped via innerHTML into #record-body inside
+   record_host.html. It is a SNAPSHOT (D-02): renders ONCE, carries NO hx-trigger="every", NO
+   setInterval, and NO hx-swap-oob on the approval subtree -- so the operator's in-progress inline
+   edit inside a pending-approval row survives the single chrome poll (mirrors Phase 60 R-2).
+
+   Sections top→bottom (UI-SPEC §Surface 1): (1) sticky header, (2) facts grid, (3) windowed
+   multi-lane timeline (reuses proposals/partials/analysis_timeline.html VERBATIM), (4/5) metadata
+   diff + identity grid (reuses _diff_row.html + row_detail.html), (6) the amber "pending approvals
+   for this file" box (inline-approvable _diff_row.html rows wired to the Phase 60 routes), and
+   (7) history.
+
+   Trust boundary (T-61-01 / SP-5): every DB-sourced cell autoescapes through Jinja; the only
+   JS-attribute context (_diff_row.html's x-data) uses |tojson NOT |e -- inherited from the reused
+   partial. No new |e in any JS-attribute context here. data-file-id anchors the file_id scope.
+#}
+{% set _eyebrow = 'font-jura text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400' %}
+{% set _tile = 'rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-phaze-border dark:bg-phaze-panel' %}
+<div data-file-id="{{ file.id }}" class="flex flex-col">
+    {# 1 — Sticky header: Jura title + mono path + ✕ close (returns focus to the opener). #}
+    <div class="sticky top-0 z-10 border-b border-gray-200 bg-white px-6 py-4 dark:border-phaze-border dark:bg-phaze-bg">
+        <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+                <h2 tabindex="-1" class="truncate font-jura text-[18px] uppercase tracking-[0.15em] text-gray-900 outline-none dark:text-gray-100">{{ file.original_filename }}</h2>
+                <p class="mt-1 truncate font-mono text-xs text-gray-500 dark:text-gray-400" title="{{ file.current_path }}">{{ file.current_path }}</p>
+            </div>
+            <button type="button" @click="hide()" aria-label="Close record"
+                    class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-400 dark:hover:bg-white/5">✕</button>
+        </div>
+    </div>
+
+    <div class="space-y-6 px-6 py-5">
+        {# 2 — Facts grid: Format · Duration · sha256 · Lane badge. #}
+        <div class="grid grid-cols-4 gap-3">
+            <div class="{{ _tile }}">
+                <p class="{{ _eyebrow }}">Format</p>
+                <p class="mt-1 truncate text-sm text-gray-900 dark:text-gray-200">{{ file.file_type }}</p>
+            </div>
+            <div class="{{ _tile }}">
+                <p class="{{ _eyebrow }}">Duration</p>
+                <p class="mt-1 truncate text-sm text-gray-900 dark:text-gray-200">{% if total_sec %}{{ '%d:%02d' % ((total_sec | int) // 60, (total_sec | int) % 60) }}{% else %}—{% endif %}</p>
+            </div>
+            <div class="{{ _tile }}">
+                <p class="{{ _eyebrow }}">sha256</p>
+                <p class="mt-1 truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ file.sha256_hash }}">{{ file.sha256_hash[:12] }}…</p>
+            </div>
+            <div class="{{ _tile }}">
+                <p class="{{ _eyebrow }}">Lane</p>
+                <p class="mt-1 truncate text-sm text-gray-900 dark:text-gray-200">🖥️ local</p>
+            </div>
+        </div>
+
+        {# 3 — Windowed multi-lane timeline (reuse analysis_timeline.html; it renders a <td>, so it
+           is wrapped in a table row whose id its own reveal script keys on). #}
+        <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <p class="{{ _eyebrow }} mb-3">Windowed analysis · multi-lane timeline</p>
+            <table class="w-full"><tbody><tr id="timeline-{{ file.id }}">
+                {% include "proposals/partials/analysis_timeline.html" %}
+            </tr></tbody></table>
+        </div>
+
+        {# 4/5 — Metadata diff (left) + Identity (right). #}
+        <div class="grid grid-cols-2 gap-4">
+            <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
+                <p class="{{ _eyebrow }} mb-2">Metadata</p>
+                {% if pending_rows %}
+                <p class="text-xs text-gray-500 dark:text-gray-400">Proposed changes are inline-approvable below.</p>
+                {% else %}
+                <p class="text-sm text-gray-500 dark:text-gray-400">No pending metadata changes — this file is up to date.</p>
+                {% endif %}
+            </div>
+            <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
+                <p class="{{ _eyebrow }} mb-2">Identity</p>
+                {% if identity %}
+                <table class="w-full"><tbody><tr id="detail-{{ file.id }}">
+                    {% with proposal=identity %}{% include "proposals/partials/row_detail.html" %}{% endwith %}
+                </tr></tbody></table>
+                {% else %}
+                <p class="text-sm text-gray-500 dark:text-gray-400">No identity proposal yet.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        {# 6 — Pending approvals for THIS file: amber box, inline-approvable via the Phase 60 routes. #}
+        <div class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
+            <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-200">Pending approvals for this file</p>
+            {% if pending_rows %}
+            <div class="mt-2 -mx-4">
+                {% for p in pending_rows %}
+                    {% with row_id_prefix="record-row",
+                            pid=p.id,
+                            file=p.filename,
+                            original_path=p.original_path,
+                            before=p.filename,
+                            after=p.proposed_filename,
+                            approve_url="/proposals/" ~ p.id ~ "/approve",
+                            skip_url="/proposals/" ~ p.id ~ "/reject",
+                            undo_url="/proposals/" ~ p.id ~ "/undo",
+                            edit_url="/proposals/" ~ p.id ~ "/edit",
+                            edit_facet="filename",
+                            row_state="pending" %}
+                        {% include "pipeline/partials/_diff_row.html" %}
+                    {% endwith %}
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This file is up to date — no pending approvals.</p>
+            {% endif %}
+        </div>
+
+        {# 7 — History: read-only per-file event list (ExecutionLog + TagWriteLog). #}
+        <div>
+            <p class="{{ _eyebrow }} mb-2">History</p>
+            {% if history %}
+            <ul class="space-y-1 font-mono text-xs text-gray-500 dark:text-gray-400">
+                {% for h in history %}
+                <li class="flex items-center gap-2">
+                    <span class="shrink-0 text-gray-400 dark:text-gray-500">{{ h.when.strftime('%Y-%m-%d %H:%M') if h.when else '' }}</span>
+                    <span class="text-gray-700 dark:text-gray-300">{{ h.label }}</span>
+                    <span>· {{ h.status }}</span>
+                    {% if h.detail %}<span class="truncate" title="{{ h.detail }}">· {{ h.detail }}</span>{% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="text-sm text-gray-400 dark:text-gray-500">No recorded events yet.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>

@@ -38,6 +38,7 @@ from phaze.routers import (
     pipeline_stages,
     preview,
     proposals,
+    record,
     scan,
     search,
     shell,
@@ -197,6 +198,10 @@ def create_app() -> FastAPI:
     # legacy /pipeline/ now 302-redirects here. NO extra prefix= (required by
     # tests/_route_introspection.iter_effective_routes).
     app.include_router(shell.router)
+    # Phase 61 (61-02, RECORD-01 / D-01): the per-file full-record read-only fragment
+    # route (GET /record/{file_id}). Typed uuid.UUID path param + strictly file_id-scoped
+    # reads (T-61-03); a missing file renders the friendly 404 fragment (T-61-05).
+    app.include_router(record.router)
     # Phase 37: per-stage control-plane endpoints (POST /pipeline/stages/{stage}/
     # {priority,pause,resume}). Distinct from `pipeline.router` (dashboard + triggers);
     # mutates the pipeline_stage_control intent row + the live saq_jobs backlog together.
