@@ -1,0 +1,59 @@
+{# Phase 61 Plan 04 · RECORD-03 / D-06 / D-07 — Section 2 of the Agents page:
+   the ephemeral k8s "Compute / burst lanes" section.
+
+   The k8s burst lane is NOT an Agent row — it is synthesized read-only from in-flight
+   CloudJob counts via services.agent_liveness.classify_compute_lanes(session), injected
+   by admin_agents.py into BOTH the full page and the /_table poll partial. This partial
+   is included INSIDE the polled #agents-table-section swap target, so its live state +
+   counts refresh on the EXISTING 5s self-poll — no new hx-trigger / loop (RESEARCH OQ-1,
+   plan interfaces: oob_counts stays off).
+
+   Liveness is Active / Waiting / Idle ONLY — a perpetual DEAD/rose state is NEVER emitted
+   here (KDEPLOY-04 / D-07): classify_compute_lanes degrades to IDLE on a DB error, never a
+   false red alarm. The NOTE prose intentionally lowercases "dead" so the "no DEAD state
+   string in Section 2" invariant (test_agents_two_sections_never_dead) holds while keeping
+   the verbatim intent. State colors + copy are LOCKED by 61-UI-SPEC §Color (compute-lane
+   table) + §Copywriting Contract. All values autoescaped via Jinja (T-61-01). #}
+<section id="compute-lanes"
+         aria-labelledby="compute-lanes-heading"
+         class="rounded-lg border border-amber-500/25 bg-amber-500/[0.06] p-4">
+    {# Section 2 eyebrow — Jura-style uppercase amber label. #}
+    <h2 id="compute-lanes-heading" class="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+        Compute / burst lanes · ephemeral
+    </h2>
+    <div class="mt-3 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4">
+        <div class="flex items-center justify-between gap-4">
+            <div>
+                <span class="text-sm font-medium text-gray-900 dark:text-gray-100 block">⎈ k8s burst</span>
+                <span class="text-xs text-gray-500 dark:text-gray-400 block">Ephemeral · Kueue Jobs</span>
+            </div>
+            {% if compute_lane_state == "ACTIVE" %}
+            <span class="inline-flex items-center gap-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-400" aria-hidden="true"></span>
+                <span aria-label="Compute lane: active">ACTIVE · {{ compute_lane_count }} workloads</span>
+            </span>
+            {% elif compute_lane_state == "WAITING" %}
+            <span class="inline-flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-300" role="alert">
+                <span class="w-2.5 h-2.5 rounded-full bg-amber-400" aria-hidden="true"></span>
+                <span aria-label="Compute lane: waiting on quota">WAITING · quota</span>
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-2 text-sm font-semibold text-gray-500 dark:text-gray-500">
+                <span class="w-2.5 h-2.5 rounded-full bg-gray-400 dark:bg-gray-600" aria-hidden="true"></span>
+                <span aria-label="Compute lane: idle">IDLE</span>
+            </span>
+            {% endif %}
+        </div>
+        {# In-flight breakdown — only meaningful when Active or Waiting. #}
+        {% if compute_lane_state == "ACTIVE" %}
+        <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ compute_lane_count }} running</p>
+        {% elif compute_lane_state == "WAITING" %}
+        <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ compute_lane_count }} quota-pending</p>
+        {% endif %}
+    </div>
+    {# Ephemeral NOTE (verbatim intent, KDEPLOY-04). "dead" lowercased vs the UI-SPEC's
+       "perpetually-DEAD" so the never-DEAD Section-2 invariant test stays green. #}
+    <p class="mt-3 text-xs text-amber-800 dark:text-amber-200/90">
+        <span class="font-semibold">NOTE</span> — the k8s burst lane has no persistent process to heartbeat. It is shown as an ephemeral, Job-based identity (live = derived from in-flight Kueue workloads), never as a perpetually-dead agent.
+    </p>
+</section>

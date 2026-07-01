@@ -11,6 +11,12 @@
    §Error / Failure-Tolerant Refresh is status: approved (LOCKED). The
    accompanying htmx:responseError + htmx:sendError + htmx:afterSwap event
    listener lives in admin/agents.html (the page shell). #}
+{# Phase 61 Plan 04 (RECORD-03 / D-06): the swap target now wraps TWO sub-sections —
+   Section 1 "Agents · heartbeating" (the existing _load_agents grid, classify/sort_key
+   unchanged) and Section 2 "Compute / burst lanes · ephemeral" (compute_lanes.html,
+   driven by classify_compute_lanes). Both live inside this SINGLE #agents-table-section
+   so the existing 5s self-poll refreshes both with NO new loop (RESEARCH OQ-1). Two
+   sibling swap roots would duplicate on outerHTML — hence one root wrapping both. #}
 <section id="agents-table-section"
          hx-get="/admin/agents/_table"
          hx-trigger="every 5s"
@@ -18,8 +24,10 @@
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
          aria-live="polite"
-         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
-    <h2 id="agents-table-heading" class="sr-only">Registered agents</h2>
+         class="space-y-6">
+    {# Section 1 — heartbeating agents (local / A1). #}
+    <div class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
+    <h2 id="agents-table-heading" class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-3">Agents · heartbeating</h2>
     {% if not agents %}
     <div class="text-center py-8">
         <p class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">No agents registered yet</p>
@@ -99,4 +107,9 @@
        x-cloak>
         Refresh failed at <span x-text="formattedTime"></span> — retrying every 5s.
     </p>
+    </div>{# /Section 1 heartbeating card #}
+
+    {# Section 2 — ephemeral k8s compute / burst lanes (RECORD-03 / D-07). Rides this
+       same 5s poll; renders Active/Waiting/Idle from classify_compute_lanes, never DEAD. #}
+    {% include "admin/partials/compute_lanes.html" %}
 </section>
