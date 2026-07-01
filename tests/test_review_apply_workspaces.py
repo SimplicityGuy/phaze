@@ -319,6 +319,66 @@ async def test_diff_row_edit_island_is_js_context_safe(
     assert "\\u0027" in body, "apostrophe must be JS-escaped by |tojson, not left raw in the attribute"
 
 
+@pytest.mark.asyncio
+async def test_tagwrite_workspace_apply_and_bulk_wiring(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """REVIEW-01/REVIEW-02 (Plan 60-03) -- ``/s/tagwrite`` renders the shared diff row over the tag facet.
+
+    An EXECUTED file whose filename parses to a new artist+title (a >=1-change comparison, no COMPLETED
+    ``TagWriteLog``) surfaces in the queue. Its per-row APPROVE POSTs ``/tags/{id}/write`` (the write IS the
+    apply -- NOT a proposals PATCH) and its per-row UNDO POSTs ``/tags/{id}/undo``; the header bulk button
+    POSTs the id-less server-predicate ``/tags/bulk-write-no-discrepancies`` (D-03). Tag rows carry NO
+    SAVE-EDIT (tag inline-edit is out of the initial cut) and NO proposals-facet ``hx-patch``.
+    """
+    file, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    frag = await client.get("/s/tagwrite", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+
+    # Per-row apply wiring is the tag write path (POST), NOT a proposals PATCH.
+    assert f'hx-post="/tags/{file.id}/write"' in body, "APPROVE posts the tag write, not a proposals PATCH"
+    assert f'hx-post="/tags/{file.id}/undo"' in body, "UNDO posts the tag undo route"
+    # The bulk header is the id-less D-03 server predicate.
+    assert 'hx-post="/tags/bulk-write-no-discrepancies"' in body
+    assert "APPROVE ALL WITH NO DISCREPANCIES" in body
+    # Tag inline-edit is out of cut -- no SAVE-EDIT control, no proposals-facet edit PATCH.
+    assert "SAVE EDIT" not in body, "tag rows render no SAVE-EDIT (tag inline-edit out of cut)"
+    assert "/proposals/" not in body, "tag apply never routes through a proposals PATCH"
+    # The computed tag diff surfaces (before/after summaries autoescaped through the shared partial).
+    assert "New Artist" in body and "grid-cols-[1fr_auto_1fr]" in body
+
+
+@pytest.mark.asyncio
+async def test_propose_workspace_generate_and_model(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """D-01 (Plan 60-03) -- ``/s/propose`` is the generation view: GENERATE ALL + the configured Model.
+
+    Propose is a thin generation view over the SAME pending ``RenameProposal`` source (NOT a diff): the
+    header GENERATE ALL button POSTs the EXISTING batch trigger ``/pipeline/proposals`` and the table's
+    Model column renders the CONFIGURED ``settings.llm_model`` (A1 -- one model per run, not a per-row
+    field). It carries NO per-row Approve/Edit/Skip (approval lives on Rename/Move).
+    """
+    from phaze.config import settings
+
+    p = await seed_pending_proposal(0.95, proposed_filename="Renamed.mp3", original_filename="messy.mp3")
+
+    frag = await client.get("/s/propose", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+
+    assert 'hx-post="/pipeline/proposals"' in body, "GENERATE ALL wires to the existing batch trigger"
+    assert "GENERATE ALL" in body
+    assert settings.llm_model in body, "the Model column renders the configured llm_model (A1)"
+    # The generation view lists the proposal + is not a per-row diff-approve surface.
+    assert "messy.mp3" in body and "Renamed.mp3" in body
+    assert f"/proposals/{p.id}/approve" not in body, "Propose is a generation view -- no per-row approve here"
+
+
 @pytest.mark.xfail(reason="converted to real assertions by the dedupe workspace plan (REVIEW-03)", strict=False)
 @pytest.mark.asyncio
 async def test_dedupe_keeper_resolve_wiring(client: AsyncClient) -> None:

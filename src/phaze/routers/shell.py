@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
+from phaze.config import settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.pipeline_scans import build_recent_scans
@@ -40,7 +41,7 @@ from phaze.services.pipeline import (
     get_tracklist_set_rows,
     get_untracked_files,
 )
-from phaze.services.review import get_pending_proposal_rows
+from phaze.services.review import get_pending_proposal_rows, get_tagwrite_review_rows
 
 from .pipeline import build_dashboard_context
 
@@ -86,13 +87,19 @@ STAGE_PARTIALS: dict[str, str] = {
     # table) supersedes the placeholder -- a STATIC string literal (T-57-01: `stage` is never spliced
     # into a template path). Supersede-in-place; the legacy template stays reachable until CUT-02.
     "tracklist": "pipeline/partials/tracklist_workspace.html",
-    "propose": _STAGE_PLACEHOLDER,
+    # Phase 60 (60-03, D-01): the real Propose generation view (the pending RenameProposal list + Model +
+    # Conf + a GENERATE ALL trigger over the existing POST /pipeline/proposals) supersedes the placeholder
+    # -- a STATIC string literal (T-57-01: `stage` is never spliced into a template path). Supersede-in-place.
+    "propose": "pipeline/partials/propose_workspace.html",
     # Phase 60 (60-02, REVIEW-01/REVIEW-02): the real Rename/Path + Move-files review diff workspaces
     # (the ONE shared _diff_row.html over pending RenameProposal rows -- filename facet vs proposed_path
     # facet, D-06) supersede the placeholders -- STATIC string literals (T-57-01: `stage` is never
     # spliced into a template path). Supersede-in-place; the legacy templates stay reachable until CUT-02.
     "rename": "pipeline/partials/rename_workspace.html",
-    "tagwrite": _STAGE_PLACEHOLDER,
+    # Phase 60 (60-03, REVIEW-01/REVIEW-02): the real Tag-write review workspace (the shared _diff_row.html
+    # over the computed tag comparison -- APPROVE POSTs /tags/{id}/write, bulk POSTs the D-03 server-predicate
+    # /tags/bulk-write-no-discrepancies) supersedes the placeholder -- a STATIC string literal (T-57-01).
+    "tagwrite": "pipeline/partials/tagwrite_workspace.html",
     "move": "pipeline/partials/move_workspace.html",
     "dedupe": _STAGE_PLACEHOLDER,
     "cue": _STAGE_PLACEHOLDER,
@@ -183,6 +190,21 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # over the SAME pending RenameProposal source (proposed_path facet, D-06). Same degrade-safe helper;
         # oob_counts stays False (Pitfall 5).
         context["move_proposals"] = await get_pending_proposal_rows(session)
+    elif stage == "propose":
+        # Phase 60 (60-03, D-01): the Propose generation view reuses the SAME degrade-safe pending-proposal
+        # read as Rename/Move (it is a generation view over the shared RenameProposal source, NOT a diff).
+        # The Model column renders the CONFIGURED settings.llm_model (A1 -- one model per run, not a per-row
+        # value); it is a plain str read off the module-level ControlSettings singleton (no DB, no enqueue).
+        # oob_counts stays False (Pitfall 5); the live sub-count would ride the single chrome poll's OOB seeds.
+        context["propose_proposals"] = await get_pending_proposal_rows(session)
+        context["llm_model"] = settings.llm_model
+    elif stage == "tagwrite":
+        # Phase 60 (60-03, REVIEW-01/REVIEW-02): the Tag-write review workspace renders the computed tag
+        # comparison for EXECUTED files without a COMPLETED TagWriteLog (Pitfall 3 -- an empty queue while
+        # files await a move is CORRECT). get_tagwrite_review_rows is a read-only, SAVEPOINT-wrapped,
+        # degrade-safe assembly that returns [] on any DB error, so no router try/except is needed;
+        # oob_counts stays False (Pitfall 5).
+        context["tagwrite_files"] = await get_tagwrite_review_rows(session)
 
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)
