@@ -1,10 +1,11 @@
 ---
 phase: 61
 slug: full-record-k-agents
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-07-01
+reviewed_at: 2026-07-01
 ---
 
 # Phase 61 — UI Design Contract
