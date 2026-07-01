@@ -15,10 +15,12 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.proposal import ProposalStatus
 from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
+    approve_pending_above_confidence,
     bulk_update_status,
     get_proposal_stats,
     get_proposal_with_file,
     get_proposals_page,
+    update_proposal_fields,
     update_proposal_status,
 )
 
@@ -303,6 +305,98 @@ async def proposal_timeline(
             "mood_ribbons": _ribbons(coarse, "mood", total_sec),
             "style_ribbons": _ribbons(coarse, "style", total_sec),
         },
+    )
+
+
+def _validate_proposed_value(proposed: str, *, is_path: bool) -> str:
+    """Validate + normalize an operator-edited ``proposed`` value (D-05, T-60-02).
+
+    Rejects empty/whitespace-only values, any ``..`` (path-traversal), and NUL/control chars;
+    the filename facet additionally rejects any ``/``. The path facet mirrors ``store_proposals``
+    normalization (``strip('/')`` + collapse ``//``). Raises ``HTTPException(400)`` on any
+    violation so a hostile edit can never reach the persisted row a later physical move consumes.
+    """
+    value = proposed.strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="Proposed value must not be empty")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise HTTPException(status_code=400, detail="Proposed value must not contain control characters")
+    if ".." in value:
+        raise HTTPException(status_code=400, detail="Proposed value must not contain '..'")
+    if not is_path:
+        if "/" in value:
+            raise HTTPException(status_code=400, detail="Proposed filename must not contain '/'")
+        return value
+    # Path facet: mirror services/proposal.py store_proposals sanitize (strip('/') + collapse '//').
+    value = value.strip("/")
+    while "//" in value:
+        value = value.replace("//", "/")
+    if not value:
+        raise HTTPException(status_code=400, detail="Proposed path must not be empty")
+    return value
+
+
+@router.patch("/bulk-approve-high-confidence", response_class=HTMLResponse)
+async def bulk_approve_high_confidence(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """REVIEW-02 (D-02): approve every PENDING proposal with confidence >= 0.9.
+
+    Server-evaluated predicate -- the fixed 0.9 threshold is re-queried at submit and drives the
+    result. This route reads NO client-supplied ``proposal_ids`` id-list (unlike ``bulk_action``),
+    so a stale or forged selection under the counts-only poll can never mass-approve (the REVIEW-02
+    correctness core). Mirrors ``tracklists.reject_low_confidence``. NULL-confidence rows are
+    excluded by the SQL predicate (Pitfall 2). The threshold is fixed server-side (REVIEW-06 defers
+    configurability). Same route serves the Rename/Path AND Move queues (both ``RenameProposal``).
+    """
+    count = await approve_pending_above_confidence(session, threshold=0.9)
+    stats = await get_proposal_stats(session)
+    toast_message = f"{count} proposals approved." if count else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+    return templates.TemplateResponse(
+        request=request,
+        name="proposals/partials/approve_response.html",
+        context={
+            "request": request,
+            "proposal": None,
+            "stats": stats,
+            "action_label": "approved",
+            "toast_message": toast_message,
+            "is_bulk": True,
+            "bulk_ids": [],
+        },
+    )
+
+
+@router.patch("/{proposal_id}/edit", response_class=HTMLResponse)
+async def edit_proposal(
+    request: Request,
+    proposal_id: uuid.UUID,
+    proposed: str = Form(...),
+    facet: str = Form("filename"),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """REVIEW-01 (D-05): persist an operator edit to a proposal BEFORE approve.
+
+    Thin write over the persisted row -- validates the edited value (T-60-02) then updates
+    ``proposed_filename`` (``facet="filename"``) or ``proposed_path`` (``facet="path"``). The row
+    stays PENDING and the LLM is NOT re-run (generation logic untouched). Returns only the row
+    markup so ``hx-swap="outerHTML"`` replaces just that row (R-6). Plan 60-02 re-points this at the
+    shared ``pipeline/partials/_diff_row.html`` partial; until then the existing proposals row
+    partial keeps this endpoint's own test green.
+    """
+    is_path = facet == "path"
+    value = _validate_proposed_value(proposed, is_path=is_path)
+    if is_path:
+        proposal = await update_proposal_fields(session, proposal_id, proposed_path=value)
+    else:
+        proposal = await update_proposal_fields(session, proposal_id, proposed_filename=value)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; the validated proposed value renders escaped (no raw/`| safe`), so this is not a direct tainted response.
+        request=request,
+        name="proposals/partials/proposal_row.html",
+        context={"request": request, "proposal": proposal},
     )
 
 

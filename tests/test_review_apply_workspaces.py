@@ -36,9 +36,16 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from phaze.models.proposal import ProposalStatus
+
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.models.proposal import RenameProposal
 
 
 # The six redesigned Review & Apply workspace stages whose HX fragments must ride the ONE chrome
@@ -98,19 +105,72 @@ async def test_review_single_poll_discipline(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="converted to real assertions by Plan 60-01 Task 2 (D-02 server predicate)", strict=False)
 @pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_server_predicate(client: AsyncClient) -> None:
-    """REVIEW-02 / D-02 -- bulk approve re-queries confidence>=0.9 and ignores any client id-list."""
-    resp = await client.patch("/proposals/bulk-approve-high-confidence")
+async def test_bulk_approve_high_confidence_server_predicate(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """REVIEW-02 / D-02 -- bulk approve re-queries confidence>=0.9 and ignores any client id-list.
+
+    Seeds a 0.95 + a 0.50 + a NULL-confidence pending proposal, then submits a client
+    ``proposal_ids`` form field naming the 0.50 row (the REVIEW-02 anti-pattern). The server
+    re-query MUST drive the result: exactly the 0.95 row is approved; the 0.50 row is untouched
+    (the client id-list has NO effect); the NULL-confidence row is excluded by the SQL predicate
+    (Pitfall 2), never approved.
+    """
+    p_high = await seed_pending_proposal(0.95, original_filename="high.mp3")
+    p_mid = await seed_pending_proposal(0.50, original_filename="mid.mp3")
+    p_null = await seed_pending_proposal(None, original_filename="null.mp3")
+
+    resp = await client.patch(
+        "/proposals/bulk-approve-high-confidence",
+        data={"proposal_ids": str(p_mid.id)},  # forged selection -- must be ignored
+    )
     assert resp.status_code == 200
 
+    await session.refresh(p_high)
+    await session.refresh(p_mid)
+    await session.refresh(p_null)
+    assert p_high.status == ProposalStatus.APPROVED.value, "only the >=0.9 pending row is approved"
+    assert p_mid.status == ProposalStatus.PENDING.value, "the client id-list must not approve the 0.50 row"
+    assert p_null.status == ProposalStatus.PENDING.value, "NULL confidence is excluded by the SQL predicate"
 
-@pytest.mark.xfail(reason="converted to real assertions by Plan 60-01 Task 2 (D-05 inline edit)", strict=False)
+
 @pytest.mark.asyncio
-async def test_edit_patch_targets_own_row(client: AsyncClient) -> None:
-    """REVIEW-01 / D-05 -- inline Edit PATCH updates the persisted field and returns only the row."""
-    raise AssertionError("edit endpoint wired in Task 2")
+async def test_edit_patch_targets_own_row(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """REVIEW-01 / D-05 -- inline Edit PATCH updates the persisted field and returns only the row.
+
+    The happy path persists the submitted ``proposed`` value to ``proposed_filename``, leaves the
+    row PENDING (no LLM re-run, no FileState transition) and returns only the row markup (R-6).
+    Rejected inputs -- a ``..`` traversal segment, a leading ``/``, or a NUL byte -- 400 and leave
+    the row unchanged (T-60-02).
+    """
+    proposal = await seed_pending_proposal(0.8, proposed_filename="Original.mp3", original_filename="orig.mp3")
+
+    resp = await client.patch(
+        f"/proposals/{proposal.id}/edit",
+        data={"proposed": "Edited Name.mp3", "facet": "filename"},
+    )
+    assert resp.status_code == 200
+    assert f'id="proposal-{proposal.id}"' in resp.text, "returns the targeted row"
+    assert "<html" not in resp.text, "returns only the row, not a full page"
+    await session.refresh(proposal)
+    assert proposal.proposed_filename == "Edited Name.mp3"
+    assert proposal.status == ProposalStatus.PENDING.value, "edit is pre-approve -- row stays PENDING"
+
+    for bad in ("../escape.mp3", "/leading.mp3", "na\x00me.mp3"):
+        bad_resp = await client.patch(
+            f"/proposals/{proposal.id}/edit",
+            data={"proposed": bad, "facet": "filename"},
+        )
+        assert bad_resp.status_code == 400, f"{bad!r} must be rejected"
+    await session.refresh(proposal)
+    assert proposal.proposed_filename == "Edited Name.mp3", "rejected edits leave the row unchanged"
 
 
 @pytest.mark.xfail(reason="converted to real assertions by Plan 60-01 Task 3 (D-03/OQ-1 tag predicate)", strict=False)

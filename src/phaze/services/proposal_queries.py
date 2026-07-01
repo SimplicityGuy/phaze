@@ -191,6 +191,57 @@ async def bulk_update_status(
     return int(cursor_result.rowcount)
 
 
+async def approve_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> int:
+    """Approve every PENDING proposal whose confidence >= threshold (server-evaluated predicate).
+
+    REVIEW-02 / D-02: the caller passes NO id-list; the server re-queries the pending rows that
+    meet the fixed confidence predicate at submit and bulk-updates them to APPROVED. Rows whose
+    ``confidence`` IS NULL are excluded by the SQL comparison (Pitfall 2 -- the conservative-correct
+    behavior for an irreplaceable archive; do NOT COALESCE), leaving them for per-file review.
+    Reuses :func:`bulk_update_status` so the ``FileRecord.state`` cascade (APR-02) is identical to
+    the existing bulk path. Returns the number of proposals approved.
+    """
+    stmt = select(RenameProposal.id).where(
+        RenameProposal.status == ProposalStatus.PENDING,
+        RenameProposal.confidence >= threshold,
+    )
+    ids = list((await session.execute(stmt)).scalars().all())
+    if not ids:
+        return 0
+    return await bulk_update_status(session, ids, ProposalStatus.APPROVED)
+
+
+async def update_proposal_fields(
+    session: AsyncSession,
+    proposal_id: uuid_mod.UUID,
+    *,
+    proposed_filename: str | None = None,
+    proposed_path: str | None = None,
+) -> RenameProposal | None:
+    """Persist an operator edit to a proposal's ``proposed_filename`` / ``proposed_path`` (D-05).
+
+    Copies :func:`update_proposal_status` exactly but mutates the provided Text field(s) instead of
+    ``.status``: the row stays PENDING (edit is pre-approve -- NO FileState transition) and the LLM
+    is NOT re-run. Keeps the re-select-with-``selectinload(file)`` tail so the returned row can
+    render its diff. Returns ``None`` if the proposal does not exist.
+    """
+    stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
+    result = await session.execute(stmt)
+    proposal = result.scalar_one_or_none()
+    if proposal is None:
+        return None
+    if proposed_filename is not None:
+        proposal.proposed_filename = proposed_filename
+    if proposed_path is not None:
+        proposal.proposed_path = proposed_path
+    await session.commit()
+    # Re-fetch with selectinload to ensure the file relationship is available for the row render
+    # (session.refresh does not honor selectinload on lazy='raise' relationships).
+    stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
+    result2 = await session.execute(stmt2)
+    return result2.scalar_one_or_none()
+
+
 async def get_proposal_with_file(
     session: AsyncSession,
     proposal_id: uuid_mod.UUID,
