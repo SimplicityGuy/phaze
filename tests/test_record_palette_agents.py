@@ -115,15 +115,16 @@ async def test_distinct_artists_query(session: AsyncSession, seed_distinct_artis
 
 @pytest.mark.asyncio
 async def test_cmdk_commands_and_artist_nav(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-02: Scan command posts /pipeline/scan-live-sets; artist row navigates with artist= param."""
+    """RECORD-02: Scan command posts /pipeline/scan-live-sets; artist row re-searches with q= param."""
     await seed_distinct_artists()
     r = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert r.status_code == 200
     body = r.text
     # ⌘K "Scan" is the PARAMETERLESS fingerprint scan (correct for the palette; Pitfall 2).
     assert "/pipeline/scan-live-sets" in body
-    # An Artist option navigates to the file list filtered by artist=.
-    assert "artist=" in body
+    # An Artist option must re-search with q= (WR-03): search_page only runs a query when q is
+    # truthy, so an artist= only URL would return an empty palette. The artist row carries q=.
+    assert 'hx-get="/search/?q=' in body
 
 
 # ---------------------------------------------------------------------------

@@ -137,6 +137,9 @@ async def _analyze_file_count(session: AsyncSession) -> int:
     try:
         result = await session.execute(select(func.count(FileRecord.id)))
     except Exception:
+        # Roll back the aborted transaction so downstream reads on this same session
+        # aren't poisoned (WR-05, matches the codebase-wide degrade-safe pattern).
+        await session.rollback()
         return 1
     return int(result.scalar() or 0)
 

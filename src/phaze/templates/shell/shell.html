@@ -245,6 +245,17 @@
             syncRailSelection(location.pathname);
             _focusStageHeading();
         });
+        document.body.addEventListener('htmx:beforeSwap', function (event) {
+            // GET /record/{id} returns a friendly 404 fragment (record_not_found.html) when a
+            // file was de-duplicated/removed between render and click. htmx does NOT swap non-2xx
+            // by default, so opt the record panel back in for its 404 so the fragment shows
+            // instead of the click silently doing nothing (WR-01).
+            const d = event.detail;
+            if (d && d.xhr && d.xhr.status === 404 && d.target && d.target.id === 'record-body') {
+                d.shouldSwap = true;
+                d.isError = false;
+            }
+        });
         document.body.addEventListener('htmx:afterSwap', function (event) {
             // htmx:afterSwap exposes the request target as event.detail.target (htmx 2.0.10);
             // fall back to event.target for the element the bubbling event fired on.

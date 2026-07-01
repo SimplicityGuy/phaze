@@ -99,9 +99,14 @@ async def file_record(
     exec_logs = list((await session.execute(exec_stmt)).scalars().all())
     tag_stmt = select(TagWriteLog).where(TagWriteLog.file_id == file_id).order_by(TagWriteLog.written_at.desc())
     tag_logs = list((await session.execute(tag_stmt)).scalars().all())
-    history: list[dict[str, Any]] = [
-        {"when": e.executed_at, "label": e.operation, "status": e.status, "detail": e.destination_path} for e in exec_logs
-    ] + [{"when": t.written_at, "label": "tag write", "status": t.status, "detail": t.source} for t in tag_logs]
+    # Merge-sort by timestamp: concatenating two independently-DESC lists is NOT globally DESC
+    # (WR-04). None timestamps sort last so a half-written row never masks real history.
+    history: list[dict[str, Any]] = sorted(
+        [{"when": e.executed_at, "label": e.operation, "status": e.status, "detail": e.destination_path} for e in exec_logs]
+        + [{"when": t.written_at, "label": "tag write", "status": t.status, "detail": t.source} for t in tag_logs],
+        key=lambda h: (h["when"] is not None, h["when"]),
+        reverse=True,
+    )
 
     context: dict[str, Any] = {
         "request": request,

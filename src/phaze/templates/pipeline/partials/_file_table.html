@@ -34,7 +34,11 @@
     <p class="text-sm text-gray-500 dark:text-gray-400">{{ empty_body }}</p>
 </div>
 {% else %}
-<div class="overflow-x-auto">
+<div class="overflow-x-auto"{% if row_file_ids %} x-data{% endif %}>
+    {# row_file_ids ⇒ each row carries @click="$dispatch('record:open')"; the bare x-data gives
+       those rows an Alpine scope so the click actually wires. The shell root has NO x-data
+       (see shell.html — x-data on <html> is inert), so without this the record slide-in never
+       opens on a direct GET / Analyze landing (CR-01). Non-clickable tables stay scope-free. #}
     <table class="w-full text-left text-sm"{% if table_id %} id="{{ table_id }}"{% endif %}>
         <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
             <tr>

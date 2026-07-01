@@ -73,8 +73,11 @@
        role="option"
        aria-selected="false"
        tabindex="-1"
-       href="/search/?artist={{ a | urlencode }}"
-       hx-get="/search/?artist={{ a | urlencode }}"
+       {# search_page only runs a query when `q` is truthy — an artist row must carry q,
+          not artist= alone, or the palette comes back empty (WR-03). Clicking an artist
+          re-searches for that name (files/tracklists + the artist facet). #}
+       href="/search/?q={{ a | urlencode }}"
+       hx-get="/search/?q={{ a | urlencode }}"
        hx-target="#cmdk-results"
        hx-swap="innerHTML"
        class="{{ row_class }}">

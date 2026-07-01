@@ -441,6 +441,12 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     assert "record:open" in tbl
     assert "aria-selected" not in tbl
 
+    # CR-01 regression: the @click="$dispatch('record:open')" rows MUST sit inside an Alpine
+    # x-data scope or the dispatch never fires (the shell root has no x-data). A bare string
+    # match on "record:open" passes even when the click is inert, so assert the enclosing
+    # x-data on the clickable table wrapper (the wrapper div precedes the table id, so check body).
+    assert 'overflow-x-auto" x-data' in body
+
     # WORK-05 / R-2: no second poll loop in the fragment.
     assert 'hx-trigger="every' not in body
     assert "setInterval" not in body
