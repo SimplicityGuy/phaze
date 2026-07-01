@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
 status: executing
-last_updated: "2026-07-01T18:23:58.329Z"
+last_updated: "2026-07-01T18:41:58.198Z"
 last_activity: 2026-07-01
 progress:
   total_phases: 29
   completed_phases: 4
   total_plans: 19
-  completed_plans: 17
+  completed_plans: 18
   percent: 14
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 ## Current Position
 
 Phase: 60 (review-apply) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-07-01
 
-Progress: [█████████░] 89%
+Progress: [██████████] 95%
 
 ## Performance Metrics
 
@@ -103,6 +103,8 @@ Progress: [█████████░] 89%
 - [Phase 58]: 58-04: the six v6.0 cloud cards reused VERBATIM preserve the quota-wait-vs-Inadmissible role=alert distinction; in-flight rows render the 57.1 mid-flight N/M signal alongside running (D-04), not a bare running
 - [Phase 60]: 60-01: D-03/OQ-1 tag-bulk blank-guard is defensive — compute_proposed_tags copies every non-None metadata field so a server-computed comparison never blanks; predicate factored into _qualifies_for_bulk_write and unit-asserted
 - [Phase 60]: 60-01: scope refined 2->4 thin routes (all over unchanged logic) — tag-bulk (D-03) + tag-undo (REVIEW-05) have no existing endpoint; both live in tags.py since tags are computed, not RenameProposal rows
+- [Phase ?]: Phase 60-03: tag-write reuses shared _diff_row.html via backward-compatible show_edit/show_skip/show_undo flags; Tag SKIP omitted (no tag-skip route), UNDO surfaced in pending cluster
+- [Phase ?]: Phase 60-03: Propose is a GENERATION view (reuses _file_table.html over get_pending_proposal_rows, Model = configured settings.llm_model A1), not a diff
 
 ### Pending Todos
 
@@ -162,6 +164,7 @@ None.
 | Phase 58 P04 | 8min | 3 tasks | 9 files |
 | Phase 60 P01 | 45min | 3 tasks | 7 files |
 | Phase 60 P02 | 20min | 3 tasks | 6 files |
+| Phase 60 P03 | 25min | 3 tasks | 6 files |
 
 ## Deferred Items
 
@@ -191,8 +194,8 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-07-01T18:23:43.490Z
-Stopped at: Phase 60 UI-SPEC approved (re-verified)
+Last session: 2026-07-01T18:41:58.193Z
+Stopped at: Completed 60-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
