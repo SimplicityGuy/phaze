@@ -1,0 +1,60 @@
+{# Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename / Path review diff workspace.
+
+   Content-only fragment swapped into #stage-workspace -- the SIBLING of move_workspace.html (same
+   shape, the proposed_filename facet vs the proposed_path facet, D-06 LOCKED). Composes the shared
+   scaffold (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a sub-count + the amber
+   bulk header + body. The body loops the pending RenameProposal rows (shell._render_stage ->
+   rename_proposals, via services/review.get_pending_proposal_rows) through the ONE shared
+   pipeline/partials/_diff_row.html partial.
+
+   Bulk header (REVIEW-02 / D-02): APPROVE ALL >=90% CONFIDENCE posts the id-less, threshold-less
+   PATCH /proposals/bulk-approve-high-confidence -- the server re-queries the fixed 0.9 predicate at
+   submit (no client id-list), so the counts-only poll (R-2) can never corrupt a mass-approve. R-4
+   guard: hx-confirm naming the predicate + live count, hx-disabled-elt + a controllerBusy :disabled
+   busy-gate so a second bulk apply can't fire mid-churn.
+
+   Rows are inert-but-present (R-1): the diff grid is the focal content; only the in-row Approve/Edit/
+   Skip controls are live. Every DB-sourced value autoescapes through _diff_row.html (T-60-XSS -- never
+   raw). NO second poll (R-2); the live sub-count would ride the single chrome poll's OOB seeds.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = "'" ~ (rename_proposals | length) ~ " awaiting approval · proposed filename + destination'" %}
+{% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    <button type="button"
+            hx-patch="/proposals/bulk-approve-high-confidence" hx-target="#rename-trigger-response" hx-swap="innerHTML"
+            hx-confirm="Approve all pending proposals at ≥90% confidence? The server re-checks confidence at submit — {{ rename_proposals | length }} match now. Every apply is audited and reversible."
+            hx-disabled-elt="this"
+            :disabled="$store.pipeline.controllerBusy > 0"
+            aria-label="Approve all pending proposals at or above 90 percent confidence"
+            class="{{ _bulk_btn }}">APPROVE ALL ≥90% CONFIDENCE</button>
+{% endset %}
+{% call ws.workspace(title="Review & Apply · Rename / Path", subcount=subcount, actions=actions) %}
+    {# Bulk-approve response (approve_response.html toast) lands here; empty:hidden until it fires. #}
+    <div id="rename-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+    {% if rename_proposals %}
+    <div>
+        {% for p in rename_proposals %}
+            {% with row_id_prefix="rename-row",
+                    pid=p.id,
+                    file=p.filename,
+                    original_path=p.original_path,
+                    before=p.filename,
+                    after=p.proposed_filename,
+                    approve_url="/proposals/" ~ p.id ~ "/approve",
+                    skip_url="/proposals/" ~ p.id ~ "/reject",
+                    undo_url="/proposals/" ~ p.id ~ "/undo",
+                    edit_url="/proposals/" ~ p.id ~ "/edit",
+                    edit_facet="filename",
+                    row_state="pending" %}
+                {% include "pipeline/partials/_diff_row.html" %}
+            {% endwith %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="px-6 py-12 text-center">
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Nothing to review</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">No pending rename proposals. Generate proposals in Propose, or approvals are all cleared.</p>
+    </div>
+    {% endif %}
+{% endcall %}
