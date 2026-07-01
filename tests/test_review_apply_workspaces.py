@@ -279,7 +279,7 @@ async def test_diff_row_before_after(
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f'hx-patch="/proposals/{p.id}/approve"' in body
     assert "hx-post" not in body
-    assert 'x-data="{ editing' in body
+    assert "x-data='{ editing" in body
     assert 'name="proposed"' in body
     assert f'id="rename-row-{p.id}"' in body
     assert 'value="filename"' in body
@@ -291,6 +291,32 @@ async def test_diff_row_before_after(
     assert f'id="move-row-{p.id}"' in mbody
     assert 'value="path"' in mbody
     assert "hx-post" not in mbody
+
+
+@pytest.mark.asyncio
+async def test_diff_row_edit_island_is_js_context_safe(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """REVIEW-01 security -- a proposed value with an apostrophe (e.g. "Guns N' Roses") must NOT
+    break out of the Alpine ``x-data``/``@click`` JS string. ``|e`` is HTML-context escaping and is
+    unsafe here (the browser HTML-decodes the attribute before Alpine evaluates it as JS); the row
+    uses ``|tojson`` with a single-quoted attribute delimiter so ``'`` serializes to ``\\u0027``.
+    """
+    await seed_pending_proposal(
+        0.95,
+        proposed_filename="Guns N' Roses - Don't Cry.mp3",
+        proposed_path="Guns N' Roses/Album/Don't Cry.mp3",
+        original_filename="messy.mp3",
+    )
+
+    body = (await client.get("/s/rename", headers={"HX-Request": "true"})).text
+
+    # The vulnerable single-quote-delimited JS-string pattern must be gone entirely.
+    assert "val:'" not in body, "|e-in-JS breakout pattern (val:'...') must not be present"
+    # The tojson-safe island delimiter is in use, and the apostrophe is unicode-escaped.
+    assert "x-data='{ editing" in body
+    assert "\\u0027" in body, "apostrophe must be JS-escaped by |tojson, not left raw in the attribute"
 
 
 @pytest.mark.xfail(reason="converted to real assertions by the dedupe workspace plan (REVIEW-03)", strict=False)

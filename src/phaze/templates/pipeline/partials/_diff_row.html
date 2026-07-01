@@ -29,7 +29,7 @@
 {% set _sec = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
      class="px-6 py-3 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
-     x-data="{ editing:false, val:'{{ after|e }}' }">
+     x-data='{ editing:false, val:{{ after|tojson }} }'>
     <div class="flex items-center justify-between">
         <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ original_path }}">{{ file }}</div>
         {% if row_state and row_state != 'pending' %}
@@ -48,7 +48,7 @@
         <div class="flex gap-1.5 shrink-0 ml-4" x-show="editing">
             {# SAVE EDIT targets ONLY its own row (R-6); hx-include pulls this row's `proposed` + `facet` inputs. #}
             <button type="button" hx-patch="{{ edit_url }}" hx-include="#{{ row_id_prefix }}-{{ pid }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _primary }}">SAVE EDIT</button>
-            <button type="button" @click="editing=false; val='{{ after|e }}'" class="{{ _sec }}">DISCARD</button>
+            <button type="button" @click='editing=false; val={{ after|tojson }}' class="{{ _sec }}">DISCARD</button>
         </div>
         {% endif %}
     </div>
