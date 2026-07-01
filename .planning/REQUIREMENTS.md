@@ -49,11 +49,11 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Review & Apply (REVIEW)
 
-- [ ] **REVIEW-01**: Rename/Path, Tag-write, and Move-files each present pending changes as a before→after diff with per-file Approve / Edit / Skip.
-- [ ] **REVIEW-02**: Each of those queues offers a bulk "approve all high-confidence" action gated by a confidence threshold.
+- [x] **REVIEW-01**: Rename/Path, Tag-write, and Move-files each present pending changes as a before→after diff with per-file Approve / Edit / Skip.
+- [x] **REVIEW-02**: Each of those queues offers a bulk "approve all high-confidence" action gated by a confidence threshold.
 - [ ] **REVIEW-03**: Dedupe presents duplicate groups with keeper-selection (others archived) and a bulk auto-keep-highest-quality action.
 - [ ] **REVIEW-04**: Cue-sheet generation is reviewable with a preview and approve, gated on a matched tracklist.
-- [ ] **REVIEW-05**: Every applied change (rename, tag-write, move, dedupe) is recorded in the audit log and is reversible.
+- [x] **REVIEW-05**: Every applied change (rename, tag-write, move, dedupe) is recorded in the audit log and is reversible.
 
 ### Full record, command palette & agents (RECORD)
 

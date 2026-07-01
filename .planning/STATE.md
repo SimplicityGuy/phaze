@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
 status: executing
-last_updated: "2026-07-01T17:27:25.466Z"
-last_activity: 2026-07-01 -- Phase 60 planning complete
+last_updated: "2026-07-01T18:08:06.041Z"
+last_activity: 2026-07-01
 progress:
   total_phases: 29
   completed_phases: 4
@@ -20,16 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 60 — review & apply
+**Current focus:** Phase 60 — review-apply
 
 ## Current Position
 
-Phase: 60
-Plan: Not started
+Phase: 60 (review-apply) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-07-01 -- Phase 60 planning complete
+Last activity: 2026-07-01
 
-Progress: [██████████] 100%
+Progress: [████████░░] 79%
 
 ## Performance Metrics
 
@@ -101,6 +101,8 @@ Progress: [██████████] 100%
 - [Phase 58]: 58-04: per-file lane is DERIVED from the cloud_job sidecar (no row->local / cloud_phase NULL->a1 / set->k8s); sound because cloud_job rows are written ONLY in cloud_staging.stage_file_to_s3, so a local file never carries one (RESEARCH A1 confirmed)
 - [Phase 58]: 58-04: computeOnline added by extending count_active_agents with an optional kind= filter (no second liveness rule); rides the dag.items() OOB loop onto a pre-mounted dag-seed-computeOnline placeholder (B1)
 - [Phase 58]: 58-04: the six v6.0 cloud cards reused VERBATIM preserve the quota-wait-vs-Inadmissible role=alert distinction; in-flight rows render the 57.1 mid-flight N/M signal alongside running (D-04), not a bare running
+- [Phase 60]: 60-01: D-03/OQ-1 tag-bulk blank-guard is defensive — compute_proposed_tags copies every non-None metadata field so a server-computed comparison never blanks; predicate factored into _qualifies_for_bulk_write and unit-asserted
+- [Phase 60]: 60-01: scope refined 2->4 thin routes (all over unchanged logic) — tag-bulk (D-03) + tag-undo (REVIEW-05) have no existing endpoint; both live in tags.py since tags are computed, not RenameProposal rows
 
 ### Pending Todos
 
@@ -158,6 +160,7 @@ None.
 | Phase 58 P02 | 35m | 3 tasks | 9 files |
 | Phase 58 P03 | 25min | 2 tasks | 4 files |
 | Phase 58 P04 | 8min | 3 tasks | 9 files |
+| Phase 60 P01 | 45min | 3 tasks | 7 files |
 
 ## Deferred Items
 
@@ -187,9 +190,9 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-07-01T04:28:46.610Z
+Last session: 2026-07-01T18:07:55.170Z
 Stopped at: Phase 60 UI-SPEC approved (re-verified)
-Resume file: .planning/phases/60-review-apply/60-UI-SPEC.md
+Resume file: None
 
 ## Operator Next Steps
 
