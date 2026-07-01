@@ -123,7 +123,7 @@ new size or weight is introduced.** Role assignments specific to the Review work
 | Bulk header action label | Label — Jura 11–12px / 500 | uppercase `tracking-wider` |
 | Propose table cells / Conf numeral | Body 14 / Mono 12 | reuse `_file_table.html`; `Conf` is `mono {n}%` colored by tier |
 | Dedupe group title | Label — Jura 11px / 500 | uppercase `tracking-wider` + a `text-gray-600 normal-case` "· {n} copies" suffix |
-| Keeper file label / size | Body 14 / Mono 12 | file name Inter 14; `{kbps · size}` `mono text-xs text-gray-500`; KEEP/archive tag Jura `text-[10px] tracking-wider` |
+| Keeper file label / size | Body 14 / Mono 12 | file name Inter 14; `{kbps · size}` `mono text-xs text-gray-500`; KEEP/archive tag Jura `text-[11px] tracking-wider` |
 | Cue preview `<pre>` | Mono — `text-[11px]` / 400 / relaxed | the `.cue` text; `mono` display at the 11px label size (a mono display treatment of an existing size, not a new token) |
 
 > **Two-weight discipline (critical — do NOT regress):** All NEW Phase-60 markup uses only **400 / 500**.
@@ -211,8 +211,8 @@ authoritative Review interaction. Tokenized from the prototype `diffRow()`:
       <button ...SKIP (secondary)             hx-post=".../reject" hx-confirm="Skip this proposal?">SKIP</button>
     </div>
     <div class="flex gap-1.5 shrink-0 ml-4" x-show="editing">    {# ACTION CLUSTER — inline-edit state #}
-      <button ...SAVE (emerald-600 fill)  hx-patch=".../{id}" hx-include="closest div" hx-target="#{row_id_prefix}-{id}" hx-swap="outerHTML">SAVE</button>
-      <button ...CANCEL (secondary)       @click="editing=false; val='{{ proposed|e }}'">CANCEL</button>
+      <button ...SAVE EDIT (emerald-600 fill)  hx-patch=".../{id}" hx-include="closest div" hx-target="#{row_id_prefix}-{id}" hx-swap="outerHTML">SAVE EDIT</button>
+      <button ...DISCARD (secondary)       @click="editing=false; val='{{ proposed|e }}'">DISCARD</button>
     </div>
   </div>
   <div class="mt-2 grid grid-cols-[1fr_auto_1fr] gap-3 items-center text-xs">
@@ -227,7 +227,7 @@ authoritative Review interaction. Tokenized from the prototype `diffRow()`:
 </div>
 ```
 
-**Diff-row anatomy contract:**
+**Diff-row anatomy contract:** The before→after diff grid is the focal content of every row; the amber bulk-header action is the workspace's focal interactive signal.
 - **Top line:** truncating file name (`title=` full path) + the right-aligned **3-action cluster**
   (Approve · Edit · Skip), `shrink-0`.
 - **Body:** `grid grid-cols-[1fr_auto_1fr]` — BEFORE `<code>` (rose struck) · `→` · AFTER `<code>`
@@ -345,8 +345,8 @@ distinct interaction shape, D-06).
              hx-post="/duplicates/{{ group_id }}/resolve" hx-vals='{"keeper_id":"{{ f.file_id }}"}'>
       <span class="flex-1 text-sm {{ 'text-emerald-200' if f.keeper else 'text-gray-300' }}">{{ f.name }}</span>
       <span class="text-xs text-gray-500 mono">{{ f.quality }}</span>   {# e.g. "320 kbps · 22 MB" #}
-      {% if f.keeper %}<span class="jura text-[10px] tracking-wider text-emerald-300">KEEP</span>
-      {% else %}<span class="jura text-[10px] tracking-wider text-gray-600">archive</span>{% endif %}
+      {% if f.keeper %}<span class="jura text-[11px] tracking-wider text-emerald-300">KEEP</span>
+      {% else %}<span class="jura text-[11px] tracking-wider text-gray-600">archive</span>{% endif %}
     </label>
     {% endfor %}
   </div>
@@ -468,7 +468,7 @@ voice). Live numerals come from `$store.pipeline` / server render; the strings b
 | Workspace | Buttons |
 |-----------|---------|
 | Propose | **GENERATE ALL** (header) |
-| Rename / Path | **APPROVE ALL ≥90% CONFIDENCE** (header) · per-row **APPROVE · EDIT · SKIP** (→ **SAVE · CANCEL** in edit) · **UNDO** (applied) |
+| Rename / Path | **APPROVE ALL ≥90% CONFIDENCE** (header) · per-row **APPROVE · EDIT · SKIP** (→ **SAVE EDIT · DISCARD** in edit) · **UNDO** (applied) |
 | Tag write | **APPROVE ALL WITH NO DISCREPANCIES** (header) · per-row **APPROVE · EDIT · SKIP** · **UNDO** |
 | Move files | **APPROVE ALL ≥90% CONFIDENCE** (header) · per-row **APPROVE · EDIT · SKIP** · **UNDO** |
 | Dedupe | **AUTO-KEEP HIGHEST QUALITY** (header) · per-group keeper **radio** · **UNDO** |
