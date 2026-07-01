@@ -107,25 +107,23 @@ progress bar `h-1.5`, journey rows `gap-2.5`) exactly as in the prototype and `b
 
 Two brand-locked families, inherited from `57-UI-SPEC.md`: **Jura** (headings/eyebrows/labels, uppercase
 letter-spaced), **Inter** (body/UI text). This phase **first renders the Display / 24px scale that Phase 57
-reserved for it** — the first-run empty-state heading.
+reserved for it** — the first-run empty-state heading. Exactly **four sizes**: 24 / 18 / 14 / 11px.
 
 | Role | Family | Size | Weight | Line Height | Usage |
 |------|--------|------|--------|-------------|-------|
 | **Display** | Jura | **24px** (`text-2xl`) | 500 | 1.2 | first-run heading "POINT PHAZE AT YOUR MUSIC" (`uppercase tracking-[0.2em]`) — **this is where 24px first renders (57 reserved it for 61)** |
 | Heading | Jura | 18px (`text-lg`) | 500 | 1.2 | record `<h2>` file title (`uppercase tracking-[0.15em]`); focus target on record open (`tabindex="-1"`) |
-| Body | Inter | 14px (`text-sm`) | 400 | 1.5 | palette rows, record facts, agent card body, empty-state body copy, table cells |
-| Eyebrow / Label | Jura | 11px (`text-[11px]`) | 500 | 1.4 | record section eyebrows (`uppercase tracking-[0.2em]`); Jura-tracked control labels (APPROVE, START SCAN, FULL ↗) |
-| Group label | Jura | 10px (`text-[10px]`) | 500 | 1.4 | ⌘K group headers (Files/Tracklists/Artists/Commands, `uppercase tracking-wider text-gray-600`) |
-| Mono facts / counts | monospace | 12px (`text-xs`) | 400 | 1.4 | record path + sha256, palette `esc` chip, scan counts, timeline medians, diff code chips — a display treatment, not a new family |
+| Body | Inter | 14px (`text-sm`) | 400 | 1.5 | palette rows, record facts, agent card body, empty-state body copy, table cells. *12px `text-xs` monospace is used in tight numeric contexts (record path, sha256, palette `esc` chip, scan counts, timeline medians, diff code chips) — a display variant of Body, not a distinct type-scale entry (matches Phase 57's inlined 12px treatment).* |
+| Eyebrow / Label | Jura | 11px (`text-[11px]`) | 500 | 1.4 | record section eyebrows (`uppercase tracking-[0.2em]`); Jura-tracked control labels (APPROVE, START SCAN, FULL ↗); **⌘K group headers** (Files/Tracklists/Artists/Commands, `text-[11px] uppercase tracking-wider text-gray-600`) |
 
 **Chart series strokes** in the multi-lane timeline are a data-viz treatment (not text): BPM `#60a5fa`,
-Key `#34d399`, Energy `#fbbf24` (blue/emerald/amber-400), `stroke-width 1.5`. Permitted exception, like mono counts.
+Key `#34d399`, Energy `#fbbf24` (blue/emerald/amber-400), `stroke-width 1.5`. Permitted exception, like the 12px mono variant.
 
 **Weights — exactly two declared for this phase's new chrome:**
 
 - **400 (regular)** — Inter body, the default (palette rows, record facts, agent body, empty-state body, history).
 - **500 (medium)** — Jura headings/eyebrows/labels and all Jura-tracked controls (Display heading, record `<h2>`,
-  section eyebrows, APPROVE / START SCAN / OPEN FULL RECORD labels).
+  section eyebrows, ⌘K group headers, APPROVE / START SCAN / OPEN FULL RECORD labels).
 
 > **Note:** Inter **600 (semibold, `font-medium`)** already renders in the 58+ workspaces for emphasized names
 > (agent-card `name`, record/pane file-name). This phase reuses that inherited treatment for the same purpose;
@@ -228,9 +226,9 @@ panel `absolute left-1/2 top-24 -translate-x-1/2 w-[640px] max-w-[92vw] bg-phaze
 shadow-2xl overflow-hidden`. Header row `h-14 border-b`: search icon + `x-ref="input"` + `esc` mono chip.
 Results body `max-h-[50vh] overflow-y-auto p-2 text-sm`.
 
-**Grouped results + commands (D-03/D-05):** four labeled groups, each header a Jura `text-[10px] uppercase
-tracking-wider text-gray-600` line; rows are `rail-node`-style (`rounded-lg px-3 py-2 flex items-center gap-3`,
-leading emoji + flex-1 label + trailing muted status).
+**Grouped results + commands (D-03/D-05):** four labeled groups, each header a Jura Eyebrow/Label
+(`text-[11px] uppercase tracking-wider text-gray-600`) line; rows are `rail-node`-style (`rounded-lg px-3 py-2
+flex items-center gap-3`, leading emoji + flex-1 label + trailing muted status).
 
 | Group | Source | Row → action |
 |-------|--------|--------------|
@@ -327,7 +325,7 @@ target; controls carry visible `ring-2 ring-blue-500` focus.
 | Record — history heading | "History" |
 | Record — error (missing file) | "That file no longer exists. — It may have been moved or de-duplicated. Close this record and pick another from the list." *(404 fragment)* |
 | ⌘K input placeholder | "Search files, artists, tracklists — or type a command…" *(inherited from 57 skeleton, now functional)* |
-| ⌘K group headers | "Files" · "Tracklists" · "Artists" · "Commands" *(Jura 10px uppercase)* |
+| ⌘K group headers | "Files" · "Tracklists" · "Artists" · "Commands" *(Jura 11px uppercase)* |
 | ⌘K command labels | "Scan a directory…" · "Jump to a stage…" · "Go to Review & Apply → {queue}" · "Open compute / agents" |
 | ⌘K — empty query hint | *(Commands group shown; no error copy)* |
 | ⌘K — no results | "No matches. Try a filename, artist, or tracklist — or run a command." *(muted, not an error)* |
