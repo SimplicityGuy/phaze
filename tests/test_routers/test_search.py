@@ -105,12 +105,17 @@ async def test_search_page_loads(client: AsyncClient, session: AsyncSession) -> 
 
 @pytest.mark.asyncio
 async def test_search_with_query_returns_results(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /search/?q=deadmau5 returns 200 with results table."""
+    """GET /search/?q=deadmau5 returns 200 with grouped ⌘K palette rows (v7.0 RECORD-02).
+
+    The flat results table was superseded by the grouped command-palette listbox: matching files
+    now render as ``role="option"`` rows under the Files group instead of table rows.
+    """
     await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
     response = await client.get("/search/", params={"q": "deadmau5"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "deadmau5" in response.text
-    assert "<table" in response.text.lower()
+    assert 'role="option"' in response.text
+    assert "Files" in response.text
 
 
 @pytest.mark.asyncio
@@ -174,7 +179,12 @@ async def test_search_file_state_filter(client: AsyncClient, session: AsyncSessi
 
 @pytest.mark.asyncio
 async def test_search_pagination(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /search/?q=track&page=1&page_size=25 returns paginated results."""
+    """GET /search/?q=track&page_size=25 renders the matched files as palette rows (v7.0 RECORD-02).
+
+    The ⌘K command palette is a top-N surface — the old paginated ``Showing X-Y of Z`` footer was
+    retired with the flat table. The page/page_size params still bound the underlying search(),
+    so the matched files surface as ``role="option"`` rows under the Files group.
+    """
     for i in range(30):
         await create_searchable_file(
             session,
@@ -183,7 +193,8 @@ async def test_search_pagination(client: AsyncClient, session: AsyncSession) -> 
         )
     response = await client.get("/search/", params={"q": "track", "page": "1", "page_size": "25"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert "Showing 1-25 of 30" in response.text
+    assert 'role="option"' in response.text
+    assert "Files" in response.text
 
 
 @pytest.mark.asyncio
