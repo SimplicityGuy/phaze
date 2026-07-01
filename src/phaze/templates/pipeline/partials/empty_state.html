@@ -1,0 +1,103 @@
+{# Phase 61 (61-05, RECORD-04): the first-run empty-state guide.
+
+   Content-only fragment swapped into #stage-workspace when the file count is exactly 0
+   (shell._render_stage analyze branch). NEVER carries <html>/<head> — the shell chrome
+   persists across swaps.
+
+   D-08 / T-61-04 — ZERO new input surface: NO free-text path <input>, NO directory-browse
+   endpoint. Each "Scan {agent}" reuses the DISCOVERY scan `POST /pipeline/scans`
+   (agent_id + scan_root Form fields, validated against agent.scan_roots at
+   pipeline_scans.py:366/377 — prefix + `..`-traversal check, T-27-03). This is the CORRECT
+   0-files trigger (Pitfall 2): the parameterless fingerprint scan is wrong here because with
+   0 files there is nothing to fingerprint.
+
+   T-61-01 — every `agent`/`scan_roots` value crosses the DB→HTML boundary through Jinja2
+   autoescape; NEVER `| safe`.
+
+   SP-6 — live scan progress rides the EXISTING #pipeline-stats 5s poll (shell.html): the
+   card binds to $store.pipeline (refreshed by the single chrome poll's OOB seeds). NO
+   self-poll trigger and NO JS timer are added here — no second loop.
+#}
+{% set _scan_btn = 'inline-flex items-center justify-center h-9 px-4 rounded-lg bg-blue-600 dark:bg-blue-700 text-white hover:bg-blue-700 dark:hover:bg-blue-600 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg disabled:opacity-50 disabled:cursor-not-allowed' %}
+<div data-empty-state class="grid place-items-center p-6" x-data>
+    <div class="w-[560px] flex flex-col items-center text-center gap-6">
+        {# Wave logo (64×64, brand blue) — the brand mark. Static inline SVG, no external fetch. #}
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="text-blue-500">
+            <path d="M4 32c6-16 12-16 18 0s12 16 18 0 12-16 18 0" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        </svg>
+
+        {# Display heading (Jura 24px uppercase, 0.2em tracking). #}
+        <h1 tabindex="-1" class="font-jura text-2xl uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100 focus:outline-none">
+            Point Phaze at your music
+        </h1>
+
+        {# Body copy (Inter 14px, muted). #}
+        <p class="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+            No files yet. Scan a directory one of your agents already watches — discovery unlocks
+            metadata, analysis, and the rest of the pipeline.
+        </p>
+
+        {# Agent-roots guide (D-08): one card per registered agent listing its configured
+           scan_roots, each with a "Scan {agent}" DISCOVERY-scan control + a "Configure roots →"
+           link. NO free-text path field, NO directory browser. #}
+        <div class="w-full flex flex-col gap-3">
+            {% for agent in agents %}
+            <div class="rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4 text-left">
+                <div class="flex items-center justify-between gap-3 mb-2">
+                    <span class="font-jura text-xs uppercase tracking-wider text-gray-700 dark:text-gray-300">{{ agent.name }}</span>
+                    <a href="/admin/agents#{{ agent.id }}"
+                       class="text-xs text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded">
+                        Configure roots →
+                    </a>
+                </div>
+                {% if agent.scan_roots %}
+                <ul class="flex flex-col gap-2">
+                    {% for root in agent.scan_roots %}
+                    <li class="flex items-center justify-between gap-3">
+                        <code class="font-mono text-xs text-gray-600 dark:text-gray-400 truncate" title="{{ root }}">{{ root }}</code>
+                        {# Reused DISCOVERY-scan form shape (discover_workspace.html): POST /pipeline/scans
+                           with hidden agent_id + scan_root. The endpoint validates scan_root against
+                           agent.scan_roots (prefix + `..` check). Result swaps in place (progress card). #}
+                        <form hx-post="/pipeline/scans"
+                              hx-target="#empty-state-scan-result"
+                              hx-swap="innerHTML"
+                              class="shrink-0">
+                            <input type="hidden" name="agent_id" value="{{ agent.id }}">
+                            <input type="hidden" name="scan_root" value="{{ root }}">
+                            <button type="submit" class="{{ _scan_btn }}"
+                                    aria-label="Scan {{ root }} on {{ agent.name }}">
+                                Scan {{ agent.id }}
+                            </button>
+                        </form>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="text-xs text-gray-400 dark:text-gray-500">
+                    No scan roots configured. <a href="/admin/agents#{{ agent.id }}" class="text-blue-600 dark:text-blue-400 hover:underline">Configure roots →</a>
+                </p>
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4 text-sm text-gray-500 dark:text-gray-400">
+                No agents registered yet. <a href="/admin/agents" class="text-blue-600 dark:text-blue-400 hover:underline">Register an agent →</a>
+            </div>
+            {% endfor %}
+        </div>
+
+        {# The scan-submit result host (progress card lands here on submit). #}
+        <div id="empty-state-scan-result" class="w-full" aria-live="polite"></div>
+
+        {# Live scan progress — rides the EXISTING /pipeline/stats poll via $store.pipeline
+           (SP-6). Shown only while a scan is in flight (scanBusy > 0). NO second poll loop. #}
+        <div x-show="$store.pipeline.scanBusy > 0" x-cloak
+             class="w-full rounded-xl bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border p-4 text-left">
+            <div class="h-1.5 w-full rounded-full bg-gray-100 dark:bg-white/5 overflow-hidden mb-2">
+                <div class="h-1.5 bg-blue-400 rounded-full animate-pulse w-1/2"></div>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 font-mono">
+                Scanning… · found <span x-text="$store.pipeline.discovered"></span> · de-duping against existing…
+            </p>
+        </div>
+    </div>
+</div>
