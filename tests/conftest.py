@@ -1,6 +1,7 @@
 """Shared test fixtures for Phaze test suite."""
 
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 import hashlib
 import os
 import secrets
@@ -14,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from phaze.database import get_session
 from phaze.main import create_app
 from phaze.models.agent import LEGACY_AGENT_ID, Agent
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.base import Base
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -491,5 +494,157 @@ def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-d
         tracklist.latest_version_id = version.id
         await session.commit()
         return file, tracklist, version
+
+    return _make
+
+
+# ---------------------------------------------------------------------------
+# Phase 61 (Plan 61-01): record / palette / agents / empty-state seed factories.
+#
+# Wave-0 read-model fixtures the four surface plans (61-02..05) verify against.
+# Same async-factory shape as make_file above (build on make_file; add -> commit
+# -> refresh); no backend/logic change. See 61-VALIDATION.md "Wave 0 Requirements".
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+def seed_file_with_windows(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
+    """Return an async factory seeding a file + its ``AnalysisResult`` + fine/coarse ``AnalysisWindow`` rows.
+
+    Backs the record timeline (RECORD-01): the aggregate carries bpm/musical_key with
+    ``sampled=True`` and non-NULL fine/coarse window counts; the per-window rows span
+    ``tier="fine"`` (bpm/musical_key populated) and ``tier="coarse"`` (mood/style populated)
+    with distinct ``window_index`` so a timeline read has ordered, tiered data.
+    """
+
+    async def _make(
+        *,
+        fine_count: int = 3,
+        coarse_count: int = 2,
+        original_filename: str = "analyzed-set.mp3",
+    ) -> tuple[FileRecord, AnalysisResult, list[AnalysisWindow]]:
+        file = await make_file(state=FileState.ANALYZED, original_filename=original_filename)
+        result = AnalysisResult(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            bpm=128.0,
+            musical_key="Am",
+            mood="energetic",
+            style="techno",
+            sampled=True,
+            fine_windows_analyzed=fine_count,
+            fine_windows_total=fine_count,
+            coarse_windows_analyzed=coarse_count,
+            coarse_windows_total=coarse_count,
+            analysis_completed_at=datetime.now(UTC),
+        )
+        session.add(result)
+        windows: list[AnalysisWindow] = []
+        for i in range(fine_count):
+            windows.append(
+                AnalysisWindow(
+                    id=uuid.uuid4(),
+                    file_id=file.id,
+                    tier="fine",
+                    window_index=i,
+                    start_sec=float(i * 30),
+                    end_sec=float((i + 1) * 30),
+                    bpm=128.0 + i,
+                    musical_key="Am" if i % 2 == 0 else "C",
+                )
+            )
+        for i in range(coarse_count):
+            windows.append(
+                AnalysisWindow(
+                    id=uuid.uuid4(),
+                    file_id=file.id,
+                    tier="coarse",
+                    window_index=i,
+                    start_sec=float(i * 60),
+                    end_sec=float((i + 1) * 60),
+                    mood="energetic" if i % 2 == 0 else "dark",
+                    style="techno",
+                )
+            )
+        session.add_all(windows)
+        await session.commit()
+        await session.refresh(result)
+        return file, result, windows
+
+    return _make
+
+
+@pytest_asyncio.fixture
+def seed_distinct_artists(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
+    """Return an async factory seeding ``FileMetadata`` + ``Tracklist`` rows with distinct artists.
+
+    Backs ``distinct_artists()`` (RECORD-02, D-05): includes a name SHARED across both tables
+    (must collapse to ONE distinct result) and a ``None`` artist in each table (must be excluded).
+    Returns the sorted set of the non-None artist names actually seeded.
+    """
+
+    async def _make() -> set[str]:
+        shared = "Bonobo"
+        # FileMetadata artists (one shared, one unique, one None).
+        meta_artists: list[str | None] = [shared, "Four Tet", None]
+        for artist in meta_artists:
+            file = await make_file(state=FileState.EXECUTED, original_filename="meta.mp3")
+            session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, artist=artist, title="t"))
+        # Tracklist artists (one shared with metadata, one unique, one None).
+        tl_artists: list[str | None] = [shared, "Caribou", None]
+        for artist in tl_artists:
+            session.add(
+                Tracklist(
+                    id=uuid.uuid4(),
+                    external_id=f"ext-{uuid.uuid4().hex[:12]}",
+                    source_url="https://example.test/tl",
+                    artist=artist,
+                    status="approved",
+                )
+            )
+        await session.commit()
+        return {"Bonobo", "Four Tet", "Caribou"}
+
+    return _make
+
+
+@pytest_asyncio.fixture
+def seed_cloud_jobs(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
+    """Return an async factory seeding ``CloudJob`` rows in a chosen liveness mix.
+
+    Backs ``classify_compute_lanes`` (RECORD-03, D-07): ``running`` count seeds ACTIVE-lane
+    rows, ``submitted_inadmissible`` count seeds WAITING-lane rows (status=submitted +
+    ``inadmissible=True``); passing all-zero leaves the IDLE (no live jobs) case. Each CloudJob
+    needs a distinct ``file_id`` (unique FK), so every row gets its own ``make_file``.
+    """
+
+    async def _make(*, running: int = 0, submitted_inadmissible: int = 0) -> list[CloudJob]:
+        jobs: list[CloudJob] = []
+        for _ in range(running):
+            file = await make_file(state=FileState.AWAITING_CLOUD, original_filename="cloud-run.mp3")
+            jobs.append(
+                CloudJob(
+                    id=uuid.uuid4(),
+                    file_id=file.id,
+                    s3_key=f"staging/{file.id}",
+                    status=CloudJobStatus.RUNNING.value,
+                )
+            )
+        for _ in range(submitted_inadmissible):
+            file = await make_file(state=FileState.AWAITING_CLOUD, original_filename="cloud-wait.mp3")
+            jobs.append(
+                CloudJob(
+                    id=uuid.uuid4(),
+                    file_id=file.id,
+                    s3_key=f"staging/{file.id}",
+                    status=CloudJobStatus.SUBMITTED.value,
+                    inadmissible=True,
+                )
+            )
+        session.add_all(jobs)
+        await session.commit()
+        for job in jobs:
+            await session.refresh(job)
+        return jobs
 
     return _make
