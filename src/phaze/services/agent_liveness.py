@@ -1,10 +1,17 @@
 """Agent liveness classification (Phase 29 D-12 + UI-SPEC §Status Pill Component).
 
-Pure functions only — no DB, no I/O. The router (``phaze.routers.admin_agents``)
-calls ``classify(agent, now)`` for every row and injects the result on a
-transient ``agent._status`` attribute, then sorts the list with
-``sort_key(agent, now)`` before rendering. Tests and renderer share a single
+``classify``/``sort_key`` are pure functions — no DB, no I/O. The router
+(``phaze.routers.admin_agents``) calls ``classify(agent, now)`` for every row and
+injects the result on a transient ``agent._status`` attribute, then sorts the list
+with ``sort_key(agent, now)`` before rendering. Tests and renderer share a single
 source of truth via ``phaze.constants.AGENT_LIVENESS_*`` thresholds.
+
+``classify_compute_lanes(session)`` (RECORD-03 / D-07) is the one DB-touching read
+here — a degrade-safe, read-only ``CloudJob`` aggregation that models the ephemeral
+k8s burst lane as an Active/Waiting/Idle Job-based identity (NEVER a perpetually-DEAD
+agent). It mirrors the ``try/except → default`` count discipline in
+``phaze.services.pipeline`` and lives beside ``classify`` because both answer the same
+operator question ("what's alive right now?") for the two-section Agents page.
 
 Status precedence (D-12 LOCKED):
 
@@ -36,13 +43,23 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Literal
 
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
+import structlog
+
 from phaze.constants import AGENT_LIVENESS_ALIVE_SECONDS, AGENT_LIVENESS_STALE_SECONDS
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 
 
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from phaze.models.agent import Agent
+
+
+logger = structlog.get_logger(__name__)
 
 
 AgentStatus = Literal["alive", "stale", "dead", "revoked", "never"]
@@ -112,3 +129,58 @@ def sort_key(agent: Agent, now: datetime) -> tuple[int, int, float]:
     # group.
     neg_last_seen = math.inf if agent.last_seen_at is None else -agent.last_seen_at.timestamp()
     return (revoked_int, status_rank, neg_last_seen)
+
+
+ComputeLaneState = Literal["ACTIVE", "WAITING", "IDLE"]
+"""3-state liveness for the k8s burst lane (RECORD-03 / D-07). DEAD is NEVER a member.
+
+The Kubernetes burst lane is modeled as an ephemeral, Job-based identity — NOT a
+heartbeating agent — so it can never be "perpetually DEAD". Its liveness is derived
+live from in-flight ``CloudJob`` counts and degrades to ``IDLE`` (never DEAD/red) on
+any DB error (KDEPLOY-04).
+"""
+
+
+async def classify_compute_lanes(session: AsyncSession) -> tuple[str, int]:
+    """Return the ephemeral compute-lane liveness state + in-flight count (RECORD-03, D-07).
+
+    Read-only ``CloudJob`` aggregation — mirrors the degrade-safe ``try/except → default``
+    count shape of :func:`phaze.services.pipeline.get_inadmissible_count` /
+    :func:`phaze.services.pipeline.get_cloud_phase_counts`. Precedence:
+
+    - ``("ACTIVE", running)`` when ≥1 ``CloudJob.status == running`` — the lane is doing work;
+    - ``("WAITING", waiting)`` when no job is running but ≥1 is ``submitted`` AND
+      ``inadmissible`` (blocked behind a misconfigured Kueue quota);
+    - ``("IDLE", 0)`` when nothing is in-flight.
+
+    Degrade-safe (T-61-08 / KDEPLOY-04): on any :class:`~sqlalchemy.exc.SQLAlchemyError`
+    the session is rolled back and the lane degrades to ``("IDLE", 0)`` — a DB hiccup
+    must NEVER paint the lane DEAD/red (a false alarm). This is a pure aggregation the
+    router injects on the render (never a perpetually-DEAD agent row).
+    """
+    try:
+        running = int((await session.execute(select(func.count(CloudJob.id)).where(CloudJob.status == CloudJobStatus.RUNNING.value))).scalar() or 0)
+        waiting = int(
+            (
+                await session.execute(
+                    select(func.count(CloudJob.id)).where(
+                        CloudJob.status == CloudJobStatus.SUBMITTED.value,
+                        CloudJob.inadmissible.is_(True),
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+    except SQLAlchemyError:
+        logger.warning("compute_lane_liveness_degraded", exc_info=True)
+        try:
+            await session.rollback()
+        except SQLAlchemyError:
+            logger.warning("compute_lane_liveness_rollback_failed", exc_info=True)
+        return ("IDLE", 0)
+
+    if running >= 1:
+        return ("ACTIVE", running)
+    if waiting >= 1:
+        return ("WAITING", waiting)
+    return ("IDLE", 0)
