@@ -1,10 +1,11 @@
 ---
 phase: 60
 slug: review-apply
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-06-30
+reviewed_at: 2026-06-30
 inherits: 59-identify-workspaces/59-UI-SPEC.md
 also_inherits:
   - 58-enrich-analyze-workspaces/58-UI-SPEC.md
