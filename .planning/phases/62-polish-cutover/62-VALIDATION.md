@@ -2,7 +2,7 @@
 phase: 62
 slug: polish-cutover
 status: draft
-nyquist_compliant: false
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-01
 ---
@@ -45,7 +45,7 @@ created: 2026-07-01
 | 62-01-03 | 01 | 1 | CUT-01 | — | Record slide-in is `role=dialog aria-modal=true` with accessible name + x-trap | structural | `uv run pytest tests/test_a11y_record.py -q` | ❌ W0 | ⬜ pending |
 | 62-02-01 | 02 | 1 | CUT-04 | — | rail labels use `max-lg:sr-only` (readable, not hidden); per-stage inline-SVG icons present with aria-hidden + node accessible label; rail collapses <lg | structural | `uv run pytest tests/test_rail_narrow_width.py -q` | ❌ W0 | ⬜ pending |
 | 62-03-01 | 03 | 1 | CUT-03 | — | README + docs/architecture.md + docs/project-structure.md contain the new-IA sections (shell/rail/⌘K/stages); no stale tab-UI nav references | source assertion | `uv run pytest tests/test_docs_ia_current.py -q` | ❌ W0 | ⬜ pending |
-| 62-04-01 | 04 (LAST) | 2 | CUT-02 | — | 8 wrapper templates + 6 orphaned partials deleted; `_ALLOWLIST` empty; closure logic untouched | guard | `uv run pytest tests/test_dead_template_guard.py -q` | ✅ | ⬜ pending |
+| 62-04-01 | 04 (LAST) | 2 | CUT-02 | — | 8 wrapper templates + 6 orphaned partials deleted; `_ALLOWLIST` empty; closure logic untouched; the 5 content routers' live HX branch KEPT | guard | `uv run pytest tests/test_dead_template_guard.py -q` | ✅ | ⬜ pending |
 | 62-04-02 | 04 (LAST) | 2 | CUT-02 | — | legacy non-HX GET still 302-redirects into shell (SHELL-05 bookmark preservation) after wrapper deletion | behavior | `uv run pytest tests/test_shell_routes.py -q` | ✅ (extend) | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
@@ -60,7 +60,7 @@ created: 2026-07-01
 - [ ] `tests/test_rail_narrow_width.py` — CUT-04 max-lg collapse + inline-SVG icon stubs
 - [ ] `tests/test_docs_ia_current.py` — CUT-03 docs-contain-new-IA stubs
 
-*Existing infrastructure (pytest, `tests/conftest.py`, the `test_dead_template_guard.py` + `test_base_html_sri.py` + `test_shell_routes.py` guards) covers CUT-02. New a11y/rail/docs guard files are the only Wave 0 additions. Follow the pure-filesystem/rendered-HTML assertion idiom of the existing guards — no browser/axe dependency.*
+*Existing infrastructure (pytest, `tests/conftest.py`, the `test_dead_template_guard.py` + `test_base_html_sri.py` + `test_shell_routes.py` guards) covers CUT-02. New a11y/rail/docs guard files are the only Wave 0 additions — they are authored inline as the first (TDD) task of plans 01–03, so `wave_0_complete` stays false at planning time even though every plan task already carries a concrete `<automated>` verify. Follow the pure-filesystem/rendered-HTML assertion idiom of the existing guards — no browser/axe dependency.*
 
 ---
 
@@ -77,11 +77,14 @@ created: 2026-07-01
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 180s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies — every plan task carries a concrete inline `<automated>` command; no MISSING placeholders remain
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references — the 5 new guard test files are authored inline as the first task of plans 01–03
+- [x] No watch-mode flags
+- [x] Feedback latency < 180s — 62-04 Task 3 leads with the sub-second fast-lane filesystem guards, full suite is the secondary final gate
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+*Note: `wave_0_complete` remains false because the CUT-01/03/04 guard test files are created inline (TDD) during execution, not pre-authored. This is intentional — every task nonetheless ships a real automated command, so the phase is Nyquist-compliant.*
+
+**Approval:** approved — all tasks carry concrete automated commands; 62-04 fast-lane guards give sub-second feedback with the full suite as the final gate.
+</content>

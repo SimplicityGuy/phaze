@@ -385,18 +385,21 @@ This is a rename/removal-adjacent phase (deleting templates + routes), so the in
 | A3 | The prototype has no per-stage icon set to match, so D-08 glyphs are Claude's choice. | CUT-04 / D-08 | Verified prototype uses dots — low risk. |
 | A4 | Removing the 8 tab links from base.html nav won't break audit/agents page tests. | base.html reconciliation | Audit `tests/test_routers/test_execution.py` + admin_agents tests for nav-link assertions before editing. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Remove legacy HX branches, or leave as thin dead paths?** (D-03 discretion)
    - Known: minimal cut (leave HX branches) → 6-partial cascade, guard green, less churn.
    - Unclear: whether "no orphaned dead code" intent wants the HX branches gone too.
    - Recommendation: leave HX branches (they're small, harmless, and their partials are shared with record/shell in some cases); if removed, re-run the reach simulation first.
+   - **RESOLVED (2026-07-01) → keep the HX branches.** Confirmed via source that the per-router HX branches are **LIVE** (they serve the shell workspaces' pagination/filter/sort fragments — `proposals.py:164-165` → `proposal_content.html`, and identically tags/cue/tracklists/duplicates), NOT dead. See corrected **CONTEXT.md D-03b**: delete only the dead `return ...list.html` tails + `pipeline.py`'s genuinely-dead dashboard branch; KEEP the live HX branches (stripping them would break live shell functionality — REQUIREMENTS.md line 82). This recommendation was the correct one; the interim "strip them" framing was a mis-scope, now reverted.
 
 2. **Does `docs/quick-start.md` exist and need nav corrections?** (D-06 discretion)
    - Recommendation: planner reads `docs/` at plan time; correct inline only if it has now-wrong nav steps.
+   - **RESOLVED → per CONTEXT.md D-06:** `quick-start.md` legacy-nav steps are corrected inline; `architecture.md` + `project-structure.md` get an added UI/IA section (they have none today). Handled by plan 62-03.
 
 3. **base.html nav: strip to logo+theme only, or add a shell "back" affordance for audit/agents?**
    - Recommendation: keep logo home link (`href="/"`) + theme toggle; delete the 8 tab links. No new capability.
+   - **RESOLVED → per CONTEXT.md D-04a:** strip to logo home link + theme toggle only (no separate "back" affordance). Handled by plan 62-04.
 
 ## Environment Availability
 
