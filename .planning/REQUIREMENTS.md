@@ -64,25 +64,25 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CI-01 | TBD | Pending |
-| CI-02 | TBD | Pending |
-| CI-03 | TBD | Pending |
-| CI-04 | TBD | Pending |
-| VER-01 | TBD | Pending |
-| VER-02 | TBD | Pending |
-| VER-03 | TBD | Pending |
-| VER-04 | TBD | Pending |
-| COV-01 | TBD | Pending |
-| COV-02 | TBD | Pending |
-| DOCS-01 | TBD | Pending |
-| CLEAN-01 | TBD | Pending |
-| CLEAN-02 | TBD | Pending |
+| CI-01 | Phase 63 | Pending |
+| CI-02 | Phase 63 | Pending |
+| CI-03 | Phase 63 | Pending |
+| CI-04 | Phase 63 | Pending |
+| VER-01 | Phase 65 | Pending |
+| VER-02 | Phase 65 | Pending |
+| VER-03 | Phase 65 | Pending |
+| VER-04 | Phase 65 | Pending |
+| COV-01 | Phase 64 | Pending |
+| COV-02 | Phase 64 | Pending |
+| DOCS-01 | Phase 66 | Pending |
+| CLEAN-01 | Phase 66 | Pending |
+| CLEAN-02 | Phase 66 | Pending |
 
 **Coverage:**
 - Milestone requirements: 13 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 13 ⚠️ (resolved by roadmapper)
+- Mapped to phases: 13 ✓ (Phase 63: CI-01..04 · Phase 64: COV-01/02 · Phase 65: VER-01..04 · Phase 66: DOCS-01, CLEAN-01/02)
+- Unmapped: 0 ✓ (no orphans, no duplicates)
 
 ---
 *Requirements defined: 2026-07-02*
-*Last updated: 2026-07-02 after initial definition*
+*Last updated: 2026-07-02 — roadmap created; all 13 requirements mapped to phases 63-66*
