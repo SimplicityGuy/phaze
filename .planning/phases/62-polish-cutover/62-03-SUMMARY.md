@@ -99,6 +99,11 @@ None - no external service configuration required.
 - CUT-03 complete. The remaining Phase 62 work (CUT-01 a11y, CUT-02 dead-code cutover, CUT-04 narrow-width rail) is independent of this docs plan.
 - Note for CUT-02: when the legacy wrappers/routers are deleted, the redirect-into-shell behavior the docs now describe must remain — the docs-currency guard does not assert redirects (that is the dead-template guard's and router tests' job).
 
+## Self-Check: PASSED
+
+- Created/modified files all present on disk (tests/test_docs_ia_current.py, README.md, docs/architecture.md, docs/project-structure.md, docs/quick-start.md).
+- All task commits present in git log: `106f2f0` (test guard), `721db69` (doc edits), `d986da2` (summary).
+
 ---
 *Phase: 62-polish-cutover*
 *Completed: 2026-07-02*
