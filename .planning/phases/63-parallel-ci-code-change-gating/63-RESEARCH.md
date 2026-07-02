@@ -512,7 +512,7 @@ gh run view <run-id> --json jobs \
 
 ## Open Questions
 
-1. **Q-A — "Unit buckets run service-free" (D-07) vs 55% DB penetration.**
+1. **Q-A — "Unit buckets run service-free" (D-07) vs 55% DB penetration.** _(RESOLVED — CONTEXT D-07 revised: every bucket leg provisions postgres+redis; "service-free unit buckets" dropped. See 63-03 Task 1.)_
    - What we know: 117/212 test files consume DB fixtures and are auto-marked `integration`; only 5
      live under `integration/`/`test_migrations/` today. Under a *directory* partition (D-03), those
      112 DB-backed files sit in domain buckets (review/analyze/identify/etc.), so those buckets are
@@ -525,7 +525,7 @@ gh run view <run-id> --json jobs \
      dedicated `integration` bucket still exists but is not uniquely privileged in provisioning.
      **This likely warrants a CONTEXT revisit or an explicit planner note against D-07.**
 
-2. **Q-B — `-n auto` inside every bucket (D-01) vs the shared-DB fixture race (Pitfall 4).**
+2. **Q-B — `-n auto` inside every bucket (D-01) vs the shared-DB fixture race (Pitfall 4).** _(RESOLVED — CONTEXT D-01 revised: DB buckets run serial; `-n auto` only on empirically-confirmed DB-free buckets. See 63-03 Task 1.)_
    - What we know: `async_engine` does `create_all`/`drop_all` on one `TEST_DATABASE_URL`; xdist
      workers would race it.
    - What's unclear: Whether to run DB buckets serially (matrix-only parallelism — satisfies CI-02,
@@ -534,7 +534,7 @@ gh run view <run-id> --json jobs \
      isolation as an optional enhancement. Note against D-01 that literal "`-n auto` inside each
      bucket" is unsafe for DB buckets without isolation work.
 
-3. **Q-C — Bucket assignment is manual/semantic.** Filename keywords ≠ bucket names ("discovery"=0
+3. **Q-C — Bucket assignment is manual/semantic.** _(RESOLVED — delivered as the `tests/BUCKETS.md` mapping artifact in 63-02 Task 1; partition guard enforces completeness.)_ Filename keywords ≠ bucket names ("discovery"=0
    files, "scan"=9). Someone must assign all 212 files to a bucket. Recommendation: produce an explicit
    file→bucket mapping table as a plan artifact; the partition-guard (D-06) enforces completeness.
 

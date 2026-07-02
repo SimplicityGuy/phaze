@@ -1,8 +1,8 @@
 ---
 phase: 63
 slug: parallel-ci-code-change-gating
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-02
 ---
@@ -79,11 +79,11 @@ Key seams to validate — these are what make CI-01/CI-03 *trustworthy*:
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references (pytest-xdist, bucket recipes, partition guard)
-- [ ] No watch-mode flags
-- [ ] Feedback latency acceptable
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies (checkpoint Task 63-01/1 uses `<how-to-verify>`; all others carry `<automated>`)
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (pytest-xdist, bucket recipes, partition guard)
+- [x] No watch-mode flags
+- [x] Feedback latency acceptable (full-suite `just integration-test` in 63-02 Task 2 is accepted latency — inherent to proving the reorg is behavior-preserving)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved (plan-checker review, 2026-07-02). Wave 0 not yet executed.
