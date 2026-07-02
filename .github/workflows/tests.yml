@@ -12,10 +12,28 @@ permissions:
   contents: read
 
 jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      buckets: ${{ steps.buckets.outputs.buckets }}
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: 🪣 Read bucket list
+        id: buckets
+        run: echo "buckets=$(jq -c . tests/buckets.json)" >> "${GITHUB_OUTPUT}"
+
   test:
-    name: Tests
+    name: Tests (${{ matrix.bucket }})
+    needs: [setup]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        bucket: ${{ fromJSON(needs.setup.outputs.buckets) }}
     services:
       postgres:
         image: postgres:18-alpine
@@ -76,14 +94,19 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
-      - name: 🧪 Run tests with coverage
-        run: just test-ci
+      - name: 🧪 Run bucket tests with coverage
+        # Every bucket contains DB-fixture (integration-marked) tests — verified empirically at
+        # execution: `pytest tests/<bucket> -m integration --collect-only` returns >0 for all 9
+        # buckets. So no bucket qualifies for `-n auto` (xdist would race on schema create/drop
+        # against the shared phaze_test DB). All buckets run serial; matrix fan-out alone delivers
+        # CI-02's parallelism. If a future bucket becomes DB-free, add a matrix.include entry
+        # passing a third `-n auto` arg here.
+        run: just test-bucket ${{ matrix.bucket }}
 
-      - name: 📊 Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+      - name: 📤 Upload coverage shard
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          flags: unittests
-          disable_search: true
-          files: ./coverage.xml
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          name: coverage-${{ matrix.bucket }}
+          path: .coverage.${{ matrix.bucket }}
+          include-hidden-files: true
+          if-no-files-found: error
