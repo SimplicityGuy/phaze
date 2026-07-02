@@ -86,3 +86,8 @@ None — plan executed exactly as written. The `just test-bucket` / `just covera
 
 - Adding a new documentation path type (e.g. `.rst` at repo root, a new top-level docs dir) means editing the single `grep -vE` pattern in `scripts/classify-changed-files.sh` and adding a case to `tests/shared/test_change_gate.py` — the classifier is the one place to change, and the test guards it.
 - The required branch-protection check remains `aggregate-results`; this plan did not touch the required-check topology.
+
+## Self-Check: PASSED
+
+- Files: FOUND `scripts/classify-changed-files.sh`, FOUND `tests/shared/test_change_gate.py`, FOUND `.github/workflows/ci.yml`, FOUND `justfile`.
+- Commits: FOUND `372609a` (Task 1), FOUND `6025e48` (Task 2).

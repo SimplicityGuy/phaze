@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.0
 milestone_name: Engineering Improvements
-status: executing
-last_updated: "2026-07-02T21:05:46.105Z"
+status: verifying
+last_updated: "2026-07-02T21:13:17.941Z"
 last_activity: 2026-07-02
 progress:
   total_phases: 33
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
-  percent: 0
+  completed_plans: 4
+  percent: 3
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 Phase: 63 (parallel-ci-code-change-gating) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-02
 
 ## Performance Metrics
@@ -113,6 +113,7 @@ Last activity: 2026-07-02
 - [Phase 63]: 63-01: relative_files=true added for cross-shard coverage combine; concurrency kept [greenlet,thread] with NO multiprocessing (would corrupt CI-03 baseline); fail_under stays 85 (Phase 64 raises it)
 - [Phase 63]: 63-01: tests/buckets.json is the single source of truth for the 9 buckets; test-bucket XDIST defaults serial (DB-safe), -n auto opt-in for DB-free buckets
 - [Phase 63]: 63-03: tests.yml runs a setup->bucket-matrix->combine topology; all 9 buckets serial (each has DB-fixture tests), matrix fan-out alone gives CI-02; single combine job yields one coverage.xml + one Codecov upload at --fail-under=85 (CI-03), CODECOV_TOKEN scoped to combine only
+- [Phase 63]: 63-04: broadened doc-only CI skip to *.md + .planning/** + LICENSE + docs/** + *.txt; conservative keep-only-non-doc classifier keeps code-changed=true for any non-doc path (security T-63-04-01); classifier extracted to shellcheck-clean scripts/classify-changed-files.sh invoked via `just detect-code-changes` (D-10) + unit-tested by tests/shared/test_change_gate.py; ci.yml SHA edge-case block + aggregate-results skip-with-success contract left byte-for-byte unchanged (no paths-ignore)
 
 ### Pending Todos
 
@@ -178,6 +179,7 @@ None.
 | Phase 63 P01 | 8min | 3 tasks | 4 files |
 | Phase 63 P02 | 40min | 3 tasks | 265 files |
 | Phase 63 P03 | ~15min | 2 tasks | 1 files |
+| Phase 63 P04 | ~20min | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -219,8 +221,8 @@ These are tracked for the next deploy; they are NOT blockers for the v7.0 milest
 
 ## Session Continuity
 
-Last session: 2026-07-02T21:04:25.781Z
-Stopped at: Completed 63-01-PLAN.md
+Last session: 2026-07-02T21:13:17.935Z
+Stopped at: Completed 63-04-PLAN.md — Phase 63 ready for verification
 Resume file: None
 
 ## Operator Next Steps
