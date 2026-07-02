@@ -199,6 +199,18 @@ Items acknowledged and deferred at the **v6.0** milestone close on 2026-06-29. A
 
 These are tracked for the v6.0 deploy; they are NOT blockers for the milestone record. The JOB-ENV-CONTRACT seam fix (quick 260628-wzq) makes the live E2E re-run especially important.
 
+Items acknowledged and deferred at the **v7.0** milestone close on 2026-07-02. Both are
+**deployment-gated** — they unblock on the next homelab/cluster rollout (see
+`57.1-HUMAN-UAT.md`). `57.1-VERIFICATION.md` is already `passed`; these are live confirmations
+of behavior already proven by green automated proxies (57.1-UAT tests 5 + 7).
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 57.1-UAT test 8 (UAT-57.1-01) | deferred-to-live | Real multi-hour `kill -9` mid-analysis on the local/A1 lane; needs the homelab + a real multi-hour concert file. Proxied by transport kill-safety + `put_analysis`-replace idempotency tests (green on real Postgres) |
+| uat | 57.1-UAT test 9 (UAT-57.1-02) | deferred-to-live | Live Kueue k8s-lane mid-flight progress post; needs a live cluster. Proxied by the lane-bridge test (green) |
+
+These are tracked for the next deploy; they are NOT blockers for the v7.0 milestone record. Confirm live, then flip the 57.1 UAT notes to passed.
+
 ## Session Continuity
 
 Last session: 2026-07-02T06:19:23.305Z
