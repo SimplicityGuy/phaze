@@ -804,11 +804,13 @@ Plans:
 
 **Notes**: Most correctness-sensitive phase (irreplaceable archive). REVIEW-02 fixes the live-polling stale-bulk-approval hazard — pick a fixed server-side confidence threshold at plan time (REVIEW-06 defers configurable thresholds; check the `tracklists.py` `reject-low` endpoint as a reference value). The 5s diff-list poll must OOB-update counts **only** — never re-render the operator's in-progress selection subtree. No phase research needed.
 **Plans**: 5 plans in 2 waves
+
 - [x] 61-01-PLAN.md — Foundation: @alpinejs/focus dep + SRI gate (shell.html+base.html) + Wave-0 tests/fixtures
 - [x] 61-02-PLAN.md — Full-record slide-in (RECORD-01): GET /record/{file_id} fragment, persistent x-trap host, composed body, row/⌘K open
 - [x] 61-03-PLAN.md — ⌘K command palette (RECORD-02): distinct_artists() + grouped results + roving arrow-nav + x-trap
 - [x] 61-04-PLAN.md — Agents page (RECORD-03): heartbeating section + ephemeral compute lanes (classify_compute_lanes, never DEAD)
 - [x] 61-05-PLAN.md — First-run empty state (RECORD-04): agent-roots guide + DISCOVERY scan (POST /pipeline/scans)
+
 **UI hint**: yes
 
 ### Phase 61: Full record + ⌘K + Agents
@@ -841,12 +843,17 @@ Plans:
 
 **Notes**: CUT-02 deletes the legacy page wrappers (`proposals/list.html`, `tags/list.html`, `duplicates/list.html`, `cue/list.html`, `tracklists/list.html`, `search/page.html`, `preview/tree.html`, `pipeline/dashboard.html`, and the `base.html` nav block) via three-way grep + the dead-template test; **keep all `partials/`** — they became the shell's fragments. No phase research needed.
 **Plans**: 4 plans (3 in wave 1 · CUT-02 cutover last in wave 2)
-
 Plans:
+**Wave 1**
+
 - [ ] 62-01-PLAN.md — CUT-01 accessibility: close the ⌘K combobox accessible-name gap, remove the dead detail-pane aside, and lock the a11y baseline with a filesystem structural guard [Wave 1]
 - [ ] 62-02-PLAN.md — CUT-04 narrow-width rail: max-lg icon-only collapse + 15 per-stage inline-SVG glyphs (sr-only labels, title tooltips) + collapse guard [Wave 1]
 - [ ] 62-03-PLAN.md — CUT-03 docs: refresh README + docs/architecture.md + docs/project-structure.md + quick-start nav for the DAG-centric IA + docs-currency guard [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 62-04-PLAN.md — CUT-02 dead-code cutover (LAST): delete 8 wrapper templates + orphaned partials, strip base.html tab-bar nav, drain the dead-template allowlist to empty [Wave 2]
+
 **UI hint**: yes
 
 ## Backlog (unscheduled — no phase number yet)
