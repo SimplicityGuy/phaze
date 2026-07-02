@@ -32,6 +32,7 @@ metrics:
   completed: "2026-07-01"
   tasks: 2
   files_changed: 2
+requirements-completed: [CUT-04]
 ---
 
 # Phase 62 Plan 02: Narrow-Width Icon Rail (CUT-04) Summary

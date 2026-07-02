@@ -104,21 +104,21 @@ Each v7.0 requirement maps to exactly one phase. **Coverage: 28/28 — no orphan
 | WORK-03 | Phase 58 — Enrich + Analyze workspaces | Done |
 | WORK-04 | Phase 58 — Enrich + Analyze workspaces | Done |
 | WORK-05 | Phase 58 — Enrich + Analyze workspaces | Done |
-| IDENT-01 | Phase 59 — Identify workspaces | Planned |
-| IDENT-02 | Phase 59 — Identify workspaces | Planned |
-| REVIEW-01 | Phase 60 — Review & Apply | Planned |
-| REVIEW-02 | Phase 60 — Review & Apply | Planned |
-| REVIEW-03 | Phase 60 — Review & Apply | Planned |
-| REVIEW-04 | Phase 60 — Review & Apply | Planned |
-| REVIEW-05 | Phase 60 — Review & Apply | Planned |
-| RECORD-01 | Phase 61 — Full record + ⌘K + Agents | Planned |
-| RECORD-02 | Phase 61 — Full record + ⌘K + Agents | Planned |
-| RECORD-03 | Phase 61 — Full record + ⌘K + Agents | Planned |
-| RECORD-04 | Phase 61 — Full record + ⌘K + Agents | Planned |
-| CUT-01 | Phase 62 — Polish & cutover | Planned |
-| CUT-02 | Phase 62 — Polish & cutover | Planned |
-| CUT-03 | Phase 62 — Polish & cutover | Planned |
-| CUT-04 | Phase 62 — Polish & cutover | Planned |
+| IDENT-01 | Phase 59 — Identify workspaces | Done |
+| IDENT-02 | Phase 59 — Identify workspaces | Done |
+| REVIEW-01 | Phase 60 — Review & Apply | Done |
+| REVIEW-02 | Phase 60 — Review & Apply | Done |
+| REVIEW-03 | Phase 60 — Review & Apply | Done |
+| REVIEW-04 | Phase 60 — Review & Apply | Done |
+| REVIEW-05 | Phase 60 — Review & Apply | Done |
+| RECORD-01 | Phase 61 — Full record + ⌘K + Agents | Done |
+| RECORD-02 | Phase 61 — Full record + ⌘K + Agents | Done |
+| RECORD-03 | Phase 61 — Full record + ⌘K + Agents | Done |
+| RECORD-04 | Phase 61 — Full record + ⌘K + Agents | Done |
+| CUT-01 | Phase 62 — Polish & cutover | Done |
+| CUT-02 | Phase 62 — Polish & cutover | Done |
+| CUT-03 | Phase 62 — Polish & cutover | Done |
+| CUT-04 | Phase 62 — Polish & cutover | Done |
 | RECORD-05 | Future (deferred — v7.x) | Deferred |
 | SHELL-06 | Future (deferred — v7.x) | Deferred |
 | REVIEW-06 | Future (deferred — v7.0 ships fixed threshold) | Deferred |
