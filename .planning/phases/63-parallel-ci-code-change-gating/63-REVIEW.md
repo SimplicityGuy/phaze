@@ -17,7 +17,21 @@ findings:
   warning: 2
   info: 2
   total: 5
-status: issues_found
+status: resolved
+resolution:
+  applied: 2026-07-02
+  commit: b24853a
+  fixed: [CR-01, WR-01]
+  accepted: [WR-02, IN-01, IN-02]
+  note: >-
+    CR-01 (aggregate-results fail-open) and WR-01 (empty-input skip) fixed in
+    b24853a — operator approved overriding the plan's locked "aggregate-results
+    unchanged" / "empty => false" decisions. aggregate-results is now a deny-list
+    (detect-changes + quality must be success; code changes require every gated
+    job success; docs-only skip-with-success preserved). Empty/whitespace diff
+    now fails safe to code-changed=true. WR-02 (docs/ + .txt doc patterns) accepted
+    as the plan-sanctioned D-08 doc-only set (latent: repo has no tracked .txt and
+    docs/ is .md/.html only). IN-01/IN-02 informational, no change.
 ---
 
 # Phase 63: Code Review Report
