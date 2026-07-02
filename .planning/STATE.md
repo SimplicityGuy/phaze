@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
 status: executing
-last_updated: "2026-07-02T05:10:16.651Z"
-last_activity: 2026-07-02 -- Phase 62 execution started
+last_updated: "2026-07-02T06:22:29.314Z"
+last_activity: 2026-07-02
 progress:
   total_phases: 29
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 28
-  completed_plans: 24
-  percent: 21
+  completed_plans: 28
+  percent: 24
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 ## Current Position
 
 Phase: 62 (polish-cutover) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 62
-Last activity: 2026-07-02 -- Phase 62 execution started
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-07-02
 
 Progress: [██████████] 100%
 
@@ -108,6 +108,8 @@ Progress: [██████████] 100%
 - [Phase ?]: Phase 60-04: dedupe/cue wired to VERIFIED endpoints not the UI-SPEC sketch — resolve uses Form canonical_id + sha256_hash key (not group_id/keeper_id); cue APPROVE posts /cue/{id}/generate (generate IS the write, no /approve route)
 - [Phase ?]: Phase 60-04: get_cue_review_cards builds the .cue preview via generate_cue_content ONLY (no write_cue_file) — render never writes disk (T-60-CUE); dedupe UNDO rides the existing resolve_response.html OOB toast file_states round-trip, no new template
 - [Phase ?]: Phase 60-04: _STAGE_PLACEHOLDER constant retained in shell.py (unused) so the _stage_placeholder.html literal stays in router source and the dead-template guard keeps it reachable until CUT-02 (Phase 62)
+- [Phase ?]: Phase 62-04 (CUT-02): v7.0 dead-code cutover complete — 20 legacy tab-era templates deleted, /pipeline/ + /preview/ pure redirects, base.html reduced to logo+theme, dead-template guard green with empty _ALLOWLIST (closure untouched); kept all live shell HX fragments (D-03b)
+- [Phase ?]: Phase 62-04: /saq SAQ-monitor in-UI link is a surfaced supersession gap (D-05) — app stays mounted + URL-reachable but no shell link exists; not fixed (would be new capability)
 
 ### Pending Todos
 
@@ -169,6 +171,7 @@ None.
 | Phase 60 P02 | 20min | 3 tasks | 6 files |
 | Phase 60 P03 | 25min | 3 tasks | 6 files |
 | Phase 60 P04 | 35min | 3 tasks | 7 files |
+| Phase 62 P04 | 95min | 3 tasks | 9 files |
 
 ## Deferred Items
 
@@ -198,9 +201,9 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-07-02T04:20:16.246Z
+Last session: 2026-07-02T06:19:23.305Z
 Stopped at: Phase 62 UI-SPEC approved
-Resume file: .planning/phases/62-polish-cutover/62-UI-SPEC.md
+Resume file: None
 
 ## Operator Next Steps
 

@@ -190,7 +190,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
 | 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
-| 62. Polish & cutover | v7.0 | 3/4 | In Progress|  |
+| 62. Polish & cutover | v7.0 | 4/4 | Complete   | 2026-07-02 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -852,7 +852,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 62-04-PLAN.md — CUT-02 dead-code cutover (LAST): delete 8 wrapper templates + orphaned partials, strip base.html tab-bar nav, drain the dead-template allowlist to empty [Wave 2]
+- [x] 62-04-PLAN.md — CUT-02 dead-code cutover (LAST): delete 8 wrapper templates + orphaned partials, strip base.html tab-bar nav, drain the dead-template allowlist to empty [Wave 2]
 
 **UI hint**: yes
 
