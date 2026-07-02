@@ -57,10 +57,10 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Full record, command palette & agents (RECORD)
 
-- [ ] **RECORD-01**: Opening a file (from a row or ⌘K) shows a full per-file record: identity, metadata diff, windowed multi-lane analysis timeline, this file's pending approvals (inline-approvable), and history.
-- [ ] **RECORD-02**: ⌘K opens a command palette searching files / tracklists / artists and offering quick commands (scan, jump to a stage or review queue).
-- [ ] **RECORD-03**: The Agents page shows local and A1 as heartbeating agents and the k8s burst lane as an ephemeral, Job-based identity (liveness derived from in-flight Kueue workloads) rather than a perpetually-DEAD agent — carrying v6.0 KDEPLOY-04's intent into the new UI.
-- [ ] **RECORD-04**: When no files exist, a first-run empty state guides the operator to point phaze at a directory and shows live scan progress.
+- [x] **RECORD-01**: Opening a file (from a row or ⌘K) shows a full per-file record: identity, metadata diff, windowed multi-lane analysis timeline, this file's pending approvals (inline-approvable), and history.
+- [x] **RECORD-02**: ⌘K opens a command palette searching files / tracklists / artists and offering quick commands (scan, jump to a stage or review queue).
+- [x] **RECORD-03**: The Agents page shows local and A1 as heartbeating agents and the k8s burst lane as an ephemeral, Job-based identity (liveness derived from in-flight Kueue workloads) rather than a perpetually-DEAD agent — carrying v6.0 KDEPLOY-04's intent into the new UI.
+- [x] **RECORD-04**: When no files exist, a first-run empty state guides the operator to point phaze at a directory and shows live scan progress.
 
 ### Polish & cutover (CUT)
 

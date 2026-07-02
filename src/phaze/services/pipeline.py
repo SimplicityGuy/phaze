@@ -792,6 +792,7 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
         async with session.begin_nested():
             stmt = (
                 select(
+                    FileRecord.id,
                     FileRecord.original_filename,
                     FileRecord.original_path,
                     FileRecord.state,
@@ -814,7 +815,7 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
         return []
 
     files: list[dict[str, Any]] = []
-    for filename, path, state, cloud_job_id, cloud_phase, fine_done, fine_total, duration in rows:
+    for file_id, filename, path, state, cloud_job_id, cloud_phase, fine_done, fine_total, duration in rows:
         if cloud_job_id is None:
             lane = "local"
         elif cloud_phase is None:
@@ -823,6 +824,9 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
             lane = "k8s"
         files.append(
             {
+                # Phase 61 (RECORD-01): the row->record slide-in opener keys on this file_id
+                # (hx-get="/record/{file_id}"); str() so the template renders the UUID inline.
+                "file_id": str(file_id),
                 "filename": filename,
                 "path": path,
                 "state": state,

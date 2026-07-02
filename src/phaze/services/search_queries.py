@@ -164,6 +164,28 @@ async def search(
     return results, pagination
 
 
+async def distinct_artists(session: AsyncSession, query: str, *, limit: int = 20) -> list[str]:
+    """Return DISTINCT non-NULL artist names matching ``query`` across files and tracklists.
+
+    The one sanctioned additive read for the ⌘K palette Artists group (RECORD-02 / D-05): a
+    read-only ``SELECT DISTINCT`` over ``FileMetadata.artist`` + ``Tracklist.artist``, each
+    filtered by ``IS NOT NULL`` and a parameterized (bound) ILIKE. The ``%{query}%`` pattern is
+    bound by SQLAlchemy, never string-interpolated into the SQL text (T-61-06) — mirrors the
+    existing ``search()`` ``artist=`` filter.
+
+    Pitfall 4: both artist columns are UNINDEXED ``Text``. The caller owns the debounce
+    (>=150-250ms), a ``len(query) >= 2`` gate, and relies on the ``LIMIT`` here to bound the
+    per-keystroke scan. A real trigram index is deferred (a schema change, out of the
+    presentation scope of this phase).
+    """
+    like = f"%{query}%"
+    fm = select(FileMetadata.artist).where(FileMetadata.artist.is_not(None), FileMetadata.artist.ilike(like))
+    tl = select(Tracklist.artist).where(Tracklist.artist.is_not(None), Tracklist.artist.ilike(like))
+    combined = union_all(fm, tl).subquery()
+    rows = await session.execute(select(combined.c.artist).distinct().limit(limit))
+    return [artist for (artist,) in rows if artist]
+
+
 async def get_summary_counts(session: AsyncSession) -> dict[str, int]:
     """Return total file, tracklist, and Discogs link counts for the search landing page."""
     file_count_result = await session.execute(select(func.count()).select_from(FileRecord))

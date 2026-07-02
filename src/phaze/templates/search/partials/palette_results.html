@@ -1,0 +1,134 @@
+{#
+  ⌘K grouped command-palette results (RECORD-02, D-03/D-05). Rendered by the /search HX branch
+  and swapped as innerHTML into #cmdk-results (role="listbox") in cmdk_modal.html.
+
+  Four labeled groups — Files / Tracklists / Artists / Commands (+ optional Discogs). Group
+  headers are role="presentation" (skipped by the roving ↑/↓ nav); every selectable row is a
+  STATIC role="option" with a stable id for aria-activedescendant — NO Alpine islands, so no
+  Alpine.initTree() is needed after a swap (contrast the record body).
+
+  Security: every DB-sourced cell (filename / title / artist) is Jinja2-autoescaped (T-61-01);
+  artist names entering an hx-get URL are urlencoded. No value is emitted into an Alpine/JS
+  attribute context, so no |tojson is required here.
+#}
+{% set row_class = "cmdk-row rounded-lg px-3 py-2 flex items-center gap-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-phaze-border" %}
+{% set head_class = "px-3 pt-3 pb-1 font-jura text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-500" %}
+{% set badge_base = "shrink-0 text-[11px] px-1.5 py-0.5 rounded" %}
+
+{% if file_results %}
+  <div role="presentation" class="{{ head_class }}">Files</div>
+  {% for r in file_results %}
+    <div id="cmdk-file-{{ loop.index }}"
+         role="option"
+         aria-selected="false"
+         tabindex="-1"
+         class="{{ row_class }}"
+         hx-get="/record/{{ r.id }}"
+         hx-target="#record-body"
+         hx-swap="innerHTML"
+         @click="$dispatch('record:open', {el: $el})">
+      <span aria-hidden="true">🎵</span>
+      <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ r.title }}</span>
+      {% if r.artist %}<span class="shrink-0 text-xs text-gray-500 dark:text-gray-500 truncate max-w-[10rem]">{{ r.artist }}</span>{% endif %}
+      <span class="{{ badge_base }} bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400">File</span>
+    </div>
+  {% endfor %}
+{% endif %}
+
+{% if tracklist_results %}
+  <div role="presentation" class="{{ head_class }}">Tracklists</div>
+  {% for r in tracklist_results %}
+    <a id="cmdk-tracklist-{{ loop.index }}"
+       role="option"
+       aria-selected="false"
+       tabindex="-1"
+       href="/s/tracklist"
+       class="{{ row_class }}">
+      <span aria-hidden="true">📜</span>
+      <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ r.title }}</span>
+      <span class="{{ badge_base }} bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400">Tracklist</span>
+    </a>
+  {% endfor %}
+{% endif %}
+
+{% if discogs_results %}
+  <div role="presentation" class="{{ head_class }}">Discogs</div>
+  {% for r in discogs_results %}
+    <div id="cmdk-discogs-{{ loop.index }}"
+         role="option"
+         aria-selected="false"
+         tabindex="-1"
+         class="{{ row_class }}">
+      <span aria-hidden="true">💿</span>
+      <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ r.title }}</span>
+      <span class="{{ badge_base }} bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400">Discogs</span>
+    </div>
+  {% endfor %}
+{% endif %}
+
+{% if artists %}
+  <div role="presentation" class="{{ head_class }}">Artists</div>
+  {% for a in artists %}
+    <a id="cmdk-artist-{{ loop.index }}"
+       role="option"
+       aria-selected="false"
+       tabindex="-1"
+       {# search_page only runs a query when `q` is truthy — an artist row must carry q,
+          not artist= alone, or the palette comes back empty (WR-03). Clicking an artist
+          re-searches for that name (files/tracklists + the artist facet). #}
+       href="/search/?q={{ a | urlencode }}"
+       hx-get="/search/?q={{ a | urlencode }}"
+       hx-target="#cmdk-results"
+       hx-swap="innerHTML"
+       class="{{ row_class }}">
+      <span aria-hidden="true">👤</span>
+      <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ a }}</span>
+    </a>
+  {% endfor %}
+{% endif %}
+
+{# Commands (D-03) — always present so the roving nav always has selectable targets. #}
+<div role="presentation" class="{{ head_class }}">Commands</div>
+<div id="cmdk-cmd-scan"
+     role="option"
+     aria-selected="false"
+     tabindex="-1"
+     class="{{ row_class }}"
+     hx-post="/pipeline/scan-live-sets"
+     hx-swap="none">
+  <span aria-hidden="true">⊕</span>
+  <span class="flex-1 text-gray-900 dark:text-gray-100">Scan for new live sets</span>
+</div>
+<a id="cmdk-cmd-stage"
+   role="option"
+   aria-selected="false"
+   tabindex="-1"
+   href="/s/analyze"
+   class="{{ row_class }}">
+  <span aria-hidden="true">→</span>
+  <span class="flex-1 text-gray-900 dark:text-gray-100">Jump to a stage</span>
+</a>
+<a id="cmdk-cmd-review"
+   role="option"
+   aria-selected="false"
+   tabindex="-1"
+   href="/s/rename"
+   class="{{ row_class }}">
+  <span aria-hidden="true">✓</span>
+  <span class="flex-1 text-gray-900 dark:text-gray-100">Jump to a review queue</span>
+</a>
+<a id="cmdk-cmd-agents"
+   role="option"
+   aria-selected="false"
+   tabindex="-1"
+   href="/admin/agents"
+   class="{{ row_class }}">
+  <span aria-hidden="true">⎈</span>
+  <span class="flex-1 text-gray-900 dark:text-gray-100">Open Agents</span>
+</a>
+
+{% if query and not file_results and not tracklist_results and not discogs_results and not artists %}
+  <div class="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-500">
+    No results found for "{{ query }}". Try a different search or one of the commands above.
+  </div>
+{% endif %}

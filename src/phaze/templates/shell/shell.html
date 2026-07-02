@@ -35,6 +35,11 @@
     <!-- HTMX SSE extension -->
     <script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4/sse.js" integrity="sha384-QA9wXqexhwzXTuTvuF5QP82pddm3R2hy81UzXi7ioNTqNF2b75hlkkSGjafohhL3" crossorigin="anonymous"></script>
 
+    <!-- Alpine Focus plugin (x-trap): powers the record slide-in + ⌘K palette focus-traps.
+         MUST load BEFORE Alpine core — plugins register on core init, so load order is
+         load-bearing; version pinned to Alpine core (3.15.12) + SRI SHA-384 (T-61-02 supply-chain). -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/focus@3.15.12/dist/cdn.min.js" integrity="sha384-ysJcnHb6oCzqAGKdoTm+IqKqmPKgxHT+ApZCawkyWOJfMq15WvzW3RRmHl7tWpEY" crossorigin="anonymous"></script>
+
     <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.12/dist/cdn.min.js" integrity="sha384-pb6hrQvo4s23cEUFtj0CZkzGE3jyK3pj26RIupXXxhSrrcUA/Cn0lZgcCrGH0t6L" crossorigin="anonymous"></script>
 
@@ -171,6 +176,13 @@
          (the /search → /?palette=1 rename target, Plan 04) to auto-open on load (A3). -->
     {% include "shell/partials/cmdk_modal.html" %}
 
+    <!-- Phase 61 (RECORD-01 / D-01): the persistent full-record slide-in host. A sibling of the
+         cmdk modal, it lives OUTSIDE #stage-workspace so a rail swap never re-renders or destroys
+         it. Opened via the `record:open` window event ($dispatch from a file row / ⌘K Files row);
+         its #record-body is the HTMX innerHTML swap target for GET /record/{file_id}. Does NOT use
+         the empty 350px right <aside> above (its removal is Phase 62). -->
+    {% include "shell/partials/record_host.html" %}
+
     <!-- Single persistent live-refresh poll (WORK-05 / R-2 / R-3). Lives in chrome OUTSIDE
          #stage-workspace, so a rail swap never re-renders, duplicates, or stops it — there is
          exactly ONE /pipeline/stats poll for the whole shell (the v7.0 shell had no live poll
@@ -232,6 +244,17 @@
             if (ws && window.Alpine) Alpine.initTree(ws);
             syncRailSelection(location.pathname);
             _focusStageHeading();
+        });
+        document.body.addEventListener('htmx:beforeSwap', function (event) {
+            // GET /record/{id} returns a friendly 404 fragment (record_not_found.html) when a
+            // file was de-duplicated/removed between render and click. htmx does NOT swap non-2xx
+            // by default, so opt the record panel back in for its 404 so the fragment shows
+            // instead of the click silently doing nothing (WR-01).
+            const d = event.detail;
+            if (d && d.xhr && d.xhr.status === 404 && d.target && d.target.id === 'record-body') {
+                d.shouldSwap = true;
+                d.isError = false;
+            }
         });
         document.body.addEventListener('htmx:afterSwap', function (event) {
             // htmx:afterSwap exposes the request target as event.detail.target (htmx 2.0.10);

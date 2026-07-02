@@ -41,7 +41,13 @@ import time
 import pytest
 
 
-_BASE_HTML = Path(__file__).resolve().parents[1] / "src" / "phaze" / "templates" / "base.html"
+_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "src" / "phaze" / "templates"
+_BASE_HTML = _TEMPLATES_DIR / "base.html"
+# RESEARCH Pitfall 1: the v7.0 shell runs on shell.html (its OWN <head> block), where the
+# record slide-in + ⌘K focus-traps actually load @alpinejs/focus. A stale/missing SRI hash
+# there was previously invisible to this test — guard BOTH templates.
+_SHELL_HTML = _TEMPLATES_DIR / "shell" / "shell.html"
+_ALL_TEMPLATES = (_BASE_HTML, _SHELL_HTML)
 _SCRIPT_TAG = re.compile(
     r"<script\b[^>]*?\bsrc=[\"']([^\"']+)[\"'][^>]*?\bintegrity=[\"']([^\"']+)[\"']",
     re.IGNORECASE | re.DOTALL,
@@ -54,19 +60,21 @@ _MAX_FETCH_ATTEMPTS = 3
 _FETCH_RETRY_DELAY_SECONDS = 1.0
 
 
-def _extract_cdn_scripts() -> list[tuple[str, str]]:
-    """Return (src, integrity) tuples for every <script> in base.html with both attrs."""
-    html = _BASE_HTML.read_text()
+def _extract_cdn_scripts(template: Path = _BASE_HTML) -> list[tuple[str, str]]:
+    """Return (src, integrity) tuples for every <script> in ``template`` with both attrs."""
+    html = template.read_text()
     return _SCRIPT_TAG.findall(html)
 
 
-def test_base_html_has_at_least_one_cdn_script_with_integrity() -> None:
+@pytest.mark.parametrize("template", _ALL_TEMPLATES, ids=lambda p: p.name)
+def test_base_html_has_at_least_one_cdn_script_with_integrity(template: Path) -> None:
     """Sanity: regression test would be vacuously satisfied otherwise."""
-    scripts = _extract_cdn_scripts()
-    assert len(scripts) >= 1, f"no SRI-protected scripts found in {_BASE_HTML}"
+    scripts = _extract_cdn_scripts(template)
+    assert len(scripts) >= 1, f"no SRI-protected scripts found in {template}"
 
 
-def test_every_cdn_script_pins_a_specific_version() -> None:
+@pytest.mark.parametrize("template", _ALL_TEMPLATES, ids=lambda p: p.name)
+def test_every_cdn_script_pins_a_specific_version(template: Path) -> None:
     """Phase 27 UAT Gap 11: SRI-protected URLs must NOT use floating major-version pins.
 
     `@tailwindcss/browser@4` was the culprit — jsdelivr served a newer 4.x build
@@ -83,7 +91,7 @@ def test_every_cdn_script_pins_a_specific_version() -> None:
     bad: list[tuple[str, str]] = []
     full_semver = re.compile(r"@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?(?:/|$)")
     full_sha = re.compile(r"@[0-9a-f]{40}(?:/|$)")
-    for src, _ in _extract_cdn_scripts():
+    for src, _ in _extract_cdn_scripts(template):
         # The version pin sits between the package name and the trailing path
         # segment. Search the URL for any acceptable form; if none found, flag.
         if full_semver.search(src) or full_sha.search(src):
@@ -104,7 +112,8 @@ def _has_internet() -> bool:
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_internet(), reason="network unavailable")
-def test_cdn_sri_hashes_match_served_content() -> None:
+@pytest.mark.parametrize("template", _ALL_TEMPLATES, ids=lambda p: p.name)
+def test_cdn_sri_hashes_match_served_content(template: Path) -> None:
     """Phase 27 UAT Gap 11: every pinned SRI hash must match what the CDN actually serves.
 
     This is the strongest form of the check — it fetches each URL and
@@ -129,7 +138,7 @@ def test_cdn_sri_hashes_match_served_content() -> None:
     import httpx
 
     failures: list[str] = []
-    for src, integrity in _extract_cdn_scripts():
+    for src, integrity in _extract_cdn_scripts(template):
         # Reject anything other than https:// so a malicious commit cannot smuggle
         # in a file:// or http:// URL (semgrep CWE-939: improper handler for custom URL schemes).
         if not src.startswith("https://"):

@@ -61,6 +61,18 @@ _ALLOWLIST: frozenset[str] = frozenset(
         # it dangles. Tracked here so the guard stays green without masking new dead
         # templates.
         "tracklists/partials/toast.html",
+        # Superseded by Phase 61 (61-03): the ⌘K palette repurposed the `/search/`
+        # HX branch to render `search/partials/palette_results.html`, so the old
+        # flat-table search page and its partials are no longer reached by any
+        # router. Left on disk (not deleted) because dead old-UI template removal
+        # is CUT-02's explicit scope (Phase 62); allowlisted so the guard proves
+        # they dangle without blocking Phase 61.
+        "search/page.html",
+        "search/partials/results_content.html",
+        "search/partials/results_row.html",
+        "search/partials/results_table.html",
+        "search/partials/search_form.html",
+        "search/partials/summary_counts.html",
     }
 )
 

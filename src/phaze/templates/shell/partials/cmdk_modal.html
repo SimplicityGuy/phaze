@@ -1,35 +1,31 @@
 {#
-  ⌘K command palette — SKELETON modal only (D-04). Affordance + keybinding + full
-  open/close/focus contract; NO search or command wiring (that is Phase 61). Core Alpine
-  only — the dedicated focus-trap plugin lands in Phase 61, so this modal uses basic focus
-  management (focus the input on open, return focus to the trigger on close).
+  ⌘K command palette — FUNCTIONAL (RECORD-02, D-03/D-04/D-05). Grouped Files/Tracklists/
+  Artists/Commands results over the existing search service (+ the read-only distinct-artist
+  facet), full roving ↑/↓ keyboard nav, ARIA listbox semantics, and an x-trap focus-trap.
 
-  Open:  the header ⌘K button ($dispatch('cmdk:open') → @cmdk:open.window), the ⌘K / Ctrl+K
-         keybinding, OR the ?palette=1 query param on load (A3 — the /search → /?palette=1
-         rename target landed by Plan 04). On open, focus the input via $nextTick.
-  Close: ESC (@keydown.escape) or backdrop click; returns focus to the #cmdk-trigger button.
-  ARIA:  role="dialog" aria-modal="true" aria-label="Command palette".
+  Contract preserved from the Phase 57 skeleton:
+    Open:  the header ⌘K button ($dispatch('cmdk:open') → @cmdk:open.window), the ⌘K / Ctrl+K
+           keybinding, OR the ?palette=1 query param on load. On open, focus the input via
+           $nextTick and (re)scan the currently-rendered option rows.
+    Close: ESC (@keydown.escape) or backdrop click; returns focus to the #cmdk-trigger button.
+    ARIA:  dialog role="dialog" aria-modal="true" aria-label="Command palette".
 
-  The root is hidden (inline display:none) until Alpine evaluates x-show, so there is no
-  flash before init and no dependency on a global [x-cloak] rule.
+  Results are fetched from the /search/ HX branch (the grouped palette_results.html fragment)
+  by a debounced hx-get on the input that swaps ONLY #cmdk-results (not the header/input). Rows
+  are STATIC role="option" markup — no Alpine islands, so no Alpine.initTree() is needed after a
+  swap (contrast the record body). Focus-trap is x-trap.inert.noscroll on the open panel. No new
+  poll loop (SP-6): the only trigger is the debounced input (+ one initial load).
+
+  The root is hidden (inline display:none) until Alpine evaluates x-show, so there is no flash
+  before init and no dependency on a global [x-cloak] rule.
 #}
-<div x-data="{
-        open: false,
-        show() {
-            this.open = true;
-            this.$nextTick(() => { if (this.$refs.input) this.$refs.input.focus(); });
-        },
-        hide() {
-            this.open = false;
-            const trigger = document.getElementById('cmdk-trigger');
-            if (trigger) trigger.focus();
-        }
-     }"
+<div x-data="cmdkPalette()"
      x-init="if (new URLSearchParams(window.location.search).has('palette')) show()"
      @cmdk:open.window="show()"
      @keydown.window.cmd.k.prevent="show()"
      @keydown.window.ctrl.k.prevent="show()"
-     @keydown.escape.window="if (open) hide()">
+     @keydown.escape.window="if (open) hide()"
+     @htmx:after-swap="onResults()">
 
     <div x-show="open"
          style="display:none"
@@ -41,28 +37,102 @@
         {# Backdrop — click to close. #}
         <div class="absolute inset-0 bg-black/60" @click="hide()"></div>
 
-        {# Panel — centered-top, 640px (max 92vw). #}
-        <div class="absolute left-1/2 top-24 -translate-x-1/2 w-[640px] max-w-[92vw] bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border rounded-2xl shadow-2xl overflow-hidden">
+        {# Panel — centered-top, 640px (max 92vw). x-trap replaces the skeleton's basic focus
+           management: it traps Tab inside the open panel and restores scroll on close. #}
+        <div x-trap.inert.noscroll.noreturn="open"
+             class="absolute left-1/2 top-24 -translate-x-1/2 w-[640px] max-w-[92vw] bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border rounded-2xl shadow-2xl overflow-hidden">
 
-            {# Header row: search icon + input + esc hint. #}
+            {# Header row: search icon + combobox input + esc hint. #}
             <div class="flex items-center gap-3 px-4 h-14 border-b border-gray-200 dark:border-phaze-border">
                 <svg class="w-5 h-5 text-gray-400 dark:text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/>
                 </svg>
                 <input x-ref="input"
+                       name="q"
                        type="text"
+                       autocomplete="off"
                        placeholder="Search files, artists, tracklists — or type a command…"
+                       role="combobox"
+                       aria-expanded="true"
+                       aria-controls="cmdk-results"
+                       :aria-activedescendant="activeId"
+                       hx-get="/search/"
+                       hx-trigger="load, input changed delay:200ms"
+                       hx-target="#cmdk-results"
+                       hx-swap="innerHTML"
+                       @keydown.down.prevent="move(1)"
+                       @keydown.up.prevent="move(-1)"
+                       @keydown.enter.prevent="activate()"
                        class="flex-1 bg-transparent outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-600">
                 <span class="font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-500 shrink-0">esc</span>
             </div>
 
-            {# Skeleton body (Phase 57): a single muted placeholder line — no result rows,
-               no command list, no fetch (D-04). #}
-            <div class="p-6 text-sm text-gray-500 dark:text-gray-500">
-                Search and commands arrive in a later phase. Press
-                <kbd class="font-mono text-xs px-1 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-600 dark:text-gray-400">Esc</kbd>
-                to close.
+            {# Results listbox — the debounced hx-get swaps grouped palette rows into here.
+               Rows are static role="option" markup (see palette_results.html). #}
+            <div id="cmdk-results"
+                 x-ref="results"
+                 role="listbox"
+                 aria-label="Search and command results"
+                 class="max-h-[50vh] overflow-y-auto p-2 text-sm">
             </div>
         </div>
     </div>
 </div>
+
+<script>
+    // Roving-index command palette. State: q (via the input's own value), activeIndex, the flat
+    // ordered list of currently-rendered option rows (headers are role="presentation" and skipped),
+    // and activeId (the active row's id for aria-activedescendant). Rows are static server markup,
+    // so after each hx swap we simply re-collect the option elements — no Alpine.initTree() needed.
+    function cmdkPalette() {
+        return {
+            open: false,
+            activeIndex: 0,
+            items: [],
+            activeId: null,
+            show() {
+                this.open = true;
+                this.$nextTick(() => {
+                    if (this.$refs.input) this.$refs.input.focus();
+                    this.onResults();
+                });
+            },
+            hide() {
+                this.open = false;
+                // Defer focus-return to after Alpine tears the panel down: focusing the
+                // trigger synchronously here is undone when the browser resets focus to
+                // <body> as the just-focused in-panel element is hidden on the same tick.
+                this.$nextTick(() => {
+                    const trigger = document.getElementById('cmdk-trigger');
+                    if (trigger) trigger.focus();
+                });
+            },
+            onResults() {
+                if (!this.$refs.results) return;
+                this.items = Array.from(this.$refs.results.querySelectorAll('[role="option"]'));
+                this.activeIndex = 0;
+                this.syncActive();
+            },
+            syncActive() {
+                this.items.forEach((el, i) => {
+                    const on = i === this.activeIndex;
+                    el.setAttribute('aria-selected', on ? 'true' : 'false');
+                    el.classList.toggle('bg-gray-100', on);
+                    el.classList.toggle('dark:bg-phaze-border', on);
+                });
+                const cur = this.items[this.activeIndex];
+                this.activeId = cur ? cur.id : null;
+                if (cur) cur.scrollIntoView({ block: 'nearest' });
+            },
+            move(delta) {
+                if (!this.items.length) return;
+                this.activeIndex = (this.activeIndex + delta + this.items.length) % this.items.length;
+                this.syncActive();
+            },
+            activate() {
+                const el = this.items[this.activeIndex];
+                if (el) el.click();
+            },
+        };
+    }
+</script>

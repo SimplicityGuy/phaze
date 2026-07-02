@@ -104,7 +104,7 @@
             'a1': ('☁️ A1', 'text-blue-600 dark:text-blue-300'),
             'k8s': ('⎈ k8s', 'text-amber-600 dark:text-amber-300'),
         } %}
-        {% set ns = namespace(rows=[]) %}
+        {% set ns = namespace(rows=[], file_ids=[]) %}
         {% for f in analyze_files %}
             {% set badge_text, badge_color = lane_badges.get(f.lane, lane_badges['local']) %}
             {% set duration_cell = ('%d:%02d' % ((f.duration | int) // 60, (f.duration | int) % 60)) if f.duration else '—' %}
@@ -133,8 +133,12 @@
                 {'text': badge_text, 'color': badge_color},
                 {'text': state_text, 'color': state_color},
             ]) %}
+            {# Phase 61 (RECORD-01): parallel file-id list backing ns.rows — passed as row_file_ids
+               so each Analyze row opens the full-record slide-in (hx-get="/record/{file_id}"). #}
+            {% set _ = ns.file_ids.append(f.file_id) %}
         {% endfor %}
         {% set rows = ns.rows %}
+        {% set row_file_ids = ns.file_ids %}
         {% set empty_heading = "No files in flight" %}
         {% set empty_body = "Route files into Analyze from Discover, or check lane capacity above." %}
         {% set row_id_prefix = "analyze-row" %}
