@@ -45,7 +45,7 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
   - Success: rename/tag/move each show diffs with per-file + bulk-high-conf approve (server-side predicate, not a client id-list); dedupe groups pick a keeper; cue previews + approves gated on a matched tracklist; every applied change lands in the reversible audit log.
 - [x] **Phase 61: Full record + ⌘K + Agents** — per-file record (multi-lane windowed timeline, metadata diff, inline approvals, history); ⌘K palette (`@alpinejs/focus`); Agents page with ephemeral k8s identity; first-run empty state (RECORD-01..04) (completed 2026-07-02)
   - Success: a file opens to a full record; ⌘K searches files/tracklists/artists + offers quick commands; Agents shows local/A1 heartbeating and k8s as ephemeral Job-based (never perpetually-DEAD); empty state guides the first scan.
-- [ ] **Phase 62: Polish & cutover** — a11y parity (keyboard rail + ⌘K, focus, skip-link, DAG ARIA); remove dead old-UI templates/routers (dead-template guard green); update docs + README; narrow-width rail collapse (CUT-01..04)
+- [x] **Phase 62: Polish & cutover** — a11y parity (keyboard rail + ⌘K, focus, skip-link, DAG ARIA); remove dead old-UI templates/routers (dead-template guard green); update docs + README; narrow-width rail collapse (CUT-01..04) (completed 2026-07-02)
   - Success: keyboard-navigable rail + palette with visible focus and skip link; no orphaned old-UI code (the Phase 57 dead-template guard is green); docs/README describe the new IA; the rail collapses to icons at narrow widths.
 
 <details>
@@ -190,7 +190,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
 | 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
-| 62. Polish & cutover | v7.0 | 4/4 | Complete   | 2026-07-02 |
+| 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 

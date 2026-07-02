@@ -64,10 +64,10 @@ Each maps to exactly one roadmap phase (Traceability below).
 
 ### Polish & cutover (CUT)
 
-- [ ] **CUT-01**: The redesigned UI meets baseline accessibility — keyboard navigation for the rail and ⌘K, visible focus states, a skip link, and ARIA on the DAG — at parity with or better than today.
+- [x] **CUT-01**: The redesigned UI meets baseline accessibility — keyboard navigation for the rail and ⌘K, visible focus states, a skip link, and ARIA on the DAG — at parity with or better than today.
 - [x] **CUT-02**: Dead templates, routers, and partials from the old tabbed UI are removed once superseded (no orphaned dead code).
-- [ ] **CUT-03**: User-facing docs and the per-service README are updated to describe the new information architecture.
-- [ ] **CUT-04**: The shell degrades reasonably at narrow widths (the rail collapses to icons) for the single-user desktop tool.
+- [x] **CUT-03**: User-facing docs and the per-service README are updated to describe the new information architecture.
+- [x] **CUT-04**: The shell degrades reasonably at narrow widths (the rail collapses to icons) for the single-user desktop tool.
 
 ## Future Requirements (deferred)
 
