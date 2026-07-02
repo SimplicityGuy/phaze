@@ -164,9 +164,6 @@
         <main class="flex-1 min-w-0 bg-white dark:bg-phaze-bg">
             <div id="stage-workspace" data-stage="{{ stage }}" class="h-full overflow-y-auto">{% include stage_partial %}</div>
         </main>
-
-        <!-- Right detail pane (w-[350px]). Phase 57 placeholder; bridged content is a later phase. -->
-        <aside class="w-[350px] shrink-0 overflow-y-auto border-l border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel" aria-label="Detail pane"></aside>
     </div>
 
     <!-- Toast container -->
@@ -179,8 +176,8 @@
     <!-- Phase 61 (RECORD-01 / D-01): the persistent full-record slide-in host. A sibling of the
          cmdk modal, it lives OUTSIDE #stage-workspace so a rail swap never re-renders or destroys
          it. Opened via the `record:open` window event ($dispatch from a file row / ⌘K Files row);
-         its #record-body is the HTMX innerHTML swap target for GET /record/{file_id}. Does NOT use
-         the empty 350px right <aside> above (its removal is Phase 62). -->
+         its #record-body is the HTMX innerHTML swap target for GET /record/{file_id}. It replaces
+         the former empty 350px right <aside> detail pane (removed in Phase 62 / CUT-01). -->
     {% include "shell/partials/record_host.html" %}
 
     <!-- Single persistent live-refresh poll (WORK-05 / R-2 / R-3). Lives in chrome OUTSIDE
