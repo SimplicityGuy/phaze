@@ -13,6 +13,10 @@ a change set mixing docs with a single ``.py`` file MUST classify as
 ``code-changed=true``. That is the security property (T-63-04-01) — a code change
 can never ride a doc-only skip past the security scans — so it gets an explicit,
 non-parametrised positive test rather than hiding in a table.
+
+An empty or whitespace-only file list is treated as ``code-changed=true`` (fail
+safe): a spurious-empty diff (e.g. a broken diff base) must never silently skip
+CI. ``code-changed=false`` is reserved for "at least one path changed, all docs".
 """
 
 from __future__ import annotations
@@ -48,16 +52,20 @@ def _classify(changed_files: str) -> str:
 @pytest.mark.parametrize(
     ("changed_files", "expected"),
     [
-        # Doc-only shapes -> skip (code-changed=false).
+        # Doc-only shapes (at least one changed path, all docs) -> skip.
         (".planning/STATE.md\n.planning/phases/63/63-04-PLAN.md\n", "code-changed=false"),
         ("LICENSE\n", "code-changed=false"),
         ("docs/architecture.md\ndocs/notes.txt\nrelease-notes.txt\n", "code-changed=false"),
         ("README.md\nsrc/phaze/foo.md\n", "code-changed=false"),
-        ("", "code-changed=false"),
         # Code shapes -> run the full pipeline (code-changed=true).
         ("src/phaze/main.py\n", "code-changed=true"),
         (".github/workflows/ci.yml\n", "code-changed=true"),
         ("pyproject.toml\n", "code-changed=true"),
+        # Empty / whitespace-only file list -> fail safe, run everything (WR-01).
+        # A spurious-empty diff must never silently skip CI.
+        ("", "code-changed=true"),
+        ("\n\n", "code-changed=true"),
+        ("   \n", "code-changed=true"),
     ],
 )
 def test_classifier_maps_change_sets(changed_files: str, expected: str) -> None:
