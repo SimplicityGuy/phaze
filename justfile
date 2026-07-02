@@ -104,6 +104,11 @@ coverage-combine:
     uv run coverage xml
     uv run coverage report --fail-under=85
 
+[doc('Classify changed files (newline-delimited on stdin) as code-changed=true|false for the CI doc-only skip gate (CI-04)')]
+[group('test')]
+detect-code-changes:
+    @bash scripts/classify-changed-files.sh
+
 [doc('Start ephemeral Postgres + Redis for integration tests (ports PHAZE_TEST_DB_PORT/PHAZE_TEST_REDIS_PORT, defaults 5433/6380)')]
 [group('test')]
 test-db:

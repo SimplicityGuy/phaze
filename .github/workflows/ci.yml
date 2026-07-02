@@ -40,6 +40,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: 🔧 Setup Just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+
       - name: 🔍 Detect changed file types
         id: filter
         env:
@@ -69,13 +72,19 @@ jobs:
           echo "📝 Changed files:"
           echo "${CHANGED_FILES}"
 
-          NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -v '\.md$' || true)
+          # Delegate the doc-vs-code classification to the versioned, unit-tested
+          # scripts/classify-changed-files.sh via `just` (D-10). The script prints
+          # `code-changed=false` when EVERY changed path is documentation
+          # (*.md, .planning/**, LICENSE, docs/**, *.txt) and `code-changed=true`
+          # otherwise — conservative by construction, so any code/test/workflow
+          # change still runs the full pipeline. Its stdout is already in
+          # GitHub Actions name=value form, appended straight to the job output.
+          CODE_CHANGED=$(echo "${CHANGED_FILES}" | just detect-code-changes)
+          echo "${CODE_CHANGED}" >> "${GITHUB_OUTPUT}"
 
-          if [[ -z "${NON_MD_FILES}" ]]; then
-            echo "code-changed=false" >> "${GITHUB_OUTPUT}"
-            echo "📄 Only markdown files changed — skipping tests, security, and docker jobs"
+          if [[ "${CODE_CHANGED}" == "code-changed=false" ]]; then
+            echo "📄 Only documentation/planning files changed — skipping tests, security, and docker jobs"
           else
-            echo "code-changed=true" >> "${GITHUB_OUTPUT}"
             echo "💻 Code changes detected — running full pipeline"
           fi
 
