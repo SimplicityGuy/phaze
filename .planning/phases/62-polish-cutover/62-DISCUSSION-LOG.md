@@ -77,3 +77,36 @@
 - axe-core/pa11y browser a11y audit — rejected for CUT-01 (dependency/flake); revisit if pytest guards prove insufficient.
 - Screenshots/GIFs in docs — rejected for CUT-03 (maintenance rot).
 - Manual rail-collapse toggle with persisted state — rejected for CUT-04 (auto CSS chosen).
+
+---
+
+# Update Round — post-research reconciliation (2026-07-01)
+
+Re-ran discuss-phase after `62-RESEARCH.md` + `62-VALIDATION.md` landed. Research overturned the discuss-time assumption that legacy routes still render full pages — they already 302-redirect (Phase 57 SHELL-05), so CUT-02 is pure deletion.
+
+## CUT-02 cut depth
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Minimal verified cut | Delete 8 wrappers + unreachable render tails + 6-partial cascade + drain allowlist; leave legacy HX filter branches. Guard proven green. | |
+| Also strip legacy HX filter branches | Additionally remove now-dead HX in-page filter/pagination branches; cleaner router source; requires re-running the guard reach simulation to recompute the orphaned-partial set. | ✓ |
+
+**User's choice:** Also strip legacy HX filter branches (D-03b). Planner must re-run the dead-template guard reach simulation after removing HX branches — the orphaned-partial set may extend beyond the minimal-cut 6-partial cascade.
+
+## base.html nav block
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Strip to logo + theme toggle only | Remove the dead tab-bar nav block; keep wave-logo home link + theme toggle so KEPT audit/agents pages aren't dead-ends. | ✓ |
+| Add a shell "back to app" affordance | Strip tab bar + add explicit back link. | |
+
+**User's choice:** Strip to logo + theme toggle only (D-04a).
+
+## CUT-01 scope
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Audit + close gaps + guard tests | Phase 61 already built the ARIA; add the one missing ⌘K combobox `aria-label`, verify baseline, lock with pytest guards. No rebuild. | ✓ |
+| Broaden CUT-01 scope | Rail keyboard-nav rework / roving-tabindex / expand ARIA to more surfaces. | |
+
+**User's choice:** Audit + close gaps + guard tests (D-01a). Broadening rejected as scope creep.
