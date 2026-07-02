@@ -61,14 +61,11 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["shell"])
 
 # Rail-node id -> bridged content partial (D-01). The keys + their order are VERBATIM
-# from the prototype RAIL config (57-UI-SPEC "DAG Rail" table); `analyze` (the `/`
-# default) embeds the existing pipeline-dashboard DAG canvas, which Phase 58 replaces
-# with lane cards. The other 11 nodes render a shared placeholder in Phase 57 -- their
-# real content bridges arrive with their redesigned workspaces in Phases 58-61. Every
-# VALUE is a STATIC string literal: `stage` is matched against these keys and never
-# spliced into a template path (T-57-01 -- template-path-injection mitigation). The
-# literals also act as the dead-template guard's entry roots, so each stays reachable.
-_STAGE_PLACEHOLDER = "shell/partials/_stage_placeholder.html"
+# from the prototype RAIL config (57-UI-SPEC "DAG Rail" table); every node now resolves
+# to its redesigned per-stage workspace (Phases 58-61). Every VALUE is a STATIC string
+# literal: `stage` is matched against these keys and never spliced into a template path
+# (T-57-01 -- template-path-injection mitigation). The literals also act as the
+# dead-template guard's entry roots, so each stays reachable.
 STAGE_PARTIALS: dict[str, str] = {
     # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
     # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
