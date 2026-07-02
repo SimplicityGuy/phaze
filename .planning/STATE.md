@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: 2026.7.0
 milestone_name: Engineering Improvements
 status: executing
-last_updated: "2026-07-02T19:52:48.344Z"
-last_activity: 2026-07-02 -- Phase 63 planning complete
+last_updated: "2026-07-02T20:11:30.378Z"
+last_activity: 2026-07-02
 progress:
   total_phases: 33
   completed_phases: 0
   total_plans: 4
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 63 — Parallel CI & Code-Change Gating (roadmap created; next: `/gsd:plan-phase 63`)
+**Current focus:** Phase 63 — parallel-ci-code-change-gating
 
 ## Current Position
 
-Phase: 63 — Parallel CI & Code-Change Gating (not yet planned)
-Plan: —
+Phase: 63 (parallel-ci-code-change-gating) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-07-02 -- Phase 63 planning complete
+Last activity: 2026-07-02
 
 ## Performance Metrics
 
@@ -109,6 +109,9 @@ Last activity: 2026-07-02 -- Phase 63 planning complete
 - [Phase ?]: Phase 60-04: _STAGE_PLACEHOLDER constant retained in shell.py (unused) so the _stage_placeholder.html literal stays in router source and the dead-template guard keeps it reachable until CUT-02 (Phase 62)
 - [Phase ?]: Phase 62-04 (CUT-02): v7.0 dead-code cutover complete — 20 legacy tab-era templates deleted, /pipeline/ + /preview/ pure redirects, base.html reduced to logo+theme, dead-template guard green with empty _ALLOWLIST (closure untouched); kept all live shell HX fragments (D-03b)
 - [Phase ?]: Phase 62-04: /saq SAQ-monitor in-UI link is a surfaced supersession gap (D-05) — app stays mounted + URL-reachable but no shell link exists; not fixed (would be new capability)
+- [Phase 63]: 63-01: pytest-xdist floor >=3.8.0 approved at the blocking legitimacy gate (pytest-dev official, 3.8.0 ~12mo old clears the 7-day exclude-newer cooldown)
+- [Phase 63]: 63-01: relative_files=true added for cross-shard coverage combine; concurrency kept [greenlet,thread] with NO multiprocessing (would corrupt CI-03 baseline); fail_under stays 85 (Phase 64 raises it)
+- [Phase 63]: 63-01: tests/buckets.json is the single source of truth for the 9 buckets; test-bucket XDIST defaults serial (DB-safe), -n auto opt-in for DB-free buckets
 
 ### Pending Todos
 
@@ -171,6 +174,7 @@ None.
 | Phase 60 P03 | 25min | 3 tasks | 6 files |
 | Phase 60 P04 | 35min | 3 tasks | 7 files |
 | Phase 62 P04 | 95min | 3 tasks | 9 files |
+| Phase 63 P01 | 8min | 3 tasks | 4 files |
 
 ## Deferred Items
 
@@ -212,9 +216,9 @@ These are tracked for the next deploy; they are NOT blockers for the v7.0 milest
 
 ## Session Continuity
 
-Last session: 2026-07-02T19:06:47.645Z
-Stopped at: Phase 63 context gathered
-Resume file: .planning/phases/63-parallel-ci-code-change-gating/63-CONTEXT.md
+Last session: 2026-07-02T20:11:30.372Z
+Stopped at: Completed 63-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

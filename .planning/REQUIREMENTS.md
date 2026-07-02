@@ -11,9 +11,9 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (63+).
 
 ### CI — Parallel test partition & code-change gating
 
-- [ ] **CI-01**: The ~1,750-test pytest suite is partitioned into independently-runnable buckets — one per pipeline workflow-step (discovery, metadata, fingerprint, analyze, identify/tracklist, review/apply, agents/distributed) plus a generic/shared bucket (schema, config, helpers, routing) — each selectable in isolation without running the whole suite.
-- [ ] **CI-02**: CI fans the buckets out across parallel jobs (job matrix and/or `pytest-xdist`) instead of one serial run, measurably cutting wall-clock CI time.
-- [ ] **CI-03**: Per-shard `.coverage` files are combined into a single coverage report and one Codecov upload, preserving the enforced coverage gate (no per-shard coverage loss, no double-counting).
+- [x] **CI-01**: The ~1,750-test pytest suite is partitioned into independently-runnable buckets — one per pipeline workflow-step (discovery, metadata, fingerprint, analyze, identify/tracklist, review/apply, agents/distributed) plus a generic/shared bucket (schema, config, helpers, routing) — each selectable in isolation without running the whole suite.
+- [x] **CI-02**: CI fans the buckets out across parallel jobs (job matrix and/or `pytest-xdist`) instead of one serial run, measurably cutting wall-clock CI time.
+- [x] **CI-03**: Per-shard `.coverage` files are combined into a single coverage report and one Codecov upload, preserving the enforced coverage gate (no per-shard coverage loss, no double-counting).
 - [ ] **CI-04**: The full build/test/security CI runs only when code changes; docs-, `.planning/`-, and markdown-only changes skip the heavy jobs while required status checks still report success (skip-with-success, not skip-absent — required checks stay satisfiable on doc-only PRs).
 
 ### VER — CalVer release versioning
@@ -64,9 +64,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CI-01 | Phase 63 | Pending |
-| CI-02 | Phase 63 | Pending |
-| CI-03 | Phase 63 | Pending |
+| CI-01 | Phase 63 | Complete |
+| CI-02 | Phase 63 | Complete |
+| CI-03 | Phase 63 | Complete |
 | CI-04 | Phase 63 | Pending |
 | VER-01 | Phase 65 | Pending |
 | VER-02 | Phase 65 | Pending |

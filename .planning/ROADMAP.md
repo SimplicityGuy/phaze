@@ -200,7 +200,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
 | 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
-| 63. Parallel CI & Code-Change Gating | 2026.7.0 | 0/4 | Planned | - |
+| 63. Parallel CI & Code-Change Gating | 2026.7.0 | 1/4 | In Progress|  |
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 0/? | Not started | - |
 | 65. CalVer Adoption | 2026.7.0 | 0/? | Not started | - |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 0/? | Not started | - |
@@ -888,7 +888,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 63-01-PLAN.md — Foundation: pytest-xdist (legitimacy-gated) + coverage relative_files + just test-bucket/coverage-combine + tests/buckets.json [Wave 1]
+- [x] 63-01-PLAN.md — Foundation: pytest-xdist (legitimacy-gated) + coverage relative_files + just test-bucket/coverage-combine + tests/buckets.json [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
