@@ -53,28 +53,12 @@ _HTML_LITERAL = re.compile(r"""["']([^"']+\.html)["']""")
 # cutover deletes legacy templates (Phase 62 / CUT-02). Every entry MUST carry an
 # inline comment justifying it; do NOT add a reachable template here — fix the
 # entry-set / closure extraction instead.
-_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        # Pre-existing dead partial: no router, include, or JS references it. The
-        # duplicates/proposals/cue toast partials are the live ones; this tracklists
-        # copy is unused. Slated for removal by CUT-02 (Phase 62) — the guard proves
-        # it dangles. Tracked here so the guard stays green without masking new dead
-        # templates.
-        "tracklists/partials/toast.html",
-        # Superseded by Phase 61 (61-03): the ⌘K palette repurposed the `/search/`
-        # HX branch to render `search/partials/palette_results.html`, so the old
-        # flat-table search page and its partials are no longer reached by any
-        # router. Left on disk (not deleted) because dead old-UI template removal
-        # is CUT-02's explicit scope (Phase 62); allowlisted so the guard proves
-        # they dangle without blocking Phase 61.
-        "search/page.html",
-        "search/partials/results_content.html",
-        "search/partials/results_row.html",
-        "search/partials/results_table.html",
-        "search/partials/search_form.html",
-        "search/partials/summary_counts.html",
-    }
-)
+# CUT-02 (Phase 62) drained this allowlist to empty: every legacy tab-era wrapper +
+# its orphaned partial cascade was deleted from disk (and their router literals removed),
+# so no template needs a reachability waiver any more. Keep it empty; if a future dynamic
+# `name=` makes a real template statically un-discoverable, add it back WITH an inline
+# justification -- do NOT relax the closure logic below to force green.
+_ALLOWLIST: frozenset[str] = frozenset()
 
 
 def _entry_templates() -> set[str]:
