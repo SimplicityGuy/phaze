@@ -190,7 +190,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
 | 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
-| 62. Polish & cutover | v7.0 | 0/4 | Planned | - |
+| 62. Polish & cutover | v7.0 | 3/4 | In Progress|  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -846,9 +846,9 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 62-01-PLAN.md — CUT-01 accessibility: close the ⌘K combobox accessible-name gap, remove the dead detail-pane aside, and lock the a11y baseline with a filesystem structural guard [Wave 1]
-- [ ] 62-02-PLAN.md — CUT-04 narrow-width rail: max-lg icon-only collapse + 15 per-stage inline-SVG glyphs (sr-only labels, title tooltips) + collapse guard [Wave 1]
-- [ ] 62-03-PLAN.md — CUT-03 docs: refresh README + docs/architecture.md + docs/project-structure.md + quick-start nav for the DAG-centric IA + docs-currency guard [Wave 1]
+- [x] 62-01-PLAN.md — CUT-01 accessibility: close the ⌘K combobox accessible-name gap, remove the dead detail-pane aside, and lock the a11y baseline with a filesystem structural guard [Wave 1]
+- [x] 62-02-PLAN.md — CUT-04 narrow-width rail: max-lg icon-only collapse + 15 per-stage inline-SVG glyphs (sr-only labels, title tooltips) + collapse guard [Wave 1]
+- [x] 62-03-PLAN.md — CUT-03 docs: refresh README + docs/architecture.md + docs/project-structure.md + quick-start nav for the DAG-centric IA + docs-currency guard [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
