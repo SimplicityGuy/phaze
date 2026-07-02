@@ -54,6 +54,39 @@ _STALE_NAV_URLS: tuple[str, ...] = (
     "localhost:8000/tracklists/",
 )
 
+# Every doc the CUT-03 refresh owns. The negative anti-drift check below runs across all of
+# them so a stale claim reintroduced in ANY of these files trips the guard.
+_ALL_DOCS: tuple[Path, ...] = (_README, _ARCHITECTURE, _PROJECT_STRUCTURE, _QUICK_START)
+
+# Substrings that describe UI surfaces CUT-02 (Phase 62) DELETED: the standalone pipeline
+# dashboard page and its single ``dag_canvas.html`` SVG DAG canvas partial. CUT-03 (62-03,
+# wave 1) added the correct new-IA sections but ran BEFORE CUT-02 (wave 2) removed those
+# surfaces, so pre-existing prose kept describing a template + page that no longer render.
+# These markers are matched case-insensitively and MUST NOT appear in any owned doc — the
+# DAG is now the left rail + per-stage ``/s/<stage>`` workspaces, and ``/pipeline/`` is a pure
+# 302 redirect into the shell. (The underlying stage-progress services -- get_stage_progress,
+# get_queue_activity, build_dashboard_context -- still exist and feed the Analyze workspace +
+# the /pipeline/stats poll; only the dashboard *page* + dag_canvas.html were removed, so this
+# guard targets the deleted-surface vocabulary, NOT those living service names.)
+_STALE_DELETED_SURFACE_MARKERS: tuple[str, ...] = (
+    "dag_canvas.html",
+    "svg dag canvas",
+)
+
+
+def test_docs_have_no_stale_deleted_dashboard_claims() -> None:
+    """No owned doc still claims the deleted dashboard page / dag_canvas.html renders live."""
+    offenders: dict[str, list[str]] = {}
+    for doc in _ALL_DOCS:
+        lowered = doc.read_text().lower()
+        hits = [marker for marker in _STALE_DELETED_SURFACE_MARKERS if marker in lowered]
+        if hits:
+            offenders[doc.name] = hits
+    assert not offenders, (
+        "docs still describe the CUT-02-deleted pipeline dashboard / dag_canvas.html as a live "
+        f"surface (describe the DAG rail + /s/<stage> workspaces instead): {offenders}"
+    )
+
 
 def test_readme_describes_dag_centric_shell() -> None:
     """README describes the DAG-centric console (command palette + the DAG spine)."""

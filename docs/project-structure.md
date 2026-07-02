@@ -35,7 +35,7 @@ phaze/
 │   │   ├── health.py           #   GET /health
 │   │   ├── shell.py            #   v7.0 console shell: GET / (Analyze default) + GET /s/<stage> workspace swaps
 │   │   ├── scan.py             #   File discovery scan
-│   │   ├── pipeline.py         #   Pipeline dashboard + processing triggers
+│   │   ├── pipeline.py         #   Stage triggers + /pipeline/stats poll (/pipeline/ 302-redirects to the shell)
 │   │   ├── pipeline_scans.py   #   Admin scan trigger + HTMX scan-batch polling
 │   │   ├── proposals.py        #   Proposal review + approval UI
 │   │   ├── execution.py        #   Batch execution + SSE progress
@@ -124,7 +124,7 @@ phaze/
 │       │   └── partials/       #     rail.html (DAG rail nav), header.html (⌘K + status strip),
 │       │       │               #     cmdk_modal.html (⌘K command palette), record_host.html (record slide-in)
 │       ├── record/             #   Per-file record slide-in body
-│       ├── pipeline/           #   Pipeline dashboard + /s/<stage> workspace partials (partials/<stage>_workspace.html)
+│       ├── pipeline/           #   /s/<stage> workspace partials (partials/<stage>_workspace.html) + stats_bar poll partial
 │       ├── proposals/          #   Proposal approval UI
 │       ├── execution/          #   Execution dashboard + audit log
 │       ├── duplicates/         #   Duplicate resolution UI

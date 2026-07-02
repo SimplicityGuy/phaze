@@ -129,7 +129,7 @@ If you get a connection error, the containers may still be starting — check
 A file moves through these states:
 `DISCOVERED → METADATA_EXTRACTED → FINGERPRINTED → ANALYZED → PROPOSAL_GENERATED →
 APPROVED → EXECUTED`. You drive each stage from either a `just` recipe (curl wrapper) or
-the pipeline dashboard in the Web UI.
+the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<stage>` per stage).
 
 1. **Open the console.**
 
@@ -150,7 +150,7 @@ the pipeline dashboard in the Web UI.
    just scan-status <BATCH_ID>     # GET /api/v1/scan/<BATCH_ID>
    ```
 
-3. **Run the pipeline stages.** From the dashboard, advance the discovered files through:
+3. **Run the pipeline stages.** From the DAG rail, open each stage workspace (`/s/<stage>`) and advance the discovered files through:
 
    - **Extract metadata** (mutagen) — `POST /pipeline/extract-metadata`
    - **Fingerprint** (audfprint + panako) — `POST /pipeline/fingerprint`

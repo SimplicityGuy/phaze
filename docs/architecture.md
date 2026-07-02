@@ -28,8 +28,8 @@ end-to-end flow is:
 7. **Execute** — approved proposals run through a **copy → verify (SHA-256) → delete**
    protocol with a write-ahead audit log.
 
-Each per-file stage after ingest is **operator-triggered** from the pipeline dashboard
-(Phase 35 removed the implicit auto-chaining), and every stage is idempotent by
+Each per-file stage after ingest is **operator-triggered** from its stage workspace in the
+DAG-centric shell (Phase 35 removed the implicit auto-chaining), and every stage is idempotent by
 construction (see [Pipeline Determinism & Observability](#-pipeline-determinism--observability-phase-35)).
 
 The system is layered and asynchronous: a FastAPI application server owns the database and
@@ -136,7 +136,7 @@ Tracing one music file from disk to a finished move:
    Discovery persists rows **only** — Phase 35 (D-06) removed the per-discovery
    auto-enqueue of metadata extraction.
 3. **Operator-triggered stages.** Metadata, fingerprint, and analyze are each enqueued
-   independently by the operator from the dashboard DAG (no auto-chaining). The SAQ tasks
+   independently by the operator from their DAG-rail stage workspaces (no auto-chaining). The SAQ tasks
    in `src/phaze/tasks/` are: `extract_file_metadata` (mutagen, `metadata_extraction.py`),
    `fingerprint_file` (audfprint + Panako via the `FingerprintOrchestrator`), and
    `process_file` (essentia in a `ProcessPoolExecutor`, `functions.py`). On a distributed
@@ -186,7 +186,7 @@ copies, renames, or deletes a file while a proposal is `PENDING` or `REJECTED`.
 
 ## 🧮 Pipeline Determinism & Observability (Phase 35)
 
-Every pipeline stage is **operator-triggered** from the dashboard DAG and made
+Every pipeline stage is **operator-triggered** from its DAG-rail stage workspace and made
 **idempotent by construction**, so a repeat click or a reboot re-enqueue collapses to a
 no-op instead of doubling work (the lesson of the 2026-06-11 queue-doubling incident).
 
@@ -251,17 +251,23 @@ lost work: `scanned` sums each agent's LATEST completed batch (re-scan-safe via 
 subtitle and each Recent Scans row a per-agent `→ N unique · M deduped` annotation, both shown only
 when `deduped > 0` and degrade-safe (None / `{}` → hidden).
 
-### Dashboard DAG canvas
+### DAG rail & stage workspaces
 
 `_build_dag_context` (`routers/pipeline.py`) reconciles three sources per node (D-03):
 `get_stage_progress` DB-truth `done`/`total` (the authority), the maintained `completed`
 counters (a degrade backstop via `_reconciled_done`, capped at the node total), and
-`get_queue_activity` (the per-node ACTIVE state). It feeds the 5-second `/pipeline/stats`
-OOB poll. The UI is a single 9-node SVG DAG canvas
-(`templates/pipeline/partials/dag_canvas.html`) — rendered once on full-page load and kept
-live only by the poll's store-bound OOB seeds — which **replaced** the Phase-34 stage cards
-+ processing card. Only Metadata and Analyze converge into Proposals; fingerprint and the
-tracklist subgraph have no edge into Proposals.
+`get_queue_activity` (the per-node ACTIVE state). It is assembled by
+`build_dashboard_context` and feeds both the v7.0 Analyze workspace and the 5-second
+`/pipeline/stats` OOB poll that keeps every count live. In the v7.0 shell the pipeline DAG
+is the **left rail** (`templates/shell/partials/rail.html`) — the navigation spine — where
+each node shows its live count (bound to `$store.pipeline`) and clicking a node swaps its
+workspace into `#stage-workspace` over HTMX (`GET /s/<stage>`). The standalone pipeline
+dashboard page and its single-partial DAG canvas were removed in CUT-02 (Phase 62); the
+underlying stage-progress services (`get_stage_progress`, `get_queue_activity`,
+`build_dashboard_context`) are unchanged and now back the Analyze workspace instead, and
+`/pipeline/` is a pure 302 redirect into the shell root `/`. The stage graph itself is
+unchanged: only Metadata and Analyze converge into Proposals; fingerprint and the tracklist
+subgraph have no edge into Proposals.
 
 ## 🤖 Distributed Execution Architecture (Phases 26-29)
 
