@@ -885,11 +885,17 @@ Plans:
 
 **Notes**: CI-03's combine step must be trustworthy before Phase 64 raises the enforced gate. Resolve at planning: marker vs directory vs xdist sharding vs job matrix; where real-Postgres integration tests bucket; and the code-change-detection mechanism (changed-files gate job over bare `paths-ignore`) that avoids the "required check never runs → PR can't merge" trap. CI workflows must delegate to `just` recipes per project convention.
 **Plans**: 4 plans (3 waves)
-
 Plans:
+**Wave 1**
 
 - [ ] 63-01-PLAN.md — Foundation: pytest-xdist (legitimacy-gated) + coverage relative_files + just test-bucket/coverage-combine + tests/buckets.json [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 63-02-PLAN.md — Directory reorg into 9 buckets (collision-safe layer sub-nesting + migrations-import fix) + partition guard, full suite green at baseline [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 63-03-PLAN.md — tests.yml bucket matrix (fromJSON, per-leg services + coverage shards) + combine job (single coverage.xml + single Codecov upload) [Wave 3]
 - [ ] 63-04-PLAN.md — ci.yml classifier broadened (.planning/**/LICENSE/docs/.txt) as a tested delegated script + change-gate regression tests; required-check contract untouched [Wave 3]
 
