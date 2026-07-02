@@ -40,9 +40,9 @@ created: 2026-07-01
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 62-01-01 | 01 | 1 | CUT-01 | — | Skip link present + first focusable; rail exposes nav landmark + aria-current; visible focus states asserted | structural (rendered/source) | `uv run pytest tests/test_a11y_shell.py -q` | ❌ W0 | ⬜ pending |
-| 62-01-02 | 01 | 1 | CUT-01 | — | ⌘K combobox input has accessible name (`aria-label`); combobox/listbox/option + aria-activedescendant/aria-expanded present | structural | `uv run pytest tests/test_a11y_cmdk.py -q` | ❌ W0 | ⬜ pending |
-| 62-01-03 | 01 | 1 | CUT-01 | — | Record slide-in is `role=dialog aria-modal=true` with accessible name + x-trap | structural | `uv run pytest tests/test_a11y_record.py -q` | ❌ W0 | ⬜ pending |
+| 62-01-01 | 01 | 1 | CUT-01 | — | Skip link present + first focusable; rail exposes nav landmark + aria-current; visible focus states asserted | structural (rendered/source) | `uv run pytest tests/test_a11y_guards.py -q` | ❌ W0 | ⬜ pending |
+| 62-01-02 | 01 | 1 | CUT-01 | — | ⌘K combobox input has accessible name (`aria-label`); combobox/listbox/option + aria-activedescendant/aria-expanded present | structural | `uv run pytest tests/test_a11y_guards.py -q` | ❌ W0 | ⬜ pending |
+| 62-01-03 | 01 | 1 | CUT-01 | — | Record slide-in is `role=dialog aria-modal=true` with accessible name + x-trap | structural | `uv run pytest tests/test_a11y_guards.py -q` | ❌ W0 | ⬜ pending |
 | 62-02-01 | 02 | 1 | CUT-04 | — | rail labels use `max-lg:sr-only` (readable, not hidden); per-stage inline-SVG icons present with aria-hidden + node accessible label; rail collapses <lg | structural | `uv run pytest tests/test_rail_narrow_width.py -q` | ❌ W0 | ⬜ pending |
 | 62-03-01 | 03 | 1 | CUT-03 | — | README + docs/architecture.md + docs/project-structure.md contain the new-IA sections (shell/rail/⌘K/stages); no stale tab-UI nav references | source assertion | `uv run pytest tests/test_docs_ia_current.py -q` | ❌ W0 | ⬜ pending |
 | 62-04-01 | 04 (LAST) | 2 | CUT-02 | — | 8 wrapper templates + 6 orphaned partials deleted; `_ALLOWLIST` empty; closure logic untouched; the 5 content routers' live HX branch KEPT | guard | `uv run pytest tests/test_dead_template_guard.py -q` | ✅ | ⬜ pending |
@@ -54,9 +54,7 @@ created: 2026-07-01
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_a11y_shell.py` — CUT-01 skip-link / rail landmark / focus-state structural stubs
-- [ ] `tests/test_a11y_cmdk.py` — CUT-01 ⌘K combobox/listbox ARIA + accessible-name stubs
-- [ ] `tests/test_a11y_record.py` — CUT-01 record slide-in dialog/aria-modal stubs
+- [ ] `tests/test_a11y_guards.py` — CUT-01 skip-link / rail landmark / ⌘K combobox / record dialog structural guards
 - [ ] `tests/test_rail_narrow_width.py` — CUT-04 max-lg collapse + inline-SVG icon stubs
 - [ ] `tests/test_docs_ia_current.py` — CUT-03 docs-contain-new-IA stubs
 
@@ -79,7 +77,7 @@ created: 2026-07-01
 
 - [x] All tasks have `<automated>` verify or Wave 0 dependencies — every plan task carries a concrete inline `<automated>` command; no MISSING placeholders remain
 - [x] Sampling continuity: no 3 consecutive tasks without automated verify
-- [x] Wave 0 covers all MISSING references — the 5 new guard test files are authored inline as the first task of plans 01–03
+- [x] Wave 0 covers all MISSING references — the 3 new guard test files are authored inline as the first task of plans 01–03
 - [x] No watch-mode flags
 - [x] Feedback latency < 180s — 62-04 Task 3 leads with the sub-second fast-lane filesystem guards, full suite is the secondary final gate
 - [x] `nyquist_compliant: true` set in frontmatter
@@ -87,4 +85,3 @@ created: 2026-07-01
 *Note: `wave_0_complete` remains false because the CUT-01/03/04 guard test files are created inline (TDD) during execution, not pre-authored. This is intentional — every task nonetheless ships a real automated command, so the phase is Nyquist-compliant.*
 
 **Approval:** approved — all tasks carry concrete automated commands; 62-04 fast-lane guards give sub-second feedback with the full suite as the final gate.
-</content>
