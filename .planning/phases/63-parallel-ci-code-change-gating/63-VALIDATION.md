@@ -1,10 +1,11 @@
 ---
 phase: 63
 slug: parallel-ci-code-change-gating
-status: approved
+status: validated
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-02
+validated: 2026-07-02
 ---
 
 # Phase 63 — Validation Strategy
@@ -62,9 +63,24 @@ Key seams to validate — these are what make CI-01/CI-03 *trustworthy*:
 
 ## Wave 0 Requirements
 
-- [ ] `uv add --dev "pytest-xdist>=3.8.0"` — verify it clears the 7-day `exclude-newer` cooldown at lock time
-- [ ] `just test-bucket <name>` recipe + `just coverage-combine` recipe (D-10)
-- [ ] Partition-guard test file (asserts collection ⊆ known bucket dirs)
+- [x] `uv add --dev "pytest-xdist>=3.8.0"` — cleared the 7-day `exclude-newer` cooldown (3.8.0 ~12mo old); operator-approved via the 63-01 package-legitimacy checkpoint
+- [x] `just test-bucket <name>` recipe + `just coverage-combine` recipe (D-10) — shipped in 63-01
+- [x] Partition-guard test file (asserts collection ⊆ known bucket dirs) — `tests/shared/test_partition_guard.py` (63-02)
+
+---
+
+## Requirement Coverage (post-execution audit, 2026-07-02)
+
+| Req | Behavior | Automated coverage | Status |
+|-----|----------|--------------------|--------|
+| CI-01 | Suite partitioned into per-workflow-step buckets, none dropped/double-counted | `tests/shared/test_partition_guard.py` (both-glob, reads buckets.json, non-vacuous meta-test) | ✅ COVERED |
+| CI-02 | CI fans buckets across a parallel matrix wired to the canonical bucket list | `tests/shared/test_ci_workflow_wiring.py` — matrix via `fromJSON(setup.buckets)`, `fail-fast:false`, setup reads `tests/buckets.json` | ✅ COVERED (structural) |
+| CI-03 | Per-shard `.coverage` combined → ONE Codecov upload, 85% gate on the combined number only | `tests/shared/test_ci_workflow_wiring.py` — `test-bucket` keeps `--cov-fail-under=0`, `coverage-combine` enforces `--fail-under=85` once, token confined to combine job, combine merges all shards | ✅ COVERED (structural) |
+| CI-04 | Doc-only changes skip heavy jobs (skip-with-success); conservative classifier | `tests/shared/test_change_gate.py` (11 tests over the real classifier incl. mixed doc+code positive + empty-diff fail-safe) | ✅ COVERED |
+
+The CI-02/CI-03 structural guard (`test_ci_workflow_wiring.py`) was added by this validation pass. Its
+`--cov-fail-under=0` assertion is the exact regression tripwire for the gate-deferral bug the phase
+verifier caught (every matrix leg exiting 1 on partial coverage) — non-vacuousness confirmed by the auditor.
 
 ---
 
@@ -86,4 +102,18 @@ Key seams to validate — these are what make CI-01/CI-03 *trustworthy*:
 - [x] Feedback latency acceptable (full-suite `just integration-test` in 63-02 Task 2 is accepted latency — inherent to proving the reorg is behavior-preserving)
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** approved (plan-checker review, 2026-07-02). Wave 0 not yet executed.
+**Approval:** approved (plan-checker review, 2026-07-02). Phase executed + verified 12/12.
+
+---
+
+## Validation Audit 2026-07-02
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 4 (CI-01..CI-04) |
+| Covered pre-audit | 2 (CI-01, CI-04) |
+| Gaps found | 2 (CI-02, CI-03 — no committed structural regression guard) |
+| Resolved | 2 (both closed by `tests/shared/test_ci_workflow_wiring.py`, 6 tests) |
+| Escalated / manual-only | 0 new (CI-02 wall-clock speedup + CI-04 branch-protection setting remain in Manual-Only above — inherently runtime/repo-config, not code) |
+
+Outcome: **nyquist_compliant: true** — every requirement has automated verification (structural where the surface is CI YAML) or a documented manual-only rationale.
