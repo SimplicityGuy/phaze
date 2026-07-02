@@ -92,6 +92,18 @@ test-ci:
 test-file FILE:
     uv run pytest {{FILE}} -x -v
 
+[doc('Run a single test bucket, writing coverage data to .coverage.<bucket> (CI shard). XDIST="" keeps DB buckets serial; DB-free buckets pass XDIST="-n auto".')]
+[group('test')]
+test-bucket NAME XDIST="":
+    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest tests/{{NAME}} {{XDIST}} --cov=phaze --cov-report= -q
+
+[doc('Combine per-bucket .coverage.* shards into coverage.xml and enforce the gate')]
+[group('test')]
+coverage-combine:
+    uv run coverage combine
+    uv run coverage xml
+    uv run coverage report --fail-under=85
+
 [doc('Start ephemeral Postgres + Redis for integration tests (ports PHAZE_TEST_DB_PORT/PHAZE_TEST_REDIS_PORT, defaults 5433/6380)')]
 [group('test')]
 test-db:
