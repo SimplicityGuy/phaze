@@ -1,6 +1,7 @@
 ---
 phase: quick-260628-wzq
 plan: 01
+status: complete
 subsystem: control-plane / kube-staging
 tags: [k8s, kueue, job-manifest, config, env-contract, docs]
 requires: []

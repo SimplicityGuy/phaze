@@ -1,6 +1,7 @@
 ---
 phase: quick-260629-eev
 plan: 01
+status: complete
 subsystem: docs
 tags: [docs, mermaid, cloud-burst, k8s-burst]
 requires: []
