@@ -37,8 +37,13 @@
         hide() {
             this.open = false;
             const target = this.opener || document.getElementById('stage-workspace');
-            if (target && typeof target.focus === 'function') target.focus();
             this.opener = null;
+            // Defer to after Alpine tears the panel down (see cmdk_modal.html): a
+            // synchronous focus here is undone when the browser resets focus to <body>
+            // as the hidden panel's focused child is removed on the same tick.
+            this.$nextTick(() => {
+                if (target && typeof target.focus === 'function') target.focus();
+            });
         }
      }"
      @record:open.window="show($event.detail && $event.detail.el)"
@@ -56,7 +61,7 @@
              role="dialog"
              aria-modal="true"
              aria-label="File record"
-             x-trap.inert.noscroll="open"
+             x-trap.inert.noscroll.noreturn="open"
              class="absolute inset-y-4 right-4 w-[760px] max-w-[94vw] overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-phaze-border dark:bg-phaze-bg">
 
             {# #record-body — the HTMX innerHTML swap target for GET /record/{file_id}. After each

@@ -447,6 +447,13 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     # x-data on the clickable table wrapper (the wrapper div precedes the table id, so check body).
     assert 'overflow-x-auto" x-data' in body
 
+    # UAT focus/a11y: clickable record rows are keyboard-operable — tabindex="0" (so Esc can
+    # return focus to the opening row) + Enter opens the record via both the Alpine dispatch
+    # and the htmx load (keyup[key=='Enter']). Verified live in Phase 61 UAT.
+    assert 'tabindex="0"' in tbl
+    assert "@keydown.enter" in tbl
+    assert "keyup[key==&#39;Enter&#39;]" in tbl or "keyup[key=='Enter']" in tbl
+
     # WORK-05 / R-2: no second poll loop in the fragment.
     assert 'hx-trigger="every' not in body
     assert "setInterval" not in body
