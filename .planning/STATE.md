@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v7.0
 milestone_name: UI Redesign (DAG-Centric Hybrid Console)
-status: ready_to_plan
-last_updated: 2026-07-02T01:11:31.397Z
-last_activity: 2026-07-01 -- Phase 61 execution started
+status: "Phase 62 shipped — PR #190 (v7.0 close-out)"
+last_updated: "2026-07-02T16:21:50.458Z"
+last_activity: 2026-07-02
 progress:
   total_phases: 29
-  completed_phases: 5
-  total_plans: 24
-  completed_plans: 24
-  percent: 17
-stopped_at: Phase 61 complete (5/5) — ready to discuss Phase 62
+  completed_phases: 7
+  total_plans: 28
+  completed_plans: 28
+  percent: 24
 ---
 
 # Project State
@@ -21,13 +20,13 @@ stopped_at: Phase 61 complete (5/5) — ready to discuss Phase 62
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 62 — polish & cutover
+**Current focus:** Milestone complete
 
 ## Current Position
 
 Phase: 62
 Plan: Not started
-Status: Ready to plan
+Status: Phase 62 shipped — PR #190 (v7.0 close-out)
 Last activity: 2026-07-02
 
 Progress: [██████████] 100%
@@ -36,7 +35,7 @@ Progress: [██████████] 100%
 
 **v1.0 Velocity:**
 
-- Total plans completed: 116
+- Total plans completed: 120
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -109,6 +108,8 @@ Progress: [██████████] 100%
 - [Phase ?]: Phase 60-04: dedupe/cue wired to VERIFIED endpoints not the UI-SPEC sketch — resolve uses Form canonical_id + sha256_hash key (not group_id/keeper_id); cue APPROVE posts /cue/{id}/generate (generate IS the write, no /approve route)
 - [Phase ?]: Phase 60-04: get_cue_review_cards builds the .cue preview via generate_cue_content ONLY (no write_cue_file) — render never writes disk (T-60-CUE); dedupe UNDO rides the existing resolve_response.html OOB toast file_states round-trip, no new template
 - [Phase ?]: Phase 60-04: _STAGE_PLACEHOLDER constant retained in shell.py (unused) so the _stage_placeholder.html literal stays in router source and the dead-template guard keeps it reachable until CUT-02 (Phase 62)
+- [Phase ?]: Phase 62-04 (CUT-02): v7.0 dead-code cutover complete — 20 legacy tab-era templates deleted, /pipeline/ + /preview/ pure redirects, base.html reduced to logo+theme, dead-template guard green with empty _ALLOWLIST (closure untouched); kept all live shell HX fragments (D-03b)
+- [Phase ?]: Phase 62-04: /saq SAQ-monitor in-UI link is a surfaced supersession gap (D-05) — app stays mounted + URL-reachable but no shell link exists; not fixed (would be new capability)
 
 ### Pending Todos
 
@@ -170,6 +171,7 @@ None.
 | Phase 60 P02 | 20min | 3 tasks | 6 files |
 | Phase 60 P03 | 25min | 3 tasks | 6 files |
 | Phase 60 P04 | 35min | 3 tasks | 7 files |
+| Phase 62 P04 | 95min | 3 tasks | 9 files |
 
 ## Deferred Items
 
@@ -199,9 +201,9 @@ These are tracked for the v6.0 deploy; they are NOT blockers for the milestone r
 
 ## Session Continuity
 
-Last session: 2026-07-01T20:55:59.001Z
-Stopped at: Phase 61 UI-SPEC approved
-Resume file: .planning/phases/61-full-record-k-agents/61-UI-SPEC.md
+Last session: 2026-07-02T06:19:23.305Z
+Stopped at: Phase 62 UI-SPEC approved
+Resume file: None
 
 ## Operator Next Steps
 

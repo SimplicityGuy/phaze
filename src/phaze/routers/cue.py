@@ -230,10 +230,9 @@ async def list_cue(
         "pagination": pagination,
     }
 
-    if request.headers.get("HX-Request") == "true":
-        return templates.TemplateResponse(request=request, name="cue/partials/cue_list.html", context=context)
-
-    return templates.TemplateResponse(request=request, name="cue/list.html", context=context)
+    # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
+    # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
+    return templates.TemplateResponse(request=request, name="cue/partials/cue_list.html", context=context)
 
 
 @router.post("/{tracklist_id}/generate", response_class=HTMLResponse)

@@ -45,7 +45,7 @@ K8s became a **third** analysis-routing target alongside local and the v5.0 OCI 
   - Success: rename/tag/move each show diffs with per-file + bulk-high-conf approve (server-side predicate, not a client id-list); dedupe groups pick a keeper; cue previews + approves gated on a matched tracklist; every applied change lands in the reversible audit log.
 - [x] **Phase 61: Full record + ⌘K + Agents** — per-file record (multi-lane windowed timeline, metadata diff, inline approvals, history); ⌘K palette (`@alpinejs/focus`); Agents page with ephemeral k8s identity; first-run empty state (RECORD-01..04) (completed 2026-07-02)
   - Success: a file opens to a full record; ⌘K searches files/tracklists/artists + offers quick commands; Agents shows local/A1 heartbeating and k8s as ephemeral Job-based (never perpetually-DEAD); empty state guides the first scan.
-- [ ] **Phase 62: Polish & cutover** — a11y parity (keyboard rail + ⌘K, focus, skip-link, DAG ARIA); remove dead old-UI templates/routers (dead-template guard green); update docs + README; narrow-width rail collapse (CUT-01..04)
+- [x] **Phase 62: Polish & cutover** — a11y parity (keyboard rail + ⌘K, focus, skip-link, DAG ARIA); remove dead old-UI templates/routers (dead-template guard green); update docs + README; narrow-width rail collapse (CUT-01..04) (completed 2026-07-02)
   - Success: keyboard-navigable rail + palette with visible focus and skip link; no orphaned old-UI code (the Phase 57 dead-template guard is green); docs/README describe the new IA; the rail collapses to icons at narrow widths.
 
 <details>
@@ -190,7 +190,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 59. Identify workspaces | v7.0 | 3/3 | Complete    | 2026-07-01 |
 | 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
-| 62. Polish & cutover | v7.0 | 0/TBD | Not started | - |
+| 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -804,11 +804,13 @@ Plans:
 
 **Notes**: Most correctness-sensitive phase (irreplaceable archive). REVIEW-02 fixes the live-polling stale-bulk-approval hazard — pick a fixed server-side confidence threshold at plan time (REVIEW-06 defers configurable thresholds; check the `tracklists.py` `reject-low` endpoint as a reference value). The 5s diff-list poll must OOB-update counts **only** — never re-render the operator's in-progress selection subtree. No phase research needed.
 **Plans**: 5 plans in 2 waves
+
 - [x] 61-01-PLAN.md — Foundation: @alpinejs/focus dep + SRI gate (shell.html+base.html) + Wave-0 tests/fixtures
 - [x] 61-02-PLAN.md — Full-record slide-in (RECORD-01): GET /record/{file_id} fragment, persistent x-trap host, composed body, row/⌘K open
 - [x] 61-03-PLAN.md — ⌘K command palette (RECORD-02): distinct_artists() + grouped results + roving arrow-nav + x-trap
 - [x] 61-04-PLAN.md — Agents page (RECORD-03): heartbeating section + ephemeral compute lanes (classify_compute_lanes, never DEAD)
 - [x] 61-05-PLAN.md — First-run empty state (RECORD-04): agent-roots guide + DISCOVERY scan (POST /pipeline/scans)
+
 **UI hint**: yes
 
 ### Phase 61: Full record + ⌘K + Agents
@@ -840,7 +842,18 @@ Plans:
   4. The shell degrades reasonably at narrow widths — the rail collapses to icons — for the single-user desktop tool.
 
 **Notes**: CUT-02 deletes the legacy page wrappers (`proposals/list.html`, `tags/list.html`, `duplicates/list.html`, `cue/list.html`, `tracklists/list.html`, `search/page.html`, `preview/tree.html`, `pipeline/dashboard.html`, and the `base.html` nav block) via three-way grep + the dead-template test; **keep all `partials/`** — they became the shell's fragments. No phase research needed.
-**Plans**: TBD
+**Plans**: 4 plans (3 in wave 1 · CUT-02 cutover last in wave 2)
+Plans:
+**Wave 1**
+
+- [x] 62-01-PLAN.md — CUT-01 accessibility: close the ⌘K combobox accessible-name gap, remove the dead detail-pane aside, and lock the a11y baseline with a filesystem structural guard [Wave 1]
+- [x] 62-02-PLAN.md — CUT-04 narrow-width rail: max-lg icon-only collapse + 15 per-stage inline-SVG glyphs (sr-only labels, title tooltips) + collapse guard [Wave 1]
+- [x] 62-03-PLAN.md — CUT-03 docs: refresh README + docs/architecture.md + docs/project-structure.md + quick-start nav for the DAG-centric IA + docs-currency guard [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 62-04-PLAN.md — CUT-02 dead-code cutover (LAST): delete 8 wrapper templates + orphaned partials, strip base.html tab-bar nav, drain the dead-template allowlist to empty [Wave 2]
+
 **UI hint**: yes
 
 ## Backlog (unscheduled — no phase number yet)

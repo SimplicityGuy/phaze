@@ -28,8 +28,8 @@ end-to-end flow is:
 7. **Execute** — approved proposals run through a **copy → verify (SHA-256) → delete**
    protocol with a write-ahead audit log.
 
-Each per-file stage after ingest is **operator-triggered** from the pipeline dashboard
-(Phase 35 removed the implicit auto-chaining), and every stage is idempotent by
+Each per-file stage after ingest is **operator-triggered** from its stage workspace in the
+DAG-centric shell (Phase 35 removed the implicit auto-chaining), and every stage is idempotent by
 construction (see [Pipeline Determinism & Observability](#-pipeline-determinism--observability-phase-35)).
 
 The system is layered and asynchronous: a FastAPI application server owns the database and
@@ -136,7 +136,7 @@ Tracing one music file from disk to a finished move:
    Discovery persists rows **only** — Phase 35 (D-06) removed the per-discovery
    auto-enqueue of metadata extraction.
 3. **Operator-triggered stages.** Metadata, fingerprint, and analyze are each enqueued
-   independently by the operator from the dashboard DAG (no auto-chaining). The SAQ tasks
+   independently by the operator from their DAG-rail stage workspaces (no auto-chaining). The SAQ tasks
    in `src/phaze/tasks/` are: `extract_file_metadata` (mutagen, `metadata_extraction.py`),
    `fingerprint_file` (audfprint + Panako via the `FingerprintOrchestrator`), and
    `process_file` (essentia in a `ProcessPoolExecutor`, `functions.py`). On a distributed
@@ -186,7 +186,7 @@ copies, renames, or deletes a file while a proposal is `PENDING` or `REJECTED`.
 
 ## 🧮 Pipeline Determinism & Observability (Phase 35)
 
-Every pipeline stage is **operator-triggered** from the dashboard DAG and made
+Every pipeline stage is **operator-triggered** from its DAG-rail stage workspace and made
 **idempotent by construction**, so a repeat click or a reboot re-enqueue collapses to a
 no-op instead of doubling work (the lesson of the 2026-06-11 queue-doubling incident).
 
@@ -251,17 +251,23 @@ lost work: `scanned` sums each agent's LATEST completed batch (re-scan-safe via 
 subtitle and each Recent Scans row a per-agent `→ N unique · M deduped` annotation, both shown only
 when `deduped > 0` and degrade-safe (None / `{}` → hidden).
 
-### Dashboard DAG canvas
+### DAG rail & stage workspaces
 
 `_build_dag_context` (`routers/pipeline.py`) reconciles three sources per node (D-03):
 `get_stage_progress` DB-truth `done`/`total` (the authority), the maintained `completed`
 counters (a degrade backstop via `_reconciled_done`, capped at the node total), and
-`get_queue_activity` (the per-node ACTIVE state). It feeds the 5-second `/pipeline/stats`
-OOB poll. The UI is a single 9-node SVG DAG canvas
-(`templates/pipeline/partials/dag_canvas.html`) — rendered once on full-page load and kept
-live only by the poll's store-bound OOB seeds — which **replaced** the Phase-34 stage cards
-+ processing card. Only Metadata and Analyze converge into Proposals; fingerprint and the
-tracklist subgraph have no edge into Proposals.
+`get_queue_activity` (the per-node ACTIVE state). It is assembled by
+`build_dashboard_context` and feeds both the v7.0 Analyze workspace and the 5-second
+`/pipeline/stats` OOB poll that keeps every count live. In the v7.0 shell the pipeline DAG
+is the **left rail** (`templates/shell/partials/rail.html`) — the navigation spine — where
+each node shows its live count (bound to `$store.pipeline`) and clicking a node swaps its
+workspace into `#stage-workspace` over HTMX (`GET /s/<stage>`). The standalone pipeline
+dashboard page and its single-partial DAG canvas were removed in CUT-02 (Phase 62); the
+underlying stage-progress services (`get_stage_progress`, `get_queue_activity`,
+`build_dashboard_context`) are unchanged and now back the Analyze workspace instead, and
+`/pipeline/` is a pure 302 redirect into the shell root `/`. The stage graph itself is
+unchanged: only Metadata and Analyze converge into Proposals; fingerprint and the tracklist
+subgraph have no edge into Proposals.
 
 ## 🤖 Distributed Execution Architecture (Phases 26-29)
 
@@ -436,6 +442,64 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | `recover_orphaned_work` | `reenqueue.py` | Gated, all-stages restart/queue-loss recovery (Phase 42/45): no-ops on a durable Postgres-broker restart; on genuine queue-loss (or manual `force`) replays each orphaned scheduling-ledger row — payload **and** stored `timeout`/`retries` policy — through the identical keyed producers, so in-flight items dedup (no doubling) and a recovered long `process_file` keeps its 7200s bound instead of the 600s default. Startup + the manual `/pipeline/recover` button call the same producer |
 | `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
 | `_heartbeat_loop` / `send_heartbeat` | `heartbeat.py` | 30s heartbeat POST run as a startup asyncio background task (Phase 46), not a SAQ cron; `heartbeat_tick` retained as a thin back-compat shim |
+
+## 🖥️ User Interface / Information Architecture (v7.0)
+
+The admin UI is a **three-column "Hybrid Console" shell** (Phase 57–62). It restructured the
+former flat row of ~10 sibling tabs into a single screen centered on the pipeline DAG. This
+is an **IA + presentation change only** — it is new templates over the **existing** routers
+and services documented above; no analysis, identify, proposal, or execution behavior
+changed (REQUIREMENTS "logic unchanged" rule).
+
+### Shell layout
+
+- **Left — DAG rail (navigation spine).** Every pipeline stage is a rail node with a live
+  count and status dot, grouped Discover → Enrich (Metadata · Fingerprint · Analyze) →
+  Identify (Track-ID · Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
+  Dedupe · Cue). Below the line are plain links to the **Audit log** (`/audit/`) and the
+  **Agents/Compute** page (`/admin/agents`).
+- **Center — stage workspace.** The selected rail node's file queue / lane summary / approval
+  diffs.
+- **Right — per-file pane** and, on demand, the full **record slide-in** overlay.
+
+### Rail-as-nav swap contract
+
+`src/phaze/routers/shell.py` owns the shell. `GET /` renders the full three-column shell with
+**Analyze** selected by default; clicking a rail node issues an HTMX `GET /s/<stage>` that
+returns only the stage's content fragment and swaps it into the single `#stage-workspace`
+target (`hx-push-url` keeps the URL bookmarkable). `stage` is resolved through a strict
+static whitelist, `STAGE_PARTIALS` (`shell.py`), that maps each rail-node id to its
+workspace partial (e.g. `analyze` → `pipeline/partials/analyze_workspace.html`) — `stage` is
+never interpolated into a template path (template-path-injection mitigation, T-57-01); an
+unknown stage 404s. The full-page-vs-fragment fork mirrors the legacy `search.py` shape, and
+the legacy top-level routes (`/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`,
+`/preview`, `/pipeline`, `/search`) now **302-redirect into the corresponding shell stage**
+so old bookmarks survive.
+
+Live per-stage counts, agent liveness, and pause/priority state all ride the **single**
+existing `/pipeline/stats` 5-second poll (Phase 35/57) via out-of-band swaps into an Alpine
+`$store.pipeline` store — the shell adds no second poll loop.
+
+### Global surfaces
+
+- **⌘K command palette** (`shell/partials/cmdk_modal.html`) — a Cmd-K combobox unifying
+  search over files / tracklists / artists plus quick commands; it reuses the existing
+  `/search/` HX branch and replaces the former Search tab.
+- **Header status strip** (`shell/partials/header.html`) — compute/agent liveness dots for
+  the local / A1 / k8s burst lanes; the k8s burst lane derives liveness from in-flight Kueue
+  workloads (an ephemeral Job-based identity), so it is never rendered as perpetually-DEAD.
+- **Per-file record slide-in** (`shell/partials/record_host.html`) — a `role="dialog"
+  aria-modal` panel that slides in over the shell from a file row or from ⌘K, carrying the
+  file's windowed analysis timeline, metadata/identity, and its pending approvals.
+
+### Review & Apply gate
+
+The five legacy approval tabs (Proposals / Preview / Tags / Cue / Duplicates) collapse into
+one Review & Apply group of stage workspaces sharing a single before → after diff interaction
+(`_diff_row.html`): per-row Approve / Edit / Skip plus a header "approve all high-confidence"
+bulk action, dedupe keeper-selection, and cue-sheet preview. Each workspace posts to the same
+existing endpoints (`/tags/*`, `/cue/*`, `/duplicates/*`, proposal approve/reject) and every
+applied change is audited and reversible.
 
 ## 🗂️ Directory Rationale
 

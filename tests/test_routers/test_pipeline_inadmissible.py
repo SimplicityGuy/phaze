@@ -62,7 +62,7 @@ async def test_dashboard_shows_inadmissible_alert_when_flagged(client: AsyncClie
     """With an inadmissible cloud_job row the dashboard renders the warning copy + card id."""
     await _seed_cloud_job(session, inadmissible=True)
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert 'id="inadmissible-card"' in response.text
@@ -78,7 +78,7 @@ async def test_dashboard_hides_inadmissible_alert_when_none(client: AsyncClient,
     """
     await _seed_cloud_job(session, inadmissible=False)
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     # The empty carrier is always present; the warning banner is NOT.
@@ -89,7 +89,7 @@ async def test_dashboard_hides_inadmissible_alert_when_none(client: AsyncClient,
 @pytest.mark.asyncio
 async def test_dashboard_renders_on_all_zero_path(client: AsyncClient) -> None:
     """With NO cloud_job rows at all the dashboard still renders (no template error), banner absent."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert 'id="inadmissible-card"' in response.text

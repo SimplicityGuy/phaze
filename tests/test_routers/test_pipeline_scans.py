@@ -35,7 +35,7 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scan_batch import ScanBatch, ScanStatus
-from phaze.routers import pipeline, pipeline_scans
+from phaze.routers import pipeline, pipeline_scans, shell
 
 
 if TYPE_CHECKING:
@@ -53,6 +53,7 @@ def _make_smoke_app(session: AsyncSession) -> tuple[FastAPI, AsyncMock]:
     app = FastAPI(title="pipeline-scans-smoke", version="test")
     app.include_router(pipeline_scans.router)
     app.include_router(pipeline.router)
+    app.include_router(shell.router)
     app.dependency_overrides[get_session] = lambda: session
     mock_router = AsyncMock()
     app.state.task_router = mock_router
@@ -799,7 +800,7 @@ async def test_dashboard_renders_trigger_scan_card(
     """GET /pipeline/ surfaces the Trigger Scan card heading + agent dropdown + picker slot."""
     ac, _ = smoke
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/s/discover", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'id="trigger-scan-heading"' in response.text
     assert ">Trigger Scan</h2>" in response.text
@@ -816,7 +817,7 @@ async def test_dashboard_renders_recent_scans_section(
     """GET /pipeline/ surfaces the Recent Scans heading + empty state when no batches."""
     ac, _ = smoke
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'id="recent-scans-heading"' in response.text
     assert ">Recent Scans</h2>" in response.text
@@ -843,7 +844,7 @@ async def test_dashboard_recent_scans_shows_failed_row_with_inline_error(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # PR5 added an Actions column, so the inline-error row spans 7 columns.
     assert 'colspan="7"' in response.text
@@ -869,7 +870,7 @@ async def test_dashboard_recent_scans_excludes_live_batches(
     session.add(live_batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # The LIVE sentinel must not surface; the table renders the empty state.
     assert "<watcher>" not in response.text
@@ -894,7 +895,7 @@ async def test_status_pill_running_uses_blue_surface(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-blue-100 dark:bg-blue-950" in response.text
     assert 'aria-label="Status: running"' in response.text
@@ -918,7 +919,7 @@ async def test_status_pill_completed_uses_green_surface(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-green-100" in response.text
     assert 'aria-label="Status: completed"' in response.text
@@ -943,7 +944,7 @@ async def test_status_pill_failed_uses_red_surface(
     session.add(batch)
     await session.commit()
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "bg-red-100" in response.text
     assert 'aria-label="Status: failed"' in response.text
@@ -1084,29 +1085,6 @@ async def test_stats_partial_carries_oob_files_ready_counts(
     assert "files ready" in response.text
 
 
-@pytest.mark.asyncio
-async def test_dashboard_full_page_omits_oob_counts(
-    smoke: tuple[AsyncClient, AsyncMock],
-) -> None:
-    """Initial full-page render must NOT emit the hx-swap-oob paragraphs.
-
-    stats_bar.html is {% include %}'d at full-page load. htmx only honors
-    hx-swap-oob during a swap response, so emitting the OOB paragraphs at load
-    would render them as stray visible text AND duplicate the ids that
-    stage_cards.html already carries. The dashboard handler omits ``oob_counts``
-    so the {% if oob_counts %} block is skipped: NO hx-swap-oob on the page, and
-    each "files ready" id appears exactly once (the in-place stage-card copy).
-    """
-    ac, _ = smoke
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    # No OOB markup leaks into the full-page render.
-    assert "hx-swap-oob" not in response.text
-    # Each stage-card count id appears exactly once (no duplicate-id DOM).
-    assert response.text.count('id="analyze-files-ready"') == 1
-    assert response.text.count('id="proposals-files-ready"') == 1
-
-
 # ---------------------------------------------------------------------------
 # Stage-card button :disabled tracks the live count via $store.pipeline
 # ---------------------------------------------------------------------------
@@ -1125,90 +1103,6 @@ def _make_discovered_file() -> FileRecord:
         file_size=2048,
         state=FileState.DISCOVERED,
     )
-
-
-@pytest.mark.asyncio
-async def test_dashboard_renders_one_button_per_action(
-    smoke: tuple[AsyncClient, AsyncMock],
-) -> None:
-    """The dashboard renders exactly one Run Analysis and one Generate Proposals button.
-
-    Regression guard for the disabled-state fix: the OOB count poll must not
-    duplicate (or drop) the interactive button subtree.
-    """
-    ac, _ = smoke
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    # Exactly one hx-post button per action (robust to the heading also reading
-    # "Generate Proposals"): count the unique enqueue endpoints.
-    assert response.text.count('hx-post="/pipeline/analyze"') == 1
-    assert response.text.count('hx-post="/pipeline/proposals"') == 1
-    assert "Run Analysis" in response.text
-    assert "Generate Proposals" in response.text
-
-
-@pytest.mark.asyncio
-async def test_button_disabled_binds_to_store_not_frozen_literal(
-    smoke: tuple[AsyncClient, AsyncMock],
-    session: AsyncSession,
-) -> None:
-    """Each trigger's :disabled reads $store.pipeline.* — the live count — not a baked-in int.
-
-    The bug was a server-rendered Alpine binding ``:disabled="loading || {{ count }} === 0"``
-    that froze the count at page-render time, so the button stayed disabled after a poll
-    bumped the count. The Phase-35 DAG canvas (D-01) routes the disabled state through the
-    reactive Alpine store via a centralized ``nodes`` getter: each enqueue button binds
-    ``:disabled="loading || nodes.<node>.blocked"`` and the blocked predicate reads
-    ``$store.pipeline`` (``s = $store.pipeline``), so the gate stays live across polls.
-    """
-    # Seed DISCOVERED files so the page-render count is a concrete non-zero value; the
-    # binding must still reference the store rather than that literal.
-    session.add_all([_make_discovered_file() for _ in range(3)])
-    await session.commit()
-
-    ac, _ = smoke
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    # Triggers bind to the reactive store-derived node state, the single source of truth.
-    assert ':disabled="loading || nodes.analyze.blocked"' in response.text
-    assert ':disabled="loading || nodes.proposals.blocked"' in response.text
-    # The blocked predicates read $store.pipeline (per-stage busy + dependency gates). t7k FIX2:
-    # each agent stage gates on its OWN in-flight busy count (analyzeBusy here), not a shared
-    # global agentBusy — so running one agent stage no longer locks the other two.
-    assert "s.discovered === 0 || s.analyzeBusy > 0" in response.text  # analyze gates on its own busy count
-    assert "s.analyzed === 0 || s.controllerBusy > 0" in response.text  # proposals
-    # And it must NOT be a frozen server literal like ``|| 3 === 0``.
-    assert "|| 3 === 0" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_dashboard_seeds_pipeline_store_from_server_count(
-    smoke: tuple[AsyncClient, AsyncMock],
-    session: AsyncSession,
-) -> None:
-    """Page load seeds $store.pipeline from the server count so initial disabled state is correct.
-
-    The in-place stage-card count paragraphs carry an x-init that writes the
-    server-rendered count into the store, making the buttons correctly enabled/disabled
-    before any 5s poll has run.
-    """
-    session.add_all([_make_discovered_file() for _ in range(2)])
-    await session.commit()
-
-    ac, _ = smoke
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    # discovered == 2 at render: the store is seeded with that exact value.
-    assert 'x-init="$store.pipeline.discovered = 2"' in response.text
-    # analyzed == 0: store seeded with the server value (no analyzed files seeded).
-    assert 'x-init="$store.pipeline.analyzed = 0"' in response.text
-    # The global store is registered so the bindings resolve before the first poll.
-    # Phase 34 added the queue-busy gate keys; Phase 35 (35-04) extends it further with
-    # the per-DAG-node sub-keys (all defaulting to 0). Assert the store is registered, the
-    # Phase-34 keys are preserved, and a sample new per-node key is seeded to 0.
-    assert "Alpine.store('pipeline', {" in response.text
-    assert "discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0," in response.text
-    assert "analyzeActive: 0" in response.text
 
 
 @pytest.mark.asyncio
@@ -1323,7 +1217,7 @@ async def test_recent_scans_table_delete_control_on_terminal_rows_only(
     await session.commit()
     completed_id, running_id = completed.id, running.id
 
-    response = await ac.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # Actions column header present.
     assert ">Actions</th>" in response.text

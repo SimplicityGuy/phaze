@@ -36,6 +36,30 @@ Perfect for DJs, music collectors, and live recording enthusiasts who want their
 
 ## 🏛️ Architecture Overview
 
+### 🧭 The Console (v7.0 DAG-Centric Shell)
+
+Phaze's admin UI is a **three-column "Hybrid Console"** shell — a single screen with no
+content tabs. The pipeline **DAG rail** on the left is the navigation spine: it shows every
+stage with a live count, and clicking a stage swaps the center **stage workspace** in place
+over HTMX (`GET /s/<stage>`, no full-page reload and no tab bar). The right column is the
+per-file pane. `/` renders the shell with **Analyze** selected by default.
+
+- **DAG rail = navigation.** Discover → Enrich (Metadata · Fingerprint · Analyze) →
+  Identify (Track-ID · Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
+  Dedupe · Cue), with Audit log and the Agents/Compute page below the line. Live per-stage
+  counts ride the single `/pipeline/stats` 5-second poll.
+- **⌘K command palette.** A Cmd-K command palette unifies search across files, tracklists,
+  and artists plus quick commands — it replaces the old global-search tab.
+- **Header status strip.** Compute/agent liveness (local · A1 · k8s burst) surfaces in a
+  header status strip; the k8s burst lane is modeled as an ephemeral Job-based identity, so
+  it is never shown as perpetually dead.
+- **Per-file record slide-in.** Opening a file row (or picking it from ⌘K) slides a full
+  per-file record — windowed analysis timeline, metadata/identity, and this file's pending
+  approvals — in over the shell.
+
+This is an information-architecture and presentation layer over the **existing** routers and
+services — the analysis, identify, proposal, and execution behavior is unchanged.
+
 ### ⚙️ Services
 
 | Service      | Port | Purpose                            | Key Technologies                         |
@@ -52,7 +76,7 @@ Perfect for DJs, music collectors, and live recording enthusiasts who want their
 ```mermaid
 graph TD
     subgraph Frontend ["🌐 Frontend"]
-        UI["🖥️ Web UI<br/>HTMX + Tailwind<br/>Proposals · Duplicates · Tracklists · Pipeline · Exec"]
+        UI["🖥️ DAG-Centric Console<br/>HTMX + Tailwind + Alpine<br/>DAG rail nav · stage workspaces · ⌘K palette"]
     end
 
     subgraph Backend ["⚙️ Backend"]
@@ -93,8 +117,8 @@ See [Architecture Overview](docs/architecture.md) for detailed diagrams covering
 
 After discovery, metadata extraction, fingerprinting, and analysis run as independent
 per-file stages (each reads only the file on disk). Metadata extraction is
-**operator-triggered** from the pipeline dashboard — it is no longer auto-enqueued at
-discovery. Proposal generation joins on analysis **and** metadata only.
+**operator-triggered** from its stage workspace in the DAG-centric console — it is no
+longer auto-enqueued at discovery. Proposal generation joins on analysis **and** metadata only.
 
 ```mermaid
 stateDiagram-v2
@@ -111,15 +135,18 @@ stateDiagram-v2
     APPROVED --> FAILED
 ```
 
-The pipeline dashboard renders this topology as a single live **SVG DAG canvas**: each
-stage is a node with a per-job-type progress bar, a live count, and a trigger button gated
-by its upstream dependencies (and by agent/controller availability). DB-truth stage counts
-drive every rendered `done` value; the canvas is seeded once and kept live by a 5s poll.
-The three agent nodes (**Metadata**, **Analyze**, **Fingerprint**) additionally carry a
-**Pause/Resume toggle** and a **priority stepper** (▲ Higher / ▼ Lower, "lower number runs
-first") wired to the per-stage control endpoints below; their live pause/priority state
-rides the same 5s poll. The Discovery node is display-only — scanning is initiated solely
-from the Trigger Scan card (the redundant "Rescan Files" anchor was removed in Phase 38).
+The v7.0 console renders this topology as the **DAG rail** — the left-hand navigation
+spine — where each stage is a node with a live count; clicking a node swaps its workspace
+into the center pane over HTMX (`/s/<stage>`), and that workspace carries the stage's
+trigger (gated by its upstream dependencies and by agent/controller availability). DB-truth
+stage counts drive every rendered count; the rail is seeded once and kept live by a 5s
+`/pipeline/stats` poll. The three agent stages (**Metadata**, **Analyze**, **Fingerprint**)
+additionally have **per-stage Pause/Resume + priority control endpoints** (▲ Higher / ▼
+Lower, "lower number runs first"; see below); their live pause/priority state is seeded into
+`$store.pipeline` and rides the same 5s poll. Discovery is display-only — scanning is
+initiated solely from the Discover workspace's Trigger Scan card (the redundant "Rescan
+Files" anchor was removed in Phase 38). The legacy standalone dashboard page was removed in
+the v7.0 cutover, so `/pipeline/` now 302-redirects into the shell root `/`.
 
 **Recovery-only automation (Phase 42).** Steady state produces **zero** automatic
 enqueues — every stage advances only on an operator click. The single exception is a gated
@@ -161,7 +188,7 @@ Each endpoint mutates the control row and the live backlog in a **single transac
 
 An unknown stage returns **422** (validated against the metadata/analyze/fingerprint allowlist before any backlog filter is built). These endpoints add **no app-layer auth** — like the rest of `/pipeline/*` and the `/saq` UI, they sit behind the reverse proxy's internal-realm auth on the private LAN.
 
-**DAG controls (Phase 38):** each of the three agent nodes carries a Pause/Resume toggle (amber "Pause" ↔ green "Resume") and a ▲ Higher / ▼ Lower priority stepper (the UI steps by ±10; ▲ decrements the number — lower runs sooner). The controls POST to the endpoints above with `hx-swap="none"`; an Alpine `@htmx:after-request` handler writes the authoritative `{priority, paused}` from the JSON response into `$store.pipeline`, and the 5s `/pipeline/stats` poll re-pushes the live per-stage state so every refresh reconciles. The control read is degrade-safe: if `pipeline_stage_control` is unreadable, the dashboard renders the defaults (running, priority 50) and the poll still returns 200 — it never 500s. The former duplicate "Rescan Files" anchor on the Discovery node was removed (scanning lives in the Trigger Scan card).
+**Per-stage controls (Phase 38):** each control (Pause/Resume, plus a ▲ Higher / ▼ Lower priority step — the UI steps by ±10; ▲ decrements the number, lower runs sooner) POSTs to the endpoints above with `hx-swap="none"`; an Alpine `@htmx:after-request` handler writes the authoritative `{priority, paused}` from the JSON response into `$store.pipeline`, and the 5s `/pipeline/stats` poll re-pushes the live per-stage state so every refresh reconciles. The control read is degrade-safe: if `pipeline_stage_control` is unreadable, the store falls back to the defaults (running, priority 50) and the poll still returns 200 — it never 500s. The interactive control surface that lived on the removed v6.x DAG canvas is gone with the standalone dashboard page (CUT-02); the endpoints, durable intent, and live poll state are unchanged. Scanning is initiated solely from the Discover workspace's Trigger Scan card (the redundant "Rescan Files" anchor was removed in Phase 38).
 
 ## 🌟 Key Features
 
@@ -172,7 +199,8 @@ An unknown stage returns **422** (validated against the metadata/analyze/fingerp
 - **👀 Approval Workflow**: Every rename requires human review through the web UI
 - **🔒 Safe Operations**: Copy-verify-delete protocol ensures no data loss
 - **📊 Full Audit Trail**: Every file operation is tracked in PostgreSQL
-- **🗺️ Pipeline Observability**: A single SVG DAG canvas dashboard with per-job-type progress bars and dependency-gated stage triggers
+- **🧭 DAG-Centric Console**: A three-column shell where the pipeline DAG rail is the navigation spine — clicking a stage swaps the center workspace over HTMX (`/s/<stage>`, no tab bar), a ⌘K command palette replaces the old search tab, a header status strip shows compute/agent liveness, and a per-file record slide-in opens over any row (Agents and Audit pages reachable from the rail)
+- **🗺️ Pipeline Observability**: The DAG rail is the navigation spine — every stage is a live-count node whose workspace carries a dependency-gated trigger, all kept live by a 5s DB-truth poll
 - **⚡ Async Processing**: SAQ task queue on PostgreSQL for parallel file analysis — deterministic per-task keys and idempotent re-runs (Redis backs caching/rate-limiting only)
 - **📝 Type Safety**: Full type hints with strict mypy validation and Bandit security scanning
 
