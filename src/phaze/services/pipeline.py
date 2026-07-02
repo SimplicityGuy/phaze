@@ -306,7 +306,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     - ``discovery``   -- done = COUNT(files); total = itself (bar is always 100%)
     - ``metadata``    -- done = DISTINCT file_id in ``metadata``; total = music/video file count
-    - ``fingerprint`` -- done = DISTINCT file_id in ``fingerprint_results`` (status='completed'); total = music/video count
+    - ``fingerprint`` -- done = DISTINCT file_id in ``fingerprint_results`` (status in ('success','completed') -- the
+      engine adapters persist ``'success'`` via ``put_fingerprint``; ``'completed'`` is tolerated defensively but
+      never written); total = music/video count
     - ``analyze``     -- done = DISTINCT file_id in ``analysis``; total = music/video count
     - ``scan_search`` -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
       renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
@@ -368,7 +370,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         "fingerprint": {
             "done": await _safe_count(
                 session,
-                select(func.count(distinct(FingerprintResult.file_id))).where(FingerprintResult.status == "completed"),
+                select(func.count(distinct(FingerprintResult.file_id))).where(FingerprintResult.status.in_(("success", "completed"))),
                 node="fingerprint",
             ),
             "total": music_video_total,
