@@ -437,6 +437,64 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | `execute_approved_batch` | `execution.py` | Per-chunk batch execution on the agent (`_resolve_and_check_containment` guard) |
 | `_heartbeat_loop` / `send_heartbeat` | `heartbeat.py` | 30s heartbeat POST run as a startup asyncio background task (Phase 46), not a SAQ cron; `heartbeat_tick` retained as a thin back-compat shim |
 
+## 🖥️ User Interface / Information Architecture (v7.0)
+
+The admin UI is a **three-column "Hybrid Console" shell** (Phase 57–62). It restructured the
+former flat row of ~10 sibling tabs into a single screen centered on the pipeline DAG. This
+is an **IA + presentation change only** — it is new templates over the **existing** routers
+and services documented above; no analysis, identify, proposal, or execution behavior
+changed (REQUIREMENTS "logic unchanged" rule).
+
+### Shell layout
+
+- **Left — DAG rail (navigation spine).** Every pipeline stage is a rail node with a live
+  count and status dot, grouped Discover → Enrich (Metadata · Fingerprint · Analyze) →
+  Identify (Track-ID · Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
+  Dedupe · Cue). Below the line are plain links to the **Audit log** (`/audit/`) and the
+  **Agents/Compute** page (`/admin/agents`).
+- **Center — stage workspace.** The selected rail node's file queue / lane summary / approval
+  diffs.
+- **Right — per-file pane** and, on demand, the full **record slide-in** overlay.
+
+### Rail-as-nav swap contract
+
+`src/phaze/routers/shell.py` owns the shell. `GET /` renders the full three-column shell with
+**Analyze** selected by default; clicking a rail node issues an HTMX `GET /s/<stage>` that
+returns only the stage's content fragment and swaps it into the single `#stage-workspace`
+target (`hx-push-url` keeps the URL bookmarkable). `stage` is resolved through a strict
+static whitelist, `STAGE_PARTIALS` (`shell.py`), that maps each rail-node id to its
+workspace partial (e.g. `analyze` → `pipeline/partials/analyze_workspace.html`) — `stage` is
+never interpolated into a template path (template-path-injection mitigation, T-57-01); an
+unknown stage 404s. The full-page-vs-fragment fork mirrors the legacy `search.py` shape, and
+the legacy top-level routes (`/proposals`, `/tracklists`, `/tags`, `/cue`, `/duplicates`,
+`/preview`, `/pipeline`, `/search`) now **302-redirect into the corresponding shell stage**
+so old bookmarks survive.
+
+Live per-stage counts, agent liveness, and pause/priority state all ride the **single**
+existing `/pipeline/stats` 5-second poll (Phase 35/57) via out-of-band swaps into an Alpine
+`$store.pipeline` store — the shell adds no second poll loop.
+
+### Global surfaces
+
+- **⌘K command palette** (`shell/partials/cmdk_modal.html`) — a Cmd-K combobox unifying
+  search over files / tracklists / artists plus quick commands; it reuses the existing
+  `/search/` HX branch and replaces the former Search tab.
+- **Header status strip** (`shell/partials/header.html`) — compute/agent liveness dots for
+  the local / A1 / k8s burst lanes; the k8s burst lane derives liveness from in-flight Kueue
+  workloads (an ephemeral Job-based identity), so it is never rendered as perpetually-DEAD.
+- **Per-file record slide-in** (`shell/partials/record_host.html`) — a `role="dialog"
+  aria-modal` panel that slides in over the shell from a file row or from ⌘K, carrying the
+  file's windowed analysis timeline, metadata/identity, and its pending approvals.
+
+### Review & Apply gate
+
+The five legacy approval tabs (Proposals / Preview / Tags / Cue / Duplicates) collapse into
+one Review & Apply group of stage workspaces sharing a single before → after diff interaction
+(`_diff_row.html`): per-row Approve / Edit / Skip plus a header "approve all high-confidence"
+bulk action, dedupe keeper-selection, and cue-sheet preview. Each workspace posts to the same
+existing endpoints (`/tags/*`, `/cue/*`, `/duplicates/*`, proposal approve/reject) and every
+applied change is audited and reversible.
+
 ## 🗂️ Directory Rationale
 
 The package is organized by responsibility so the control/agent import boundary stays clean.

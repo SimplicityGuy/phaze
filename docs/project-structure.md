@@ -33,6 +33,7 @@ phaze/
 │   │   └── tag_write_log.py    #   TagWriteLog (append-only tag-write audit trail)
 │   ├── routers/                # API + UI endpoints
 │   │   ├── health.py           #   GET /health
+│   │   ├── shell.py            #   v7.0 console shell: GET / (Analyze default) + GET /s/<stage> workspace swaps
 │   │   ├── scan.py             #   File discovery scan
 │   │   ├── pipeline.py         #   Pipeline dashboard + processing triggers
 │   │   ├── pipeline_scans.py   #   Admin scan trigger + HTMX scan-batch polling
@@ -118,7 +119,12 @@ phaze/
 │   └── templates/              # Jinja2 HTML templates (HTMX + Tailwind)
 │       ├── base.html           #   Base layout (SRI-pinned CDN assets)
 │       ├── _partials/          #   Shared cross-page partials
-│       ├── pipeline/           #   Pipeline dashboard (9-node SVG DAG canvas)
+│       ├── shell/              #   v7.0 console shell (three-column DAG-centric layout)
+│       │   ├── shell.html      #     Three-column shell served by GET / (Analyze default)
+│       │   └── partials/       #     rail.html (DAG rail nav), header.html (⌘K + status strip),
+│       │       │               #     cmdk_modal.html (⌘K command palette), record_host.html (record slide-in)
+│       ├── record/             #   Per-file record slide-in body
+│       ├── pipeline/           #   Pipeline dashboard + /s/<stage> workspace partials (partials/<stage>_workspace.html)
 │       ├── proposals/          #   Proposal approval UI
 │       ├── execution/          #   Execution dashboard + audit log
 │       ├── duplicates/         #   Duplicate resolution UI
@@ -167,3 +173,36 @@ phaze/
 ├── pyproject.toml              # Project config + tool settings
 └── uv.lock                     # Frozen dependency versions
 ```
+
+## Shell templates & `/s/<stage>` routing
+
+The v7.0 admin UI is a three-column DAG-centric console (see
+[Architecture → User Interface](architecture.md#-user-interface--information-architecture-v70)).
+Its structural templates live under `templates/shell/`, while each rail node's content is a
+workspace partial under `templates/pipeline/partials/`:
+
+| Template | Role |
+| -------- | ---- |
+| `templates/shell/shell.html` | The three-column shell served by `GET /` (Analyze selected by default) |
+| `templates/shell/partials/rail.html` | The DAG rail — the navigation spine (stage nodes + live counts) |
+| `templates/shell/partials/header.html` | Header: wave logo, ⌘K trigger, and the compute/agent status strip |
+| `templates/shell/partials/cmdk_modal.html` | The ⌘K command palette (unified search + commands) |
+| `templates/shell/partials/record_host.html` + `templates/record/record_body.html` | The per-file record slide-in overlay |
+
+`src/phaze/routers/shell.py` maps rail-node ids to workspace partials through the static
+`STAGE_PARTIALS` whitelist. A rail click issues `GET /s/<stage>`, which returns only that
+stage's workspace fragment to swap into the `#stage-workspace` target:
+
+| `/s/<stage>` | Workspace partial |
+| ------------ | ----------------- |
+| `/s/discover` | `pipeline/partials/discover_workspace.html` |
+| `/s/metadata` · `/s/fingerprint` · `/s/analyze` | `pipeline/partials/{metadata,fingerprint,analyze}_workspace.html` |
+| `/s/trackid` · `/s/tracklist` | `pipeline/partials/{trackid,tracklist}_workspace.html` |
+| `/s/propose` | `pipeline/partials/propose_workspace.html` |
+| `/s/rename` · `/s/tagwrite` · `/s/move` · `/s/dedupe` · `/s/cue` | `pipeline/partials/{rename,tagwrite,move,dedupe,cue}_workspace.html` |
+
+`stage` is only ever matched against the `STAGE_PARTIALS` keys — it is never interpolated
+into a template path (template-path-injection mitigation) — and an unknown stage returns
+`404`. The legacy top-level page routes (`/proposals`, `/tracklists`, `/tags`, `/cue`,
+`/duplicates`, `/preview`, `/pipeline`, `/search`) `302`-redirect into their corresponding
+shell stage so existing bookmarks keep working.

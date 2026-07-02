@@ -131,10 +131,12 @@ A file moves through these states:
 APPROVED → EXECUTED`. You drive each stage from either a `just` recipe (curl wrapper) or
 the pipeline dashboard in the Web UI.
 
-1. **Open the pipeline dashboard.**
+1. **Open the console.**
 
-   Visit http://localhost:8000/pipeline/ — it shows per-stage counts and buttons to
-   advance files through the pipeline.
+   Visit http://localhost:8000/ — the three-column DAG-centric console opens with the
+   **Analyze** stage selected by default. The left DAG rail shows every pipeline stage with
+   a live count; clicking a stage swaps the center workspace in place. Press **⌘K** at any
+   time for the command palette (search files/tracklists/artists or jump to a stage).
 
 2. **Start a scan** (file discovery against `SCAN_PATH`):
 
@@ -161,12 +163,13 @@ the pipeline dashboard in the Web UI.
 
 4. **Review proposals in the Web UI.**
 
-   Visit http://localhost:8000/proposals/ to see each AI-generated rename/move. Approve
-   or reject individually, or use bulk actions. Nothing is moved on disk at this point —
-   approval only marks a proposal as ready to execute.
+   From the DAG rail, open the **Propose** / **Rename** stages (or press **⌘K**) to see each
+   AI-generated rename/move as a before → after diff. Approve, edit, or skip individually, or
+   use "approve all high-confidence". Nothing is moved on disk at this point — approval only
+   marks a proposal as ready to execute.
 
-   Duplicate groups surface separately at http://localhost:8000/duplicates/, and concert
-   tracklist matches at http://localhost:8000/tracklists/.
+   Duplicate groups surface under the **Dedupe** rail stage, and concert tracklist matches
+   under the **Tracklist** stage.
 
 5. **Execute the approved batch.**
 
