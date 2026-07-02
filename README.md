@@ -36,6 +36,30 @@ Perfect for DJs, music collectors, and live recording enthusiasts who want their
 
 ## 🏛️ Architecture Overview
 
+### 🧭 The Console (v7.0 DAG-Centric Shell)
+
+Phaze's admin UI is a **three-column "Hybrid Console"** shell — a single screen with no
+content tabs. The pipeline **DAG rail** on the left is the navigation spine: it shows every
+stage with a live count, and clicking a stage swaps the center **stage workspace** in place
+over HTMX (`GET /s/<stage>`, no full-page reload and no tab bar). The right column is the
+per-file pane. `/` renders the shell with **Analyze** selected by default.
+
+- **DAG rail = navigation.** Discover → Enrich (Metadata · Fingerprint · Analyze) →
+  Identify (Track-ID · Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
+  Dedupe · Cue), with Audit log and the Agents/Compute page below the line. Live per-stage
+  counts ride the single `/pipeline/stats` 5-second poll.
+- **⌘K command palette.** A Cmd-K command palette unifies search across files, tracklists,
+  and artists plus quick commands — it replaces the old global-search tab.
+- **Header status strip.** Compute/agent liveness (local · A1 · k8s burst) surfaces in a
+  header status strip; the k8s burst lane is modeled as an ephemeral Job-based identity, so
+  it is never shown as perpetually dead.
+- **Per-file record slide-in.** Opening a file row (or picking it from ⌘K) slides a full
+  per-file record — windowed analysis timeline, metadata/identity, and this file's pending
+  approvals — in over the shell.
+
+This is an information-architecture and presentation layer over the **existing** routers and
+services — the analysis, identify, proposal, and execution behavior is unchanged.
+
 ### ⚙️ Services
 
 | Service      | Port | Purpose                            | Key Technologies                         |
@@ -52,7 +76,7 @@ Perfect for DJs, music collectors, and live recording enthusiasts who want their
 ```mermaid
 graph TD
     subgraph Frontend ["🌐 Frontend"]
-        UI["🖥️ Web UI<br/>HTMX + Tailwind<br/>Proposals · Duplicates · Tracklists · Pipeline · Exec"]
+        UI["🖥️ DAG-Centric Console<br/>HTMX + Tailwind + Alpine<br/>DAG rail nav · stage workspaces · ⌘K palette"]
     end
 
     subgraph Backend ["⚙️ Backend"]
@@ -172,6 +196,7 @@ An unknown stage returns **422** (validated against the metadata/analyze/fingerp
 - **👀 Approval Workflow**: Every rename requires human review through the web UI
 - **🔒 Safe Operations**: Copy-verify-delete protocol ensures no data loss
 - **📊 Full Audit Trail**: Every file operation is tracked in PostgreSQL
+- **🧭 DAG-Centric Console**: A three-column shell where the pipeline DAG rail is the navigation spine — clicking a stage swaps the center workspace over HTMX (`/s/<stage>`, no tab bar), a ⌘K command palette replaces the old search tab, a header status strip shows compute/agent liveness, and a per-file record slide-in opens over any row (Agents and Audit pages reachable from the rail)
 - **🗺️ Pipeline Observability**: A single SVG DAG canvas dashboard with per-job-type progress bars and dependency-gated stage triggers
 - **⚡ Async Processing**: SAQ task queue on PostgreSQL for parallel file analysis — deterministic per-task keys and idempotent re-runs (Redis backs caching/rate-limiting only)
 - **📝 Type Safety**: Full type hints with strict mypy validation and Bandit security scanning
