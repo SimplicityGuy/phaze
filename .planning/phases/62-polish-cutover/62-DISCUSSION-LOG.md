@@ -93,6 +93,8 @@ Re-ran discuss-phase after `62-RESEARCH.md` + `62-VALIDATION.md` landed. Researc
 
 **User's choice:** Also strip legacy HX filter branches (D-03b). Planner must re-run the dead-template guard reach simulation after removing HX branches — the orphaned-partial set may extend beyond the minimal-cut 6-partial cascade.
 
+**CORRECTION (2026-07-01, post plan-checker):** This choice was premised on my mischaracterization — the per-router HX branches were presented as "dead" but are LIVE (they serve the shell's in-page pagination/filter/sort fragments; verified at `proposals.py:164-165` et al. + RESEARCH "Partials that STAY"). Stripping them would break live shell functionality. User confirmed the correction: KEEP the live HX branches; delete only the dead `return ...list.html` tails (5 routers) + `pipeline.py`'s fully-dead dashboard branch + the 8 wrappers + orphaned partial cascade + drain the allowlist. D-03b rewritten accordingly.
+
 ## base.html nav block
 
 | Option | Description | Selected |
