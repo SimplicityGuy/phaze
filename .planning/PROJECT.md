@@ -8,7 +8,7 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
-## Current Milestone: v7.0 UI Redesign — DAG-Centric Hybrid Console
+## Last Milestone: v7.0 UI Redesign — DAG-Centric Hybrid Console — SHIPPED 2026-07-02
 
 **Goal:** Replace the MVP tab-sprawl admin UI with a DAG-centric hybrid console — the pipeline becomes the home and the navigation spine, the local/A1/k8s execution targets are first-class, and every human approval unifies behind one before→after diff/approve gate. An information-architecture + presentation rewrite over the existing routers/services; **no backend behavior change.**
 
@@ -23,7 +23,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 **Key context:** Aesthetic is **C3 "Evolved phaze"** — preserve the existing brand (Jura headings, blue accent, wave logo, dark `phaze-bg` theme + light toggle); evolve, don't reskin. Stack stays server-rendered: FastAPI + Jinja2 + HTMX + Tailwind + Alpine — **no SPA build**. Design spine is locked in `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype in the co-located assets dir). Depends on and visualizes the v6.0 local/A1/k8s routing targets but does not modify v6.0 backend behavior. 25 requirements (SHELL/WORK/IDENT/REVIEW/RECORD/CUT) across phases 57–62.
 
-## Last Milestone: v6.0 Kubernetes Burst Analysis — SHIPPED 2026-06-29
+## Prior Milestone: v6.0 Kubernetes Burst Analysis — SHIPPED 2026-06-29
 
 **Next:** v7.0 UI Redesign (DAG-Centric Hybrid Console) is now the active milestone (started 2026-06-29; see Current Milestone above). The v6.0 goal and target features below are retained as shipped-milestone context.
 
@@ -42,7 +42,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 ## Current State
 
-**v7.0 UI Redesign (DAG-Centric Hybrid Console) — IN PROGRESS.** Phases 57 → 57.1 → 58 → 59 complete; 60-62 remain.
+**v7.0 UI Redesign (DAG-Centric Hybrid Console) — SHIPPED 2026-07-02.** All 7 phases (57 → 57.1 → 58 → 59 → 60 → 61 → 62) complete + verified; milestone audit PASSED (28/28 requirements, 7/7 phases verified, 0 broken flows). Next: a cleanup / "engineering basics" milestone (planning) — candidates parked in ROADMAP.md Backlog (partition the test suite for parallel CI, CI-builds-only-when-code-changes, adopt CalVer, re-add the /saq in-UI link).
 
 **Phase 59 (v7.0, complete 2026-07-01):** Identify workspaces — the two Identify-stage fragment workspaces superseding the `trackid`/`tracklist` `_STAGE_PLACEHOLDER`s. Track-ID = one combined read-only per-file identity table (File · audfprint · Panako · Tracklist · Confidence) surfacing existing fingerprint state (per-engine status words keyed on `FingerprintResult.status == "success"` — no fabricated score, D-01/D-02) + rapidfuzz `match_confidence` with matched/candidate/no-match state (D-04); rows inert. Tracklist = three Search·Scrape·Match step cards (lane-card visual, NOT a stepper, D-05) each with an R-4-guarded ALL trigger wired verbatim to the existing `/pipeline/{search,scrape,match}-tracklists` endpoints (D-06), over a per-set N/M track-coverage table scoped to the latest tracklist version (D-07/D-08). Two new degrade-safe read-only helpers `get_trackid_stage_files`/`get_tracklist_set_rows`. `STAGE_PARTIALS` values static literals (T-57-01); no second poll, no new store key/OOB seed, no chain-orchestration endpoint. AcoustID/MusicBrainz re-scoped out (deferred IDENT-03). Presentation-only — zero backend change. 3 plans, 3 sequential waves. Verifier 18/18; code review 0 blockers (WR-01 latest-version coverage bug fixed in-phase; WR-02 pre-existing `fingerprint.done`-always-0 captured as follow-up). Validated requirements: IDENT-01, IDENT-02.
 
@@ -176,9 +176,17 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ K8s as a third cloud target via the `cloud_target` selector (replaces `cloud_burst_enabled` bool) wired as one `stage_cloud_window` branch + AST over-enqueue guard + ledger-scoped backfill — v6.0 Phase 55
 - ✓ Cluster-admin Kueue/RBAC/Secret runbook, transport-agnostic endpoints, `_FILE`-secret config + fail-fast validator, LocalQueue startup probe + dashboard alert, ephemeral Job-based Agents identity, single-toggle revert — v6.0 Phase 56
 
+- ✓ Three-column DAG-centric console shell: `GET /` (Analyze default) + `/s/<stage>` HTMX rail nav, ⌘K command palette, header status strip, 8 legacy routes redirect into the shell — v7.0 Phase 57 (SHELL-01..05)
+- ✓ Incremental mid-flight analyze-progress counter (`fine_windows_analyzed`) + `analysis_completed_at` discriminator gating partial rows out of proposals (the one scoped backend exception) — v7.0 Phase 57.1 (PROG-01..03)
+- ✓ Enrich + Analyze stage workspaces: 3 local/A1/k8s lane cards (Kueue quota-wait vs Inadmissible) + windowed per-file progress, single `/pipeline/stats` poll fanout — v7.0 Phase 58 (WORK-01..05)
+- ✓ Identify workspaces — Track-ID (existing audfprint+Panako + rapidfuzz signals; AcoustID/MB deferred to IDENT-03) + Tracklist Search→Scrape→Match 3-step — v7.0 Phase 59 (IDENT-01..02)
+- ✓ Unified Review & Apply gate — before→after diff + Approve/Edit/Skip + server-predicate bulk-approve, Dedupe keeper-select, Cue preview, every apply audited + reversible — v7.0 Phase 60 (REVIEW-01..05)
+- ✓ Per-file record slide-in, ⌘K command palette, Agents page with ephemeral k8s Job identity, first-run empty state — v7.0 Phase 61 (RECORD-01..04)
+- ✓ Baseline accessibility (keyboard rail + ⌘K, focus, skip link, DAG ARIA), narrow-width icon-rail collapse, docs/README refresh, dead-code cutover (20 legacy templates removed, empty guard allowlist) — v7.0 Phase 62 (CUT-01..04)
+
 ### Active
 
-_No active milestone in flight. v7.0 UI Redesign (DAG-Centric Hybrid Console) is scoped — see `REQUIREMENTS-v7.0.md` (25 reqs, phases 57-62). Run `/gsd:new-milestone` to activate._
+_No active milestone in flight. v7.0 UI Redesign (DAG-Centric Hybrid Console) shipped 2026-07-02 (all 7 phases, audit PASSED). **Next: a cleanup / "engineering basics" milestone** — candidates parked in ROADMAP.md Backlog (partition the test suite for parallel CI, CI-builds-only-when-code-changes, adopt CalVer versioning, re-add the /saq in-UI link, delete vestigial dead code). Run `/gsd:new-milestone` to activate._
 
 ### Out of Scope
 
@@ -288,4 +296,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-01 — Phase 59 (Identify workspaces) complete; v7.0 phases 57 → 57.1 → 58 → 59 done, 60-62 remain*
+*Last updated: 2026-07-02 — v7.0 UI Redesign (DAG-Centric Hybrid Console) SHIPPED; all 7 phases (57-62) complete, milestone audit PASSED (28/28). Next: cleanup / engineering-basics milestone (planning).*

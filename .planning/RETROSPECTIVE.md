@@ -191,6 +191,39 @@ K8s as a third analysis-routing target: ephemeral, quota-scheduled Kueue batch J
 
 ---
 
+## Milestone: v7.0 — UI Redesign (DAG-Centric Hybrid Console)
+
+**Shipped:** 2026-07-02
+**Phases:** 7 (57, 57.1, 58-62) | **Plans:** 28
+
+### What Was Built
+An IA/presentation rewrite turning the tab-sprawl admin UI into a DAG-centric three-column console: the shell + rail-as-nav spine with `/s/<stage>` HTMX swaps (57), the one scoped backend exception — a mid-flight analyze-progress counter gated by an `analysis_completed_at` discriminator (57.1) — then the stage workspaces (Enrich/Analyze 58, Identify 59, unified Review & Apply gate 60), the per-file record slide-in + ⌘K palette + Agents page (61), and the polish/a11y + dead-code cutover that deleted 20 legacy templates and drained the dead-template guard to an empty allowlist (62). No backend behavior change outside 57.1.
+
+### What Worked
+- **The seeded dead-template AST guard (Phase 57) held green through the entire milestone**, making the Phase-62 CUT-02 dead-code removal safe and mechanical — the whole "supersede-in-place, cut last" strategy paid off.
+- **Browser-free filesystem structural guards** (a11y tree, rail-collapse class strings, docs-currency vocabulary) proved presentation contracts with zero browser/axe dependency, running in the fast lane.
+- **Live Playwright-driven UAT on a fresh `phaze_uat` DB** repeatedly caught real defects that per-workspace verification missed — and accessibility-tree box snapshots turned out to be *more* precise evidence than screenshots for layout contracts.
+
+### What Was Inefficient
+- **Orphan-OOB bugs recurred across phases 58 and 60**: the single `/pipeline/stats` poll re-emits OOB cards that only have targets on some workspaces, logging `htmx:oobErrorNoTarget` on the others. Same bug class, found multiple times — a shared sink-guard should have landed the first time.
+- **A dead `_STAGE_PLACEHOLDER` survived the CUT-02 cutover** because the dead-template guard builds its reachable-set from quoted `"...html"` literals in router source, so the unused assignment masked its own template. The guard meant to remove dead code had a blind spot for its own unused entry-root literals (fixed post-milestone, PR #191).
+- **Two-worktree friction at milestone close**: the session lived in the merged per-phase worktree while the release work (tag + archives) belonged on main, and a stale *bundled* audit false-positived on the canonical `<id>-SUMMARY.md` quick-task filename.
+
+### Patterns Established
+- Filesystem structural guards for presentation contracts (a11y tree, responsive class strings, docs vocabulary) — the browser-free complement to the dead-template AST guard.
+- Live browser a11y-tree box snapshots as layout evidence (exact geometry) over screenshots.
+- Supersede-in-place: keep legacy templates reachable behind redirects until one final cutover phase drains the guard allowlist to empty.
+
+### Key Lessons
+1. A dead-code guard whose reachable-set comes from source-string literals can mask its *own* unused literals — audit the guard's blind spots at cutover, don't just trust it green.
+2. Exercise every stage/workspace, not just the default route — OOB-fanout bugs only surface where the emitted target is absent.
+3. Run the release/milestone-close against `main`; when the session is anchored in a per-phase worktree, GSD tooling's cwd/root resolution can point at the wrong `.planning`.
+
+### Cost Observations
+- 7 phases (incl. the 57.1 decimal insert) / 28 plans / ~69 tasks over 4 days (2026-06-29 → 2026-07-02); ~14 squash-merged commits on main. The audit + live UAT + two follow-up PRs (#189 fingerprint counter, #191 dead-code + /saq backlog) all closed in the same session.
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
