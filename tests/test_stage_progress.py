@@ -76,19 +76,31 @@ async def test_analyzed_but_no_metadata_counts_independently(session: AsyncSessi
 
 
 @pytest.mark.asyncio
-async def test_fingerprint_counts_only_completed(session: AsyncSession):
-    """fingerprint.done counts DISTINCT file_id in fingerprint_results with status='completed' only."""
-    done_file = _make_file(1)
-    pending_file = _make_file(2)
-    session.add_all([done_file, pending_file])
+async def test_fingerprint_done_counts_success_status(session: AsyncSession):
+    """fingerprint.done counts DISTINCT file_id whose fingerprint_results row is in a done state.
+
+    Regression for WR-02: the engine adapters persist ``status="success"`` via ``put_fingerprint``
+    (``fingerprint.py``); ``"completed"`` is NEVER written on that path. Counting only
+    ``status == "completed"`` therefore made ``fingerprint.done`` permanently 0 in production.
+    done now counts the real ``"success"`` value (and tolerates the defensive ``"completed"``,
+    matching ``_trackid_engine_badge``); ``"failed"`` and ``"pending"`` must NOT count.
+    """
+    success_file = _make_file(1)  # the value production actually writes
+    completed_file = _make_file(2)  # defensively tolerated
+    failed_file = _make_file(3)
+    pending_file = _make_file(4)
+    session.add_all([success_file, completed_file, failed_file, pending_file])
     await session.flush()
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=done_file.id, engine="chromaprint", status="completed"))
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=success_file.id, engine="chromaprint", status="success"))
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=completed_file.id, engine="chromaprint", status="completed"))
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=failed_file.id, engine="chromaprint", status="failed"))
     session.add(FingerprintResult(id=uuid.uuid4(), file_id=pending_file.id, engine="chromaprint", status="pending"))
     await session.commit()
 
     progress = await get_stage_progress(session)
 
-    assert progress["fingerprint"]["done"] == 1
+    # success + completed both count; failed + pending are excluded.
+    assert progress["fingerprint"]["done"] == 2
 
 
 @pytest.mark.asyncio
