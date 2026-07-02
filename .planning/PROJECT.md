@@ -8,6 +8,20 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
+## Current Milestone: 2026.7.0 Engineering Improvements
+
+**Goal:** Pay down accumulated CI / build / versioning / dead-code engineering debt — faster parallel CI, code-change-gated builds, CalVer release versioning, a docs-drift guard, and small UI/dead-code cleanup — with zero product-behavior change.
+
+**Target features:**
+- **Parallel-CI test partition** — split the ~1,750-test suite into workflow-step buckets fanned out across parallel CI jobs; combine `.coverage` shards → one Codecov upload; preserve the 85% gate.
+- **Code-change-gated CI** — the full build/test/security pipeline runs only when code changes; docs/`.planning`-only changes skip-with-success so required status checks stay satisfiable (no branch-protection trap).
+- **CalVer adoption** — replace `vN.M` with `YYYY.MM.REVISION`, no leading-zero month (first tag `2026.7.0`); update the release procedure, version badges, image tags, and the milestone↔version mapping in ROADMAP/MILESTONES.
+- **Docs-drift CI gate** — cross-check REQUIREMENTS.md traceability against passed phases so the traceability table stops going stale after PR merges.
+- **Per-module coverage uplift** — overall coverage is healthy (90.38%) but a tail of modules sits well below the gate after v7.0. Raise a per-module coverage floor (prioritizing v7.0-touched + worst offenders: `agent_liveness.py` 12.5%, `routers/shell.py` 39.7%, `services/pipeline.py` 65.5%, `routers/tracklists.py`/`routers/pipeline.py` ~69%, plus the 71–78% tail), and lift the enforced gate.
+- **/saq re-link + dead-code sweep** — a discreet in-UI link back to the still-mounted `/saq` SAQ monitor (Agents/Compute page); delete vestigial unused templates/routers/assignments surfaced during the v7.0 cutover. Presentation-only.
+
+**Key context:** Cleanup/infra milestone — **no user-facing feature change, no backend behavior change.** This is the milestone that *adopts* CalVer, so it is the last `vN.M`-numbered planning cycle and its release is the first CalVer tag (`2026.7.0`). Phase numbering continues from v7.0 (starts at Phase 63). Candidates sourced from the ROADMAP Backlog + v7.0 RETROSPECTIVE.
+
 ## Last Milestone: v7.0 UI Redesign — DAG-Centric Hybrid Console — SHIPPED 2026-07-02
 
 **Goal:** Replace the MVP tab-sprawl admin UI with a DAG-centric hybrid console — the pipeline becomes the home and the navigation spine, the local/A1/k8s execution targets are first-class, and every human approval unifies behind one before→after diff/approve gate. An information-architecture + presentation rewrite over the existing routers/services; **no backend behavior change.**
@@ -186,7 +200,14 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 ### Active
 
-_No active milestone in flight. v7.0 UI Redesign (DAG-Centric Hybrid Console) shipped 2026-07-02 (all 7 phases, audit PASSED). **Next: a cleanup / "engineering basics" milestone** — candidates parked in ROADMAP.md Backlog (partition the test suite for parallel CI, CI-builds-only-when-code-changes, adopt CalVer versioning, re-add the /saq in-UI link, delete vestigial dead code). Run `/gsd:new-milestone` to activate._
+**Milestone 2026.7.0 Engineering Improvements — planning (started 2026-07-02).** Cleanup/infra milestone paying down CI / build / versioning / dead-code debt; no product-behavior change. Requirements defined in `.planning/REQUIREMENTS.md`, phases in `.planning/ROADMAP.md` (continue from Phase 63). Scope:
+
+- Partition the ~1,750-test suite into workflow-step buckets for parallel CI (combined coverage, 85% gate preserved)
+- Full build/test/security CI runs only on code changes (docs/`.planning`-only skip-with-success)
+- Adopt CalVer (`YYYY.MM.REVISION`, no leading-zero month; first tag `2026.7.0`) across release procedure, badges, image tags, milestone↔version mapping
+- Docs-drift CI gate: cross-check REQUIREMENTS.md traceability against passed phases
+- Per-module coverage uplift: raise a per-module coverage floor (v7.0-touched + worst offenders) and lift the enforced gate above today's 90.38%
+- Re-add the `/saq` in-UI link (Agents/Compute page) + delete vestigial dead code
 
 ### Out of Scope
 
@@ -296,4 +317,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-02 — v7.0 UI Redesign (DAG-Centric Hybrid Console) SHIPPED; all 7 phases (57-62) complete, milestone audit PASSED (28/28). Next: cleanup / engineering-basics milestone (planning).*
+*Last updated: 2026-07-02 — Milestone 2026.7.0 Engineering Improvements started (planning). CalVer adopted this cycle (`YYYY.MM.REVISION`); v7.0 was the last `vN.M` release. Cleanup/infra scope: parallel-CI test partition, code-change-gated CI, CalVer, docs-drift gate, per-module coverage uplift, /saq re-link + dead-code sweep. Phases continue from 63.*
