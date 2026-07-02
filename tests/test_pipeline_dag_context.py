@@ -357,14 +357,6 @@ async def test_stats_poll_degrades_to_200_without_counter_source(client: AsyncCl
     assert response.status_code == 200
 
 
-@pytest.mark.asyncio
-async def test_dashboard_full_page_renders_200_with_dag_context(client: AsyncClient) -> None:
-    """GET /pipeline/ renders 200 — the dashboard context carries the per-node dag values."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "Pipeline Dashboard" in response.text
-
-
 # ---------------------------------------------------------------------------
 # Phase 50 (50-07, D-09): the bounded cloud-window count cards — PUSHING ("Staged
 # pushing") + PUSHED ("Analyzing cloud") — must ride BOTH the dashboard full-page
@@ -396,7 +388,7 @@ async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
     """
     from starlette.responses import HTMLResponse
 
-    from phaze.routers import pipeline as pipeline_router
+    from phaze.routers import pipeline as pipeline_router, shell as shell_router
 
     captured: dict[str, object] = {}
 
@@ -404,10 +396,12 @@ async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
         captured.update(kwargs.get("context", {}))  # type: ignore[arg-type]
         return HTMLResponse("ok")
 
+    # CUT-02 (Phase 62): /pipeline/ is now a pure redirect; the DAG dashboard *context*
+    # (built by the shared build_dashboard_context) is consumed by the shell Analyze render
+    # (/s/analyze). /pipeline/stats still renders through the pipeline router. Patch BOTH
+    # routers' templates so this helper captures context regardless of which path is under test.
     monkeypatch.setattr(pipeline_router.templates, "TemplateResponse", _spy)
-    # Phase 57: GET /pipeline/ now 302-redirects to the shell root `/` for plain (non-HX)
-    # navigations (the true rename). Send HX-Request so the dashboard still renders its
-    # full context here; /pipeline/stats ignores the header, so this is safe for both paths.
+    monkeypatch.setattr(shell_router.templates, "TemplateResponse", _spy)
     response = await client.get(path, headers={"HX-Request": "true"})
     assert response.status_code == 200
     return captured
@@ -425,7 +419,7 @@ async def test_dashboard_context_carries_window_counts(client: AsyncClient, sess
     )
     await session.commit()
 
-    ctx = await _capture_context(client, monkeypatch, "/pipeline/")
+    ctx = await _capture_context(client, monkeypatch, "/s/analyze")
     assert ctx["pushing_count"] == 2
     assert ctx["analyzing_cloud_count"] == 1
 
@@ -450,7 +444,7 @@ async def test_stats_poll_context_carries_window_counts(client: AsyncClient, ses
 @pytest.mark.asyncio
 async def test_window_counts_present_in_both_contexts_when_empty(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Both keys are ALWAYS present (default 0) on the dashboard AND the poll — never missing."""
-    dash = await _capture_context(client, monkeypatch, "/pipeline/")
+    dash = await _capture_context(client, monkeypatch, "/s/analyze")
     poll = await _capture_context(client, monkeypatch, "/pipeline/stats")
     for ctx in (dash, poll):
         assert ctx["pushing_count"] == 0

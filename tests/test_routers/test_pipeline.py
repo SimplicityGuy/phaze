@@ -108,37 +108,6 @@ def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[Fil
 
 
 @pytest.mark.asyncio
-async def test_dashboard_page(client: AsyncClient) -> None:
-    """GET /pipeline/ returns 200 with Pipeline Dashboard heading."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "Pipeline Dashboard" in response.text
-
-
-@pytest.mark.asyncio
-async def test_dashboard_links_to_saq_ui(client: AsyncClient) -> None:
-    """GET /pipeline/ renders an anchor to the SAQ dashboard mounted at /saq (plan 33-02).
-
-    Operator request 2026-06-11: the SAQ queue monitor must be reachable from the pipeline
-    page, not only by typing the /saq URL directly. The link points at the mounted full-page
-    SAQ app, so it opens in a new tab with rel="noopener".
-    """
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert 'href="/saq"' in response.text
-
-
-@pytest.mark.asyncio
-async def test_dashboard_includes_settings_batch_size(client: AsyncClient) -> None:
-    """GET /pipeline/ dashboard context includes settings_batch_size (default 10)."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    # The batch size value (10) should appear in the rendered template
-    assert "10" in response.text
-
-
-@pytest.mark.asyncio
 async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/analyze enqueues process_file onto phaze-agent-nox (not default)."""
     session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
@@ -1312,20 +1281,6 @@ async def test_search_tracklists_no_eligible_files_returns_200(client: AsyncClie
     assert capture == []
 
 
-@pytest.mark.asyncio
-async def test_dashboard_renders_search_trigger_end_to_end(client: AsyncClient) -> None:
-    """GET /pipeline/ exposes the Search trigger + 'Needs metadata' gate copy end-to-end (REQ-39-2).
-
-    On an empty DB metadataDone == 0, so the Search node is gated 'Needs metadata' by default. The
-    rendered dashboard must carry the bulk Search trigger's hx-post target and the LOCKED gate copy,
-    proving the Phase-39 trigger surface reaches the page (not just the partial render tests)."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    body = response.text
-    assert 'hx-post="/pipeline/search-tracklists"' in body
-    assert "Needs metadata" in body
-
-
 # ---------------------------------------------------------------------------
 # Phase 40 (REQ-40-1/REQ-40-4): bulk fingerprint-scan trigger routes per-agent with the
 # COMPLETE ScanLiveSetPayload (never default/controller), surfaces a no-agent empty-state.
@@ -1409,21 +1364,6 @@ async def test_scan_live_sets_no_eligible_files_returns_200(client: AsyncClient)
 
     await _drain_background()
     assert capture == []
-
-
-@pytest.mark.asyncio
-async def test_dashboard_renders_scan_trigger_end_to_end(client: AsyncClient) -> None:
-    """GET /pipeline/ exposes the Fingerprint-Scan trigger + 'Needs agent' gate copy end-to-end (REQ-40-1/2).
-
-    On an empty DB agentOnline == 0, so the Fingerprint-Scan node is gated 'Needs agent' by default
-    (the literal lives in the node getter regardless of state). The rendered dashboard must carry the
-    bulk Scan trigger's hx-post target and the LOCKED gate copy, proving the Phase-40 trigger surface
-    reaches the page (not just the partial render tests)."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    body = response.text
-    assert 'hx-post="/pipeline/scan-live-sets"' in body
-    assert "Needs agent" in body
 
 
 # ---------------------------------------------------------------------------
@@ -1557,22 +1497,6 @@ async def test_match_tracklists_no_pending_returns_200(client: AsyncClient) -> N
     assert capture == []
 
 
-@pytest.mark.asyncio
-async def test_dashboard_renders_scrape_and_match_triggers_end_to_end(client: AsyncClient) -> None:
-    """GET /pipeline/ exposes BOTH Scrape + Match triggers + the 'Needs tracklist' gate copy (REQ-41-4).
-
-    On an empty DB scrapeTotal/matchTotal == 0, so both nodes are gated 'Needs tracklist' by default
-    (the literal lives in the node getter regardless of state). The rendered dashboard must carry both
-    bulk triggers' hx-post targets, proving the Phase-41 trigger surface reaches the page end-to-end
-    (not just the partial render tests)."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    body = response.text
-    assert 'hx-post="/pipeline/scrape-tracklists"' in body
-    assert 'hx-post="/pipeline/match-tracklists"' in body
-    assert "Needs tracklist" in body
-
-
 # ---------------------------------------------------------------------------
 # Phase 42 (REQ-42-1/REQ-42-4/REQ-42-5): the manual /pipeline/recover endpoint calls the
 # SAME gated recover_orphaned_work producer (force=True) the controller startup runs, on a
@@ -1645,7 +1569,7 @@ async def test_dashboard_renders_recover_button_end_to_end(client: AsyncClient) 
     The recovery affordance is a pipeline-level action in the DAG header (not a per-stage node), so
     the rendered dashboard must carry its hx-post target + label, proving the Phase-42 manual recovery
     surface reaches the page end-to-end (not just the partial render test)."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/discover", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     assert 'hx-post="/pipeline/recover"' in body
@@ -1673,7 +1597,7 @@ async def test_dashboard_renders_awaiting_cloud_card(client: AsyncClient, sessio
     session.add(_make_file(state=FileState.DISCOVERED))
     await session.commit()
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert response.status_code == 200
     text = response.text
     assert 'id="awaiting-cloud-card"' in text
@@ -2020,7 +1944,7 @@ async def _seed_running_scan(session: AsyncSession, *, seconds_quiet: int, scan_
 async def test_dashboard_renders_green_pulse_for_progressing_running_scan(client: AsyncClient, session: AsyncSession) -> None:
     """A fresh RUNNING scan renders the green pulsing dot + '·Ns ago' affordance."""
     await _seed_running_scan(session, seconds_quiet=5, scan_path="/music/fresh")
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "animate-pulse" in response.text
     assert "s ago" in response.text
@@ -2044,7 +1968,7 @@ async def test_dashboard_renders_amber_stalled_for_quiet_running_scan(
     monkeypatch.setattr(pipeline_scans, "get_settings", lambda: pinned)
 
     await _seed_running_scan(session, seconds_quiet=400, scan_path="/music/quiet")
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "stalled?" in response.text
     assert "text-amber-600" in response.text
@@ -2069,7 +1993,7 @@ async def test_dashboard_attaches_activity_attrs(client: AsyncClient, session: A
     # assert through the rendered output that both transient attrs were consumed:
     # _seconds_since_progress drives the "Ns ago" text and _is_stalled drives the
     # amber label. Their presence proves the attach loop ran.
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "stalled?" in response.text  # _is_stalled True path
     assert dashboard is not None  # handler import smoke-check
@@ -2094,7 +2018,7 @@ async def test_pipeline_stats_degrades_without_queues(client: AsyncClient, sessi
     stats_response = await client.get("/pipeline/stats")
     assert stats_response.status_code == 200
 
-    dashboard_response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    dashboard_response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert dashboard_response.status_code == 200
 
 
@@ -2129,7 +2053,7 @@ async def test_dashboard_seeds_busy_on_first_load(client: AsyncClient, session: 
     task_router.set_counts("nox", queued=4, active=1)
     controller_queue.set_counts(queued=2, active=0)
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert response.status_code == 200
 
 
@@ -2147,7 +2071,7 @@ async def test_dashboard_seeds_busy_on_first_load(client: AsyncClient, session: 
 @pytest.mark.asyncio
 async def test_dashboard_renders_straggler_failed_card(client: AsyncClient) -> None:
     """GET /pipeline/ renders the straggler/ANALYSIS_FAILED card with both buckets (zero by default)."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # Card present with its two distinct buckets (44-02 D-02).
     assert 'id="straggler-failed-card"' in response.text
@@ -2161,7 +2085,7 @@ async def test_dashboard_seeds_analysis_failed_count(client: AsyncClient, sessio
     session.add_all([_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(3)])
     await session.commit()
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # The failed bucket count (3) renders inside the card's red panel.
     assert "Analysis failed" in response.text
@@ -2197,7 +2121,7 @@ async def test_stats_partial_seeds_counts_and_oob_card(client: AsyncClient, sess
 @pytest.mark.asyncio
 async def test_dashboard_straggler_count_zero_when_no_stragglers(client: AsyncClient) -> None:
     """With no in-flight process_file jobs, the straggler bucket renders 0 (degrade-safe, never 500)."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     assert response.status_code == 200
     import re
 
@@ -2251,7 +2175,7 @@ async def _seed_cloud_phase(session: AsyncSession, *, cloud_phase: str | None) -
 @pytest.mark.asyncio
 async def test_dashboard_admission_card_carrier_always_renders(client: AsyncClient) -> None:
     """With NO cloud_job rows the empty carrier still renders (stable OOB target), no heading/grid."""
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
@@ -2264,7 +2188,7 @@ async def test_dashboard_admission_card_renders_matching_tile(client: AsyncClien
     """A seeded ADMITTED row renders the heading + the blue Admitted tile (its own count gate)."""
     await _seed_cloud_phase(session, cloud_phase=CloudPhase.ADMITTED.value)
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
@@ -2281,7 +2205,7 @@ async def test_dashboard_admission_card_finished_is_green_not_alert(client: Asyn
     """The finished tile uses GREEN hues; the card carries NO role='alert' and NO amber (healthy progression)."""
     await _seed_cloud_phase(session, cloud_phase=CloudPhase.FINISHED.value)
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     import re
@@ -2302,7 +2226,7 @@ async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: Async
     """An a1/local row (NULL cloud_phase) counts toward no phase → empty carrier, no heading."""
     await _seed_cloud_phase(session, cloud_phase=None)
 
-    response = await client.get("/pipeline/", headers={"HX-Request": "true"})
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
