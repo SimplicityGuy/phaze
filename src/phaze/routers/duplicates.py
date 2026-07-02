@@ -107,10 +107,9 @@ async def list_duplicates(
         "current_page": "duplicates",
     }
 
-    if request.headers.get("HX-Request") == "true":
-        return templates.TemplateResponse(request=request, name="duplicates/partials/group_list.html", context=context)
-
-    return templates.TemplateResponse(request=request, name="duplicates/list.html", context=context)
+    # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
+    # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
+    return templates.TemplateResponse(request=request, name="duplicates/partials/group_list.html", context=context)
 
 
 @router.get("/{group_hash}/compare", response_class=HTMLResponse)

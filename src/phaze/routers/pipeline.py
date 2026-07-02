@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 import structlog
@@ -577,28 +577,18 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
 
 
 @router.get("/pipeline/", response_class=HTMLResponse)
-async def dashboard(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    """Render the pipeline dashboard page (per D-03), or 302-redirect to the shell root.
+async def dashboard() -> RedirectResponse:
+    """Redirect the legacy ``/pipeline/`` route to the v7.0 shell root.
 
-    Phase 57 (SHELL-01 / D-03 true rename): ``/pipeline/`` is renamed to the v7.0 shell
-    root ``/`` (whose Analyze default embeds THIS dashboard's DAG content via the shared
-    :func:`build_dashboard_context`). A plain (non-HX) browser navigation / bookmark
-    302-redirects to ``/``; the conditional form (``HX-Request != "true"``) preserves the
-    in-page render path for HX callers and is uniform with the Plan-04 legacy redirects.
-
-    Phase 27 D-05/D-06 extension: the dashboard exposes ``agents`` (the non-revoked agent
-    list driving the Trigger Scan card dropdown) and ``recent_scans`` (the last 10 non-LIVE
-    ScanBatches with ``agent_name`` + ``elapsed_seconds`` attached for the Recent Scans
-    mini-table). The LIVE sentinel batches are excluded -- they are an internal
-    watcher-ingestion state, not an operator-triggered event.
+    CUT-02 (Phase 62 / D-03b): ``/pipeline/`` was renamed to the shell root ``/`` in Phase
+    57 (SHELL-01). The shell's Analyze default renders the live lane-card workspace
+    (``/s/analyze``) and polls ``/pipeline/stats``; nothing hx-gets ``/pipeline/`` any more,
+    so the legacy ``dashboard.html`` render path -- the ONE genuinely-dead HX branch in the
+    cutover -- is removed and ``/pipeline/`` becomes a pure 302 redirect. The route stays
+    registered so old bookmarks keep resolving into the shell. The DAG dashboard *context*
+    still lives in :func:`build_dashboard_context`, which the shell Analyze render consumes.
     """
-    if request.headers.get("HX-Request") != "true":
-        return RedirectResponse(url="/", status_code=302)
-    context = {"request": request, **await build_dashboard_context(request.app.state, session)}
-    return templates.TemplateResponse(request=request, name="pipeline/dashboard.html", context=context)
+    return RedirectResponse(url="/", status_code=302)
 
 
 @router.get("/pipeline/stats", response_class=HTMLResponse)

@@ -160,11 +160,9 @@ async def list_proposals(
         "current_page": "proposals",
     }
 
-    # HTMX requests get tabs + table fragment (so tab active state updates)
-    if request.headers.get("HX-Request") == "true":
-        return templates.TemplateResponse(request=request, name="proposals/partials/proposal_content.html", context=context)
-
-    return templates.TemplateResponse(request=request, name="proposals/list.html", context=context)
+    # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
+    # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
+    return templates.TemplateResponse(request=request, name="proposals/partials/proposal_content.html", context=context)
 
 
 @router.patch("/{proposal_id}/approve", response_class=HTMLResponse)

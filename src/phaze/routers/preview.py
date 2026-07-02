@@ -1,65 +1,21 @@
-"""Preview UI router -- serves the directory tree preview page."""
+"""Preview UI router -- redirects the legacy tree-preview route into the v7.0 shell."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-
-from phaze.database import get_session
-from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.services.collision import TreeNode, build_tree
+from fastapi import APIRouter
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["preview"])
 
 
-def _count_dirs(node: TreeNode) -> int:
-    """Recursively count the number of directory nodes in the tree."""
-    count = len(node.children)
-    for child in node.children.values():
-        count += _count_dirs(child)
-    return count
-
-
 @router.get("/preview/", response_class=HTMLResponse)
-async def tree_preview(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    """Render the directory tree preview page for approved proposals."""
-    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
-    # tree_preview has no in-page HX filter; the conditional form is used for uniformity
-    # (a plain GET redirects; the page body below is unreachable for non-HX requests).
-    if request.headers.get("HX-Request") != "true":
-        return RedirectResponse(url="/s/move", status_code=302)
+async def tree_preview() -> RedirectResponse:
+    """Redirect the legacy directory-tree preview into the v7.0 shell Move workspace.
 
-    stmt = select(RenameProposal).where(RenameProposal.status == ProposalStatus.APPROVED).options(selectinload(RenameProposal.file))
-    result = await session.execute(stmt)
-    proposals = list(result.scalars().all())
-
-    root = build_tree(proposals)
-    total_dirs = _count_dirs(root)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="preview/tree.html",
-        context={
-            "request": request,
-            "tree": root,
-            "total_files": root.file_count,
-            "total_dirs": total_dirs,
-            "current_page": "preview",
-        },
-    )
+    CUT-02 (Phase 62 / D-03b, D-05): the tree-preview page is superseded by the shell's
+    Move workspace (``/s/move``). Phase 57 (SHELL-05) already 302-redirected non-HX GETs
+    here and there was no live in-page HX consumer, so the whole page render was dead code.
+    The route is retained as a pure 302 redirect so old bookmarks keep resolving.
+    """
+    return RedirectResponse(url="/s/move", status_code=302)

@@ -154,7 +154,7 @@
 
     <!-- Skip link -->
     {% block skip_link %}
-    <a href="#proposals-table" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to proposals table</a>
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to main content</a>
     {% endblock %}
 
     <!-- Navigation -->
@@ -170,56 +170,13 @@
                 <span class="font-jura font-medium text-sm tracking-[0.2em] text-gray-800 dark:text-gray-200 hidden sm:inline">PHAZE</span>
             </a>
 
-            <div class="flex gap-1 flex-wrap">
-                <a href="/search/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'search' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Search
-                </a>
-                <a href="/pipeline/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'pipeline' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Pipeline
-                </a>
-                <a href="/proposals/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'proposals' or current_page is not defined %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Proposals
-                </a>
-                <a href="/preview/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'preview' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Preview
-                </a>
-                <a href="/duplicates/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'duplicates' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Duplicates
-                </a>
-                <a href="/tracklists/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'tracklists' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Tracklists
-                </a>
-                <a href="/tags/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'tags' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Tags
-                </a>
-                <a href="/cue/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'cue' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    CUE Sheets
-                </a>
-                <a href="/audit/"
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'audit' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Audit Log
-                </a>
-                {# Phase 29 plan 07: operator-facing /admin/agents liveness page.
-                   WARNING-1: short-slug nav-key convention — the live Audit Log
-                   link above uses `current_page == 'audit'` (NOT `'audit_log'`),
-                   so this new link uses `'admin_agents'` (NOT `'admin_agents_log'`
-                   or `'admin_agents_page'`). The new aria-current="page" attribute
-                   is a forward-looking accessibility upgrade; the other 9 nav
-                   links above are intentionally NOT retrofitted in this PR. #}
-                <a href="/admin/agents"
-                   {% if current_page == 'admin_agents' %}aria-current="page"{% endif %}
-                   class="text-sm font-semibold px-3 py-2 rounded-md transition-colors {% if current_page == 'admin_agents' %}text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950{% else %}text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-phaze-panel{% endif %}">
-                    Agents
-                </a>
-            </div>
+            {# CUT-02 (Phase 62 / D-04a): the legacy tab-bar nav block (Search/Pipeline/
+               Proposals/Preview/Duplicates/Tracklists/Tags/CUE + Audit/Agents links) was
+               removed -- the DAG-centric shell (SHELL-03) replaced it. base.html survives
+               because the two KEPT standalone pages (execution/audit_log.html + admin/
+               agents.html) still extend it; the wave-logo home link above + the theme
+               toggle below are retained so those pages navigate back to the shell and are
+               not dead-ends. #}
 
             <!-- Theme toggle -->
             <div class="ml-auto" x-data>
@@ -250,7 +207,7 @@
         </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto px-4 py-8">
+    <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
         {% block content %}{% endblock %}
     </main>
 
