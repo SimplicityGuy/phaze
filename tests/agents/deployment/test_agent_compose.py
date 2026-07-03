@@ -40,6 +40,8 @@ COMPOSE_PATH = Path(__file__).resolve().parents[3] / "docker-compose.agent.yml"
 PUBLISH_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "docker-publish.yml"
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml"
 CLEANUP_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "cleanup-images.yml"
+MILESTONES_PATH = Path(__file__).resolve().parents[3] / ".planning" / "MILESTONES.md"
+DEPLOYMENT_DOC_PATH = Path(__file__).resolve().parents[3] / "docs" / "deployment.md"
 
 
 def _load_agent_compose() -> dict[str, Any]:
@@ -430,4 +432,78 @@ def test_cleanup_package_list_matches_published_images() -> None:
         f"  published but never pruned: {sorted(only_published)}\n"
         f"  pruned but never published: {sorted(only_cleanup)}\n"
         "Fix: keep cleanup-images.yml's matrix.package in sync with docker-publish.yml's image_suffix set."
+    )
+
+
+def test_milestones_mapping_table_intact() -> None:
+    """VER-04 (D-09/D-10, D-01/D-11): MILESTONES.md carries the milestone↔version mapping table.
+
+    CalVer adoption keeps the historical ``vN.M`` record intact while adding the
+    first CalVer release. This guard asserts ``.planning/MILESTONES.md`` contains
+    a ``| Milestone | Version | Date |`` mapping table whose rows preserve every
+    historical version string ``v1.0``..``v7.0`` verbatim (D-10) AND add the bare
+    CalVer ``2026.7.0`` row (D-01/D-11). It fails if the table header is missing,
+    if a historical version is dropped/rewritten, or if the CalVer row is absent —
+    catching a mapping regression at CI time.
+
+    Substring membership only (robust to whitespace/column-order); does NOT parse
+    Markdown table structure.
+    """
+    assert MILESTONES_PATH.exists(), f".planning/MILESTONES.md missing at {MILESTONES_PATH}"
+    text = MILESTONES_PATH.read_text()
+
+    header_ok = any("|" in line and "Milestone" in line and "Version" in line and "Date" in line for line in text.splitlines())
+
+    historical_versions = ["v1.0", "v2.0", "v3.0", "v4.0", "v5.0", "v6.0", "v7.0"]
+    missing_versions = [v for v in historical_versions if v not in text]
+    calver_ok = "2026.7.0" in text
+
+    problems: list[str] = []
+    if not header_ok:
+        problems.append("a `| Milestone | Version | Date |` mapping-table header row (columns may be reordered)")
+    if missing_versions:
+        problems.append(f"the historical version rows {missing_versions} (each vN.M must appear verbatim — D-10)")
+    if not calver_ok:
+        problems.append("the first CalVer row `2026.7.0` (D-01/D-11)")
+    assert not problems, (
+        "MILESTONES.md milestone↔version mapping table is incomplete:\n"
+        + "\n".join(f"  - missing {p}" for p in problems)
+        + "\nFix: add/restore the `| Milestone | Version | Date |` table in .planning/MILESTONES.md "
+        "with the v1.0..v7.0 historical rows verbatim plus the 2026.7.0 row."
+    )
+
+
+def test_calver_scheme_documented() -> None:
+    """VER-01 (D-07): the CalVer scheme is documented in deployment docs / MILESTONES.
+
+    The release procedure must document the ``YYYY.MM.REVISION`` scheme, the first
+    tag ``2026.7.0``, the no-leading-zero month rule (``2026.7.0`` not
+    ``2026.07.0``), and the per-month zero-based REVISION convention. The prose may
+    live in EITHER ``docs/deployment.md`` OR ``.planning/MILESTONES.md`` (combined
+    membership), so Plan 02 can place it wherever it reads best. This guard fails
+    until that prose exists, naming exactly which element is undocumented.
+    """
+    assert DEPLOYMENT_DOC_PATH.exists(), f"docs/deployment.md missing at {DEPLOYMENT_DOC_PATH}"
+    assert MILESTONES_PATH.exists(), f".planning/MILESTONES.md missing at {MILESTONES_PATH}"
+    combined = DEPLOYMENT_DOC_PATH.read_text() + "\n" + MILESTONES_PATH.read_text()
+    combined_lower = combined.lower()
+
+    month_rule_ok = ("leading-zero" in combined_lower or "leading zero" in combined_lower) and "month" in combined_lower
+    revision_rule_ok = "revision" in combined_lower and (
+        "zero-based" in combined_lower or "per-month" in combined_lower or "resets" in combined_lower
+    )
+
+    problems: list[str] = []
+    if "YYYY.MM.REVISION" not in combined:
+        problems.append("the `YYYY.MM.REVISION` scheme string")
+    if "2026.7.0" not in combined:
+        problems.append("the first CalVer tag `2026.7.0`")
+    if not month_rule_ok:
+        problems.append("the no-leading-zero month rule (e.g. `2026.7.0`, not `2026.07.0`)")
+    if not revision_rule_ok:
+        problems.append("the per-month zero-based REVISION convention")
+    assert not problems, (
+        "CalVer scheme is not fully documented:\n"
+        + "\n".join(f"  - missing {p}" for p in problems)
+        + "\nFix: document the CalVer scheme in docs/deployment.md and/or .planning/MILESTONES.md."
     )
