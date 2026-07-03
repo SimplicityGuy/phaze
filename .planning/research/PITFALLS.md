@@ -1,223 +1,223 @@
 # Pitfalls Research
 
-**Domain:** Rewriting an existing server-rendered tabbed HTMX/Jinja admin UI (~10 tabs, 105 templates / 94 partials) into a DAG-centric three-column HTMX "hybrid console" — then retiring the old UI. phaze v7.0, phases 57–62.
-**Researched:** 2026-06-29
-**Confidence:** HIGH (grounded in the actual `src/phaze/templates`, `src/phaze/routers`, and `base.html`; HTMX history/OOB behavior verified against current HTMX docs via Context7)
-
-> Scope note: this is **not** generic web-pitfall research. Every pitfall below is anchored to something that already exists in this codebase and will break (or silently regress) when the tab IA is collapsed into a rail-driven stage-swapping shell. File citations are load-bearing — they are where the existing pattern lives that the rewrite must preserve or replace.
+**Domain:** Generalizing phaze's single-target (`cloud_target` local/a1/k8s) cloud-burst dispatch into a simultaneous, tiered, multi-backend scheduler (registry + `Backend` protocol + rank/cap drain + multi-Kueue)
+**Researched:** 2026-07-03
+**Confidence:** HIGH (grounded in the actual source: `tasks/release_awaiting_cloud.py`, `tasks/reconcile_cloud_jobs.py`, `services/cloud_staging.py`, `routers/agent_push.py`, `models/cloud_job.py`, `config.py`, `services/pipeline.py`; not generic distributed-systems advice)
 
 ---
 
-## The existing UI in one paragraph (so the pitfalls make sense)
+## The One Fact That Drives Every Pitfall Below
 
-Today there is **no bare-`/` handler** — every page is a full-page template (`extends "base.html"`, 10 of them) served under a prefixed router: `/proposals/` (default-ish), `/pipeline/`, `/search/`, `/duplicates/`, `/tags/`, `/cue/`, `/tracklists/`, `/preview/`, `/audit/`, `/admin/agents`. `base.html` owns the brand (Jura/Inter, blue accent, wave SVG, `phaze-bg`/`phaze-panel` tokens), a flat `<nav>` of ~10 `<a href>` tabs highlighted by `current_page`, a hand-rolled **theme store** (`auto/dark/light` with a documented "Alpine doesn't process `:class` on `<html>`" landmine), and two global Alpine stores (`theme`, `pipeline`). The pipeline dashboard is the most sophisticated page and the template the rewrite most resembles: a single `#pipeline-stats` div polls `/pipeline/stats` `every 5s` with `hx-swap="innerHTML"`, and that one poll response carries **~10 `hx-swap-oob` fragments** to refresh cards that live *outside* the polled div, plus a `dag.items()` loop of hidden `x-init="$store.pipeline.<key> = N"` store-write paragraphs — all gated behind an `oob_counts` flag to avoid duplicate-id collisions at first paint. Bulk approval (`proposals/partials/bulk_actions.html`) serializes a client-side Alpine `selectedRows` Set into hidden `proposal_ids` inputs and PATCHes `/proposals/bulk`, which blindly applies the status change to whatever ids arrive. This is the machinery v7.0 must generalize to a rail.
+Today's two cloud targets **account for in-flight work through two completely different substrates**, and the design (§4.4) proposes to unify them:
+
+| | **a1 / compute** | **k8s / Kueue** |
+|---|---|---|
+| In-flight truth today | `COUNT(FileState IN {PUSHING, PUSHED})` — global, FileState-derived (`get_cloud_window_count`, pipeline.py:1243) | same FileState window today; design wants `COUNT(cloud_job WHERE status IN {SUBMITTED,RUNNING})` |
+| Sidecar row | **none** — no `cloud_job` row is written for a compute push | `cloud_job` row upserted in `_stage_file_to_s3` (unique FK on `file_id`) |
+| Recovery seed | **`scheduling_ledger` row** + a `process_file` enqueue on the compute queue (`agent_push.py`) → recoverable by `recover_orphaned_work` | **NO `process_file` ledger seed** (the DIST invariant) → recovered ONLY by `reconcile_cloud_jobs` |
+| Availability gate | GATE 1: compute agent must heartbeat (`select_active_agent(kind="compute")`) | GATE 1 **skipped** (Landmine L2) — ephemeral pods, no persistent agent |
+
+The whole milestone is "make `in_flight_count()` / `dispatch()` / `reconcile()` uniform across N backends." **Every critical pitfall below is a way that unification silently double-books, under-books, double-dispatches, or strands a file** because these two substrates were fused carelessly.
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: The rail swap clobbers the shell — wrong `hx-target`/`hx-swap` eats the header, rail, or per-file pane
+### Pitfall 1: Double-counting compute in-flight — FileState window AND a new `cloud_job` row
 
 **What goes wrong:**
-A rail node is wired like the existing tabs (`hx-get="/stage/analyze"`) but with a target that is too broad (`hx-target="body"`, `hx-target="#shell"`, or an implicit `outerHTML` on a wrapping element). The stage response then replaces the three-column shell itself — the rail, the ⌘K header, and the per-file pane vanish on the first click, leaving only the workspace fragment. The inverse also happens: the stage endpoint returns a **full** `extends "base.html"` page, so HTMX injects a second `<nav>`, a second theme toggle, and a second `$store` init into the middle column.
+Design §4.4 says "generalize the `cloud_job` registry to also record compute-agent pushes." If `ComputeAgentBackend.in_flight_count()` reads `cloud_job` rows while the existing FileState `{PUSHING, PUSHED}` window (`get_cloud_window_count`) is *also* still consulted anywhere, a single pushed file counts as 2 against a cap of (default) 1–2. The backend looks full at half load; long files pile up in `AWAITING_CLOUD` and (correctly per rank 99) spill onto slow local — the exact outcome the tiering was built to avoid. The inverse under-count is worse: if you drop the FileState window and the `cloud_job` row for a compute push is written a moment *after* the `PUSHING` flip commits, a concurrent drain tick reads `in_flight_count() = 0` and dispatches a second file, overshooting the cap onto a single compute agent's scratch dir (the `T-50-scratch-dos` class Phase 50's advisory lock was built to prevent).
 
 **Why it happens:**
-The current app has *no* sub-page swapping — every nav item is a hard `<a href>` full-page load (`base.html` lines 191–239). There is no existing "swap just the center" pattern to copy; the closest analog is `#pipeline-stats` which swaps `innerHTML` of a *leaf* div, not a layout region. Developers reach for the pattern they know (full-page templates) and a blunt target.
+The refactor treats "add `backend_id` to `cloud_job`" as additive, but for compute the `cloud_job` row is a *brand-new* artifact — today compute pushes write only `scheduling_ledger` + FileState. Two sources of in-flight truth now exist for the same file and nobody deletes the old one.
 
 **How to avoid:**
-- Give the center column a single stable id (e.g. `#stage-workspace`) and make **every** rail node `hx-get="/console/stage/<name>" hx-target="#stage-workspace" hx-swap="innerHTML"`. Never target a parent of the rail/header.
-- Stage endpoints return **fragments only** (no `extends "base.html"`). Establish a `_console/_stage_base.html` partial-include convention distinct from the full-page `base.html`, exactly as the codebase already separates `proposals/list.html` (full) from `proposals/partials/*.html` (fragments).
-- The shell (`base.html` successor) renders once on `GET /`; the right per-file pane updates via an **OOB** fragment in the stage response (`hx-swap-oob` targeting `#file-pane`), never by widening the main target — the dashboard already proves this OOB-alongside-primary pattern (`proposals/partials/approve_response.html` swaps the row primary + `#stats-bar` OOB + toast OOB).
+Pick **ONE** authoritative in-flight substrate for ALL backends and delete the other from the count path. The `cloud_job` registry (now `backend_id`-scoped) is the right choice — it's the only thing that can be per-backend. `in_flight_count(backend)` = `COUNT(cloud_job WHERE backend_id = :id AND status IN {in-flight states})`, computed inside the drain's advisory-locked transaction. The `cloud_job` row MUST be written **in the same transaction and before/with** the `FileState → PUSHING` flip (never after a separate commit), so the count can never lag the state. Add a characterization test asserting `sum(in_flight_count(b) for b in backends) == COUNT(FileState in-flight)` — a divergence is a double/under-count bug.
 
 **Warning signs:**
-The rail/header flicker or disappear on a stage click; "Skip to…" link count doubles; two theme toggles render; `$store.pipeline` resets to zeros mid-session (a second store init ran); browser devtools shows nested `<main>`/`<nav>`.
+Cap-of-2 backend that dispatches 3–4 concurrent pushes; or a healthy fast backend that stops accepting work at half its cap while files leak to local. A `cloud_job` count and a `FileState` count that disagree in a diagnostic query.
 
-**Phase to address:** **57** (Shell & rail) — lock the `#stage-workspace` target contract and the fragment-vs-full-page template split before any stage is built.
+**Phase to address:** Phase 2 (protocol refactor — the moment `cloud_job` gains `backend_id` and `in_flight_count` is defined); regression-verified in Phase 3 (tiered scheduler).
 
 ---
 
-### Pitfall 2: Lost Alpine state and dead event handlers after a swap (`x-data` re-init, keyboard nav, `selectedRows`)
+### Pitfall 2: The drain↔reconcile race on a per-backend cap (no shared lock)
 
 **What goes wrong:**
-The proposals table keyboard navigation and multi-select live entirely in an Alpine `x-data="proposalTable()"` component on `#proposal-list-container` with `@keydown.window`, a `focusedRow` cursor, and a `selectedRows` Set (`proposals/list.html` lines 17–20, 49–105). When that table becomes a *swapped* stage workspace, the new content's `x-data` is a fresh component instance — selection, focus cursor, and any open inline-edit state reset to empty on **every** swap and every 5s poll that re-renders the subtree. Worse, handlers bound with plain `<script>` or `htmx.onLoad` against ids that no longer exist after a swap silently stop firing.
+`stage_cloud_window` (the drain) takes `pg_advisory_xact_lock(5_000_504)` — but `reconcile_cloud_jobs` runs on its own `*/5` cron and takes **no lock** (confirmed: the only `pg_advisory` call in the codebase is in `release_awaiting_cloud.py:135`). Today that's safe because the in-flight window is FileState-derived and reconcile terminalizes via the same FileState, so MVCC self-corrects next tick. Once `in_flight_count` becomes `cloud_job.status`-derived and **per-backend**, reconcile mutating `cloud_job.status` (SUBMITTED→RUNNING→SUCCEEDED/FAILED) concurrently with the drain reading per-backend counts opens a window where the drain sees a stale in-flight number and over-dispatches to a backend reconcile just freed *and re-filled*. Worse: both crons can now try to write the **same file's** `FileState` — the drain flipping `AWAITING_CLOUD → PUSHING` on a spillover candidate while reconcile flips that same file `→ ANALYSIS_FAILED` at cap.
 
 **Why it happens:**
-HTMX swaps raw HTML; Alpine *re-initializes* `x-data` on inserted nodes (good) but does **not** preserve the prior instance's runtime state (bad if you assumed persistence). The current code already had to defend this — note `@htmx:after-swap.window="$nextTick(() => { rowIds = …; focusedRow = -1; selectedRows = new Set(); })"` in `proposals/list.html`: it *deliberately resets* selection after a swap because state can't survive it. In a rail console, swaps are constant, so this reset-on-swap becomes a UX regression (operator loses their multi-select when a poll ticks).
+The single advisory lock was designed for "overlapping *staging* ticks," not for "staging vs reconcile." With one global window and one dispatch path the two crons never contended on the count. Per-backend counting makes the count reconcile writes to load-bearing.
 
 **How to avoid:**
-- Hoist any state that must outlive a swap into an **Alpine global store** (the codebase's established pattern — `$store.theme`, `$store.pipeline` in `base.html`), not into the swapped component's `x-data`. Selection-in-progress, the active stage, ⌘K open/closed, and the open per-file id should be store-level.
-- Keep volatile, intentionally-ephemeral state (a row's inline edit buffer) in the swapped `x-data` — and **never** let the 5s poll re-render the subtree that holds an in-flight interaction. The dashboard already enforces this: the poll swaps `#pipeline-stats` only and pushes counts to `#pipeline-stages` buttons via **OOB hidden `x-init` store writes** so "the button subtree is never the swap target" (`stats_bar.html` lines 27–49). Replicate that split for every workspace with interactive rows.
-- Prefer `@event.window` Alpine listeners (survive because they bind to `window`) over element-scoped `htmx.onLoad` re-binding.
+Make reconcile and the drain **mutually exclusive** by having `reconcile_cloud_jobs` acquire the *same* `pg_advisory_xact_lock` key before it mutates `cloud_job.status` / `FileRecord.state` (or a documented lock-ordering for finer granularity). At minimum, the drain must compute `in_flight_count` and claim candidates in ONE transaction under the lock (it already does), and reconcile's terminal FileState writes must use `FOR UPDATE`/`SKIP LOCKED` against the same rows the drain claims. Add a concurrency test running a drain tick and a reconcile tick against overlapping rows: assert no file ends in two backends and no cap is exceeded.
 
 **Warning signs:**
-Multi-select clears when the live poll ticks; keyboard row-nav stops after the first stage swap; inline edit fields blank out under load; `x-cloak` flashes on every swap.
+Intermittent cap overshoot only under load (when reconcile has terminal rows to process); a file observed briefly in both a `cloud_job` in-flight state and `ANALYSIS_FAILED`; "row reconcile failed; continuing" warnings coinciding with drain ticks.
 
-**Phase to address:** **57** (state-survival store contract) + revisited in **60** (Review & Apply multi-select must survive the live diff poll).
+**Phase to address:** Phase 3 (tiered scheduler owns cap semantics); the lock change lands with the scheduler, flagged in Phase 2 when reconcile becomes `backend_id`-aware.
 
 ---
 
-### Pitfall 3: Out-of-band swap collisions when one stage response updates rail counts + header strip + workspace at once
+### Pitfall 3: Two recovery mechanisms re-driving the same compute file (over-enqueue incident class)
 
 **What goes wrong:**
-A rail console wants one click/poll to update three regions: the workspace (primary), the rail's live per-stage counts, and the header agent-status strip. Done naively with multiple `hx-swap-oob` fragments, two failure modes appear that this codebase has *already hit*: (a) OOB fragments emitted on the **initial full-page render** (not just the poll response) produce **duplicate ids** in the DOM and stray visible nodes; (b) an OOB fragment's id doesn't exactly match the live element, so the swap silently no-ops and a count goes stale.
+This is the 44.5k-job over-enqueue incident's ecosystem. Compute (a1) files today are **in the `scheduling_ledger`** (via `agent_push.py`'s `process_file` enqueue) so `recover_orphaned_work` can replay them. k8s files are deliberately **not** ledger-seeded so recover never re-enqueues them onto an agent queue (the DIST invariant). If unification gives compute backends a `cloud_job` row that `reconcile_cloud_jobs` now also re-drives, a stalled compute push can be re-dispatched by **both** `recover_orphaned_work` (ledger replay) **and** the generalized reconcile (cloud_job re-drive) — double dispatch, doubled scratch-dir occupancy, doubled cap consumption. Symmetrically, if you *remove* the compute ledger seed to avoid this but the file's `cloud_job` reconcile path doesn't cover the rsync-push failure modes (sha256 mismatch, agent restart mid-push), a stuck compute file becomes unrecoverable by *either* mechanism.
 
 **Why it happens:**
-`hx-swap-oob` is only honored *during an HTMX swap* — at first paint it renders as ordinary (duplicate) markup. The dashboard guards this with an explicit `{% if oob_counts %}` gate and a documented "same-id contract" between the in-place seed and the OOB twin (`stats_bar.html` lines 36–45, 65–68; the `dag-seed-<key>` id convention). A new rail built without internalizing that gate will regress it.
+"Make recovery uniform across backends" (§4.5) collides with the fact that compute and k8s have *opposite* recovery contracts today. The invariant "NO process_file ledger seed for k8s" is easy to preserve; the trap is accidentally giving compute a *second* recovery path instead of *one* uniform one.
 
 **How to avoid:**
-- Reuse the exact `oob_counts`-style flag: stage/poll endpoints set it `True`, the full-page shell include omits it, so OOB blocks fire *only* on swap responses. This is a proven phaze idiom — copy it, don't reinvent.
-- Maintain a **single documented id registry** for OOB targets (rail counts `#rail-count-<stage>`, header dots `#agent-status-strip`, file pane `#file-pane`). The codebase already relies on id-contract discipline (`#straggler-failed-card`, `#admission-state-card`, etc., each re-pushed `{% with oob = True %}`); a console multiplies these, so the registry must be explicit or drift is guaranteed.
-- Push **rail counts via hidden `x-init` store writes** (the `$store.pipeline` pattern) rather than re-rendering rail DOM, so a count refresh never clobbers rail focus/hover or an in-flight nav.
+Decide, per backend kind, on **exactly one** recovery owner and assert it. Cleanest: `cloud_job` (backend_id-scoped) becomes the single in-flight registry and `reconcile()` is the single recovery driver for **all** backends; compute's `reconcile()` body wraps the existing `/pushed` + callback path but the row is reconciled through `cloud_job`, and the `scheduling_ledger` seed for cloud-routed files is dropped (or explicitly excluded from `recover_orphaned_work` by backend). Keep the AST guard that asserts recover_orphaned_work cannot re-enqueue a cloud-routed file, and extend it to compute-backed files. Preserve the milestone invariant verbatim: no `process_file` ledger seed for any file a backend owns.
 
 **Warning signs:**
-Duplicate-id warnings in devtools; a rail count freezes while the workspace updates; a stray "12 files ready" text node appears at page top on first load (the classic un-gated-OOB symptom); the header status dots stop updating after the first poll.
+A compute file analyzed twice (two `put_analysis` calls for one `file_id` — the idempotent writer masks it but logs show two dispatches); scratch-dir occupancy exceeding cap; `recover_orphaned_work` tally counting cloud-routed files.
 
-**Phase to address:** **57** (rail count + header strip OOB contract) — and every later phase must conform to the id registry.
+**Phase to address:** Phase 2 (defines the uniform `reconcile()` seam + `cloud_job` ownership); guard extended in Phase 3.
 
 ---
 
-### Pitfall 4: Poll storms — many concurrent `hx-trigger="every Ns"` loops hammering endpoints, including in a backgrounded tab
+### Pitfall 4: Dispatch-partial limbo — file `PUSHING` with no reconcilable registry row
 
 **What goes wrong:**
-The repo already has **15 `every Ns` polling triggers across 16 templates** (`base.html`, `pipeline/dashboard.html`, `admin/agents.html`, `tracklists/.../scan_progress.html`, and ~10 pipeline cards). A three-column console that shows the rail (per-stage counts), a workspace (lane cards + file queue), and a per-file pane *simultaneously* can easily mount **3–5 independent 5s polls at once** — and because each is its own request, they fan out to separate DB-querying endpoints (`/pipeline/stats` alone calls ~12 service functions per tick: `pipeline.py` lines 549–594). On ~200K files these become non-trivial; multiplied across regions and never paused when the tab is backgrounded, they are a self-inflicted load source.
+`stage_cloud_window` deliberately flips `FileState → PUSHING` **before** the enqueue outcome is known (the dedup-owns-the-file idiom, line 176). For k8s, `_stage_file_to_s3` upserts the `cloud_job` row *and* enqueues in the same locked transaction, so a crash rolls back both. But in a unified `dispatch()` seam it is easy to write a body where the `PUSHING` flip commits but the `cloud_job` row (or the enqueue) is lost — e.g., an exception between the FileState mutation and the registry upsert, or a backend `dispatch()` that flips state in the scheduler but writes its registry row in the backend body across a commit boundary. Result: a file sits in `PUSHING`/in-flight, **consuming a cap slot**, but `reconcile_cloud_jobs` iterates `cloud_job` rows and never sees it → stuck forever, silently shrinking that backend's effective capacity every time it happens.
 
 **Why it happens:**
-HTMX makes per-element polling trivial (`hx-trigger="every 5s"`), so each new live region "just adds a poll." There is no shared scheduler. The existing dashboard already consolidates *deliberately* — one `#pipeline-stats` poll fans out to ~10 OOB updates rather than 10 polls — but a rail rewrite that adds the rail and file pane as separate pollers loses that consolidation.
+The refactor moves the state flip (scheduler) and the registry write (backend body) into different objects; the "one transaction" guarantee Phase 53/54 carefully built is easy to break across the new abstraction boundary.
 
 **How to avoid:**
-- **One console-level poll.** Keep the single-poll/fan-out-via-OOB architecture the dashboard already uses (`stats_bar.html`): a single `every 5s` request returns the workspace delta **plus** OOB rail counts **plus** OOB header dots **plus** OOB file-pane facts. Do not give the rail, workspace, and pane independent `every Ns` triggers.
-- Add a load-shedding visibility guard so polls don't fire on a hidden tab — an `every Ns` trigger keeps firing regardless of tab focus unless gated (verified current HTMX behavior). Gate via a `visibilitychange` listener that pauses/resumes (e.g. add/remove the polling attribute, or only `htmx.trigger` when `document.visibilityState === 'visible'`).
-- Verify each poll endpoint stays **degrade-safe and cheap**: phaze's service layer already owns "never-500, return 0 on DB error" degrade (`get_queue_activity`, `get_stage_busy_counts`, etc., per `pipeline.py` comments) — keep new lane/rail counts on the same single poll context so they inherit that contract instead of adding fresh failure surfaces.
+Make `dispatch(file)` responsible for **both** the `FileState` flip and the `cloud_job` (backend_id) upsert in **one** transaction/session passed in by the scheduler — never let the scheduler flip state and the backend write the row on separate commits. Add an invariant test/health query: **no file in an in-flight FileState without a matching non-terminal `cloud_job` row for the same `file_id`** (and vice versa). Add a reconcile sweep that detects an in-flight FileState with no live registry row and returns it to `AWAITING_CLOUD`.
 
 **Warning signs:**
-Network tab shows N requests every 5s where N = number of live regions; Postgres connection pool pressure rises when the console is open; CPU on the app server climbs with the console idle in a background tab; `/pipeline/stats`-equivalent p95 latency grows with file count.
+A backend whose effective throughput silently degrades over days; files in `PUSHING`/`PUSHED` older than any plausible analysis wall-clock; `in_flight_count` pinned near cap with no corresponding running analysis.
 
-**Phase to address:** **58** (Enrich + Analyze workspaces own WORK-05 live refresh + the three lane cards — the densest live region; the consolidation decision lives here). Re-checked in **61** (per-file pane must ride the same poll, not add its own).
+**Phase to address:** Phase 2 (the `dispatch()` transaction contract); the orphan-detection sweep in Phase 3.
 
 ---
 
-### Pitfall 5: URL/history breakage — deep-linking a stage, back/forward landing on a bare fragment, refresh on a swapped state, and SHELL-05 redirect loops
+### Pitfall 5: Backend thrash — a file bouncing across flapping backends, with `attempts` mis-scoped
 
 **What goes wrong:**
-Four linked failures: (1) Clicking a rail node with `hx-push-url="true"` snapshots the *current DOM* into history (verified: "the current DOM is snapshotted and stored for restoration"). On **back**, HTMX restores that snapshot — which for an HTMX-swapped state may be a half-built DOM whose Alpine `x-data` does not re-run, so the restored page is visually right but **dead** (no reactivity). (2) A user who **refreshes** while deep-linked to `/?stage=analyze` hits a server route that must rebuild the *whole shell with Analyze selected* — if `GET /` ignores the stage param and always renders Analyze-default, the deep link silently resets. (3) A bookmarked **bare fragment** URL (the stage endpoint `/console/stage/analyze`) opened directly returns a headerless fragment (no shell). (4) SHELL-05 redirects (`/proposals` → shell Rename queue, etc.) collide with FastAPI's default `redirect_slashes=True`: `/proposals` already 307s to `/proposals/`, so a naive redirect rule can bounce `/proposals` → `/` → (stage) → … or break the existing trailing-slash bookmark.
+§4.5: a failed/offline backend returns the file to `AWAITING_CLOUD` and "the next drain tick re-dispatches it to the next eligible backend." With several backends intermittently offline, a file can bounce A→B→A→B every tick, never completing, generating churn (S3 uploads, Job submits, rsync starts) with no progress. Compounding it: `cloud_job` has a **unique FK on `file_id`** (one row per file) and an `attempts` counter that today means "kube submit attempts for THIS file." If spillover re-uses that single row across backends, `attempts` accumulates *across* backends — a file that fails once on each of 3 backends hits `cloud_submit_max_attempts=3` and is marked `ANALYSIS_FAILED` despite each backend having tried it exactly once. If instead you reset `attempts` on backend switch, a flapping pair gives infinite retries (unbounded thrash).
 
 **Why it happens:**
-The current app never uses `hx-push-url` or history at all (hard `<a>` navigation handles it natively), so there is zero existing history-correctness code to lean on. And the legacy routes are *prefixed with trailing-slash semantics* (`prefix="/proposals"` + `get("/")` ⇒ canonical `/proposals/`), which the redesign's redirect layer must respect.
+The one-row-per-file `cloud_job` model was built for a single target; spillover introduces a per-(file,backend) notion of "attempts" and "which backend last had it" that the schema doesn't express.
 
 **How to avoid:**
-- Make **stage selection a server-resolvable URL**: `GET /` accepts the selected stage (path `/` = Analyze default, plus `/stage/<name>` or `?stage=<name>`) and renders the **full shell** with that stage's workspace inlined. The rail's `hx-get` uses `hx-push-url` pointed at that *same* canonical URL — so back/forward/refresh/deep-link all resolve to a full-shell render, not a bare fragment.
-- Serve **two shapes from one stage route** keyed on the `HX-Request` header: HTMX request → fragment (for the swap); full navigation/refresh → full shell with the stage inlined. This is the standard HTMX deep-link pattern and avoids "bookmark returns a headerless fragment."
-- For SHELL-05, write **explicit redirect routes** for each legacy path (`/proposals/`, `/pipeline/`, `/search/`, `/duplicates/`, `/tags/`, `/cue/`, `/tracklists/`, `/preview/`, `/audit/`, `/admin/agents`) → the canonical shell URL, and **add a redirect-loop test** asserting each legacy path resolves to a 200 shell in ≤1 hop and never targets a path that itself redirects. Account for `redirect_slashes`: redirect the *canonical* (trailing-slash) form the routers actually expose.
-- Handle `htmx:historyRestore`/`htmx:historyCacheMiss` (verified events) to re-trigger the live poll and re-init Alpine on a restored snapshot, so a back-navigated console isn't a dead DOM.
+Separate the two counters: keep a **global** per-file dispatch budget (bounds total thrash → `ANALYSIS_FAILED` after N *total* dispatches across all backends) AND a **per-backend** attempt/cooldown so a backend that just failed a file is skipped for that file for a short window (attempt-affinity backoff), preventing A↔B ping-pong. Record `backend_id` + a `last_dispatched_at` on the `cloud_job` row; make the scheduler's "next eligible backend" exclude the backend that failed this file within the cooldown. Bound total re-dispatches explicitly. Add a thrash test: two backends flapping offline/online each tick, assert the file makes bounded attempts and lands `ANALYSIS_FAILED` (or completes), never infinite-loops.
 
 **Warning signs:**
-Back button shows the right stage but buttons/counts are frozen (Alpine didn't re-init); refresh on a deep link drops you to Analyze; pasting a stage URL into a new tab returns un-styled fragment HTML; `curl -sI /proposals` shows a redirect chain >1 hop; existing `/proposals/` bookmarks 404 or loop.
+The same `file_id` appearing in dispatch logs across multiple backends within minutes; S3/Job/rsync submit rate far exceeding completion rate; `attempts` climbing on files no single backend actually ran to completion.
 
-**Phase to address:** **57** (SHELL-01 `/` route, SHELL-02 push-url, SHELL-05 legacy redirects — all live here; the redirect-loop test is a phase-57 must-have).
+**Phase to address:** Phase 3 (tiered scheduler — spillover, re-dispatch, attempt-budget split all live here). Schema (`backend_id`, `last_dispatched_at`) prepared in Phase 2.
 
 ---
 
-### Pitfall 6: Accessibility regressions baked in during the swap rewrite (focus management, ⌘K focus trap, rail keyboard nav, skip link, ARIA on the DAG)
+### Pitfall 6: The `cloud_target` → `backends` shim silently produces an empty or wrong registry
 
 **What goes wrong:**
-HTMX swaps replace DOM without moving focus, so after a rail click focus stays on the (now-replaced) trigger or resets to `<body>` — keyboard users lose their place. The ⌘K palette (RECORD-02) opened/closed without an explicit focus trap + focus-restore traps or strands focus. The today-existing skip link is **wrong for a console**: `base.html` hard-codes `href="#proposals-table"` (overridden per page via a `{% block skip_link %}`), which points at a target that won't exist in most stages. ARIA on the DAG rail (CUT-01 requires it) is absent — today only the Agents nav link has `aria-current="page"` (a documented partial retrofit, `base.html` lines 228–239); the other 9 links never got it. A from-scratch rail with no `role`/`aria-current`/`aria-selected` ships *worse* a11y than the tabs it replaces.
+`cloud_target=local` today means **cloud OFF** (the drain's first line is `if cfg.cloud_target == "local": return no-op`). The back-compat shim (§4.1) must translate the three legacy values into a `backends:` list. Two silent failures: (a) the shim maps `local` → empty `backends` list → every long file wedges in `AWAITING_CLOUD` **forever** with no error and no dispatch (looks like a hung pipeline, not a config error); (b) an operator who sets the new `backends:` **and** leaves a stale `PHAZE_CLOUD_TARGET=a1` env gets ambiguous precedence — the shim silently wins or loses, producing a registry that doesn't match intent. Because the drain simply no-ops when nothing is eligible, **all of these fail as silence**, exactly like the Phase 30 misrouting incident (jobs enqueued to a consumer-less queue — no error, just nothing happens).
 
 **Why it happens:**
-a11y is the named CUT-01 deliverable parked in the **final** phase (62), so the swap mechanics get built in 57–61 with no focus/ARIA discipline and 62 inherits a mountain of retrofits. Focus management is invisible in mouse testing, so it's not noticed until a keyboard pass.
+`local` is overloaded (it means both "a backend" and "cloud disabled"), and a shim that spans an env-var rename is precisely where "empty is a valid Python list" hides a misconfiguration.
 
 **How to avoid:**
-- Bake focus discipline into the **phase-57 swap contract**, not phase 62: after a stage swap, move focus to the workspace heading (`hx-on::after-swap` focusing an `[tabindex="-1"]` stage `<h1>`), and mark the active rail node `aria-current="page"`/`aria-selected="true"`. Treat "every swap manages focus" as a phase-57 acceptance criterion.
-- Build ⌘K with a real focus trap from day one (Phase 61): on open, save `document.activeElement`, trap Tab within the palette, `Esc` closes and **restores** focus to the saved element. Alpine `x-trap` (or a tiny hand-rolled trap) is the lightweight fit for the no-build stack.
-- Replace the hard-coded `#proposals-table` skip link with a console-correct `#stage-workspace` target in the shell's `{% block skip_link %}` default.
-- Give the rail proper semantics: `role="navigation"` / a `role="list"` of stages with `aria-current` on the active one, `aria-label`s on the lane cards, and `focus-visible` rings preserved (Tailwind `focus-visible:` — verify they aren't stripped by the restyle).
-- Run an **axe/keyboard pass after EACH phase** (57–61), not only in 62 — a per-phase a11y smoke check prevents the debt pile-up.
+The shim must be **explicit and total**: `local` → a single-entry registry `[local rank=99]` **plus** a distinct "cloud disabled" flag (don't conflate empty-list with off). Emit a startup **log line** stating the effective resolved registry ("backends resolved from legacy cloud_target=a1: [a1-compute rank=10 cap=2]"). Treat "`backends` set AND `cloud_target` set to a non-default" as a **fail-fast** conflict at startup, not a silent precedence pick. A registry that resolves to zero *available* backends while long files exist should raise a dashboard alert (reuse the v6.0 LocalQueue-probe Redis-flag alert pattern), never a silent hold.
 
 **Warning signs:**
-Tabbing after a rail click jumps to `<body>` or the page top; ⌘K closes but focus is lost to the document; Esc doesn't restore focus; screen-reader announces nothing on stage change; the skip link jumps to a missing anchor; no visible focus ring on rail items.
+Long files accumulating in `AWAITING_CLOUD` with a "staged: 0, skipped: 0" drain tally every 5 min and no error; operator swears cloud is configured but nothing dispatches; the resolved-registry log line missing or empty.
 
-**Phase to address:** Distributed — focus/ARIA contract **57**, ⌘K trap **61**, *full* CUT-01 audit + parity sign-off **62**. (Anti-pattern: deferring *all* of it to 62.)
+**Phase to address:** Phase 1 (registry & config model owns the shim + resolved-registry logging + conflict fail-fast).
 
 ---
 
-### Pitfall 7: Cutover removes templates/routers/partials that something still references (CUT-02 dead-code deletion)
+### Pitfall 7: Per-entry validator gaps let a misconfigured backend appear "eligible"
 
 **What goes wrong:**
-With **105 templates / 94 partials** and prefixed routers, "delete the old tab" in phase 62 removes a `*/list.html` or a partial that is still `{% include %}`d by a kept template, still rendered by a still-mounted endpoint, or still targeted by an `hx-get` string in a partial that survived. Jinja include errors throw at **request time**, not at deploy — so a missed reference 500s a live stage. Routers are registered by hand in `main.py` (lines 185–227); removing a router file without removing its `include_router` line breaks import; removing the line but leaving a template that `hx-post`s to its URL yields a 404 on click.
+Today three **model-level** validators fail-fast at startup: `_enforce_compute_scratch_dir_when_a1`, `_enforce_s3_config_when_k8s`, `_enforce_kube_config_when_k8s` (config.py:636–681). They exist precisely because a k8s target with no `kube_api_url`, or an a1 target with no `compute_scratch_dir`, otherwise **fails only at dispatch runtime** — the a1 case silently builds a `"None/<file_id>.<ext>"` path and lands every file in `ANALYSIS_FAILED` after `push_max_attempts` (the comment at config.py:643 documents this exact trap). Generalizing to N entries, these must become **per-entry** validators. The gap: an entry appears in the registry, passes a shallow "is it in the list" check, is enumerated as eligible by the scheduler, `is_available()` returns True (agent heartbeats / probe passes), then `dispatch()` fails at runtime because *that entry's* kube/S3/scratch config is missing — reintroducing the exact silent-`ANALYSIS_FAILED` class the three validators were built to kill, now multiplied by N.
 
 **Why it happens:**
-The reuse strategy ("new templates over existing routers/services") means the new shell *keeps* most routers and *replaces* templates — so which templates/partials are truly orphaned is non-obvious. Includes and `hx-*` URLs are string references invisible to a Python import graph; a grep-free deletion misses them.
+The three validators were written against flat singleton fields (`self.s3_bucket`, `self.kube_api_url`). A per-entry registry needs the same checks *inside* each entry, and it's easy to validate the list's shape without validating each entry's kind-specific required fields.
 
 **How to avoid:**
-- **Staged removal, reference-proven.** Before deleting any template/partial/router, grep the whole tree for: its filename in `{% include %}`/`{% extends %}`, its route path in `hx-get`/`hx-post`/`hx-patch`/`href`/`url_for`, and its symbol in `main.py`. Only delete when all three are empty. Encode this as a checklist in the phase-62 plan.
-- Add a **dead-template test**: a unit test that walks `templates/` and asserts every non-fragment template is reachable from a mounted route, and every `{% include %}` target exists on disk (Jinja's `meta.find_referenced_templates` makes this mechanical). This catches an orphaned-include 500 before runtime.
-- Delete **router-then-template in lockstep**, each in its own small PR (the repo's "one PR per feature, worktree-per-feature" rule, per CLAUDE.md), so a broken reference is bisectable and revertable.
-- Keep the **SHELL-05 redirects** until after the legacy templates are gone — the redirect routes are the safety net proving no inbound bookmark hits a deleted page.
+Port all three validators to **per-entry, kind-dispatched** validation that runs at settings-construction time: `kind=kueue` entry ⇒ its `kube_api_url`/`namespace`/`localqueue`/image required; `kind=compute` entry ⇒ its `agent_ref` + scratch config required; `kind=local` ⇒ nothing. Fail-fast at startup with the entry `id` in the message. Do **not** collapse them into one `kind != local` gate (the config.py:623 comment warns this silently changes a1's fail-fast semantics). Keep the milestone's "each entry fails fast" as an explicit acceptance test with a deliberately-broken entry per kind.
 
 **Warning signs:**
-A stage 500s with `TemplateNotFound` only when a specific row type renders; `grep -rn "old_partial.html" src` returns hits after you "removed" it; `main.py` import fails on boot; an `hx-post` button returns 404; coverage on a "removed" router file is suspiciously still >0.
+Files landing `ANALYSIS_FAILED` shortly after routing to one specific backend while others work; a backend that shows "available" in the UI but never completes a file; runtime `KeyError`/`None`-path errors in a backend body a startup validator should have caught.
 
-**Phase to address:** **62** (CUT-02) — but seed the dead-template test in **57** so it's green-then-watched across the whole migration.
+**Phase to address:** Phase 1 (registry validators). Verified again in Phase 4 for the multi-Kueue per-cluster fields.
 
 ---
 
-### Pitfall 8: before→after diff approval correctness — stale data after approve, bulk "approve all high-confidence" acting on changed rows, reversibility gaps (REVIEW)
+### Pitfall 8: One Kueue cluster's probe/dispatch failure poisons the whole tick
 
 **What goes wrong:**
-Today's bulk approve serializes a **client-side** `selectedRows` Set into hidden `proposal_ids` inputs and PATCHes `/proposals/bulk`, which calls `bulk_update_status(uuids, APPROVED)` with **no re-validation** that those rows are still pending or still high-confidence (`bulk_actions.html`; `proposals.py` `bulk_action` lines 304–331). In a live-polling console where the diff list refreshes every 5s, the operator can approve a stale set: a row that changed confidence, was re-proposed, or was already executed by another action between render and submit. The unified REVIEW gate widens this from one queue (proposals) to **four** (Rename/Tag/Move/Dedupe), each with a "approve all high-confidence" bulk button — so a single stale-bulk bug now mis-applies renames, tag writes, and **file moves**. REVIEW-05 requires every applied change be audited and reversible; if the new diff UI bypasses the existing `ExecutionLog`/audit write or the copy-verify-delete protocol, reversibility silently breaks.
+Multi-Kueue means the drain enumerates N `KueueBackend`s and calls `is_available()` (LocalQueue probe) then `dispatch()` (kube POST) per cluster. If cluster C's kube API is unreachable and its `is_available()` **raises** (kr8s connection error) instead of returning False, an unguarded enumeration aborts the *entire* drain tick — starving the healthy clusters and local. Same for a `dispatch()` that raises: `reconcile_cloud_jobs` already has a per-row try/except guard (line 315), but the **drain** (`stage_cloud_window`) has no per-backend guard today because it only ever touched one target. A single flaky cluster then blocks all dispatch.
 
 **Why it happens:**
-The current bulk action was built for a *static* page (you load proposals, select, submit — little time passes). The console makes the list **live**, dramatically widening the render→submit staleness window, while the "approve all high-confidence" affordance encourages large, unreviewed batch actions. The threshold is also a fixed value (REVIEW-06 defers per-stage config), so "high-confidence" is evaluated *somewhere* — if client-side off possibly-stale rendered confidence, it acts on what the user *saw*, not current truth.
+The single-target drain never needed to isolate one backend's failure from the tick. N backends make "one target down" a routine steady state, not an exception.
 
 **How to avoid:**
-- **Server is the source of truth for bulk scope.** "Approve all high-confidence" should send a *predicate* (action + threshold), not a client-built id list — the server re-queries pending rows above the threshold *at submit time* and applies to that fresh set, returning the actual count acted on. This eliminates the stale-id class entirely. (Per-file Approve/Edit/Skip can still send a single id, but the endpoint must re-check the row is still pending and 409/no-op if not.)
-- **Optimistic-concurrency guard on per-file approve:** include the row's last-known state/version; the endpoint approves only if unchanged, else returns the refreshed diff fragment so the operator re-sees current truth (the dashboard already returns refreshed fragments — `approve_response.html` re-renders the row + OOB stats).
-- **Preserve the audit + reversibility seam unchanged.** REVIEW is an IA rewrite over *existing* execution/tags/cue/duplicates routers (the milestone's explicit "no backend behavior change") — the new templates must POST to the **same** endpoints that already write `ExecutionLog` and honor copy-verify-delete; do not add a new direct-apply path that skips them. Add a test asserting every REVIEW apply action produces an audit row.
-- **Don't let the 5s poll re-render an in-flight selection** (ties to Pitfall 2/4): the diff list's live refresh must OOB-update *counts* without clobbering the operator's checked rows mid-review.
+Wrap **every** per-backend `is_available()` and `dispatch()` call in the drain in its own try/except (mirror reconcile's per-row guard): a raising/unavailable backend is skipped for this tick, logged, and the tick proceeds to the next backend. `is_available()` should be defined to **return bool, never raise** (catch the kube/probe error inside and return False). Add a test: N backends where one raises on `is_available` and one raises on `dispatch`, assert the others still receive work and no exception escapes the tick.
 
 **Warning signs:**
-"Approve all high-confidence" count returned ≠ what the operator saw; a row that was just executed gets re-approved; an approved move has no `ExecutionLog`/audit entry; undo fails to find a reversal record; selection clears or shifts when the diff list polls; bulk acted on a row whose confidence dropped below threshold after render.
+All backends stop dispatching whenever one cluster goes down; drain tick logging an exception and a `staged: 0` even though healthy backends have capacity and files are waiting.
 
-**Phase to address:** **60** (Review & Apply — REVIEW-01/02/03/05). The server-predicate bulk + audit-parity test are phase-60 must-haves.
+**Phase to address:** Phase 4 (multi-Kueue), with the per-backend guard pattern established in Phase 3's scheduler loop.
 
 ---
 
-### Pitfall 9: Theme-toggle and brand regressions during the shell rewrite (dark `phaze-bg`, light toggle, Jura/blue/wave)
+### Pitfall 9: Shared S3 bucket + deterministic keys → cross-cluster collision on spillover
 
 **What goes wrong:**
-`base.html` carries a **fragile, already-bitten** theme mechanism: a pre-Alpine inline script applies `.dark` to `<html>` to prevent FOUC, an OS `prefers-color-scheme` listener for auto mode, and an `$store.theme` whose `set()` calls `_applyTheme` directly — *because* a prior version that bound `:class` on `<html>` was "silently inert" (documented in the lines 42–53 comment). The `@theme` block defines the brand palette (`--color-blue-*`, `--color-phaze-bg/panel/border`) and Jura/Inter are loaded by `<link>`. A shell rewrite that regenerates `base.html` from the prototype can: re-introduce the inert `:class`-on-`<html>` bug, drop the pre-flash script (FOUC on every load), lose the `@custom-variant dark` registration (so all `dark:` utilities silently stop working), or hard-code Tailwind-default blue (losing the phaze accent). The Tailwind build is **self-hosted, not CDN** (lines 21–28, with a deliberate SRI rationale) — swapping to a CDN URL during the rewrite reintroduces the exact SRI-divergence bug that vendoring fixed.
+All Kueue clusters share ONE S3 bucket (§3.7) and staging keys + Job names are **`file_id`-scoped and deterministic** (`phaze-analyze-<file_id>`, file_id-scoped S3 key). Within a single cluster, the unique `cloud_job` FK guarantees one file → one object. But **spillover across clusters** re-uses the same `file_id`-scoped key: file fails on cluster A (rank 10) → re-dispatched to cluster B (rank 20). Two hazards: (a) cluster A's no-callback-terminal cleanup deletes the **shared** S3 object (`s3_staging.delete_staged_object(file_id)`, reconcile line 170) while cluster B's pod still needs it → cluster B's just-in-time GET fails, file fails spuriously; (b) if A and B overlap (a reconcile lag leaves A's Job alive when B is dispatched), both pods analyze the same object and both POST results (the idempotent writer dedups the *result* but wastes a full analysis + confuses per-backend accounting). The confirm-gone race guard (`_job_gone`, reconcile line 95) is **per-cluster** (`kube_staging.get_job` targets one kube API) and cannot see cluster A's Job from cluster B's context.
 
 **Why it happens:**
-The prototype (`prototype.html`) is a standalone artifact that almost certainly inlines its own theme handling; "port the prototype" invites replacing the hard-won `base.html` head wholesale, discarding the embedded fixes and the vendored-Tailwind decision.
+The deterministic-name idempotency that makes single-cluster re-drive safe assumes ONE kube API and ONE owner of the object. Sharing the bucket across clusters breaks the "one owner" assumption for the object lifecycle.
 
 **How to avoid:**
-- **Preserve `base.html`'s `<head>` as the source of truth** — port the prototype's *markup* into the existing head/theme scaffolding, do not replace the scaffolding. Keep `_applyTheme`, the pre-flash IIFE, the OS listener, `@custom-variant dark`, the `@theme` token block, the Jura/Inter `<link>`, and the **self-hosted** `/static/vendor/tailwindcss-browser-4.3.0.min.js` script (not CDN).
-- Add a **theme smoke test/checklist**: load `/`, assert `.dark` is present when `localStorage['phaze-theme']='dark'`, assert `dark:bg-phaze-bg` actually paints, assert no FOUC (the IIFE runs before first paint), and cycle auto/dark/light.
-- Keep brand tokens (`phaze-bg`/`phaze-panel`/blue accent) and the wave SVG logo verbatim from `base.html` (SHELL-04) — diff the new shell's computed colors against the old to confirm "evolve, don't reskin."
+Scope the S3 cleanup decision to "**is this file still owned by the backend that staged this object?**" — delete the staged object only on a *genuinely terminal* outcome (at-cap `ANALYSIS_FAILED` or success-callback), **never** on a spillover/re-drive that hands the file to another backend (the reconcile already preserves the object on the under-cap re-drive path — extend that reasoning to cross-backend spillover). Ensure a file is only ever in **one** cluster at a time (the unique `cloud_job` FK + the mutual-exclusion lock from Pitfall 2 enforce this; verify the spillover path clears the old cluster's Job before the new dispatch). Keep the S3 key `file_id`-scoped (safe with one owner) but make the **owner** explicit via `cloud_job.backend_id`.
 
 **Warning signs:**
-A flash of light theme on load (pre-flash script lost); the toggle cycles `mode` but the page doesn't change (the inert `:class`-on-`<html>` regression is back); `dark:` utilities do nothing (custom-variant lost); accent renders as Tailwind default blue; SRI console error on the Tailwind script (CDN regression).
+Cluster B pods failing on S3 GET (404) right after a cluster A cleanup; two Jobs named `phaze-analyze-<same file_id>` alive in two clusters; duplicate `put_analysis` callbacks for one file_id from different cluster identities.
 
-**Phase to address:** **57** (SHELL-04 — theme + brand preservation is a shell-phase acceptance gate).
+**Phase to address:** Phase 4 (multi-Kueue owns shared-bucket ownership semantics); spillover-cleanup rule co-designed with Phase 3.
 
 ---
 
-### Pitfall 10: Template/partial duplication and drift between full-page and fragment responses
+### Pitfall 10: The "behavior-preserving" refactor silently changes the GATE asymmetry (Landmine L2)
 
 **What goes wrong:**
-HTMX endpoints must return a **fragment** to a swap request and a **full page** to a direct navigation/refresh (see Pitfall 5). The repo's idiom is "full-page `*/list.html` includes the same `*/partials/*` the HTMX endpoint returns" — e.g. `proposals/list.html` includes `proposal_table.html` + `bulk_actions.html`, and the bulk endpoint returns `approve_response.html` which re-includes the row + stats partials. When a console adds a stage, it's easy to write the workspace markup **twice** (once inline in the shell for the full render, once in the fragment for the swap), and they drift — a column added to the fragment never appears on refresh, or vice versa.
+The current `if/elif` in `stage_cloud_window` encodes a **subtle, load-bearing asymmetry**: a1 requires a live compute agent (GATE 1), but k8s **skips GATE 1** (lines 137–147) — because k8s uses ephemeral pods with no persistent agent, and the code comment explicitly warns "else every k8s file would wedge in AWAITING_CLOUD forever (Landmine L2)." When Phases 1–2 collapse this into `Backend.is_available()`, a naïve implementation that makes all backends check "is an agent online" reintroduces Landmine L2 for every Kueue backend — files silently wedge. Equally, GATE 2 (fileserver agent must be online — it owns the media mount and runs both rsync push AND the S3 upload) applies to **both** a1 and k8s and must be preserved for both. A "behavior-preserving" refactor that gets either gate wrong changes dispatch behavior invisibly, violating the milestone's whole de-risking premise (phases 1–2 change nothing).
 
 **Why it happens:**
-The "two shapes from one route" requirement (Pitfall 5) naturally tempts two code paths. With 94 partials already, the include graph is deep and a new contributor copies markup rather than extracting a shared partial.
+The asymmetry lives in a branch comment, not in a type. Refactoring to a uniform protocol tempts you to make availability uniform too, erasing the intentional per-kind difference.
 
 **How to avoid:**
-- **One partial, two callers.** Every stage workspace is a single `_console/stages/<name>.html` partial; the full-shell route `{% include %}`s it into the shell, and the HTMX stage route returns it bare. Neither path hand-writes the workspace markup. This is exactly how `proposals/list.html` and the proposals HTMX endpoints already share `proposals/partials/*`.
-- A drift test: render each stage via the full route and via the HTMX route and assert the workspace subtree HTML is identical (or that the fragment is a literal substring of the full page).
-- Watch for **orphaned partials** created during iteration (a `_v2` partial left behind) — fold this into the Pitfall-7 dead-template test.
+Encode the gates as **explicit per-kind `is_available()` bodies with the asymmetry documented**: `LocalBackend.is_available` → always True; `ComputeAgentBackend.is_available` → its referenced compute agent heartbeats (GATE 1); `KueueBackend.is_available` → LocalQueue probe passes, **no compute-agent dependency** (GATE 1 skipped). The fileserver GATE 2 (media mount / uploader) is a **scheduler-level** precondition applied to any non-local dispatch, not folded into a backend's `is_available`. Write a **characterization test** capturing today's dispatch decisions (which files dispatch where, under which agent-online combinations) and assert the refactored path produces byte-identical decisions for the single-backend configs before flipping on multiplicity.
 
 **Warning signs:**
-A field shows after a swap but vanishes on refresh (or vice versa); two near-identical partials differ by one column; `grep` finds the same table markup in both a `list.html` and a fragment.
+After the Phase 2 merge, k8s files that dispatched fine in v6.0 now sit in `AWAITING_CLOUD`; or a1 files dispatch with no compute agent online (GATE 1 lost). Any dispatch-decision diff between v6.0 and the refactored single-backend path.
 
-**Phase to address:** **57** (establish the one-partial-two-callers convention) and enforced through **58–61** as stages are added.
+**Phase to address:** Phase 2 (protocol refactor) — the characterization test is the phase's acceptance gate.
+
+---
+
+### Pitfall 11: Test coverage gap — the old `if/elif` was only *implicitly* tested
+
+**What goes wrong:**
+The `cloud_target` switch is exercised today through integration tests that set `cloud_target=a1` or `=k8s` and assert end-to-end behavior. There is no per-branch unit test of "given target X, produce dispatch Y" because the branch was trivial. After the protocol refactor, each `Backend` implementation has four real methods (`is_available`/`in_flight_count`/`dispatch`/`reconcile`) with per-kind logic — but if the suite still only covers them via the two legacy end-to-end paths, the **new** surface (per-backend counting, spillover, the availability asymmetry, the transaction contract) is untested, and the 85% coverage gate can be *satisfied by the old integration tests* while the multiplicity branches (N>1 backends, cross-backend spillover, per-entry validators) have zero real assertions. This is how JOB-ENV-CONTRACT and the v6.0 double-enqueue defects slipped past — behavior that "looked covered" but the specific new seam wasn't asserted.
+
+**Why it happens:**
+Coverage percentage measures lines hit, not decisions asserted. A refactor that preserves line coverage via legacy tests hides that the *multiplicity* logic — the entire point of the milestone — is unexercised.
+
+**How to avoid:**
+Add **explicit unit tests per `Backend` method per kind** (12 cells minimum), plus scheduler tests that specifically require **N≥2 backends**: rank ordering, cap-full spill to next rank, spill to local only when all higher ranks full/offline, spillover on mid-flight failure, thrash bounding. Add the characterization test (Pitfall 10) and the accounting-consistency test (Pitfall 1). Treat "single-backend integration test passes" as necessary-but-not-sufficient. Extend the existing AST guards (no-default-queue routing, no-cloud-ledger-recover) to the new dispatch seam.
+
+**Warning signs:**
+Coverage green but no test file names a second backend; PR diff adds `Backend` implementations with tests that only ever instantiate one; spillover/rank/cap paths with no direct assertion.
+
+**Phase to address:** Every phase adds its own tests, but Phase 2 (protocol) and Phase 3 (scheduler) are where the multiplicity test surface must be built explicitly, not inherited.
 
 ---
 
@@ -225,106 +225,93 @@ A field shows after a swap but vanishes on refresh (or vice versa); two near-ide
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Give the rail, workspace, and file-pane each their own `every 5s` poll | Trivial to wire; each region "just works" | 3–5× request fan-out on a 200K-file DB; load even when tab is backgrounded (Pitfall 4) | Never — keep the single-poll/OOB-fanout architecture the dashboard already proves |
-| Stage endpoints return full `extends base.html` pages | Reuse existing full-page templates as-is | Nested shells, duplicate `$store`/nav/theme (Pitfall 1); no clean swap | Never for swap targets; the full-page shape is only for direct-nav/refresh |
-| Client-built id list for "approve all high-confidence" | Reuses the existing `selectedRows`→hidden-inputs bulk pattern | Acts on stale rows under live polling; mis-applies moves/tags (Pitfall 8) | Never for bulk — send a server-evaluated predicate |
-| Defer ALL of CUT-01 a11y to phase 62 | Faster stage builds in 57–61 | Mountain of focus/ARIA retrofits across every swap; likely ships worse than the tabs | Only the *final audit* belongs in 62; the focus/ARIA contract must be in 57 |
-| Port the prototype's `<head>` wholesale | One copy-paste shell | Re-introduces the inert-`:class` theme bug, FOUC, lost `dark:` variant, CDN/SRI regression (Pitfall 9) | Never — port markup into the existing head scaffolding |
-| Hand-write workspace markup in both the shell render and the fragment | Quick to see it working both ways | Full-page/fragment drift (Pitfall 10) | Never — one partial, two callers |
-| Delete a legacy router/template by "it looks unused" | Removes clutter fast | Runtime `TemplateNotFound`/404 from a surviving include or `hx-*` URL (Pitfall 7) | Never without the three-way grep + dead-template test |
+| Keep counting in-flight from FileState `{PUSHING,PUSHED}` globally and just add `backend_id` for display | No accounting rewrite; Phase 2 stays tiny | Per-backend caps are wrong the moment two backends run (a file on A counts against B); silent over/under-dispatch | **Never** — this is the milestone's core correctness property |
+| One shared advisory-lock key for drain AND reconcile | Trivial mutual exclusion | Reconcile now blocks on drain and vice-versa; a long reconcile tick stalls dispatch | Acceptable at this scale (single user, `*/5` crons, tiny row counts) — simplicity beats granular locking |
+| Reuse the single `cloud_job` row per file across backend spillover (mutate `backend_id` in place) | No schema change beyond one column | `attempts` semantics blur across backends (Pitfall 5); history of which backend had it is lost | Only if a global dispatch-budget + per-backend cooldown is added alongside |
+| Ship the `cloud_target` shim as permanent (no deprecation) | Zero-friction upgrade for existing deploy | Two config surfaces forever; the overloaded `local`=off ambiguity persists | Acceptable for one milestone with a logged deprecation path; schedule shim removal |
+| Skip the staleness guard on local (design §4.3 default) | Less code | A momentary higher-rank backlog dumps long files onto slow local, defeating tiering | Acceptable per design default (rank 99 + cap 1) **if** cap 1 is genuinely small; revisit if local thrash observed |
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| HTMX history (`hx-push-url`) | Assuming back/forward re-fetches; it restores a **DOM snapshot** (verified), leaving Alpine un-initialized | Point `hx-push-url` at a server-resolvable canonical URL; handle `htmx:historyRestore` to re-init Alpine + re-trigger the poll (Pitfall 5) |
-| FastAPI `redirect_slashes` | Writing SHELL-05 redirects against `/proposals` while the router canonical is `/proposals/`, creating a 2-hop chain or loop | Redirect the canonical trailing-slash form the routers expose; assert ≤1 hop in a test |
-| HTMX `hx-swap-oob` | Emitting OOB fragments on the initial full-page render → duplicate ids + stray nodes | Gate OOB blocks behind an `oob_counts`-style flag set only on swap responses (the existing `stats_bar.html` idiom) |
-| Alpine `x-data` + HTMX swap | Expecting component state (selection/focus) to survive a swap | Hoist cross-swap state to `$store`; keep only ephemeral state in `x-data` (Pitfall 2) |
-| Alpine `:class` on `<html>` | Binding theme `:class` on `<html>` — Alpine scans from `<body>` down, so it's silently inert (documented in `base.html`) | Drive `.dark` via `classList` from one `_applyTheme` function (preserve the existing fix) |
-| Self-hosted Tailwind browser build | Swapping the vendored `/static/vendor/...min.js` for a CDN URL with SRI | Keep the vendored audited build; CDN minification diverges per-edge and breaks SRI (documented rationale) |
-| Existing execution/tags/cue routers (REVIEW) | Adding a new direct-apply path from the diff UI that skips `ExecutionLog`/copy-verify-delete | POST to the same existing endpoints; assert an audit row per apply (REVIEW-05) |
+| Kueue (kr8s) multi-cluster | One kr8s client / one kubeconfig assumed; `is_available` raises on unreachable cluster and aborts the tick | Per-cluster kr8s client from that entry's `_FILE` kubeconfig; `is_available` catches and returns False; per-backend try/except in the drain |
+| Shared S3 bucket (aioboto3) | Delete the `file_id`-scoped object on any terminal, including cross-cluster spillover | Delete only on genuinely-terminal (at-cap fail / success callback); preserve on re-drive AND cross-backend spillover; owner tracked via `cloud_job.backend_id` |
+| Compute agent (SAQ per-agent queue) | New `cloud_job` row for compute PLUS the existing `scheduling_ledger` seed → two recovery paths | One registry (`cloud_job`) + one recovery driver (`reconcile`); drop/exclude the cloud-routed ledger seed; keep the no-default-queue routing (Phase 30 invariant) |
+| `_FILE` secrets, N per-cluster | Reuse the flat singleton `kube_*`/SA-token fields for all clusters | Per-entry secret resolution; each entry resolves its own `_FILE`-mounted kubeconfig/token; per-entry validator asserts presence |
+| `put_analysis` result writer | Assume the dropped kube watch or a reconcile miss loses the result | Unchanged — `put_analysis` by `file_id` stays the sole out-of-band writer; reconcile never writes a result (preserve KSUBMIT-03) |
 
 ## Performance Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Per-region polling fan-out | N requests/5s where N = live regions; rising PG pool pressure | Single console poll + OOB fan-out (Pitfall 4) | Noticeable now at ~200K files; worse with the 3-column always-live layout |
-| Polls keep firing in a backgrounded tab | App-server CPU stays high with the console idle in another tab | Gate `every Ns` on `document.visibilityState` | Any long-lived admin session (this is a single-user tool left open) |
-| Stage workspace re-renders the whole file queue every poll | Large innerHTML swaps; lost scroll/selection; jank | Poll updates counts via OOB store-writes; only swap rows when they actually change | Queues with thousands of pending rows (proposals/move on a big import) |
-| `/pipeline/stats`-style endpoint grows more service calls per tick | p95 latency creeps as each phase adds a count | Keep new lane/rail counts on the one degrade-safe poll context; don't add fresh endpoints | As phases 58–61 each add "just one more live count" |
+| Per-tick `is_available()` doing a live probe per backend per `*/5` tick | Drain tick latency grows with N backends; kube API rate noise | Cache/parallelize probes; keep probes cheap; the startup-probe→Redis-flag pattern (v6.0) can front the live probe | N clusters × frequent ticks |
+| Spillover thrash generating S3/Job/rsync churn | Submit/upload rate ≫ completion rate | Attempt-affinity cooldown + global dispatch budget (Pitfall 5) | Any time ≥2 backends flap |
+| Enumerating `in_flight_count` as N separate COUNT queries per tick | Drain tick does N round-trips | Single grouped `COUNT(*) ... GROUP BY backend_id` under the lock | Small N — low risk at this scale, trivial to get right |
 
 ## Security Mistakes
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Trusting client-submitted bulk id lists for destructive applies (move/tag-write) | Operator approves a stale/changed set; irreversible file moves on wrong rows | Server re-evaluates the predicate at submit time; per-file approve re-checks state (Pitfall 8) |
-| Removing SHELL-05 redirects before legacy templates are gone | Inbound bookmarks 404; or a deleted page leaks a stack trace | Keep redirects until cutover proven; never expose raw 500s (the codebase's "never raw 500" discipline) |
-| ⌘K command palette running "quick commands" (scan, etc.) without the same guards as the buttons | A command bypasses an enqueue guard (e.g. the Phase-30 default-queue / no-active-agent guard) | ⌘K commands must funnel through the same router endpoints + `enqueue_router` guards, not a new path |
-
-> Note: this is a single-user private-LAN tool (no public access, no multi-tenant auth) — so classic web-auth pitfalls are out of scope; the real "security" surface here is **destructive-action correctness** (moves/tag-writes are hard to reverse) and **not bypassing existing enqueue guards**.
+| A cluster/provider config leaking media-plane access (breaking DIST-01) | An agent/pod gets S3 importer credentials; media boundary violated | Preserve DIST-01: control plane stays sole S3 importer/presigner; per-entry config never grants a pod bucket creds — only presigned URLs |
+| Per-cluster `_FILE` secrets logged in the resolved-registry log line (Pitfall 6) | kubeconfig / SA-token in logs | Log entry `id`/`kind`/`rank`/`cap` only — never resolved secret material (`SecretStr` repr discipline) |
+| A misconfigured backend's raw kube/S3 error text surfaced to the admin UI | Credential/endpoint disclosure | Sanitize backend error surfacing; alert with the entry `id`, not the raw exception |
 
 ## UX Pitfalls
 
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| Live poll clears the operator's in-progress multi-select | Loses a 50-row selection mid-review; rage | OOB-update counts only; never re-render the selection subtree (Pitfall 2/4/8) |
-| Stage swap doesn't move focus | Keyboard user is stranded on a replaced trigger | Focus the stage heading after swap (Pitfall 6) |
-| ⌘K doesn't restore focus on close | User loses their place in the rail/workspace | Save+restore `activeElement`; Esc closes and restores (Pitfall 6) |
-| Rail counts go stale while workspace updates | Operator distrusts the whole console | Single poll updates rail + workspace together via OOB (Pitfall 3/4) |
-| k8s lane shown as perpetually-DEAD agent | Operator thinks burst is broken | Model k8s as ephemeral Job-based identity (RECORD-03, carries v6.0 KDEPLOY-04 intent) |
-| FOUC / theme flash on every navigation | Looks broken/cheap — the exact "v1-ish" complaint the redesign exists to kill | Preserve the pre-flash IIFE + `_applyTheme` (Pitfall 9) |
+| N per-backend lanes surfaced as N undifferentiated cards | Operator can't tell free-fast from paid-last, or which is offline vs full | Generalize v7.0 Phase 58's local/A1/k8s lane cards to N lanes labeled by `id` + rank + cap + live in-flight/available state (coordinate with the UI phase; §7 flags this) |
+| A silent hold (empty registry / all-unavailable) shown as "idle" | Operator thinks the pipeline is done, not misconfigured | Distinguish "no work" from "work waiting, no available backend" with a dashboard alert (reuse the v6.0 LocalQueue amber-alert Redis-flag pattern) |
+| Inadmissible (per-cluster) not attributed to a cluster | Operator can't tell which cluster is misconfigured | Attribute the Inadmissible alert to the specific backend `id` |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Rail swap:** Looks right on click — verify **refresh** on a deep-linked stage rebuilds the full shell with that stage selected (not Analyze-default), and **back/forward** restores a *live* (Alpine-initialized) DOM, not a frozen snapshot.
-- [ ] **Legacy redirects (SHELL-05):** Each of `/proposals/ /pipeline/ /search/ /duplicates/ /tags/ /cue/ /tracklists/ /preview/ /audit/ /admin/agents` resolves to a 200 shell in ≤1 hop — `curl -sI` each, assert no loop.
-- [ ] **Theme (SHELL-04):** dark/light/auto cycle works, `.dark` paints `phaze-bg`, no FOUC, accent is phaze-blue not Tailwind-blue, Tailwind script is the vendored file (not CDN).
-- [ ] **Live polling:** Open the console, count requests/5s — verify it's **one**, not one-per-region; backgrounding the tab pauses/sheds the poll.
-- [ ] **Bulk approve (REVIEW-02):** "Approve all high-confidence" returns a count derived from a **server** re-query at submit time; approving a row that changed since render no-ops/refreshes instead of mis-applying.
-- [ ] **Reversibility (REVIEW-05):** every apply (rename/tag/move/dedupe) writes an `ExecutionLog`/audit row and is undoable — assert in a test, not by eye.
-- [ ] **a11y (CUT-01):** keyboard-only pass of rail + ⌘K; focus moves on swap; Esc restores focus; skip link targets `#stage-workspace`; rail nodes carry `aria-current`; visible focus rings present.
-- [ ] **Dead code (CUT-02):** grep proves no surviving `{% include %}`/`hx-*`/`main.py` reference to each removed template/router; dead-template test green.
-- [ ] **Full/fragment parity:** each stage rendered via full route == via HTMX route (no drift).
+- [ ] **Per-backend cap:** Often missing the single-substrate guarantee — verify `sum(in_flight_count(b)) == COUNT(in-flight FileState)` and that no path counts both FileState AND `cloud_job` for the same file.
+- [ ] **`dispatch()` atomicity:** Often missing the one-transaction contract — verify FileState flip + `cloud_job` upsert commit together; kill the process between them in a test, assert no limbo row.
+- [ ] **Spillover:** Often missing thrash bounding — verify a file across flapping backends lands terminal in bounded attempts, and `attempts` isn't mis-scoped across backends.
+- [ ] **Shim:** Often missing the empty-vs-off distinction — verify `cloud_target=local` and `=a1` both resolve to a logged, correct registry, and a dual-config conflict fails fast.
+- [ ] **Per-entry validators:** Often missing per-kind required-field checks — verify a broken entry of each kind fails at **startup**, not at dispatch.
+- [ ] **GATE asymmetry:** Often missing — verify Kueue `is_available` does NOT depend on a compute agent (Landmine L2) and a1 still requires one.
+- [ ] **Recovery uniqueness:** Often missing — verify `recover_orphaned_work` cannot re-enqueue any backend-owned file (extend the AST guard to compute-backed files).
+- [ ] **Shared-bucket cleanup:** Often missing — verify the S3 object survives cross-backend spillover and is deleted only on genuine terminal.
+- [ ] **Drain resilience:** Often missing — verify one backend raising in `is_available`/`dispatch` doesn't abort the whole tick.
+- [ ] **Multiplicity tests:** Often missing — verify at least one test instantiates N≥2 backends and asserts rank/cap/spill; coverage-green ≠ multiplicity-tested.
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Shell clobbered by over-broad swap target | LOW | Narrow `hx-target` to `#stage-workspace`; convert stage templates to fragments |
-| Lost Alpine selection/focus on swap | LOW–MEDIUM | Hoist the lost state into `$store`; stop polling the interactive subtree |
-| Poll storm in production | LOW | Collapse per-region polls into one console poll + OOB; add visibility gate |
-| History/back returns a dead DOM | MEDIUM | Make `/` stage-resolvable; add `htmx:historyRestore` re-init; serve full-vs-fragment by `HX-Request` |
-| Deleted template still referenced (runtime 500) | MEDIUM | Revert the deletion PR (one-PR-per-removal makes this clean); add the missing reference to the dead-template test; re-delete |
-| Theme/brand regression | LOW | Restore `base.html`'s `<head>` scaffolding (it's in git history); re-run theme smoke test |
-| Stale bulk approve mis-applied moves | HIGH | Use the existing audit log + undo/copy-verify-delete reversal to roll back; then switch bulk to server-predicate before re-enabling |
+| Double/under-count cap (P1) | MEDIUM | Pick one substrate, migrate `in_flight_count` to `cloud_job` per-backend, add the consistency assertion; drain self-heals next tick once the count is right |
+| Drain↔reconcile race (P2) | MEDIUM | Add the shared advisory lock to reconcile; reprocess any file stuck in a split state via the orphan sweep |
+| Double recovery / over-enqueue (P3) | HIGH | Purge duplicate in-flight (the v4.0.6/Phase-32 purge+cron-rebuild playbook); enforce single recovery owner; extend AST guard |
+| Dispatch limbo (P4) | LOW | Orphan sweep returns in-flight-without-registry-row files to `AWAITING_CLOUD` |
+| Thrash (P5) | LOW | Add cooldown + global budget; files self-resolve to terminal once bounded |
+| Empty/wrong shim (P6) | LOW | Fix config; the resolved-registry log line + startup conflict fail-fast prevent recurrence |
+| Cross-cluster S3 collision (P9) | MEDIUM | Scope cleanup to owner; re-stage the deleted object for the spillover target; enforce one-cluster-at-a-time via the unique FK + lock |
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| 1 — Swap clobbers shell | 57 | Stage click leaves rail/header/pane intact; stage responses contain no `<nav>`/second `$store` |
-| 2 — Lost Alpine state after swap | 57 (+60) | Selection/focus survive a poll tick; cross-swap state lives in `$store` |
-| 3 — OOB collisions (rail + header + workspace) | 57 | No duplicate-id warnings; rail counts + header dots update on the same poll; OOB gated by `oob_counts`-style flag |
-| 4 — Poll storms | 58 (+61) | One request/5s with the console open; poll pauses on hidden tab |
-| 5 — URL/history + redirect loops | 57 | Deep-link refresh rebuilds full shell; back restores live DOM; each legacy path ≤1-hop to 200 |
-| 6 — a11y regressions | 57 (focus/ARIA), 61 (⌘K trap), 62 (audit) | Per-phase keyboard/axe smoke; CUT-01 parity sign-off in 62 |
-| 7 — Dead-code cutover | 62 (test seeded 57) | Three-way grep empty per removal; dead-template test green; boot succeeds |
-| 8 — Diff/bulk approval correctness | 60 | Bulk count from server re-query; per-apply audit row asserted; stale per-file approve no-ops |
-| 9 — Theme/brand regression | 57 | Theme smoke test; vendored Tailwind; phaze accent; no FOUC |
-| 10 — Full/fragment drift | 57 (enforced 58–61) | Stage full-route HTML == HTMX-route HTML |
+| P1 Double/under-count cap | Phase 2 (protocol) → Phase 3 | `sum(in_flight_count) == FileState in-flight count` assertion; cap-of-2 never dispatches 3 |
+| P2 Drain↔reconcile race | Phase 3 (scheduler) | Concurrency test: overlapping drain+reconcile ticks, no cap overshoot, no split state |
+| P3 Double recovery / over-enqueue | Phase 2 → Phase 3 | AST guard: `recover_orphaned_work` excludes all backend-owned files; single reconcile owner |
+| P4 Dispatch limbo | Phase 2 (dispatch txn) → Phase 3 (orphan sweep) | Crash-between-writes test; invariant query in-flight-state ⇔ live registry row |
+| P5 Backend thrash | Phase 3 (spillover) | Two-flapping-backend test: bounded attempts, correct terminal, no infinite loop |
+| P6 Shim empty/wrong | Phase 1 (config model) | `local`/`a1` resolve to logged correct registry; dual-config conflict fails fast |
+| P7 Per-entry validator gap | Phase 1 (validators), re-checked Phase 4 | Broken entry per kind fails at startup with entry id in message |
+| P8 One cluster poisons tick | Phase 4 (multi-Kueue), pattern in Phase 3 | N-backend test with one raising; others still dispatch, no escape |
+| P9 Shared-bucket collision | Phase 4 (multi-Kueue) | Spillover preserves object; object deleted only on genuine terminal; one cluster per file |
+| P10 GATE asymmetry lost | Phase 2 (protocol) | Characterization test: dispatch decisions byte-identical for single-backend configs |
+| P11 Test coverage gap | Phase 2 + Phase 3 | ≥12 per-method-per-kind unit tests + N≥2 scheduler tests exist and assert |
 
 ## Sources
 
-- `src/phaze/templates/base.html` — theme store + documented `:class`-on-`<html>` inert bug, pre-flash `_applyTheme`, `@theme` brand tokens, `@custom-variant dark`, self-hosted Tailwind + SRI rationale, flat tab `<nav>`, skip-link block, `aria-current` partial-retrofit note (HIGH)
-- `src/phaze/templates/pipeline/dashboard.html` + `pipeline/partials/stats_bar.html` — the single-poll/OOB-fanout architecture, `oob_counts` gate, `dag-seed-<key>` same-id contract, ~10 OOB cards (HIGH)
-- `src/phaze/routers/pipeline.py` (lines 434–622) — `/pipeline/` full render vs `/pipeline/stats` partial; ~12 degrade-safe service calls per poll tick (HIGH)
-- `src/phaze/templates/proposals/list.html` + `partials/bulk_actions.html` + `routers/proposals.py` `bulk_action` — `proposalTable()` `x-data`, `selectedRows` Set→hidden inputs, `@htmx:after-swap` selection reset, client-id bulk with no server re-validation (HIGH)
-- `src/phaze/main.py` (lines 185–229) — hand-registered routers, no bare-`/` handler, router prefixes (`/proposals`, `/search`, `/duplicates`, `/tags`, `/cue`, `/tracklists`; `/preview/`, `/audit/`, `/admin/agents` path-based) (HIGH)
-- Template inventory: 105 templates / 94 partials / 10 full-page (`extends base.html`); 15 `every Ns` polls across 16 templates (HIGH — direct counts)
-- HTMX docs via Context7 (`/bigskysoftware/htmx`) — `hx-push-url` snapshots/restores the current DOM; `htmx:historyRestore`/`historyCacheMiss`; `hx-swap-oob` multi-target; combinable `hx-trigger` events; `every Ns` polling semantics (HIGH)
-- `.planning/REQUIREMENTS.md` (v7.0, 25 reqs SHELL/WORK/IDENT/REVIEW/RECORD/CUT → phases 57–62) and `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (locked design spine) (HIGH)
+- Codebase (HIGH confidence — read directly): `src/phaze/tasks/release_awaiting_cloud.py` (advisory-locked drain, GATE 1/2 asymmetry, PUSHING-before-enqueue idiom, k8s S3 no-commit branch), `src/phaze/tasks/reconcile_cloud_jobs.py` (no advisory lock, delete-after-record ordering, bounded re-drive, `_job_gone` per-cluster race guard, Inadmissible-vs-Pending), `src/phaze/services/cloud_staging.py` (`_stage_file_to_s3` cloud_job upsert, one-commit-after-loop), `src/phaze/routers/agent_push.py` (compute push → `scheduling_ledger` + `process_file` enqueue), `src/phaze/models/cloud_job.py` (unique FK on file_id, `attempts`, `inadmissible`, `cloud_phase`), `src/phaze/config.py` (three per-target fail-fast validators; `cloud_target`/`cloud_max_in_flight`/`cloud_submit_max_attempts`), `src/phaze/services/pipeline.py` (`get_cloud_window_count` FileState-derived), `src/phaze/services/enqueue_router.py` (`select_active_agent(kind=...)`).
+- Design spec (HIGH): `docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md` §4.1–4.5, §5–7.
+- Milestone context + `.planning/PROJECT.md`: DIST-01, `put_analysis` sole-writer, no-k8s-ledger-seed invariant, and the documented incident history (Phase 30 default-queue misrouting; v4.0.6/v4.0.8 stranded-jobs/dead-letter; recover over-enqueue 44.5k; JOB-ENV-CONTRACT) that anchors the accounting/over-enqueue/dead-letter pitfall classes.
 
 ---
-*Pitfalls research for: rewriting phaze's tabbed HTMX/Jinja admin UI into a DAG-centric hybrid console + retiring the legacy UI*
-*Researched: 2026-06-29*
+*Pitfalls research for: multi-cloud tiered backend scheduler over an existing single-target dispatch system*
+*Researched: 2026-07-03*
