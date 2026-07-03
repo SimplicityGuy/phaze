@@ -107,7 +107,9 @@ test-bucket NAME XDIST="":
 coverage-combine:
     uv run coverage combine
     uv run coverage xml
-    uv run coverage report --fail-under=85
+    uv run coverage json
+    uv run coverage report --fail-under=95
+    uv run python scripts/coverage_floor.py
 
 [doc('Classify changed files (newline-delimited on stdin) as code-changed=true|false for the CI doc-only skip gate (CI-04)')]
 [group('test')]
