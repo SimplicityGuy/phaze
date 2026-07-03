@@ -42,23 +42,32 @@ if TYPE_CHECKING:
 
 
 class _StubCfg:
-    """Minimal stand-in for the control settings stage_cloud_window reads (cloud_max_in_flight + selector).
+    """Minimal stand-in for the registry-derived reads stage_cloud_window makes (Phase 67 rewire).
 
-    ``cloud_target`` defaults ``"a1"`` here so the existing Phase-50 staging tests keep exercising the
-    ON (rsync-push) behavior; the cloud-off case constructs the stub with ``cloud_target="local"``.
-    The k8s S3-branch of this cron is Plan 03 scope -- not stubbed here.
+    The Phase-67 rewire (REG-04, D-14) moved the cron off the flat ``cloud_target`` /
+    ``cloud_max_in_flight`` onto the registry-derived reads: ``cloud_enabled`` (the on/off gate),
+    ``active_cap`` (the former cloud_max_in_flight) and the transitional ``active_cloud_kind``
+    (``"compute"`` / ``"kueue"`` / ``None``). The former target→kind mapping is local→disabled,
+    a1→compute, k8s→kueue; the defaults model a single compute backend so the Phase-50 rsync-push
+    regressions keep exercising the ON path.
     """
 
-    def __init__(self, *, cloud_max_in_flight: int = 2, cloud_target: str = "a1") -> None:
-        self.cloud_max_in_flight = cloud_max_in_flight
-        self.cloud_target = cloud_target
+    def __init__(self, *, active_cap: int = 2, cloud_enabled: bool = True, active_cloud_kind: str | None = "compute") -> None:
+        self.active_cap = active_cap
+        self.cloud_enabled = cloud_enabled
+        self.active_cloud_kind = active_cloud_kind
 
 
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_target: str = "a1") -> None:
-    """Pin stage_cloud_window's get_settings() deterministically (cloud_max_in_flight + cloud_target)."""
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_kind: str | None = "compute") -> None:
+    """Pin stage_cloud_window's get_settings() to a registry-derived stub.
+
+    ``cloud_kind`` selects the reduction the cron reads: ``None`` -> cloud disabled (all-local, the
+    implicit-local registry); ``"compute"`` -> the rsync-push path (GATE-1 compute probe active);
+    ``"kueue"`` -> the S3 path (GATE-1 skipped). ``max_in_flight`` becomes the stub's ``active_cap``.
+    """
     monkeypatch.setattr(
         "phaze.tasks.release_awaiting_cloud.get_settings",
-        lambda: _StubCfg(cloud_max_in_flight=max_in_flight, cloud_target=cloud_target),
+        lambda: _StubCfg(active_cap=max_in_flight, cloud_enabled=cloud_kind is not None, active_cloud_kind=cloud_kind),
     )
 
 
@@ -199,18 +208,19 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
 
 
-# --- Phase 55 (D-02): cloud_target gate on the staging cron -------------------------------
+# --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the staging cron ---------
 
 
 @pytest.mark.asyncio
-async def test_cloud_local_stages_nothing(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """OFF: with cloud_target='local' the cron is a clean no-op BEFORE the window logic (D-02).
+async def test_cloud_disabled_stages_nothing(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OFF: with the implicit-local registry (cloud_enabled False) the cron is a clean no-op (D-14).
 
     Both agents are online and the window is wide open (3 held, N=2), so the cron WOULD stage if the
-    target were a cloud one. With 'local' it returns {"staged": 0, "skipped": 0}, takes no advisory lock,
-    stages no push_file, and leaves every held file AWAITING_CLOUD.
+    registry held a cloud backend. All-local returns {"staged": 0, "skipped": 0}, takes no advisory
+    lock, stages no push_file, and leaves every held file AWAITING_CLOUD (byte-identical to the former
+    ``cloud_target == "local"`` no-op).
     """
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="local")
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind=None)
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = [_make_file() for _ in range(3)]
@@ -227,9 +237,9 @@ async def test_cloud_local_stages_nothing(async_engine: AsyncEngine, session: As
 
 
 @pytest.mark.asyncio
-async def test_cloud_a1_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """ON: with cloud_target='a1' the cron stages as before (Phase 50 a1 rsync-push regression)."""
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="a1")
+async def test_cloud_compute_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ON: a single compute backend (active_cloud_kind='compute') stages as before (Phase 50 rsync-push regression)."""
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = [_make_file() for _ in range(3)]
@@ -265,7 +275,7 @@ async def test_k8s_branch_skips_compute_gate_and_stages_to_s3(
     The k8s branch stages via ``_stage_file_to_s3`` (enqueues ``s3_upload``, NOT ``push_file``) and a
     single post-loop commit fires. With max_in_flight=2 and 3 held, exactly 2 stage.
     """
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="kueue")
     _patch_s3(monkeypatch)
     # NO compute agent online -- only a fileserver. On a1 this would wedge; on k8s GATE-1 is skipped.
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
@@ -294,7 +304,7 @@ async def test_k8s_branch_holds_with_no_fileserver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """k8s with NO fileserver online: GATE-2 holds -- nothing staged, files stay AWAITING_CLOUD."""
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="kueue")
     _patch_s3(monkeypatch)
     # No agents online at all (compute skipped on k8s; fileserver gate still holds).
     held = [_make_file() for _ in range(3)]
@@ -321,7 +331,7 @@ async def test_k8s_overlapping_ticks_never_exceed_window(
     The k8s branch calls the NO-COMMIT ``_stage_file_to_s3`` core (L1), so the advisory lock is held
     across the whole tick and the committed PUSHING set never exceeds cloud_max_in_flight.
     """
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_target="k8s")
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="kueue")
     _patch_s3(monkeypatch)
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backlog = [_make_file() for _ in range(20)]

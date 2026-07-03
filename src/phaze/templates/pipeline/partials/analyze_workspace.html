@@ -22,9 +22,10 @@
    Body (c) -- the all-in-stage per-file lane + window table (D-03/D-04). Added by Plan-04 Task 3
    at the insertion point below; this fragment stays valid on its own without it.
 
-   Lane state derivation (read-only, render-time): cloud_target (config.py:406) gives the
-   "not configured" labels; dag.agentOnline / dag.computeOnline / localqueue_unreachable give
-   "offline". No backend behavior change -- presentation over existing degrade-safe reads.
+   Lane state derivation (read-only, render-time): cloud_lane_kind (the Phase-67 registry-derived
+   neutral context key: "local" / "compute" / "kueue") gives the "not configured" labels;
+   dag.agentOnline / dag.computeOnline / localqueue_unreachable give "offline". No backend behavior
+   change -- presentation over existing degrade-safe reads. (Phase 71 / BEUI-01 owns the N-lane redesign.)
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount = '`${$store.pipeline.analyzeActive} files in flight across 3 lanes`' %}
@@ -51,20 +52,20 @@
         {% set sub_label = "short sets < 90 min" %}
         {% include "pipeline/partials/_lane_card.html" %}
 
-        {# ☁️ A1 -- arm64 cloud; not configured unless cloud_target=='a1', offline when no compute agent. #}
+        {# ☁️ A1 -- arm64 cloud; not configured unless cloud_lane_kind=='compute', offline when no compute agent. #}
         {% set lane_emoji = "☁️" %}
         {% set lane_title = "A1 · arm64" %}
         {% set lane_border = "border-gray-200 dark:border-phaze-border" %}
         {% set lane_color = "text-blue-600 dark:text-blue-300" %}
         {% set lane_bar = "bg-blue-400" %}
-        {% set lane_state = ('online' if dag.computeOnline > 0 else 'offline') if cloud_target == 'a1' else 'not configured' %}
+        {% set lane_state = ('online' if dag.computeOnline > 0 else 'offline') if cloud_lane_kind == 'compute' else 'not configured' %}
         {% set capacity_expr = '`${$store.pipeline.computeOnline} online`' %}
         {% set capacity_value = '' %}
         {% set capacity_pct_expr = '`width: ${$store.pipeline.computeOnline > 0 ? 100 : 0}%`' %}
         {% set sub_label = "long sets ≥ 90 min" %}
         {% include "pipeline/partials/_lane_card.html" %}
 
-        {# ⎈ k8s -- Kueue burst; not configured unless cloud_target=='k8s', offline when LocalQueue unreachable.
+        {# ⎈ k8s -- Kueue burst; not configured unless cloud_lane_kind=='kueue', offline when LocalQueue unreachable.
            Capacity = render-time admission pending count (NOT a store key -- the admission_state_card below
            carries the live detail on the poll). #}
         {% set lane_emoji = "⎈" %}
@@ -72,7 +73,7 @@
         {% set lane_border = "border-amber-500/30" %}
         {% set lane_color = "text-amber-600 dark:text-amber-300" %}
         {% set lane_bar = "bg-amber-400" %}
-        {% set lane_state = ('offline' if localqueue_unreachable else 'online') if cloud_target == 'k8s' else 'not configured' %}
+        {% set lane_state = ('offline' if localqueue_unreachable else 'online') if cloud_lane_kind == 'kueue' else 'not configured' %}
         {% set capacity_expr = '' %}
         {% set capacity_value = (queued_behind_quota_count + admitted_count) ~ ' pending' %}
         {% set capacity_pct_expr = '' %}
