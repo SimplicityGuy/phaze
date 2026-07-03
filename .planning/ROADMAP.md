@@ -1005,7 +1005,14 @@ Plans:
   3. With no `backends.toml` present (and no config pointer), the registry resolves to an implicit single `kind=local` backend — the current live all-local deploy keeps running unchanged with zero config edits (never a silently-empty / wedged-backlog registry). `cloud_target` and the flat `s3_*`/`kube_*`/`compute_*` fields no longer exist, and there is no back-compat shim (no live deploy ever exercised the `a1`/`k8s` paths).
   4. Operator can declare an S3 staging-bucket registry (each bucket shared/public or cluster-specific, credentials via inline `*_file` paths) and assign each Kueue backend its bucket set; a `cluster-specific` bucket is referenceable by at most one Kueue backend, and a Kueue backend that resolves to an empty bucket set fails fast. The flat single global S3 config is removed with the other flat fields (no shim).
   5. Per-backend secrets (kube tokens/kubeconfigs, S3 credentials, agent tokens) resolve via the existing `<VAR>_FILE` convention scoped per entry.
-**Plans**: TBD (decomposed at `/gsd:plan-phase 67`)
+**Plans**: 6 plans (4 waves)
+Plans:
+- [ ] 67-01-PLAN.md — config_backends.py: discriminated-union submodels (Local/Compute/Kueue) + KubeConfig/BucketConfig + per-variant id-tagged validators + inline *_file reader + shared whitespace helper (REG-01/02/03/05)
+- [ ] 67-02-PLAN.md — ControlSettings integration (additive): backends/buckets fields + tomllib loader + container cardinality validator + cloud_enabled + transitional accessors + secret-free startup-log projection (REG-01/04/05)
+- [ ] 67-03-PLAN.md — Rewire routing/staging-cron/backfill/templates to cloud_enabled + transitional accessors (REG-04, Class A/B/C)
+- [ ] 67-04-PLAN.md — Rewire s3_staging.py + kube_staging.py flat-field reads to active_bucket/active_kube transitional accessors (REG-04)
+- [ ] 67-05-PLAN.md — Rewire agent_s3/agent_push/controller callbacks + probe gate + wire startup registry log (REG-04)
+- [ ] 67-06-PLAN.md — Remove cloud_target + flat s3_*/kube_*/compute_* fields + 3 validators (no shim) + trim SECRET_FILE_FIELDS + delete stale tests + .env.example/docs (REG-04)
 **PR**: own worktree branch — never a direct commit to `main`. Behavior-preserving (config model only).
 
 ### Phase 68: Backend Protocol + 3 Implementations
