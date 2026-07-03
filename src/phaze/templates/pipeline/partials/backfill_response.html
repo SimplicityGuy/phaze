@@ -12,7 +12,7 @@
     Backfilled {{ count }} long files: {{ cloud }} cloud, {{ awaiting }} awaiting cloud.
 </span>
 {% elif disabled %}
-<span class="text-sm text-gray-500 dark:text-gray-400">Cloud burst is disabled (cloud_target=local) — nothing backfilled.</span>
+<span class="text-sm text-gray-500 dark:text-gray-400">Cloud burst is disabled (all-local registry) — nothing backfilled.</span>
 {% else %}
 <span class="text-sm text-gray-500 dark:text-gray-400">No timed-out long files to backfill.</span>
 {% endif %}
