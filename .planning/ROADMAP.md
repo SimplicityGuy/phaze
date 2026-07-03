@@ -912,11 +912,18 @@ Plans:
 
 **Notes**: Behavior-first tests only — no assertions written solely to touch lines. Interacts with CI-03: the combined coverage number the gate enforces must already be correct (hence the Phase 63 dependency). No product/backend behavior change. **Re-baselining (planning, 2026-07-02):** the Success-Criteria worst-offender percentages are a no-DB measurement artifact — against the authoritative COMBINED coverage (2566 tests, DB up) overall is 96.89% and the ONLY sub-floor module is `services/review.py` at 83.16%. The named offenders (shell/pipeline/tracklists/main) are all ≥90% combined (main.py 100%). The phase's engineering value is the floor-enforcement machinery + a defensible raised gate, not mass test-writing; SC #1's module list is honored by the floor clearing (D-06), not by per-module test waves.
 **Plans**: 4 plans in 3 waves
-
 Plans:
+**Wave 1**
+
 - [ ] 64-01-PLAN.md — Per-module floor machinery: `scripts/coverage_floor.py` (stdlib-only, D-01/D-02/D-03/D-04) + unit test [Wave 1]
 - [ ] 64-02-PLAN.md — `services/review.py` uplift ≥85% via behavior-asserting degrade/formatter tests (+ agent_liveness margin) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 64-03-PLAN.md — Raise the global gate >90.38 (D-05) + wire the floor into `just coverage-combine` + gate-consistency guard test [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 64-04-PLAN.md — Verify the combine job is a merge-blocking required check (fail-closed CI gate) [Wave 3]
 
 ### Phase 65: CalVer Adoption
