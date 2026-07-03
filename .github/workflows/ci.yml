@@ -8,9 +8,9 @@ on:
     # triggers two competing runs that cancel each other on the concurrency
     # group. Also stops docker-publish (push: github.event_name != 'pull_request')
     # from publishing images off feature-branch pushes -- publishing now only
-    # happens on main and v*.*.* tags.
+    # happens on main and bare CalVer [0-9]+.[0-9]+.[0-9]+ tags.
     branches: ["main"]
-    tags: ["v*.*.*"]
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
   pull_request:
     branches: ["**"]
 
