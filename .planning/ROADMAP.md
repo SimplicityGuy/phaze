@@ -203,7 +203,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
 | 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
-| 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 2/3 | In Progress|  |
+| 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete   | 2026-07-03 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -970,7 +970,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 — shares justfile + benefits from a green tree per the D-12 guardrail)*
 
-- [ ] 66-03-PLAN.md — CLEAN-02 vulture dead-code sweep: legitimacy checkpoint + `vulture>=2.16` dev dep + hand-audited whitelist + `just vulture` recipe + manual-verify confirmed-dead deletions
+- [x] 66-03-PLAN.md — CLEAN-02 vulture dead-code sweep: legitimacy checkpoint + `vulture>=2.16` dev dep + hand-audited whitelist + `just vulture` recipe + manual-verify confirmed-dead deletions
 
 ## Backlog (unscheduled — no phase number yet)
 
