@@ -183,14 +183,25 @@ def _passed_phase_completeness_offenders() -> list[str]:
     return offenders
 
 
-def _marked_requirement_offenders() -> list[str]:
-    """D-02: a req marked Complete (checkbox [x] or table COMPLETE) => its mapped phase passed."""
-    text = _read(_REQUIREMENTS)
-    checkboxes = _parse_requirement_checkboxes(text)
-    table = _parse_traceability(text)
-    roadmap = _parse_roadmap_phases()
+def _marked_requirement_offenders_from(
+    checkboxes: dict[str, bool],
+    table: dict[str, tuple[str, str | None]],
+    roadmap: dict[str, bool],
+) -> list[str]:
+    """D-02 core, iterating the UNION of checkbox and table req-ids (WR-02).
+
+    Iterating ``table.items()`` alone let a requirement ticked ``[x]`` in the checkbox list but
+    MISSING from the Traceability table escape the "marked without a passed phase" drift class
+    entirely (it is in neither loop). Walking ``set(checkboxes) | set(table)`` closes that
+    false negative: a checkbox-only ``[x]`` with no Traceability row is now itself an offender.
+    """
     offenders: list[str] = []
-    for rid, (status, phase) in table.items():
+    for rid in sorted(set(checkboxes) | set(table)):
+        if rid not in table:
+            if checkboxes.get(rid, False):
+                offenders.append(f"{rid} checkbox [x] but has no Traceability row — add its row or untick the checkbox")
+            continue
+        status, phase = table[rid]
         marked = checkboxes.get(rid, False) or status == "COMPLETE"
         if not marked:
             continue
@@ -199,6 +210,12 @@ def _marked_requirement_offenders() -> list[str]:
         elif not _active_phase_passed(phase, roadmap):
             offenders.append(f"{rid} marked Complete but Phase {phase} not passed")
     return offenders
+
+
+def _marked_requirement_offenders() -> list[str]:
+    """D-02: a req marked Complete (checkbox [x] or table COMPLETE) => its mapped phase passed."""
+    text = _read(_REQUIREMENTS)
+    return _marked_requirement_offenders_from(_parse_requirement_checkboxes(text), _parse_traceability(text), _parse_roadmap_phases())
 
 
 def _checkbox_table_offenders(text: str, label: str) -> list[str]:
@@ -279,6 +296,17 @@ def test_requirement_checkboxes_are_section_scoped() -> None:
     text = "## Requirements\n\n- [ ] **CI-01**: real requirement\n\n## Traceability\n\n- [x] **CI-01**: stray duplicate that must be ignored\n"
     checkboxes = _parse_requirement_checkboxes(text)
     assert checkboxes["CI-01"] is False
+
+
+def test_marked_requirement_without_traceability_row_is_flagged() -> None:
+    """WR-02: a requirement ticked [x] but absent from the Traceability table is drift."""
+    offenders = _marked_requirement_offenders_from({"ZZ-01": True}, {}, {})
+    assert any("ZZ-01 checkbox [x] but has no Traceability row" in o for o in offenders), offenders
+
+
+def test_unmarked_requirement_without_traceability_row_is_not_flagged() -> None:
+    """WR-02: an un-ticked [ ] requirement with no table row is in-flight, not drift."""
+    assert _marked_requirement_offenders_from({"ZZ-01": False}, {}, {}) == []
 
 
 def test_inflight_phase_with_unmarked_requirements_passes() -> None:
