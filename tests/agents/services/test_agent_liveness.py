@@ -17,9 +17,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from phaze.models.agent import Agent
-from phaze.services.agent_liveness import AgentStatus, classify, sort_key
+from phaze.services.agent_liveness import AgentStatus, classify, classify_compute_lanes, sort_key
 
 
 NOW = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
@@ -194,3 +195,30 @@ def test_sort_key_never_after_dead_within_non_revoked() -> None:
     dead = _make_agent("dead", last_seen_at=NOW - timedelta(seconds=600))
     never = _make_agent("never")
     assert sort_key(dead, NOW) < sort_key(never, NOW)
+
+
+# ---------------------------------------------------------------------------
+# classify_compute_lanes(session) — degrade branch (optional margin, D-05/D-07)
+# ---------------------------------------------------------------------------
+
+
+class _RaisingSession:
+    """Stub session whose ``execute`` raises ``SQLAlchemyError`` and whose ``rollback`` is a no-op.
+
+    Drives ``classify_compute_lanes`` straight into its ``except SQLAlchemyError`` degrade branch
+    (agent_liveness.py:174-180), which rolls back and returns ``("IDLE", 0)`` — a DB hiccup must
+    NEVER paint the compute lane DEAD/red.
+    """
+
+    async def execute(self, *_args: object, **_kwargs: object) -> object:
+        raise SQLAlchemyError("db down")
+
+    async def rollback(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_classify_compute_lanes_degrades_to_idle_on_db_error() -> None:
+    """SQLAlchemyError → rollback → observable ``("IDLE", 0)`` return (D-07 observable outcome)."""
+    result = await classify_compute_lanes(_RaisingSession())  # type: ignore[arg-type]
+    assert result == ("IDLE", 0)

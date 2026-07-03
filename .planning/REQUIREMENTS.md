@@ -25,8 +25,8 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (63+).
 
 ### COV — Per-module coverage uplift
 
-- [ ] **COV-01**: Under-covered source modules are raised to a per-module coverage floor, prioritizing the v7.0-touched and worst offenders (`services/agent_liveness.py`, `routers/shell.py`, `services/pipeline.py`, `routers/tracklists.py`, `routers/pipeline.py`, `main.py`, and the 71–78% tail), with added tests asserting observable behavior — not coverage-padding.
-- [ ] **COV-02**: The enforced coverage gate is raised above the current 90.38% baseline (exact project and/or per-module target set at plan time) and wired into CI so future coverage regressions fail the build.
+- [x] **COV-01**: Under-covered source modules are raised to a per-module coverage floor, prioritizing the v7.0-touched and worst offenders (`services/agent_liveness.py`, `routers/shell.py`, `services/pipeline.py`, `routers/tracklists.py`, `routers/pipeline.py`, `main.py`, and the 71–78% tail), with added tests asserting observable behavior — not coverage-padding.
+- [x] **COV-02**: The enforced coverage gate is raised above the current 90.38% baseline (exact project and/or per-module target set at plan time) and wired into CI so future coverage regressions fail the build.
 
 ### DOCS — Documentation-drift gate
 
@@ -72,8 +72,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | VER-02 | Phase 65 | Pending |
 | VER-03 | Phase 65 | Pending |
 | VER-04 | Phase 65 | Pending |
-| COV-01 | Phase 64 | Pending |
-| COV-02 | Phase 64 | Pending |
+| COV-01 | Phase 64 | Complete |
+| COV-02 | Phase 64 | Complete |
 | DOCS-01 | Phase 66 | Pending |
 | CLEAN-01 | Phase 66 | Pending |
 | CLEAN-02 | Phase 66 | Pending |

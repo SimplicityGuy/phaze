@@ -6,8 +6,8 @@ combine/gate deferral protocol that makes the fan-out possible at all (CI-03).
 
 **CI-03 is the highest-value assertion here.** The `just test-bucket` recipe MUST defer
 pytest-cov's `fail_under` gate (`--cov-fail-under=0`) because a single bucket only
-exercises a fraction of ``phaze`` — enforcing the pyproject-wide 85% gate against one
-bucket's PARTIAL coverage fails every matrix leg (exit 1) before its shard is uploaded,
+exercises a fraction of ``phaze`` — enforcing the pyproject-wide global coverage gate against
+one bucket's PARTIAL coverage fails every matrix leg (exit 1) before its shard is uploaded,
 which starves the ``combine`` job (``needs: [test]``) of any input and the whole gate
 never runs. **This exact regression already happened once during this phase** — the
 verifier caught every matrix leg exiting 1 for precisely this reason before the fix
@@ -15,8 +15,8 @@ landed. ``test_bucket_recipe_defers_the_coverage_gate`` below is a unit-speed tr
 for that regression: it reads the ``test-bucket`` recipe body directly out of the
 justfile and fails loud if ``--cov-fail-under=0`` is ever dropped.
 
-The remaining tests assert the rest of the combine/gate protocol (the 85% gate is
-enforced exactly once, on the COMBINED number) and the CI-02 matrix-to-``buckets.json``
+The remaining tests assert the rest of the combine/gate protocol (the global coverage gate
+is enforced exactly once, on the COMBINED number) and the CI-02 matrix-to-``buckets.json``
 wiring (the matrix is derived via ``fromJSON`` of the setup job's output — not a
 hardcoded, driftable bucket list inline in the workflow — and the token used for the
 Codecov upload never leaks into a per-bucket matrix leg).
@@ -77,7 +77,7 @@ def _find_codecov_token_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
 def test_bucket_recipe_defers_the_coverage_gate() -> None:
     """`just test-bucket` MUST pass --cov-fail-under=0 (CI-03, the regression tripwire).
 
-    Without this flag, pytest-cov enforces pyproject's fail_under=85 against a single
+    Without this flag, pytest-cov enforces pyproject's global fail_under gate against a single
     bucket's PARTIAL coverage, failing every matrix leg before its shard is uploaded —
     this happened once already this phase (verifier-caught) and starved `combine`.
     """
@@ -88,16 +88,18 @@ def test_bucket_recipe_defers_the_coverage_gate() -> None:
 
 
 def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
-    """`coverage-combine` merges shards and enforces the 85% gate on the COMBINED number.
+    """`coverage-combine` merges shards and enforces the global gate on the COMBINED number.
 
     The per-bucket deferral in test-bucket only makes sense if something enforces the
-    real gate afterward. This recipe is that "afterward": combine -> xml -> report
-    --fail-under=85, run once against the merged coverage data.
+    real gate afterward. This recipe is that "afterward": combine -> xml -> json ->
+    report --fail-under, run once against the merged coverage data. Phase 64 raised the
+    gate above the 90.38% baseline; test_coverage_gate.py owns the exact-value invariant,
+    so here we only assert the recipe still enforces a global fail-under gate at all.
     """
     recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "coverage-combine")
     assert "coverage combine" in recipe_body
     assert "coverage xml" in recipe_body
-    assert "coverage report --fail-under=85" in recipe_body
+    assert re.search(r"coverage report --fail-under=\d+", recipe_body) is not None
 
 
 def test_codecov_token_is_confined_to_the_combine_job() -> None:

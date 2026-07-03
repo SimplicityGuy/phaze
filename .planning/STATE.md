@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.0
 milestone_name: Engineering Improvements
-status: "Phase 63 shipped — PR #193"
-last_updated: "2026-07-02T23:38:30.132Z"
-last_activity: "2026-07-02 -- Phase 63 shipped (PR #193)"
+status: "Phase 64 shipped — PR #194"
+last_updated: "2026-07-03T02:39:21.304Z"
+last_activity: 2026-07-02
 progress:
   total_phases: 33
-  completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
-  percent: 3
+  completed_phases: 2
+  total_plans: 8
+  completed_plans: 8
+  percent: 6
 ---
 
 # Project State
@@ -20,20 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 64 — per module coverage uplift & gate raise
+**Current focus:** Phase 65 — calver adoption
 
 ## Current Position
 
-Phase: 64
+Phase: 65
 Plan: Not started
-Status: Phase 63 shipped — PR #193
-Last activity: 2026-07-02 -- Phase 63 shipped (PR #193)
+Status: Phase 64 shipped — PR #194
+Last activity: 2026-07-02
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 124
+- Total plans completed: 128
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -221,9 +221,9 @@ These are tracked for the next deploy; they are NOT blockers for the v7.0 milest
 
 ## Session Continuity
 
-Last session: 2026-07-02T21:13:17.935Z
-Stopped at: Completed 63-04-PLAN.md — Phase 63 ready for verification
-Resume file: None
+Last session: 2026-07-03T00:23:09.852Z
+Stopped at: Phase 64 context gathered
+Resume file: .planning/phases/64-per-module-coverage-uplift-gate-raise/64-CONTEXT.md
 
 ## Operator Next Steps
 
