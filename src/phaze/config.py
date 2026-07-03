@@ -11,12 +11,30 @@ from enum import StrEnum
 from functools import lru_cache
 import os
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal
+import tomllib
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, SettingsConfigDict
+import structlog
+
+from phaze.config_backends import (
+    BackendConfig,
+    BucketConfig,
+    ComputeBackend,
+    KueueBackend,
+    _default_local_registry,
+    _read_secret_file,
+)
+
+
+if TYPE_CHECKING:
+    from phaze.config_backends import KubeConfig
+
+
+logger = structlog.get_logger(__name__)
 
 
 def _direct_env_names(field_name: str, field_info: Any) -> list[str]:
@@ -132,17 +150,21 @@ class BaseSettings(PydanticBaseSettings):
                 if file_var not in env_upper:
                     continue
                 path = env_upper[file_var]
-                try:
-                    contents = Path(path).read_text(encoding="utf-8")
-                except OSError as exc:
-                    msg = f"{file_var} points to {path!r} which could not be read: {exc}"
-                    raise ValueError(msg) from exc
                 # Inject under the field name; every in-scope field is matched
                 # either by name (no alias) or by an AliasChoices that includes
-                # the bare field name, so this key always resolves. Key material
-                # (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its required
-                # trailing newline survives (WR-01); everything else is stripped.
-                data[field_name] = contents if field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE else contents.strip()
+                # the bare field name, so this key always resolves. The shared
+                # `_read_secret_file` helper (config_backends) applies the single
+                # strip-vs-verbatim rule both this env-`_FILE` path and the inline
+                # TOML `*_file` reader adopt (D-06: one rule, two call sites). Key
+                # material (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its
+                # required trailing newline survives (WR-01); everything else is stripped.
+                try:
+                    data[field_name] = _read_secret_file(path, preserve_whitespace=field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE)
+                except ValueError as exc:
+                    # Re-raise with the `<VAR>_FILE` name so the operator-facing message
+                    # still names the variable that pointed at the unreadable path.
+                    msg = f"{file_var} points to {path!r} which could not be read: {exc}"
+                    raise ValueError(msg) from exc
                 break
 
         return data
@@ -353,6 +375,163 @@ class ControlSettings(BaseSettings):
         "kube_kubeconfig",
         "kube_sa_token",
     }
+
+    # Phase 67 (REG-01/D-01): the typed backend registry. Declared as `list[BackendConfig]`
+    # (a discriminated union over `kind`, config_backends) so the parsed `[[backends]]` tables
+    # validate per-variant at construction. The `default_factory` synthesizes the implicit
+    # single kind=local backend when the `backends` key is ABSENT (no file) so the live all-local
+    # deploy needs zero config edits (D-03). A present-but-empty `backends = []` does NOT fire the
+    # factory and is failed fast by `_validate_registry` below (Pitfall 2). NOT exposed as an env
+    # var: the registry is sourced ONLY from the TOML file (Pitfall 6). `buckets` is the S3
+    # staging-bucket registry (REG-05); empty by default.
+    backends: list[BackendConfig] = Field(default_factory=_default_local_registry)
+    buckets: list[BucketConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _load_backend_registry(cls, data: Any) -> Any:
+        """Idiom B: load `backends`/`buckets` from the `PHAZE_BACKENDS_CONFIG_FILE` TOML (D-01/D-02/D-03).
+
+        Mirrors the `_resolve_secret_files` before-validator's inject-into-`data` shape. Reads the
+        env pointer (default `/etc/phaze/backends.toml`); if the file exists, `tomllib.load`s it and
+        injects the parsed `[[backends]]` / `[[buckets]]` tables — making the TOML file the SINGLE
+        source (Pitfall 6). If the file is ABSENT, injects nothing so the `backends` default_factory
+        synthesizes implicit-local (D-03 zero-config). `backends`/`buckets` are deliberately NOT
+        exposed as env vars, so nothing else populates them.
+        """
+        if not isinstance(data, dict):
+            return data
+        path = os.environ.get("PHAZE_BACKENDS_CONFIG_FILE", "/etc/phaze/backends.toml")
+        toml_path = Path(path)
+        if not toml_path.exists():
+            # Absent file → inject nothing; the default_factory fires (implicit-local, D-03).
+            return data
+        with toml_path.open("rb") as handle:
+            parsed = tomllib.load(handle)
+        # Present file → the TOML is authoritative. `.get(..., [])` means a file that declares only
+        # `[[buckets]]` (or is empty) resolves `backends` to a present-but-empty list, which
+        # `_validate_registry` fails fast on rather than silently synthesizing local (Pitfall 2).
+        data["backends"] = parsed.get("backends", [])
+        data["buckets"] = parsed.get("buckets", [])
+        return data
+
+    @model_validator(mode="after")
+    def _validate_registry(self) -> "ControlSettings":
+        """Enforce whole-registry invariants the per-variant submodels can't see (REG-04/05, D-08/D-09).
+
+        Cross-entry checks, in order:
+          * A resolved-empty registry (present-but-empty `backends = []`) fails fast rather than
+            booting with no backend — the Phase-30 silent-wedge failure mode (REG-04, Pitfall 2).
+          * Each KueueBackend's `buckets` id-list must resolve against `self.buckets`: an unknown id
+            (D-08) or an empty resolved set (D-08) fails fast, naming the offending backend id.
+          * A `scope="cluster-specific"` bucket referenced by >1 kueue backend fails fast, naming the
+            bucket id — the sharing-cardinality invariant (D-09). `scope="shared"` may be referenced
+            by many.
+        """
+        if not self.backends:
+            raise ValueError("backend registry resolved to empty — refusing to start (REG-04)")
+        bucket_by_id = {b.id: b for b in self.buckets}
+        cluster_specific_refs: dict[str, list[str]] = {}
+        for be in self.backends:
+            if not isinstance(be, KueueBackend):
+                continue
+            missing = [bid for bid in be.buckets if bid not in bucket_by_id]
+            if missing:
+                raise ValueError(f"backend {be.id!r} references unknown bucket ids {missing} (D-08)")
+            resolved = [bucket_by_id[bid] for bid in be.buckets]
+            if not resolved:
+                raise ValueError(f"backend {be.id!r} (kueue) resolves to an empty bucket set (D-08)")
+            for bucket in resolved:
+                if bucket.scope == "cluster-specific":
+                    cluster_specific_refs.setdefault(bucket.id, []).append(be.id)
+        for bid, refs in cluster_specific_refs.items():
+            if len(refs) > 1:
+                raise ValueError(
+                    f"bucket {bid!r} is scope=cluster-specific but referenced by {len(refs)} kueue backends {refs} — at most one allowed (D-09)"
+                )
+        return self
+
+    @property
+    def cloud_enabled(self) -> bool:
+        """True iff the registry holds any non-local backend (D-14/D-15).
+
+        The single registry-derived on/off gate the Wave-3 Class-A call sites rewire against: the
+        implicit-local registry has only a kind=local backend → False (pure local analysis, no cloud
+        activity); any compute/kueue backend → True.
+        """
+        return any(backend.kind != "local" for backend in self.backends)
+
+    def _single_non_local(self) -> "BackendConfig | None":
+        """Return the sole non-local backend, or None when all-local.
+
+        TRANSITIONAL — removed in Phase 68 (BACK-01): the ≤1-non-local reduction the legacy dispatch
+        call sites read through the accessors below. Raises when >1 non-local backend exists —
+        multi-backend dispatch lands in Phase 69 (SCHED); this reduction must NEVER silently pick one.
+        """
+        non_local = [backend for backend in self.backends if backend.kind != "local"]
+        if not non_local:
+            return None
+        if len(non_local) > 1:
+            raise ValueError(
+                f"multi-backend dispatch lands in Phase 69 (SCHED): {len(non_local)} non-local backends "
+                f"{[backend.id for backend in non_local]} are configured, but the transitional accessors reduce only a ≤1-non-local registry"
+            )
+        return non_local[0]
+
+    @property
+    def active_cloud_kind(self) -> Literal["compute", "kueue"] | None:
+        """The single non-local backend's kind, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        if backend is None or backend.kind == "local":
+            return None
+        return backend.kind
+
+    @property
+    def active_cap(self) -> int | None:
+        """The single non-local backend's concurrency cap, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        return backend.cap if backend is not None else None
+
+    @property
+    def active_compute_scratch_dir(self) -> str | None:
+        """The single compute backend's scratch_dir, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        return backend.scratch_dir if isinstance(backend, ComputeBackend) else None
+
+    @property
+    def active_kube(self) -> "KubeConfig | None":
+        """The single kueue backend's KubeConfig, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        return backend.kube if isinstance(backend, KueueBackend) else None
+
+    @property
+    def active_bucket(self) -> "BucketConfig | None":
+        """The single kueue backend's single resolved BucketConfig, else None. TRANSITIONAL — removed in Phase 68 (BACK-01).
+
+        Raises when the resolved set has >1 bucket — per-file bucket selection lands in Phase 70
+        (MKUE-02); this reduction must NEVER silently pick one.
+        """
+        backend = self._single_non_local()
+        if not isinstance(backend, KueueBackend):
+            return None
+        bucket_by_id = {bucket.id: bucket for bucket in self.buckets}
+        resolved = [bucket_by_id[bid] for bid in backend.buckets if bid in bucket_by_id]
+        if len(resolved) > 1:
+            raise ValueError(
+                f"per-file bucket selection lands in Phase 70 (MKUE-02): kueue backend {backend.id!r} resolves to "
+                f"{len(resolved)} buckets, but the transitional accessor reduces only a single-bucket set"
+            )
+        return resolved[0] if resolved else None
+
+    def log_effective_registry(self) -> None:
+        """Emit a secret-free id/kind/rank/cap projection of the resolved registry at startup (REG-04, Pitfall 5).
+
+        Logs ONLY the ``{id, kind, rank, cap}`` projection per backend — never a whole backend/bucket
+        model, a ``SecretStr``, or a ``*_file`` mount path — so secret material can never leak into
+        logs. Plan 05 wires the CALL into controller startup; this method only defines the projection.
+        """
+        projection = [{"id": backend.id, "kind": backend.kind, "rank": backend.rank, "cap": backend.cap} for backend in self.backends]
+        logger.info("phaze.config effective backend registry", backends=projection, cloud_enabled=self.cloud_enabled)
 
     # Discogsography
     discogs_match_concurrency: int = 5
