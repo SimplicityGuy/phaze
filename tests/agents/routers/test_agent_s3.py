@@ -17,7 +17,6 @@ S3 backend; the FakeTaskRouter stands in for the per-agent queue.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -26,6 +25,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from phaze.config import ControlSettings
 from phaze.database import get_session
 from phaze.main import create_app
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -45,22 +45,64 @@ if TYPE_CHECKING:
     from phaze.models.agent import Agent
 
 
-class _StubCfg(SimpleNamespace):
-    """A duck-typed ControlSettings stand-in carrying only the fields the router reads.
+# Phase 67 (REG-04): the S3 callbacks now read ``settings.active_cloud_kind`` (the registry-derived
+# transitional accessor), NOT the flat ``cloud_target``. Each test builds a REAL ``ControlSettings``
+# from a backends.toml via the shared ``backends_toml_env`` conftest fixture so the accessor is
+# exercised end-to-end. A one-kueue registry → ``active_cloud_kind == "kueue"`` (the post-staging
+# seam fires); a compute registry → ``active_cloud_kind == "compute"`` (the non-kueue preservation
+# case, mirroring the former a1 target).
+_KUEUE_REGISTRY = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
 
-    ``cloud_target`` defaults ``"k8s"`` because the S3 callbacks fire only for the k8s target today
-    (a1 uses rsync); the non-k8s-preservation case constructs the stub with ``cloud_target="a1"``.
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-cluster"
+    rank = 10
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq"
+
+    [[buckets]]
+    id = "shared-bucket"
+    scope = "shared"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-staging"
+"""
+
+_COMPUTE_REGISTRY = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 10
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "/srv/scratch"
+"""
+
+
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any, *, kind: str = "kueue") -> None:
+    """Build a real ControlSettings off a one-backend registry and pin the router's get_settings.
+
+    ``kind="kueue"`` → the S3 post-staging seam fires (``active_cloud_kind == "kueue"``);
+    ``kind="compute"`` → the defensive non-kueue guard preserves the cloud_job-only flow.
     """
-
-    def __init__(self, *, push_max_attempts: int = 3, cloud_target: str = "k8s") -> None:
-        super().__init__(push_max_attempts=push_max_attempts, cloud_target=cloud_target)
-
-
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, push_max_attempts: int = 3, cloud_target: str = "k8s") -> None:
-    monkeypatch.setattr(
-        "phaze.routers.agent_s3.get_settings",
-        lambda: _StubCfg(push_max_attempts=push_max_attempts, cloud_target=cloud_target),
-    )
+    backends_toml_env(_KUEUE_REGISTRY if kind == "kueue" else _COMPUTE_REGISTRY)
+    settings = ControlSettings()
+    monkeypatch.setattr("phaze.routers.agent_s3.get_settings", lambda: settings)
 
 
 def _make_client(
@@ -152,10 +194,11 @@ async def test_uploaded_completes_multipart_control_side_and_flips_state(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """uploaded -> control completes the multipart + cloud_job UPLOADING -> UPLOADED, 200."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     complete = AsyncMock()
@@ -183,10 +226,11 @@ async def test_uploaded_duplicate_is_idempotent_noop_without_recompleting(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """A duplicate /uploaded (cloud_job already UPLOADED) is an idempotent 200 that does NOT re-complete."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADED)  # already completed
     complete = AsyncMock()
@@ -207,10 +251,11 @@ async def test_uploaded_rejects_identity_in_body(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """extra=forbid: a body smuggling file_id/agent_id is a 422 (AUTH-01: file_id is path-only)."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
@@ -236,10 +281,11 @@ async def test_uploaded_k8s_flips_pushed_and_enqueues_submit(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
-    """k8s first /uploaded: FileRecord PUSHING->PUSHED + ONE routed submit_cloud_job (deterministic key)."""
+    """kueue first /uploaded: FileRecord PUSHING->PUSHED + ONE routed submit_cloud_job (deterministic key)."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, cloud_target="k8s")
+    _patch_settings(monkeypatch, backends_toml_env, kind="kueue")
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
@@ -265,10 +311,11 @@ async def test_uploaded_k8s_duplicate_is_idempotent_no_resubmit(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
-    """A duplicate/late k8s /uploaded (file already PUSHED) is an idempotent no-op -- no second submit."""
+    """A duplicate/late kueue /uploaded (file already PUSHED) is an idempotent no-op -- no second submit."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, cloud_target="k8s")
+    _patch_settings(monkeypatch, backends_toml_env, kind="kueue")
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHED)  # already advanced
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
@@ -288,10 +335,11 @@ async def test_uploaded_non_k8s_preserves_cloud_job_only_behavior(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
-    """Non-k8s target: the defensive guard preserves today's cloud_job-only flow (no PUSHED, no submit)."""
+    """Non-kueue target (compute): the defensive guard preserves today's cloud_job-only flow (no PUSHED, no submit)."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, cloud_target="a1")
+    _patch_settings(monkeypatch, backends_toml_env, kind="compute")
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
@@ -319,10 +367,11 @@ async def test_failed_under_cap_redrives_and_increments_counter(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """Under the cap: redrive_upload called, cloud_job stays uploading, attempt counter ++ -> cleared=False."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, push_max_attempts=3)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     await _seed_ledger(session, file_id, attempt=0)
@@ -349,6 +398,7 @@ async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """After a re-drive the ledger retains the FRESH part_urls redrive committed, plus attempt++ (WR-02).
 
@@ -357,7 +407,7 @@ async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     snapshot read at the top of the handler -- else recovery replay re-enqueues expired URLs.
     """
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, push_max_attempts=3)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     # Seed the ledger with the STALE (prior-attempt) part_urls.
@@ -398,6 +448,7 @@ async def test_failed_at_cap_fails_terminally_and_cleans_up(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """At the cap: cloud_job FAILED + abort multipart + delete staged object + ledger cleared -> cleared=True.
 
@@ -406,7 +457,7 @@ async def test_failed_at_cap_fails_terminally_and_cleans_up(
     cloud_phase so a FAILED row never inflates the admission-state "Running" tile.
     """
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, push_max_attempts=3)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
     await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds the cap

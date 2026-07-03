@@ -17,13 +17,14 @@ split (RESEARCH §Critical Finding 1):
 
 Smoke-app pattern (mirrors ``test_agent_analysis.py``): a real DB session via the
 ``session`` fixture, a ``FakeTaskRouter`` on ``app.state``, and a monkeypatched
-``get_settings`` so ``compute_scratch_dir`` / ``models_path`` / ``push_max_attempts``
-are deterministic.
+``get_settings`` returning a REAL ``ControlSettings`` built off a one-compute-backend
+``backends.toml`` (via the shared ``backends_toml_env`` conftest fixture) so
+``active_compute_scratch_dir`` / ``models_path`` / ``push_max_attempts`` are deterministic
+and the Phase-67 registry accessor is exercised end-to-end (REG-04).
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -32,6 +33,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select
 
+from phaze.config import ControlSettings
 from phaze.database import get_session
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -47,26 +49,38 @@ if TYPE_CHECKING:
 
 
 _SCRATCH_DIR = "/srv/scratch"
-_MODELS_PATH = "/models"
+_MODELS_PATH = "/models"  # ControlSettings.models_path default
+
+# Phase 67 (REG-04): the push callback builds ``scratch_path`` from ``settings.active_compute_scratch_dir``
+# (the registry-derived transitional accessor) instead of the flat ``compute_scratch_dir``. Drive a
+# real ControlSettings off a one-compute-backend registry whose ``scratch_dir`` is the sole non-local
+# backend's scratch dir, so the accessor resolves to ``_SCRATCH_DIR`` end-to-end.
+_COMPUTE_REGISTRY = f"""
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 10
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "{_SCRATCH_DIR}"
+"""
 
 
-class _StubCfg(SimpleNamespace):
-    """A duck-typed ControlSettings stand-in carrying only the fields the router reads."""
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any) -> None:
+    """Pin the router's ``get_settings()`` to a real ControlSettings off a one-compute registry.
 
-    def __init__(self, *, push_max_attempts: int = 3) -> None:
-        super().__init__(
-            compute_scratch_dir=_SCRATCH_DIR,
-            models_path=_MODELS_PATH,
-            push_max_attempts=push_max_attempts,
-        )
-
-
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, push_max_attempts: int = 3) -> None:
-    """Pin the router's ``get_settings()`` deterministically."""
-    monkeypatch.setattr(
-        "phaze.routers.agent_push.get_settings",
-        lambda: _StubCfg(push_max_attempts=push_max_attempts),
-    )
+    ``active_compute_scratch_dir`` resolves to ``_SCRATCH_DIR``; ``models_path`` / ``push_max_attempts``
+    take the ControlSettings defaults (``/models`` / 3), matching the module constants above.
+    """
+    backends_toml_env(_COMPUTE_REGISTRY)
+    settings = ControlSettings()
+    monkeypatch.setattr("phaze.routers.agent_push.get_settings", lambda: settings)
 
 
 def _make_app(session: AsyncSession, task_router: FakeTaskRouter) -> FastAPI:
@@ -130,10 +144,11 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """pushed -> PUSHED + push ledger cleared + ONE process_file with pinned sha256 + scratch_path."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id)
     compute = await seed_active_agent(session, agent_id="compute-01", kind="compute")
@@ -168,10 +183,11 @@ async def test_pushed_holds_cleanly_when_no_compute_agent(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """No compute agent online -> 200 hold (no 500), state stays PUSHING, ledger intact."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id)
 
@@ -191,6 +207,7 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """WR-02: a duplicate/late /pushed callback must NOT clobber an already-ANALYZED file.
 
@@ -199,7 +216,7 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     reset the row to PUSHED nor re-enqueue process_file (which would re-trigger CR-01 stranding).
     """
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     # The file has already advanced all the way to ANALYZED (the first callback + analysis ran).
     file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
     await seed_active_agent(session, agent_id="compute-01", kind="compute")
@@ -221,10 +238,11 @@ async def test_pushed_missing_auth_returns_401(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """No Authorization header -> 401 (HTTPBearer auto_error)."""
     agent, _ = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
 
     task_router = FakeTaskRouter()
@@ -244,10 +262,11 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """Under the cap: push_attempt++ in the ledger payload + push_file re-enqueued, state stays PUSHING."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, push_max_attempts=3)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id, push_attempt=0)
     fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
@@ -292,10 +311,11 @@ async def test_mismatch_over_cap_fails_terminally_and_clears_ledger(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """At/over the cap: state -> ANALYSIS_FAILED + ledger cleared, in one transaction (no re-drive)."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, push_max_attempts=3)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     # Already at the cap: the next attempt (4) exceeds push_max_attempts=3.
     await _seed_push_ledger(session, file_id, push_attempt=3)
@@ -321,10 +341,11 @@ async def test_mismatch_holds_when_no_fileserver_agent(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """Under the cap but no fileserver online -> 200 hold, file stays PUSHING, ledger retained."""
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, push_max_attempts=3)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id, push_attempt=0)
 
@@ -345,10 +366,11 @@ async def test_mismatch_missing_auth_returns_401(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
 ) -> None:
     """No Authorization header -> 401 (HTTPBearer auto_error)."""
     agent, _ = seed_test_agent
-    _patch_settings(monkeypatch)
+    _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
 
     task_router = FakeTaskRouter()
