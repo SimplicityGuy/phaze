@@ -996,72 +996,98 @@ Plans:
 ## Phase Details (2026.7.1 Multi-Cloud Backends)
 
 ### Phase 67: Backend Registry & Config Model
+
 **Goal**: Operator can declare the full set of execution backends (and their S3 staging buckets) in `backends.toml` as the single source of truth, and `cloud_target` + the flat `s3_*`/`kube_*`/`compute_*` fields are **removed with no back-compat shim** (their ~10 call sites rewired to registry-derived reads). The only deploy that ever ran (`cloud_target=local`, all-local) keeps working **unchanged with zero config edits** via a zero-config implicit all-local registry — not a shim. Config-model-only: no dispatch/scheduler/protocol change this phase. *(Scope revised 2026-07-03 per operator decision D-11..D-14; see Phase 67 CONTEXT.md. The 67↔68 boundary and Phase 68's byte-identical characterization premise are revisited at Phase 68 plan-time.)*
 **Depends on**: Nothing new (builds on the shipped v6.0 config surface; first phase of this milestone)
 **Requirements**: REG-01, REG-02, REG-03, REG-04, REG-05
 **Success Criteria** (what must be TRUE):
+
   1. Operator can declare a `backends:` list (each entry `id` / `kind` ∈ {local, compute, kueue} / integer `rank` / integer `cap`); the app boots with it as the resolved registry and logs the effective registry (`id`/`kind`/`rank`/`cap` only — never secret material) at startup.
   2. A misconfigured backend entry fails fast **at startup** with the offending entry `id` in the message (a kueue entry missing its kube config, or a compute entry missing its bound-agent reference), not silently at dispatch time.
   3. With no `backends.toml` present (and no config pointer), the registry resolves to an implicit single `kind=local` backend — the current live all-local deploy keeps running unchanged with zero config edits (never a silently-empty / wedged-backlog registry). `cloud_target` and the flat `s3_*`/`kube_*`/`compute_*` fields no longer exist, and there is no back-compat shim (no live deploy ever exercised the `a1`/`k8s` paths).
   4. Operator can declare an S3 staging-bucket registry (each bucket shared/public or cluster-specific, credentials via inline `*_file` paths) and assign each Kueue backend its bucket set; a `cluster-specific` bucket is referenceable by at most one Kueue backend, and a Kueue backend that resolves to an empty bucket set fails fast. The flat single global S3 config is removed with the other flat fields (no shim).
   5. Per-backend secrets (kube tokens/kubeconfigs, S3 credentials, agent tokens) resolve via the existing `<VAR>_FILE` convention scoped per entry.
-**Plans**: 6 plans (4 waves)
-Plans:
+
+**Plans**: 6 plans (4 waves)Plans:
+**Wave 1**
+
 - [ ] 67-01-PLAN.md — config_backends.py: discriminated-union submodels (Local/Compute/Kueue) + KubeConfig/BucketConfig + per-variant id-tagged validators + inline *_file reader + shared whitespace helper (REG-01/02/03/05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 67-02-PLAN.md — ControlSettings integration (additive): backends/buckets fields + tomllib loader + container cardinality validator + cloud_enabled + transitional accessors + secret-free startup-log projection (REG-01/04/05)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 67-03-PLAN.md — Rewire routing/staging-cron/backfill/templates to cloud_enabled + transitional accessors (REG-04, Class A/B/C)
 - [ ] 67-04-PLAN.md — Rewire s3_staging.py + kube_staging.py flat-field reads to active_bucket/active_kube transitional accessors (REG-04)
 - [ ] 67-05-PLAN.md — Rewire agent_s3/agent_push/controller callbacks + probe gate + wire startup registry log (REG-04)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 67-06-PLAN.md — Remove cloud_target + flat s3_*/kube_*/compute_* fields + 3 validators (no shim) + trim SECRET_FILE_FIELDS + delete stale tests + .env.example/docs (REG-04)
+
 **PR**: own worktree branch — never a direct commit to `main`. Behavior-preserving (config model only).
 
 ### Phase 68: Backend Protocol + 3 Implementations
+
 **Goal**: The hardcoded `if/elif cloud_target` switch is replaced by one internal `Backend` protocol with three implementations and one uniform per-backend in-flight count — provably without changing single-backend dispatch behavior. This is where the accounting substrate changes, so it must be proven byte-identical before multiplicity is switched on.
 **Depends on**: Phase 67 (needs the `backends:` registry to bind implementations to)
 **Requirements**: BACK-01, BACK-02, BACK-03, BACK-04
 **Success Criteria** (what must be TRUE):
+
   1. Every former `cloud_target` `if/elif` call site dispatches through the `Backend` protocol (`is_available` / `in_flight_count` / `dispatch` / `reconcile`), with `LocalBackend` / `ComputeAgentBackend` / `KueueBackend` bodies re-homing the existing staging / push / submit logic rather than rewriting it.
   2. `cloud_job` carries a `backend_id` column (additive migration + backfill of existing rows to the current single backend) and compute-agent pushes are now recorded in `cloud_job`, so `in_flight_count(backend)` returns one uniform per-backend count across all kinds from a single authoritative substrate (no path counts both `FileState{PUSHING,PUSHED}` and a `cloud_job` row for the same file).
   3. A characterization test proves single-backend dispatch decisions are byte-identical pre/post refactor — including the compute-requires-a-live-agent (GATE 1) vs. Kueue-deliberately-skips-that-gate asymmetry (a Kueue `is_available()` never depends on a compute agent — Landmine L2 preserved).
   4. Accounting is internally consistent: `sum(in_flight_count(b) for b in backends)` equals the count of in-flight `FileState` rows, with the `dispatch()` `FileState` flip + `cloud_job` upsert committed in one transaction (no in-flight-without-registry-row limbo).
+
 **Plans**: TBD (decomposed at `/gsd:plan-phase 68`)
 **PR**: own worktree branch — never a direct commit to `main`. Behavior-preserving; the characterization test (criterion 3) is the phase's acceptance gate.
 
 ### Phase 69: Tiered Drain Scheduler
+
 **Goal**: Long files drain across every eligible backend simultaneously, cheapest-rank-first with per-backend caps, spilling to the next rank when the preferred one is full or offline. The first behavior-changing phase — the moment more than one backend can run at once.
 **Depends on**: Phase 68 (a per-backend `cap` is unenforceable without Phase 68's uniform per-backend `in_flight_count()`)
 **Requirements**: SCHED-01, SCHED-02, SCHED-03, SCHED-04, SCHED-05
 **Success Criteria** (what must be TRUE):
+
   1. Each `AWAITING_CLOUD` file is dispatched to the *available* backend with the lowest `rank` whose `in_flight_count() < cap`, with eligibility evaluated **per candidate file** so a full top-rank backend spills to the next rank rather than blocking the tick; local (rank 99, small cap) is reached only when every higher-ranked backend is full or offline.
   2. The former global `cloud_max_in_flight` window is now a per-backend `cap`, enforced by count-and-claim in one transaction under the existing `pg_advisory_xact_lock` — overlapping drain/reconcile ticks never overshoot a backend's cap (reconcile shares the lock discipline).
   3. A backend going offline or a job failing mid-flight returns the file to `AWAITING_CLOUD`; the next tick re-dispatches it to the next eligible backend chosen against *current* availability, and a black-hole / cooldown guard prevents a persistently-down backend from repeatedly reclaiming and re-failing its own files (bounded total attempts → `ANALYSIS_FAILED`, never an infinite A↔B thrash loop).
   4. Two or more equal-`rank` backends are tie-broken deterministically and statelessly (lowest current utilization `in_flight/cap`, then stable `id`) — no weighted or proportional fair-share.
   5. Exactly one recovery owner exists per backend kind: `reconcile_cloud_jobs` and the recovery ledger are `backend_id`-aware and the AST over-enqueue guard now covers compute-backed cloud files, so no cloud-owned file gains a second recovery path (no replay of the 44.5k-job over-enqueue incident class).
+
 **Plans**: TBD (decomposed at `/gsd:plan-phase 69`)
 **Research**: needed — the drain↔reconcile lock-ordering change and the global-dispatch-budget vs. per-backend-cooldown split are novel correctness mechanisms with no existing phaze precedent; settle exact lock scope + attempt counters at plan-time (`/gsd:plan-phase --research-phase 69`).
 **PR**: own worktree branch — never a direct commit to `main`. First behavior-changing phase.
 
 ### Phase 70: Multi-Kueue (N Clusters)
+
 **Goal**: The registry's multiplicity extends to N real Kueue clusters dispatched concurrently, each staging to its assigned bucket set, with one cluster's failure isolated from the rest — proving multiplicity on real infrastructure without introducing a new provider type.
 **Depends on**: Phase 69 (the tiered scheduler) and Phase 68 (the `KueueBackend` protocol body)
 **Requirements**: MKUE-01, MKUE-02, MKUE-03, MKUE-04
 **Success Criteria** (what must be TRUE):
+
   1. Operator can declare N Kueue-cluster backends, each with its own kube config (per-cluster kubeconfig/context), and the one control plane dispatches to them concurrently.
   2. Each cluster stages long files to a bucket drawn from its REG-05-assigned set (shared/public or cluster-specific; deterministic per-file selection when a set holds several buckets); the control plane stays the **sole** S3 importer/presigner for every bucket (DIST-01 preserved) and pods/agents stay credential-free, receiving only presigned, `file_id`-scoped, TTL-bounded URLs (objects never world-readable despite an Internet-reachable endpoint).
   3. Each cluster has its own LocalQueue reachability probe and a `backend_id`-scoped reconcile, and one cluster's probe/dispatch failure is isolated (per-backend try/except; `is_available()` returns bool, never raises) so it cannot poison the whole drain tick — healthy clusters and local still receive work.
   4. Cross-cluster/cross-bucket staged-object cleanup is scoped to the (backend, bucket) that staged the object, so a spillover re-dispatch never deletes an object another cluster or bucket is still using; the per-bucket lifecycle TTL remains the backstop.
+
 **Plans**: TBD (decomposed at `/gsd:plan-phase 70`)
 **Research**: needed — unresolved plan-time schema/resolution questions: (a) `cloud_job` one-row-per-file (mutate `backend_id` in place) vs. one-row-per-(file,backend) for attempt-scoping; (b) `ComputeAgentBackend.is_available()`/dispatch resolving its specific agent via `agent_ref`→`Agent.id` (replacing the "most-recently-seen" heuristic); plus a live-cluster verify of kr8s auth per distinct kubeconfig/context and cross-cluster stale-Job cleanup ordering (`/gsd:plan-phase --research-phase 70`).
 **PR**: own worktree branch — never a direct commit to `main`.
 
 ### Phase 71: Deployment, Config, Docs & N-Lane UI
+
 **Goal**: Operators can see all N backend lanes, revert everything to local for incident response, and follow a runbook for the `backends:` schema and the `cloud_target`→`backends` migration. Presentation/ops close-out over the now-proven scheduler and multi-Kueue — the per-lane data is already computed by phases 69–70.
 **Depends on**: Phase 70 (and Phase 69 for the per-backend `{available, in_flight, cap, rank}` state the UI reads)
 **Requirements**: BEUI-01, BEUI-02, BEUI-03
 **Success Criteria** (what must be TRUE):
+
   1. The admin UI renders N per-backend lanes derived from the registry — each showing available/offline, in-flight/cap, and rank (the Kueue quota-wait-vs-Inadmissible distinction preserved and attributed per lane by `id`) — read-only and riding the existing `/pipeline/stats` 5s poll (no second poll loop), generalizing v7.0 Phase 58's fixed 3 cards to N dynamic lanes.
   2. A master toggle reverts all routing to local for incident response (the `backends`-era equivalent of today's `cloud_target=local` no-op gate).
   3. The operator runbook and configuration docs cover the `backends:` schema, per-backend `_FILE` secrets, and the `cloud_target`→`backends` migration and deprecation path.
+
 **Plans**: TBD (decomposed at `/gsd:plan-phase 71`)
 **UI hint**: yes
 **PR**: own worktree branch — never a direct commit to `main`. Presentation/ops only.

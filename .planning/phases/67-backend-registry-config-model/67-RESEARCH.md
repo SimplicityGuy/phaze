@@ -593,23 +593,32 @@ class Settings(BaseSettings):
 **These `[ASSUMED]` items need confirmation before they become locked plan decisions** — especially A1
 (verify the live compose/`.env` has no cloud vars) and A4 (open the three templates during planning).
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Idiom A vs Idiom B for TOML loading**
    - What we know: both work; Idiom A is blessed, Idiom B fits the house before-validator style.
    - What's unclear: whether the planner wants the env-pointer + absent-file + implicit-local logic
      centralized (Idiom B) or layered as a settings source (Idiom A).
    - Recommendation: Idiom B for visibility and house-style consistency; either is HIGH confidence.
+   - **RESOLVED:** Idiom B chosen — the explicit `tomllib` `model_validator(mode="before")` keyed on
+     `PHAZE_BACKENDS_CONFIG_FILE` is implemented in Plan 67-02 Task 1 (env-pointer + absent-file
+     implicit-local logic centralized in one visible place, house-style consistent).
 
 2. **Transitional accessors vs merging Phase 68 (D-14)**
    - What we know: Class-B forks are dispatch logic; 67 is config-model-only.
    - What's unclear: whether the planner keeps 67 pure (transitional accessors) or absorbs part of 68.
    - Recommendation: keep 67 pure with `# TRANSITIONAL` accessors; let 68 revisit its own gate.
+   - **RESOLVED:** 67 kept config-model-only — the `# TRANSITIONAL — Phase 68` accessors are defined in
+     Plan 67-02 and consumed by the Class-B rewires in Plans 67-03 / 67-04 / 67-05; no `Backend`
+     protocol is pulled forward. Phase 68 revisits its own byte-identical gate (already moot per D-14).
 
 3. **Per-bucket lifecycle TTL / presign knob placement (D-15 discretion)**
    - What we know: D-15 leaves it to the planner (registry `[[buckets]]` field now vs Phase 70).
    - Recommendation: since bucket *behavior* is Phase 70 (D-10), keep TTL/presign as global
      `ControlSettings` knobs this phase unless a per-bucket value is needed for validation — none is.
+   - **RESOLVED:** the TTL / presign / multipart knobs stay global `ControlSettings` fields per D-15 —
+     explicitly retained by Plan 67-06's removal wave and still read globally by Plan 67-04's staging
+     rewire (no per-bucket value is needed for any Phase-67 validation).
 
 ## Environment Availability
 

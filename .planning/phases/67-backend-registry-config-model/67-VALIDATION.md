@@ -2,7 +2,7 @@
 phase: 67
 slug: backend-registry-config-model
 status: draft
-nyquist_compliant: false
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-03
 ---
@@ -19,7 +19,7 @@ created: 2026-07-03
 |----------|-------|
 | **Framework** | pytest (pytest-asyncio) |
 | **Config file** | `pyproject.toml` (`[tool.pytest.ini_options]`) |
-| **Quick run command** | `uv run pytest tests/test_config.py -q` |
+| **Quick run command** | `uv run pytest tests/shared/config/ -q` |
 | **Full suite command** | `uv run pytest --cov --cov-report=term-missing` |
 | **Estimated runtime** | ~60 seconds (config-focused subset is a few seconds) |
 
@@ -27,7 +27,7 @@ created: 2026-07-03
 
 ## Sampling Rate
 
-- **After every task commit:** Run `uv run pytest tests/test_config.py -q` (plus the new registry test module)
+- **After every task commit:** Run the task's `<automated>` command (config subset is a few seconds)
 - **After every plan wave:** Run `uv run pytest --cov --cov-report=term-missing`
 - **Before `/gsd:verify-work`:** Full suite must be green; coverage ≥ 85%
 - **Max feedback latency:** ~60 seconds
@@ -36,20 +36,40 @@ created: 2026-07-03
 
 ## Per-Task Verification Map
 
-*Populated during planning / Nyquist validation once PLAN.md tasks exist. Each REG-0X observable behavior from RESEARCH.md `## Validation Architecture` maps to a pytest seam (tmp_path TOML fixtures + monkeypatched `PHAZE_BACKENDS_CONFIG_FILE` pointer).*
+*Populated from the 6 PLAN.md `<automated>` verify commands. Each REG-0X observable behavior maps to a
+pytest seam (tmp_path TOML fixtures + the conftest `backends_toml_env` fixture that writes a temp
+`backends.toml` and points `PHAZE_BACKENDS_CONFIG_FILE` at it).*
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| TBD | — | — | REG-01..05 | — | fail-fast at startup, no secrets in logs | unit | `uv run pytest -q` | ❌ W0 | ⬜ pending |
+| 01-T1 | 67-01 | 1 | REG-01, REG-02 | T-67-01-04 | per-variant id-tagged fail-fast; bounded rank/cap reject out-of-range | unit | `uv run pytest tests/shared/config/test_backend_registry.py -x` | ❌ W0 | ⬜ pending |
+| 01-T2 | 67-01 | 1 | REG-05, REG-02 | T-67-01-01, T-67-01-02 | per-bucket `endpoint_url` http(s)+netloc SSRF guard; creds typed `SecretStr` | unit | `uv run pytest tests/shared/config/test_backend_registry.py -x` | ❌ W0 | ⬜ pending |
+| 01-T3 | 67-01 | 1 | REG-03 | T-67-01-03 | inline `*_file` eager read, fail-fast on unreadable, strip/verbatim per D-06 | unit | `uv run pytest tests/shared/config/test_backend_secret_files.py -x` | ❌ W0 | ⬜ pending |
+| 02-T1 | 67-02 | 2 | REG-01, REG-04 | T-67-02-04 | single TOML source (no env override); absent-file → implicit-local | unit | `uv run pytest tests/shared/config/test_bucket_registry.py -x` | ❌ W0 | ⬜ pending |
+| 02-T2 | 67-02 | 2 | REG-05 | T-67-02-01, T-67-02-02 | empty resolved registry → fail-fast; scope cardinality (cluster-specific ≤1) | unit | `uv run pytest tests/shared/config/test_bucket_registry.py -x` | ❌ W0 | ⬜ pending |
+| 02-T3 | 67-02 | 2 | REG-04 | T-67-02-03 | `log_effective_registry()` id/kind/rank/cap projection only, no secret material | unit | `uv run pytest tests/shared/config/test_bucket_registry.py -x` | ❌ W0 | ⬜ pending |
+| 03-T1 | 67-03 | 3 | REG-04 | T-67-03-02 | staging-cron `{"staged":0,"skipped":0}` no-op early-returns preserved | unit | `uv run pytest tests/analyze/core/test_staging_cron.py -x` | ✅ | ⬜ pending |
+| 03-T2 | 67-03 | 3 | REG-04 | T-67-03-01 | reads-only rewire (`cloud_enabled`/accessors); no dispatch import; `cloud_lane_kind` context key | integration | `uv run pytest tests/shared/routers/test_pipeline.py tests/shared/core/test_routing_seam.py -x` | ✅ | ⬜ pending |
+| 03-T3 | 67-03 | 3 | REG-04 | T-67-03-03 | Analyze partials render off `cloud_lane_kind`, no template 500 | unit | `uv run pytest tests/shared/core/test_enrich_analyze_workspaces.py -x` | ✅ | ⬜ pending |
+| 04-T1 | 67-04 | 3 | REG-04 | T-67-04-02, T-67-04-03 | `active_bucket` creds stay `SecretStr`; scope-bound bucket; TTL knobs stay global | integration | `uv run pytest tests/analyze/services/test_s3_staging.py tests/analyze/services/test_cloud_staging.py -x` | ✅ | ⬜ pending |
+| 04-T2 | 67-04 | 3 | REG-04 | T-67-04-01, T-67-04-04 | `active_kube` reads only; fail-fast (not silent-pick) on >1 non-local backend | integration | `uv run pytest tests/analyze/services/test_kube_staging.py -x` | ✅ | ⬜ pending |
+| 05-T1 | 67-05 | 3 | REG-04 | T-67-05-03 | agent callbacks read transitional accessors only; no Backend protocol | integration | `uv run pytest tests/agents/routers/test_agent_s3.py tests/agents/routers/test_agent_push.py -x` | ✅ | ⬜ pending |
+| 05-T2 | 67-05 | 3 | REG-04 | T-67-05-01, T-67-05-02 | LocalQueue probe keeps boot-safety try/except; secret-free registry startup log | integration | `uv run pytest tests/shared/tasks/test_controller_startup_localqueue.py -x` | ✅ | ⬜ pending |
+| 06-T1 | 67-06 | 4 | REG-04 | T-67-06-02, T-67-06-03 | D-15 global knobs + control-plane secrets kept; no dangling flat-field read (`mypy .`) | unit | `uv run pytest tests/shared/config/ -x --ignore=tests/shared/config/test_cloud_target.py --ignore=tests/shared/config/test_kube_settings.py --ignore=tests/shared/config/test_s3_settings.py` | ✅ | ⬜ pending |
+| 06-T2 | 67-06 | 4 | REG-04 | T-67-06-01 | role-split no-dead-token gate (removed `PHAZE_CLOUD_TARGET`/`cloud_burst` absent) | unit | `uv run pytest tests/shared/core/test_config_role_split.py -x` | ✅ | ⬜ pending |
+| 06-T3 | 67-06 | 4 | REG-04 | T-67-06-01 | `.env.example` breaking-removal callout; no reintroduced legacy tokens | unit | `uv run pytest tests/shared/core/test_config_role_split.py -x` | ✅ | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*File Exists: ❌ W0 = new test module created in Wave 0; ✅ = existing test rewritten/extended in place.*
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] New registry test module (e.g. `tests/test_backends_registry.py`) — stubs for REG-01..05 (discriminated-union fail-fast with entry id, zero-config implicit-local resolution, scope-cardinality rejection, missing-mount-path fail-fast, effective-registry startup log with no secret material)
-- [ ] tmp_path TOML fixtures + `PHAZE_BACKENDS_CONFIG_FILE` monkeypatch helper in `tests/conftest.py` (or the module)
+- [ ] New registry test module `tests/shared/config/test_backend_registry.py` — REG-01/02/05 (parse, per-variant id-tagged fail-fast, bucket parse + endpoint SSRF)
+- [ ] New `tests/shared/config/test_backend_secret_files.py` — REG-03 (inline `*_file` strip/verbatim/fail-fast)
+- [ ] New `tests/shared/config/test_bucket_registry.py` — REG-04/05 (implicit-local, present-empty fail-fast, cardinality, missing-ref/empty-set, log-no-secrets)
+- [ ] `backends_toml_env` fixture in `tests/conftest.py` (writes tmp `backends.toml` + sets `PHAZE_BACKENDS_CONFIG_FILE`, clears `get_settings` cache) — shared by all Wave 3 consumers
 - [ ] Rewrite/delete existing `cloud_target` / flat-field config tests removed by REG-04 (RESEARCH Wave 0 note)
 
 *Existing pytest infrastructure covers the framework; only new test modules + fixtures are needed.*
@@ -68,11 +88,11 @@ created: 2026-07-03
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 60s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 60s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-07-03

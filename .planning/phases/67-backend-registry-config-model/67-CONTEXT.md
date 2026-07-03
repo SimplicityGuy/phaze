@@ -62,7 +62,7 @@ back-compat clauses below are superseded by an operator decision this discussion
   cardinality**: `scope="cluster-specific"` → the bucket may be referenced by **at most one** Kueue
   backend (fail-fast if two list it); `scope="shared"` (Internet-reachable/public) → referenceable by
   many. This catches the real footgun: pointing a cloud cluster at a homelab-only bucket it cannot reach.
-- **D-10:** Config-model only this phase — bucket *behavior* (deterministic per-file bucket selection
+- **D-10 [informational]:** Config-model only this phase — bucket *behavior* (deterministic per-file bucket selection
   when a set holds >1, presigning, cleanup scoping) is MKUE-02/04 (Phase 70). The control plane remaining
   the **sole S3 importer/presigner** and pods/agents staying credential-free is preserved and unchanged.
 
