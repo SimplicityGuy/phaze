@@ -18,10 +18,50 @@ construction via the shared ``_read_secret_file`` helper (D-04/D-06), failing fa
 path.
 """
 
-from typing import Annotated, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+
+
+def _read_secret_file(path: str, *, preserve_whitespace: bool) -> str:
+    """Read an inline ``*_file`` secret path eagerly, applying the shared strip-vs-verbatim rule.
+
+    This is the single whitespace rule Plan 02 also adopts in config.py's ``_resolve_secret_files``
+    ("factor, don't fork", D-06): key material (kubeconfig / SSH-style keys) is kept verbatim so its
+    required trailing newline survives; tokens/access-keys are ``.strip()``ed so a heredoc/echo
+    trailing newline hashes/parses identically to an operator-typed value (mirrors config.py:143-145).
+    An unreadable path fails fast with a ValueError naming the path (never echoing file contents).
+    """
+    try:
+        contents = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        msg = f"secret file {path!r} could not be read: {exc}"
+        raise ValueError(msg) from exc
+    return contents if preserve_whitespace else contents.strip()
+
+
+def _resolve_inline_secret_files(data: Any, spec: dict[str, tuple[str, bool]]) -> Any:
+    """Populate SecretStr fields from sibling inline ``*_file`` TOML paths (D-04/D-06).
+
+    ``spec`` maps each ``*_file`` input key to ``(target_field, preserve_whitespace)``. This is the
+    DISTINCT inline-TOML mechanism (Pitfall 4): the path is a TOML field VALUE, not an env
+    ``<VAR>_FILE`` var, so it never touches the env-``_FILE`` field set or resolver in config.py. A
+    directly-provided target value wins over its ``*_file`` sibling (mirrors config.py precedence).
+    """
+    if not isinstance(data, dict):
+        return data
+    for file_field, (target_field, preserve) in spec.items():
+        if file_field not in data:
+            continue
+        path = data.pop(file_field)
+        if data.get(target_field) is not None:
+            continue  # a directly-provided value wins over the file pointer
+        if path is None:
+            continue
+        data[target_field] = _read_secret_file(str(path), preserve_whitespace=preserve)
+    return data
 
 
 class LocalBackend(BaseModel):
@@ -109,6 +149,20 @@ class KubeConfig(BaseModel):
     kubeconfig: SecretStr | None = None
     sa_token: SecretStr | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_inline_secret_files(cls, data: Any) -> Any:
+        """Resolve inline ``kubeconfig_file`` / ``sa_token_file`` paths before field validation (D-04)."""
+        return _resolve_inline_secret_files(
+            data,
+            {
+                # key material → verbatim (OpenSSH/kubeconfig parsers require the trailing newline)
+                "kubeconfig_file": ("kubeconfig", True),
+                # bearer token → stripped (mirrors config.py:145)
+                "sa_token_file": ("sa_token", False),
+            },
+        )
+
 
 class BucketConfig(BaseModel):
     """S3 staging-bucket entry (REG-05, D-07).
@@ -127,6 +181,19 @@ class BucketConfig(BaseModel):
     addressing_style: Literal["path", "virtual"] = "path"
     access_key_id: SecretStr | None = None
     secret_access_key: SecretStr | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_inline_secret_files(cls, data: Any) -> Any:
+        """Resolve inline ``access_key_id_file`` / ``secret_access_key_file`` paths (D-04)."""
+        return _resolve_inline_secret_files(
+            data,
+            {
+                # S3 access/secret keys → stripped (not key material)
+                "access_key_id_file": ("access_key_id", False),
+                "secret_access_key_file": ("secret_access_key", False),
+            },
+        )
 
     @field_validator("endpoint_url")
     @classmethod
