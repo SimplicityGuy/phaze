@@ -361,19 +361,14 @@ class ControlSettings(BaseSettings):
     """Application-server role: LLM proposal generation, Discogs matching, fileless tasks."""
 
     # v4.0.1: add the LLM API keys to the inherited database_url/redis_url set.
-    # Phase 53 (KSTAGE-05): the S3 credentials honor the same `<VAR>_FILE` convention so the
-    # control plane reads them from Docker/K8s secret mounts; they live on ControlSettings ONLY
-    # (KSTAGE-02 -- the agent and pod never receive bucket credentials; T-53-01).
-    # Phase 54 (KSUBMIT-01): the kube credentials (kubeconfig / SA token) honor the same
-    # `<VAR>_FILE` convention so the control plane reads them from Docker/K8s secret mounts; they
-    # live on ControlSettings ONLY (the agent and pod never receive kube credentials; T-54-01).
+    # Phase 67 (D-05, REG-04): control-plane secrets (LLM keys + inherited
+    # database_url/redis_url/queue_url) stay on the env `<VAR>_FILE` path. The PER-BACKEND
+    # secrets (S3 access/secret keys, kube kubeconfig / SA token) moved to inline `*_file`
+    # pointers in backends.toml (config_backends `_read_secret_file`) — they are NO LONGER
+    # flat ControlSettings fields, so they are gone from this set (no back-compat shim; D-12).
     SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = BaseSettings.SECRET_FILE_FIELDS | {
         "openai_api_key",
         "anthropic_api_key",
-        "s3_access_key_id",
-        "s3_secret_access_key",
-        "kube_kubeconfig",
-        "kube_sa_token",
     }
 
     # Phase 67 (REG-01/D-01): the typed backend registry. Declared as `list[BackendConfig]`
@@ -573,33 +568,11 @@ class ControlSettings(BaseSettings):
         description="Duration threshold (seconds) at/above which a file is routed to a cloud compute agent for analysis (Phase 49). Default 5400 (90 min); lt=86400 caps it at one day.",
     )
 
-    # Phase 55 D-02 (KROUTE-01): the single cloud-target selector that HARD-REPLACES the Phase 51
-    # cloud-burst master bool. ONE setting selects the active target -- 'local' (default) ==
-    # cloud OFF (pure local analysis, no cloud activity); 'a1' = the v5.0 rsync→OCI-A1 compute
-    # agent; 'k8s' = the v6.0 S3→Kueue burst. It is the single source of truth that gates ALL THREE
-    # cloud entry points -- the routing seam (D-02), the staging cron (D-03), and the backfill
-    # trigger (D-03) -- so 'local' reverts to pure local analysis with no other change. A pydantic
-    # `Literal` rejects any off-list member at construction (T-55-CFG-01); there is NO back-compat
-    # alias for PHAZE_CLOUD_BURST_ENABLED (D-02). Not secret-bearing, so it is absent from
-    # SECRET_FILE_FIELDS. Lives on ControlSettings because the control plane owns routing.
-    cloud_target: Literal["local", "a1", "k8s"] = Field(
-        default="local",
-        validation_alias=AliasChoices("PHAZE_CLOUD_TARGET", "cloud_target"),
-        description="Active cloud target: 'local' (default) == cloud off; 'a1' = rsync→OCI A1 compute agent; 'k8s' = S3→Kueue burst. Single source of truth (Phase 55, D-02/KROUTE-01).",
-    )
+    # Phase 67 (REG-04, D-12): the flat cloud-target selector and the flat in-flight window field
+    # were REMOVED with no shim. The active target is now derived from the typed backend registry
+    # (`cloud_enabled` gate + the transitional `active_cloud_kind`/`active_cap` accessors above);
+    # the per-backend concurrency cap comes from each backend's `cap` in backends.toml. See D-11/D-12.
 
-    # Phase 50 D-03: the load-bearing ≤N cloud window. The staging cron tops up so that the
-    # count of files in {PUSHING, PUSHED} never exceeds this; it is the only backpressure that
-    # keeps an unbounded backlog off the single compute agent. Bounded (gt=0, lt=100) like
-    # cloud_route_threshold_sec so an out-of-range operator value fails fast at startup
-    # (T-50-config-oob). Lives on ControlSettings because the control plane owns the window.
-    cloud_max_in_flight: int = Field(
-        default=2,
-        gt=0,
-        lt=100,
-        validation_alias=AliasChoices("PHAZE_CLOUD_MAX_IN_FLIGHT", "cloud_max_in_flight"),
-        description="Max cloud files staged-or-in-flight (PUSHING+PUSHED); the load-bearing ≤N window (Phase 50, D-03). Default 2; bounded gt=0, lt=100.",
-    )
     # Phase 50 D-12: how many times control re-drives a push that failed sha256 verification
     # before giving up and marking the file ANALYSIS_FAILED. Bounded (gt=0, lt=20) so a misconfig
     # cannot create an unbounded retry storm (T-50-config-oob).
@@ -623,55 +596,14 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS", "cloud_submit_max_attempts"),
         description="Max kube Job submit attempts before a file is marked ANALYSIS_FAILED (Phase 54, D-08). A distinct budget from push_max_attempts. Default 3; bounded gt=0, lt=20.",
     )
-    # Phase 50: control-side mirror of the compute agent's AgentSettings.cloud_scratch_dir.
-    # The push-success callback (routers/agent_push.py, 50-05) builds the process_file
-    # scratch_path from this base (`<compute_scratch_dir>/<file_id>.<ext>`). Its value MUST
-    # match the compute agent's cloud_scratch_dir; a drift surfaces as a sha256/transfer failure
-    # (50-04/50-05), never silent corruption (T-50-scratch-skew). Lives on ControlSettings
-    # because the control plane builds the payload.
-    compute_scratch_dir: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_COMPUTE_SCRATCH_DIR", "compute_scratch_dir"),
-        description="Control-side copy of the compute agent's scratch directory; used to build process_file scratch_path in the push callback (Phase 50, 50-05). MUST match the compute agent's cloud_scratch_dir.",
-    )
+    # Phase 67 (REG-04, D-12): the flat compute scratch-dir field and the flat S3
+    # connection/credential surface (endpoint / bucket / region / addressing-style / access-key /
+    # secret-key) were REMOVED with no shim. Compute scratch dir now comes from the compute
+    # backend's `scratch_dir` (transitional `active_compute_scratch_dir`); bucket identity/creds
+    # come from the `[[buckets]]` registry (transitional `active_bucket`). The D-15 GLOBAL S3
+    # tuning knobs below (presign TTLs / lifecycle / part-size) are NOT per-backend and REMAIN on
+    # ControlSettings.
 
-    # Phase 53 (KSTAGE-05): operator-provided S3 object-staging surface. Works against ANY
-    # S3-compatible backend via an explicit `endpoint_url` (MinIO/Backblaze/AWS/etc.), not just
-    # AWS. The control plane presigns multipart PUT + just-in-time GET and deletes staged objects
-    # (KSTAGE-01..04); the file-server agent and pod transfer bytes over presigned URLs and never
-    # see these fields (KSTAGE-02). All optional by default so an all-local (cloud-off) deploy
-    # needs zero S3 config; the `_enforce_s3_config_when_cloud_enabled` validator fails fast when
-    # cloud burst is ON but the staging substrate is unconfigured.
-    s3_endpoint_url: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_S3_ENDPOINT_URL", "s3_endpoint_url"),
-        description="S3-compatible endpoint URL (e.g. https://s3.us-west-1.amazonaws.com or a MinIO/Backblaze URL). Must be a well-formed http(s) URL (Phase 53, KSTAGE-05; T-53-02).",
-    )
-    s3_bucket: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_S3_BUCKET", "s3_bucket"),
-        description="Operator-created bucket used for ephemeral file_id-scoped staging objects (Phase 53, KSTAGE-04/05).",
-    )
-    s3_region: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_S3_REGION", "s3_region"),
-        description="S3 region (e.g. us-west-1). Optional for many S3-compatible backends (Phase 53, KSTAGE-05).",
-    )
-    s3_addressing_style: Literal["path", "virtual"] = Field(
-        default="path",
-        validation_alias=AliasChoices("PHAZE_S3_ADDRESSING_STYLE", "s3_addressing_style"),
-        description="S3 addressing style. 'path' (default) maximizes S3-compatible-backend support; 'virtual' for AWS virtual-hosted-style (Phase 53, KSTAGE-05).",
-    )
-    s3_access_key_id: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_S3_ACCESS_KEY_ID", "s3_access_key_id"),
-        description="S3 access key id (control-plane only; resolves from PHAZE_S3_ACCESS_KEY_ID_FILE per the _FILE convention). KSTAGE-02/T-53-01.",
-    )
-    s3_secret_access_key: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_S3_SECRET_ACCESS_KEY", "s3_secret_access_key"),
-        description="S3 secret access key (control-plane only; resolves from PHAZE_S3_SECRET_ACCESS_KEY_FILE per the _FILE convention). KSTAGE-02/T-53-01.",
-    )
     # Bounded presign/lifecycle/part-size knobs: an out-of-range operator value fails fast at
     # startup (T-53-03) and never reaches the presign/upload code path.
     s3_presign_put_ttl_sec: int = Field(
@@ -703,161 +635,15 @@ class ControlSettings(BaseSettings):
         description="Multipart upload part size (bytes) the agent streams over presigned part URLs (Phase 53, D-01). Default 67108864 (64 MiB); bounded to the S3 [5 MiB, 5 GiB) part-size range.",
     )
 
-    # Phase 54 (KSUBMIT-01): the kube client surface the submit seam, submit task, and reconcile
-    # cron read. ALL OPTIONAL (default None) in Phase 54 so an existing Phase 53 cloud-on/no-kube
-    # deploy keeps working -- the fail-fast model validator that couples these to
-    # `cloud_target == "k8s"` is Phase 55 (`_enforce_kube_config_when_k8s`, below), pulled forward
-    # from KDEPLOY-02. Credentials (`kube_kubeconfig` / `kube_sa_token`) are SecretStr resolved
-    # from `<VAR>_FILE` mounts via SECRET_FILE_FIELDS above; they live on the control plane only
-    # (T-54-01) and are never logged.
-    kube_api_url: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_API_URL", "kube_api_url"),
-        description="Kubernetes API server URL the control plane submits/watches Jobs against (Phase 54, KSUBMIT-01). Required when cloud_target is 'k8s' (Phase 55 fail-fast validator).",
-    )
-    kube_namespace: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_NAMESPACE", "kube_namespace"),
-        description="Namespace the Kueue Jobs are submitted into (Phase 54, KSUBMIT-01). Optional in Phase 54.",
-    )
-    kube_local_queue: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_LOCAL_QUEUE", "kube_local_queue"),
-        description="Kueue LocalQueue name stamped on submitted Jobs (kueue.x-k8s.io/queue-name label) (Phase 54, KSUBMIT-01). Optional in Phase 54.",
-    )
-    kube_job_image: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_JOB_IMAGE", "kube_job_image"),
-        description="Container image the submitted analysis Job runs (Phase 54, KSUBMIT-01). Optional in Phase 54.",
-    )
-    kube_job_cpu_request: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_JOB_CPU_REQUEST", "kube_job_cpu_request"),
-        description="CPU resource request stamped on the submitted Job's pod spec (e.g. '2') (Phase 54, KSUBMIT-01). Optional in Phase 54.",
-    )
-    kube_job_memory_request: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_JOB_MEMORY_REQUEST", "kube_job_memory_request"),
-        description="Memory resource request stamped on the submitted Job's pod spec (e.g. '4Gi') (Phase 54, KSUBMIT-01). Optional in Phase 54.",
-    )
-    kube_workload_api_version: str = Field(
-        default="kueue.x-k8s.io/v1beta1",
-        validation_alias=AliasChoices("PHAZE_KUBE_WORKLOAD_API_VERSION", "kube_workload_api_version"),
-        description="apiVersion of the Kueue Workload/Job resources the control plane submits and reconciles (Phase 54, KSUBMIT-01). Default 'kueue.x-k8s.io/v1beta1'.",
-    )
-    kube_ca_secret_name: str = Field(
-        default="phaze-internal-ca",
-        validation_alias=AliasChoices("PHAZE_KUBE_CA_SECRET_NAME", "kube_ca_secret_name"),
-        description="Name of the operator-created core/v1 Secret holding the internal CA cert (key 'phaze-ca.crt'). The suspended Job mounts it read-only at /certs so the one-shot pod verifies the control-plane TLS chain (Phase 56, KDEPLOY-06). The CA is NOT baked into the Job image (KJOB-05 reversed); rotation is a Secret update + re-submit, no image rebuild. phaze references this Secret by name only and never authors it.",
-    )
-    kube_env_configmap_name: str = Field(
-        default="phaze-agent-env",
-        validation_alias=AliasChoices("PHAZE_KUBE_ENV_CONFIGMAP_NAME", "kube_env_configmap_name"),
-        description="Name of the operator-created core/v1 ConfigMap the suspended Job sources its static agent env from via envFrom (PHAZE_ROLE=agent, PHAZE_AGENT_API_URL, PHAZE_MODELS_DIR). The per-Job PHAZE_JOB_FILE_ID is injected separately at submit time, not from this ConfigMap. phaze references this ConfigMap by name only and never authors it.",
-    )
-    kube_env_secret_name: str = Field(
-        default="phaze-agent-token",
-        validation_alias=AliasChoices("PHAZE_KUBE_ENV_SECRET_NAME", "kube_env_secret_name"),
-        description="Name of the operator-created core/v1 Secret the suspended Job sources PHAZE_AGENT_TOKEN from via envFrom; defaults to the existing compute-agent bearer-token Secret (phaze-agent-token). phaze references this Secret by name only and never authors it.",
-    )
-    # Phase 54 (KSUBMIT-01) credentials -- file-mounted SecretStr resolved via SECRET_FILE_FIELDS
-    # above. NEVER log (T-54-01). Control plane only.
-    kube_kubeconfig: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_KUBECONFIG", "kube_kubeconfig"),
-        description="Kubeconfig contents for the control plane's kube client, file-mounted via PHAZE_KUBE_KUBECONFIG_FILE (Phase 54, KSUBMIT-01). Never logged.",
-    )
-    kube_sa_token: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PHAZE_KUBE_SA_TOKEN", "kube_sa_token"),
-        description="ServiceAccount bearer token for the control plane's kube client, file-mounted via PHAZE_KUBE_SA_TOKEN_FILE (Phase 54, KSUBMIT-01). Never logged.",
-    )
-
-    @field_validator("s3_endpoint_url")
-    @classmethod
-    def _validate_s3_endpoint_url(cls, value: str | None) -> str | None:
-        """Require a well-formed http(s) URL with a netloc (T-53-02 SSRF surface).
-
-        ``s3_endpoint_url`` is operator-controlled and feeds the aioboto3 client the control
-        plane uses to presign/delete. A scheme-less value (``s3.example.com``) or a non-http
-        scheme (``file://``) is rejected at construction so an SSRF-shaped endpoint can never
-        reach the S3 client. ``None`` (cloud off / unset) passes through unchanged.
-        """
-        if value is None:
-            return None
-        parsed = urlparse(value)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            msg = f"s3_endpoint_url must be a well-formed http(s) URL with a host, got {value!r}"
-            raise ValueError(msg)
-        return value
-
-    @model_validator(mode="after")
-    def _enforce_s3_config_when_k8s(self) -> "ControlSettings":
-        """Phase 55 (D-02, KROUTE-01): the 'k8s' target requires the S3 staging substrate.
-
-        S3 is the **k8s** byte path (the v6.0 S3→Kueue leg) -- NOT a generic "cloud on"
-        concern. The staging leg presigns objects into ``s3_bucket`` at ``s3_endpoint_url``;
-        with ``cloud_target == "k8s"`` but either unset, the upload presign would fail at
-        runtime with no startup signal. Fail fast. This is one of THREE per-target validators
-        kept deliberately separate (RESEARCH Pitfall 3 / T-55-CFG-03): collapsing them into a
-        single ``!= "local"`` gate would silently change a1 fail-fast semantics. 'local' and
-        'a1' keep S3 optional (a1 uses rsync, not S3), so neither needs S3 config.
-        """
-        if self.cloud_target == "k8s":
-            if not self.s3_bucket:
-                raise ValueError("PHAZE_S3_BUCKET is required when PHAZE_CLOUD_TARGET is 'k8s' (it is the S3→Kueue staging bucket)")
-            if not self.s3_endpoint_url:
-                raise ValueError(
-                    "PHAZE_S3_ENDPOINT_URL is required when PHAZE_CLOUD_TARGET is 'k8s' (the S3-compatible endpoint the control plane presigns against)"
-                )
-        return self
-
-    @model_validator(mode="after")
-    def _enforce_compute_scratch_dir_when_a1(self) -> "ControlSettings":
-        """Phase 55 (D-02, KROUTE-01): the 'a1' target requires a compute scratch dir.
-
-        ``compute_scratch_dir`` is the **a1** rsync-scratch concern -- NOT a generic "cloud on"
-        concern. The push-success callback (routers/agent_push.py) builds the process_file
-        ``scratch_path`` as ``<compute_scratch_dir>/<file_id>.<ext>``. If
-        ``cloud_target == "a1"`` but ``compute_scratch_dir`` is unset, that path becomes the
-        literal ``"None/<file_id>.<ext>"``: every pushed file fails to read, routes to
-        push-mismatch, and silently lands in ANALYSIS_FAILED after ``push_max_attempts`` — with
-        no startup signal. Fail fast instead, mirroring the agent-side ``_require_push_config``
-        guard for ``cloud_scratch_dir`` (push.py). 'local' and 'k8s' keep ``compute_scratch_dir``
-        optional (k8s uses S3, not rsync scratch).
-        """
-        if self.cloud_target == "a1" and not self.compute_scratch_dir:
-            raise ValueError(
-                "PHAZE_COMPUTE_SCRATCH_DIR is required when PHAZE_CLOUD_TARGET is 'a1' "
-                "(it builds the process_file scratch_path; must match the compute agent's PHAZE_CLOUD_SCRATCH_DIR)"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _enforce_kube_config_when_k8s(self) -> "ControlSettings":
-        """Phase 55 (D-02, KROUTE-01; pulls KDEPLOY-02 forward): the 'k8s' target requires the kube surface.
-
-        The submit seam / submit task / reconcile cron read ``kube_api_url`` (where to POST the
-        Job), ``kube_namespace`` (where the Job lands), and ``kube_local_queue`` (the
-        ``kueue.x-k8s.io/queue-name`` label). These exist optional today (Phase 54); with
-        ``cloud_target == "k8s"`` but any unset, submission fails at runtime with no startup
-        signal. Fail fast — the third per-target validator (kept separate per RESEARCH Pitfall 3).
-        'local' and 'a1' keep the kube fields optional (a1 does not touch kube).
-        """
-        if self.cloud_target == "k8s":
-            if not self.kube_api_url:
-                raise ValueError(
-                    "PHAZE_KUBE_API_URL is required when PHAZE_CLOUD_TARGET is 'k8s' (the kube API the control plane submits/watches Jobs against)"
-                )
-            if not self.kube_namespace:
-                raise ValueError(
-                    "PHAZE_KUBE_NAMESPACE is required when PHAZE_CLOUD_TARGET is 'k8s' (the namespace the Kueue Jobs are submitted into)"
-                )
-            if not self.kube_local_queue:
-                raise ValueError(
-                    "PHAZE_KUBE_LOCAL_QUEUE is required when PHAZE_CLOUD_TARGET is 'k8s' (the Kueue LocalQueue name stamped on submitted Jobs)"
-                )
-        return self
+    # Phase 67 (REG-04, D-12): the flat kube cluster connection + Job-manifest surface (api-url /
+    # namespace / local-queue / job-image / cpu-request / memory-request / workload-api-version /
+    # ca-secret-name / env-configmap-name / env-secret-name / kubeconfig / sa-token) was REMOVED
+    # with no shim. Kueue cluster config now lives in each kueue backend's `[kube]` table in
+    # backends.toml (config_backends KubeConfig; transitional `active_kube`). The three
+    # per-target fail-fast model validators and the S3-endpoint field-validator were removed too —
+    # their per-variant equivalents now live on the Plan-01 submodels (KubeConfig / BucketConfig
+    # required fields + endpoint validation) and the whole-registry `_validate_registry`
+    # invariants above (REG-02, D-12).
 
 
 class AgentSettings(BaseSettings):
@@ -1027,8 +813,10 @@ class AgentSettings(BaseSettings):
 
     # Phase 50 D-05/D-07: rsync-over-SSH push target (the fileserver agent pushes long files to
     # the compute agent's scratch dir). The SSH host/user identify the static push target;
-    # cloud_scratch_dir is the remote landing directory whose path MUST match
-    # ControlSettings.compute_scratch_dir. The two timeouts bracket the transport: push_timeout_sec
+    # cloud_scratch_dir is the remote landing directory whose path MUST match the control-plane's
+    # compute-backend scratch dir (Phase 67: the compute backend's `scratch_dir` in backends.toml,
+    # read control-side via the transitional `active_compute_scratch_dir` accessor). The two
+    # timeouts bracket the transport: push_timeout_sec
     # is the rsync I/O-stall timeout (must stay below the SAQ push_file job net), and
     # push_connect_timeout_sec caps the SSH connect handshake. Operator-provisioned in Phase 51;
     # Phase 50 only declares the fields.
@@ -1045,7 +833,7 @@ class AgentSettings(BaseSettings):
     cloud_scratch_dir: str | None = Field(
         default=None,
         validation_alias=AliasChoices("PHAZE_CLOUD_SCRATCH_DIR", "cloud_scratch_dir"),
-        description="Remote scratch directory on the compute agent where pushed files land and are later read by process_file. MUST match ControlSettings.compute_scratch_dir (Phase 50, D-07).",
+        description="Remote scratch directory on the compute agent where pushed files land and are later read by process_file. MUST match the control-plane compute backend's scratch_dir in backends.toml (Phase 50, D-07; Phase 67).",
     )
     push_timeout_sec: int = Field(
         default=600,
