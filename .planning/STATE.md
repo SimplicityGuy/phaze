@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: 2026.7.0
 milestone_name: Engineering Improvements
 status: "Phase 65 shipped — PR #197"
-last_updated: "2026-07-03T11:49:17.023Z"
+last_updated: "2026-07-03T12:12:37.067Z"
 last_activity: 2026-07-03
 progress:
   total_phases: 33
@@ -221,9 +221,9 @@ These are tracked for the next deploy; they are NOT blockers for the v7.0 milest
 
 ## Session Continuity
 
-Last session: 2026-07-03T02:56:02.853Z
-Stopped at: Phase 65 context gathered
-Resume file: .planning/phases/65-calver-adoption/65-CONTEXT.md
+Last session: 2026-07-03T12:12:37.061Z
+Stopped at: Phase 66 context gathered
+Resume file: .planning/phases/66-docs-drift-gate-dead-code-sweep/66-CONTEXT.md
 
 ## Operator Next Steps
 
