@@ -78,33 +78,33 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REG-01 | — | Pending |
-| REG-02 | — | Pending |
-| REG-03 | — | Pending |
-| REG-04 | — | Pending |
-| REG-05 | — | Pending |
-| BACK-01 | — | Pending |
-| BACK-02 | — | Pending |
-| BACK-03 | — | Pending |
-| BACK-04 | — | Pending |
-| SCHED-01 | — | Pending |
-| SCHED-02 | — | Pending |
-| SCHED-03 | — | Pending |
-| SCHED-04 | — | Pending |
-| SCHED-05 | — | Pending |
-| MKUE-01 | — | Pending |
-| MKUE-02 | — | Pending |
-| MKUE-03 | — | Pending |
-| MKUE-04 | — | Pending |
-| BEUI-01 | — | Pending |
-| BEUI-02 | — | Pending |
-| BEUI-03 | — | Pending |
+| REG-01 | Phase 67 | Pending |
+| REG-02 | Phase 67 | Pending |
+| REG-03 | Phase 67 | Pending |
+| REG-04 | Phase 67 | Pending |
+| REG-05 | Phase 67 | Pending |
+| BACK-01 | Phase 68 | Pending |
+| BACK-02 | Phase 68 | Pending |
+| BACK-03 | Phase 68 | Pending |
+| BACK-04 | Phase 68 | Pending |
+| SCHED-01 | Phase 69 | Pending |
+| SCHED-02 | Phase 69 | Pending |
+| SCHED-03 | Phase 69 | Pending |
+| SCHED-04 | Phase 69 | Pending |
+| SCHED-05 | Phase 69 | Pending |
+| MKUE-01 | Phase 70 | Pending |
+| MKUE-02 | Phase 70 | Pending |
+| MKUE-03 | Phase 70 | Pending |
+| MKUE-04 | Phase 70 | Pending |
+| BEUI-01 | Phase 71 | Pending |
+| BEUI-02 | Phase 71 | Pending |
+| BEUI-03 | Phase 71 | Pending |
 
 **Coverage:**
 - Milestone requirements: 21 total
-- Mapped to phases: 0 (roadmapper populates — intended 1:1 category→phase: REG→67 · BACK→68 · SCHED→69 · MKUE→70 · BEUI→71)
-- Unmapped: 21 (pending roadmap)
+- Mapped to phases: 21 (REG→67 · BACK→68 · SCHED→69 · MKUE→70 · BEUI→71) — 1:1 category→phase, dependency-strict
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-07-03*
-*Last updated: 2026-07-03 — added REG-05 (S3 bucket registry: public/shared vs cluster-specific) + revised MKUE-02/MKUE-04 per operator direction, superseding the design's one-shared-bucket decision (§6/§7)*
+*Last updated: 2026-07-03 — traceability populated at roadmap creation: all 21 requirements mapped 1:1 to phases 67–71, 0 orphans, 0 duplicates (REG→67 · BACK→68 · SCHED→69 · MKUE→70 · BEUI→71). Earlier: added REG-05 (S3 bucket registry: public/shared vs cluster-specific) + revised MKUE-02/MKUE-04 per operator direction, superseding the design's one-shared-bucket decision (§6/§7)*
