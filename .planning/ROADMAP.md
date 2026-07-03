@@ -202,7 +202,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
 | 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
-| 65. CalVer Adoption | 2026.7.0 | 1/2 | In Progress|  |
+| 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 0/? | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -945,7 +945,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 65-02-PLAN.md — GREEN: swap ci.yml to the CalVer-only tag glob, bump pyproject `2026.7.0` + uv.lock, add the MILESTONES mapping table, rewrite forward-looking CalVer docs
+- [x] 65-02-PLAN.md — GREEN: swap ci.yml to the CalVer-only tag glob, bump pyproject `2026.7.0` + uv.lock, add the MILESTONES mapping table, rewrite forward-looking CalVer docs
 
 ### Phase 66: Docs-Drift Gate & Dead-Code Sweep
 
