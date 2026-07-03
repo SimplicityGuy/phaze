@@ -242,3 +242,171 @@ def test_two_kueue_sharing_shared_bucket_accepted(backends_toml_env) -> None:  #
     )
     settings = ControlSettings()
     assert [b.id for b in settings.backends] == ["kueue-a", "kueue-b"]
+
+
+# --------------------------------------------------------------------------- #
+# Task 3: cloud_enabled + transitional accessors + secret-free startup log
+# --------------------------------------------------------------------------- #
+_ONE_COMPUTE = """
+[[backends]]
+kind = "compute"
+id = "oci-a1"
+rank = 10
+cap = 3
+agent_ref = "compute-agent-01"
+scratch_dir = "/scratch/cloud"
+"""
+
+_ONE_KUEUE = """
+[[backends]]
+kind = "kueue"
+id = "kueue-a"
+rank = 10
+cap = 4
+buckets = ["bucket-a"]
+
+[backends.kube]
+api_url = "https://kube.example.com"
+namespace = "phaze"
+local_queue = "phaze-lq"
+
+[[buckets]]
+id = "bucket-a"
+scope = "cluster-specific"
+endpoint_url = "https://s3.example.com"
+bucket = "phaze-a"
+"""
+
+
+def test_cloud_enabled_false_for_implicit_local(monkeypatch: _pytest.MonkeyPatch) -> None:
+    """The implicit-local registry has no non-local backend → cloud_enabled is False; active_cloud_kind None (D-14)."""
+    _clear_backends_env(monkeypatch)
+    settings = ControlSettings()
+    assert settings.cloud_enabled is False
+    assert settings.active_cloud_kind is None
+
+
+def test_single_compute_backend_accessors(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A single compute backend reduces through the transitional ≤1-non-local accessors (D-15)."""
+    backends_toml_env(_ONE_COMPUTE)
+    settings = ControlSettings()
+    assert settings.cloud_enabled is True
+    assert settings.active_cloud_kind == "compute"
+    assert settings.active_compute_scratch_dir == "/scratch/cloud"
+    assert settings.active_cap == 3
+
+
+def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A single kueue backend exposes its KubeConfig + single resolved bucket via the accessors (D-15)."""
+    backends_toml_env(_ONE_KUEUE)
+    settings = ControlSettings()
+    assert settings.cloud_enabled is True
+    assert settings.active_cloud_kind == "kueue"
+    assert settings.active_kube is not None
+    assert settings.active_kube.api_url == "https://kube.example.com"
+    assert settings.active_bucket is not None
+    assert settings.active_bucket.id == "bucket-a"
+
+
+def test_multiple_non_local_backends_accessor_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """>1 non-local backend → the transitional accessors raise (multi-backend dispatch is Phase 69) — never silently pick one."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+
+        [[backends]]
+        kind = "compute"
+        id = "compute-b"
+        rank = 20
+        cap = 2
+        agent_ref = "agent-b"
+        scratch_dir = "/scratch/b"
+        """
+    )
+    settings = ControlSettings()
+    assert settings.cloud_enabled is True
+    with pytest.raises(ValueError, match=r"Phase 69"):
+        _ = settings.active_cloud_kind
+
+
+def test_multi_bucket_kueue_active_bucket_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A kueue resolving to >1 bucket → active_bucket raises (per-file bucket selection is Phase 70) — never silently pick one."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-multi"
+        rank = 10
+        cap = 4
+        buckets = ["b1", "b2"]
+
+        [backends.kube]
+        api_url = "https://kube.example.com"
+        namespace = "phaze"
+        local_queue = "phaze-lq"
+
+        [[buckets]]
+        id = "b1"
+        scope = "shared"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-b1"
+
+        [[buckets]]
+        id = "b2"
+        scope = "shared"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-b2"
+        """
+    )
+    settings = ControlSettings()
+    with pytest.raises(ValueError, match=r"Phase 70"):
+        _ = settings.active_bucket
+
+
+def test_log_effective_registry_is_secret_free_projection(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """log_effective_registry emits an id/kind/rank/cap projection only — never secret material (Pitfall 5)."""
+    from structlog.testing import capture_logs
+
+    secret_value = "SUPERSECRETSATOKEN"
+    backends_toml_env(
+        f"""
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-a"
+        rank = 10
+        cap = 4
+        buckets = ["bucket-a"]
+
+        [backends.kube]
+        api_url = "https://kube.example.com"
+        namespace = "phaze"
+        local_queue = "phaze-lq"
+        sa_token = "{secret_value}"
+
+        [[buckets]]
+        id = "bucket-a"
+        scope = "cluster-specific"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-a"
+        """
+    )
+    settings = ControlSettings()
+    # The secret parsed into a SecretStr on the kube config...
+    assert settings.active_kube is not None
+    assert settings.active_kube.sa_token is not None
+    assert settings.active_kube.sa_token.get_secret_value() == secret_value
+
+    with capture_logs() as logs:
+        settings.log_effective_registry()
+    record = next(r for r in logs if r.get("event") == "phaze.config effective backend registry")
+    assert record["backends"] == [{"id": "kueue-a", "kind": "kueue", "rank": 10, "cap": 4}]
+    for entry in record["backends"]:
+        assert set(entry) == {"id", "kind", "rank", "cap"}
+    # No secret value anywhere in the captured records (projection never carries the SecretStr).
+    assert secret_value not in repr(logs)
