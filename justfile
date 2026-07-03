@@ -92,6 +92,21 @@ test-ci:
 test-file FILE:
     uv run pytest {{FILE}} -x -v
 
+[doc('Run the REQUIREMENTS/ROADMAP docs-drift traceability guard (DOCS-01)')]
+[group('test')]
+docs-drift:
+    uv run pytest tests/shared/core/test_requirements_traceability.py -q
+
+# Non-blocking dead-code sweep (CLEAN-02). NOT a CI/pre-commit gate — framework-invoked
+# code produces false-positives that need per-candidate human reachability judgment. A
+# nonzero exit merely lists remaining candidates to hand-verify. vulture_whitelist.py is a
+# hand-audited suppression list for framework false-positives (FastAPI handlers, Pydantic
+# validators, transient ORM attrs, SAQ hooks, CLI entry points).
+[doc('Run the vulture dead-code sweep over src/phaze (non-blocking; lists candidates to hand-verify)')]
+[group('test')]
+vulture:
+    uv run vulture src/phaze vulture_whitelist.py --min-confidence 80 --ignore-decorators "@router.*,@app.*,@field_validator,@model_validator,@validator,@pytest.fixture"
+
 # --cov-fail-under=0 is REQUIRED: a single bucket only exercises a fraction of
 # phaze, so pytest-cov auto-enforcing pyproject's global fail_under gate against a
 # bucket's PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded,

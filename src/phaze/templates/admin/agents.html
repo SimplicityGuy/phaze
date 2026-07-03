@@ -18,6 +18,16 @@
     {% include "admin/partials/agents_table.html" %}
 </div>
 
+{# CLEAN-01 (D-09/D-10/D-11): discreet flag-gated footer link to the still-mounted /saq SAQ
+   monitor. Gated on enable_saq_ui — the SAME flag that gates the /saq mount (main.py) — so it
+   never dangles as a 404. Low visual weight (muted palette). Opens in a new tab with
+   rel="noopener" to prevent reverse-tabnabbing (T-66-05). #}
+{% if enable_saq_ui %}
+<p class="mt-6 text-xs text-gray-400 dark:text-gray-500">
+    <a href="/saq" target="_blank" rel="noopener" class="hover:underline">SAQ monitor ↗</a>
+</p>
+{% endif %}
+
 {# BLOCKER-2 (MANDATORY): UI-SPEC §Error / Failure-Tolerant Refresh — status: approved.
    Attaches once at page load. Writes localStorage `phaze:agents:lastError` ISO timestamp
    on htmx:responseError or htmx:sendError targeting #agents-table-section. Clears the

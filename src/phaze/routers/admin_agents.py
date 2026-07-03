@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI needs runtime import to resolve Annotated[AsyncSession, Depends(...)]
 import structlog
 
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.services.agent_liveness import classify, classify_compute_lanes, sort_key
@@ -107,6 +108,7 @@ async def page(
             "refreshed_at_iso": now.isoformat(),
             "compute_lane_state": compute_lane_state,
             "compute_lane_count": compute_lane_count,
+            "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
         },
     )
 

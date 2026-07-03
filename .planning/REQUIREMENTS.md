@@ -30,12 +30,12 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (63+).
 
 ### DOCS — Documentation-drift gate
 
-- [ ] **DOCS-01**: A CI gate cross-checks REQUIREMENTS.md traceability against passed phases and fails when the table is stale (a passed phase's requirements left unmarked, or a requirement marked without a passed phase), closing the manual REQUIREMENTS/ROADMAP sync gap called out across the retrospectives.
+- [x] **DOCS-01**: A CI gate cross-checks REQUIREMENTS.md traceability against passed phases and fails when the table is stale (a passed phase's requirements left unmarked, or a requirement marked without a passed phase), closing the manual REQUIREMENTS/ROADMAP sync gap called out across the retrospectives.
 
 ### CLEAN — Dead-code sweep & /saq re-link
 
-- [ ] **CLEAN-01**: A discreet in-UI link to the still-mounted `/saq` SAQ monitor is restored in the shell (natural home: the Agents/Compute page), reachable without typing the raw URL. Presentation-only.
-- [ ] **CLEAN-02**: Vestigial dead code (unused templates, routers, assignments surfaced during the v7.0 cutover) is identified and removed, and the dead-template guard's blind spot for its own unused entry-root literals (per the v7.0 retrospective) is closed.
+- [x] **CLEAN-01**: A discreet in-UI link to the still-mounted `/saq` SAQ monitor is restored in the shell (natural home: the Agents/Compute page), reachable without typing the raw URL. Presentation-only.
+- [x] **CLEAN-02**: Vestigial dead code (unused templates, routers, assignments surfaced during the v7.0 cutover) is identified and removed, and the dead-template guard's blind spot for its own unused entry-root literals (per the v7.0 retrospective) is closed.
 
 ## Future Requirements
 
@@ -74,9 +74,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 | VER-04 | Phase 65 | Complete |
 | COV-01 | Phase 64 | Complete |
 | COV-02 | Phase 64 | Complete |
-| DOCS-01 | Phase 66 | Pending |
-| CLEAN-01 | Phase 66 | Pending |
-| CLEAN-02 | Phase 66 | Pending |
+| DOCS-01 | Phase 66 | Complete |
+| CLEAN-01 | Phase 66 | Complete |
+| CLEAN-02 | Phase 66 | Complete |
 
 **Coverage:**
 - Milestone requirements: 13 total
