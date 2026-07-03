@@ -2,10 +2,9 @@
 gsd_state_version: 1.0
 milestone: 2026.7.0
 milestone_name: Engineering Improvements
-status: completed
-stopped_at: Phase 65 context gathered
-last_updated: "2026-07-03T04:27:20.353Z"
-last_activity: 2026-07-03 -- Phase 65 marked complete
+status: "Phase 65 shipped — PR #197"
+last_updated: "2026-07-03T11:49:17.023Z"
+last_activity: 2026-07-03
 progress:
   total_phases: 33
   completed_phases: 3
@@ -27,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 Phase: 65 — COMPLETE
 Plan: 1 of 2
-Status: Phase 65 complete
-Last activity: 2026-07-03 -- Phase 65 marked complete
+Status: Phase 65 shipped — PR #197
+Last activity: 2026-07-03
 
 ## Performance Metrics
 
