@@ -18,10 +18,10 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (63+).
 
 ### VER — CalVer release versioning
 
-- [ ] **VER-01**: Release versioning uses CalVer `YYYY.MM.REVISION` with no leading-zero month (first release `2026.7.0`), and a REVISION convention that supports multiple same-month patch releases.
-- [ ] **VER-02**: The release procedure (pyproject `version` + `uv.lock` bump → annotated tag push → GHCR publish) and the README version/badge line reflect the CalVer scheme.
-- [ ] **VER-03**: Published Docker image tags and any compose/deploy references use the CalVer version.
-- [ ] **VER-04**: The milestone↔version mapping in ROADMAP.md and MILESTONES.md is updated so milestones read as named and releases as dated, without breaking the historical `vN.M` record.
+- [x] **VER-01**: Release versioning uses CalVer `YYYY.MM.REVISION` with no leading-zero month (first release `2026.7.0`), and a REVISION convention that supports multiple same-month patch releases.
+- [x] **VER-02**: The release procedure (pyproject `version` + `uv.lock` bump → annotated tag push → GHCR publish) and the README version/badge line reflect the CalVer scheme.
+- [x] **VER-03**: Published Docker image tags and any compose/deploy references use the CalVer version.
+- [x] **VER-04**: The milestone↔version mapping in ROADMAP.md and MILESTONES.md is updated so milestones read as named and releases as dated, without breaking the historical `vN.M` record.
 
 ### COV — Per-module coverage uplift
 
@@ -68,10 +68,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CI-02 | Phase 63 | Complete |
 | CI-03 | Phase 63 | Complete |
 | CI-04 | Phase 63 | Complete |
-| VER-01 | Phase 65 | Pending |
-| VER-02 | Phase 65 | Pending |
-| VER-03 | Phase 65 | Pending |
-| VER-04 | Phase 65 | Pending |
+| VER-01 | Phase 65 | Complete |
+| VER-02 | Phase 65 | Complete |
+| VER-03 | Phase 65 | Complete |
+| VER-04 | Phase 65 | Complete |
 | COV-01 | Phase 64 | Complete |
 | COV-02 | Phase 64 | Complete |
 | DOCS-01 | Phase 66 | Pending |

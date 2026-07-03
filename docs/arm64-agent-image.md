@@ -126,7 +126,7 @@ essentia C++ compile is ~324 s cold; **no QEMU** (a cross-compile is prohibitive
 ```bash
 # Operator fallback (mirrors the CI build-arm64 job):
 just image-build-arm64            # builds ghcr.io/<owner>/phaze:latest-arm64
-just image-build-arm64 v5.0.0     # builds ...:v5.0.0-arm64
+just image-build-arm64 2026.7.0   # builds ...:2026.7.0-arm64
 
 # Raw docker:
 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 \

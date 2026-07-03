@@ -259,7 +259,7 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
 - `MODELS_PATH=./models`
 - `CA_PATH=./certs`
 - `PHAZE_AGENT_SCAN_ROOTS=/data/music,/data/concerts`
-- `PHAZE_IMAGE_TAG=v4.0.0` (or `latest` for first-time setup)
+- `PHAZE_IMAGE_TAG=2026.7.0` (or `latest` for first-time setup)
 
 See [docs/configuration.md](configuration.md) for the complete env-var reference and defaults.
 
@@ -345,9 +345,13 @@ Called from the CI `docker-publish` job, which runs only after `aggregate-result
 - Builds the same three images in a matrix and pushes to GHCR. `push` is `true` for non-PR events.
 - The `api` image publishes to the bare repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s `worker` + `watcher` can pull it directly; the sidecars publish under `/audfprint` and `/panako` suffixes.
 - **Authoritative image paths:** `ghcr.io/simplicityguy/phaze` is the authoritative api/worker/watcher image; `ghcr.io/simplicityguy/phaze/audfprint` and `ghcr.io/simplicityguy/phaze/panako` are the sidecar images. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a pre-D-15 convention — it is no longer published and must NOT be pulled or referenced.
-- Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:v<version>`.
-- Release tags MUST be 3-part semver (`vX.Y.Z`, e.g. `v4.0.0`) — `ci.yml` triggers the publish pipeline on `push` of a `v*.*.*` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part semver ref. A 2-part tag (`v4.0`) will not match the trigger and will not publish version-pinnable images.
+- Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:<version>`.
+- Release tags MUST be 3-part CalVer (`YYYY.MM.REVISION`, e.g. `2026.7.0`) — `ci.yml` triggers the publish pipeline on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part ref. A 2-part tag (`2026.7`) will not match the trigger and will not publish version-pinnable images, so the 3-part shape is still required.
 - Builds with `provenance: true` and `sbom: true` for supply-chain attestation, on `linux/amd64`.
+
+**Release version scheme (CalVer).** Releases use CalVer `YYYY.MM.REVISION` with a **bare** tag (no `v` prefix — the first CalVer tag is `2026.7.0`) and a **no-leading-zero month** (`2026.7.0`, not `2026.07.0`). REVISION is a **per-month zero-based** counter: the Nth release within a given `YYYY.MM`, starting at `0` and **resetting each calendar month**, so same-month patch releases just increment REVISION (`2026.7.0` → `2026.7.1`). Milestones are named; versions are dated — the two are decoupled.
+
+**Publish trigger (invariant).** GHCR publish fires on the **push of an annotated tag** (`git tag -a 2026.7.0 -m "…"` then `git push origin 2026.7.0`) — creating the tag locally publishes nothing; the *push* of the tag ref is the sole trigger. If a tag was pushed wrong (bad SHA, premature), delete-and-recreate it: `git push --delete origin 2026.7.0`, fix, then re-tag and push again to re-fire the pipeline. `docker-publish.yml`'s metadata-action is scheme-agnostic (`type=semver` parses `2026.7.0` → `{{version}}=2026.7.0`, `{{major}}.{{minor}}=2026.7`), so no workflow edit is needed to adopt CalVer.
 
 The single-stage `Dockerfile` (`FROM python:3.14-slim AS base`) installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
 
@@ -367,7 +371,7 @@ Production-critical variables:
 | `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url` (CR-01) and passwordless `redis_url` (D-06). Note: there is no production credential guard on `PHAZE_QUEUE_URL` yet — protect it via the LAN-scoped firewall + a strong DB password. |
 | `PHAZE_AGENT_TOKEN` | file-server | The plaintext bearer token; must match the `token_hash` row in `agents`. Generate via `secrets.token_urlsafe(32)`. |
 | `PHAZE_AGENT_CA_FILE` | file-server | Path to the operator-distributed `phaze-ca.crt`; the agent's HTTP client verifies the app-server TLS chain against it. |
-| `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (`v4.0.0`) in production rather than `latest`. |
+| `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (`2026.7.0`) in production rather than `latest`. |
 | `SCAN_PATH` | file-server | The music-library root, bind-mounted read-only into all agent services. Compose parse fails if unset. |
 
 ### Secrets via files (Docker secrets)
@@ -400,19 +404,19 @@ There is no automated rollback in CI — rollback is a manual re-deploy of a pre
 ```bash
 # On the file-server host:
 # 1. Edit .env: set PHAZE_IMAGE_TAG back to the last-known-good version, e.g.
-#    PHAZE_IMAGE_TAG=v4.0.0
+#    PHAZE_IMAGE_TAG=2026.7.0
 # 2. Re-pull and recreate the agent containers:
 docker compose -f docker-compose.agent.yml pull
 docker compose -f docker-compose.agent.yml up -d
 ```
 
-Because `docker-publish.yml` tags both `:latest` and `:v<version>`, every release remains pullable by its version tag — keep `PHAZE_IMAGE_TAG` pinned in production so a rollback is just editing one line.
+Because `docker-publish.yml` tags both `:latest` and `:<version>`, every release remains pullable by its version tag — keep `PHAZE_IMAGE_TAG` pinned in production so a rollback is just editing one line.
 
 **Application server** is built locally from the checkout, so rolling back means checking out the previous git tag and rebuilding:
 
 ```bash
 # On the app-server host:
-git checkout v4.0.0          # the last-known-good release tag
+git checkout 2026.7.0        # the last-known-good CalVer release tag (a pre-CalVer rollback legitimately still uses its old v4.0.0 tag — mechanism unchanged)
 just rebuild                 # docker compose up -d --build
 ```
 
@@ -476,10 +480,10 @@ For first-time setup, `PHAZE_IMAGE_TAG=latest` pulls the most recent tagged rele
 
 ```bash
 # On the file-server host's .env:
-PHAZE_IMAGE_TAG=v4.0.0
+PHAZE_IMAGE_TAG=2026.7.0
 ```
 
-Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:v<version>` on tagged releases. The pin MUST be a 3-part `vX.Y.Z` value matching a published release tag (`ci.yml` only publishes on `push` of a `v*.*.*` tag).
+Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.MM.REVISION` value (e.g. `2026.7.0`) matching a published release tag (`ci.yml` only publishes on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag).
 
 ## Pre-warming models (skip the first-start wait)
 
@@ -502,7 +506,7 @@ Before shipping a file-server host to production:
 - [ ] `PHAZE_AGENT_TOKEN` generated via `secrets.token_urlsafe(32)`, not a placeholder
 - [ ] `phaze-ca.crt` distributed via secure channel (scp over SSH, not email/chat)
 - [ ] `phaze-ca.key` NEVER copied off the app-server host
-- [ ] `PHAZE_IMAGE_TAG` pinned to a specific version (`v4.0.0`), not `latest`
+- [ ] `PHAZE_IMAGE_TAG` pinned to a specific version (`2026.7.0`), not `latest`
 - [ ] `SCAN_PATH` points at the actual music library root (compose parse fails if unset)
 - [ ] `docker-compose.override.yml` not present / not active on production hosts (it bypasses the cert-bootstrap entrypoint)
 - [ ] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"
