@@ -1,5 +1,30 @@
 # Milestones
 
+## Milestone ↔ Version Mapping
+
+Milestones are **named**; releases are **dated** CalVer. Every milestone from `v1.0`
+through `v7.0` shipped under the legacy `vN.M` scheme (preserved verbatim below).
+Starting with the Engineering Improvements milestone the project adopts CalVer
+`YYYY.MM.REVISION` (e.g. `2026.7.0`) with a **no-leading-zero month** (`2026.7.0`,
+not `2026.07.0`). REVISION is a **per-month zero-based** counter — the Nth release
+within a given `YYYY.MM`, starting at `0` and **resetting each calendar month** — so
+milestone NAMES are fully decoupled from version NUMBERS: multiple milestones landing
+in the same month, or same-month patch releases, simply increment REVISION within the
+shared `YYYY.MM`.
+
+| Milestone | Version | Date |
+|-----------|---------|------|
+| MVP | v1.0 | 2026-03-30 |
+| Metadata Enrichment & Tracklist Integration | v2.0 | 2026-04-02 |
+| Cross-Service Intelligence & File Enrichment | v3.0 | 2026-04-04 |
+| Distributed Agents | v4.0 | 2026-05-17 |
+| Cloud Burst Analysis | v5.0 | 2026-06-26 |
+| Kubernetes Burst Analysis | v6.0 | 2026-06-29 |
+| UI Redesign — DAG-Centric Hybrid Console | v7.0 | 2026-07-02 |
+| Engineering Improvements | 2026.7.0 | _(release date TBD)_ |
+
+---
+
 ## v7.0 UI Redesign — DAG-Centric Hybrid Console (Shipped: 2026-07-02)
 
 **Phases completed:** 7 phases, 28 plans, 69 tasks
