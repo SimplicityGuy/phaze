@@ -121,6 +121,10 @@ None — no external service configuration required (pure config-model code; the
 - `uv run mypy src/phaze/config_backends.py` → clean.
 - `grep -q "discriminator=.kind"` → present; no `SECRET_FILE_FIELDS` mutation in the module.
 
+## Self-Check: PASSED
+
+All 3 created files exist on disk; all 6 task commits + the SUMMARY commit are present in git history.
+
 ---
 *Phase: 67-backend-registry-config-model*
 *Completed: 2026-07-03*
