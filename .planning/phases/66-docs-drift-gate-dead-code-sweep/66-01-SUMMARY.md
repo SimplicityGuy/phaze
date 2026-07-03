@@ -116,6 +116,12 @@ None - no external service configuration required.
 - The dead-template guard now fails loudly on a dead entry-root literal (D-14).
 - **CLEAN-02 remains partially open:** this plan closed only the dead-template-guard blind-spot portion. The full-repo vulture dead-code sweep + `/saq` re-link (CLEAN-01) are separate work (expected in plan 66-02). REQUIREMENTS.md checkboxes for DOCS-01/CLEAN-01/CLEAN-02 are intentionally left `[ ]` + Pending until Phase 66 fully passes — the guard tolerates this in-flight state by design (D-05).
 
+## Self-Check: PASSED
+
+- All created/modified files verified on disk.
+- All task commits (`cf11724`, `58db0f1`, `11c71cf`, `fd424f9`) + SUMMARY commit (`440cbf0`) verified in git log.
+- Final verification: `test_requirements_traceability.py` + `test_dead_template_guard.py` → 7 passed.
+
 ---
 *Phase: 66-docs-drift-gate-dead-code-sweep*
 *Completed: 2026-07-03*
