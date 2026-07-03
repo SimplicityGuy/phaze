@@ -123,6 +123,12 @@ None - plan executed exactly as written.
 
 - CalVer is live across every forward-looking surface; the publish invariant is preserved. The remaining action is the external memory update noted above and the eventual annotated `2026.7.0` tag push at milestone completion.
 
+## Self-Check: PASSED
+
+- All modified/created files present on disk (ci.yml, pyproject.toml, uv.lock, MILESTONES.md, SUMMARY.md, both compose files).
+- Commits verified in git log: `e6dbfb5` (Task 1), `0f1b17e` (Task 2), `6dee358` (Task 3), `20a9757` (SUMMARY).
+- Working tree clean.
+
 ---
 *Phase: 65-calver-adoption*
 *Completed: 2026-07-03*
