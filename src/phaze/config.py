@@ -22,6 +22,7 @@ from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, Se
 from phaze.config_backends import (
     BackendConfig,
     BucketConfig,
+    KueueBackend,
     _default_local_registry,
     _read_secret_file,
 )
@@ -404,6 +405,42 @@ class ControlSettings(BaseSettings):
         data["backends"] = parsed.get("backends", [])
         data["buckets"] = parsed.get("buckets", [])
         return data
+
+    @model_validator(mode="after")
+    def _validate_registry(self) -> "ControlSettings":
+        """Enforce whole-registry invariants the per-variant submodels can't see (REG-04/05, D-08/D-09).
+
+        Cross-entry checks, in order:
+          * A resolved-empty registry (present-but-empty `backends = []`) fails fast rather than
+            booting with no backend — the Phase-30 silent-wedge failure mode (REG-04, Pitfall 2).
+          * Each KueueBackend's `buckets` id-list must resolve against `self.buckets`: an unknown id
+            (D-08) or an empty resolved set (D-08) fails fast, naming the offending backend id.
+          * A `scope="cluster-specific"` bucket referenced by >1 kueue backend fails fast, naming the
+            bucket id — the sharing-cardinality invariant (D-09). `scope="shared"` may be referenced
+            by many.
+        """
+        if not self.backends:
+            raise ValueError("backend registry resolved to empty — refusing to start (REG-04)")
+        bucket_by_id = {b.id: b for b in self.buckets}
+        cluster_specific_refs: dict[str, list[str]] = {}
+        for be in self.backends:
+            if not isinstance(be, KueueBackend):
+                continue
+            missing = [bid for bid in be.buckets if bid not in bucket_by_id]
+            if missing:
+                raise ValueError(f"backend {be.id!r} references unknown bucket ids {missing} (D-08)")
+            resolved = [bucket_by_id[bid] for bid in be.buckets]
+            if not resolved:
+                raise ValueError(f"backend {be.id!r} (kueue) resolves to an empty bucket set (D-08)")
+            for bucket in resolved:
+                if bucket.scope == "cluster-specific":
+                    cluster_specific_refs.setdefault(bucket.id, []).append(be.id)
+        for bid, refs in cluster_specific_refs.items():
+            if len(refs) > 1:
+                raise ValueError(
+                    f"bucket {bid!r} is scope=cluster-specific but referenced by {len(refs)} kueue backends {refs} — at most one allowed (D-09)"
+                )
+        return self
 
     # Discogsography
     discogs_match_concurrency: int = 5
