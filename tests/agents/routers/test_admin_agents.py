@@ -313,6 +313,58 @@ async def test_partial_failure_footer_uses_role_alert(smoke: AsyncClient) -> Non
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Phase 66 — discreet flag-gated /saq footer link (CLEAN-01), D-09/D-10/D-11
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_saq_link_present_when_enable_saq_ui_true(smoke: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full-page GET /admin/agents renders the discreet /saq footer link when enable_saq_ui is true.
+
+    The handler reads the flag via the ``get_settings()`` call-site, so we toggle it through the
+    env var + lru_cache-clear idiom (the conftest autouse fixture also clears the cache per test).
+    The link must open in a new tab with ``rel="noopener"`` (T-66-05 reverse-tabnabbing guard, D-11).
+    """
+    from phaze.config import get_settings
+
+    monkeypatch.setenv("PHAZE_ENABLE_SAQ_UI", "true")
+    get_settings.cache_clear()
+
+    response = await smoke.get("/admin/agents")
+    assert response.status_code == 200, response.text
+    body = response.text
+    assert 'href="/saq"' in body, "flag-gated /saq footer link must be present when enable_saq_ui is true"
+    assert 'target="_blank"' in body, "the /saq link must open in a new tab (D-11)"
+    assert 'rel="noopener"' in body, "the /saq link must carry rel=noopener (reverse-tabnabbing guard, T-66-05)"
+
+
+@pytest.mark.asyncio
+async def test_saq_link_absent_when_enable_saq_ui_false(smoke: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full-page GET /admin/agents omits the /saq link when enable_saq_ui is false.
+
+    When the flag is off, the ``/saq`` sub-app is not mounted (main.py), so the link must NOT
+    render — otherwise it would dangle as a dead 404 (D-09 / T-66-07).
+    """
+    from phaze.config import get_settings
+
+    monkeypatch.setenv("PHAZE_ENABLE_SAQ_UI", "false")
+    get_settings.cache_clear()
+
+    response = await smoke.get("/admin/agents")
+    assert response.status_code == 200, response.text
+    body = response.text
+    assert 'href="/saq"' not in body, "the /saq link must be absent when enable_saq_ui is false (never a dead 404)"
+
+
+@pytest.mark.asyncio
+async def test_saq_link_absent_from_poll_partial(smoke: AsyncClient) -> None:
+    """The polled /_table partial never carries the /saq link — it lives only in the page shell."""
+    response = await smoke.get("/admin/agents/_table")
+    assert response.status_code == 200
+    assert 'href="/saq"' not in response.text, "the /saq link must not leak into the polled partial"
+
+
 @pytest.mark.asyncio
 async def test_router_registered_in_main_app() -> None:
     """admin_agents.router is registered in main.create_app() (production wiring)."""
