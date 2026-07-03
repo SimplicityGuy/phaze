@@ -20,7 +20,7 @@ Covers five invariants for ``docker-compose.agent.yml``:
 
 A sixth test (WARNING-4) parses ``.github/workflows/docker-publish.yml`` and
 asserts the ``docker/metadata-action`` step emits BOTH a ``:latest`` tag and a
-``:v<version>`` tag pattern.
+``:<version>`` tag pattern.
 
 These tests deliberately use ``yaml.safe_load`` so the assertions are robust
 against YAML reformatting. ``yaml.safe_load`` does NOT perform docker-compose
@@ -171,7 +171,7 @@ def _metadata_action_tag_lines(step: dict[str, Any]) -> list[str]:
 
 
 def test_docker_publish_workflow_tags_both_latest_and_version() -> None:
-    """WARNING-4: .github/workflows/docker-publish.yml emits BOTH :latest AND :v<version> tags.
+    """WARNING-4: .github/workflows/docker-publish.yml emits BOTH :latest AND :<version> tags.
 
     Replaces the original `checkpoint:human-verify` task (Phase 29 plan 04
     WARNING-4 resolution). An automated YAML-parse test guarantees the tag
@@ -181,14 +181,14 @@ def test_docker_publish_workflow_tags_both_latest_and_version() -> None:
 
     Tag patterns accepted:
       - `:latest` ← `type=raw,value=latest` (with or without `enable=...`)
-      - `:v<version>` ← `type=semver,pattern={{version}}` OR `type=ref,event=tag`
+      - `:<version>` ← `type=semver,pattern={{version}}` OR `type=ref,event=tag`
     """
     assert PUBLISH_WORKFLOW_PATH.exists(), f"docker-publish.yml missing at {PUBLISH_WORKFLOW_PATH}"
     workflow = yaml.safe_load(PUBLISH_WORKFLOW_PATH.read_text())
     step = _extract_api_metadata_action_step(workflow)
     assert step is not None, (
         "Could not locate a docker/metadata-action step in docker-publish.yml. "
-        "Phase 29 D-16 requires the workflow to produce both :latest and :v<version> tags."
+        "Phase 29 D-16 requires the workflow to produce both :latest and :<version> tags."
     )
     tags = _metadata_action_tag_lines(step)
     assert tags, f"docker/metadata-action step has no `with.tags:` block; got step={step!r}"
@@ -314,13 +314,15 @@ def _ci_detect_changes_filter_step() -> dict[str, Any]:
 
 
 def test_ci_workflow_triggers_on_version_tags() -> None:
-    """Release fix: ci.yml fires on a 3-part semver tag push (and still on branches).
+    """Release fix: ci.yml fires on a bare 3-part CalVer tag push (and still on branches).
 
     Without ``on.push.tags``, pushing a release tag runs NO workflow, so
     docker-publish never builds the version-tagged GHCR image and the
-    documented ``PHAZE_IMAGE_TAG=vX.Y.Z`` pin is unusable. This test fails if
-    the tag trigger is dropped, and also guards that branch CI is not lost in
-    the process.
+    documented ``PHAZE_IMAGE_TAG=YYYY.MM.REVISION`` pin (first tag
+    ``2026.7.0``) is unusable. Under CalVer adoption (D-02) the tag glob is the
+    bare ``[0-9]+.[0-9]+.[0-9]+`` form with NO leading ``v`` — this test fails
+    if the CalVer glob is dropped, if the legacy ``v*.*.*`` glob lingers, and
+    guards that branch CI is not lost in the process.
     """
     assert CI_WORKFLOW_PATH.exists(), f"ci.yml missing at {CI_WORKFLOW_PATH}"
     data = yaml.safe_load(CI_WORKFLOW_PATH.read_text())
@@ -329,9 +331,12 @@ def test_ci_workflow_triggers_on_version_tags() -> None:
     assert isinstance(push, dict), f"ci.yml `on.push` must be a mapping; got {push!r}"
 
     tags = push.get("tags")
-    assert isinstance(tags, list) and any("v*.*.*" in str(t) for t in tags), (
-        f'ci.yml must trigger on 3-part semver tags. Add `on.push.tags: ["v*.*.*"]` so release-tag pushes run the publish pipeline; got tags={tags!r}'
+    CALVER_GLOB = "[0-9]+.[0-9]+.[0-9]+"
+    assert isinstance(tags, list) and any(CALVER_GLOB in str(t) for t in tags), (
+        f'ci.yml must trigger on the bare CalVer glob {CALVER_GLOB!r}. Add `on.push.tags: ["{CALVER_GLOB}"]` '
+        f"so CalVer release-tag pushes (first tag 2026.7.0) run the publish pipeline; got tags={tags!r}"
     )
+    assert not any("v*.*.*" in str(t) for t in tags), "legacy v*.*.* glob must be dropped (D-02: CalVer-only)"
 
     branches = push.get("branches")
     assert isinstance(branches, list) and branches, (
