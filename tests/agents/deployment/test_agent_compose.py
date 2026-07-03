@@ -20,7 +20,7 @@ Covers five invariants for ``docker-compose.agent.yml``:
 
 A sixth test (WARNING-4) parses ``.github/workflows/docker-publish.yml`` and
 asserts the ``docker/metadata-action`` step emits BOTH a ``:latest`` tag and a
-``:v<version>`` tag pattern.
+``:<version>`` tag pattern.
 
 These tests deliberately use ``yaml.safe_load`` so the assertions are robust
 against YAML reformatting. ``yaml.safe_load`` does NOT perform docker-compose
@@ -40,6 +40,8 @@ COMPOSE_PATH = Path(__file__).resolve().parents[3] / "docker-compose.agent.yml"
 PUBLISH_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "docker-publish.yml"
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml"
 CLEANUP_WORKFLOW_PATH = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "cleanup-images.yml"
+MILESTONES_PATH = Path(__file__).resolve().parents[3] / ".planning" / "MILESTONES.md"
+DEPLOYMENT_DOC_PATH = Path(__file__).resolve().parents[3] / "docs" / "deployment.md"
 
 
 def _load_agent_compose() -> dict[str, Any]:
@@ -171,7 +173,7 @@ def _metadata_action_tag_lines(step: dict[str, Any]) -> list[str]:
 
 
 def test_docker_publish_workflow_tags_both_latest_and_version() -> None:
-    """WARNING-4: .github/workflows/docker-publish.yml emits BOTH :latest AND :v<version> tags.
+    """WARNING-4: .github/workflows/docker-publish.yml emits BOTH :latest AND :<version> tags.
 
     Replaces the original `checkpoint:human-verify` task (Phase 29 plan 04
     WARNING-4 resolution). An automated YAML-parse test guarantees the tag
@@ -181,14 +183,14 @@ def test_docker_publish_workflow_tags_both_latest_and_version() -> None:
 
     Tag patterns accepted:
       - `:latest` ← `type=raw,value=latest` (with or without `enable=...`)
-      - `:v<version>` ← `type=semver,pattern={{version}}` OR `type=ref,event=tag`
+      - `:<version>` ← `type=semver,pattern={{version}}` OR `type=ref,event=tag`
     """
     assert PUBLISH_WORKFLOW_PATH.exists(), f"docker-publish.yml missing at {PUBLISH_WORKFLOW_PATH}"
     workflow = yaml.safe_load(PUBLISH_WORKFLOW_PATH.read_text())
     step = _extract_api_metadata_action_step(workflow)
     assert step is not None, (
         "Could not locate a docker/metadata-action step in docker-publish.yml. "
-        "Phase 29 D-16 requires the workflow to produce both :latest and :v<version> tags."
+        "Phase 29 D-16 requires the workflow to produce both :latest and :<version> tags."
     )
     tags = _metadata_action_tag_lines(step)
     assert tags, f"docker/metadata-action step has no `with.tags:` block; got step={step!r}"
@@ -314,13 +316,15 @@ def _ci_detect_changes_filter_step() -> dict[str, Any]:
 
 
 def test_ci_workflow_triggers_on_version_tags() -> None:
-    """Release fix: ci.yml fires on a 3-part semver tag push (and still on branches).
+    """Release fix: ci.yml fires on a bare 3-part CalVer tag push (and still on branches).
 
     Without ``on.push.tags``, pushing a release tag runs NO workflow, so
     docker-publish never builds the version-tagged GHCR image and the
-    documented ``PHAZE_IMAGE_TAG=vX.Y.Z`` pin is unusable. This test fails if
-    the tag trigger is dropped, and also guards that branch CI is not lost in
-    the process.
+    documented ``PHAZE_IMAGE_TAG=YYYY.MM.REVISION`` pin (first tag
+    ``2026.7.0``) is unusable. Under CalVer adoption (D-02) the tag glob is the
+    bare ``[0-9]+.[0-9]+.[0-9]+`` form with NO leading ``v`` — this test fails
+    if the CalVer glob is dropped, if the legacy ``v*.*.*`` glob lingers, and
+    guards that branch CI is not lost in the process.
     """
     assert CI_WORKFLOW_PATH.exists(), f"ci.yml missing at {CI_WORKFLOW_PATH}"
     data = yaml.safe_load(CI_WORKFLOW_PATH.read_text())
@@ -329,9 +333,12 @@ def test_ci_workflow_triggers_on_version_tags() -> None:
     assert isinstance(push, dict), f"ci.yml `on.push` must be a mapping; got {push!r}"
 
     tags = push.get("tags")
-    assert isinstance(tags, list) and any("v*.*.*" in str(t) for t in tags), (
-        f'ci.yml must trigger on 3-part semver tags. Add `on.push.tags: ["v*.*.*"]` so release-tag pushes run the publish pipeline; got tags={tags!r}'
+    CALVER_GLOB = "[0-9]+.[0-9]+.[0-9]+"
+    assert isinstance(tags, list) and any(CALVER_GLOB in str(t) for t in tags), (
+        f'ci.yml must trigger on the bare CalVer glob {CALVER_GLOB!r}. Add `on.push.tags: ["{CALVER_GLOB}"]` '
+        f"so CalVer release-tag pushes (first tag 2026.7.0) run the publish pipeline; got tags={tags!r}"
     )
+    assert not any("v*.*.*" in str(t) for t in tags), "legacy v*.*.* glob must be dropped (D-02: CalVer-only)"
 
     branches = push.get("branches")
     assert isinstance(branches, list) and branches, (
@@ -425,4 +432,78 @@ def test_cleanup_package_list_matches_published_images() -> None:
         f"  published but never pruned: {sorted(only_published)}\n"
         f"  pruned but never published: {sorted(only_cleanup)}\n"
         "Fix: keep cleanup-images.yml's matrix.package in sync with docker-publish.yml's image_suffix set."
+    )
+
+
+def test_milestones_mapping_table_intact() -> None:
+    """VER-04 (D-09/D-10, D-01/D-11): MILESTONES.md carries the milestone↔version mapping table.
+
+    CalVer adoption keeps the historical ``vN.M`` record intact while adding the
+    first CalVer release. This guard asserts ``.planning/MILESTONES.md`` contains
+    a ``| Milestone | Version | Date |`` mapping table whose rows preserve every
+    historical version string ``v1.0``..``v7.0`` verbatim (D-10) AND add the bare
+    CalVer ``2026.7.0`` row (D-01/D-11). It fails if the table header is missing,
+    if a historical version is dropped/rewritten, or if the CalVer row is absent —
+    catching a mapping regression at CI time.
+
+    Substring membership only (robust to whitespace/column-order); does NOT parse
+    Markdown table structure.
+    """
+    assert MILESTONES_PATH.exists(), f".planning/MILESTONES.md missing at {MILESTONES_PATH}"
+    text = MILESTONES_PATH.read_text()
+
+    header_ok = any("|" in line and "Milestone" in line and "Version" in line and "Date" in line for line in text.splitlines())
+
+    historical_versions = ["v1.0", "v2.0", "v3.0", "v4.0", "v5.0", "v6.0", "v7.0"]
+    missing_versions = [v for v in historical_versions if v not in text]
+    calver_ok = "2026.7.0" in text
+
+    problems: list[str] = []
+    if not header_ok:
+        problems.append("a `| Milestone | Version | Date |` mapping-table header row (columns may be reordered)")
+    if missing_versions:
+        problems.append(f"the historical version rows {missing_versions} (each vN.M must appear verbatim — D-10)")
+    if not calver_ok:
+        problems.append("the first CalVer row `2026.7.0` (D-01/D-11)")
+    assert not problems, (
+        "MILESTONES.md milestone↔version mapping table is incomplete:\n"
+        + "\n".join(f"  - missing {p}" for p in problems)
+        + "\nFix: add/restore the `| Milestone | Version | Date |` table in .planning/MILESTONES.md "
+        "with the v1.0..v7.0 historical rows verbatim plus the 2026.7.0 row."
+    )
+
+
+def test_calver_scheme_documented() -> None:
+    """VER-01 (D-07): the CalVer scheme is documented in deployment docs / MILESTONES.
+
+    The release procedure must document the ``YYYY.MM.REVISION`` scheme, the first
+    tag ``2026.7.0``, the no-leading-zero month rule (``2026.7.0`` not
+    ``2026.07.0``), and the per-month zero-based REVISION convention. The prose may
+    live in EITHER ``docs/deployment.md`` OR ``.planning/MILESTONES.md`` (combined
+    membership), so Plan 02 can place it wherever it reads best. This guard fails
+    until that prose exists, naming exactly which element is undocumented.
+    """
+    assert DEPLOYMENT_DOC_PATH.exists(), f"docs/deployment.md missing at {DEPLOYMENT_DOC_PATH}"
+    assert MILESTONES_PATH.exists(), f".planning/MILESTONES.md missing at {MILESTONES_PATH}"
+    combined = DEPLOYMENT_DOC_PATH.read_text() + "\n" + MILESTONES_PATH.read_text()
+    combined_lower = combined.lower()
+
+    month_rule_ok = ("leading-zero" in combined_lower or "leading zero" in combined_lower) and "month" in combined_lower
+    revision_rule_ok = "revision" in combined_lower and (
+        "zero-based" in combined_lower or "per-month" in combined_lower or "resets" in combined_lower
+    )
+
+    problems: list[str] = []
+    if "YYYY.MM.REVISION" not in combined:
+        problems.append("the `YYYY.MM.REVISION` scheme string")
+    if "2026.7.0" not in combined:
+        problems.append("the first CalVer tag `2026.7.0`")
+    if not month_rule_ok:
+        problems.append("the no-leading-zero month rule (e.g. `2026.7.0`, not `2026.07.0`)")
+    if not revision_rule_ok:
+        problems.append("the per-month zero-based REVISION convention")
+    assert not problems, (
+        "CalVer scheme is not fully documented:\n"
+        + "\n".join(f"  - missing {p}" for p in problems)
+        + "\nFix: document the CalVer scheme in docs/deployment.md and/or .planning/MILESTONES.md."
     )
