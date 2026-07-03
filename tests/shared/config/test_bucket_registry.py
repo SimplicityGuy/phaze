@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from phaze.config import ControlSettings
 from phaze.config_backends import BucketConfig, ComputeBackend, KueueBackend, LocalBackend
 
@@ -110,3 +112,133 @@ def test_kueue_backend_with_kube_table_parses(backends_toml_env) -> None:  # typ
     assert kueue.kube is not None
     assert kueue.kube.api_url == "https://kube.example.com"
     assert kueue.buckets == ["bucket-a"]
+
+
+# --------------------------------------------------------------------------- #
+# Task 2: container cross-entry validator (empty / bucket-cardinality / scope)
+# --------------------------------------------------------------------------- #
+_KUEUE_KUBE = """
+[backends.kube]
+api_url = "https://kube.example.com"
+namespace = "phaze"
+local_queue = "phaze-lq"
+"""
+
+
+def test_present_but_empty_registry_fails_fast(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A present-but-empty `backends = []` fails fast rather than silently booting empty (REG-04, Pitfall 2)."""
+    backends_toml_env("backends = []\n")
+    with pytest.raises(ValueError, match="empty"):
+        ControlSettings()
+
+
+def test_kueue_referencing_unknown_bucket_fails_fast(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A kueue backend referencing an unknown bucket id fails fast, naming the backend id + missing ids (D-08)."""
+    backends_toml_env(
+        f"""
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-x"
+        rank = 10
+        cap = 4
+        buckets = ["ghost-bucket"]
+        {_KUEUE_KUBE}
+        """
+    )
+    with pytest.raises(ValueError, match=r"kueue-x"):
+        ControlSettings()
+
+
+def test_kueue_with_empty_bucket_set_fails_fast(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A kueue backend whose resolved bucket set is empty fails fast (D-08)."""
+    backends_toml_env(
+        f"""
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-empty"
+        rank = 10
+        cap = 4
+        buckets = []
+        {_KUEUE_KUBE}
+        """
+    )
+    with pytest.raises(ValueError, match=r"kueue-empty"):
+        ControlSettings()
+
+
+def test_two_kueue_sharing_cluster_specific_bucket_rejected(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A cluster-specific bucket referenced by two kueue backends fails fast, naming the bucket id (D-09)."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-a"
+        rank = 10
+        cap = 4
+        buckets = ["cs-bucket"]
+
+        [backends.kube]
+        api_url = "https://a.example.com"
+        namespace = "phaze"
+        local_queue = "lq-a"
+
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-b"
+        rank = 20
+        cap = 4
+        buckets = ["cs-bucket"]
+
+        [backends.kube]
+        api_url = "https://b.example.com"
+        namespace = "phaze"
+        local_queue = "lq-b"
+
+        [[buckets]]
+        id = "cs-bucket"
+        scope = "cluster-specific"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-cs"
+        """
+    )
+    with pytest.raises(ValueError, match=r"cs-bucket"):
+        ControlSettings()
+
+
+def test_two_kueue_sharing_shared_bucket_accepted(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A shared-scope bucket may be referenced by many kueue backends — constructs cleanly (D-09)."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-a"
+        rank = 10
+        cap = 4
+        buckets = ["shared-bucket"]
+
+        [backends.kube]
+        api_url = "https://a.example.com"
+        namespace = "phaze"
+        local_queue = "lq-a"
+
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-b"
+        rank = 20
+        cap = 4
+        buckets = ["shared-bucket"]
+
+        [backends.kube]
+        api_url = "https://b.example.com"
+        namespace = "phaze"
+        local_queue = "lq-b"
+
+        [[buckets]]
+        id = "shared-bucket"
+        scope = "shared"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-shared"
+        """
+    )
+    settings = ControlSettings()
+    assert [b.id for b in settings.backends] == ["kueue-a", "kueue-b"]
