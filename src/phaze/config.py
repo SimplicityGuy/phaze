@@ -12,20 +12,29 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import tomllib
-from typing import Annotated, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, SettingsConfigDict
+import structlog
 
 from phaze.config_backends import (
     BackendConfig,
     BucketConfig,
+    ComputeBackend,
     KueueBackend,
     _default_local_registry,
     _read_secret_file,
 )
+
+
+if TYPE_CHECKING:
+    from phaze.config_backends import KubeConfig
+
+
+logger = structlog.get_logger(__name__)
 
 
 def _direct_env_names(field_name: str, field_info: Any) -> list[str]:
@@ -441,6 +450,88 @@ class ControlSettings(BaseSettings):
                     f"bucket {bid!r} is scope=cluster-specific but referenced by {len(refs)} kueue backends {refs} — at most one allowed (D-09)"
                 )
         return self
+
+    @property
+    def cloud_enabled(self) -> bool:
+        """True iff the registry holds any non-local backend (D-14/D-15).
+
+        The single registry-derived on/off gate the Wave-3 Class-A call sites rewire against: the
+        implicit-local registry has only a kind=local backend → False (pure local analysis, no cloud
+        activity); any compute/kueue backend → True.
+        """
+        return any(backend.kind != "local" for backend in self.backends)
+
+    def _single_non_local(self) -> "BackendConfig | None":
+        """Return the sole non-local backend, or None when all-local.
+
+        TRANSITIONAL — removed in Phase 68 (BACK-01): the ≤1-non-local reduction the legacy dispatch
+        call sites read through the accessors below. Raises when >1 non-local backend exists —
+        multi-backend dispatch lands in Phase 69 (SCHED); this reduction must NEVER silently pick one.
+        """
+        non_local = [backend for backend in self.backends if backend.kind != "local"]
+        if not non_local:
+            return None
+        if len(non_local) > 1:
+            raise ValueError(
+                f"multi-backend dispatch lands in Phase 69 (SCHED): {len(non_local)} non-local backends "
+                f"{[backend.id for backend in non_local]} are configured, but the transitional accessors reduce only a ≤1-non-local registry"
+            )
+        return non_local[0]
+
+    @property
+    def active_cloud_kind(self) -> Literal["compute", "kueue"] | None:
+        """The single non-local backend's kind, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        if backend is None or backend.kind == "local":
+            return None
+        return backend.kind
+
+    @property
+    def active_cap(self) -> int | None:
+        """The single non-local backend's concurrency cap, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        return backend.cap if backend is not None else None
+
+    @property
+    def active_compute_scratch_dir(self) -> str | None:
+        """The single compute backend's scratch_dir, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        return backend.scratch_dir if isinstance(backend, ComputeBackend) else None
+
+    @property
+    def active_kube(self) -> "KubeConfig | None":
+        """The single kueue backend's KubeConfig, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        backend = self._single_non_local()
+        return backend.kube if isinstance(backend, KueueBackend) else None
+
+    @property
+    def active_bucket(self) -> "BucketConfig | None":
+        """The single kueue backend's single resolved BucketConfig, else None. TRANSITIONAL — removed in Phase 68 (BACK-01).
+
+        Raises when the resolved set has >1 bucket — per-file bucket selection lands in Phase 70
+        (MKUE-02); this reduction must NEVER silently pick one.
+        """
+        backend = self._single_non_local()
+        if not isinstance(backend, KueueBackend):
+            return None
+        bucket_by_id = {bucket.id: bucket for bucket in self.buckets}
+        resolved = [bucket_by_id[bid] for bid in backend.buckets if bid in bucket_by_id]
+        if len(resolved) > 1:
+            raise ValueError(
+                f"per-file bucket selection lands in Phase 70 (MKUE-02): kueue backend {backend.id!r} resolves to "
+                f"{len(resolved)} buckets, but the transitional accessor reduces only a single-bucket set"
+            )
+        return resolved[0] if resolved else None
+
+    def log_effective_registry(self) -> None:
+        """Emit a secret-free id/kind/rank/cap projection of the resolved registry at startup (REG-04, Pitfall 5).
+
+        Logs ONLY the ``{id, kind, rank, cap}`` projection per backend — never a whole backend/bucket
+        model, a ``SecretStr``, or a ``*_file`` mount path — so secret material can never leak into
+        logs. Plan 05 wires the CALL into controller startup; this method only defines the projection.
+        """
+        projection = [{"id": backend.id, "kind": backend.kind, "rank": backend.rank, "cap": backend.cap} for backend in self.backends]
+        logger.info("phaze.config effective backend registry", backends=projection, cloud_enabled=self.cloud_enabled)
 
     # Discogsography
     discogs_match_concurrency: int = 5
