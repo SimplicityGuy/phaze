@@ -72,6 +72,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     # credentials -- queue_url is a SECRET_FILE_FIELDS member). Report the backend + queue name only.
     logger.info("phaze.controller startup role=control queue=controller backend=postgres")
 
+    # Phase 67 (REG-04): log the resolved backend registry ONCE at boot. The projection is
+    # secret-free by construction (id/kind/rank/cap only -- never a SecretStr, kube DSN, or SA
+    # token; Plan 02 owns the projection, Pitfall 5). This is the operator's boot-time visibility
+    # into which backends are active (implicit-local vs. a configured compute/kueue registry).
+    cfg.log_effective_registry()  # type: ignore[attr-defined]
+
     # Shared async engine pool for all fileless task functions (INFRA-01 from v1.0).
     task_engine = create_async_engine(
         str(cfg.database_url),
@@ -159,12 +165,13 @@ async def startup(ctx: dict[str, Any]) -> None:
 
     # Phase 56 (KDEPLOY-04, D-05/D-06): live LocalQueue-reachability probe. This is a RUNTIME probe,
     # distinct from the three fail-fast kube config validators -- it GETs the configured Kueue
-    # LocalQueue and writes a cross-process flag the dashboard reads. Gated on cloud_target == "k8s"
-    # so a non-k8s control plane never touches kube. Wrapped in its OWN broad try/except mirroring the
+    # LocalQueue and writes a cross-process flag the dashboard reads. Gated on active_cloud_kind == "kueue"
+    # so a non-kueue control plane never touches kube. Wrapped in its OWN broad try/except mirroring the
     # recovery block above: a transient kube/mesh blip MUST NEVER abort controller boot (D-05 -- the
     # control plane still boots Postgres/Redis/UI/local-analysis). The WARNING names only the env var
     # PHAZE_KUBE_LOCAL_QUEUE; it never interpolates the SA token or kube DSN (T-56-LOG / T-54-07).
-    if cfg.cloud_target == "k8s":  # type: ignore[attr-defined]
+    # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
+    if cfg.active_cloud_kind == "kueue":  # type: ignore[attr-defined]
         # Probe the LocalQueue and persist the flag in two INDEPENDENTLY-guarded steps. CR-01: the flag
         # write is the FIRST Redis call in startup (backfill/recovery above use Postgres), so a Redis-down
         # boot would let an unguarded ``.set``/``.delete`` propagate and crash the control worker -- the
@@ -187,10 +194,11 @@ async def startup(ctx: dict[str, Any]) -> None:
         except Exception:
             logger.warning("phaze.controller startup: could not persist LocalQueue-reachability flag; control plane boots regardless (D-05)")
     else:
-        # WR-01: the flag lives in long-lived Redis. Switching the control plane away from k8s (the
-        # documented one-flip ``PHAZE_CLOUD_TARGET=k8s`` -> ``local`` revert) must clear any stale flag,
-        # else the dashboard shows a perpetual false LocalQueue-unreachable alert. Best-effort + guarded:
-        # a Redis blip on a non-k8s boot must not abort the control plane either (D-05).
+        # WR-01: the flag lives in long-lived Redis. Switching the control plane away from kueue (the
+        # documented revert = drop the kueue backend from backends.toml so the registry resolves all-local)
+        # must clear any stale flag, else the dashboard shows a perpetual false LocalQueue-unreachable
+        # alert. Best-effort + guarded: a Redis blip on a non-kueue boot must not abort the control plane
+        # either (D-05).
         try:
             await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
         except Exception:
