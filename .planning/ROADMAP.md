@@ -960,8 +960,17 @@ Plans:
   4. The dead-template guard's blind spot for its own unused entry-root literals (per the v7.0 retrospective) is closed. (CLEAN-02)
 
 **Notes**: CLEAN-01/02 are presentation- and dead-code-only — no backend behavior change. DOCS-01 closes the manual REQUIREMENTS/ROADMAP sync gap called out across the retrospectives.
-**Plans**: TBD
+**Plans**: 3 plans
 **UI hint**: yes
+
+**Wave 1** *(parallel — no file overlap)*
+
+- [ ] 66-01-PLAN.md — DOCS-01 traceability drift guard (5 drift classes, active-vs-archived degradation, in-flight tolerance) + D-14 dead-template entry-literal check + `just docs-drift` wired into the always-run code-quality job
+- [ ] 66-02-PLAN.md — CLEAN-01 discreet flag-gated `/saq` footer link on the Agents page (enable_saq_ui context + template + render test)
+
+**Wave 2** *(blocked on Wave 1 — shares justfile + benefits from a green tree per the D-12 guardrail)*
+
+- [ ] 66-03-PLAN.md — CLEAN-02 vulture dead-code sweep: legitimacy checkpoint + `vulture>=2.16` dev dep + hand-audited whitelist + `just vulture` recipe + manual-verify confirmed-dead deletions
 
 ## Backlog (unscheduled — no phase number yet)
 
