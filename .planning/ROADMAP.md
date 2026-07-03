@@ -220,7 +220,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
 | 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete    | 2026-07-03 |
-| 67. Backend Registry & Config Model | 2026.7.1 | 2/6 | In Progress|  |
+| 67. Backend Registry & Config Model | 2026.7.1 | 5/6 | In Progress|  |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 0/TBD | Not started | - |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 0/TBD | Not started | - |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 0/TBD | Not started | - |
@@ -1019,9 +1019,9 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 67-03-PLAN.md — Rewire routing/staging-cron/backfill/templates to cloud_enabled + transitional accessors (REG-04, Class A/B/C)
-- [ ] 67-04-PLAN.md — Rewire s3_staging.py + kube_staging.py flat-field reads to active_bucket/active_kube transitional accessors (REG-04)
-- [ ] 67-05-PLAN.md — Rewire agent_s3/agent_push/controller callbacks + probe gate + wire startup registry log (REG-04)
+- [x] 67-03-PLAN.md — Rewire routing/staging-cron/backfill/templates to cloud_enabled + transitional accessors (REG-04, Class A/B/C)
+- [x] 67-04-PLAN.md — Rewire s3_staging.py + kube_staging.py flat-field reads to active_bucket/active_kube transitional accessors (REG-04)
+- [x] 67-05-PLAN.md — Rewire agent_s3/agent_push/controller callbacks + probe gate + wire startup registry log (REG-04)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
