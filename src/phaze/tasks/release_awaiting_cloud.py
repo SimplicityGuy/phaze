@@ -120,12 +120,15 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     # worker (PHAZE_ROLE=control), so get_settings() returns ControlSettings here (mirrors the
     # controller.startup llm_model/llm_max_rpm access pattern).
     cfg = get_settings()
-    # Phase 55 (D-02): cloud-target gate. 'local' (cloud off) -> clean no-op BEFORE the advisory
-    # lock + window logic, so the cron introduces NO new cloud push work. NEVER raise
+    # Phase 67 (D-14, REG-04): registry on/off gate. An all-local registry (cloud_enabled False) ->
+    # clean no-op BEFORE the advisory lock + window logic, so the cron introduces NO new cloud push
+    # work. Byte-identical to the former ``== "local"`` selector for the all-local deploy. NEVER raise
     # (T-50-cron-raise discipline, matching the GATE 1/2 no-op contract below).
-    if cfg.cloud_target == "local":  # type: ignore[attr-defined]
+    if not cfg.cloud_enabled:  # type: ignore[attr-defined]
         return {"staged": 0, "skipped": 0}
-    max_in_flight = cfg.cloud_max_in_flight  # type: ignore[attr-defined]
+    # active_cap is the ≤1-non-local reduction of the former cloud_max_in_flight (# TRANSITIONAL —
+    # Phase 68); non-None here because the cloud_enabled gate short-circuited the all-local case above.
+    max_in_flight = cfg.active_cap  # type: ignore[attr-defined]
 
     async with ctx["async_session"]() as session:
         # WR-04: serialize overlapping cron ticks. A transaction-scoped advisory lock makes the
@@ -139,7 +142,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # Kueue pods (no persistent compute agent), so on the k8s branch GATE 1 is SKIPPED -- else
         # every k8s file would wedge in AWAITING_CLOUD forever (Landmine L2). GATE 2 (fileserver)
         # below stays for BOTH targets (the fileserver owns the media mount + runs the S3 upload).
-        if cfg.cloud_target == "a1":  # type: ignore[attr-defined]
+        if cfg.active_cloud_kind == "compute":  # type: ignore[attr-defined]  # TRANSITIONAL — Phase 68
             try:
                 await select_active_agent(session, kind="compute")
             except NoActiveAgentError:
@@ -165,7 +168,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             logger.info("stage_cloud_window hold: no fileserver agent online", candidates=len(candidates))
             return {"staged": 0, "skipped": len(candidates)}
 
-        # Phase 55 (D-01a): ONE branch forks on cloud_target inside the SAME window. Both targets
+        # Phase 55 (D-01a): ONE branch forks on the active cloud kind inside the SAME window. Both kinds
         # reuse the advisory lock + FIFO claim + window/slots math + the SINGLE post-loop commit.
         task_router = ctx["task_router"]
         push_queue = task_router.queue_for(fileserver_agent.id)
@@ -174,7 +177,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # Flip to PUSHING BEFORE the enqueue dedup outcome is known: a deduped (already-live) push
             # still owns the file, so the window count stays honest on the next tick.
             file.state = FileState.PUSHING
-            if cfg.cloud_target == "k8s":  # type: ignore[attr-defined]
+            if cfg.active_cloud_kind == "kueue":  # type: ignore[attr-defined]  # TRANSITIONAL — Phase 68
                 # k8s: stage to S3 via the NO-COMMIT core (L1) -- NEVER the committing public
                 # stage_file_to_s3 (a mid-loop commit would release the advisory lock + row locks
                 # and re-open the over-stage class). It enqueues s3_upload (not push_file); the
