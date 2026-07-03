@@ -32,9 +32,9 @@
 #   - network_mode: host is present on the worker (D-05 host tailscaled).
 #
 # Image tag pinning (D-08/D-16): default `latest-arm64` is convenient for first
-# bring-up. Production should pin a specific version via `PHAZE_IMAGE_TAG=v5.0.0`
+# bring-up. Production should pin a specific version via `PHAZE_IMAGE_TAG=2026.7.0`
 # in .env; the docker-publish.yml build-arm64 job tags both `:latest-arm64` and
-# `:v<version>-arm64` (verified by test_docker_publish_arm64_job_tags_latest_and_version).
+# `:<version>-arm64` (verified by test_docker_publish_arm64_job_tags_latest_and_version).
 #
 # Secrets (D-06): no plaintext secrets are inlined here. The worker reads the
 # existing `*_FILE` machinery (PHAZE_QUEUE_URL_FILE, PHAZE_AGENT_TOKEN_FILE,

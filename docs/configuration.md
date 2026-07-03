@@ -288,7 +288,7 @@ These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.a
 | `UID`              | No       | `1000`        | Host user ID for volume permissions.                                       |
 | `GID`              | No       | `1000`        | Host group ID for volume permissions.                                      |
 | `CA_PATH`          | No       | `./certs`     | Host path bind-mounted read-only to `/certs` in agent containers (operator-distributed CA cert). |
-| `PHAZE_IMAGE_TAG`  | No       | `latest`      | GHCR image tag pulled by `docker-compose.agent.yml` (e.g., `v4.0.0`).      |
+| `PHAZE_IMAGE_TAG`  | No       | `latest`      | GHCR image tag pulled by `docker-compose.agent.yml` (e.g., `2026.7.0`).      |
 
 ## Config file format
 
@@ -347,4 +347,4 @@ There are no `.env.development` / `.env.production` files; environment selection
 - **Redis exposure** — keep `REDIS_BIND_IP=127.0.0.1` in dev; set it to the app server's LAN IP in production so agents on other hosts can reach Redis.
 - **TLS SANs** — extend `PHAZE_API_TLS_SANS` with the app server's production LAN hostname / IP so agents can verify the TLS handshake.
 - **Migrations** — set `PHAZE_AUTO_MIGRATE=false` in production to run Alembic migrations manually during a maintenance window.
-- **Agent images** — `docker-compose.agent.yml` pulls `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}`; pin `PHAZE_IMAGE_TAG` (e.g., `v4.0.0`) per deployment.
+- **Agent images** — `docker-compose.agent.yml` pulls `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}`; pin `PHAZE_IMAGE_TAG` (e.g., `2026.7.0`) per deployment.

@@ -24,8 +24,8 @@
 #
 # Image tag pinning (D-16): default `latest` is convenient for first-time
 # operators. Production should pin to a specific version tag via
-# `PHAZE_IMAGE_TAG=v4.0.0` in .env. The docker-publish.yml workflow tags both
-# `:latest` and `:v<version>` on tagged releases (verified by
+# `PHAZE_IMAGE_TAG=2026.7.0` in .env. The docker-publish.yml workflow tags both
+# `:latest` and `:<version>` on tagged releases (verified by
 # test_docker_publish_workflow_tags_both_latest_and_version).
 
 services:
