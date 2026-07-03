@@ -19,8 +19,9 @@ path.
 """
 
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
 class LocalBackend(BaseModel):
@@ -86,9 +87,60 @@ BackendConfig = Annotated[
 
 
 class KubeConfig(BaseModel):
-    """Nested kube config for a KueueBackend. Full field set defined in Task 2."""
+    """Per-entry kube config for a KueueBackend.
+
+    A per-entry superset of the former flat ``kube_*`` block (config.py:534-595) so Plan 04's
+    staging-service rewire has a home for every read (D-13). Credential fields are ``SecretStr`` so
+    accidental interpolation prints ``**********`` and they are never echoed in logs (T-67-01-02).
+    """
 
     api_url: str | None = None
+    namespace: str | None = None
+    local_queue: str | None = None
+    job_image: str | None = None
+    cpu_request: str | None = None
+    memory_request: str | None = None
+    workload_api_version: str = "kueue.x-k8s.io/v1beta1"
+    # Kubernetes object *names* (not secrets); use Field(default=...) so ruff's S105 does not flag
+    # the "secret"/"token" substring on a bare assignment, mirroring config.py's kube_*_name fields.
+    ca_secret_name: str = Field(default="phaze-internal-ca")
+    env_configmap_name: str = "phaze-agent-env"
+    env_secret_name: str = Field(default="phaze-agent-token")
+    kubeconfig: SecretStr | None = None
+    sa_token: SecretStr | None = None
+
+
+class BucketConfig(BaseModel):
+    """S3 staging-bucket entry (REG-05, D-07).
+
+    A per-entry superset of the former flat ``s3_*`` block (config.py:466-495) so s3_staging reads
+    each value per bucket. ``scope`` is a load-bearing sharing-cardinality invariant (D-09) whose
+    cross-entry enforcement lives in Plan 02's container validator. ``endpoint_url`` carries the
+    per-bucket http(s) SSRF guard lifted from ``_validate_s3_endpoint_url`` (config.py:597-613).
+    """
+
+    id: str
+    scope: Literal["shared", "cluster-specific"]
+    endpoint_url: str
+    bucket: str  # the S3 bucket name (the value s3_staging reads as s3_bucket)
+    region: str | None = None
+    addressing_style: Literal["path", "virtual"] = "path"
+    access_key_id: SecretStr | None = None
+    secret_access_key: SecretStr | None = None
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def _validate_endpoint_url(cls, value: str) -> str:
+        """Require a well-formed http(s) URL with a host (T-67-01-01 SSRF surface, per bucket).
+
+        A scheme-less value (``minio.homelab:9000``) or a non-http scheme (``file://``) is rejected
+        at construction so an SSRF-shaped endpoint can never reach the S3 client.
+        """
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            msg = f"endpoint_url must be a well-formed http(s) URL with a host, got {value!r}"
+            raise ValueError(msg)
+        return value
 
 
 def _default_local_registry() -> list[BackendConfig]:
