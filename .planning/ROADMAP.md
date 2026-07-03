@@ -201,7 +201,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
 | 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
 | 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
-| 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 0/4 | Planned | - |
+| 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 2/4 | In Progress|  |
 | 65. CalVer Adoption | 2026.7.0 | 0/? | Not started | - |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 0/? | Not started | - |
 
@@ -915,8 +915,8 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 64-01-PLAN.md — Per-module floor machinery: `scripts/coverage_floor.py` (stdlib-only, D-01/D-02/D-03/D-04) + unit test [Wave 1]
-- [ ] 64-02-PLAN.md — `services/review.py` uplift ≥85% via behavior-asserting degrade/formatter tests (+ agent_liveness margin) [Wave 1]
+- [x] 64-01-PLAN.md — Per-module floor machinery: `scripts/coverage_floor.py` (stdlib-only, D-01/D-02/D-03/D-04) + unit test [Wave 1]
+- [x] 64-02-PLAN.md — `services/review.py` uplift ≥85% via behavior-asserting degrade/formatter tests (+ agent_liveness margin) [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
