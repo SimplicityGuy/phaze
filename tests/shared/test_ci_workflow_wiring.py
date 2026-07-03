@@ -91,13 +91,15 @@ def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
     """`coverage-combine` merges shards and enforces the 85% gate on the COMBINED number.
 
     The per-bucket deferral in test-bucket only makes sense if something enforces the
-    real gate afterward. This recipe is that "afterward": combine -> xml -> report
-    --fail-under=85, run once against the merged coverage data.
+    real gate afterward. This recipe is that "afterward": combine -> xml -> json ->
+    report --fail-under, run once against the merged coverage data. Phase 64 raised the
+    gate above the 90.38% baseline; test_coverage_gate.py owns the exact-value invariant,
+    so here we only assert the recipe still enforces a global fail-under gate at all.
     """
     recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "coverage-combine")
     assert "coverage combine" in recipe_body
     assert "coverage xml" in recipe_body
-    assert "coverage report --fail-under=85" in recipe_body
+    assert re.search(r"coverage report --fail-under=\d+", recipe_body) is not None
 
 
 def test_codecov_token_is_confined_to_the_combine_job() -> None:

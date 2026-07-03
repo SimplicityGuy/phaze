@@ -65,7 +65,7 @@ dependencies = [
 phaze = "phaze.cli:main"
 
 [tool.coverage.report]
-fail_under = 85
+fail_under = 95
 precision = 2
 show_missing = true
 
