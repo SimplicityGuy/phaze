@@ -48,12 +48,25 @@ def _isolate_pydantic_settings_from_env_file(monkeypatch: pytest.MonkeyPatch) ->
     specific values; ``os.environ`` continues to take precedence over the
     (now-empty) env_file.
     """
-    from phaze.config import AgentSettings, ControlSettings
+    from phaze.config import AgentSettings, ControlSettings, get_settings
 
     for cls in (ControlSettings, AgentSettings):
         new_config = dict(cls.model_config)
         new_config["env_file"] = None
         monkeypatch.setattr(cls, "model_config", new_config)
+
+    # `get_settings()` is `@lru_cache(maxsize=1)`: the first call in the process caches a
+    # role-specific singleton (ControlSettings vs AgentSettings, selected by `PHAZE_ROLE`).
+    # A test that constructs the agent role — e.g. importing `agent_worker`, which builds a
+    # Queue at import time under `PHAZE_ROLE=agent` — poisons that singleton for every LATER
+    # test, because `monkeypatch` reverts the env but never clears the cache. Downstream
+    # control-plane code (`cloud_staging` casts `get_settings()` to `ControlSettings`) then
+    # reads the leaked `AgentSettings` and `AttributeError`s on ControlSettings-only fields
+    # (e.g. `s3_multipart_part_size_bytes`). This was latent while the suite ran as one process
+    # (collection order happened to hide it) and surfaced once the suite was partitioned into
+    # per-bucket CI jobs. Clearing the cache per test makes settings resolution always reflect
+    # the test's own env, never a leaked singleton.
+    get_settings.cache_clear()
     # Also clear non-infrastructure env vars that the project's docker .env
     # defines, so the OS env layer cannot leak into tests. We deliberately
     # leave DATABASE_URL and REDIS_URL alone — integration-test fixtures

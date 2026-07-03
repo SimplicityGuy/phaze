@@ -23,16 +23,30 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# Minimal mirror of the SAQ-managed saq_jobs table (only the columns the service helpers
-# touch). saq_jobs is NOT a SQLAlchemy model, so Base.metadata.create_all never builds it;
-# the helpers' raw UPDATE would otherwise fail on an absent relation. Empty table => no-op.
+# saq_jobs is SAQ-managed and is NOT a SQLAlchemy model, so Base.metadata.create_all never
+# builds it; the service helpers' raw UPDATE would otherwise fail on an absent relation. This
+# test seeds NO saq_jobs rows (empty table => the reorder/park UPDATEs are a no-op), but it
+# MUST create the table with SAQ's CANONICAL column set, not a minimal stub. saq_jobs is shared
+# across the ephemeral test DB, and `CREATE TABLE IF NOT EXISTS` means whichever test creates it
+# FIRST wins. A stub missing `job`/`queue`/`lock_key` poisons every later broker test in the same
+# job (e.g. tests/analyze/tasks/test_ledger_backfill + test_recovery, which INSERT/SELECT those
+# columns and would raise `UndefinedColumn`). This was hidden while the suite ran as one process
+# (a real PostgresQueue built the canonical table first) and surfaced once the suite was
+# partitioned into per-bucket CI jobs. Schema mirrors saq.queue.postgres_migrations (see
+# tests/analyze/tasks/test_ledger_backfill.py); the extra NOT NULL columns are harmless here
+# because no rows are inserted.
 _SAQ_JOBS_DDL = text(
     """
     CREATE TABLE IF NOT EXISTS saq_jobs (
         key TEXT PRIMARY KEY,
+        lock_key SERIAL NOT NULL,
+        job BYTEA NOT NULL,
+        queue TEXT NOT NULL,
         status TEXT NOT NULL,
         priority SMALLINT NOT NULL DEFAULT 0,
-        scheduled BIGINT NOT NULL DEFAULT 0
+        group_key TEXT,
+        scheduled BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()),
+        expire_at BIGINT
     )
     """
 )
