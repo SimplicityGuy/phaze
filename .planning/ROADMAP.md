@@ -220,7 +220,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
 | 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete    | 2026-07-03 |
-| 67. Backend Registry & Config Model | 2026.7.1 | 0/TBD | Not started | - |
+| 67. Backend Registry & Config Model | 2026.7.1 | 1/6 | In Progress|  |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 0/TBD | Not started | - |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 0/TBD | Not started | - |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 0/TBD | Not started | - |
@@ -1011,7 +1011,7 @@ Plans:
 **Plans**: 6 plans (4 waves)Plans:
 **Wave 1**
 
-- [ ] 67-01-PLAN.md — config_backends.py: discriminated-union submodels (Local/Compute/Kueue) + KubeConfig/BucketConfig + per-variant id-tagged validators + inline *_file reader + shared whitespace helper (REG-01/02/03/05)
+- [x] 67-01-PLAN.md — config_backends.py: discriminated-union submodels (Local/Compute/Kueue) + KubeConfig/BucketConfig + per-variant id-tagged validators + inline *_file reader + shared whitespace helper (REG-01/02/03/05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
