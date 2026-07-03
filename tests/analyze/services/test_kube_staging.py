@@ -25,6 +25,7 @@ from httpx import Response
 import kr8s
 import pytest
 
+from phaze.config_backends import KubeConfig
 from phaze.services import kube_staging
 from tests.conftest import KUBE_TEST_API_URL
 
@@ -42,29 +43,35 @@ _LQ_PATH = f"/apis/kueue.x-k8s.io/v1beta1/namespaces/{_NS}/localqueues/{_LQ}"
 
 
 class _StubCfg(SimpleNamespace):
-    """A duck-typed ControlSettings stand-in carrying only the kube_* fields the seam reads."""
+    """A duck-typed ControlSettings stand-in exposing the transitional ``active_kube`` accessor.
+
+    The seam now reads the active kueue backend's cluster config via ``cfg.active_kube`` (REG-04,
+    D-14), so the stub builds a real ``KubeConfig`` from the same connection/manifest fields and
+    hangs it off ``active_kube``. ``overrides`` name the accessor fields (``api_url``, ``namespace``,
+    ``job_image``, ...), not the removed flat ``kube_*`` fields.
+    """
 
     def __init__(self, **overrides: object) -> None:
-        defaults: dict[str, object] = {
-            "kube_api_url": KUBE_TEST_API_URL,
-            "kube_namespace": _NS,
-            "kube_local_queue": _LQ,
-            "kube_job_image": _IMAGE,
-            "kube_job_cpu_request": "2",
-            "kube_job_memory_request": "4Gi",
-            "kube_workload_api_version": "kueue.x-k8s.io/v1beta1",
-            "kube_ca_secret_name": "phaze-internal-ca",
-            "kube_env_configmap_name": "phaze-agent-env",
-            "kube_env_secret_name": "phaze-agent-token",
-            "kube_sa_token": None,
+        kube_fields: dict[str, object] = {
+            "api_url": KUBE_TEST_API_URL,
+            "namespace": _NS,
+            "local_queue": _LQ,
+            "job_image": _IMAGE,
+            "cpu_request": "2",
+            "memory_request": "4Gi",
+            "workload_api_version": "kueue.x-k8s.io/v1beta1",
+            "ca_secret_name": "phaze-internal-ca",
+            "env_configmap_name": "phaze-agent-env",
+            "env_secret_name": "phaze-agent-token",
+            "sa_token": None,
         }
-        defaults.update(overrides)
-        super().__init__(**defaults)
+        kube_fields.update(overrides)
+        super().__init__(active_kube=KubeConfig(**kube_fields))
 
 
 @pytest.fixture
 def stub_cfg(monkeypatch: pytest.MonkeyPatch) -> _StubCfg:
-    """Point the seam's ``get_settings`` at a fully-configured kube stub."""
+    """Point the seam's ``get_settings`` at a fully-configured kube stub (registry-driven active_kube)."""
     cfg = _StubCfg()
     monkeypatch.setattr(kube_staging, "get_settings", lambda: cfg)
     return cfg
@@ -100,7 +107,7 @@ def test_build_job_manifest_spec(stub_cfg: _StubCfg) -> None:
     """Every KSUBMIT-01/05 field is present: suspend, parallelism, backoffLimit 0, TTL=900,
     queue-name label ON the Job, restartPolicy Never, requests-only (NO limits), deterministic name."""
     fid = uuid.uuid4()
-    manifest = kube_staging.build_job_manifest(fid, stub_cfg)
+    manifest = kube_staging.build_job_manifest(fid, stub_cfg.active_kube)
 
     assert manifest["apiVersion"] == "batch/v1"
     assert manifest["kind"] == "Job"
@@ -135,12 +142,12 @@ def test_build_job_manifest_mounts_ca_secret(stub_cfg: _StubCfg) -> None:
     the Secret named by kube_ca_secret_name; the analyze container mounts it read-only at /certs and
     points PHAZE_AGENT_CA_FILE at /certs/phaze-ca.crt so construct_agent_client verifies the
     control-plane TLS chain (never verify=False)."""
-    manifest = kube_staging.build_job_manifest(uuid.uuid4(), stub_cfg)
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), stub_cfg.active_kube)
     pod_spec = manifest["spec"]["template"]["spec"]
 
     volumes = pod_spec["volumes"]
     ca_volume = next(v for v in volumes if v["name"] == "phaze-ca")
-    assert ca_volume["secret"]["secretName"] == "phaze-internal-ca"  # cfg.kube_ca_secret_name
+    assert ca_volume["secret"]["secretName"] == "phaze-internal-ca"  # kube.ca_secret_name
 
     container = pod_spec["containers"][0]
     ca_mount = next(m for m in container["volumeMounts"] if m["name"] == "phaze-ca")
@@ -158,7 +165,7 @@ def test_build_job_manifest_injects_env_contract(stub_cfg: _StubCfg) -> None:
     exits EXIT_CONFIG=20 before any analysis. The pre-existing PHAZE_AGENT_CA_FILE entry must remain
     (the injection is additive, not a replacement)."""
     fid = uuid.uuid4()
-    manifest = kube_staging.build_job_manifest(fid, stub_cfg)
+    manifest = kube_staging.build_job_manifest(fid, stub_cfg.active_kube)
     container = manifest["spec"]["template"]["spec"]["containers"][0]
 
     # (a) the per-Job file id is code-injected (cannot come from a static ConfigMap/Secret).
@@ -166,8 +173,8 @@ def test_build_job_manifest_injects_env_contract(stub_cfg: _StubCfg) -> None:
 
     # (b) the static agent env is sourced via envFrom from the configured ConfigMap + Secret.
     env_from = container["envFrom"]
-    assert {"configMapRef": {"name": stub_cfg.kube_env_configmap_name}} in env_from
-    assert {"secretRef": {"name": stub_cfg.kube_env_secret_name}} in env_from
+    assert {"configMapRef": {"name": stub_cfg.active_kube.env_configmap_name}} in env_from
+    assert {"secretRef": {"name": stub_cfg.active_kube.env_secret_name}} in env_from
 
     # (c) regression guard: the additive change keeps the existing CA env entry.
     assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
@@ -181,7 +188,7 @@ def test_job_name_is_deterministic_and_file_id_scoped() -> None:
     assert kube_staging.job_name(uuid.uuid4()) != kube_staging.job_name(fid)
 
 
-@pytest.mark.parametrize("missing", ["kube_api_url", "kube_namespace", "kube_local_queue"])
+@pytest.mark.parametrize("missing", ["api_url", "namespace", "local_queue"])
 def test_kube_config_raises_when_unset(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
     """``_kube_config`` fail-louds when any of api_url/namespace/local_queue is unset (operator misconfig)."""
     cfg = _StubCfg(**{missing: None})
@@ -190,13 +197,13 @@ def test_kube_config_raises_when_unset(monkeypatch: pytest.MonkeyPatch, missing:
         kube_staging._kube_config()
 
 
-@pytest.mark.parametrize("missing", ["kube_job_image", "kube_job_cpu_request", "kube_job_memory_request"])
+@pytest.mark.parametrize("missing", ["job_image", "cpu_request", "memory_request"])
 def test_build_job_manifest_raises_when_manifest_field_unset(missing: str) -> None:
-    """WR-02: an unset image/cpu/memory fail-louds with a message NAMING the missing variable,
+    """WR-02: an unset image/cpu/memory fail-louds with a message NAMING the missing field,
     instead of building a ``None``-valued manifest the kube API rejects with an opaque error."""
     cfg = _StubCfg(**{missing: None})
     with pytest.raises(kube_staging.KubeStagingError, match=missing):
-        kube_staging.build_job_manifest(uuid.uuid4(), cfg)
+        kube_staging.build_job_manifest(uuid.uuid4(), cfg.active_kube)
 
 
 # --------------------------------------------------------------------------- #
@@ -257,7 +264,7 @@ async def test_sa_token_applied_as_bearer(monkeypatch: pytest.MonkeyPatch, kube_
     """
     from pydantic import SecretStr
 
-    cfg = _StubCfg(kube_sa_token=SecretStr("sa-secret-token"))
+    cfg = _StubCfg(sa_token=SecretStr("sa-secret-token"))
     monkeypatch.setattr(kube_staging, "get_settings", lambda: cfg)
     fid = uuid.uuid4()
     name = f"phaze-analyze-{fid}"

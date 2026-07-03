@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     import uuid
 
     from phaze.config import ControlSettings
+    from phaze.config_backends import BucketConfig
 
 
 _STAGING_PREFIX = "phaze-staging"
@@ -64,43 +65,49 @@ def staged_object_key(file_id: uuid.UUID) -> str:
     return f"{_STAGING_PREFIX}/{file_id}"
 
 
-def _staging_config() -> ControlSettings:
-    """Return ControlSettings with the S3 staging substrate validated as present.
+def _staging_config() -> tuple[ControlSettings, BucketConfig]:
+    """Return ControlSettings + the active backend's staging bucket, validated as present.
 
-    Raises ``S3StagingError`` if the bucket or endpoint is unset so a presign/upload never
-    proceeds against a half-configured backend.
+    Raises ``S3StagingError`` if no active backend bucket resolves so a presign/upload never
+    proceeds against a half-configured backend. The bucket identity/creds come from the registry's
+    single non-local backend via the transitional ``active_bucket`` accessor; the kept-global TTL /
+    part-size tuning knobs (D-15) stay on ``ControlSettings``.
     """
     cfg = cast("ControlSettings", get_settings())
-    if not cfg.s3_bucket or not cfg.s3_endpoint_url:
-        raise S3StagingError("S3 staging requires both s3_bucket and s3_endpoint_url to be configured (set PHAZE_S3_BUCKET / PHAZE_S3_ENDPOINT_URL)")
-    return cfg
+    # TRANSITIONAL — Phase 68 (per-file bucket selection = Phase 70 MKUE-02)
+    bucket = cfg.active_bucket
+    if bucket is None:
+        raise S3StagingError(
+            "S3 staging requires an active backend bucket to be configured (declare a kueue backend with a bound bucket in backends.toml)"
+        )
+    return cfg, bucket
 
 
-def _client(cfg: ControlSettings) -> Any:
-    """Build the aioboto3 S3 client context manager from the ControlSettings S3 surface.
+def _client(bucket: BucketConfig) -> Any:
+    """Build the aioboto3 S3 client context manager from the active bucket's identity/creds.
 
     Returns an ``async with``-able client. Credentials come from the control-plane-only
     ``SecretStr`` fields and are never logged. The region falls back to ``us-east-1`` so
     SigV4-style presigning has a region even when an S3-compatible backend leaves it unset.
     """
     session = aioboto3.Session(
-        aws_access_key_id=cfg.s3_access_key_id.get_secret_value() if cfg.s3_access_key_id else None,
-        aws_secret_access_key=cfg.s3_secret_access_key.get_secret_value() if cfg.s3_secret_access_key else None,
-        region_name=cfg.s3_region or "us-east-1",
+        aws_access_key_id=bucket.access_key_id.get_secret_value() if bucket.access_key_id else None,
+        aws_secret_access_key=bucket.secret_access_key.get_secret_value() if bucket.secret_access_key else None,
+        region_name=bucket.region or "us-east-1",
     )
     return session.client(
         "s3",
-        endpoint_url=cfg.s3_endpoint_url,
-        config=AioConfig(s3={"addressing_style": cfg.s3_addressing_style}),
+        endpoint_url=bucket.endpoint_url,
+        config=AioConfig(s3={"addressing_style": bucket.addressing_style}),
     )
 
 
 async def create_multipart_upload(file_id: uuid.UUID) -> str:
     """Initiate a multipart upload for ``file_id`` and return its ``UploadId`` (D-01)."""
-    cfg = _staging_config()
+    _cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
-    async with _client(cfg) as client:
-        resp = await client.create_multipart_upload(Bucket=cfg.s3_bucket, Key=key)
+    async with _client(bucket) as client:
+        resp = await client.create_multipart_upload(Bucket=bucket.bucket, Key=key)
     upload_id: str = resp["UploadId"]
     return upload_id
 
@@ -111,15 +118,15 @@ async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: i
     Each URL is bounded by ``s3_presign_put_ttl_sec``. The agent PUTs each part's bytes
     to its URL over httpx and reports back the ``(part_number, etag)`` pairs.
     """
-    cfg = _staging_config()
+    cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
     urls: list[str] = []
-    async with _client(cfg) as client:
+    async with _client(bucket) as client:
         for part_number in range(1, part_count + 1):
             url: str = await client.generate_presigned_url(
                 "upload_part",
-                Params={"Bucket": cfg.s3_bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
-                ExpiresIn=cfg.s3_presign_put_ttl_sec,
+                Params={"Bucket": bucket.bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
+                ExpiresIn=cfg.s3_presign_put_ttl_sec,  # kept-global tuning knob (D-15)
             )
             urls.append(url)
     return urls
@@ -139,12 +146,12 @@ async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: l
     already assembled) instead of a permanent 500-retry loop (WR-01). Any other ``ClientError``
     is re-raised as ``S3StagingError``.
     """
-    cfg = _staging_config()
+    _cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
     multipart = {"Parts": [{"PartNumber": part_number, "ETag": etag} for part_number, etag in sorted(parts)]}
-    async with _client(cfg) as client:
+    async with _client(bucket) as client:
         try:
-            await client.complete_multipart_upload(Bucket=cfg.s3_bucket, Key=key, UploadId=upload_id, MultipartUpload=multipart)
+            await client.complete_multipart_upload(Bucket=bucket.bucket, Key=key, UploadId=upload_id, MultipartUpload=multipart)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
             if code in _ABORT_ABSENT_CODES:
@@ -161,11 +168,11 @@ async def abort_multipart_upload(file_id: uuid.UUID, upload_id: str) -> None:
     500-retry loop when a prior partial run already aborted the multipart (CR-02). Mirrors
     ``delete_staged_object``; any other ``ClientError`` is re-raised as ``S3StagingError``.
     """
-    cfg = _staging_config()
+    _cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
-    async with _client(cfg) as client:
+    async with _client(bucket) as client:
         try:
-            await client.abort_multipart_upload(Bucket=cfg.s3_bucket, Key=key, UploadId=upload_id)
+            await client.abort_multipart_upload(Bucket=bucket.bucket, Key=key, UploadId=upload_id)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
             if code in _ABORT_ABSENT_CODES:
@@ -180,13 +187,13 @@ async def presign_get(file_id: uuid.UUID) -> str:
     during a Kueue wait). The download leg fetches the bytes from this URL; the control
     plane never reads them.
     """
-    cfg = _staging_config()
+    cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
-    async with _client(cfg) as client:
+    async with _client(bucket) as client:
         url: str = await client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": cfg.s3_bucket, "Key": key},
-            ExpiresIn=cfg.s3_presign_get_ttl_sec,
+            Params={"Bucket": bucket.bucket, "Key": key},
+            ExpiresIn=cfg.s3_presign_get_ttl_sec,  # kept-global tuning knob (D-15)
         )
     return url
 
@@ -198,11 +205,11 @@ async def delete_staged_object(file_id: uuid.UUID) -> None:
     safe to call when no object was ever staged (the all-local path) or when a prior delete /
     lifecycle sweep already removed it.
     """
-    cfg = _staging_config()
+    _cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
-    async with _client(cfg) as client:
+    async with _client(bucket) as client:
         try:
-            await client.delete_object(Bucket=cfg.s3_bucket, Key=key)
+            await client.delete_object(Bucket=bucket.bucket, Key=key)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
             if code in _DELETE_ABSENT_CODES:
@@ -217,17 +224,17 @@ async def ensure_bucket_lifecycle_ttl() -> None:
     Kueue eviction with no completion callback. Scoped to the ``phaze-staging/`` prefix so it
     never touches unrelated objects in an operator-shared bucket.
     """
-    cfg = _staging_config()
-    async with _client(cfg) as client:
+    cfg, bucket = _staging_config()
+    async with _client(bucket) as client:
         await client.put_bucket_lifecycle_configuration(
-            Bucket=cfg.s3_bucket,
+            Bucket=bucket.bucket,
             LifecycleConfiguration={
                 "Rules": [
                     {
                         "ID": _LIFECYCLE_RULE_ID,
                         "Filter": {"Prefix": f"{_STAGING_PREFIX}/"},
                         "Status": "Enabled",
-                        "Expiration": {"Days": cfg.s3_lifecycle_ttl_days},
+                        "Expiration": {"Days": cfg.s3_lifecycle_ttl_days},  # kept-global tuning knob (D-15)
                     }
                 ]
             },

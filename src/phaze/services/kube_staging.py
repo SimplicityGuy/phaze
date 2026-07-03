@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     import uuid
 
     from phaze.config import ControlSettings
+    from phaze.config_backends import KubeConfig
 
 
 # 15 min = 3x the */5 reconcile tick. D-04 makes the explicit delete-after-record primary, so the
@@ -52,9 +53,10 @@ _JOB_UID_LABEL = "kueue.x-k8s.io/job-uid"
 class KubeStagingError(RuntimeError):
     """Raised when the kube staging substrate is unconfigured or a control-side kube call fails.
 
-    Fail-loud (cf. ``S3StagingError``): an unset ``kube_api_url`` / ``kube_namespace`` /
-    ``kube_local_queue`` is an operator misconfiguration that must surface immediately, never a
-    silent no-op that would leave a file un-submitted.
+    Fail-loud (cf. ``S3StagingError``): a missing active kueue backend or an unset
+    ``api_url`` / ``namespace`` / ``local_queue`` on its ``[kube]`` config is an operator
+    misconfiguration that must surface immediately, never a silent no-op that would leave a file
+    un-submitted.
     """
 
 
@@ -69,32 +71,35 @@ def job_name(file_id: uuid.UUID) -> str:
     return f"phaze-analyze-{file_id}"
 
 
-def _kube_config() -> ControlSettings:
-    """Return ControlSettings with the kube staging surface validated as present.
+def _kube_config() -> KubeConfig:
+    """Return the active kueue backend's KubeConfig with the connection surface validated as present.
 
-    Raises ``KubeStagingError`` if ``kube_api_url`` / ``kube_namespace`` / ``kube_local_queue`` is
-    unset so a submit/reconcile never proceeds against a half-configured cluster.
+    Reads the single non-local backend's cluster config via the transitional ``active_kube``
+    accessor (REG-04, D-14). Raises ``KubeStagingError`` if no kueue backend is active or its
+    ``api_url`` / ``namespace`` / ``local_queue`` is unset so a submit/reconcile never proceeds
+    against a half-configured cluster.
     """
     cfg = cast("ControlSettings", get_settings())
-    if not cfg.kube_api_url or not cfg.kube_namespace or not cfg.kube_local_queue:
+    # TRANSITIONAL — Phase 68 (multi-backend dispatch = Phase 69 SCHED)
+    kube = cfg.active_kube
+    if kube is None or not kube.api_url or not kube.namespace or not kube.local_queue:
         raise KubeStagingError(
-            "Kube staging requires kube_api_url, kube_namespace, and kube_local_queue to be configured "
-            "(set PHAZE_KUBE_API_URL / PHAZE_KUBE_NAMESPACE / PHAZE_KUBE_LOCAL_QUEUE)"
+            "Kube staging requires an active kueue backend with api_url, namespace, and local_queue configured in its [kube] table (backends.toml)"
         )
-    return cfg
+    return kube
 
 
-async def _api(cfg: ControlSettings) -> Any:
-    """Build the async kr8s API client from the ControlSettings kube surface.
+async def _api(kube: KubeConfig) -> Any:
+    """Build the async kr8s API client from the active backend's kube config.
 
     The control plane runs OUTSIDE the cluster (home server, reaching the API over
-    Tailscale/WireGuard), so it authenticates via the operator-provided ``kube_api_url`` plus an
+    Tailscale/WireGuard), so it authenticates via the operator-provided ``api_url`` plus an
     optional ServiceAccount bearer token from the ``_FILE``-resolved ``SecretStr`` field. The token
     is set on the auth object and never logged (T-54-07). The exact auth/constructor form is a
     Phase-56 live-cluster verification item (RESEARCH Q3, deferred).
     """
-    api = await kr8s.asyncio.api(url=cfg.kube_api_url, namespace=cfg.kube_namespace)
-    token = cfg.kube_sa_token.get_secret_value() if cfg.kube_sa_token else None
+    api = await kr8s.asyncio.api(url=kube.api_url, namespace=kube.namespace)
+    token = kube.sa_token.get_secret_value() if kube.sa_token else None
     if token:
         # kr8s bakes ``Authorization: Bearer <token>`` into its httpx session at session-CREATION time
         # (kr8s 0.20.15 ``_api._create_session``), and that session was already built during the
@@ -106,7 +111,7 @@ async def _api(cfg: ControlSettings) -> Any:
     return api
 
 
-def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, Any]:
+def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     """Build the suspended ``batch/v1`` Job manifest phaze submits (KSUBMIT-01/05).
 
     Exactly one object phaze writes: ``suspend: true`` (never starts a pod before Kueue gates it),
@@ -123,32 +128,32 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
     the container sets ``PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`` so the one-shot callback verifies
     the control-plane TLS chain (never ``verify=False``). CA rotation = Secret update + re-submit.
 
-    Fail-loud on an unset ``kube_job_image`` / ``kube_job_cpu_request`` / ``kube_job_memory_request``
-    (all ``Optional`` in Phase 54): a half-configured manifest would otherwise carry ``None`` values
-    and surface as an opaque non-409 ``KubeStagingError`` from the kube API, instead of naming the
-    missing operator variable. Mirrors the connection-field discipline in :func:`_kube_config`.
+    Fail-loud on an unset ``job_image`` / ``cpu_request`` / ``memory_request`` (all ``Optional`` on
+    ``KubeConfig``): a half-configured manifest would otherwise carry ``None`` values and surface as
+    an opaque non-409 ``KubeStagingError`` from the kube API, instead of naming the missing operator
+    field. Mirrors the connection-field discipline in :func:`_kube_config`.
     """
     missing = [
         name
         for name, value in (
-            ("kube_job_image", cfg.kube_job_image),
-            ("kube_job_cpu_request", cfg.kube_job_cpu_request),
-            ("kube_job_memory_request", cfg.kube_job_memory_request),
+            ("job_image", kube.job_image),
+            ("cpu_request", kube.cpu_request),
+            ("memory_request", kube.memory_request),
         )
         if not value
     ]
     if missing:
         raise KubeStagingError(
-            f"Kube Job submission requires {', '.join(missing)} to be configured (set {' / '.join(f'PHAZE_{name.upper()}' for name in missing)})"
+            f"Kube Job submission requires {', '.join(missing)} to be configured in the active backend's [kube] config (backends.toml)"
         )
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
             "name": job_name(file_id),
-            "namespace": cfg.kube_namespace,
+            "namespace": kube.namespace,
             "labels": {
-                _QUEUE_NAME_LABEL: cfg.kube_local_queue,
+                _QUEUE_NAME_LABEL: kube.local_queue,
                 _MANAGED_BY_LABEL: _MANAGED_BY_VALUE,
                 _FILE_ID_LABEL: str(file_id),
             },
@@ -171,13 +176,13 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
                     "volumes": [
                         {
                             "name": "phaze-ca",
-                            "secret": {"secretName": cfg.kube_ca_secret_name},
+                            "secret": {"secretName": kube.ca_secret_name},
                         }
                     ],
                     "containers": [
                         {
                             "name": "analyze",
-                            "image": cfg.kube_job_image,
+                            "image": kube.job_image,
                             # Two env sources with distinct lifecycles (JOB-ENV-CONTRACT):
                             #   - `env`: the PER-JOB PHAZE_JOB_FILE_ID, code-injected here because it
                             #     varies per submit and CANNOT come from a static ConfigMap/Secret.
@@ -193,16 +198,16 @@ def build_job_manifest(file_id: uuid.UUID, cfg: ControlSettings) -> dict[str, An
                                 {"name": "PHAZE_JOB_FILE_ID", "value": str(file_id)},
                             ],
                             "envFrom": [
-                                {"configMapRef": {"name": cfg.kube_env_configmap_name}},
-                                {"secretRef": {"name": cfg.kube_env_secret_name}},
+                                {"configMapRef": {"name": kube.env_configmap_name}},
+                                {"secretRef": {"name": kube.env_secret_name}},
                             ],
                             "volumeMounts": [
                                 {"name": "phaze-ca", "mountPath": "/certs", "readOnly": True},
                             ],
                             "resources": {
                                 "requests": {
-                                    "cpu": cfg.kube_job_cpu_request,
-                                    "memory": cfg.kube_job_memory_request,
+                                    "cpu": kube.cpu_request,
+                                    "memory": kube.memory_request,
                                 },
                             },
                         }
@@ -220,9 +225,9 @@ async def submit_job(file_id: uuid.UUID) -> tuple[str, str]:
     swallowed by refreshing the existing object (no error, no duplicate) so a re-drive after a
     partial run is safe. Any non-409 server error surfaces as ``KubeStagingError``.
     """
-    cfg = _kube_config()
-    api = await _api(cfg)
-    job = Job(build_job_manifest(file_id, cfg), api=api)
+    kube = _kube_config()
+    api = await _api(kube)
+    job = Job(build_job_manifest(file_id, kube), api=api)
     try:
         await job.create()
     except kr8s.ServerError as exc:
@@ -235,9 +240,9 @@ async def submit_job(file_id: uuid.UUID) -> tuple[str, str]:
 
 async def get_job(name: str) -> Any:
     """Fetch the Job by name (its ``status`` carries succeeded/failed -- the terminal signals)."""
-    cfg = _kube_config()
-    api = await _api(cfg)
-    job = Job({"metadata": {"name": name, "namespace": cfg.kube_namespace}}, api=api)
+    kube = _kube_config()
+    api = await _api(kube)
+    job = Job({"metadata": {"name": name, "namespace": kube.namespace}}, api=api)
     await job.refresh()
     return job
 
@@ -253,10 +258,10 @@ async def get_local_queue() -> Any:
     the controller.startup caller (D-05/D-06), which treats BOTH 404 and transient errors as
     "unreachable" and flags it without aborting boot.
     """
-    cfg = _kube_config()
-    api = await _api(cfg)
-    local_queue_cls = new_class(kind="LocalQueue", version=cfg.kube_workload_api_version, namespaced=True)
-    local_queue = local_queue_cls({"metadata": {"name": cfg.kube_local_queue, "namespace": cfg.kube_namespace}}, api=api)
+    kube = _kube_config()
+    api = await _api(kube)
+    local_queue_cls = new_class(kind="LocalQueue", version=kube.workload_api_version, namespaced=True)
+    local_queue = local_queue_cls({"metadata": {"name": kube.local_queue, "namespace": kube.namespace}}, api=api)
     await local_queue.refresh()
     return local_queue
 
@@ -268,9 +273,9 @@ async def list_inflight_jobs() -> list[Any]:
     cross-check / orphan-Job sweep capability reserved for a future tick. Do NOT treat the unused
     export as dead code -- it is exercised by the seam tests and wired by a later phase.
     """
-    cfg = _kube_config()
-    api = await _api(cfg)
-    return [job async for job in Job.list(namespace=cfg.kube_namespace, label_selector={_MANAGED_BY_LABEL: _MANAGED_BY_VALUE}, api=api)]
+    kube = _kube_config()
+    api = await _api(kube)
+    return [job async for job in Job.list(namespace=kube.namespace, label_selector={_MANAGED_BY_LABEL: _MANAGED_BY_VALUE}, api=api)]
 
 
 async def get_workload_for(job_uid: str) -> Any | None:
@@ -282,15 +287,15 @@ async def get_workload_for(job_uid: str) -> Any | None:
     miss -- so a wrong/changed live label key degrades to the fallback instead of silently leaving
     admission state unreadable (the exact live label key is verified in Phase 56).
     """
-    cfg = _kube_config()
-    api = await _api(cfg)
-    workload_cls = new_class(kind="Workload", version=cfg.kube_workload_api_version, namespaced=True)
+    kube = _kube_config()
+    api = await _api(kube)
+    workload_cls = new_class(kind="Workload", version=kube.workload_api_version, namespaced=True)
 
-    by_label = [wl async for wl in workload_cls.list(namespace=cfg.kube_namespace, label_selector={_JOB_UID_LABEL: job_uid}, api=api)]
+    by_label = [wl async for wl in workload_cls.list(namespace=kube.namespace, label_selector={_JOB_UID_LABEL: job_uid}, api=api)]
     if by_label:
         return by_label[0]
 
-    async for wl in workload_cls.list(namespace=cfg.kube_namespace, api=api):
+    async for wl in workload_cls.list(namespace=kube.namespace, api=api):
         workload = cast("Any", wl)
         for ref in workload.metadata.get("ownerReferences", []) or []:
             if ref.get("uid") == job_uid:
@@ -305,9 +310,9 @@ async def delete_job(name: str) -> None:
     A missing Job is the desired end state, so a ``NotFoundError`` (404) is swallowed -- safe to
     re-run after a partial reconcile tick. Any other error surfaces as ``KubeStagingError``.
     """
-    cfg = _kube_config()
-    api = await _api(cfg)
-    job = Job({"metadata": {"name": name, "namespace": cfg.kube_namespace}}, api=api)
+    kube = _kube_config()
+    api = await _api(kube)
+    job = Job({"metadata": {"name": name, "namespace": kube.namespace}}, api=api)
     try:
         await job.delete(propagation_policy="Background")
     except kr8s.NotFoundError:
