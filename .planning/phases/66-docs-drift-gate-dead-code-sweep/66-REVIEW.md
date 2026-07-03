@@ -15,11 +15,19 @@ files_reviewed_list:
   - vulture_whitelist.py
 findings:
   critical: 0
-  warning: 3
+  warning: 0
   info: 4
-  total: 7
+  total: 4
+warnings_resolved: 3
 status: issues_found
+fixed_on_branch: SimplicityGuy/phase-66-guard-hardening
 ---
+
+> **Update 2026-07-03 — WR-01/02/03 FIXED** on branch `SimplicityGuy/phase-66-guard-hardening`
+> (follow-up to the merged PR #198). Commits `9a1e79d` (WR-01), `ebc4999` (WR-02),
+> `a1808e9` (WR-03). Guard tests 7 → 12 passing (5 new synthetic regressions); `just docs-drift`
+> still exit 0 on the real repo; ruff + mypy clean. The 4 Info items (IN-01..04) are intentionally
+> left as-is (not in the default `--fix` Critical+Warning scope).
 
 # Phase 66: Code Review Report
 
