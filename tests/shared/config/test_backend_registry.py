@@ -10,17 +10,26 @@ the S3 staging surface with a per-bucket http(s) SSRF guard on ``endpoint_url``
 
 from __future__ import annotations
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import SecretStr, TypeAdapter, ValidationError
 import pytest
 
 from phaze.config_backends import (
     BackendConfig,
+    BucketConfig,
     ComputeBackend,
     KubeConfig,
     KueueBackend,
     LocalBackend,
     _default_local_registry,
 )
+
+
+# Literal secret/name values pulled into module constants so ruff's S106 (hardcoded password in a
+# call argument) does not fire on the model-construction kwargs; test files already ignore S105.
+_CA_SECRET_NAME = "phaze-internal-ca"
+_ENV_SECRET_NAME = "phaze-agent-token"
+_SA_TOKEN = "tok"
+_SECRET_ACCESS_KEY = "secret"
 
 
 # --------------------------------------------------------------------------- #
@@ -96,3 +105,86 @@ def test_default_local_registry_returns_single_rank99_local() -> None:
     assert only.id == "local"
     assert only.rank == 99
     assert only.cap == 1
+
+
+# --------------------------------------------------------------------------- #
+# Task 2: KubeConfig + BucketConfig submodels with per-bucket SSRF guard
+# --------------------------------------------------------------------------- #
+def test_bucket_config_parses() -> None:
+    """A bucket entry carries id/scope/endpoint_url/bucket + optional region/addressing_style (REG-05, D-07)."""
+    bucket = BucketConfig(
+        id="b1",
+        scope="shared",
+        endpoint_url="https://minio.homelab:9000",
+        bucket="phaze-staging",
+        region="us-west-1",
+    )
+    assert bucket.scope == "shared"
+    assert bucket.bucket == "phaze-staging"
+    assert bucket.addressing_style == "path"
+
+
+def test_bucket_scope_literal_rejects_unknown() -> None:
+    """scope is a Literal of exactly {shared, cluster-specific} (D-09)."""
+    with pytest.raises(ValidationError):
+        BucketConfig(id="b1", scope="public", endpoint_url="https://minio.homelab:9000", bucket="phaze-staging")
+
+
+def test_bucket_endpoint_url_schemeless_rejected() -> None:
+    """A scheme-less endpoint_url is rejected at construction (per-bucket SSRF guard, REG-05 / V5, T-67-01-01)."""
+    with pytest.raises(ValidationError, match=r"endpoint_url"):
+        BucketConfig(id="b1", scope="shared", endpoint_url="minio.homelab:9000", bucket="phaze-staging")
+
+
+def test_bucket_endpoint_url_non_http_scheme_rejected() -> None:
+    """A non-http(s) scheme (file://) is rejected at construction (SSRF guard)."""
+    with pytest.raises(ValidationError, match=r"endpoint_url"):
+        BucketConfig(id="b1", scope="shared", endpoint_url="file:///etc/passwd", bucket="phaze-staging")
+
+
+def test_kube_config_exposes_full_field_superset() -> None:
+    """KubeConfig is a per-entry superset of the flat kube_* block so Plan 04 has a home for every read (D-13)."""
+    kube = KubeConfig(
+        api_url="https://kube.example.com",
+        namespace="phaze",
+        local_queue="phaze-lq",
+        job_image="ghcr.io/phaze/agent:latest",
+        cpu_request="2",
+        memory_request="4Gi",
+        ca_secret_name=_CA_SECRET_NAME,
+        env_configmap_name="phaze-agent-env",
+        env_secret_name=_ENV_SECRET_NAME,
+    )
+    assert kube.api_url == "https://kube.example.com"
+    assert kube.namespace == "phaze"
+    assert kube.local_queue == "phaze-lq"
+    assert kube.job_image == "ghcr.io/phaze/agent:latest"
+    assert kube.cpu_request == "2"
+    assert kube.memory_request == "4Gi"
+    # default retained from the flat field (config.py:564-568)
+    assert kube.workload_api_version == "kueue.x-k8s.io/v1beta1"
+    assert kube.ca_secret_name == _CA_SECRET_NAME
+    assert kube.env_configmap_name == "phaze-agent-env"
+    assert kube.env_secret_name == _ENV_SECRET_NAME
+
+
+def test_kube_secret_fields_are_secretstr() -> None:
+    """Resolved kube credentials are SecretStr so accidental interpolation prints ******** (T-67-01-02)."""
+    kube = KubeConfig(api_url="https://kube.example.com", kubeconfig="apiVersion: v1\n", sa_token=_SA_TOKEN)
+    assert isinstance(kube.kubeconfig, SecretStr)
+    assert isinstance(kube.sa_token, SecretStr)
+    assert "apiVersion" not in repr(kube.kubeconfig)
+
+
+def test_bucket_secret_fields_are_secretstr() -> None:
+    """Resolved bucket S3 credentials are SecretStr (T-67-01-02)."""
+    bucket = BucketConfig(
+        id="b1",
+        scope="shared",
+        endpoint_url="https://minio.homelab:9000",
+        bucket="phaze-staging",
+        access_key_id="AKIA",
+        secret_access_key=_SECRET_ACCESS_KEY,
+    )
+    assert isinstance(bucket.access_key_id, SecretStr)
+    assert isinstance(bucket.secret_access_key, SecretStr)
