@@ -127,3 +127,18 @@ def test_empty_coverage_json_fails_closed(tmp_path: Path, monkeypatch: pytest.Mo
 
     with pytest.raises(json.JSONDecodeError):
         module.main()
+
+
+def test_empty_files_dict_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """FAIL CLOSED (T-64-01): a parseable ``{"files": {}}`` -> exit 1, NEVER exit 0 (WR-01).
+
+    A report with zero tracked modules means the measurement produced nothing (e.g. no shards
+    were combined). An empty loop must not be mistaken for an all-clear, or a broken combine
+    would merge green with the gate never actually run against real coverage.
+    """
+    module = _load_floor_module()
+    (tmp_path / "coverage.json").write_text(json.dumps({"files": {}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert module.main() == 1
+    assert "no tracked files" in capsys.readouterr().out

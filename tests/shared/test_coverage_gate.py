@@ -32,6 +32,12 @@ import tomllib
 # The baseline combined coverage the raised gate must stay strictly above (D-05).
 _BASELINE = 90.38
 
+# The gate Phase 64 pinned the two sites to (T-64-06). Asserting `>= _PINNED_GATE` (rather than a
+# bare `> _BASELINE`) is a floor, not a ceiling: an intentional future RAISE (e.g. 96, 97) still
+# passes, but a silent lockstep DOWNGRADE to some value that is still above the baseline (e.g. 92)
+# trips this guard instead of sliding through green (WR-01/WR-02 hardening).
+_PINNED_GATE = 95
+
 # tests/shared/test_coverage_gate.py -> parents[2] == repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _JUSTFILE = _REPO_ROOT / "justfile"
@@ -80,6 +86,9 @@ def test_global_gate_sites_agree_and_beat_the_baseline() -> None:
     )
     assert pyproject_gate > _BASELINE, f"pyproject fail_under={pyproject_gate} must be strictly > {_BASELINE} baseline (D-05)"
     assert justfile_gate > _BASELINE, f"justfile --fail-under={justfile_gate} must be strictly > {_BASELINE} baseline (D-05)"
+    # Floor at the Phase-64 pinned gate: catches a silent lockstep downgrade that still clears the
+    # baseline (e.g. both sites dropped to 92). Raises above 95 remain allowed (WR-02 hardening).
+    assert pyproject_gate >= _PINNED_GATE, f"pyproject fail_under={pyproject_gate} regressed below the pinned gate {_PINNED_GATE} (T-64-06)"
 
 
 def test_coverage_combine_keeps_the_per_module_floor_wiring() -> None:

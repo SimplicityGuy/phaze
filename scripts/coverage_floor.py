@@ -16,9 +16,11 @@ Output:
 
 Exit semantics (T-64-01, FAIL CLOSED):
     0  -- every tracked module is >= FLOOR (or exempt / zero-statement).
-    1  -- at least one tracked module is below FLOOR.
-    !=0 -- a missing / empty / unparseable ``coverage.json`` raises, which propagates as a non-zero
-           exit. A missing gate input NEVER exits 0.
+    1  -- at least one tracked module is below FLOOR, OR the report carries NO tracked files
+          (an empty ``files`` dict -- a report with zero modules is treated as a failed
+          measurement, never an all-clear).
+    !=0 -- a missing / empty-string / unparseable / ``files``-less ``coverage.json`` raises, which
+           propagates as a non-zero exit. A missing gate input NEVER exits 0.
 """
 
 from __future__ import annotations
@@ -37,8 +39,13 @@ EXEMPT: dict[str, str] = {}
 
 def main() -> int:
     data = json.loads(Path("coverage.json").read_text(encoding="utf-8"))
+    files = data["files"]
+    if not files:  # FAIL CLOSED (T-64-01): a report with zero tracked modules is a broken
+        # measurement (e.g. no shards combined), not an all-clear — an empty loop must never exit 0.
+        print("❌ coverage.json has no tracked files — refusing to pass an empty coverage report.")  # noqa: T201
+        return 1
     failures: list[tuple[str, float]] = []
-    for path, info in sorted(data["files"].items()):
+    for path, info in sorted(files.items()):
         if path in EXEMPT:
             continue
         if info["summary"]["num_statements"] == 0:  # __init__.py / empty modules

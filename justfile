@@ -93,10 +93,10 @@ test-file FILE:
     uv run pytest {{FILE}} -x -v
 
 # --cov-fail-under=0 is REQUIRED: a single bucket only exercises a fraction of
-# phaze, so pytest-cov auto-enforcing pyproject's fail_under=85 against a bucket's
-# PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded, and
-# the combine job (needs: [test]) would never run. The 85% gate is enforced once,
-# on the COMBINED number, by `coverage-combine`.
+# phaze, so pytest-cov auto-enforcing pyproject's global fail_under gate against a
+# bucket's PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded,
+# and the combine job (needs: [test]) would never run. The global gate is enforced
+# once, on the COMBINED number, by `coverage-combine`.
 [doc('Run a single test bucket, writing coverage data to .coverage.<bucket> (CI shard). XDIST="" keeps DB buckets serial; DB-free buckets pass XDIST="-n auto".')]
 [group('test')]
 test-bucket NAME XDIST="":
