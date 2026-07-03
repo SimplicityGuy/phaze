@@ -99,6 +99,10 @@ None - no external service configuration required.
 - CLEAN-01 delivered. The still-mounted `/saq` monitor is again discoverable from the shell, gated by the same flag as its mount.
 - No blockers for remaining Phase 66 plans (docs-drift gate, dead-code sweep).
 
+## Self-Check: PASSED
+
+All modified files exist and all task/summary commits are present in git history.
+
 ---
 *Phase: 66-docs-drift-gate-dead-code-sweep*
 *Completed: 2026-07-03*
