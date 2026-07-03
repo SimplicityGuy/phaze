@@ -71,3 +71,9 @@ The three RED gates define the exact contract Plan 02 must satisfy:
 - `ci.yml` line 13: `tags: ["v*.*.*"]` -> `tags: ["[0-9]+.[0-9]+.[0-9]+"]` (quoted).
 - `.planning/MILESTONES.md`: add a `| Milestone | Version | Date |` table with `v1.0`..`v7.0` verbatim rows + a `2026.7.0` row.
 - `docs/deployment.md` and/or MILESTONES.md: document `YYYY.MM.REVISION`, `2026.7.0`, the no-leading-zero month rule, and the per-month zero-based REVISION convention. The month-rule check matches `("leading-zero" | "leading zero") AND "month"`; the revision-rule check matches `"revision" AND ("zero-based" | "per-month" | "resets")` (case-insensitive).
+
+## Self-Check: PASSED
+
+- `tests/agents/deployment/test_agent_compose.py` modified — verified present.
+- Commits verified in git log: 9eab593 (Task 1), 7309429 (Task 2), 1802b1f (SUMMARY).
+- Working tree clean.
