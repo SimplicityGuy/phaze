@@ -202,7 +202,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
 | 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
-| 65. CalVer Adoption | 2026.7.0 | 0/? | Not started | - |
+| 65. CalVer Adoption | 2026.7.0 | 1/2 | In Progress|  |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 0/? | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -941,7 +941,7 @@ Plans:
 **Notes**: Retroactively re-tagging historical `vN.M` releases as CalVer is explicitly out of scope — CalVer applies going forward. Keep README badges on one line; do not re-add removed badges. Preserve the annotated-tag-PUSH-triggers-GHCR-publish invariant (see memory `project-release-procedure`).**Plans**: 2 plans
 **Wave 1**
 
-- [ ] 65-01-PLAN.md — RED test gate: retarget the CI glob guard to CalVer + add MILESTONES-mapping & CalVer-scheme structural guards
+- [x] 65-01-PLAN.md — RED test gate: retarget the CI glob guard to CalVer + add MILESTONES-mapping & CalVer-scheme structural guards
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
