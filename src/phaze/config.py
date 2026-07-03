@@ -11,12 +11,20 @@ from enum import StrEnum
 from functools import lru_cache
 import os
 from pathlib import Path
+import tomllib
 from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, SettingsConfigDict
+
+from phaze.config_backends import (
+    BackendConfig,
+    BucketConfig,
+    _default_local_registry,
+    _read_secret_file,
+)
 
 
 def _direct_env_names(field_name: str, field_info: Any) -> list[str]:
@@ -132,17 +140,21 @@ class BaseSettings(PydanticBaseSettings):
                 if file_var not in env_upper:
                     continue
                 path = env_upper[file_var]
-                try:
-                    contents = Path(path).read_text(encoding="utf-8")
-                except OSError as exc:
-                    msg = f"{file_var} points to {path!r} which could not be read: {exc}"
-                    raise ValueError(msg) from exc
                 # Inject under the field name; every in-scope field is matched
                 # either by name (no alias) or by an AliasChoices that includes
-                # the bare field name, so this key always resolves. Key material
-                # (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its required
-                # trailing newline survives (WR-01); everything else is stripped.
-                data[field_name] = contents if field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE else contents.strip()
+                # the bare field name, so this key always resolves. The shared
+                # `_read_secret_file` helper (config_backends) applies the single
+                # strip-vs-verbatim rule both this env-`_FILE` path and the inline
+                # TOML `*_file` reader adopt (D-06: one rule, two call sites). Key
+                # material (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its
+                # required trailing newline survives (WR-01); everything else is stripped.
+                try:
+                    data[field_name] = _read_secret_file(path, preserve_whitespace=field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE)
+                except ValueError as exc:
+                    # Re-raise with the `<VAR>_FILE` name so the operator-facing message
+                    # still names the variable that pointed at the unreadable path.
+                    msg = f"{file_var} points to {path!r} which could not be read: {exc}"
+                    raise ValueError(msg) from exc
                 break
 
         return data
@@ -353,6 +365,45 @@ class ControlSettings(BaseSettings):
         "kube_kubeconfig",
         "kube_sa_token",
     }
+
+    # Phase 67 (REG-01/D-01): the typed backend registry. Declared as `list[BackendConfig]`
+    # (a discriminated union over `kind`, config_backends) so the parsed `[[backends]]` tables
+    # validate per-variant at construction. The `default_factory` synthesizes the implicit
+    # single kind=local backend when the `backends` key is ABSENT (no file) so the live all-local
+    # deploy needs zero config edits (D-03). A present-but-empty `backends = []` does NOT fire the
+    # factory and is failed fast by `_validate_registry` below (Pitfall 2). NOT exposed as an env
+    # var: the registry is sourced ONLY from the TOML file (Pitfall 6). `buckets` is the S3
+    # staging-bucket registry (REG-05); empty by default.
+    backends: list[BackendConfig] = Field(default_factory=_default_local_registry)
+    buckets: list[BucketConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _load_backend_registry(cls, data: Any) -> Any:
+        """Idiom B: load `backends`/`buckets` from the `PHAZE_BACKENDS_CONFIG_FILE` TOML (D-01/D-02/D-03).
+
+        Mirrors the `_resolve_secret_files` before-validator's inject-into-`data` shape. Reads the
+        env pointer (default `/etc/phaze/backends.toml`); if the file exists, `tomllib.load`s it and
+        injects the parsed `[[backends]]` / `[[buckets]]` tables — making the TOML file the SINGLE
+        source (Pitfall 6). If the file is ABSENT, injects nothing so the `backends` default_factory
+        synthesizes implicit-local (D-03 zero-config). `backends`/`buckets` are deliberately NOT
+        exposed as env vars, so nothing else populates them.
+        """
+        if not isinstance(data, dict):
+            return data
+        path = os.environ.get("PHAZE_BACKENDS_CONFIG_FILE", "/etc/phaze/backends.toml")
+        toml_path = Path(path)
+        if not toml_path.exists():
+            # Absent file → inject nothing; the default_factory fires (implicit-local, D-03).
+            return data
+        with toml_path.open("rb") as handle:
+            parsed = tomllib.load(handle)
+        # Present file → the TOML is authoritative. `.get(..., [])` means a file that declares only
+        # `[[buckets]]` (or is empty) resolves `backends` to a present-but-empty list, which
+        # `_validate_registry` fails fast on rather than silently synthesizing local (Pitfall 2).
+        data["backends"] = parsed.get("backends", [])
+        data["buckets"] = parsed.get("buckets", [])
+        return data
 
     # Discogsography
     discogs_match_concurrency: int = 5
