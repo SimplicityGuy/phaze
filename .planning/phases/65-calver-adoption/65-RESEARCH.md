@@ -334,15 +334,18 @@ assert not any("v*.*.*" in str(t) for t in tags), "legacy v*.*.* glob must be dr
 
 *(All glob-syntax and metadata-action claims are CITED, not assumed.)*
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **README VER-02 clause — there is no version badge.** `README.md` line 12 has CI/codecov/license/`Python 3.14+` badges; none encode the release version. VER-02 says "the README version/badge line reflect the CalVer scheme."
    - What we know: no release-version string exists in README to edit; line 39's "v7.0" is a feature-era label (leave, D-13).
    - Recommendation: Planner chooses one of — (a) treat VER-02's README clause as satisfied because there is no stale version claim to fix (the release-procedure prose in `docs/deployment.md` carries CalVer), or (b) add a one-line CalVer release reference/badge (keeping the badge row one-line per MEMORY). Lean (a) to avoid re-adding a removed badge; surface for the discuss/plan step.
+   - **RESOLVED — option (a): no README version-badge edit.** VER-02 is satisfied by the `docs/deployment.md` CalVer procedure prose; do NOT add or re-add a removed badge (per `readme-badge-style` memory). Implemented in Plan 02 Task 3 (README left byte-unchanged; decision recorded in SUMMARY).
 
 2. **pyproject bump timing (Claude's Discretion, D).** Bump `version = "2026.7.0"` **within** this phase or at milestone-release time? Recommendation: bump within the phase so the version source-of-truth is consistent with the adopted scheme and the guard tests exercise the final state; the actual annotated tag remains a milestone-completion step (the tag, not the file, triggers publish).
+   - **RESOLVED — bump within this phase.** Set `version = "2026.7.0"` in pyproject and `uv lock` now, so the guard tests exercise the final state; the annotated tag remains a milestone-completion step (the tag, not the file, triggers publish). Implemented in Plan 02 Task 1.
 
 3. **cloud-burst.md / arm64-agent-image.md example edits — in scope?** These carry forward-looking `v5.0.0` examples but are v5.0-feature-specific docs. Recommendation: rewrite the pin/build **examples** to `2026.7.0` (D-12) but leave the "v5.0 Cloud Burst" feature-era labels (D-13). Low priority; scope-check with planner to avoid churn.
+   - **RESOLVED — in scope.** Rewrite the forward-looking `vN.M.P` pin/build examples in both docs to `2026.7.0` (`2026.7.0-arm64` where the suffix appears), and leave the "v5.0 Cloud Burst" feature-era labels verbatim (D-13). Both files are in Plan 02 Task 3 `files_modified`.
 
 ## Environment Availability
 
