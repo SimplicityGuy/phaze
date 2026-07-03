@@ -92,6 +92,11 @@ test-ci:
 test-file FILE:
     uv run pytest {{FILE}} -x -v
 
+[doc('Run the REQUIREMENTS/ROADMAP docs-drift traceability guard (DOCS-01)')]
+[group('test')]
+docs-drift:
+    uv run pytest tests/shared/core/test_requirements_traceability.py -q
+
 # --cov-fail-under=0 is REQUIRED: a single bucket only exercises a fraction of
 # phaze, so pytest-cov auto-enforcing pyproject's global fail_under gate against a
 # bucket's PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded,

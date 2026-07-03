@@ -93,3 +93,23 @@ def test_no_orphan_templates() -> None:
 
     orphans = all_templates - reachable - _ALLOWLIST
     assert not orphans, f"Orphaned templates (referenced by nobody): {sorted(orphans)}"
+
+
+def test_entry_literals_resolve_to_templates() -> None:
+    """Every router "...html" literal points at a real template (no dead entry-root literal).
+
+    Closes the D-14 blind spot: ``test_no_orphan_templates`` builds ``all_templates`` from
+    on-disk files, so a router literal pointing at a *deleted* template is added to
+    ``reachable`` but never flagged (it contributes nothing to ``all_templates``). This
+    sibling assertion catches the ``_STAGE_PLACEHOLDER``-shape dead entry-root literal by
+    requiring every captured literal to resolve on disk. De-risked: all current router
+    ``.html`` literals resolve today, so this is green with no allowlist. If a legitimate
+    non-template ``.html`` href literal is ever needed, add a tiny explicit
+    ``_NON_TEMPLATE_HTML: frozenset[str]`` with an inline justification (mirroring
+    ``_ALLOWLIST``) — do NOT relax this assertion.
+    """
+    missing = sorted(lit for lit in _entry_templates() if not (_TEMPLATES / lit).is_file())
+    assert not missing, (
+        "router source references template literals that don't exist on disk "
+        f"(dead entry-root literal — delete the literal or restore the template): {missing}"
+    )
