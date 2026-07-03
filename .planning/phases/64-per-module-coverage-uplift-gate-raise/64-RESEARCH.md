@@ -429,14 +429,14 @@ Not applicable — this is a test + CI-config phase with no rename/refactor/migr
 | A3 | The `combine` job is the branch-protection required check, so a non-zero `coverage-combine` blocks merge | Gate Wiring | MEDIUM — MEMORY notes branch-protection required-check = `aggregate-results` was a deferred post-Phase-63 chore (UAT #11); confirm the required check actually gates on the combine result before relying on red-check enforcement |
 | A4 | `.planning/config.json` does not disable nyquist_validation / security_enforcement | Validation/Security | LOW — sections included regardless; planner drops if config says otherwise |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Is the branch-protection required check wired to the combine result yet?**
+1. **Is the branch-protection required check wired to the combine result yet?** _Resolved → 64-04:_ plan 64-04 adds a `gh api .../required_status_checks` read (Task 1) + a blocking human-verify checkpoint (Task 2) that confirms/sets the combine (or `aggregate-results`) context as a merge-blocking required check, or explicitly defers it as a tracked chore.
    - What we know: Phase 63 intended the required check to be a stable aggregate/combine job; MEMORY flags "set GitHub branch-protection required-check = `aggregate-results`" as a deferred post-merge chore (Phase 63 UAT #11).
    - What's unclear: whether a red `combine` job currently blocks merge in branch protection.
    - Recommendation: the planner should include a verification step (or a note) confirming the required check gates on the combine job; otherwise the floor/gate is advisory in practice. This does not block writing the script/tests.
 
-2. **Exact final `<NEW_GLOBAL>` digit.**
+2. **Exact final `<NEW_GLOBAL>` digit.** _Resolved → 64-03:_ plan 64-03 Task 1 measures the post-uplift combined overall the CI-faithful way at execute time and pins `fail_under` = integer floor of (overall − ~1), strictly > 90.38.
    - What we know: combined overall = 96.89% today; post-uplift ≥ that; D-05 = achieved-minus-~1.
    - What's unclear: the precise post-uplift overall (depends on how much margin the planner adds).
    - Recommendation: measure at execute time (CI-faithful commands above), then set `fail_under` to the integer floor of (overall − 1), e.g. 95. Strictly > 90.38 guaranteed.
