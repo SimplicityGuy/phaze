@@ -201,7 +201,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
 | 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
 | 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
-| 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 2/4 | In Progress|  |
+| 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 3/4 | In Progress|  |
 | 65. CalVer Adoption | 2026.7.0 | 0/? | Not started | - |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 0/? | Not started | - |
 
@@ -920,7 +920,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 64-03-PLAN.md — Raise the global gate >90.38 (D-05) + wire the floor into `just coverage-combine` + gate-consistency guard test [Wave 2]
+- [x] 64-03-PLAN.md — Raise the global gate >90.38 (D-05) + wire the floor into `just coverage-combine` + gate-consistency guard test [Wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
