@@ -26,7 +26,7 @@ from phaze.services import s3_staging
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 
 _BUCKET = "phaze-test-staging"
@@ -44,15 +44,39 @@ def moto_s3_server() -> Iterator[str]:
 
 
 @pytest.fixture
-def s3_env(moto_s3_server: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """Point ControlSettings S3 fields at the moto server and create the staging bucket."""
+def s3_env(moto_s3_server: str, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Callable[[str], object]) -> Iterator[str]:
+    """Drive the registry off a one-kueue-backend backends.toml pointed at the moto server + create the bucket.
+
+    The staging service now reads the active bucket's identity/creds via the transitional
+    ``active_bucket`` accessor (REG-04, D-14), so the test config is a single kueue backend + one
+    bucket in backends.toml instead of the flat ``PHAZE_S3_*`` env vars.
+    """
     monkeypatch.setenv("PHAZE_ROLE", "control")
-    monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", moto_s3_server)
-    monkeypatch.setenv("PHAZE_S3_BUCKET", _BUCKET)
-    monkeypatch.setenv("PHAZE_S3_REGION", "us-east-1")
-    monkeypatch.setenv("PHAZE_S3_ACCESS_KEY_ID", "testing")
-    monkeypatch.setenv("PHAZE_S3_SECRET_ACCESS_KEY", "testing")
-    get_settings.cache_clear()
+    backends_toml_env(
+        f"""
+        [[backends]]
+        kind = "kueue"
+        id = "cluster-01"
+        rank = 10
+        cap = 4
+        buckets = ["staging"]
+
+        [backends.kube]
+        api_url = "https://kube.test"
+        namespace = "phaze"
+        local_queue = "phaze-lq"
+
+        [[buckets]]
+        id = "staging"
+        scope = "shared"
+        endpoint_url = "{moto_s3_server}"
+        bucket = "{_BUCKET}"
+        region = "us-east-1"
+        addressing_style = "path"
+        access_key_id = "testing"
+        secret_access_key = "testing"
+        """
+    )
     boto3.client("s3", endpoint_url=moto_s3_server, region_name="us-east-1", **_CREDS).create_bucket(Bucket=_BUCKET)
     yield moto_s3_server
     get_settings.cache_clear()
@@ -209,10 +233,13 @@ async def test_ensure_bucket_lifecycle_ttl_sets_expiration_on_prefix(s3_env: str
 
 
 async def test_missing_bucket_config_raises_s3_staging_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no S3 bucket/endpoint configured, the service fails loud rather than building a client."""
+    """With no active backend bucket (implicit-local registry), the service fails loud rather than building a client.
+
+    Absent any backends.toml the registry synthesizes a single kind=local backend, so
+    ``active_bucket`` is ``None`` and the staging service must fail loud (D-03/D-14).
+    """
     monkeypatch.setenv("PHAZE_ROLE", "control")
-    monkeypatch.delenv("PHAZE_S3_BUCKET", raising=False)
-    monkeypatch.delenv("PHAZE_S3_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("PHAZE_BACKENDS_CONFIG_FILE", raising=False)
     get_settings.cache_clear()
     try:
         with pytest.raises(s3_staging.S3StagingError):
