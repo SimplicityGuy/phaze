@@ -109,10 +109,10 @@ async def test_no_direct_to_compute_enqueue_path(session: AsyncSession) -> None:
     assert long_file.state == FileState.AWAITING_CLOUD
 
 
-# --- Phase 55 (D-02): the cloud_target gate on the routing seam ---------------------------
+# --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the routing seam ---------
 # The helper takes a resolved ``cloud_enabled`` bool; the production callers source it from
-# ``settings.cloud_target != "local"`` (pipeline.py). These tests drive the bool directly; the
-# k8s case below proves that resolution maps the 'k8s' target onto cloud-on.
+# ``settings.cloud_enabled`` (pipeline.py), the registry-derived property. These tests drive the bool
+# directly; the kueue case below proves a non-local registry resolves that property onto cloud-on.
 
 
 @pytest.mark.asyncio
@@ -166,21 +166,27 @@ async def test_cloud_enabled_holds_long_file(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cloud_target_k8s_resolves_to_cloud_on(session: AsyncSession) -> None:
-    """cloud_target='k8s' resolves to cloud-on (`cloud_target != "local"`) and HOLDS a long file (D-02).
+async def test_kueue_registry_resolves_to_cloud_on(session: AsyncSession) -> None:
+    """A single kueue backend resolves settings.cloud_enabled True and HOLDS a long file (D-14).
 
-    The production callers feed the seam ``settings.cloud_target != "local"``; this case proves the
-    'k8s' selector maps onto the cloud-on bool so the long file is held in AWAITING_CLOUD, not routed
-    local. (The 'a1' target resolves identically -- covered by the cloud_enabled=True case above.)
+    The production callers feed the seam ``settings.cloud_enabled``; this case builds that exact
+    registry-derived property from a single kueue backend and proves it maps onto the cloud-on bool so
+    the long file is held in AWAITING_CLOUD, not routed local. (A single compute backend resolves
+    identically -- covered by the cloud_enabled=True case above.)
     """
+    from phaze.config import settings
+    from phaze.config_backends import KubeConfig, KueueBackend
+
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
     long_file = _make_long_file()
     session.add(long_file)
     await session.commit()
 
-    cloud_target = "k8s"
-    cloud_enabled = cloud_target != "local"  # the exact resolution pipeline.py performs
+    # The exact registry-derived read pipeline.py performs: a non-local registry -> cloud_enabled True.
+    kueue_settings = settings.model_copy(update={"backends": [KueueBackend(kind="kueue", id="k8s", rank=10, cap=2, kube=KubeConfig())]})
+    cloud_enabled = kueue_settings.cloud_enabled
+    assert cloud_enabled is True
 
     router = FakeTaskRouter()
     app_state = SimpleNamespace(task_router=router)
