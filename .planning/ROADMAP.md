@@ -20,7 +20,7 @@ Cleanup / engineering-debt paydown: faster parallel CI, code-change-gated builds
 - [x] **Phase 63: Parallel CI & Code-Change Gating** — partition the ~1,750-test suite into workflow-step buckets, fan out across parallel jobs, combine per-shard coverage into one Codecov upload, and skip heavy jobs on doc-only changes (skip-with-success) (CI-01..04) (completed 2026-07-02)
 - [x] **Phase 64: Per-Module Coverage Uplift & Gate Raise** — raise the worst-offender modules to a per-module coverage floor with behavior-asserting tests and lift the enforced gate above today's 90.38%, wired into CI (COV-01, COV-02) (completed 2026-07-03)
 - [x] **Phase 65: CalVer Adoption** — replace `vN.M` with `YYYY.MM.REVISION` (first tag `2026.7.0`) across the release procedure, version badges, image tags, and the milestone↔version mapping, historical record intact (VER-01..04) (completed 2026-07-03)
-- [ ] **Phase 66: Docs-Drift Gate & Dead-Code Sweep** — a CI gate cross-checking REQUIREMENTS.md traceability against passed phases + re-link the `/saq` monitor in the shell + delete vestigial dead code (DOCS-01, CLEAN-01, CLEAN-02)
+- [x] **Phase 66: Docs-Drift Gate & Dead-Code Sweep** — a CI gate cross-checking REQUIREMENTS.md traceability against passed phases + re-link the `/saq` monitor in the shell + delete vestigial dead code (DOCS-01, CLEAN-01, CLEAN-02) (completed 2026-07-03)
 
 <details>
 <summary>✅ v6.0 Kubernetes Burst Analysis (Phases 52-56) — SHIPPED 2026-06-29</summary>
@@ -203,7 +203,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
 | 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
-| 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete   | 2026-07-03 |
+| 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete    | 2026-07-03 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
