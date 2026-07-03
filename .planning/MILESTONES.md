@@ -1,5 +1,23 @@
 # Milestones
 
+## 2026.7.0 Engineering Improvements (Shipped: 2026-07-03)
+
+**Phases completed:** 4 phases (63–66), 13 plans, 19 tasks
+**Shipped via:** PRs #193, #194, #197, #198, #199 · git range `9b65cf7..f9949cb` · 2026-07-02 → 2026-07-03
+**Delivered:** An engineering-debt paydown milestone — faster parallel CI, a per-module coverage floor, CalVer release versioning, a docs-drift guard, and dead-code cleanup — with **no product or backend behavior change**.
+
+**Key accomplishments:**
+
+- **Parallel CI & code-change gating (Phase 63, CI-01..04):** partitioned the ~1,750-test suite into 9 workflow-step buckets (`tests/buckets.json` as the single source of truth) via a behavior-preserving `git mv` of 205 test files, fanned the buckets out across a setup→matrix→combine CI topology, combined per-shard `.coverage` into one Codecov upload, and gated the heavy jobs to skip-with-success on doc-only changes (shellcheck-clean classifier + partition guard).
+- **Per-module coverage uplift & gate raise (Phase 64, COV-01/02):** added `scripts/coverage_floor.py` (fail-closed per-module 85% floor over the combined `coverage.json`, with its own unit test), raised the worst-offender / v7.0-touched modules with behavior-asserting tests, and lifted the enforced project gate above the 90.38% baseline — wired into CI so future regressions fail the build.
+- **CalVer adoption (Phase 65, VER-01..04):** replaced `vN.M` with `YYYY.MM.REVISION` (no-leading-zero month, first tag `2026.7.0`, per-month zero-based REVISION) across the release procedure, README badge, image tags, `ci.yml` tag glob, and the milestone↔version mapping — bumping pyproject/uv.lock to `2026.7.0` while leaving every historical `vN.M` record and the docker-publish machinery intact.
+- **Docs-drift CI gate (Phase 66, DOCS-01):** a hermetic pytest traceability guard cross-checking REQUIREMENTS/ROADMAP/VERIFICATION for 5 drift classes (plus a dead entry-root-literal assertion), wired as a `just docs-drift` step into the always-run code-quality job so drift fails CI even on doc-only PRs — it caught and fixed a stale Phase-65 ROADMAP checkbox on its first run, and was hardened post-merge (PR #199: section-scoped parser, fail-loud on duplicate rows, flag `[x]` reqs missing from the table, escape-hatch seam).
+- **`/saq` re-link & dead-code sweep (Phase 66, CLEAN-01/02):** restored a discreet flag-gated `/saq` SAQ-monitor link to the shell Agents page (`rel="noopener"`, gated on `enable_saq_ui`), and added `vulture>=2.16` as a non-blocking `just vulture` recipe with a hand-audited `vulture_whitelist.py` (20 grep-verified framework false-positives suppressed) — the confirmed-dead sweep was a deliberate no-op since the v7.0 CUT-02 cutover already removed the vestigial dead code.
+
+**Known deferred items at close:** 3 (see STATE.md Deferred Items) — all already-completed work with stale tracking status (Phase 63 UAT 0-pending; quick tasks 260628-wzq, 260629-eev committed), acknowledged at close.
+
+---
+
 ## Milestone ↔ Version Mapping
 
 Milestones are **named**; releases are **dated** CalVer. Every milestone from `v1.0`
@@ -21,7 +39,7 @@ shared `YYYY.MM`.
 | Cloud Burst Analysis | v5.0 | 2026-06-26 |
 | Kubernetes Burst Analysis | v6.0 | 2026-06-29 |
 | UI Redesign — DAG-Centric Hybrid Console | v7.0 | 2026-07-02 |
-| Engineering Improvements | 2026.7.0 | _(release date TBD)_ |
+| Engineering Improvements | 2026.7.0 | 2026-07-03 |
 
 ---
 

@@ -224,6 +224,42 @@ An IA/presentation rewrite turning the tab-sprawl admin UI into a DAG-centric th
 
 ---
 
+## Milestone: 2026.7.0 — Engineering Improvements
+
+**Shipped:** 2026-07-03
+**Phases:** 4 (63-66) | **Plans:** 13
+
+### What Was Built
+An engineering-debt paydown milestone with **zero product/backend behavior change**: parallel CI over a 9-bucket test partition with combined-across-shards coverage + doc-only skip-with-success (63), a fail-closed per-module coverage floor that lifted the enforced gate above the 90.38% baseline (64), CalVer release versioning (`YYYY.MM.REVISION`, first tag `2026.7.0`) across the whole release surface with the historical `vN.M` record intact (65), and a hermetic docs-drift CI guard + `/saq` shell re-link + vulture dead-code tooling (66). The docs-drift gate directly closes the "documentation drift needs automation" lesson that recurred across the v2.0/v3.0/v4.0/v7.0 audits.
+
+### What Worked
+- **The docs-drift gate caught real drift on its very first run** — a stale Phase-65 ROADMAP checkbox — then self-validated this milestone's own completion bookkeeping green. A lesson logged for four milestones finally became an enforced test.
+- **A behavior-preserving `git mv` of 205 test files into 9 buckets kept all 2,566 tests green**, with a partition guard failing CI on any unbucketed test — a large reorg at zero behavior risk.
+- **The vulture sweep being a deliberate no-op validated the v7.0 CUT-02 cutover**: the confirmed-dead pass found nothing, proving the earlier dead-code removal was complete; the durable artifact is a hand-audited whitelist, not a deletion.
+- **Two blocking human-approval gates on the dead-code phase** (package-legitimacy + deletion-review) kept an inherently-risky sweep safe.
+
+### What Was Inefficient
+- **CI-gate hardening spilled past plan scope in Phase 63** (aggregate-results deny-list, empty-diff fail-safe, per-bucket gate deferred to combine) — real improvements, but code-review/verification discoveries rather than planned work; the plan under-modeled the branch-protection interaction.
+- **Guard robustness needed a follow-up PR (#199)** after the Phase 66 merge: the traceability parser needed section-scoping, fail-loud-on-duplicate-rows, and a missing-from-table check. The first cut of a drift guard has its own drift blind spots.
+- **The two-worktree close friction recurred** from v7.0 — the session lived in the merged per-phase worktree while the tag + archives belonged on main; resolved by running the close from the main worktree on a `release/2026.7.0` branch.
+
+### Patterns Established
+- CI-load-bearing scripts (`classify-changed-files.sh`, `coverage_floor.py`) each ship with their own `tests/shared/` unit test — a script that gates CI is itself under test.
+- `tests/buckets.json` as a single-source-of-truth partition consumed by BOTH the CI matrix and a structural guard — the partition can't silently drift from what CI runs.
+- Hermetic doc-drift gate: a pytest reading REQUIREMENTS/ROADMAP/VERIFICATION that fails on traceability drift, wired into the always-run code-quality job so it fires even on doc-only PRs.
+- Fail-closed gates: coverage/drift scripts raise → non-zero exit on missing/unparseable input, never a silent 0.
+
+### Key Lessons
+1. A drift guard has its own drift — section-scope its parsers, fail loud on duplicate/ambiguous rows, check both directions (passed-phase-unmarked AND marked-without-passed-phase). Budget a hardening follow-up.
+2. Adopt CalVer at a milestone boundary, not mid-cycle — decoupling names from numbers is a clean cutover once the last `vN.M` has shipped.
+3. Run the milestone close from the `main` worktree on a `release/*` branch — the two-worktree cwd/root ambiguity bit both v7.0 and 2026.7.0.
+4. A dead-code sweep that finds nothing is a positive result, not wasted work — it proves a prior cutover was complete; keep the whitelist as the durable artifact.
+
+### Cost Observations
+- 4 phases / 13 plans / 19 tasks over 2 days (2026-07-02 → 2026-07-03); 5 squash-merged PRs (#193/#194/#197/#198 + the #199 guard-hardening follow-up). Net −9,314 lines (12,669 added / 21,983 deleted) — the deletions are the test-bucket reorg + dead-code confirmation, not feature loss.
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -234,6 +270,7 @@ An IA/presentation rewrite turning the tab-sprawl admin UI into a DAG-centric th
 | v2.0 | 6 | 16 | Research phases before planning, dual-service architecture, HTMX patterns matured |
 | v3.0 | 6 | 11 | Enrichment layer (search, Discogs, tag writing, CUE) on stable foundation; HTMX OOB swaps + Alpine.js patterns reused everywhere |
 | v4.0 | 6 | 47 | Two-host distributed architecture (HTTP-only agent boundary, per-agent SAQ queues, internal CA, settings split via `get_settings()` factory); subprocess import-boundary tests enforce invariants; 4× plan count from contract-heavy API surface |
+| 2026.7.0 | 4 | 13 | First CalVer milestone (names decoupled from versions); parallel-CI bucket partition + combined coverage; docs-drift lesson finally automated as a hermetic CI gate; engineering-debt paydown, zero behavior change |
 
 ### Cumulative Quality
 
@@ -245,6 +282,7 @@ An IA/presentation rewrite turning the tab-sprawl admin UI into a DAG-centric th
 | v4.0 | (full suite passing) | ~14,300 src + ~28,000 tests cumulative; ~23,242 lines added since v3.0 tag | 6 |
 | v5.0 | (full suite passing) | (arm64 essentia image + cloud-burst push pipeline) | 5 |
 | v6.0 | 2,474 passing | ~8,452 lines added across 61 files since v5.0 tag | 5 |
+| 2026.7.0 | 2,566 passing (9 buckets) | net −9,314 (test-bucket reorg + dead-code confirmation) | 4 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -254,4 +292,4 @@ An IA/presentation rewrite turning the tab-sprawl admin UI into a DAG-centric th
 4. The discuss-phase questioning loop is highest ROI on schema/migration phases (v4.0 Phase 24 two-step migration shape was locked before any SQL was written)
 5. Subprocess import-boundary tests are the cheapest enforcement of architectural invariants — established in v4.0, should generalize to any future "this module must not import that module" rule
 6. Per-phase PR convention scales — held through 29 phases across 4 milestones, main never broken
-7. Documentation drift gates need automation — manual REQUIREMENTS.md / ROADMAP.md sync after PR merge consistently lags; surfaced in v2.0, v3.0, and v4.0 audits
+7. Documentation drift gates need automation — manual REQUIREMENTS.md / ROADMAP.md sync after PR merge consistently lags; surfaced in v2.0, v3.0, v4.0, and v7.0 audits → **RESOLVED in 2026.7.0 (Phase 66): a hermetic `just docs-drift` CI guard now fails the build on traceability drift, and caught real drift on its first run**

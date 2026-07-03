@@ -2,33 +2,32 @@
 gsd_state_version: 1.0
 milestone: 2026.7.0
 milestone_name: Engineering Improvements
-status: milestone_complete
-last_updated: 2026-07-03T17:55:24.565Z
-last_activity: 2026-07-03 -- Completed 66-03-PLAN.md (vulture dead-code sweep, no-op deletion)
+status: Awaiting next milestone
+last_updated: "2026-07-03T19:48:37.007Z"
+last_activity: 2026-07-03 — Milestone 2026.7.0 completed and archived
 progress:
   total_phases: 33
   completed_phases: 4
   total_plans: 13
   completed_plans: 13
   percent: 12
-stopped_at: Milestone complete (Phase 66 was final phase)
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
+See: .planning/PROJECT.md (updated 2026-07-03 — 2026.7.0 Engineering Improvements shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Milestone complete
+**Current focus:** 2026.7.0 shipped — planning the next named milestone (Multi-cloud backends, phases 67+; design already on `main` via PR #182)
 
 ## Current Position
 
-Phase: 66
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-07-03
+Phase: Milestone 2026.7.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-03 — Milestone 2026.7.0 completed and archived
 
 ## Performance Metrics
 
@@ -221,6 +220,16 @@ of behavior already proven by green automated proxies (57.1-UAT tests 5 + 7).
 
 These are tracked for the next deploy; they are NOT blockers for the v7.0 milestone record. Confirm live, then flip the 57.1 UAT notes to passed.
 
+Items acknowledged and deferred at the **2026.7.0** milestone close on 2026-07-03. Unlike the
+deployment-gated items above, all three are **already-completed work with stale tracking status**
+(surfaced by `gsd-sdk query audit-open`) — none is genuinely open. Recorded here per the acknowledge-at-close protocol.
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 63-UAT | partial | Phase 63 UAT has **0 pending scenarios** — status simply never flipped to complete; the parallel-CI work shipped in PR #193 |
+| quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | missing | Committed `5f43aa7` (v6.0 audit fix); quick-task tracking file was never marked complete |
+| quick_task | 260629-eev (ASCII→mermaid diagram conversion) | missing | Committed `267109b`; quick-task tracking file was never marked complete |
+
 ## Session Continuity
 
 Last session: 2026-07-03T17:42:18.407Z
@@ -229,4 +238,6 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- **Merge release PR `release/2026.7.0`** (milestone archive + PROJECT/ROADMAP/STATE/RETROSPECTIVE/MILESTONES updates), then **cut the annotated `2026.7.0` tag on the merge commit and push it** — the tag push fires the GHCR publish (see [[project_release_procedure]]; pyproject/uv.lock were already bumped to `2026.7.0` in Phase 65).
+- **`.planning/REQUIREMENTS.md` was intentionally kept** (not `git rm`'d) at this close: the Phase-66 docs-drift guard has no existence check and would fail the required CI check if the file were absent. `/gsd:new-milestone` regenerates/overwrites it. Guard hardening captured in ROADMAP Backlog.
+- Start the next milestone with `/gsd-new-milestone` (next named milestone = Multi-cloud backends, phases 67+; design already on `main` via PR #182).

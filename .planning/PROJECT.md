@@ -8,9 +8,11 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
-## Current Milestone: 2026.7.0 Engineering Improvements
+## Last Milestone: 2026.7.0 Engineering Improvements — SHIPPED 2026-07-03
 
-**Goal:** Pay down accumulated CI / build / versioning / dead-code engineering debt — faster parallel CI, code-change-gated builds, CalVer release versioning, a docs-drift guard, and small UI/dead-code cleanup — with zero product-behavior change.
+**Next:** planning the **Multi-cloud backends** milestone (phases 67+; design already on `main` via PR #182). The 2026.7.0 goal and target features below are retained as shipped-milestone context.
+
+**Goal (shipped):** Pay down accumulated CI / build / versioning / dead-code engineering debt — faster parallel CI, code-change-gated builds, CalVer release versioning, a docs-drift guard, and small UI/dead-code cleanup — with zero product-behavior change.
 
 **Target features:**
 - **Parallel-CI test partition** — split the ~1,750-test suite into workflow-step buckets fanned out across parallel CI jobs; combine `.coverage` shards → one Codecov upload; preserve the 85% gate.
@@ -22,7 +24,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 **Key context:** Cleanup/infra milestone — **no user-facing feature change, no backend behavior change.** This is the milestone that *adopts* CalVer, so it is the last `vN.M`-numbered planning cycle and its release is the first CalVer tag (`2026.7.0`). Phase numbering continues from v7.0 (starts at Phase 63). Candidates sourced from the ROADMAP Backlog + v7.0 RETROSPECTIVE.
 
-## Last Milestone: v7.0 UI Redesign — DAG-Centric Hybrid Console — SHIPPED 2026-07-02
+## Prior Milestone: v7.0 UI Redesign — DAG-Centric Hybrid Console — SHIPPED 2026-07-02
 
 **Goal:** Replace the MVP tab-sprawl admin UI with a DAG-centric hybrid console — the pipeline becomes the home and the navigation spine, the local/A1/k8s execution targets are first-class, and every human approval unifies behind one before→after diff/approve gate. An information-architecture + presentation rewrite over the existing routers/services; **no backend behavior change.**
 
@@ -37,7 +39,7 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 **Key context:** Aesthetic is **C3 "Evolved phaze"** — preserve the existing brand (Jura headings, blue accent, wave logo, dark `phaze-bg` theme + light toggle); evolve, don't reskin. Stack stays server-rendered: FastAPI + Jinja2 + HTMX + Tailwind + Alpine — **no SPA build**. Design spine is locked in `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` (+ interactive prototype in the co-located assets dir). Depends on and visualizes the v6.0 local/A1/k8s routing targets but does not modify v6.0 backend behavior. 25 requirements (SHELL/WORK/IDENT/REVIEW/RECORD/CUT) across phases 57–62.
 
-## Prior Milestone: v6.0 Kubernetes Burst Analysis — SHIPPED 2026-06-29
+## Earlier Milestone: v6.0 Kubernetes Burst Analysis — SHIPPED 2026-06-29
 
 **Next:** v7.0 UI Redesign (DAG-Centric Hybrid Console) is now the active milestone (started 2026-06-29; see Current Milestone above). The v6.0 goal and target features below are retained as shipped-milestone context.
 
@@ -200,16 +202,14 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 - ✓ Per-file record slide-in, ⌘K command palette, Agents page with ephemeral k8s Job identity, first-run empty state — v7.0 Phase 61 (RECORD-01..04)
 - ✓ Baseline accessibility (keyboard rail + ⌘K, focus, skip link, DAG ARIA), narrow-width icon-rail collapse, docs/README refresh, dead-code cutover (20 legacy templates removed, empty guard allowlist) — v7.0 Phase 62 (CUT-01..04)
 
+- ✓ Parallel-CI test partition — ~1,750-test suite split into 9 workflow-step buckets (`tests/buckets.json`), fanned across a matrix, per-shard `.coverage` combined into one Codecov upload, doc-only changes skip-with-success — 2026.7.0 Phase 63 (CI-01..04)
+- ✓ Per-module coverage floor + enforced project gate raised above the 90.38% baseline, wired into CI so future regressions fail the build — 2026.7.0 Phase 64 (COV-01/02)
+- ✓ CalVer release versioning (`YYYY.MM.REVISION`, no-leading-zero month, first tag `2026.7.0`) across release procedure, badge, image tags, and the milestone↔version mapping; historical `vN.M` record intact — 2026.7.0 Phase 65 (VER-01..04)
+- ✓ Docs-drift CI gate cross-checking REQUIREMENTS.md traceability against passed phases (hermetic `just docs-drift`) + `/saq` shell re-link + vulture dead-code tooling (deliberate no-op sweep post-v7.0-cutover) — 2026.7.0 Phase 66 (DOCS-01, CLEAN-01/02)
+
 ### Active
 
-**Milestone 2026.7.0 Engineering Improvements — planning (started 2026-07-02).** Cleanup/infra milestone paying down CI / build / versioning / dead-code debt; no product-behavior change. Requirements defined in `.planning/REQUIREMENTS.md`, phases in `.planning/ROADMAP.md` (continue from Phase 63). Scope:
-
-- Partition the ~1,750-test suite into workflow-step buckets for parallel CI (combined coverage, 85% gate preserved)
-- Full build/test/security CI runs only on code changes (docs/`.planning`-only skip-with-success)
-- Adopt CalVer (`YYYY.MM.REVISION`, no leading-zero month; first tag `2026.7.0`) across release procedure, badges, image tags, milestone↔version mapping
-- Docs-drift CI gate: cross-check REQUIREMENTS.md traceability against passed phases
-- Per-module coverage uplift: raise a per-module coverage floor (v7.0-touched + worst offenders) and lift the enforced gate above today's 90.38%
-- Re-add the `/saq` in-UI link (Agents/Compute page) + delete vestigial dead code
+**No active milestone — planning the next one.** 2026.7.0 shipped 2026-07-03. The next named milestone is **Multi-cloud backends** (pluggable analysis-backend registry: local + 1+ Kueue + 1+ cloud-compute simultaneously, cost-tiered ranks + caps, static/no-provisioning; phases 67+). Design already merged to `main` (PR #182); promote to an active milestone via `/gsd:new-milestone`. `.planning/REQUIREMENTS.md` was archived at the 2026.7.0 close and will be regenerated for the next milestone.
 
 ### Out of Scope
 
@@ -300,6 +300,9 @@ Deferred to a future ops phase: mTLS for the agent boundary, agent self-registra
 | CPU-only cluster nodes for v6.0 (no GPU / no Coral) | essentia analysis is CPU-bound: wall-clock is dominated by `MonoLoader` decode + native DSP (rhythm/onset/spectral) on long sets; the TF classifier step is a tiny slice. Coral needs int8 TFLite (essentia ships full float TF) and GPU only speeds the negligible inference. Throughput lever is horizontal CPU parallelism across files — Kueue quota delivers exactly that. | ✓ Good — shipped v6.0; Kueue resource requests target `cpu`/`memory` only on a generic x64 CPU node pool; consistent with the v1.0 ProcessPoolExecutor decision |
 | Ephemeral Kueue Job as the K8s execution unit (v6.0) | One suspended `batch/v1` Job per long file instead of a persistent SAQ-draining host; Kueue owns quota/admission only, and the analysis result stays out-of-band via the `/api/internal/agent/*` callback reconciled by `file_id` (a dropped kube watch never loses a result) | ✓ Good — v6.0 shipped; the milestone audit (JOB-ENV-CONTRACT) confirmed the manifest→pod env seam needs an explicit contract test; live E2E deployment-gated |
 | Object storage for K8s staging (v6.0, reverses v5.0) | Ephemeral Job pods have no persistent local disk, so the long file is staged to an operator-provided S3-compatible bucket, downloaded by the pod, and deleted after analysis; control plane presigns only (DIST-01), agent/pod are credential-free | ✓ Good — v6.0 shipped; aioboto3 confined to one control-plane module, CI-enforced; ephemeral staging only, not a data home |
+| CalVer release versioning (2026.7.0) | Decouple milestone names from version numbers; a per-month zero-based REVISION supports multiple same-month releases without a semantic-version argument | ✓ Good — adopted 2026.7.0; `YYYY.MM.REVISION` (no-leading-zero month), historical `vN.M` preserved verbatim |
+| Bucketed parallel CI over one serial run (2026.7.0) | Partition the ~1,750-test suite into 9 workflow-step buckets fanned across a matrix, combine per-shard coverage into one gated Codecov upload, skip heavy jobs with success on doc-only changes | ✓ Good — `tests/buckets.json` single source of truth + partition guard; wall-clock CI cut, required checks stay satisfiable on doc-only PRs |
+| Docs-drift gate as a hermetic CI test (2026.7.0) | REQUIREMENTS↔ROADMAP↔VERIFICATION traceability went stale after merges across every prior milestone; a `just docs-drift` pytest guard fails CI on drift | ✓ Good — caught a stale Phase-65 ROADMAP checkbox on first run; self-validates milestone bookkeeping |
 
 ## Evolution
 
@@ -319,4 +322,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-03 — Milestone 2026.7.0 Engineering Improvements: ALL 4 phases complete + verified (63 Parallel CI CI-01..04; 64 Coverage Uplift COV-01/02; 65 CalVer VER-01..04; 66 Docs-Drift Gate + /saq re-link + dead-code sweep DOCS-01/CLEAN-01/CLEAN-02, verifier 16/16). All 13 requirements validated. Next: milestone audit + first CalVer release (`2026.7.0`). CalVer adopted this cycle (`YYYY.MM.REVISION`); v7.0 was the last `vN.M` release.*
+*Last updated: 2026-07-03 — Milestone 2026.7.0 Engineering Improvements SHIPPED + archived (13/13 requirements validated → Validated; phases 63-66 detail in `milestones/2026.7.0-ROADMAP.md`, requirements in `milestones/2026.7.0-REQUIREMENTS.md`). CalVer adopted this cycle (`YYYY.MM.REVISION`); v7.0 was the last `vN.M` release. Next: cut the `2026.7.0` tag on the release-PR merge (fires GHCR publish), then plan the Multi-cloud backends milestone (phases 67+) via `/gsd:new-milestone`.*
