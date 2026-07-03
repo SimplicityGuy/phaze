@@ -8,9 +8,22 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
+## Current Milestone: 2026.7.1 Multi-Cloud Backends
+
+**Goal:** Generalize the single `cloud_target` selector (`local`/`a1`/`k8s`) into a declarative, pluggable **`backends:` config registry** that drains long, locally-timing-out audio files across **local + Kueue (1+ clusters) + cloud-compute (1+ providers) simultaneously** — cost-tiered by operator-assigned **ranks + per-backend caps**, preferring free/owned capacity and spilling to paid only under load. Static routing, no provisioning: phaze routes to whatever backends the operator has deployed and are online.
+
+**Target features:**
+- **Backend config registry** — a declarative `backends:` list on `ControlSettings` (id/kind/rank/cap per entry) as the single source of truth for what execution targets exist, replacing the 3-value `cloud_target` Literal; per-entry fail-fast validators + a `cloud_target=a1|k8s` back-compat shim so existing single-target deploys keep working.
+- **`Backend` protocol + three implementations** — one internal protocol (`is_available`/`in_flight_count`/`dispatch`/`reconcile`) with `LocalBackend`/`ComputeAgentBackend`/`KueueBackend` bodies, collapsing the duplicated `cloud_target` `if/elif` spread across `stage_cloud_window`, the three config validators, and the staging modules; `cloud_job` gains a `backend_id` column so in-flight counts and reconcile are per-backend (behavior-preserving refactor).
+- **Tiered drain scheduler** — per tick under the existing advisory lock, pick for each `AWAITING_CLOUD` file the available backend with the lowest rank whose `in_flight_count() < cap`; the global `cloud_max_in_flight` becomes per-backend `cap`; local (rank 99, small cap) is naturally reached only when every higher-ranked backend is full or offline. Multiple backends run simultaneously; a failed/offline backend returns the file to `AWAITING_CLOUD` for next-tick re-dispatch to the next eligible backend (spillover).
+- **Multi-Kueue** — N Kueue clusters from config, each with its own kube config + LocalQueue probe/reconcile, all sharing one S3 bucket (control plane stays the sole S3 importer; DIST-01 no-media boundary preserved). Kueue is a category separate from the cloud-compute abstraction — cluster-location-agnostic.
+- **Deployment, config & docs** — per-backend `_FILE` secrets, operator runbook, a master revert toggle, and admin/UI surfacing of N per-backend lanes (generalizing v7.0 Phase 58's local/A1/k8s lane cards to N lanes).
+
+**Key context:** No new concrete providers this milestone — the `Backend` seam makes them trivial follow-ons (the cloud-compute path is *already* provider-agnostic: today's `a1` target has zero OCI-specific code). Cost-tier = operator-assigned ranks + caps, **not** an automated dollar-cost model — local is free-but-ranked-last (proving rank ≠ pure dollar cost). Result-return (`put_analysis` by `file_id`), duration gating (`_route_discovered_by_duration`), the agent HTTP surface, the shared S3 staging leg, and windowed analysis all stay untouched. Dependency-strict order — phases 1→2 are behavior-preserving refactors that de-risk the tiered scheduler in 3. Design spine locked in `docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md` (on `main`, PR #182). Supersedes the single `cloud_target` selector introduced in v6.0 Phase 55. Phase numbering continues from 2026.7.0 (starts at **Phase 67**). Version is provisional CalVer (`2026.7.1`) — finalized to the actual `YYYY.MM.REVISION` at release time per the CalVer name/number decoupling.
+
 ## Last Milestone: 2026.7.0 Engineering Improvements — SHIPPED 2026-07-03
 
-**Next:** planning the **Multi-cloud backends** milestone (phases 67+; design already on `main` via PR #182). The 2026.7.0 goal and target features below are retained as shipped-milestone context.
+**Next:** (superseded) — Multi-cloud backends is now the active milestone above. The 2026.7.0 goal and target features below are retained as shipped-milestone context.
 
 **Goal (shipped):** Pay down accumulated CI / build / versioning / dead-code engineering debt — faster parallel CI, code-change-gated builds, CalVer release versioning, a docs-drift guard, and small UI/dead-code cleanup — with zero product-behavior change.
 
@@ -209,7 +222,7 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 ### Active
 
-**No active milestone — planning the next one.** 2026.7.0 shipped 2026-07-03. The next named milestone is **Multi-cloud backends** (pluggable analysis-backend registry: local + 1+ Kueue + 1+ cloud-compute simultaneously, cost-tiered ranks + caps, static/no-provisioning; phases 67+). Design already merged to `main` (PR #182); promote to an active milestone via `/gsd:new-milestone`. `.planning/REQUIREMENTS.md` was archived at the 2026.7.0 close and will be regenerated for the next milestone.
+**Active milestone: 2026.7.1 Multi-Cloud Backends (phases 67+).** Pluggable analysis-backend registry draining long files across local + 1+ Kueue + 1+ cloud-compute simultaneously, cost-tiered by operator ranks + caps, static/no-provisioning. Design merged to `main` (PR #182); promoted via `/gsd:new-milestone` on 2026-07-03. Requirements defined in `.planning/REQUIREMENTS.md`; phases in `.planning/ROADMAP.md`.
 
 ### Out of Scope
 
@@ -322,4 +335,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-03 — Milestone 2026.7.0 Engineering Improvements SHIPPED + archived (13/13 requirements validated → Validated; phases 63-66 detail in `milestones/2026.7.0-ROADMAP.md`, requirements in `milestones/2026.7.0-REQUIREMENTS.md`). CalVer adopted this cycle (`YYYY.MM.REVISION`); v7.0 was the last `vN.M` release. Next: cut the `2026.7.0` tag on the release-PR merge (fires GHCR publish), then plan the Multi-cloud backends milestone (phases 67+) via `/gsd:new-milestone`.*
+*Last updated: 2026-07-03 — Milestone **2026.7.1 Multi-Cloud Backends** started (phases 67+; design on `main` via PR #182). Generalizes the single `cloud_target` selector into a pluggable, cost-tiered `backends:` registry draining long files across local + 1+ Kueue + 1+ cloud-compute simultaneously (static routing, no provisioning). Version is provisional CalVer (`2026.7.1`), finalized at release. Prior milestone 2026.7.0 Engineering Improvements SHIPPED + archived 2026-07-03 (13/13 requirements validated).*
