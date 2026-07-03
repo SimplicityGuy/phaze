@@ -9,8 +9,18 @@
 - ✅ **v5.0 Cloud Burst Analysis** — Phases 47-51 (shipped 2026-06-26)
 - ✅ **v6.0 Kubernetes Burst Analysis** — Phases 52-56 (shipped 2026-06-29)
 - ✅ **v7.0 UI Redesign (DAG-Centric Hybrid Console)** — Phases 57-62 (shipped 2026-07-02)
+- 🚧 **2026.7.0 Engineering Improvements** — Phases 63-66 (planning, started 2026-07-02)
 
 ## Phases
+
+### 🚧 2026.7.0 Engineering Improvements (Phases 63-66) — PLANNING
+
+Cleanup / engineering-debt paydown: faster parallel CI, code-change-gated builds, CalVer release versioning, a per-module coverage uplift, a docs-drift guard, and small UI/dead-code cleanup. **No product-behavior change, no backend behavior change.** Phase numbering continues from v7.0 (Phase 62 was the last integer; 57.1 was a decimal insert). This milestone *adopts* CalVer, so it is the last `vN.M`-numbered planning cycle and its release is the first CalVer tag (`2026.7.0`). Every phase = one PR (worktree branch, never direct to main).
+
+- [x] **Phase 63: Parallel CI & Code-Change Gating** — partition the ~1,750-test suite into workflow-step buckets, fan out across parallel jobs, combine per-shard coverage into one Codecov upload, and skip heavy jobs on doc-only changes (skip-with-success) (CI-01..04) (completed 2026-07-02)
+- [ ] **Phase 64: Per-Module Coverage Uplift & Gate Raise** — raise the worst-offender modules to a per-module coverage floor with behavior-asserting tests and lift the enforced gate above today's 90.38%, wired into CI (COV-01, COV-02)
+- [ ] **Phase 65: CalVer Adoption** — replace `vN.M` with `YYYY.MM.REVISION` (first tag `2026.7.0`) across the release procedure, version badges, image tags, and the milestone↔version mapping, historical record intact (VER-01..04)
+- [ ] **Phase 66: Docs-Drift Gate & Dead-Code Sweep** — a CI gate cross-checking REQUIREMENTS.md traceability against passed phases + re-link the `/saq` monitor in the shell + delete vestigial dead code (DOCS-01, CLEAN-01, CLEAN-02)
 
 <details>
 <summary>✅ v6.0 Kubernetes Burst Analysis (Phases 52-56) — SHIPPED 2026-06-29</summary>
@@ -190,6 +200,10 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 60. Review & Apply | v7.0 | 4/4 | Complete   | 2026-07-01 |
 | 61. Full record + ⌘K + Agents | v7.0 | 5/5 | Complete    | 2026-07-02 |
 | 62. Polish & cutover | v7.0 | 4/4 | Complete    | 2026-07-02 |
+| 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
+| 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 0/? | Not started | - |
+| 65. CalVer Adoption | 2026.7.0 | 0/? | Not started | - |
+| 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 0/? | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -855,10 +869,85 @@ Plans:
 
 **UI hint**: yes
 
+## Phase Details (2026.7.0 Engineering Improvements)
+
+### Phase 63: Parallel CI & Code-Change Gating
+
+**Goal**: CI runs materially faster by executing the ~1,750-test suite as parallel, independently-selectable workflow-step buckets with correct combined coverage — and skips the heavy build/test/security jobs on documentation-only changes while keeping every required status check satisfiable. All CI-workflow work, one PR.
+**Depends on**: Nothing (first phase of this milestone; restructures the existing CI on top of v7.0)
+**Requirements**: CI-01, CI-02, CI-03, CI-04
+**Success Criteria** (what must be TRUE):
+
+  1. The pytest suite is partitioned into independently-runnable workflow-step buckets — discovery, metadata, fingerprint, analyze, identify/tracklist, review/apply, agents/distributed, plus a generic/shared bucket (schema, config, helpers, routing) — each selectable in isolation without running the whole suite. (CI-01)
+  2. CI fans the buckets out across parallel jobs (job matrix and/or `pytest-xdist`) rather than one serial run, measurably cutting wall-clock CI time. (CI-02)
+  3. Per-shard `.coverage` files are combined into a single coverage report and one Codecov upload, preserving the enforced coverage gate with no per-shard loss and no double-counting. (CI-03)
+  4. A docs-, `.planning/`-, or markdown-only PR skips the heavy build/test/security jobs while the required status checks still report **success** (skip-with-success, not skip-absent — a doc-only PR stays mergeable under branch protection). (CI-04)
+
+**Notes**: CI-03's combine step must be trustworthy before Phase 64 raises the enforced gate. Resolve at planning: marker vs directory vs xdist sharding vs job matrix; where real-Postgres integration tests bucket; and the code-change-detection mechanism (changed-files gate job over bare `paths-ignore`) that avoids the "required check never runs → PR can't merge" trap. CI workflows must delegate to `just` recipes per project convention.
+**Plans**: 4 plans (3 waves)
+Plans:
+**Wave 1**
+
+- [x] 63-01-PLAN.md — Foundation: pytest-xdist (legitimacy-gated) + coverage relative_files + just test-bucket/coverage-combine + tests/buckets.json [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 63-02-PLAN.md — Directory reorg into 9 buckets (collision-safe layer sub-nesting + migrations-import fix) + partition guard, full suite green at baseline [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 63-03-PLAN.md — tests.yml bucket matrix (fromJSON, per-leg services + coverage shards) + combine job (single coverage.xml + single Codecov upload) [Wave 3]
+- [x] 63-04-PLAN.md — ci.yml classifier broadened (.planning/**/LICENSE/docs/.txt) as a tested delegated script + change-gate regression tests; required-check contract untouched [Wave 3]
+
+### Phase 64: Per-Module Coverage Uplift & Gate Raise
+
+**Goal**: Raise the under-covered tail of source modules behind a per-module coverage floor with tests that assert real observable behavior (not coverage-padding), then lift the enforced coverage gate above today's baseline and wire it into CI so future regressions fail the build.
+**Depends on**: Phase 63 (the combined-across-shards coverage plumbing must be correct and trustworthy before a higher gate is enforced on it)
+**Requirements**: COV-01, COV-02
+**Success Criteria** (what must be TRUE):
+
+  1. The prioritized worst-offender and v7.0-touched modules — `services/agent_liveness.py`, `routers/shell.py`, `services/pipeline.py`, `routers/tracklists.py`, `routers/pipeline.py`, `main.py`, plus the 71–78% tail — each meet a per-module coverage floor, with the added tests asserting observable behavior. (COV-01)
+  2. The enforced coverage gate is raised above the current 90.38% project baseline (exact project and/or per-module target set at plan time). (COV-02)
+  3. The raised gate is wired into CI so a future coverage regression below the floor/gate fails the build. (COV-02)
+
+**Notes**: Behavior-first tests only — no assertions written solely to touch lines. Interacts with CI-03: the combined coverage number the gate enforces must already be correct (hence the Phase 63 dependency). No product/backend behavior change.
+**Plans**: TBD
+
+### Phase 65: CalVer Adoption
+
+**Goal**: Move release versioning from milestone-aligned `vN.M` to calendar-based `YYYY.MM.REVISION` (no leading-zero month; first tag `2026.7.0`) across the release procedure, version badges, published image tags, and the milestone↔version mapping — without breaking the historical `vN.M` record. This is the milestone that *adopts* CalVer, so its own release is the first CalVer tag.
+**Depends on**: Nothing (independent of the CI/coverage line — parallel-friendly isolation)
+**Requirements**: VER-01, VER-02, VER-03, VER-04
+**Success Criteria** (what must be TRUE):
+
+  1. Release versioning uses CalVer `YYYY.MM.REVISION` with no leading-zero month (first release `2026.7.0`) and a REVISION convention that supports multiple same-month patch releases. (VER-01)
+  2. The release procedure (pyproject `version` + `uv.lock` bump → annotated tag push → GHCR publish) and the README version/badge line reflect the CalVer scheme. (VER-02)
+  3. Published Docker image tags and any compose/deploy references use the CalVer version. (VER-03)
+  4. The milestone↔version mapping in ROADMAP.md and MILESTONES.md reads milestones as named and releases as dated, without breaking the historical `vN.M` record. (VER-04)
+
+**Notes**: Retroactively re-tagging historical `vN.M` releases as CalVer is explicitly out of scope — CalVer applies going forward. Keep README badges on one line; do not re-add removed badges. Preserve the annotated-tag-PUSH-triggers-GHCR-publish invariant (see memory `project-release-procedure`).
+**Plans**: TBD
+
+### Phase 66: Docs-Drift Gate & Dead-Code Sweep
+
+**Goal**: Close the small remaining engineering-debt items in one PR — a CI gate that keeps REQUIREMENTS.md traceability honest against passed phases, a discreet re-link to the still-mounted `/saq` monitor in the shell, and removal of the vestigial dead code (plus the dead-template guard's own blind spot) surfaced during the v7.0 cutover.
+**Depends on**: Phase 63 (the traceability CI gate slots cleanly into the restructured CI; CLEAN-01/02 are otherwise independent)
+**Requirements**: DOCS-01, CLEAN-01, CLEAN-02
+**Success Criteria** (what must be TRUE):
+
+  1. A CI gate cross-checks REQUIREMENTS.md traceability against passed phases and **fails** when the table is stale — a passed phase's requirements left unmarked, or a requirement marked without a passed phase. (DOCS-01)
+  2. A discreet in-UI link to the still-mounted `/saq` SAQ monitor is reachable from the shell (natural home: the Agents/Compute page) without typing the raw URL. (CLEAN-01)
+  3. Vestigial dead code (unused templates, routers, and assignments surfaced during the v7.0 cutover) is identified and removed. (CLEAN-02)
+  4. The dead-template guard's blind spot for its own unused entry-root literals (per the v7.0 retrospective) is closed. (CLEAN-02)
+
+**Notes**: CLEAN-01/02 are presentation- and dead-code-only — no backend behavior change. DOCS-01 closes the manual REQUIREMENTS/ROADMAP sync gap called out across the retrospectives.
+**Plans**: TBD
+**UI hint**: yes
+
 ## Backlog (unscheduled — no phase number yet)
 
 - **Distributed cloud analysis (burst the backlog).** _[SCHEDULED as v5.0 Cloud Burst Analysis, Phases 47-51 — narrowed to rsync-over-Tailscale to a free arm64 OCI A1 (essentia built from source), no object storage. See Phase Details (v5.0).]_ Offload long-file analysis to cloud x86 workers via the existing agent model: stage file to object storage → cloud worker pulls (presigned GET) → analyzes → PUTs result; **reconcile by `file_id`** (already end-to-end), sha256 for download integrity. Only new pieces: optional `source_url`+`sha256` on `ProcessFilePayload` + a "stager". essentia is **x86-only** (no aarch64 wheel; source build infeasible). Best near-free path = **GCP $300/90-day trial, x86 e2 spot, GCS same-region** (≈$0 out of pocket); min-cost paid = OCI E5 preemptible (~$100, free egress). **Gate: only pursue if nox throughput is still insufficient after the Phase 43 redeploy + re-measure** — bounding may make this moot. Full design: memory `reference-essentia-arm64-cloud-burst` + `project-analyze-4h-timeout-incident`.
-- **Partition the test suite for parallel CI.** Split the ~1750-test pytest suite into independently-runnable buckets so CI fans them out across parallel jobs instead of one serial run. Partition by **pipeline workflow-step** (discovery, metadata, fingerprint, analyze, identify/tracklist, review/apply, agents/distributed) plus a **generic/shared** bucket (schema, config, helpers, routing). Open questions to resolve at planning: marker-based selection (`@pytest.mark.<step>`) vs directory layout vs `pytest-xdist` sharding vs a CI job matrix; how to keep coverage aggregation correct across shards (combine `.coverage` files → single Codecov upload) and preserve the 85% gate; real-Postgres integration tests likely need their own bucket. Goal: cut wall-clock CI time without losing the single coverage report.
-- **Adopt CalVer ([calver.org](https://calver.org/)) for release versioning.** Replace the current milestone-aligned `vN.M` scheme (now at v7.0) with a calendar-based version. Decide the exact scheme at planning (e.g. `YYYY.MM.MICRO` or `YY.MM.MICRO`) and how it coexists with the milestone narrative (milestones become named, versions become dated). Update: the release procedure (pyproject `version` + `uv.lock` bump → annotated tag PUSH → GHCR publish — see memory `project-release-procedure`), README/version badges (one-line badge style), the milestone↔version mapping in ROADMAP/MILESTONES, and any image tags / compose references. Note the prior cadence shipped many `v4.0.x` patch releases — pick a MICRO convention that supports same-month patches.
-- **CI builds only when code changes.** Stop running the full build/test/security CI on docs- and planning-only changes (e.g. `.planning/**`, `*.md`) so commits like these backlog/requirements edits don't trigger the whole pipeline. Decide the mechanism at planning: workflow `paths`/`paths-ignore` filters vs a changed-files detection job that gates downstream jobs (the latter avoids the "required check never runs → PR can't merge" branch-protection trap that bare `paths-ignore` causes). Must keep the required status checks satisfiable on doc-only PRs (skip-with-success, not skip-absent). Pairs with the "partition test suite for parallel CI" item.
-- **Re-add an in-UI link to the `/saq` SAQ monitor.** _[Surfaced by the v7.0 milestone audit (`v7.0-MILESTONE-AUDIT.md`) — target the next cleanup / "engineering basics" milestone.]_ The SAQ task-queue dashboard is still mounted at `/saq` (`main.py`) and reachable by direct URL, but the v7.0 cutover (Phase 62/CUT-02) deleted the only in-UI link when it removed `dashboard.html`. Nothing is broken — the monitor works, it's just unlinked. Add a discreet link back into the shell; the natural home is the Agents / Compute page (RECORD-03 already surfaces agent state) rather than the DAG rail. Presentation-only; no backend change.
+- **Partition the test suite for parallel CI.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 63 (CI-01/02/03). See Phase Details (2026.7.0).]_ Split the ~1750-test pytest suite into independently-runnable buckets so CI fans them out across parallel jobs instead of one serial run. Partition by **pipeline workflow-step** (discovery, metadata, fingerprint, analyze, identify/tracklist, review/apply, agents/distributed) plus a **generic/shared** bucket (schema, config, helpers, routing). Open questions to resolve at planning: marker-based selection (`@pytest.mark.<step>`) vs directory layout vs `pytest-xdist` sharding vs a CI job matrix; how to keep coverage aggregation correct across shards (combine `.coverage` files → single Codecov upload) and preserve the 85% gate; real-Postgres integration tests likely need their own bucket. Goal: cut wall-clock CI time without losing the single coverage report.
+- **Adopt CalVer ([calver.org](https://calver.org/)) for release versioning.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 65 (VER-01..04). See Phase Details (2026.7.0).]_ Replace the current milestone-aligned `vN.M` scheme (now at v7.0) with a calendar-based version. Decide the exact scheme at planning (e.g. `YYYY.MM.MICRO` or `YY.MM.MICRO`) and how it coexists with the milestone narrative (milestones become named, versions become dated). Update: the release procedure (pyproject `version` + `uv.lock` bump → annotated tag PUSH → GHCR publish — see memory `project-release-procedure`), README/version badges (one-line badge style), the milestone↔version mapping in ROADMAP/MILESTONES, and any image tags / compose references. Note the prior cadence shipped many `v4.0.x` patch releases — pick a MICRO convention that supports same-month patches.
+- **CI builds only when code changes.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 63 (CI-04). See Phase Details (2026.7.0).]_ Stop running the full build/test/security CI on docs- and planning-only changes (e.g. `.planning/**`, `*.md`) so commits like these backlog/requirements edits don't trigger the whole pipeline. Decide the mechanism at planning: workflow `paths`/`paths-ignore` filters vs a changed-files detection job that gates downstream jobs (the latter avoids the "required check never runs → PR can't merge" branch-protection trap that bare `paths-ignore` causes). Must keep the required status checks satisfiable on doc-only PRs (skip-with-success, not skip-absent). Pairs with the "partition test suite for parallel CI" item.
+- **Re-add an in-UI link to the `/saq` SAQ monitor.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 66 (CLEAN-01). See Phase Details (2026.7.0).]_ _[Surfaced by the v7.0 milestone audit (`v7.0-MILESTONE-AUDIT.md`) — target the next cleanup / "engineering basics" milestone.]_ The SAQ task-queue dashboard is still mounted at `/saq` (`main.py`) and reachable by direct URL, but the v7.0 cutover (Phase 62/CUT-02) deleted the only in-UI link when it removed `dashboard.html`. Nothing is broken — the monitor works, it's just unlinked. Add a discreet link back into the shell; the natural home is the Agents / Compute page (RECORD-03 already surfaces agent state) rather than the DAG rail. Presentation-only; no backend change.

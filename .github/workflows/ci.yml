@@ -40,6 +40,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: 🔧 Setup Just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+
       - name: 🔍 Detect changed file types
         id: filter
         env:
@@ -69,13 +72,19 @@ jobs:
           echo "📝 Changed files:"
           echo "${CHANGED_FILES}"
 
-          NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -v '\.md$' || true)
+          # Delegate the doc-vs-code classification to the versioned, unit-tested
+          # scripts/classify-changed-files.sh via `just` (D-10). The script prints
+          # `code-changed=false` when EVERY changed path is documentation
+          # (*.md, .planning/**, LICENSE, docs/**, *.txt) and `code-changed=true`
+          # otherwise — conservative by construction, so any code/test/workflow
+          # change still runs the full pipeline. Its stdout is already in
+          # GitHub Actions name=value form, appended straight to the job output.
+          CODE_CHANGED=$(echo "${CHANGED_FILES}" | just detect-code-changes)
+          echo "${CODE_CHANGED}" >> "${GITHUB_OUTPUT}"
 
-          if [[ -z "${NON_MD_FILES}" ]]; then
-            echo "code-changed=false" >> "${GITHUB_OUTPUT}"
-            echo "📄 Only markdown files changed — skipping tests, security, and docker jobs"
+          if [[ "${CODE_CHANGED}" == "code-changed=false" ]]; then
+            echo "📄 Only documentation/planning files changed — skipping tests, security, and docker jobs"
           else
-            echo "code-changed=true" >> "${GITHUB_OUTPUT}"
             echo "💻 Code changes detected — running full pipeline"
           fi
 
@@ -122,38 +131,62 @@ jobs:
       - name: 📊 Check all pipeline results
         env:
           CODE_CHANGED: ${{ needs.detect-changes.outputs.code-changed }}
+          DETECT_RESULT: ${{ needs.detect-changes.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
           TEST_RESULT: ${{ needs.test.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           DOCKER_RESULT: ${{ needs.docker.result }}
         run: |
           echo "Pipeline Results Summary:"
-          echo "  Code Changed:  ${CODE_CHANGED}"
-          echo "  Code Quality:  ${QUALITY_RESULT}"
-          echo "  Tests:         ${TEST_RESULT}"
-          echo "  Security:      ${SECURITY_RESULT}"
-          echo "  Docker:        ${DOCKER_RESULT}"
+          echo "  Detect Changes: ${DETECT_RESULT}"
+          echo "  Code Changed:   ${CODE_CHANGED}"
+          echo "  Code Quality:   ${QUALITY_RESULT}"
+          echo "  Tests:          ${TEST_RESULT}"
+          echo "  Security:       ${SECURITY_RESULT}"
+          echo "  Docker:         ${DOCKER_RESULT}"
 
-          # Code quality must always pass
-          if [[ "${QUALITY_RESULT}" == "failure" ]]; then
-            echo "❌ Code quality failed"
+          # DENY-LIST gate: a job counts as passing ONLY when it explicitly
+          # succeeded (docs-only skip is the one sanctioned exception below).
+          # Allow-listing just "failure" (the old logic) let a failed or
+          # cancelled detect-changes cascade into skipped test/security/docker
+          # and slip through green with nothing run (CR-01).
+
+          # The change gate itself must have run cleanly; otherwise code-changed
+          # is untrustworthy and the heavy jobs were skipped on a false signal.
+          if [[ "${DETECT_RESULT}" != "success" ]]; then
+            echo "❌ Change detection did not succeed (${DETECT_RESULT}) — cannot trust the skip gate"
             exit 1
           fi
 
-          # For docs-only changes, skipped jobs are expected
+          # Code quality always runs and must always pass.
+          if [[ "${QUALITY_RESULT}" != "success" ]]; then
+            echo "❌ Code quality did not pass (${QUALITY_RESULT})"
+            exit 1
+          fi
+
+          # Docs-only change: test/security/docker are intentionally skipped.
+          # Accept 'skipped' (skip-with-success) but reject failure/cancelled.
           if [[ "${CODE_CHANGED}" == "false" ]]; then
-            echo "📄 Docs-only change — skipped jobs are expected"
+            for result in "${TEST_RESULT}" "${SECURITY_RESULT}" "${DOCKER_RESULT}"; do
+              if [[ "${result}" != "skipped" && "${result}" != "success" ]]; then
+                echo "❌ Docs-only change but a gated job ended '${result}' (expected skipped)"
+                exit 1
+              fi
+            done
+            echo "📄 Docs-only change — gated jobs skipped as expected"
             echo "✅ All required pipeline workflows passed!"
             exit 0
           fi
 
-          # For code changes, all jobs must pass (not fail)
-          if [[ "${TEST_RESULT}" == "failure" ]] || \
-             [[ "${SECURITY_RESULT}" == "failure" ]] || \
-             [[ "${DOCKER_RESULT}" == "failure" ]]; then
-            echo "❌ One or more pipeline workflows failed"
-            exit 1
-          fi
+          # Code change: every gated job must have explicitly succeeded.
+          for pair in "Tests:${TEST_RESULT}" "Security:${SECURITY_RESULT}" "Docker:${DOCKER_RESULT}"; do
+            name="${pair%%:*}"
+            result="${pair##*:}"
+            if [[ "${result}" != "success" ]]; then
+              echo "❌ ${name} did not succeed (${result})"
+              exit 1
+            fi
+          done
 
           echo "✅ All pipeline workflows passed!"
 

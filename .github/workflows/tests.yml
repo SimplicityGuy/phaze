@@ -12,10 +12,28 @@ permissions:
   contents: read
 
 jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      buckets: ${{ steps.buckets.outputs.buckets }}
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: 🪣 Read bucket list
+        id: buckets
+        run: echo "buckets=$(jq -c . tests/buckets.json)" >> "${GITHUB_OUTPUT}"
+
   test:
-    name: Tests
+    name: Tests (${{ matrix.bucket }})
+    needs: [setup]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        bucket: ${{ fromJSON(needs.setup.outputs.buckets) }}
     services:
       postgres:
         image: postgres:18-alpine
@@ -76,8 +94,55 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
-      - name: 🧪 Run tests with coverage
-        run: just test-ci
+      - name: 🧪 Run bucket tests with coverage
+        # Every bucket contains DB-fixture (integration-marked) tests — verified empirically at
+        # execution: `pytest tests/<bucket> -m integration --collect-only` returns >0 for all 9
+        # buckets. So no bucket qualifies for `-n auto` (xdist would race on schema create/drop
+        # against the shared phaze_test DB). All buckets run serial; matrix fan-out alone delivers
+        # CI-02's parallelism. If a future bucket becomes DB-free, add a matrix.include entry
+        # passing a third `-n auto` arg here.
+        run: just test-bucket ${{ matrix.bucket }}
+
+      - name: 📤 Upload coverage shard
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-${{ matrix.bucket }}
+          path: .coverage.${{ matrix.bucket }}
+          include-hidden-files: true
+          if-no-files-found: error
+
+  combine:
+    name: Combine coverage
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: 📦 Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 🔧 Setup Just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📦 Install dependencies
+        run: just install
+
+      - name: 📥 Download coverage shards
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      - name: 🧮 Combine coverage and enforce gate
+        run: just coverage-combine
 
       - name: 📊 Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0

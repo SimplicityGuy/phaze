@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v7.0
-milestone_name: UI Redesign (DAG-Centric Hybrid Console)
-status: Awaiting next milestone
-last_updated: "2026-07-02T17:33:44.895Z"
-last_activity: 2026-07-02 — Milestone v7.0 completed and archived
+milestone: 2026.7.0
+milestone_name: Engineering Improvements
+status: "Phase 63 shipped — PR #193"
+last_updated: "2026-07-02T23:38:30.132Z"
+last_activity: "2026-07-02 -- Phase 63 shipped (PR #193)"
 progress:
-  total_phases: 29
-  completed_phases: 7
-  total_plans: 28
-  completed_plans: 28
-  percent: 24
+  total_phases: 33
+  completed_phases: 1
+  total_plans: 4
+  completed_plans: 4
+  percent: 3
 ---
 
 # Project State
@@ -20,20 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-29 — v7.0 UI Redesign started)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Milestone complete
+**Current focus:** Phase 64 — per module coverage uplift & gate raise
 
 ## Current Position
 
-Phase: Milestone v7.0 complete
-Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-02 — Milestone v7.0 completed and archived
+Phase: 64
+Plan: Not started
+Status: Phase 63 shipped — PR #193
+Last activity: 2026-07-02 -- Phase 63 shipped (PR #193)
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 120
+- Total plans completed: 124
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -64,6 +64,7 @@ Last activity: 2026-07-02 — Milestone v7.0 completed and archived
 
 ### Roadmap Evolution
 
+- 2026.7.0 Engineering Improvements roadmap created (2026-07-02): 4 phases (63-66), continuing from v7.0's last integer phase (62; 57.1 was a decimal insert). Cleanup / engineering-debt paydown — **no product-behavior change, no backend behavior change**; the "user" is the maintainer/operator. 13/13 requirements mapped, 0 orphans, 0 duplicates. **63** Parallel CI & Code-Change Gating (partition the ~1,750-test suite into workflow-step buckets + fan out across parallel jobs + combine per-shard `.coverage` → one Codecov upload + doc-only skip-with-success; the tightly-coupled CI-01/02/03 land together and CI-04 rides the same CI-workflow PR; CI-01..04). **64** Per-Module Coverage Uplift & Gate Raise (raise worst-offender/v7.0-touched modules — agent_liveness/shell/pipeline/tracklists/routers.pipeline/main + the 71–78% tail — to a per-module floor with behavior-asserting tests, then lift the enforced gate above 90.38% wired into CI; **depends on 63** because the combined-across-shards coverage number must be trustworthy before a higher gate enforces on it; COV-01/02). **65** CalVer Adoption (replace `vN.M` with `YYYY.MM.REVISION`, no leading-zero month, first tag `2026.7.0`, across release procedure + badges + image tags + milestone↔version mapping, historical record intact; independent parallel-friendly phase; VER-01..04). **66** Docs-Drift Gate & Dead-Code Sweep (CI gate cross-checking REQUIREMENTS.md traceability vs passed phases + `/saq` re-link in the shell Agents/Compute page + vestigial dead-code removal incl. the dead-template guard's own blind spot; **depends on 63** for the CI-gate slot, CLEAN otherwise independent; UI-hinted; DOCS-01, CLEAN-01/02). Build order 63 → 64, with 65 and 66 parallel-friendly (66's DOCS-01 sequenced after 63). This milestone *adopts* CalVer — the last `vN.M` planning cycle; its release is the first CalVer tag. Candidates sourced from the ROADMAP Backlog + v7.0 RETROSPECTIVE. Each phase = own PR (worktree branch, never direct to main).
 - v7.0 UI Redesign (DAG-Centric Hybrid Console) roadmap created (2026-06-29): 6 phases (57-62), the phase structure locked in REQUIREMENTS.md honored exactly, 25/25 requirements mapped (no orphans, no duplicates), dependency-strict build order 57→58→59→60→61→62. **57** Shell & DAG rail (three-column shell, DAG-rail-as-nav, `/`=Analyze default, ⌘K + status strip, brand/theme preserved, ≤1-hop legacy redirects; the load-bearing risk phase — locks `#stage-workspace` swap target, single `/pipeline/stats`→OOB fanout, `$store.pipeline` cross-swap survival, `htmx:historyRestore`, focus/ARIA baseline, seeded dead-template AST guard; stack bumps htmx 2.0.10/Alpine 3.15.12/Tailwind 4.3.2 + SRI recompute; SHELL-01..05). **58** Enrich + Analyze workspaces (Discover/Metadata/Fingerprint + Analyze 3 lane cards local/A1/k8s with Kueue quota-wait vs Inadmissible; reuse stats_bar OOB seed, NO second poll loop; WORK-01..05). **59** Identify workspaces (Track-ID surfaces EXISTING audfprint+Panako + rapidfuzz signals ONLY — IDENT-01 re-scoped off AcoustID/MusicBrainz → deferred IDENT-03; Tracklist Search→Scrape→Match 3-step; IDENT-01..02). **60** Review & Apply (unified before→after diff + per-file Approve/Edit/Skip; bulk approve-high-conf = SERVER-evaluated predicate at a fixed threshold, not a client id-list; dedupe keeper-select; cue preview; audit+reversible; REVIEW-01..05). **61** Full record + ⌘K + Agents (per-file record slide-in, ⌘K over existing search w/ `@alpinejs/focus@3.15.12`, ephemeral Job-based k8s Agents identity, first-run empty state; RECORD-01..04). **62** Polish & cutover (a11y audit, dead-template guard green after removing legacy page wrappers/keep partials, docs/README, narrow rail-collapse; CUT-02 necessarily LAST; CUT-01..04). IA/presentation rewrite over existing routers/services — **no backend behavior change**; visualizes v6.0 local/A1/k8s routing. No phase needs a research-phase (all patterns in-repo; verified 2026-06-29). Each phase = own PR (worktree branch).
 - v6.0 Kubernetes Burst Analysis roadmap created (2026-06-27): 5 phases (52-56), one per requirement category, in dependency order mirroring v5.0 (image → legs → pipeline → routing seam → deploy) — **52** Job-runner image & one-shot entrypoint (x86 GHCR image FROM existing essentia base, zero new pip deps; one-shot httpx-GET → windowed analyze → POST `/api/internal/agent/*` reconciled by `file_id` → exit; honest exit codes; internal CA baked in; KJOB-01..05); **53** S3 object-staging leg (control-plane aioboto3 presign PUT/GET + delete, file-server agent httpx-PUT uploads bytes, pod presigned GET — DIST-01 preserved, agent+pod S3-credential-free; `file_id`-scoped keys, cleanup on every terminal outcome + bucket-lifecycle TTL backstop; `endpoint_url` any-S3, `_FILE` secrets; `cloud_job` sidecar Alembic migration; KSTAGE-01..05); **54** Kube submit/watch + reconcile cron (kr8s submit of a suspended `batch/v1` Job labeled `kueue.x-k8s.io/queue-name`, deterministic name keyed to `file_id`; fast submit returns in seconds, periodic `reconcile_k8s_jobs` cron owns lifecycle; out-of-band callback is the ONLY authoritative result; Inadmissible-vs-Pending; bounded max-attempts re-drive → ANALYSIS_FAILED, no cross-target fallback; NO `process_file:<id>` ledger seed — highest-risk phase; KSUBMIT-01..06); **55** Routing/state/ledger integration — the ONE live-seam edit (`cloud_target` Literal["local","a1","k8s"] selector + `stage_cloud_window` K8s branch enqueuing `upload_file_s3`; reuse duration router + AWAITING_CLOUD hold + advisory-locked in-flight window + `PUSHING`/`PUSHED` states + `cloud_phase` column; `enqueue_router` frozenset additions + AST guard against over-enqueue; ledger-scoped backfill; KROUTE-01..05); **56** Deploy/runbook/config/docs (cluster-admin Kueue/RBAC/Secret runbook for objects phaze does NOT create, least-privilege namespaced Role, transport-agnostic Tailscale-OR-WireGuard endpoints, pydantic-settings `_FILE` + fail-fast model validator, startup LocalQueue validation, ephemeral Job-based identity in Agents UI vs perpetually-DEAD, master toggle revert; KDEPLOY-01..05). 26 requirements, 100% coverage, no orphans. **No phase needs a research-phase** — kr8s/aioboto3/Kueue v1beta2 verified same-day against Context7/official docs; each phase has a direct v5.0 precedent. Two new control-plane deps vs v5.0 (`kr8s`, `aioboto3`); zero new pip deps in the Job image. Each phase = own PR.
 - v5.0 Cloud Burst Analysis roadmap created (2026-06-24): 5 phases (47-51), one per requirement category, in dependency order — **47** Official arm64 essentia agent image (build from source on a native arm64 CI runner, GHCR publish, parity guard; CLOUDIMG-01..03); **48** Compute-agent type (`kind="compute"` media-less agent, drains per-agent SAQ queue + HTTP result PUT, Agents-page badge/liveness/depth; CLOUDAGENT-01..03); **49** Duration routing & backfill (capability-aware `enqueue_router` on `metadata.duration` threshold default 90min, "awaiting cloud" hold when no compute agent online, backfill the 144 `analysis_failed` long files via the Phase 45 scheduling ledger; CLOUDROUTE-01..04); **50** Push pipeline (control-plane "stay one ahead" orchestrator + file-server `push_file_to_cloud` rsync/SSH-over-Tailscale to A1 scratch, `ProcessFilePayload.ephemeral`, sha256 verify, scratch delete, idempotent re-drive; CLOUDPIPE-01..05); **51** Deployment/config/docs (`docker-compose.cloud-agent.yml` + Tailscale, all pydantic-settings knobs with `_FILE` secrets, OCI A1 + Tailscale-ACL runbook scoping A1→lux:{5432,6379,8000}+nox→A1:22 + least-privilege queue role, master enable toggle; CLOUDDEPLOY-01..04). 18 requirements, 100% coverage, no orphans. Design brainstormed + approved this session. Replaces the "Distributed cloud analysis" backlog item (now narrowed to rsync-over-Tailscale to A1 local disk — no object storage — because arm64 essentia builds from source, proven on `spike/arm64-essentia-analysis`). Each phase = own PR.
@@ -108,6 +109,11 @@ Last activity: 2026-07-02 — Milestone v7.0 completed and archived
 - [Phase ?]: Phase 60-04: _STAGE_PLACEHOLDER constant retained in shell.py (unused) so the _stage_placeholder.html literal stays in router source and the dead-template guard keeps it reachable until CUT-02 (Phase 62)
 - [Phase ?]: Phase 62-04 (CUT-02): v7.0 dead-code cutover complete — 20 legacy tab-era templates deleted, /pipeline/ + /preview/ pure redirects, base.html reduced to logo+theme, dead-template guard green with empty _ALLOWLIST (closure untouched); kept all live shell HX fragments (D-03b)
 - [Phase ?]: Phase 62-04: /saq SAQ-monitor in-UI link is a surfaced supersession gap (D-05) — app stays mounted + URL-reachable but no shell link exists; not fixed (would be new capability)
+- [Phase 63]: 63-01: pytest-xdist floor >=3.8.0 approved at the blocking legitimacy gate (pytest-dev official, 3.8.0 ~12mo old clears the 7-day exclude-newer cooldown)
+- [Phase 63]: 63-01: relative_files=true added for cross-shard coverage combine; concurrency kept [greenlet,thread] with NO multiprocessing (would corrupt CI-03 baseline); fail_under stays 85 (Phase 64 raises it)
+- [Phase 63]: 63-01: tests/buckets.json is the single source of truth for the 9 buckets; test-bucket XDIST defaults serial (DB-safe), -n auto opt-in for DB-free buckets
+- [Phase 63]: 63-03: tests.yml runs a setup->bucket-matrix->combine topology; all 9 buckets serial (each has DB-fixture tests), matrix fan-out alone gives CI-02; single combine job yields one coverage.xml + one Codecov upload at --fail-under=85 (CI-03), CODECOV_TOKEN scoped to combine only
+- [Phase 63]: 63-04: broadened doc-only CI skip to *.md + .planning/** + LICENSE + docs/** + *.txt; conservative keep-only-non-doc classifier keeps code-changed=true for any non-doc path (security T-63-04-01); classifier extracted to shellcheck-clean scripts/classify-changed-files.sh invoked via `just detect-code-changes` (D-10) + unit-tested by tests/shared/test_change_gate.py; ci.yml SHA edge-case block + aggregate-results skip-with-success contract left byte-for-byte unchanged (no paths-ignore)
 
 ### Pending Todos
 
@@ -170,6 +176,10 @@ None.
 | Phase 60 P03 | 25min | 3 tasks | 6 files |
 | Phase 60 P04 | 35min | 3 tasks | 7 files |
 | Phase 62 P04 | 95min | 3 tasks | 9 files |
+| Phase 63 P01 | 8min | 3 tasks | 4 files |
+| Phase 63 P02 | 40min | 3 tasks | 265 files |
+| Phase 63 P03 | ~15min | 2 tasks | 1 files |
+| Phase 63 P04 | ~20min | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -211,8 +221,8 @@ These are tracked for the next deploy; they are NOT blockers for the v7.0 milest
 
 ## Session Continuity
 
-Last session: 2026-07-02T06:19:23.305Z
-Stopped at: Phase 62 UI-SPEC approved
+Last session: 2026-07-02T21:13:17.935Z
+Stopped at: Completed 63-04-PLAN.md — Phase 63 ready for verification
 Resume file: None
 
 ## Operator Next Steps
