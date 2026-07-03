@@ -148,6 +148,37 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.integration)
 
 
+# ---------------------------------------------------------------------------
+# Phase 67 (Plan 02): backend-registry TOML fixture.
+#
+# Writes a tmp backends.toml + points PHAZE_BACKENDS_CONFIG_FILE at it so a
+# ControlSettings() construction resolves the given registry via the Idiom-B
+# tomllib loader (config.py). Wave-3 consumers reuse this to construct a control
+# plane with a chosen registry. Yields a `write(toml_text) -> Path` callable so
+# each test supplies its own [[backends]]/[[buckets]] TOML; the get_settings
+# lru_cache is cleared before AND after so a cached singleton never leaks.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def backends_toml_env(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    """Return a callable that writes a backends.toml and points the env pointer at it."""
+    import textwrap
+
+    from phaze.config import get_settings
+
+    def _write(toml_text: str):  # type: ignore[no-untyped-def]
+        path = tmp_path / "backends.toml"
+        path.write_text(textwrap.dedent(toml_text), encoding="utf-8")
+        monkeypatch.setenv("PHAZE_BACKENDS_CONFIG_FILE", str(path))
+        get_settings.cache_clear()
+        return path
+
+    get_settings.cache_clear()
+    yield _write
+    get_settings.cache_clear()
+
+
 @pytest_asyncio.fixture
 async def async_engine():  # type: ignore[no-untyped-def]
     """Create async engine, set up tables, seed the legacy agent, yield, then tear down.
