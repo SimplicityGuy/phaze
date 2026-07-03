@@ -334,11 +334,18 @@ def test_ci_workflow_triggers_on_version_tags() -> None:
 
     tags = push.get("tags")
     CALVER_GLOB = "[0-9]+.[0-9]+.[0-9]+"
-    assert isinstance(tags, list) and any(CALVER_GLOB in str(t) for t in tags), (
-        f'ci.yml must trigger on the bare CalVer glob {CALVER_GLOB!r}. Add `on.push.tags: ["{CALVER_GLOB}"]` '
-        f"so CalVer release-tag pushes (first tag 2026.7.0) run the publish pipeline; got tags={tags!r}"
+    tag_entries = [str(t) for t in tags] if isinstance(tags, list) else []
+    assert CALVER_GLOB in tag_entries, (
+        f"ci.yml must trigger on the bare CalVer glob {CALVER_GLOB!r} as an exact `on.push.tags` entry. "
+        f'Add `on.push.tags: ["{CALVER_GLOB}"]` so CalVer release-tag pushes (first tag 2026.7.0) run the '
+        f"publish pipeline; got tags={tags!r}"
     )
-    assert not any("v*.*.*" in str(t) for t in tags), "legacy v*.*.* glob must be dropped (D-02: CalVer-only)"
+    # Exact-shape guard: a substring check would let a `v`-prefixed or wildcard
+    # variant (e.g. `v[0-9]+.[0-9]+.[0-9]+` or `v*.*.*`) slip through the positive
+    # assertion above, so reject any entry carrying a leading `v` or a `*` wildcard.
+    assert not any(t.startswith("v") or "*" in t for t in tag_entries), (
+        f"legacy/ambiguous tag glob must be dropped (D-02: CalVer-only — no leading `v`, no `*` wildcard); got tags={tags!r}"
+    )
 
     branches = push.get("branches")
     assert isinstance(branches, list) and branches, (

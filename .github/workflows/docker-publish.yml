@@ -104,7 +104,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.image_suffix }}
           # Phase 29 D-16 + WARNING-4: tag strategy is verified by
           # tests/test_deployment/test_agent_compose.py::test_docker_publish_workflow_tags_both_latest_and_version
-          # which asserts BOTH a `:latest` and a `:v<version>` tag are produced.
+          # which asserts BOTH a `:latest` and a `:<version>` tag are produced.
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
