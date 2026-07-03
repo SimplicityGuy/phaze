@@ -11,7 +11,7 @@ Mirrors ``agent_analysis.py`` (``put_analysis`` / ``report_analysis_failed``):
 - ``/pushed``   (D-01 intent within the Postgres-free boundary): in ONE transaction
   flip ``PUSHING -> PUSHED``, clear the ``push_file:<id>`` ledger row, and enqueue
   exactly one ``process_file`` job on the COMPUTE queue carrying the ORM-pinned
-  ``expected_sha256`` (D-11) and a ``<compute_scratch_dir>/<file_id>.<ext>``
+  ``expected_sha256`` (D-11) and a ``<active_compute_scratch_dir>/<file_id>.<ext>``
   ``scratch_path``. With no compute agent online this is a clean 200 hold (never a
   500): the file stays ``PUSHING`` with its ledger row, so the staging cron /
   recovery re-drives it once a compute agent appears.
@@ -71,7 +71,7 @@ async def report_pushed(
     One committed transaction (mirrors ``put_analysis``'s state-update + ``clear_ledger_entry``
     idiom). ``expected_sha256`` is read CONTROL-SIDE from ``FileRecord.sha256_hash`` (D-11) -- the
     untrusted agent never supplies it -- and ``scratch_path`` is built from
-    ``ControlSettings.compute_scratch_dir`` (the control-side mirror of the compute agent's
+    ``ControlSettings.active_compute_scratch_dir`` (the control-side mirror of the compute agent's
     ``cloud_scratch_dir``). ``file_id`` is the PATH value only; ``agent`` comes from the token
     dependency (AUTH-01).
 
@@ -118,7 +118,8 @@ async def report_pushed(
     await clear_ledger_entry(session, f"push_file:{file_id}")
 
     compute_queue = request.app.state.task_router.queue_for(compute_agent.id)
-    scratch_path = f"{settings.compute_scratch_dir}/{file_id}.{file.file_type}"
+    # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
+    scratch_path = f"{settings.active_compute_scratch_dir}/{file_id}.{file.file_type}"
     await enqueue_process_file(
         compute_queue,
         file,

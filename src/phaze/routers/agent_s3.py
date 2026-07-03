@@ -71,12 +71,12 @@ async def report_uploaded(
     duplicate/late callback is an idempotent 200 no-op that does NOT re-complete the object
     (T-53-15). ``file_id`` is the PATH value only; ``agent`` comes from the token (AUTH-01).
 
-    Phase 55 (D-01b, KROUTE-03): on the k8s target the upload-complete callback is also the
+    Phase 55 (D-01b, KROUTE-03): on the kueue target the upload-complete callback is also the
     post-staging seam -- it advances the FileRecord ``PUSHING -> PUSHED`` (a rowcount-guarded
     idempotent flip mirroring ``agent_push.report_pushed``, freeing a window slot) and enqueues
     ``submit_cloud_job`` through ``enqueue_router`` on the controller queue (NEVER a raw enqueue --
-    KROUTE-04). A1 uses rsync and never reaches these S3 callbacks, so the ``cloud_target == "k8s"``
-    guard is defensive: a non-k8s target preserves today's cloud_job-only behavior.
+    KROUTE-04). A1 uses rsync and never reaches these S3 callbacks, so the ``active_cloud_kind == "kueue"``
+    guard is defensive: a non-kueue target preserves today's cloud_job-only behavior.
     """
     cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
 
@@ -105,11 +105,12 @@ async def report_uploaded(
         logger.info("report_uploaded: idempotent no-op (lost the flip race)", file_id=str(file_id), agent_id=agent.id)
         return UploadedResponse(file_id=file_id)
 
-    # Phase 55 (D-01b): k8s post-staging seam. Advance the FileRecord PUSHING -> PUSHED and enqueue
+    # Phase 55 (D-01b): kueue post-staging seam. Advance the FileRecord PUSHING -> PUSHED and enqueue
     # the routed submit_cloud_job. Defensive guard -- a1 uses rsync and never hits these callbacks,
-    # so a non-k8s target keeps today's cloud_job-only flow.
+    # so a non-kueue target keeps today's cloud_job-only flow.
     settings = cast("ControlSettings", get_settings())
-    if settings.cloud_target == "k8s":
+    # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
+    if settings.active_cloud_kind == "kueue":
         # Rowcount-guarded idempotent flip (mirrors agent_push.report_pushed): a duplicate/late
         # callback whose file already advanced past PUSHING matches 0 rows -> NO re-enqueue (T-55-SEAM-05).
         flip = cast(
