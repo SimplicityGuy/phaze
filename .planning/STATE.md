@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: 2026.7.0
 milestone_name: Engineering Improvements
 status: "Phase 64 shipped — PR #194"
-last_updated: "2026-07-03T02:39:21.304Z"
+last_updated: "2026-07-03T02:56:02.860Z"
 last_activity: 2026-07-02
 progress:
   total_phases: 33
@@ -221,9 +221,9 @@ These are tracked for the next deploy; they are NOT blockers for the v7.0 milest
 
 ## Session Continuity
 
-Last session: 2026-07-03T00:23:09.852Z
-Stopped at: Phase 64 context gathered
-Resume file: .planning/phases/64-per-module-coverage-uplift-gate-raise/64-CONTEXT.md
+Last session: 2026-07-03T02:56:02.853Z
+Stopped at: Phase 65 context gathered
+Resume file: .planning/phases/65-calver-adoption/65-CONTEXT.md
 
 ## Operator Next Steps
 
