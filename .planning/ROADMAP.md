@@ -203,7 +203,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 63. Parallel CI & Code-Change Gating | 2026.7.0 | 4/4 | Complete    | 2026-07-02 |
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
 | 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
-| 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 0/? | Not started | - |
+| 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 2/3 | In Progress|  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -965,8 +965,8 @@ Plans:
 
 **Wave 1** *(parallel — no file overlap)*
 
-- [ ] 66-01-PLAN.md — DOCS-01 traceability drift guard (5 drift classes, active-vs-archived degradation, in-flight tolerance) + D-14 dead-template entry-literal check + `just docs-drift` wired into the always-run code-quality job
-- [ ] 66-02-PLAN.md — CLEAN-01 discreet flag-gated `/saq` footer link on the Agents page (enable_saq_ui context + template + render test)
+- [x] 66-01-PLAN.md — DOCS-01 traceability drift guard (5 drift classes, active-vs-archived degradation, in-flight tolerance) + D-14 dead-template entry-literal check + `just docs-drift` wired into the always-run code-quality job
+- [x] 66-02-PLAN.md — CLEAN-01 discreet flag-gated `/saq` footer link on the Agents page (enable_saq_ui context + template + render test)
 
 **Wave 2** *(blocked on Wave 1 — shares justfile + benefits from a green tree per the D-12 guardrail)*
 
