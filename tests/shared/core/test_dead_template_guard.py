@@ -60,6 +60,15 @@ _HTML_LITERAL = re.compile(r"""["']([^"']+\.html)["']""")
 # justification -- do NOT relax the closure logic below to force green.
 _ALLOWLIST: frozenset[str] = frozenset()
 
+# Router ``"...html"`` literals that are intentionally NOT on-disk templates — a redirect
+# target, an ``href`` string, a docstring example. ``_HTML_LITERAL`` captures ANY quoted
+# ``*.html`` in router source, so without this seam the first such literal would fail the
+# always-run entry-literal gate even though it is legitimately not a template. Kept EMPTY
+# today (every current literal resolves to a real template); add an entry WITH an inline
+# justification when the first genuine non-template literal appears — do NOT relax the
+# assertion or the ``_HTML_LITERAL`` capture (WR-03).
+_NON_TEMPLATE_HTML: frozenset[str] = frozenset()
+
 
 def _entry_templates() -> set[str]:
     """Templates rendered directly by a router (any quoted "...html" literal)."""
@@ -104,11 +113,11 @@ def test_entry_literals_resolve_to_templates() -> None:
     sibling assertion catches the ``_STAGE_PLACEHOLDER``-shape dead entry-root literal by
     requiring every captured literal to resolve on disk. De-risked: all current router
     ``.html`` literals resolve today, so this is green with no allowlist. If a legitimate
-    non-template ``.html`` href literal is ever needed, add a tiny explicit
-    ``_NON_TEMPLATE_HTML: frozenset[str]`` with an inline justification (mirroring
-    ``_ALLOWLIST``) — do NOT relax this assertion.
+    non-template ``.html`` href literal is ever needed, add it to the ``_NON_TEMPLATE_HTML``
+    escape hatch with an inline justification (mirroring ``_ALLOWLIST``) — do NOT relax this
+    assertion or the ``_HTML_LITERAL`` capture.
     """
-    missing = sorted(lit for lit in _entry_templates() if not (_TEMPLATES / lit).is_file())
+    missing = sorted(lit for lit in _entry_templates() - _NON_TEMPLATE_HTML if not (_TEMPLATES / lit).is_file())
     assert not missing, (
         "router source references template literals that don't exist on disk "
         f"(dead entry-root literal — delete the literal or restore the template): {missing}"

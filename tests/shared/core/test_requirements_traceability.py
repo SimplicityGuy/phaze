@@ -42,6 +42,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+import pytest
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]  # tests/shared/core/X.py -> repo root
 _PLANNING = _REPO_ROOT / ".planning"
@@ -78,19 +80,50 @@ def _normalize_status(cell: str) -> str:
     return "PENDING"
 
 
+def _traceability_section(text: str) -> str:
+    """Slice just the ``## Traceability`` section (WR-01).
+
+    The Traceability table is the authoritative req-id -> (Status, Phase) mapping. Scanning
+    the whole file lets a req-id-shaped table row elsewhere (an Out-of-Scope table, a Future
+    Requirements block, a prose example) silently last-wins-overwrite the real row. Slicing
+    to the section makes the parser trust only the authoritative table.
+    """
+    m = re.search(r"^## Traceability\b.*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    return m.group(0) if m else ""
+
+
+def _requirements_list_section(text: str) -> str:
+    """Everything before the ``## Traceability`` heading — the requirement-checkbox list (WR-01).
+
+    Checkboxes (``- [x] **REQ-ID**``) only ever live in the requirements list above the
+    Traceability table. Scoping checkbox parsing here keeps a stray/duplicate checkbox-shaped
+    line inside or after the table from desyncing the authoritative checkbox mapping.
+    """
+    m = re.search(r"^## Traceability\b", text, re.MULTILINE)
+    return text[: m.start()] if m else text
+
+
 def _parse_requirement_checkboxes(text: str) -> dict[str, bool]:
-    """Per-requirement checkbox state: {req_id: is_checked}."""
-    return {rid: (state == "x") for state, rid in _REQ_CHECKBOX.findall(text)}
+    """Per-requirement checkbox state: {req_id: is_checked}, scoped to the requirements list."""
+    section = _requirements_list_section(text)
+    return {rid: (state == "x") for state, rid in _REQ_CHECKBOX.findall(section)}
 
 
 def _parse_traceability(text: str) -> dict[str, tuple[str, str | None]]:
     """Traceability table: {req_id: (normalized_status, phase_number_or_None)}.
 
+    Scoped to the ``## Traceability`` section so a req-id-shaped row elsewhere in the file
+    cannot silently overwrite the authoritative row; a duplicate row *within* the table fails
+    loudly rather than last-wins-overwriting (WR-01).
+
     A phase cell with no ``Phase N`` match (e.g. ``Future (deferred — v7.x)``) yields
     phase=None; such rows are deferred/unmapped and never participate in phase-pass.
     """
+    section = _traceability_section(text)
     out: dict[str, tuple[str, str | None]] = {}
-    for rid, phase_cell, status_cell in _TABLE_ROW.findall(text):
+    for rid, phase_cell, status_cell in _TABLE_ROW.findall(section):
+        if rid in out:
+            raise ValueError(f"duplicate Traceability row for {rid} — the table must have exactly one authoritative row per requirement")
         match = _PHASE_IN_CELL.search(phase_cell)
         phase = match.group(1) if match else None
         out[rid] = (_normalize_status(status_cell), phase)
@@ -150,14 +183,25 @@ def _passed_phase_completeness_offenders() -> list[str]:
     return offenders
 
 
-def _marked_requirement_offenders() -> list[str]:
-    """D-02: a req marked Complete (checkbox [x] or table COMPLETE) => its mapped phase passed."""
-    text = _read(_REQUIREMENTS)
-    checkboxes = _parse_requirement_checkboxes(text)
-    table = _parse_traceability(text)
-    roadmap = _parse_roadmap_phases()
+def _marked_requirement_offenders_from(
+    checkboxes: dict[str, bool],
+    table: dict[str, tuple[str, str | None]],
+    roadmap: dict[str, bool],
+) -> list[str]:
+    """D-02 core, iterating the UNION of checkbox and table req-ids (WR-02).
+
+    Iterating ``table.items()`` alone let a requirement ticked ``[x]`` in the checkbox list but
+    MISSING from the Traceability table escape the "marked without a passed phase" drift class
+    entirely (it is in neither loop). Walking ``set(checkboxes) | set(table)`` closes that
+    false negative: a checkbox-only ``[x]`` with no Traceability row is now itself an offender.
+    """
     offenders: list[str] = []
-    for rid, (status, phase) in table.items():
+    for rid in sorted(set(checkboxes) | set(table)):
+        if rid not in table:
+            if checkboxes.get(rid, False):
+                offenders.append(f"{rid} checkbox [x] but has no Traceability row — add its row or untick the checkbox")
+            continue
+        status, phase = table[rid]
         marked = checkboxes.get(rid, False) or status == "COMPLETE"
         if not marked:
             continue
@@ -166,6 +210,12 @@ def _marked_requirement_offenders() -> list[str]:
         elif not _active_phase_passed(phase, roadmap):
             offenders.append(f"{rid} marked Complete but Phase {phase} not passed")
     return offenders
+
+
+def _marked_requirement_offenders() -> list[str]:
+    """D-02: a req marked Complete (checkbox [x] or table COMPLETE) => its mapped phase passed."""
+    text = _read(_REQUIREMENTS)
+    return _marked_requirement_offenders_from(_parse_requirement_checkboxes(text), _parse_traceability(text), _parse_roadmap_phases())
 
 
 def _checkbox_table_offenders(text: str, label: str) -> list[str]:
@@ -225,6 +275,38 @@ def test_archived_milestones_internally_consistent() -> None:
     for req_file in sorted(_MILESTONES.glob("*-REQUIREMENTS.md")):
         offenders.extend(_checkbox_table_offenders(_read(req_file), req_file.name))
     assert not offenders, f"an archived milestone has an internally-inconsistent requirement (checkbox vs Traceability Status): {offenders}"
+
+
+def test_traceability_parser_is_section_scoped() -> None:
+    """WR-01: a req-id-shaped row outside ``## Traceability`` never overwrites the real row."""
+    text = "## Out of Scope\n\n| CI-01 | Phase 99 | Deferred |\n\n## Traceability\n\n| Requirement | Phase | Status |\n|---|---|---|\n| CI-01 | Phase 63 | Complete |\n"
+    table = _parse_traceability(text)
+    assert table["CI-01"] == ("COMPLETE", "63")
+
+
+def test_traceability_parser_flags_duplicate_rows() -> None:
+    """WR-01: a duplicate row within the table fails loudly instead of last-wins-overwrite."""
+    text = "## Traceability\n\n| CI-01 | Phase 63 | Complete |\n| CI-01 | Phase 64 | Pending |\n"
+    with pytest.raises(ValueError, match="duplicate Traceability row for CI-01"):
+        _parse_traceability(text)
+
+
+def test_requirement_checkboxes_are_section_scoped() -> None:
+    """WR-01: a stray checkbox after the Traceability heading does not desync the mapping."""
+    text = "## Requirements\n\n- [ ] **CI-01**: real requirement\n\n## Traceability\n\n- [x] **CI-01**: stray duplicate that must be ignored\n"
+    checkboxes = _parse_requirement_checkboxes(text)
+    assert checkboxes["CI-01"] is False
+
+
+def test_marked_requirement_without_traceability_row_is_flagged() -> None:
+    """WR-02: a requirement ticked [x] but absent from the Traceability table is drift."""
+    offenders = _marked_requirement_offenders_from({"ZZ-01": True}, {}, {})
+    assert any("ZZ-01 checkbox [x] but has no Traceability row" in o for o in offenders), offenders
+
+
+def test_unmarked_requirement_without_traceability_row_is_not_flagged() -> None:
+    """WR-02: an un-ticked [ ] requirement with no table row is in-flight, not drift."""
+    assert _marked_requirement_offenders_from({"ZZ-01": False}, {}, {}) == []
 
 
 def test_inflight_phase_with_unmarked_requirements_passes() -> None:
