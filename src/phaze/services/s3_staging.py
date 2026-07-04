@@ -125,12 +125,21 @@ def _client(bucket: BucketConfig) -> Any:
 
 
 async def create_multipart_upload(file_id: uuid.UUID, bucket: BucketConfig) -> str:
-    """Initiate a multipart upload for ``file_id`` on ``bucket`` and return its ``UploadId`` (D-01)."""
+    """Initiate a multipart upload for ``file_id`` on ``bucket`` and return its ``UploadId`` (D-01).
+
+    WR-02: wrap a raw ``ClientError`` (bad creds, missing bucket, network failure) in ``S3StagingError``
+    so this verb presents the module's single fail-loud error surface, matching its
+    ``complete``/``abort``/``delete`` siblings -- a caller's ``except S3StagingError`` sees every S3-SDK
+    failure class uniformly, never a leaked ``botocore.exceptions.ClientError``.
+    """
     key = staged_object_key(file_id)
-    async with _client(bucket) as client:
-        resp = await client.create_multipart_upload(Bucket=bucket.bucket, Key=key)
-    upload_id: str = resp["UploadId"]
-    return upload_id
+    try:
+        async with _client(bucket) as client:
+            resp = await client.create_multipart_upload(Bucket=bucket.bucket, Key=key)
+            upload_id: str = resp["UploadId"]
+            return upload_id
+    except ClientError as exc:
+        raise S3StagingError(f"failed to create multipart upload for {file_id}") from exc
 
 
 async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: int, bucket: BucketConfig) -> list[str]:
@@ -138,19 +147,25 @@ async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: i
 
     Each URL is bounded by ``s3_presign_put_ttl_sec``. The agent PUTs each part's bytes
     to its URL over httpx and reports back the ``(part_number, etag)`` pairs.
+
+    WR-02: wrap a raw ``ClientError`` in ``S3StagingError`` so this verb matches the module's fail-loud
+    error surface (see :func:`create_multipart_upload`).
     """
     cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     key = staged_object_key(file_id)
     urls: list[str] = []
-    async with _client(bucket) as client:
-        for part_number in range(1, part_count + 1):
-            url: str = await client.generate_presigned_url(
-                "upload_part",
-                Params={"Bucket": bucket.bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
-                ExpiresIn=cfg.s3_presign_put_ttl_sec,  # kept-global tuning knob (D-15)
-            )
-            urls.append(url)
-    return urls
+    try:
+        async with _client(bucket) as client:
+            for part_number in range(1, part_count + 1):
+                url: str = await client.generate_presigned_url(
+                    "upload_part",
+                    Params={"Bucket": bucket.bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
+                    ExpiresIn=cfg.s3_presign_put_ttl_sec,  # kept-global tuning knob (D-15)
+                )
+                urls.append(url)
+        return urls
+    except ClientError as exc:
+        raise S3StagingError(f"failed to presign upload parts for {file_id}") from exc
 
 
 async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: list[tuple[int, str]], bucket: BucketConfig) -> None:
@@ -205,16 +220,22 @@ async def presign_get(file_id: uuid.UUID, bucket: BucketConfig) -> str:
     Bounded by ``s3_presign_get_ttl_sec`` (short, minted at pod start so it never expires
     during a Kueue wait). The download leg fetches the bytes from this URL; the control
     plane never reads them.
+
+    WR-02: wrap a raw ``ClientError`` in ``S3StagingError`` so this verb matches the module's fail-loud
+    error surface (see :func:`create_multipart_upload`).
     """
     cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     key = staged_object_key(file_id)
-    async with _client(bucket) as client:
-        url: str = await client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket.bucket, "Key": key},
-            ExpiresIn=cfg.s3_presign_get_ttl_sec,  # kept-global tuning knob (D-15)
-        )
-    return url
+    try:
+        async with _client(bucket) as client:
+            url: str = await client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket.bucket, "Key": key},
+                ExpiresIn=cfg.s3_presign_get_ttl_sec,  # kept-global tuning knob (D-15)
+            )
+            return url
+    except ClientError as exc:
+        raise S3StagingError(f"failed to presign GET for {file_id}") from exc
 
 
 async def delete_staged_object(file_id: uuid.UUID, bucket: BucketConfig) -> None:
