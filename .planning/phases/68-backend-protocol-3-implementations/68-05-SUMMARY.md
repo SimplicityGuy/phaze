@@ -136,3 +136,8 @@ None. No new network endpoint, auth path, or trust-boundary surface. `log_effect
 secret-free `{id,kind,rank,cap}` projection is unchanged (T-68-12 mitigated); the `>1`-non-local
 fail-fast is preserved (boot-time `resolve_backends()` guard + `_single_non_local`'s retained raise as
 defense-in-depth — T-68-13 mitigated); zero package installs (T-68-SC N/A).
+
+## Self-Check: PASSED
+
+- `68-05-SUMMARY.md` present at `.planning/phases/68-backend-protocol-3-implementations/`.
+- Commits `f3f75eb` (Task 1) and `3b8be4e` (SUMMARY) both present in git history.
