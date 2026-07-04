@@ -33,6 +33,7 @@ narrow, in-flight K8s reconcile ONLY (mirror the ``controller.py`` cron-scope gu
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
@@ -153,9 +154,14 @@ async def _handle_no_callback_terminal(
     """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill back to AWAITING_CLOUD at cap (D-08/SCHED-03).
 
     At cap (``attempts + 1 > cloud_submit_max_attempts``) the ordering is the load-bearing terminal
-    sequence (D-04): record cloud_job FAILED + flip the FileRecord back to AWAITING_CLOUD + COMMIT ->
-    ``delete_staged_object`` (D-05) -> ``delete_job``. The file is NOT hard-failed on cloud flakiness
-    (SCHED-03): because ``cloud_job.attempts`` already equals ``cap``, the next drain tick's
+    sequence (MKUE-04 clean-before-flip, D-01/D-03/D-04): capture the OLD (backend_id, staging_bucket)
+    identity, ``delete_staged_object`` the old object UNDER the still-held per-row advisory lock (before
+    the flip commit) -> record cloud_job FAILED + clear ``staging_bucket`` + flip the FileRecord back to
+    AWAITING_CLOUD + COMMIT (which releases the lock) -> ``delete_job`` (post-commit). Deleting the old
+    object before the commit that makes the file a drain candidate closes Pitfall 9: a concurrent drain
+    tick cannot re-dispatch + re-stage a new object under the same ``file_id`` key until this txn commits,
+    so the trailing delete can never destroy the new owner's object. The file is NOT hard-failed on cloud
+    flakiness (SCHED-03): because ``cloud_job.attempts`` already equals ``cap``, the next drain tick's
     ``select_backend`` excludes every cloud backend (``attempts >= cap``) and routes the file to the local
     safety net -- ANALYSIS_FAILED then comes only from a local failure (D-04), never from this branch.
 
@@ -177,21 +183,35 @@ async def _handle_no_callback_terminal(
         # guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
         # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
         # ``updated_at`` on the flip gives a fresh staleness clock (desirable).
-        # MKUE-02: resolve the RECORDED staging bucket BEFORE the commit terminalizes the row, and delete
-        # the staged object on it (a bucketless row -- no S3 object -- skips the delete cleanly). NOTE
-        # (Plan 05): this KEEPS the current commit-then-delete ordering; the clean-before-flip reorder
-        # (delete UNDER the still-held advisory lock, before the commit that makes the file a drain
-        # candidate) lands in Plan 05 -- this plan only makes the delete bucket-aware.
+        #
+        # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
+        # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
+        # (acquired at the TOP of this ``KueueBackend.reconcile`` per-row unit, backends.py) -- i.e. BEFORE
+        # the ``session.commit()`` that flips the file to AWAITING_CLOUD and thus RELEASES the lock, making
+        # the file a drain candidate. The re-dispatch reuses the SAME ``file_id``-scoped S3 key; if D-06
+        # lands the re-stage on the same bucket, a delete that ran AFTER the lock released would race the
+        # new stage and destroy the object the new pod needs. Deleting before the flip guarantees the old
+        # object is gone before any re-stage can occur (the drain holds the same lock across its whole
+        # candidate claim, so it physically cannot pick up the file until this txn commits).
+        #
+        # Capture the OLD identity into locals BEFORE any mutation, resolve the RECORDED staging bucket
+        # (never re-derive -- Pitfall 4/T-70-04-04), and delete it UNDER the lock. The delete is best-effort
+        # (D-03): ``contextlib.suppress(Exception)`` so a slow/failed/absent S3 delete never blocks the spill
+        # nor pins the lock beyond one network timeout (the per-bucket TTL is the backstop). A bucketless row
+        # (no staged object) resolves to None and skips the delete cleanly.
         cfg = cast("ControlSettings", get_settings())
-        bucket = s3_staging.resolve_bucket_config(cfg, cloud_job.staging_bucket)
+        old_bucket_id = cloud_job.staging_bucket  # captured pre-mutation -- the authoritative old identity.
+        bucket = s3_staging.resolve_bucket_config(cfg, old_bucket_id)
+        with contextlib.suppress(Exception):
+            if bucket is not None:
+                await s3_staging.delete_staged_object(file_id, bucket)
         cloud_job.status = CloudJobStatus.FAILED.value
         cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit.
         cloud_job.cloud_phase = None  # WR-01: terminal row must not inflate the admission-state "Running" tile.
+        cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
-        await session.commit()
-        if bucket is not None:
-            await s3_staging.delete_staged_object(file_id, bucket)
-        await kube_staging.delete_job(name, kube)
+        await session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
+        await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
         tally["failed"] += 1
         logger.warning(
             "reconcile_cloud_jobs: submit cap reached -> spill back to AWAITING_CLOUD", file_id=str(file_id), attempt=next_attempt, cap=cap
