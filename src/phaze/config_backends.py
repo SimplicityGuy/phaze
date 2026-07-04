@@ -143,6 +143,9 @@ class KubeConfig(BaseModel):
 
     api_url: str | None = None
     namespace: str | None = None
+    # REG-05 per-cluster kubeconfig/context; selects a non-default context, defaults to
+    # current-context when None (MKUE-01/A1). NOT a secret -- a plain kubeconfig context name.
+    context: str | None = None
     local_queue: str | None = None
     job_image: str | None = None
     cpu_request: str | None = None
