@@ -391,17 +391,21 @@ await session.execute(
 | A3 | Declaring PyYAML explicitly (vs relying on the kr8s transitive edge) is the preferred hygiene. | Package Legitimacy | Low risk either way; the `NamedTemporaryFile` alternative avoids the import entirely. `[ASSUMED]` |
 | A4 | Default TLS verification (no CA injected) against the second cluster works over the mesh, matching the retired hack's behavior. | Pitfall 5 | If cluster 2 uses a private CA, presign/submit fails at rollout until `certificate-authority-data` is added. Deployment-gated. `[ASSUMED]` |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+Both questions were answered during research (see each "Recommendation:") and are carried by concrete plan tasks. Markers added at plan time.
 
 1. **Does `KubeConfig` carry a `context` field today?**
    - What we know: config_backends.py `KubeConfig` has `api_url`, `namespace`, `local_queue`, `kubeconfig` (SecretStr content), `sa_token`, and object-name fields.
    - What's unclear: whether a `context` field exists to pick a context out of a multi-context kubeconfig (REG-05 wording says "per-cluster kubeconfig/context").
    - Recommendation: planner adds `context: str | None = None` to `KubeConfig` (additive, defaults to current-context when None) as part of MKUE-01. Cheap and matches the requirement text.
+   - **RESOLVED:** planner adopted the recommendation — `context: str | None = None` is added to `KubeConfig` in **Plan 01, Task 3** (config_backends field add) and consumed by `kube_staging._api` (`context=kube.context`) in **Plan 03, Task 1**.
 
 2. **Which of the ~6 `active_bucket`/`active_kube` consumer call sites become caller-resolves-bucket vs backend-method?**
    - What we know: `presign_get` (agent_files), `_delete_staged_object_if_cloud` (agent_analysis ×3), `agent_s3` upload-failure delete, `submit_cloud_job` (s3_key only, bucket-agnostic), reconcile at-cap delete.
    - What's unclear: the cleanest seam for router call sites that are not `KueueBackend` methods.
    - Recommendation: router/caller resolves `cloud_job.staging_bucket` → `BucketConfig` and passes it; `s3_staging` stays ORM-free (import-boundary test enforces this).
+   - **RESOLVED:** router/caller-resolves-bucket seam adopted — the router call sites (`agent_files.presign_get`, `agent_analysis._delete_staged_object_if_cloud`, `agent_s3` upload-failure delete) read `cloud_job.staging_bucket` → `BucketConfig` and pass it to the parameterized `s3_staging` verbs in **Plan 02, Task 3**, keeping `s3_staging` ORM-free (import-boundary test).
 
 ## Environment Availability
 
