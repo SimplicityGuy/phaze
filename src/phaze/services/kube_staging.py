@@ -76,7 +76,7 @@ def job_name(file_id: uuid.UUID) -> str:
 def _require_kube(kube: KubeConfig) -> None:
     """Fail loud if THIS backend's ``[kube]`` connection surface is half-configured (D-04 guard).
 
-    Replaces the retired module-global ``_kube_config()`` reader: the caller now threads the
+    Replaces the retired module-global active-kube reader: the caller now threads the
     per-backend ``KubeConfig`` directly, so the fail-loud validation moves here. Auth comes from EITHER
     an inline ``kubeconfig`` (the YAML carries the server) OR an explicit ``api_url`` (the synthesized
     form); ``namespace`` + ``local_queue`` are phaze-level config used in every manifest/probe
