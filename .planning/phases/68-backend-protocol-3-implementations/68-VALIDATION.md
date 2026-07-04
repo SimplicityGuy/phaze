@@ -1,10 +1,11 @@
 ---
 phase: 68
 slug: backend-protocol-3-implementations
-status: approved
+status: validated
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-03
+validated: 2026-07-04
 ---
 
 # Phase 68 — Validation Strategy
@@ -40,13 +41,20 @@ created: 2026-07-03
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| (Wave 0) | — | 0 | BACK-01/03/04 | — | N/A | unit/characterization | `uv run pytest tests/analyze/services/test_backends.py tests/analyze/core/test_dispatch_snapshot.py` | ❌ W0 | ⬜ pending |
-| BACK-01 | TBD | — | BACK-01 | — | N/A | unit | `uv run pytest tests/analyze/services/test_backends.py -x` | ❌ W0 | ⬜ pending |
-| BACK-02 | TBD | — | BACK-02 | — | N/A | migration | `uv run pytest tests/integration/test_migrations/test_migration_029_backend_id.py` | ❌ W0 | ⬜ pending |
-| BACK-03 | TBD | — | BACK-03 | — | N/A | unit | `uv run pytest tests/analyze/services/test_backends.py::test_in_flight_equivalence` | ❌ W0 | ⬜ pending |
-| BACK-04 | TBD | — | BACK-04 | — | GATE-1 asymmetry preserved | characterization | `uv run pytest tests/analyze/core/test_dispatch_snapshot.py -x` | ❌ W0 | ⬜ pending |
+| BACK-01 | 68-03 | 2 | BACK-01 | T-68-04/05/07 | protocol dispatch; bodies never raise/commit | unit | `uv run pytest tests/analyze/services/test_backends.py -x` | ✅ | ✅ green (16) |
+| BACK-02 | 68-02 | 1 | BACK-02 | T-68-02/03 | additive migration; no saq_jobs; nullable | migration | `uv run pytest tests/integration/test_migrations/test_migration_029_backend_id.py` | ✅ | ✅ green (3) |
+| BACK-03 | 68-03 | 2 | BACK-03 | — | in-flight equivalence (D-02) | unit | `uv run pytest tests/analyze/services/test_backends.py::test_in_flight_equivalence` | ✅ | ✅ green (1) |
+| BACK-04 | 68-01→68-04 | 0→3 | BACK-04 | — | GATE-1 asymmetry preserved (D-01a); byte-identical | characterization | `uv run pytest tests/analyze/core/test_dispatch_snapshot.py -x` | ✅ | ✅ green (8) |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky. Task IDs finalized by the planner; every BACK-* ID must map to at least one automated command above.*
+*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky. Every BACK-* ID maps to ≥1 green automated command above. BACK-04 golden captured in Wave 0 (68-01) on post-67 code, held byte-identical through the Wave-3 (68-04) live rewire (one plan-sanctioned compute field flip).*
+
+### Code-Review Fix Regression Coverage (added post-execution)
+
+| Finding | Test | Command | Status |
+|---------|------|---------|--------|
+| CR-01 (compute cloud_job leak on push-cap failure) | `test_mismatch_over_cap_terminalizes_compute_cloud_job` | `uv run pytest tests/agents/routers/test_agent_push.py` | ✅ green (9) |
+| WR-02 (mid-tick fileserver → clean hold; cron never raises) | `test_fileserver_vanishes_mid_tick_holds_cleanly` | `uv run pytest tests/analyze/core/test_staging_cron.py` | ✅ green (in 41) |
+| WR-01 (`resolved_non_local_kind` >1-non-local fail-fast) | `test_resolved_non_local_kind_raises_on_multiple_non_local` | `uv run pytest tests/analyze/services/test_backends.py` | ✅ green (in 16) |
 
 ---
 
@@ -89,11 +97,11 @@ resolves through the new backend resolution without behavior change.
 
 ## Wave 0 Requirements
 
-- [ ] `tests/analyze/services/test_backends.py` — protocol unit tests (Layer 3) + invariant (Layer 2)
-- [ ] `tests/analyze/core/test_dispatch_snapshot.py` — golden matrix (Layer 1) covering BACK-04
-- [ ] `tests/integration/test_migrations/test_migration_029_backend_id.py` — migration (Layer 4)
-- [ ] Snapshot fixture shape/serialization (Claude's Discretion — inline expected-dict per cell recommended)
-- [ ] Framework install: none — pytest/pytest-asyncio already present; reuse `tests/_queue_fakes.py`, `tests/kube_fakes.py`.
+- [x] `tests/analyze/services/test_backends.py` — protocol unit tests (Layer 3) + invariant (Layer 2) — 16 green
+- [x] `tests/analyze/core/test_dispatch_snapshot.py` — golden matrix (Layer 1) covering BACK-04 — 8 green, byte-identical
+- [x] `tests/integration/test_migrations/test_migration_029_backend_id.py` — migration (Layer 4) — 3 green
+- [x] Snapshot fixture shape/serialization — inline expected-dict per cell (as recommended)
+- [x] Framework install: none — pytest/pytest-asyncio already present.
 
 ---
 
@@ -115,6 +123,22 @@ resolves through the new backend resolution without behavior change.
 - [x] No watch-mode flags
 - [x] Feedback latency < 120s
 - [x] `nyquist_compliant: true` set in frontmatter
-- [ ] `wave_0_complete` — flips to true once plan 68-01 executes
+- [x] `wave_0_complete` — flipped true; plan 68-01 executed (golden captured)
 
 **Approval:** approved 2026-07-03 (plan-checker VERIFICATION PASSED; contract satisfied by plans 68-01..05)
+
+---
+
+## Validation Audit 2026-07-04
+
+Post-execution audit (State A). Every requirement re-run against the executed codebase on a fresh test DB.
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 4 (BACK-01..04) |
+| COVERED (green automated) | 4 |
+| PARTIAL / MISSING gaps | 0 |
+| Gaps resolved | 0 (none found) |
+| Escalated / manual-only | 0 |
+
+**Result:** NYQUIST-COMPLIANT. All BACK-* requirements have green automated verification; the three code-review-fix findings (CR-01/WR-01/WR-02) each carry a dedicated regression test. No gap-filling required — auditor not spawned (Step 3 no-gap short-circuit).
