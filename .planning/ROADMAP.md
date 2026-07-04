@@ -220,7 +220,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 64. Per-Module Coverage Uplift & Gate Raise | 2026.7.0 | 4/4 | Complete    | 2026-07-03 |
 | 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete    | 2026-07-03 |
-| 67. Backend Registry & Config Model | 2026.7.1 | 5/6 | In Progress|  |
+| 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete   | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 0/TBD | Not started | - |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 0/TBD | Not started | - |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 0/TBD | Not started | - |
@@ -1025,7 +1025,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 67-06-PLAN.md — Remove cloud_target + flat s3_*/kube_*/compute_* fields + 3 validators (no shim) + trim SECRET_FILE_FIELDS + delete stale tests + .env.example/docs (REG-04)
+- [x] 67-06-PLAN.md — Remove cloud_target + flat s3_*/kube_*/compute_* fields + 3 validators (no shim) + trim SECRET_FILE_FIELDS + delete stale tests + .env.example/docs (REG-04)
 
 **PR**: own worktree branch — never a direct commit to `main`. Behavior-preserving (config model only).
 
