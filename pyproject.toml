@@ -46,6 +46,11 @@ dependencies = [
     # support; declared explicitly so the direct import is not a transitive accident.
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.32",
+    # Phase 70 (MKUE-01): kube_staging parses inline kubeconfig YAML content into a dict for the
+    # per-backend kr8s client. Already resolved transitively via the pinned kr8s -- declared
+    # explicitly (hygiene) so a future kr8s dropping PyYAML cannot silently break the kubeconfig
+    # parse. Floor at the currently-resolved 6.0.3 (>=7 days old, exclude-newer cooldown satisfied).
+    "PyYAML>=6.0.3",
     "rapidfuzz>=3.14.5",
     # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
     # but `redis.asyncio` is imported directly across the codebase (cache_redis handle,
