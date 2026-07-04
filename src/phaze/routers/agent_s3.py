@@ -42,6 +42,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_s3 import UploadedRequest, UploadedResponse, UploadFailedRequest, UploadFailedResponse
 from phaze.services import cloud_staging, s3_staging
+from phaze.services.backends import resolved_non_local_kind
 from phaze.services.enqueue_router import NoActiveAgentError, resolve_queue_for_task
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
@@ -75,7 +76,7 @@ async def report_uploaded(
     post-staging seam -- it advances the FileRecord ``PUSHING -> PUSHED`` (a rowcount-guarded
     idempotent flip mirroring ``agent_push.report_pushed``, freeing a window slot) and enqueues
     ``submit_cloud_job`` through ``enqueue_router`` on the controller queue (NEVER a raw enqueue --
-    KROUTE-04). A1 uses rsync and never reaches these S3 callbacks, so the ``active_cloud_kind == "kueue"``
+    KROUTE-04). A1 uses rsync and never reaches these S3 callbacks, so the resolved-kind ``== "kueue"``
     guard is defensive: a non-kueue target preserves today's cloud_job-only behavior.
     """
     cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
@@ -109,8 +110,8 @@ async def report_uploaded(
     # the routed submit_cloud_job. Defensive guard -- a1 uses rsync and never hits these callbacks,
     # so a non-kueue target keeps today's cloud_job-only flow.
     settings = cast("ControlSettings", get_settings())
-    # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
-    if settings.active_cloud_kind == "kueue":
+    # Phase 68 (D-09): registry-derived kind via the Backend registry helper (was the retired ≤1-non-local accessor).
+    if resolved_non_local_kind(settings) == "kueue":
         # Rowcount-guarded idempotent flip (mirrors agent_push.report_pushed): a duplicate/late
         # callback whose file already advanced past PUSHING matches 0 rows -> NO re-enqueue (T-55-SEAM-05).
         flip = cast(
