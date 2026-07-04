@@ -45,12 +45,14 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileState
+from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
-from phaze.tasks.release_awaiting_cloud import _enqueue_push_file
+from phaze.tasks.release_awaiting_cloud import push_file_job_key
 
 
 if TYPE_CHECKING:
@@ -75,6 +77,35 @@ IN_FLIGHT: tuple[CloudJobStatus, ...] = (
 )
 
 
+async def _enqueue_push_file(queue: Any, file: FileRecord, agent_id: str) -> Any:
+    """Enqueue ONE ``push_file`` job with the deterministic key + the complete PushFilePayload.
+
+    Relocated from ``release_awaiting_cloud`` in Wave 3 (68-04): this control-side enqueue leg is the
+    ``ComputeAgentBackend.dispatch`` body, so it now lives with the backend that owns it (the drain no
+    longer references it). Builds the four required ``PushFilePayload`` fields (the FileRecord's ``id``
+    / ``original_path`` / ``file_type`` plus the resolved fileserver ``agent_id``) and serializes via
+    ``model_dump(mode="json")`` so the UUID round-trips as a string under ``extra="forbid"``. Returns
+    whatever ``queue.enqueue`` returns -- a ``saq.Job`` normally, or ``None`` when SAQ deduped the
+    deterministic key (the file is already being pushed) so the caller counts a ``None`` as skipped.
+    """
+    payload = PushFilePayload(
+        file_id=file.id,
+        original_path=file.original_path,
+        file_type=file.file_type,
+        agent_id=agent_id,
+    )
+    # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
+    await queue.connect()
+    # WR-03: stamp an explicit SAQ job-net timeout strictly above the agent's asyncio outer guard so
+    # a job-net cancellation can never fire before the guard reaps the rsync child.
+    return await queue.enqueue(
+        "push_file",
+        key=push_file_job_key(file.id),
+        timeout=PUSH_FILE_SAQ_TIMEOUT_SEC,
+        **payload.model_dump(mode="json"),
+    )
+
+
 class Backend(Protocol):
     """The single internal dispatch seam that removes the ``if active_cloud_kind == …`` fork (§4.2).
 
@@ -95,8 +126,13 @@ class Backend(Protocol):
         """COUNT(cloud_job WHERE backend_id == self.id AND status IN {in-flight}) -- the D-02 substrate."""
         ...
 
-    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> None:
-        """Flip ``file`` into the cloud window + write its ``cloud_job`` row, IN the caller's txn (D-03). Never commits."""
+    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
+        """Flip ``file`` into the cloud window + write its ``cloud_job`` row, IN the caller's txn (D-03). Never commits.
+
+        Returns ``True`` when new dispatch work was actually enqueued (a genuine stage) and ``False``
+        when the enqueue was a deterministic-key dedup no-op / a clean hold -- the drain counts the
+        former as ``staged`` and the latter as ``skipped`` (preserves the Phase-50 tally semantics).
+        """
         ...
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:
@@ -150,21 +186,22 @@ class LocalBackend(_BaseBackend):
         """Always 0 -- a local burst writes no ``cloud_job`` row, so it holds no in-flight cloud slot."""
         return 0
 
-    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> None:
+    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
         """Enqueue ``process_file`` on the fileserver agent's queue; a clean hold when no agent is online.
 
         Re-homes the local ``enqueue_process_file`` producer (``analysis_enqueue``). Writes NO
-        ``cloud_job`` row. An absent agent degrades to a clean hold (NoActiveAgentError -> no-op),
-        matching the cron no-op discipline -- never a raise.
+        ``cloud_job`` row. An absent agent degrades to a clean hold (NoActiveAgentError -> ``False``),
+        matching the cron no-op discipline -- never a raise. Returns ``True`` once the job is enqueued.
         """
         cfg = cast("ControlSettings", get_settings())
         try:
             agent = await select_active_agent(session, kind="fileserver")
         except NoActiveAgentError:
             logger.info("LocalBackend.dispatch hold: no fileserver agent online", file_id=str(file.id))
-            return
+            return False
         queue = task_router.queue_for(agent.id)
         await enqueue_process_file(queue, file, agent.id, cfg.models_path)
+        return True
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:  # noqa: ARG002 -- protocol signature; local has no cron read
         """No-op: local analysis completion is synchronous -- there is no cron read to run."""
@@ -193,7 +230,7 @@ class ComputeAgentBackend(_BaseBackend):
             return False
         return True
 
-    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> None:
+    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
         """Flip ``file`` to PUSHING + upsert its ``cloud_job`` row, THEN enqueue ``push_file`` -- one txn, no commit.
 
         D-03 write ordering: the ``FileState -> PUSHING`` flip and the ``cloud_job`` upsert
@@ -224,9 +261,12 @@ class ComputeAgentBackend(_BaseBackend):
         )
         await session.execute(stmt)
 
-        # Re-home the compute enqueue leg (release_awaiting_cloud._enqueue_push_file), verbatim.
+        # Re-home the compute enqueue leg (_enqueue_push_file, now local to this module), verbatim.
         push_queue = task_router.queue_for(fileserver_agent.id)
-        await _enqueue_push_file(push_queue, file, fileserver_agent.id)
+        job = await _enqueue_push_file(push_queue, file, fileserver_agent.id)
+        # A deterministic-key dedup returns None (the file is already being pushed) -> the drain counts
+        # it as skipped, not staged (T-50-double-enqueue); a genuine enqueue returns a saq.Job -> staged.
+        return job is not None
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:  # noqa: ARG002 -- protocol signature; compute terminalizes via the /pushed callback
         """No-op: compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08), not a cron read."""
@@ -258,18 +298,20 @@ class KueueBackend(_BaseBackend):
             return False
         return local_queue is not None
 
-    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> None:
+    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
         """Flip ``file`` to PUSHING then run the no-commit S3-staging core VERBATIM (single-cluster, D-05).
 
         The S3 core (``cloud_staging._stage_file_to_s3``) already upserts the ``cloud_job`` row
         (``UPLOADING``) + enqueues one ``s3_upload`` in the caller's session -- exactly as today's kueue
         drain branch does -- so this writes NO second ``cloud_job`` row. D-05 keeps it single-cluster
         (reads ``active_kube`` / ``active_bucket``); per-cluster parameterization is Phase 70. NEVER
-        commits (the drain owns the single post-loop commit -- Landmine L1).
+        commits (the drain owns the single post-loop commit -- Landmine L1). Always a genuine stage on
+        the kueue path (the current drain counts every kueue file staged), so returns ``True``.
         """
         # D-03: the drain flips PUSHING before the per-kind fork; own that flip here so dispatch is atomic.
         file.state = FileState.PUSHING
         await _stage_file_to_s3(session, file, task_router)
+        return True
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:
         """Reconcile THIS backend's in-flight ``cloud_job`` rows against their Kueue Job/Workload (backend_id-aware).

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -32,9 +33,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
-from phaze.services import cloud_staging, s3_staging
+from phaze.services import cloud_staging, kube_staging, s3_staging
 from phaze.tasks.release_awaiting_cloud import push_file_job_key, stage_cloud_window
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
+from tests.kube_fakes import fake_local_queue
 
 
 if TYPE_CHECKING:
@@ -56,6 +58,13 @@ class _StubCfg:
         self.active_cap = active_cap
         self.cloud_enabled = cloud_enabled
         self.active_cloud_kind = active_cloud_kind
+        # Phase 68: the drain resolves its dispatch backend via resolve_backends(cfg), which reads the
+        # registry-shaped ``backends`` list (each entry duck-types the Phase-67 submodel's
+        # kind/id/rank/cap). One non-local backend of the cell's kind; a local entry when cloud disabled.
+        if active_cloud_kind is None:
+            self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
+        else:
+            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_kind: str | None = "compute") -> None:
@@ -259,9 +268,16 @@ async def test_cloud_compute_stages_normally(async_engine: AsyncEngine, session:
 
 
 def _patch_s3(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub the S3 SDK calls the k8s branch's ``_stage_file_to_s3`` core makes (no live backend)."""
+    """Stub the S3 SDK calls the k8s branch's ``_stage_file_to_s3`` core makes (no live backend).
+
+    Phase 68: also stub the Kueue LocalQueue probe -- the drain now clears GATE-1 through
+    ``KueueBackend.is_available``, which probes ``kube_staging.get_local_queue`` (a cluster reach test
+    with NO compute dependency, D-01a). Stub it "reachable" so the kueue cells proceed exactly as the
+    pre-refactor drain did (which took no such probe on the k8s branch).
+    """
     monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
     monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+    monkeypatch.setattr(kube_staging, "get_local_queue", AsyncMock(return_value=fake_local_queue()))
 
 
 @pytest.mark.asyncio

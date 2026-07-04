@@ -31,6 +31,7 @@ stay byte-identical -- that byte-identity is the BACK-04 characterization proof.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -41,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord, FileState
-from phaze.services import enqueue_router, kube_staging, s3_staging
+from phaze.services import backends as backends_mod, enqueue_router, kube_staging, s3_staging
 from phaze.tasks import release_awaiting_cloud
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 from tests.kube_fakes import fake_local_queue
@@ -55,18 +56,25 @@ if TYPE_CHECKING:
 
 
 class _StubCfg:
-    """Stand-in for the registry-derived reads ``stage_cloud_window`` makes on current code.
+    """Stand-in for the registry-derived reads ``stage_cloud_window`` makes.
 
-    The Phase-67 rewire drives the cron off ``cloud_enabled`` (the on/off gate), ``active_cap`` (the
-    former ``cloud_max_in_flight``) and the transitional ``active_cloud_kind`` (``"compute"`` /
-    ``"kueue"`` / ``None``). Per cell we set a single non-local backend of the cell's kind; the local
-    cell sets ``cloud_enabled=False`` (the implicit all-local registry).
+    The Phase-68 refactor drives the cron off ``cloud_enabled`` (the on/off gate) + the resolved
+    ``backends`` registry (``resolve_backends(cfg)`` yields the single non-local dispatch backend, whose
+    ``.cap`` is the former ``active_cap``). Per cell we set one non-local backend of the cell's kind; the
+    local cell sets ``cloud_enabled=False`` (the implicit all-local registry). ``active_cap`` /
+    ``active_cloud_kind`` stay as legacy shims for the readers not yet rewired, but the drain now reads
+    ``backends``. Each ``backends`` entry duck-types the Phase-67 submodel fields
+    (``kind`` / ``id`` / ``rank`` / ``cap``) that ``resolve_backends`` binds each impl to.
     """
 
     def __init__(self, *, active_cap: int, cloud_enabled: bool, active_cloud_kind: str | None) -> None:
         self.active_cap = active_cap
         self.cloud_enabled = cloud_enabled
         self.active_cloud_kind = active_cloud_kind
+        if active_cloud_kind is None:
+            self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
+        else:
+            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
 
 
 def _make_file(*, file_type: str = "mp3") -> FileRecord:
@@ -91,18 +99,40 @@ def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter) -> dict[st
 
 
 def _spy_select_active_agent(calls: list[str]) -> Any:
-    """Wrap the REAL ``select_active_agent`` so we record the kinds the drain requests (D-01a).
+    """Wrap the REAL ``select_active_agent`` so we record the kinds the DRAIN requests (D-01a).
 
     Delegating to the real selector keeps behavior identical to production (a genuine DB lookup that
     raises ``NoActiveAgentError`` when the agent is absent); the wrapper only appends the requested
-    ``kind`` so the snapshot can assert the compute gate was checked (compute cell) vs skipped (kueue
-    cell). Only the drain's calls are spied -- ``cloud_staging``'s internal fileserver lookup uses its
-    own module reference and is deliberately NOT recorded (the tracked observation is GATE-1 only).
+    ``kind``. Patched on ``release_awaiting_cloud`` this records the drain's own GATE-2 fileserver
+    lookup. ``cloud_staging``'s internal fileserver lookup uses its own module reference and is
+    deliberately NOT recorded (the tracked observation is a GATE check, not an internal agent lookup).
     """
     real = enqueue_router.select_active_agent
 
     async def _wrapped(session: AsyncSession, kind: str | None = None) -> Any:
         calls.append(kind if kind is not None else "<any>")
+        return await real(session, kind=kind)
+
+    return _wrapped
+
+
+def _spy_backends_gate1(calls: list[str]) -> Any:
+    """Wrap the REAL ``select_active_agent`` on the ``backends`` module, recording ONLY the GATE-1 probe.
+
+    Post-Phase-68 the compute GATE-1 (``select_active_agent(kind="compute")``) lives inside
+    ``ComputeAgentBackend.is_available`` -- i.e. it now fires through ``services.backends``'s own module
+    reference, not the drain's. To keep the D-01a observation byte-identical across the seam move we spy
+    that reference too, but record ONLY the ``kind=="compute"`` GATE-1 probe: ``ComputeAgentBackend.dispatch``
+    ALSO looks the fileserver agent up through this same reference per file, and those are internal
+    dispatch lookups (not gate checks), exactly like ``cloud_staging``'s -- so they stay un-tracked
+    (mirrors the drain spy's contract). Kueue's ``is_available`` probes the cluster (kube), never this
+    selector, so ``compute`` correctly never appears for the kueue cell.
+    """
+    real = enqueue_router.select_active_agent
+
+    async def _wrapped(session: AsyncSession, kind: str | None = None) -> Any:
+        if kind == "compute":
+            calls.append(kind)
         return await real(session, kind=kind)
 
     return _wrapped
@@ -131,9 +161,12 @@ async def _run_cell(
         lambda: _StubCfg(active_cap=active_cap, cloud_enabled=cloud_enabled, active_cloud_kind=kind),
     )
 
-    # D-01a spy: record the kinds the drain's GATE-1/GATE-2 request select_active_agent for.
+    # D-01a spy: record the gate kinds. GATE-2 (fileserver) fires through the drain's own reference;
+    # GATE-1 (compute) now fires through ComputeAgentBackend.is_available (the backends module ref), so
+    # spy BOTH into one shared ordered list -- the backends spy records ONLY the compute GATE-1 probe.
     gate_kinds: list[str] = []
     monkeypatch.setattr(release_awaiting_cloud, "select_active_agent", _spy_select_active_agent(gate_kinds))
+    monkeypatch.setattr(backends_mod, "select_active_agent", _spy_backends_gate1(gate_kinds))
 
     # Real staging bodies run (strongest golden capture): stub the S3 SDK the kueue core calls.
     monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
@@ -188,9 +221,10 @@ _COMPUTE_UP_EXPECTED = {
     "compute_gate_checked": True,
     "staging_tasks": ["push_file"],  # compute rsync-push leg
     "state_counts": {"pushing": 2, "awaiting_cloud": 1},
-    # TODO(68-04 / Wave 3): flips to 2 when D-03/D-08 land the in-txn compute cloud_job write.
-    # Every OTHER field in this dict MUST stay byte-identical across the refactor (BACK-04 proof).
-    "cloud_job_count": 0,
+    # Wave 3 (68-04) landed D-03/D-08: ComputeAgentBackend.dispatch now writes an in-txn cloud_job row
+    # per staged file (backend_id set, s3_key NULL, SUBMITTED), so 2 staged files -> 2 cloud_job rows.
+    # This is the ONE deliberate snapshot change; every OTHER field stays byte-identical (BACK-04 proof).
+    "cloud_job_count": 2,
     "tally": {"staged": 2, "skipped": 0},
 }
 
