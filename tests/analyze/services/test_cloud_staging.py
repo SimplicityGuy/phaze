@@ -12,6 +12,7 @@ that), so these tests drive it directly.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
 
@@ -242,3 +243,54 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
     assert len(task_router.queues[fileserver_id].captured) == 2
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()
     assert len(rows) == 1
+
+
+def test_redrive_bucket_falls_back_to_repick_over_backend_set_when_staging_bucket_absent(s3_env: str) -> None:
+    """A row missing ``staging_bucket`` (legacy / cleared) re-picks deterministically over its backend's bound set."""
+    cfg = get_settings()
+    file = SimpleNamespace(id=uuid.uuid4())
+    existing = SimpleNamespace(staging_bucket=None, backend_id="cluster-01")  # cluster-01 is bound to ["staging"] by s3_env
+    resolved = cloud_staging._redrive_bucket(cfg, existing, file)  # type: ignore[arg-type]
+    assert resolved is not None
+    # pick_bucket over the single-element ["staging"] set is deterministically "staging".
+    assert resolved.id == s3_staging.pick_bucket(file.id, ["staging"])
+    assert resolved.id == "staging"
+
+
+def test_redrive_bucket_returns_none_when_no_recorded_bucket_and_no_resolvable_backend(s3_env: str) -> None:
+    """No recorded ``staging_bucket`` AND no usable backend (None or unknown id) resolves to None (the raise-path input)."""
+    cfg = get_settings()
+    file = SimpleNamespace(id=uuid.uuid4())
+    # backend_id absent entirely
+    assert cloud_staging._redrive_bucket(cfg, SimpleNamespace(staging_bucket=None, backend_id=None), file) is None  # type: ignore[arg-type]
+    # backend_id set but not present in the resolved registry
+    assert cloud_staging._redrive_bucket(cfg, SimpleNamespace(staging_bucket=None, backend_id="ghost"), file) is None  # type: ignore[arg-type]
+    # existing row absent entirely
+    assert cloud_staging._redrive_bucket(cfg, None, file) is None  # type: ignore[arg-type]
+
+
+async def test_redrive_upload_raises_when_no_staging_bucket_resolvable(
+    s3_env: str,
+    session: AsyncSession,
+) -> None:
+    """redrive_upload fails loudly (never a dead re-stage) when the row has no recorded bucket and no usable backend."""
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    # A cloud_job row with neither a recorded staging_bucket nor a resolvable backend_id -> _redrive_bucket is None.
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=s3_staging.staged_object_key(file.id),
+            status=CloudJobStatus.UPLOADING.value,
+            upload_id=None,
+            staging_bucket=None,
+            backend_id=None,
+        )
+    )
+    await session.commit()
+
+    task_router = FakeTaskRouter()
+    with pytest.raises(s3_staging.S3StagingError, match="could not resolve a staging bucket"):
+        await cloud_staging.redrive_upload(session, file, task_router)
+    assert task_router.queues == {}  # nothing enqueued on the loud failure
