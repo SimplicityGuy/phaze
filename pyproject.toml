@@ -112,6 +112,11 @@ ignore_missing_imports = true
 module = ["aioboto3", "aioboto3.*", "aiobotocore", "aiobotocore.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
+# PyYAML ships no py.typed / stubs bundled; kube_staging parses inline kubeconfig content via yaml.safe_load.
+[[tool.mypy.overrides]]
+module = ["yaml", "yaml.*"]
+ignore_missing_imports = true
+
 [[tool.mypy.overrides]]
 module = "phaze.services.agent_client"
 check_untyped_defs = true

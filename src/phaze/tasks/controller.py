@@ -32,7 +32,6 @@ from phaze.config import export_llm_api_keys, get_settings
 from phaze.logging_config import configure_logging
 from phaze.services import kube_staging
 from phaze.services.agent_task_router import AgentTaskRouter
-from phaze.services.backends import resolved_non_local_kind
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.deterministic_key import increment_completed
@@ -168,57 +167,44 @@ async def startup(ctx: dict[str, Any]) -> None:
     except Exception:
         logger.exception("recover_orphaned_work on startup failed")
 
-    # Phase 56 (KDEPLOY-04, D-05/D-06): live LocalQueue-reachability probe. This is a RUNTIME probe,
-    # distinct from the three fail-fast kube config validators -- it GETs the configured Kueue
-    # LocalQueue and writes a cross-process flag the dashboard reads. Gated on the resolved kind == "kueue"
-    # so a non-kueue control plane never touches kube. Wrapped in its OWN broad try/except mirroring the
-    # recovery block above: a transient kube/mesh blip MUST NEVER abort controller boot (D-05 -- the
-    # control plane still boots Postgres/Redis/UI/local-analysis). The WARNING names only the env var
-    # PHAZE_KUBE_LOCAL_QUEUE; it never interpolates the SA token or kube DSN (T-56-LOG / T-54-07).
-    # Phase 68 (D-09): registry-derived kind via the Backend registry (was the retired ≤1-non-local accessor).
-    # Phase 69 (SCHED-01) retired resolve_backends()'s ≤1-non-local boot guard (N non-local backends now
-    # resolve), so the single-kind fail-fast this probe relies on now comes SOLELY from
-    # resolved_non_local_kind() below: it still RAISES on a premature >1-non-local registry (a valid
-    # schema whose Kueue LocalQueue probe is single-cluster). Reading it here must honor the D-05 boot
-    # invariant documented above, so a raise degrades to "skip the Kueue probe" (falls through to the else
-    # branch which clears any stale flag) rather than aborting the controller boot.
-    try:
-        control_cfg = cast("ControlSettings", cfg)
-        active_kind = resolved_non_local_kind(control_cfg)
-    except Exception:
-        logger.warning(
-            "phaze.controller startup: backend registry holds >1 non-local backend; multi-backend dispatch "
-            "lands in Phase 69, so skipping the Kueue LocalQueue probe; control plane boots regardless (D-05)"
-        )
-        active_kind = None
-    if active_kind == "kueue":
-        # Probe the LocalQueue and persist the flag in two INDEPENDENTLY-guarded steps. CR-01: the flag
-        # write is the FIRST Redis call in startup (backfill/recovery above use Postgres), so a Redis-down
-        # boot would let an unguarded ``.set``/``.delete`` propagate and crash the control worker -- the
-        # exact opposite of the D-05 invariant. A Redis blip must be as non-fatal to boot as a kube blip,
-        # so the persistence step gets its OWN broad try/except and never re-raises.
+    # Phase 56/70 (KDEPLOY-04, MKUE-01/03, D-05/D-06): PER-CLUSTER LocalQueue-reachability probe. This is
+    # a RUNTIME probe, distinct from the fail-fast kube config validators -- for EACH configured Kueue
+    # backend it GETs THAT cluster's LocalQueue (threaded the backend's own KubeConfig) and writes a
+    # single cross-process flag the dashboard reads. Phase 70 iterates every kueue backend (was a single
+    # global probe gated on a ≤1-non-local resolved kind), so N clusters each get their own reachability
+    # check; the flag is set iff ANY configured cluster is unreachable (reachable == ALL-reachable). Each
+    # probe AND the Redis write is INDEPENDENTLY guarded (its own broad try/except): a transient
+    # kube/mesh/Redis blip MUST NEVER abort controller boot (D-05 -- the control plane still boots
+    # Postgres/Redis/UI/local-analysis). Warnings name only the config surface; they never interpolate an
+    # SA token or kube DSN (T-56-LOG / T-54-07).
+    control_cfg = cast("ControlSettings", cfg)
+    kueue_kubes = [kube for entry in control_cfg.backends if entry.kind == "kueue" and (kube := getattr(entry, "kube", None)) is not None]
+    if kueue_kubes:
+        all_reachable = True
+        for kube in kueue_kubes:
+            try:
+                await kube_staging.get_local_queue(kube)
+            except Exception:
+                all_reachable = False
+                logger.warning(
+                    "phaze.controller startup: a Kueue LocalQueue is unreachable -- check cluster connectivity "
+                    "and the backend's [kube] local_queue configuration; control plane boots regardless (D-05)"
+                )
+        # Persist the aggregate flag in its OWN guarded step. CR-01: this is the FIRST Redis call in
+        # startup (backfill/recovery above use Postgres), so a Redis-down boot would let an unguarded
+        # ``.set``/``.delete`` propagate and crash the control worker -- the exact opposite of D-05.
         try:
-            await kube_staging.get_local_queue()
-            reachable = True
-        except Exception:
-            logger.warning(
-                "phaze.controller startup: Kueue LocalQueue unreachable -- check cluster connectivity "
-                "and the PHAZE_KUBE_LOCAL_QUEUE configuration; control plane boots regardless (D-05)"
-            )
-            reachable = False
-        try:
-            if reachable:
+            if all_reachable:
                 await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
             else:
                 await ctx["redis"].set("phaze:k8s:localqueue_unreachable", "1")
         except Exception:
             logger.warning("phaze.controller startup: could not persist LocalQueue-reachability flag; control plane boots regardless (D-05)")
     else:
-        # WR-01: the flag lives in long-lived Redis. Switching the control plane away from kueue (the
-        # documented revert = drop the kueue backend from backends.toml so the registry resolves all-local)
-        # must clear any stale flag, else the dashboard shows a perpetual false LocalQueue-unreachable
-        # alert. Best-effort + guarded: a Redis blip on a non-kueue boot must not abort the control plane
-        # either (D-05).
+        # WR-01: no kueue backend configured (all-local or compute-only). The flag lives in long-lived
+        # Redis, so a documented revert (drop the kueue backend(s) from backends.toml) must clear any
+        # stale flag, else the dashboard shows a perpetual false LocalQueue-unreachable alert.
+        # Best-effort + guarded: a Redis blip on a non-kueue boot must not abort the control plane (D-05).
         try:
             await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
         except Exception:

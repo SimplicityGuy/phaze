@@ -20,11 +20,14 @@ Decisions realized here:
   invariant is the characterization proof that the new substrate matches the old count.
 * **D-03** -- ``dispatch`` owns BOTH the ``FileState -> PUSHING`` flip AND the ``cloud_job`` upsert in the
   SAME caller-passed session, before/with the flip, NEVER after a separate commit (Pitfall 4 limbo guard).
-* **D-05** -- ``KueueBackend`` calls today's single-cluster ``_stage_file_to_s3`` / ``kube_staging``
-  VERBATIM (reads ``active_kube`` / ``active_bucket``); per-cluster parameterization is Phase 70.
+* **D-05** -- ``KueueBackend`` calls ``_stage_file_to_s3`` / ``kube_staging`` threaded THIS backend's
+  own ``KubeConfig`` + D-06 bucket (Phase 70 MKUE-01/02 retired the ``active_kube`` / ``active_bucket``
+  module-global reads: one control plane dispatches to N distinct clusters/buckets).
 * **D-07** -- the raise-on-``>1``-non-local guard is Phase-69-retired from :func:`resolve_backends` (N
-  non-local backends now resolve; SCHED-01) and survives ONLY in :func:`resolved_non_local_kind` for the
-  non-drain single-kind callers (WR-01); ``cloud_enabled`` stays in config as the registry on/off gate.
+  non-local backends now resolve; SCHED-01). Phase 70 (MKUE-01) further generalizes
+  :func:`resolved_non_local_kind` to return ``"kueue"`` for ANY-kueue registry (N Kueue backends are the
+  literal MKUE-01 scenario), retaining the fail-fast only for the ambiguous compute-only ``>1`` case;
+  ``cloud_enabled`` stays in config as the registry on/off gate.
 * **D-10** -- the in-flight status set is ``{UPLOADING, UPLOADED, SUBMITTED, RUNNING}``.
 
 Cron no-op discipline (T-68-05): ``is_available`` / ``dispatch`` / ``reconcile`` degrade to a clean hold
@@ -59,7 +62,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
-    from phaze.config_backends import BackendConfig
+    from phaze.config_backends import BackendConfig, KubeConfig
     from phaze.models.file import FileRecord
     from phaze.services.agent_task_router import AgentTaskRouter
 
@@ -296,23 +299,40 @@ class ComputeAgentBackend(_BaseBackend):
 class KueueBackend(_BaseBackend):
     """Kueue-cluster backend -- re-homes today's single-cluster S3-staging + kube submit/reconcile (D-05).
 
-    ``is_available`` probes the Kueue LocalQueue with NO compute-agent dependency (D-01a); ``dispatch``
-    calls the no-commit S3-staging core VERBATIM (single-cluster, reads ``active_kube`` / ``active_bucket``);
-    ``reconcile`` re-homes the ``reconcile_cloud_jobs`` cron body, made ``backend_id``-aware, with NO
-    advisory lock (Pitfall 2 -- deferred to Phase 69). ``in_flight_count`` is inherited from
-    :class:`_BaseBackend` (the D-02 substrate).
+    ``is_available`` probes THIS backend's Kueue LocalQueue with NO compute-agent dependency (D-01a);
+    ``dispatch`` picks the D-06 bucket and runs the no-commit S3-staging core; ``reconcile`` re-homes the
+    ``reconcile_cloud_jobs`` cron body, made ``backend_id``-aware, under a per-row advisory lock.
+    ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
+
+    Phase 70 (MKUE-01/D-04): every ``kube_staging`` call is threaded THIS backend's own
+    ``KubeConfig`` (``self._kube()``) -- one control plane dispatches to N distinct clusters, each with
+    its own constructor-time-authed kr8s client (the module-global ``active_kube`` read is retired).
     """
 
-    async def is_available(self, session: AsyncSession) -> bool:  # noqa: ARG002 -- protocol signature; kueue probes the cluster, not a DB agent
-        """Probe the Kueue LocalQueue -- True iff reachable; False (never raises) on any probe failure (D-01a).
+    def _kube(self) -> KubeConfig:
+        """Return THIS backend's ``KubeConfig`` (the bound kueue registry entry's ``[kube]`` table, D-04).
 
-        Re-homes the ``kube_staging.get_local_queue`` reachability probe. Deliberately has NO
-        compute-agent dependency (D-01a asymmetry): ephemeral Kueue pods have no persistent compute
-        agent. A ``NotFoundError`` (mis-named queue) or transient ``ServerError`` degrades to False rather
-        than raising (mirrors the controller's non-fatal catch), preserving the cron no-op discipline.
+        ``self.config`` is the Phase-67 ``KueueBackend`` submodel bound in ``resolve_backends``; its
+        ``kube`` field is the per-cluster connection surface every ``kube_staging`` verb now takes.
+        Fail-loud (``KubeStagingError``) if a kueue backend somehow has no ``[kube]`` bound -- the
+        config validator already guards this, so this is defense-in-depth.
+        """
+        kube = getattr(self.config, "kube", None)
+        if kube is None:
+            raise kube_staging.KubeStagingError(f"kueue backend {self.id!r} has no [kube] config bound")
+        return cast("KubeConfig", kube)
+
+    async def is_available(self, session: AsyncSession) -> bool:  # noqa: ARG002 -- protocol signature; kueue probes the cluster, not a DB agent
+        """Probe THIS backend's Kueue LocalQueue -- True iff reachable; False (never raises) on any probe failure (D-01a).
+
+        Re-homes the ``kube_staging.get_local_queue`` reachability probe, now threaded THIS backend's
+        ``KubeConfig`` (MKUE-01/03). Deliberately has NO compute-agent dependency (D-01a asymmetry):
+        ephemeral Kueue pods have no persistent compute agent. A ``NotFoundError`` (mis-named queue) or
+        transient ``ServerError`` (or an unconfigured ``[kube]``) degrades to False rather than raising
+        (mirrors the controller's non-fatal catch), preserving the cron no-op discipline.
         """
         try:
-            local_queue = await kube_staging.get_local_queue()
+            local_queue = await kube_staging.get_local_queue(self._kube())
         except Exception:  # any kube/mesh failure degrades to "unavailable" (T-68-05 no-op discipline)
             logger.info("KueueBackend.is_available: LocalQueue probe failed -> unavailable", backend_id=self.id)
             return False
@@ -393,7 +413,9 @@ class KueueBackend(_BaseBackend):
                 if cloud_job is None:
                     continue
                 tally["reconciled"] += 1
-                await _reconcile_one(reconcile_ctx, session, cloud_job, cap, tally)
+                # MKUE-01/D-04: thread THIS backend's KubeConfig so every get_job/get_workload_for/
+                # delete_job inside reconcile targets the file's own cluster.
+                await _reconcile_one(reconcile_ctx, session, cloud_job, cap, tally, self._kube())
             except Exception:
                 # Per-row guard: a single bad row never aborts the tick; roll back the partial mutation.
                 await session.rollback()
@@ -429,22 +451,33 @@ def resolve_backends(settings: ControlSettings) -> list[Backend]:
 
 
 def resolved_non_local_kind(settings: ControlSettings) -> str:
-    """Return the registry-derived active kind: ``"local"`` when all-local, else the single non-local kind.
+    """Return the registry-derived cloud-lane kind: ``"local"`` when all-local, else the non-local kind.
 
-    The Wave-3 replacement for the deleted config dispatch-selector accessor (D-07/D-09): ``"local"`` when
-    ``cloud_enabled`` is False, otherwise the sole non-local backend's kind (``"compute"`` | ``"kueue"``).
-    The single-non-local invariant is enforced by :func:`resolve_backends`'s boot guard.
+    The single seam the non-drain single-kind callers use (the S3-upload-complete callback
+    ``agent_s3.report_uploaded``, the ``/pipeline/stats`` poll ``build_dashboard_context``, and the
+    backfill route): they only ask "is the cloud lane kueue?". ``"local"`` when ``cloud_enabled`` is
+    False.
+
+    Phase 70 (MKUE-01, sibling of the Pitfall-1 ``active_compute_scratch_dir`` fix): the callers 500'd
+    the moment a 2nd Kueue backend was declared, because the old ``>1``-non-local blanket raise fired on
+    the literal MKUE-01 scenario. Generalize: when ANY non-local backend is ``"kueue"``, return
+    ``"kueue"`` -- this tolerates N Kueue backends AND a local + N-Kueue + 1-compute registry (the
+    callers degrade gracefully by construction, no per-site try/except needed). The fail-fast is retained
+    ONLY for the genuinely-ambiguous compute-only ``>1`` case (PROV-01 territory, unreachable under
+    D-05's ≤1-compute invariant), mirroring ``active_compute_scratch_dir``'s single-compute reduction.
+    All-local -> ``"local"``, single-kueue -> ``"kueue"``, single-compute -> ``"compute"`` stay
+    byte-identical.
     """
     if not settings.cloud_enabled:
         return "local"
     non_local = [backend for backend in settings.backends if backend.kind != "local"]
-    # WR-01: preserve the ≤1-non-local defense-in-depth the retired ``_single_non_local`` accessor gave the
-    # three call sites (pipeline dashboard / backfill, agent_s3). Fail fast naming the offending ids rather
-    # than silently picking non_local[0] -- mirrors :func:`resolve_backends`'s boot guard (multi-backend
-    # dispatch is Phase 69 / SCHED). This keeps the all-local and single-non-local paths byte-identical.
+    if any(backend.kind == "kueue" for backend in non_local):
+        return "kueue"
+    # No kueue backend -> compute-only. Retain the fail-fast on the ambiguous >1-compute case (multi-
+    # compute agent_ref resolution lands in PROV-01; unreachable under D-05's ≤1-compute invariant).
     if len(non_local) > 1:
         raise ValueError(
-            f"multi-backend dispatch lands in Phase 69 (SCHED): {len(non_local)} non-local backends "
-            f"{[backend.id for backend in non_local]} are configured, but Phase 68 resolves only a ≤1-non-local registry"
+            f"multiple compute backends {[backend.id for backend in non_local]} are configured, but "
+            f"resolved_non_local_kind reduces a single compute lane (multi-compute lands in PROV-01)"
         )
     return non_local[0].kind
