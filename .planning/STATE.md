@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: 2026.7.0
-milestone_name: Engineering Improvements
-status: Awaiting next milestone
-last_updated: "2026-07-03T19:48:37.007Z"
-last_activity: 2026-07-03 — Milestone 2026.7.0 completed and archived
+milestone: 2026.7.1
+milestone_name: Multi-Cloud Backends
+status: "Phase 67 shipped — PR #201"
+last_updated: "2026-07-04T01:05:33.606Z"
+last_activity: 2026-07-04
 progress:
-  total_phases: 33
-  completed_phases: 4
-  total_plans: 13
-  completed_plans: 13
-  percent: 12
+  total_phases: 38
+  completed_phases: 5
+  total_plans: 19
+  completed_plans: 6
+  percent: 13
 ---
 
 # Project State
@@ -20,20 +20,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-03 — 2026.7.0 Engineering Improvements shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** 2026.7.0 shipped — planning the next named milestone (Multi-cloud backends, phases 67+; design already on `main` via PR #182)
+**Current focus:** Phase 68 — backend protocol + 3 implementations
 
 ## Current Position
 
-Phase: Milestone 2026.7.0 complete
-Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-03 — Milestone 2026.7.0 completed and archived
+Phase: 68
+Plan: Not started
+Status: Phase 67 shipped — PR #201
+Last activity: 2026-07-04
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 131
+- Total plans completed: 137
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -64,6 +66,7 @@ Last activity: 2026-07-03 — Milestone 2026.7.0 completed and archived
 
 ### Roadmap Evolution
 
+- 2026.7.1 Multi-Cloud Backends roadmap created (2026-07-03): 5 phases (67–71), continuing from 2026.7.0's last phase (66) — **NOT reset to 1**. Requirements-driven, dependency-strict, 1:1 category→phase per REQUIREMENTS.md + research SUMMARY: REG→67 · BACK→68 · SCHED→69 · MKUE→70 · BEUI→71. 21/21 mapped, 0 orphans, 0 duplicates. Generalizes the single `cloud_target` selector into a declarative cost-tiered `backends:` registry draining long files across local + 1+ Kueue + 1+ cloud-compute simultaneously (rank + cap, static routing, no provisioning); **zero new deps**, a pure application-code refactor over v6.0. **67** Backend Registry & Config Model (`backends:` list + per-kind discriminated-union validators + `cloud_target` back-compat shim + REG-05 S3 bucket registry public/shared-vs-cluster-specific; config-model-only, behavior-preserving; REG-01..05). **68** Backend Protocol + 3 impls (`Backend` `is_available`/`in_flight_count`/`dispatch`/`reconcile` re-homing existing bodies + `cloud_job.backend_id` additive migration + uniform per-backend in-flight accounting; behavior-preserving, acceptance-gated by a byte-identical characterization test incl. the GATE-1 compute-vs-Kueue asymmetry; **depends on 67**; BACK-01..04). **69** Tiered Drain Scheduler (rank-first per-file eligible dispatch, per-backend `cap`, spill-when-full, offline→next-eligible re-dispatch + black-hole/cooldown guard, stateless equal-rank tie-break, single-recovery-owner per kind; **first behavior-changing phase; depends on 68** — cap needs 68's per-backend count; **research flag** = drain↔reconcile lock-ordering + attempt-budget/cooldown split; SCHED-01..05). **70** Multi-Kueue N clusters (N concurrent Kueue backends each staging to its REG-05-assigned bucket set with DIST-01 preserved, per-cluster probe + `backend_id`-scoped reconcile + per-backend failure isolation, per-(backend,bucket) cleanup; **depends on 69**; **research flag** = `cloud_job` one-row-per-file-vs-per-(file,backend) + `agent_ref`→`Agent.id` resolution + live multi-cluster kr8s auth/multi-bucket staging; MKUE-01..04). **71** Deployment/Config/Docs & N-Lane UI (N registry-derived per-backend lanes read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + runbook/config docs incl. `cloud_target`→`backends` migration; UI-hinted; **depends on 70**; BEUI-01..03). Build order 67→68→69→70→71, strictly sequential (each hard-depends on the prior). Design spine locked (`docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md`, PR #182); REG-05 + revised MKUE-02/04 supersede its one-shared-bucket decision per operator direction. Version provisional CalVer `2026.7.1`, finalized at release. Each phase = own PR (worktree branch, never direct to main); 67–68 behavior-preserving refactors that de-risk 69.
 - 2026.7.0 Engineering Improvements roadmap created (2026-07-02): 4 phases (63-66), continuing from v7.0's last integer phase (62; 57.1 was a decimal insert). Cleanup / engineering-debt paydown — **no product-behavior change, no backend behavior change**; the "user" is the maintainer/operator. 13/13 requirements mapped, 0 orphans, 0 duplicates. **63** Parallel CI & Code-Change Gating (partition the ~1,750-test suite into workflow-step buckets + fan out across parallel jobs + combine per-shard `.coverage` → one Codecov upload + doc-only skip-with-success; the tightly-coupled CI-01/02/03 land together and CI-04 rides the same CI-workflow PR; CI-01..04). **64** Per-Module Coverage Uplift & Gate Raise (raise worst-offender/v7.0-touched modules — agent_liveness/shell/pipeline/tracklists/routers.pipeline/main + the 71–78% tail — to a per-module floor with behavior-asserting tests, then lift the enforced gate above 90.38% wired into CI; **depends on 63** because the combined-across-shards coverage number must be trustworthy before a higher gate enforces on it; COV-01/02). **65** CalVer Adoption (replace `vN.M` with `YYYY.MM.REVISION`, no leading-zero month, first tag `2026.7.0`, across release procedure + badges + image tags + milestone↔version mapping, historical record intact; independent parallel-friendly phase; VER-01..04). **66** Docs-Drift Gate & Dead-Code Sweep (CI gate cross-checking REQUIREMENTS.md traceability vs passed phases + `/saq` re-link in the shell Agents/Compute page + vestigial dead-code removal incl. the dead-template guard's own blind spot; **depends on 63** for the CI-gate slot, CLEAN otherwise independent; UI-hinted; DOCS-01, CLEAN-01/02). Build order 63 → 64, with 65 and 66 parallel-friendly (66's DOCS-01 sequenced after 63). This milestone *adopts* CalVer — the last `vN.M` planning cycle; its release is the first CalVer tag. Candidates sourced from the ROADMAP Backlog + v7.0 RETROSPECTIVE. Each phase = own PR (worktree branch, never direct to main).
 - v7.0 UI Redesign (DAG-Centric Hybrid Console) roadmap created (2026-06-29): 6 phases (57-62), the phase structure locked in REQUIREMENTS.md honored exactly, 25/25 requirements mapped (no orphans, no duplicates), dependency-strict build order 57→58→59→60→61→62. **57** Shell & DAG rail (three-column shell, DAG-rail-as-nav, `/`=Analyze default, ⌘K + status strip, brand/theme preserved, ≤1-hop legacy redirects; the load-bearing risk phase — locks `#stage-workspace` swap target, single `/pipeline/stats`→OOB fanout, `$store.pipeline` cross-swap survival, `htmx:historyRestore`, focus/ARIA baseline, seeded dead-template AST guard; stack bumps htmx 2.0.10/Alpine 3.15.12/Tailwind 4.3.2 + SRI recompute; SHELL-01..05). **58** Enrich + Analyze workspaces (Discover/Metadata/Fingerprint + Analyze 3 lane cards local/A1/k8s with Kueue quota-wait vs Inadmissible; reuse stats_bar OOB seed, NO second poll loop; WORK-01..05). **59** Identify workspaces (Track-ID surfaces EXISTING audfprint+Panako + rapidfuzz signals ONLY — IDENT-01 re-scoped off AcoustID/MusicBrainz → deferred IDENT-03; Tracklist Search→Scrape→Match 3-step; IDENT-01..02). **60** Review & Apply (unified before→after diff + per-file Approve/Edit/Skip; bulk approve-high-conf = SERVER-evaluated predicate at a fixed threshold, not a client id-list; dedupe keeper-select; cue preview; audit+reversible; REVIEW-01..05). **61** Full record + ⌘K + Agents (per-file record slide-in, ⌘K over existing search w/ `@alpinejs/focus@3.15.12`, ephemeral Job-based k8s Agents identity, first-run empty state; RECORD-01..04). **62** Polish & cutover (a11y audit, dead-template guard green after removing legacy page wrappers/keep partials, docs/README, narrow rail-collapse; CUT-02 necessarily LAST; CUT-01..04). IA/presentation rewrite over existing routers/services — **no backend behavior change**; visualizes v6.0 local/A1/k8s routing. No phase needs a research-phase (all patterns in-repo; verified 2026-06-29). Each phase = own PR (worktree branch).
 - v6.0 Kubernetes Burst Analysis roadmap created (2026-06-27): 5 phases (52-56), one per requirement category, in dependency order mirroring v5.0 (image → legs → pipeline → routing seam → deploy) — **52** Job-runner image & one-shot entrypoint (x86 GHCR image FROM existing essentia base, zero new pip deps; one-shot httpx-GET → windowed analyze → POST `/api/internal/agent/*` reconciled by `file_id` → exit; honest exit codes; internal CA baked in; KJOB-01..05); **53** S3 object-staging leg (control-plane aioboto3 presign PUT/GET + delete, file-server agent httpx-PUT uploads bytes, pod presigned GET — DIST-01 preserved, agent+pod S3-credential-free; `file_id`-scoped keys, cleanup on every terminal outcome + bucket-lifecycle TTL backstop; `endpoint_url` any-S3, `_FILE` secrets; `cloud_job` sidecar Alembic migration; KSTAGE-01..05); **54** Kube submit/watch + reconcile cron (kr8s submit of a suspended `batch/v1` Job labeled `kueue.x-k8s.io/queue-name`, deterministic name keyed to `file_id`; fast submit returns in seconds, periodic `reconcile_k8s_jobs` cron owns lifecycle; out-of-band callback is the ONLY authoritative result; Inadmissible-vs-Pending; bounded max-attempts re-drive → ANALYSIS_FAILED, no cross-target fallback; NO `process_file:<id>` ledger seed — highest-risk phase; KSUBMIT-01..06); **55** Routing/state/ledger integration — the ONE live-seam edit (`cloud_target` Literal["local","a1","k8s"] selector + `stage_cloud_window` K8s branch enqueuing `upload_file_s3`; reuse duration router + AWAITING_CLOUD hold + advisory-locked in-flight window + `PUSHING`/`PUSHED` states + `cloud_phase` column; `enqueue_router` frozenset additions + AST guard against over-enqueue; ledger-scoped backfill; KROUTE-01..05); **56** Deploy/runbook/config/docs (cluster-admin Kueue/RBAC/Secret runbook for objects phaze does NOT create, least-privilege namespaced Role, transport-agnostic Tailscale-OR-WireGuard endpoints, pydantic-settings `_FILE` + fail-fast model validator, startup LocalQueue validation, ephemeral Job-based identity in Agents UI vs perpetually-DEAD, master toggle revert; KDEPLOY-01..05). 26 requirements, 100% coverage, no orphans. **No phase needs a research-phase** — kr8s/aioboto3/Kueue v1beta2 verified same-day against Context7/official docs; each phase has a direct v5.0 precedent. Two new control-plane deps vs v5.0 (`kr8s`, `aioboto3`); zero new pip deps in the Job image. Each phase = own PR.
@@ -232,9 +235,9 @@ deployment-gated items above, all three are **already-completed work with stale 
 
 ## Session Continuity
 
-Last session: 2026-07-03T17:42:18.407Z
-Stopped at: Phase 66 context gathered
-Resume file: None
+Last session: 2026-07-03T21:12:31.392Z
+Stopped at: Phase 67 context gathered
+Resume file: .planning/phases/67-backend-registry-config-model/67-CONTEXT.md
 
 ## Operator Next Steps
 

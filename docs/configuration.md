@@ -34,10 +34,14 @@ The secret-bearing fields and their `_FILE` siblings:
 | `agent_token`       | agent   | `PHAZE_AGENT_TOKEN_FILE`, `AGENT_TOKEN_FILE` |
 | `push_ssh_key`      | agent   | `PHAZE_PUSH_SSH_KEY_FILE` (whitespace **preserved**) |
 | `push_known_hosts`  | agent   | `PHAZE_PUSH_KNOWN_HOSTS_FILE` (whitespace **preserved**) |
-| `s3_access_key_id`     | control | `PHAZE_S3_ACCESS_KEY_ID_FILE` |
-| `s3_secret_access_key` | control | `PHAZE_S3_SECRET_ACCESS_KEY_FILE` |
-| `kube_kubeconfig`      | control | `PHAZE_KUBE_KUBECONFIG_FILE` |
-| `kube_sa_token`        | control | `PHAZE_KUBE_SA_TOKEN_FILE` |
+
+> **Removed in 2026.7.1 (Phase 67, REG-04):** the flat control-plane S3 and kube
+> secret env vars are gone with no shim. Per-backend secrets now live as inline
+> `*_file` pointers inside `backends.toml` (each S3 bucket's access/secret key and
+> each Kueue backend's kubeconfig / SA token), resolved by the shared secret-file
+> helper. Only the control-plane secrets above (LLM keys + `database_url` /
+> `redis_url` / `queue_url`) remain on the env `<VAR>_FILE` path. See
+> **[Backend registry (`backends.toml`)](#backend-registry-backendstoml)** below.
 
 Semantics (implemented by the shared `_resolve_secret_files` validator in `config.py`, which derives the `_FILE` names from each field's existing aliases):
 
@@ -82,7 +86,41 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 | `WORKER_KEEP_RESULT`          | No       | `3600`  | Seconds SAQ retains a finished job's result.         |
 | `PHAZE_SCAN_STALL_SECONDS` (or `SCAN_STALL_SECONDS`) | No | `600` | Seconds with no progress before a RUNNING scan is reaped as stalled by the control worker's every-minute cron. Lives on `BaseSettings`, so both roles parse it, but only the control worker runs the reaper. The admin UI flips a RUNNING scan to an amber "stalled?" indicator at **half** this threshold, before the hard reap. |
 
+## Backend registry (`backends.toml`)
+
+**As of 2026.7.1 (Phase 67, REG-01/04/05, D-11/D-12) the typed backend registry is the SOLE cloud config surface.** It replaces the flat `PHAZE_CLOUD_TARGET` selector and the flat `PHAZE_S3_*` / `PHAZE_KUBE_*` / compute-scratch env vars, which were **removed with no back-compat shim**. Instead of one global cloud target, you declare a *registry* of backends (and their staging buckets) in a TOML file.
+
+**Loading + zero-config default.** The registry is loaded from a TOML file pointed at by `PHAZE_BACKENDS_CONFIG_FILE` (default `/etc/phaze/backends.toml`). If the file is **absent**, the control plane synthesizes an **implicit single `kind=local` backend** — an all-local deploy needs **zero** config edits. The registry is sourced **only** from the TOML file (it is deliberately not an env var), and a present-but-empty `backends = []` fails fast at startup rather than silently booting with no backend.
+
+**`[[backends]]` — the analysis backends.** An array-of-tables; each entry is a discriminated union on `kind`:
+
+| Field | Applies to | Description |
+|-------|-----------|-------------|
+| `id` | all | Unique backend identifier (used in logs + bucket refs). |
+| `kind` | all | `local` \| `compute` \| `kueue`. Selects the variant + its required config. |
+| `rank` | all | Cost-tier ordering; lower ranks are preferred by the scheduler. |
+| `cap` | all | Concurrency cap for this backend (replaces the old flat in-flight window). |
+| `scratch_dir` | `compute` | Remote scratch dir the rsync push lands in (was the flat compute-scratch mirror). |
+| `[backends.kube]` | `kueue` | Nested Kueue cluster config: API URL, namespace, local-queue, Job image/resources, workload apiVersion, CA/ConfigMap/Secret names, and inline `kubeconfig_file` / `sa_token_file` secret pointers. |
+| `buckets` | `kueue` | List of `[[buckets]]` `id`s this Kueue backend stages through. |
+
+**`[[buckets]]` — the S3 staging-bucket registry (REG-05).** An array-of-tables of the S3-compatible staging buckets Kueue backends reference:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique bucket identifier referenced by a backend's `buckets` list. |
+| `scope` | `shared` (any number of Kueue backends may reference it) or `cluster-specific` (**at most one** Kueue backend may reference it — a cardinality invariant enforced at startup). |
+| `endpoint` | S3-compatible endpoint URL (validated as a well-formed http(s) URL). |
+| `region`, `addressing_style` | Optional S3 connection tuning. |
+| `access_key_id_file`, `secret_access_key_file` | Inline `*_file` secret pointers (control-plane only; never sent to the agent or pod). |
+
+Whole-registry invariants (enforced by the `_validate_registry` model validator at startup): non-empty registry; every Kueue backend's `buckets` ids resolve to a declared bucket and the resolved set is non-empty; a `cluster-specific` bucket is referenced by at most one Kueue backend. The resolved registry is logged **secret-free** at boot as an `{id, kind, rank, cap}` projection.
+
+The global tuning knobs below (route threshold, retry budgets, S3 presign/lifecycle/part-size) are **not** per-backend and remain env vars on `ControlSettings`.
+
 ## Cloud-burst settings
+
+> **Superseded in 2026.7.1 (Phase 67):** the flat `cloud_target` / `cloud_max_in_flight` / compute-scratch and flat `s3_*` / `kube_*` knobs in the tables below were **removed with no shim** — backend selection, caps, cluster config, and bucket config now come from the **[Backend registry](#backend-registry-backendstoml)** above. The rows are retained only as a historical field reference; the **global** knobs still marked as kept (`cloud_route_threshold_sec`, `push_max_attempts`, `cloud_submit_max_attempts`, the `s3_presign_*` / `s3_lifecycle_ttl_days` / `s3_multipart_part_size_bytes` knobs, and the agent-side `cloud_scratch_dir` / push-SSH fields) remain live env vars.
 
 Cloud burst (Phase 49/50/51, v5.0) offloads **long** audio sets (duration ≥ the route threshold) to a free OCI A1 arm64 **compute agent** over Tailscale via an rsync push — instead of letting them time out on the local file server. The full feature walkthrough, runbook, and smoke test live in [cloud-burst.md](cloud-burst.md); this section is the canonical knob reference.
 

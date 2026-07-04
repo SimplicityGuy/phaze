@@ -9,7 +9,7 @@
    D-05 (ALWAYS render all three): a lane is NEVER hidden. When it is unavailable the card
    renders greyed (opacity) with 0 capacity and an EXPLICIT word label -- "offline"
    (configured-but-no-online-agent: A1 with computeOnline==0, or k8s with localqueue_unreachable)
-   vs "not configured" (cloud_target != lane). Lane/state identity always carries a word + glyph
+   vs "not configured" (cloud_lane_kind != lane). Lane/state identity always carries a word + glyph
    (never hue-only -- WCAG 1.4.1).
 
    Context contract (set by the caller before each {% include %}):

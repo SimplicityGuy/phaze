@@ -4,6 +4,20 @@ The single source of truth for the 9 bucket **names** is `tests/buckets.json`.
 This file records the explicit file->bucket assignment for the reorg, plus the
 pre-reorg baseline the reorg must preserve (CI-03).
 
+> **Note — "buckets" here means CI *test* partitions, not S3 buckets.** The 9
+> buckets below are the parallel-CI test partitions from Phase 63; they are
+> unrelated to the S3 staging buckets. Phase 67 (REG-05) introduced the S3
+> **staging-bucket registry** as an array-of-tables (`[[buckets]]` with an `id`,
+> a `scope` of `shared` | `cluster-specific`, an `endpoint`, and per-bucket
+> credentials) inside `backends.toml`. That flat single-global S3 config (the old
+> `PHAZE_S3_*` env vars) was removed with no shim; the registry surface is
+> documented in `docs/configuration.md`.
+>
+> **Phase 67 removal:** the three config test files
+> `tests/shared/config/test_cloud_target.py`, `test_kube_settings.py`, and
+> `test_s3_settings.py` (rows below, retained as the Phase-63 reorg record) were
+> DELETED in Phase 67 because they asserted the now-removed flat cloud fields.
+
 ## Pre-reorg baseline (acceptance target for the reorg)
 
 | Metric | Value | How captured |

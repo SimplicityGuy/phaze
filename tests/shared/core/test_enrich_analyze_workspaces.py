@@ -330,9 +330,11 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> 
     """WORK-03 / D-05 -- all 3 lane cards always render; not-configured vs offline; Inadmissible role=alert.
 
     The Analyze workspace ALWAYS renders all three execution-lane cards (local / A1 / k8s). On the
-    default test deploy (``cloud_target == "local"``, no online agents) the local lane is configured
-    but has no online agent (``offline``) while A1 + k8s are ``not configured`` -- a down lane is never
-    hidden, it is greyed + labelled (D-05). The load-bearing WORK-03 distinction: the Inadmissible
+    default test deploy (the implicit-local registry -> ``cloud_lane_kind == "local"``, no online
+    agents) the local lane is configured but has no online agent (``offline``) while A1 + k8s are
+    ``not configured`` -- a down lane is never hidden, it is greyed + labelled (D-05). This is the
+    Phase-67 implicit-local render-safety case: the workspace renders with no template exception when
+    the registry is all-local. The load-bearing WORK-03 distinction: the Inadmissible
     fault card carries ``role="alert"`` while the healthy admission-state card does NOT. B1: the A1
     lane numeral has a pre-mounted ``dag-seed-computeOnline`` OOB target so it is not stuck at 0.
     """
@@ -382,6 +384,38 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> 
     # WORK-05 / R-2: no second poll loop in the workspace fragment.
     assert 'hx-trigger="every' not in body
     assert "setInterval" not in body
+
+
+@pytest.mark.asyncio
+async def test_lane_cards_render_on_compute_registry(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 67 (D-14 Class C): with a single compute backend the A1 lane resolves off cloud_lane_kind.
+
+    The router supplies the NEUTRAL ``cloud_lane_kind`` = "compute" for a single-compute registry, so
+    the A1 lane is NO LONGER "not configured" -- it renders configured (offline here, no compute agent
+    online). Proves the renamed context var + the compute↔A1 mapping is consistent across the router
+    and the three partials, with no `cloud_target` string and no template exception.
+    """
+    from phaze.config import settings
+    from phaze.config_backends import ComputeBackend
+
+    # A file must exist or the analyze node swaps to the first-run empty-state (shell.py:176) instead
+    # of the lane workspace.
+    await _seed_file(session, state=FileState.PUSHED, original_filename="held.mp3")
+    monkeypatch.setattr(settings, "backends", [ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1", scratch_dir="/scratch")])
+
+    resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+
+    # All three lanes still render (no template exception on the renamed var).
+    assert 'id="analyze-lanes"' in body
+    # The A1 lane (compute↔A1) is now CONFIGURED: its card shows "offline" (no compute agent), never
+    # "not configured". Slice the A1 card region (between the A1 and K8S lane titles) to assert per-lane.
+    a1_card = body[body.index("A1 · arm64") : body.index("K8S · burst")]
+    assert "not configured" not in a1_card
+    assert "offline" in a1_card
+    # The k8s lane (kind != kueue) is still "not configured".
+    assert "not configured" in body
 
 
 @pytest.mark.asyncio

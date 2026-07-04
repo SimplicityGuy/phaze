@@ -30,7 +30,7 @@ from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,16 +51,40 @@ def moto_s3_server() -> Iterator[str]:
 
 
 @pytest.fixture
-def s3_env(moto_s3_server: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """Point ControlSettings S3 fields at the moto server and create the staging bucket."""
+def s3_env(moto_s3_server: str, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Callable[[str], object]) -> Iterator[str]:
+    """Drive the registry off a one-kueue-backend backends.toml + keep the global part-size knob.
+
+    ``s3_staging`` now reads bucket identity/creds via ``active_bucket`` (REG-04, D-14), so the
+    bucket lives in backends.toml; ``PHAZE_S3_MULTIPART_PART_SIZE_BYTES`` is a kept-global tuning
+    knob (D-15) still read from ``ControlSettings``.
+    """
     monkeypatch.setenv("PHAZE_ROLE", "control")
-    monkeypatch.setenv("PHAZE_S3_ENDPOINT_URL", moto_s3_server)
-    monkeypatch.setenv("PHAZE_S3_BUCKET", _BUCKET)
-    monkeypatch.setenv("PHAZE_S3_REGION", "us-east-1")
-    monkeypatch.setenv("PHAZE_S3_ACCESS_KEY_ID", "testing")
-    monkeypatch.setenv("PHAZE_S3_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("PHAZE_S3_MULTIPART_PART_SIZE_BYTES", str(_PART_SIZE))
-    get_settings.cache_clear()
+    backends_toml_env(
+        f"""
+        [[backends]]
+        kind = "kueue"
+        id = "cluster-01"
+        rank = 10
+        cap = 4
+        buckets = ["staging"]
+
+        [backends.kube]
+        api_url = "https://kube.test"
+        namespace = "phaze"
+        local_queue = "phaze-lq"
+
+        [[buckets]]
+        id = "staging"
+        scope = "shared"
+        endpoint_url = "{moto_s3_server}"
+        bucket = "{_BUCKET}"
+        region = "us-east-1"
+        addressing_style = "path"
+        access_key_id = "testing"
+        secret_access_key = "testing"
+        """
+    )
     boto3.client("s3", endpoint_url=moto_s3_server, region_name="us-east-1", **_CREDS).create_bucket(Bucket=_BUCKET)
     yield moto_s3_server
     get_settings.cache_clear()

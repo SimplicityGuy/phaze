@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from phaze.config import settings
+from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
 from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -58,18 +59,30 @@ async def _drain_background() -> None:
         await asyncio.sleep(0)
 
 
-@pytest.fixture(autouse=True)
-def _cloud_target_a1(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default the Phase-49/50 cloud-routing tests to cloud_target='a1' (cloud ON, rsync path).
+# Registry fixtures driving the Phase-67 (D-14, REG-04) reduction the rewired pipeline reads:
+# a single compute backend -> cloud_enabled True + active_cloud_kind 'compute' (the v5.0 rsync path);
+# a single kueue backend -> active_cloud_kind 'kueue' (the k8s/S3 path); a single local backend ->
+# cloud_enabled False (all-local). The pipeline endpoints read the singleton's ``backends`` field via
+# the registry-derived ``cloud_enabled`` / ``active_cloud_kind`` properties, so patching ``backends``
+# drives every rewired call site through the real property logic.
+_COMPUTE_BACKEND = ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1", scratch_dir="/scratch")
+_KUEUE_BACKEND = KueueBackend(kind="kueue", id="k8s", rank=10, cap=2, kube=KubeConfig())
+_LOCAL_BACKEND = LocalBackend(kind="local", id="local", rank=99, cap=1)
 
-    The Phase-55 selector (``cloud_target``) defaults 'local', which flips the duration router and
-    the backfill trigger to all-local. These regression tests assert the ON behavior (long files held
-    in AWAITING_CLOUD, backfill resets+routes) for the live v5.0 a1 path, so pin the singleton selector
-    to 'a1' here. The cloud-off tests below override it to 'local' inside their own bodies.
+
+@pytest.fixture(autouse=True)
+def _cloud_compute_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the Phase-49/50 cloud-routing tests to a single compute backend (cloud ON, rsync path).
+
+    The Phase-67 rewire reads the registry: an all-local registry -> cloud_enabled False (all-local
+    routing + backfill no-op); a single compute backend -> cloud_enabled True + active_cloud_kind
+    'compute' (the live v5.0 rsync path). These regression tests assert the ON behavior (long files
+    held in AWAITING_CLOUD, backfill resets+routes), so pin the singleton's ``backends`` to one
+    compute backend. The cloud-off / k8s tests override it inside their own bodies.
     """
     from phaze.config import settings
 
-    monkeypatch.setattr(settings, "cloud_target", "a1")
+    monkeypatch.setattr(settings, "backends", [_COMPUTE_BACKEND])
 
 
 def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
@@ -862,20 +875,20 @@ async def test_backfill_zero_candidates_returns_empty_fragment(client: AsyncClie
     assert capture == []
 
 
-# --- Phase 55 (D-02): the cloud_target gate on the backfill trigger -----------------------
+# --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the backfill trigger ------
 
 
 @pytest.mark.asyncio
 async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """OFF: with cloud_target='local' the backfill trigger is a no-op -- ZERO file.state mutations.
+    """OFF: with an all-local registry (cloud_enabled False) the backfill trigger is a no-op -- ZERO mutations.
 
     Pitfall 2 / T-51-02: gating ONLY the routing seam would still let backfill reset the 144
     ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. The explicit
-    early-return guard prevents any state mutation when the target is 'local'.
+    early-return guard prevents any state mutation when the registry holds no cloud backend.
     """
     from phaze.config import settings
 
-    monkeypatch.setattr(settings, "cloud_target", "local")
+    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
@@ -897,7 +910,7 @@ async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: 
 
 @pytest.mark.asyncio
 async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: AsyncSession) -> None:
-    """ON: with cloud_target='a1' (autouse fixture) the backfill resets the long file and holds it (regression)."""
+    """ON: with a single compute backend (autouse fixture) the backfill resets the long file and holds it (regression)."""
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "cloud", kind="compute")
     capture = wire_fakes(client)
@@ -911,14 +924,14 @@ async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: A
     assert long_failed.state == FileState.AWAITING_CLOUD
 
 
-# --- Phase 55 Plan 04 Task 2 (L3 / CLOUDROUTE-02): backfill forks on cloud_target ------------
+# --- Phase 55 Plan 04 Task 2 (L3 / CLOUDROUTE-02): backfill forks on the active cloud kind ---------
 # The backfill endpoint resets ledger-scoped failed long files to DISCOVERED and routes them to
-# AWAITING_CLOUD for BOTH cloud targets. The ONLY difference is the held-file ledger seed:
-#   - a1  : seeds a process_file:<id> row (insert_ledger_if_absent) -- the held file's durable
-#           "was scheduled" fact (D-09).
-#   - k8s : seeds NO process_file:<id> row -- a ledger row would let recover_orphaned_work replay
-#           the held file onto a LOCAL agent queue (the cloud_job row, NOT the ledger, is the k8s
-#           in-flight registry). The seed call must NOT fire on the k8s branch.
+# AWAITING_CLOUD for BOTH cloud kinds. The ONLY difference is the held-file ledger seed:
+#   - compute : seeds a process_file:<id> row (insert_ledger_if_absent) -- the held file's durable
+#               "was scheduled" fact (D-09).
+#   - kueue   : seeds NO process_file:<id> row -- a ledger row would let recover_orphaned_work replay
+#               the held file onto a LOCAL agent queue (the cloud_job row, NOT the ledger, is the k8s
+#               in-flight registry). The seed call must NOT fire on the kueue branch.
 # Both forks converge on exactly the prior candidacy row, so the fork is asserted at the
 # insert_ledger_if_absent call boundary (spy), which is the only observable difference.
 
@@ -940,8 +953,8 @@ def _spy_on_ledger_seed(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
 
 @pytest.mark.asyncio
 async def test_backfill_a1_seeds_process_file_ledger_row(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """a1 fork: the held-file branch calls insert_ledger_if_absent for the process_file:<id> key (D-09)."""
-    # cloud_target='a1' is the autouse default.
+    """compute fork: the held-file branch calls insert_ledger_if_absent for the process_file:<id> key (D-09)."""
+    # A single compute backend is the autouse default.
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")  # no compute -> held in AWAITING_CLOUD
     wire_fakes(client)
@@ -965,13 +978,13 @@ async def test_backfill_k8s_holds_awaiting_cloud_without_ledger_seed(
 ) -> None:
     """k8s fork (L3): the held file is reset->routed to AWAITING_CLOUD but NO ledger seed fires.
 
-    A process_file:<id> ledger seed on the k8s branch would let recover_orphaned_work replay the
-    held file onto a LOCAL agent queue (CLOUDROUTE-02). The k8s branch therefore SKIPS
+    A process_file:<id> ledger seed on the kueue branch would let recover_orphaned_work replay the
+    held file onto a LOCAL agent queue (CLOUDROUTE-02). The kueue branch therefore SKIPS
     insert_ledger_if_absent entirely; the file still carries exactly its prior candidacy row (no
     NEW row), and the cloud_job row -- seeded later by the stage_cloud_window k8s branch -- is the
     in-flight registry.
     """
-    monkeypatch.setattr(settings, "cloud_target", "k8s")
+    monkeypatch.setattr(settings, "backends", [_KUEUE_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")  # k8s has no compute agent -> held
     wire_fakes(client)
@@ -994,7 +1007,7 @@ async def test_backfill_k8s_holds_awaiting_cloud_without_ledger_seed(
 @pytest.mark.asyncio
 async def test_backfill_local_redrives_nothing(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """local fork: the cloud-off gate short-circuits -- no file is reset and no ledger seed fires."""
-    monkeypatch.setattr(settings, "cloud_target", "local")
+    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")
     wire_fakes(client)
@@ -1007,6 +1020,33 @@ async def test_backfill_local_redrives_nothing(client: AsyncClient, session: Asy
     assert seeded_keys == []
     await session.refresh(long_failed)
     assert long_failed.state == FileState.ANALYSIS_FAILED  # never reset on the local gate
+
+
+@pytest.mark.asyncio
+async def test_dashboard_context_binds_cloud_lane_kind(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 67 (D-14 Class C): build_dashboard_context binds the NEUTRAL `cloud_lane_kind` key.
+
+    The presentation value the Analyze lane cards read is a transitional legacy-shaped string under
+    the neutral `cloud_lane_kind` key: 'local' for an all-local registry, else the single non-local
+    backend's kind ('compute'/'kueue'). No `cloud_target` context key survives (Plan 06's package-wide
+    gate depends on this).
+    """
+    from phaze.routers.pipeline import build_dashboard_context
+
+    app_state = client._transport.app.state  # type: ignore[union-attr]
+
+    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
+    ctx_local = await build_dashboard_context(app_state, session)
+    assert ctx_local["cloud_lane_kind"] == "local"
+    assert "cloud_target" not in ctx_local
+
+    monkeypatch.setattr(settings, "backends", [_COMPUTE_BACKEND])
+    ctx_compute = await build_dashboard_context(app_state, session)
+    assert ctx_compute["cloud_lane_kind"] == "compute"
+
+    monkeypatch.setattr(settings, "backends", [_KUEUE_BACKEND])
+    ctx_kueue = await build_dashboard_context(app_state, session)
+    assert ctx_kueue["cloud_lane_kind"] == "kueue"
 
 
 # ---------------------------------------------------------------------------

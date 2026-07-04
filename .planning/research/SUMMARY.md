@@ -1,249 +1,173 @@
-# Research Summary — phaze v7.0 UI Redesign (DAG-Centric Hybrid Console)
+# Project Research Summary
 
-**Project:** phaze v7.0
-**Domain:** Server-rendered admin console IA/template rewrite (FastAPI + Jinja2 + HTMX + Tailwind + Alpine)
-**Researched:** 2026-06-29
-**Confidence:** HIGH (all findings grounded in actual `src/phaze/` code; one scoped gap at MEDIUM)
-
----
+**Project:** phaze — 2026.7.1 Multi-Cloud Backends
+**Domain:** Pluggable multi-backend, cost-tiered job dispatch (subsequent-milestone refactor of an existing async Python control plane)
+**Researched:** 2026-07-03
+**Confidence:** HIGH
 
 ## Executive Summary
 
-v7.0 is a presentation rewrite, not a product feature: it collapses ~10 legacy tabs into a three-column DAG-centric shell (rail · workspace · per-file pane) over an entirely unchanged backend. The approach is conservative by design — every stage workspace maps to an existing router and service, the stack gains exactly one new CDN dependency (`@alpinejs/focus@3.15.12` for the ⌘K focus trap), and three of the four existing CDN libraries get patch-level bumps only. Reuse is aggressive: the `HX-Request` full-vs-fragment split already exists in 8 routers, the single-poll/OOB-fanout architecture that must power all live rail counts is already proven in `stats_bar.html`, and the `$store.pipeline` Alpine store already carries every count the rail needs. The redesign's job is to give those existing components a better home, not to replace them.
+This milestone generalizes phaze's single `cloud_target` selector (`local`/`a1`/`k8s`) into a declarative `backends:` registry that can drain long-running analysis files across local + N Kueue clusters + N cloud-compute agents **simultaneously**, ranked by an operator-assigned integer `rank` and bounded by a per-backend `cap`. The design is locked (`docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md`, PR #182); this research targeted only the design's deferred-to-plan-time open questions — it does not re-litigate architecture. All four research tracks (stack, features, architecture, pitfalls) independently converged on the same conclusion from different angles, which is the strongest signal in this research set: this is a pure application-code refactor with one genuinely hard correctness problem at its center.
 
-Three convergent findings across all four research files define the mandatory architecture: (1) There is ONE poll — `GET /pipeline/stats` every 5 seconds — and all live rail counts, header status dots, and workspace counts must fan out from it via `hx-swap-oob` behind the existing `oob_counts` gate. The repo already has ~15 `every Ns` triggers; adding independent per-region pollers is the single fastest path to production pain. (2) Every stage endpoint must branch on `HX-Request`: fragment for HTMX swaps, full shell for direct navigation/refresh. The pattern exists in 8 routers and must be standardized across all 12 new workspace fragments. (3) Phase 57 (Shell & rail) is uniquely load-bearing — it must lock the swap-target contract, the OOB id registry, cross-swap `$store` survival, and the theme/brand scaffolding that all later phases depend on. Cutting corners in Phase 57 means every later phase inherits structural debt.
+No new dependencies are required. pydantic v2's discriminated unions, pydantic-settings' complex-field/`env_nested_delimiter` loading, kr8s's per-call arg-cached client (already N-cluster-capable), and aioboto3's single shared bucket already cover every capability the design calls for. The recommended approach is the design's own dependency-strict build order: land the registry and the `Backend` protocol as two behavior-preserving refactors first (phases 67-68, gated by a byte-identical characterization test), then flip on true multiplicity in the tiered scheduler (phase 69), then prove it scales to N Kueue clusters (phase 70), then close out with deploy/docs/UI (phase 71).
 
-The single concrete scope risk is **IDENT-01**: the REQUIREMENTS.md text says "AcoustID→MusicBrainz match state" but `grep -ri 'acoustid|musicbrainz' src/phaze` returns empty — the capability does not exist. Three of the four research agents independently surfaced this gap. Building AcoustID/MusicBrainz would be a net-new backend integration and would violate the milestone's explicit no-backend-change boundary. **This must be resolved before Phase 59 planning**, not during it. The recommended resolution is to re-scope IDENT-01 to surface the existing identity signals (audfprint+panako fingerprint match/score + rapidfuzz tracklist match confidence) and defer AcoustID/MusicBrainz to a future milestone.
-
----
+The central risk — surfaced independently by the features, architecture, and pitfalls research — is that phaze's two existing cloud targets track "in-flight work" through two incompatible substrates: compute/a1 counts via committed `FileState IN {PUSHING, PUSHED}` (with a `scheduling_ledger` recovery seed), while k8s counts via `cloud_job` rows (with no ledger seed, recovered only by `reconcile_cloud_jobs`). Fusing these into one uniform per-backend `in_flight_count()` — without double-counting, under-counting, racing with the unlocked reconcile cron, or reviving the Phase-30/44.5k-job over-enqueue incident class — is the milestone's sharpest correctness edge and the reason phases 67-68 exist as isolated, testable, behavior-preserving steps before phase 69 turns on multiplicity for real.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The v7.0 stack is the locked existing stack with minimal version bumps. No new frameworks, no build step, no Node. The only addition is one official Alpine plugin.
+Every capability the design needs is already in the pinned stack (pydantic `>=2.13.4`, pydantic-settings `>=2.14.2`, kr8s `>=0.20.15`, aioboto3 `>=15.5.0`). This is confirmed as a zero-new-dependency, pure application-code milestone. All three load-bearing libraries are simultaneously the latest PyPI release, the pinned floor, and far older than the project's 7-day exclude-newer cooldown window — no version churn risk.
 
-**Core technologies (bump only — already in production):**
-- **htmx 2.0.10** (was 2.0.7) — rail→workspace stage swaps, deep-link history, OOB rail/header updates; stay on the 2.0.x line — htmx 4.0.0 is in beta and must not be adopted mid-rewrite
-- **Alpine.js 3.15.12** (was 3.15.9) — local UI state: ⌘K open/close, theme store, per-row selection, slide-in panel
-- **@tailwindcss/browser 4.3.2** (was 4.3.0) — keep self-vendoring in `static/vendor/`; CDN minification diverges per-edge and breaks SRI (the repo already hit this bug)
-- **htmx-ext-sse 2.2.4** — unchanged; stays scoped to the one bounded execution-progress stream it already serves; do NOT expand its use to rail/workspace live updates
+**Core technologies (all already present):**
+- **pydantic v2** (discriminated unions) — a `list[BackendConfig]` with a `Literal["local","compute","kueue"]` discriminator gives fail-fast, per-entry, per-kind validation natively, replacing the three current cross-field `_enforce_*_when_*` validators with per-variant required fields.
+- **pydantic-settings** — a `list[SubModel]` is a native "complex" settings field (single JSON env var, `env_nested_delimiter` numeric-index deep override, or a config-file source). Per-entry `_FILE` secrets are best served by extending the project's existing `_resolve_secret_files` before-validator via secret-name indirection (recommended) — not a new settings source.
+- **kr8s** — `kr8s.asyncio.api(url=/kubeconfig=/context=)` is a per-call, arg-cached factory; distinct kubeconfig/context per backend entry yields distinct clients automatically. Natively N-cluster-capable; no `kubernetes`/`kubernetes_asyncio` or multi-cluster wrapper needed. One care point: the current post-construction token-mutation hack in `kube_staging.py` is unsafe across a shared cached client and should be retired in favor of a distinct `kubeconfig`/`context` per backend.
+- **aioboto3** — unchanged; one shared S3 bucket across all Kueue clusters, control plane stays the sole importer (DIST-01 invariant preserved).
 
-**The ONE new dependency:**
-- **@alpinejs/focus 3.15.12** — `x-trap.inert.noscroll` for ⌘K and the slide-in record panel; the only correctly-implemented focus trap approach in a no-build stack; 3KB, official, CDN-delivered; version must exactly match Alpine core
-
-**What NOT to use:** htmx 4.0.0-beta; any SPA framework; graph libraries (mermaid/cytoscape/d3) for the rail; command-palette libraries (cmdk/kbar are React-only; ninja-keys pulls in lit); `htmx-ext-head-support`; WebSockets; Tailwind via bare CDN URL (SRI divergence risk).
-
-All version bumps require SRI hash recomputation (`curl | openssl dgst -sha384`). A stale hash blocks the script silently.
+**What NOT to add:** `kubernetes`/`kubernetes_asyncio` (kr8s already covers it), `pluggy`/`stevedore`/entry-point plugin frameworks (the `Backend` protocol is explicitly internal-only, not third-party-pluggable), `pydantic-settings[yaml]`/PyYAML (prefer TOML/JSON-env to keep zero-dep), `secrets_dir`/`NestedSecretsSettingsSource` (would fork the project's established `<VAR>_FILE` convention), and any cloud-provider SDK or cost/pricing library (static routing, no provisioning, rank is not a dollar model — locked non-goals).
 
 ### Expected Features
 
-v7.0 has 25 locked requirements across 6 categories. "Must have" means required for the milestone to ship; "defer" items are already named and catalogued.
+The design's "free-first, spill-to-paid, slow-local-last" shape is a well-trodden industry pattern (Kubernetes cluster-autoscaler's `priority` expander for operator-set rank ordering; Karpenter's spot→on-demand fallback for automatic spillover; SQS+Spot for the one-queue/N-heterogeneous-worker shape). phaze's approach — operator-assigned integer rank (no dollar model, unlike Karpenter) combined with automatic fallback (like Karpenter) and no provisioning (unlike both references) — is coherent and well-precedented.
 
-**Must have — the 25 locked requirements (SHELL/WORK/IDENT/REVIEW/RECORD/CUT):**
-- Three-column shell with DAG rail-as-nav: rail-click → center swap via HTMX without full-page reload (SHELL-01/02)
-- Per-stage live counts on the rail, header agent-status strip, legacy route redirects, theme/brand preserved (SHELL-03/04/05)
-- Discover/Metadata/Fingerprint/Analyze workspaces with lane cards (local/A1/k8s) and Kueue quota-wait vs. Inadmissible (WORK-01 through WORK-05)
-- Track-ID workspace surfacing **existing** fingerprint+tracklist signals (NOT AcoustID/MusicBrainz — see gap); Tracklist Search→Scrape→Match 3-step (IDENT-01/02)
-- Unified before→after diff/approve gate across Rename/Tag/Move; bulk high-confidence approval server-predicate evaluated; dedupe keeper-select; cue preview; audit+undo (REVIEW-01 through REVIEW-05)
-- Full per-file record (slide-in); ⌘K command palette over existing FTS; Agents with ephemeral k8s identity; first-run empty state (RECORD-01 through RECORD-04)
-- Keyboard nav/focus/ARIA baseline; dead-code removal; docs update; narrow rail-collapse (CUT-01 through CUT-04)
+**Must have (table stakes) — four of the five deferred design questions resolve to INCLUDE:**
+- Lowest-rank-first eligible dispatch, evaluated per candidate file (not once per tick), so a full top-rank backend cannot block files a lower-rank backend could take this tick.
+- Spillover on offline mid-flight failure — file returns to `AWAITING_CLOUD`, re-dispatch picks fresh by rank against current availability (the "black-hole guard": never repeatedly reclaim onto a persistently-down backend).
+- Uniform per-backend in-flight accounting across compute and Kueue (the sharpest correctness edge — see Architecture/Pitfalls below).
+- Deterministic, stateless tie-break between equal-rank backends (design's own example has two rank-10 backends) — lowest-current-utilization, stable-`id` tiebreak; explicitly reject weighted fair-share.
+- `cloud_target` → `backends` back-compat shim, INCLUDE but do not remove `cloud_target` this milestone (the only live deploy depends on it).
+- N-lane admin surfacing (generalize v7.0 Phase 58's fixed 3 cards to N), read-only, riding the existing `/pipeline/stats` 5s poll — no second poll loop, no config editing in the UI.
+- Per-backend `_FILE` secrets + a master revert-to-all-local toggle for incident response.
 
-**Defer to v7.x:**
-- REVIEW-06: per-stage configurable confidence thresholds (ship a fixed threshold in v7.0)
-- WORK-06: `cloud_phase`-driven admission-state sub-states (v6.0 KROUTE-06 deferred)
-- RECORD-05: full first-class C3 light theme treatment (dark is primary for v7.0)
+**Should have / thin include:** per-lane live utilization gauge (cheap, presentation-only extension of the N-lane work).
 
-**Defer to v8+:**
-- AcoustID/MusicBrainz Track-ID — net-new backend integration, out of v7.0 scope
-- SHELL-06: mobile/touch layout
-- XAGENT-01: cross-file-server fingerprint identity
+**Defer:** staleness guard on local (design's own default is rank-99 + cap-1 is sufficient structural protection; only add the cheap age-threshold form, off by default, if a real leak is observed — reject the stateful form as YAGNI); per-backend reconcile cron cadence split (keep the single `*/5` cadence until a concrete latency problem appears).
 
-**Anti-features confirmed off the table:** drag-to-reorder rail; animated DAG graph canvas as home (rejected in design); per-stage historical charts; auto-applying high-confidence without a human click; Approve-with-no-undo fast path.
+**Anti-features (explicitly locked out):** automated dollar-cost/spend model, instance provisioning/teardown/autoscaling, preemption/migration of running jobs, external/third-party plugin loading, per-cluster S3 buckets, weighted/proportional fair-share, and any new concrete cloud provider this milestone.
 
 ### Architecture Approach
 
-The architecture is an integration rewrite, not a ground-up build. A new `shell.html` defines the three-column flex layout and a new thin `routers/shell.py` owns `/`, `/shell/{stage}`, `/command`, and `/record/{file_id}`. All existing routers and services are unchanged in data logic; they gain (or have expanded) an `HX-Request` fragment branch. The 5-second `/pipeline/stats` poll and `$store.pipeline` Alpine store — already proven in the dashboard — become the live-data spine for the entire console; the rail is just a new presentation of the existing store, consuming it rather than reinventing it.
+This is an integration map, not a greenfield design — every seam cited resolves to a real function/module already in the codebase. The `Backend` Protocol (`is_available`/`in_flight_count`/`dispatch`/`reconcile`) is a thin adapter layer over bodies that already exist and are already isolated as module-level async functions (compute push via `tasks/push.py`, Kueue submit via `services/cloud_staging.py` + `tasks/submit_cloud_job.py`, local via `process_file`). This is precisely why phases 67-68 are genuinely behavior-preserving: no logic is rewritten, only re-homed behind the protocol.
 
-**Major components (new templates + thin routing only):**
-1. `shell.html` + `shell/` template subtree — three-column shell, rail, header, ⌘K overlay, file pane, all 12 workspace fragments; the full `base.html` `<head>` is reused verbatim
-2. `routers/shell.py` — thin new router calling existing services read-only; the only genuinely new server file
-3. Stage workspace fragments (`shell/workspaces/*.html`) — one per rail node; each `{% include %}`d by the full-shell route and returned bare by the HTMX route (one partial, two callers — no duplication)
-4. `record/detail.html` — full-record slide-in composing existing `AnalysisWindow`, `FileRecord`, `tag_comparison`, `audit_log` partials
-5. Existing UI routers (proposals/tags/duplicates/cue/tracklists/execution) — modified only to return `shell.html` on direct navigation and the workspace fragment on `HX-Request`; data logic untouched
-6. `services/*` + `models/*` + `base.html <head>` + `$store.pipeline` — entirely unchanged
+**Major components:**
+1. `ControlSettings.backends: list[BackendConfig]` (config.py) — single source of truth, replaces the 3-value `cloud_target` Literal and its three per-target validators; carries the `cloud_target` back-compat shim.
+2. `Backend` Protocol + `LocalBackend`/`ComputeAgentBackend`/`KueueBackend` (new `services/backends.py`) — the seam that removes the `if/elif cloud_target` fork at every one of the ~10 grep-verified call sites (config.py, release_awaiting_cloud.py, pipeline.py, agent_s3.py, controller.py).
+3. `cloud_job` sidecar + `backend_id` column (additive migration) — generalized from k8s-only to recording compute pushes too, so `in_flight_count()` is one uniform `COUNT(cloud_job WHERE backend_id=? AND <non-terminal>)` for every kind.
+4. Tiered drain scheduler (`stage_cloud_window` in `release_awaiting_cloud.py`) — keeps its existing advisory-lock/FIFO/single-commit skeleton; the body inside the lock becomes: enumerate available backends → compute per-backend free slots once → for each candidate file, pick lowest-rank backend with a free slot → dispatch → decrement locally.
+5. Multi-Kueue (`kube_staging.py` parameterized per-cluster) — one kr8s client per backend entry, ONE shared S3 bucket preserved (DIST-01), `reconcile_cloud_jobs` grouped by `backend_id`.
 
-**The standardized full-vs-fragment pattern** (already present in 8 routers): `if request.headers.get("HX-Request") == "true"` → return the workspace fragment; else → return `shell.html` with that stage's workspace inlined via `{% include %}` and the rail node pre-selected. This handles direct navigation, bookmarks, browser back/forward, and HTMX swaps from one branch point.
-
-**SHELL-05 redirect strategy (hybrid):** Routes with a clean canonical URL (`/proposals/`, `/tags/`, `/cue/`, `/duplicates/`, `/tracklists/`) render-in-shell (the URL is already the stage state — no redirect needed). True renames (`/pipeline/` → `/`, `/search/` → `/?cmd=1`) use `RedirectResponse`. Account for FastAPI's `redirect_slashes=True` — redirect the canonical trailing-slash form, not the bare path, to avoid 2-hop chains.
+**Recommended build order** (dependency-strict, matches design §8):
+- 67 — Backend registry & config model (behavior-preserving; shim yields a one-entry list).
+- 68 — `Backend` protocol + 3 impls + `cloud_job.backend_id` migration + backfill + parameterized `kube_staging` (behavior-preserving; acceptance-gated by a byte-identical characterization test).
+- 69 — Tiered scheduler: rank/cap drain loop, per-backend `in_flight_count`, spillover via return-to-`AWAITING_CLOUD` (behavior-changing — first tick where >1 backend runs simultaneously).
+- 70 — Multi-Kueue: N clusters, shared bucket, per-cluster probe/reconcile (behavior-changing — cluster multiplicity).
+- 71 — Deployment/config/docs, per-backend `_FILE` secrets, master revert toggle, N-lane UI (presentation/ops).
 
 ### Critical Pitfalls
 
-Ten pitfalls documented; top five by severity and phase impact:
+All four research tracks independently converged on the same spine: uniform per-backend in-flight accounting is the load-bearing risk, and the known incident-class hazards (Phase 30 default-queue misrouting, the 44.5k-job recover-over-enqueue incident, dead-lettering) are exactly the failure shapes this milestone can reintroduce if the two existing substrates are fused carelessly.
 
-1. **Poll storms — independent per-region pollers** — the repo already has ~15 `every Ns` triggers; a three-column console naively adding rail/workspace/pane pollers independently can easily fan out to 3-5 concurrent DB-hitting loops. Prevention: one console-level poll (`/pipeline/stats` every 5s) fans out to all live regions via `hx-swap-oob`; no second poll loop; add a `visibilitychange` guard so polls shed when the tab is backgrounded. Address in Phase 58.
+1. **Double/under-counting compute in-flight** (FileState window vs. new `cloud_job` row) — pick ONE authoritative substrate (`cloud_job.backend_id`) for ALL backends and delete the other from the count path; write the registry row in the same transaction as the `FileState → PUSHING` flip, never after a separate commit. Add a `sum(in_flight_count(b)) == COUNT(FileState in-flight)` consistency assertion.
+2. **Drain↔reconcile race on a per-backend cap** — today `reconcile_cloud_jobs` takes no advisory lock because the count was FileState-derived and self-healing; once counting becomes `cloud_job.status`-derived and per-backend, reconcile mutating status concurrently with the drain reading counts can overshoot a cap. Make reconcile acquire the same `pg_advisory_xact_lock` before mutating `cloud_job`/`FileState`.
+3. **Two recovery mechanisms re-driving the same compute file** (the over-enqueue incident's ecosystem) — compute today has a `scheduling_ledger` seed that k8s deliberately lacks (the DIST invariant: no `process_file` re-enqueue for cloud-routed files). Generalizing must assign exactly ONE recovery owner per backend kind and extend the existing AST guard to compute-backed files, not accidentally give compute a second recovery path.
+4. **Dispatch-partial limbo** — `dispatch()` must own both the `FileState` flip and the `cloud_job` upsert in one transaction; a scheduler-flips/backend-writes-separately split reintroduces silent capacity leaks the Phase 53/54 advisory lock was built to prevent.
+5. **The `cloud_target`→`backends` shim silently producing an empty or wrong registry** — `local` is overloaded (means both "a backend" and "cloud disabled"); the shim must be explicit/total with a resolved-registry startup log line and a fail-fast conflict check, or misconfiguration looks exactly like the Phase 30 "silent, nothing happens" failure mode.
 
-2. **IDENT-01 scope violation** — the prototype labels Track-ID "AcoustID→MusicBrainz" but that capability is absent from the codebase. Building it would add a new API client, network dependency, and rate-limit surface — a net-new backend feature that violates the milestone boundary. Re-scope to existing signals or defer. Resolve before Phase 59 planning begins.
-
-3. **REVIEW-02 stale bulk approval** — today's bulk approve serializes a client-side `selectedRows` Set into hidden inputs and submits without server re-validation. In a live-polling console the render→submit window can be many seconds; an operator can approve a stale set, leading to renames/tag-writes/file-moves on wrong rows. Prevention: "approve all high-confidence" must send a server-evaluated predicate (action + threshold), not a client-built id list. The server re-queries pending rows above threshold at submit time. Address in Phase 60.
-
-4. **Rail swap clobbers the shell (wrong hx-target)** — if a rail node targets too broad a region (`body`, `#shell`), the swap destroys the header, rail, and pane. Stage endpoints returning full `extends base.html` pages inject nested `<nav>`, duplicate `$store`, and duplicate theme toggles into the center column. Prevention: one stable `#stage-workspace` id; all stage endpoints return fragments only; the shell renders once on `GET /`. Lock this contract in Phase 57 before building any stage.
-
-5. **URL/history breakage and redirect loops** — `hx-push-url` snapshots the DOM on forward navigation; back-button restores a potentially-dead (Alpine-uninitiated) snapshot. SHELL-05 redirects that target `/proposals` instead of `/proposals/` (the canonical trailing-slash form) create 2-hop chains with FastAPI's `redirect_slashes=True`. Prevention: every stage URL is server-resolvable (full shell + stage pre-selected); add a redirect-loop test asserting each legacy path resolves in ≤1 hop to a 200; handle `htmx:historyRestore` to re-init Alpine. Address in Phase 57.
-
-**Additional pitfalls to hold in mind:** lost Alpine `x-data` state after swaps (hoist cross-swap state to `$store`; Pitfall 2 addressed in Phase 57 + 60); OOB id collisions from un-gated OOB blocks at initial render (the `oob_counts` gate is mandatory; Pitfall 3); dead-code cutover breaking surviving `{% include %}` references (Pitfall 7; seed the dead-template test in Phase 57, execute CUT-02 in Phase 62); theme/brand regression from porting the prototype `<head>` wholesale (Pitfall 9; preserve `base.html`'s `_applyTheme`, pre-flash IIFE, `@custom-variant dark`, vendored Tailwind).
-
----
+Additional pitfalls to carry into planning: per-entry validator gaps reintroducing the a1/k8s silent-`ANALYSIS_FAILED` trap at N-fold scale (P7); one flaky Kueue cluster's `is_available()`/`dispatch()` raising and poisoning the whole drain tick if not individually try/excepted (P8); cross-cluster S3 object collisions on spillover since the shared bucket's `file_id`-scoped keys assume one owner at a time (P9); the GATE-1/GATE-2 asymmetry (compute requires a live agent, Kueue deliberately skips that gate — "Landmine L2") being silently erased by a naively-uniform `is_available()` (P10); and a coverage-green suite that never actually instantiates N≥2 backends, hiding that the multiplicity logic — the entire point of the milestone — is untested (P11).
 
 ## Implications for Roadmap
 
-The phase structure is already defined in REQUIREMENTS.md (phases 57–62). The research validates and constrains it — the dependency order is strict and non-negotiable.
+Based on combined research, the roadmap should adopt the design's own dependency-strict five-phase structure. This is not just architecturally clean — it is the correctness strategy: phases 67-68 must be verifiably behavior-preserving (via a characterization test) precisely because phase 69 is where real risk is introduced, and de-risking it in isolation is the whole point.
 
-### Phase 57 — Shell & Rail (SHELL-01..05)
+### Phase 67: Backend Registry & Config Model
+**Rationale:** Everything else depends on `backends: list[BackendConfig]` existing and validating correctly; must land first and must be behavior-preserving (shim synthesizes a one-entry list, so nothing observably changes).
+**Delivers:** `ControlSettings.backends`, per-entry kind-dispatched fail-fast validators (replacing the three current `_enforce_*_when_*` validators), `cloud_target`→`backends` shim with resolved-registry startup logging and dual-config fail-fast.
+**Addresses:** Q5 back-compat shim (FEATURES.md); the shim's empty-vs-off ambiguity (Pitfall 6).
+**Avoids:** Pitfall 6 (silent empty/wrong registry — Phase-30-shaped failure), Pitfall 7 (per-entry validator gaps).
 
-**Rationale:** Every other phase renders into the shell. Phase 57 is the load-bearing risk phase: it must establish all cross-cutting contracts that later phases depend on. Do not under-scope it.
+### Phase 68: `Backend` Protocol + Three Implementations
+**Rationale:** Re-homes existing dispatch bodies behind the protocol without rewriting logic; must be provably behavior-preserving before multiplicity is allowed to exist, because this is where the accounting substrate changes.
+**Delivers:** `services/backends.py` (`LocalBackend`/`ComputeAgentBackend`/`KueueBackend`), `cloud_job.backend_id` additive migration + backfill + compute-push recording, parameterized `kube_staging.py`.
+**Uses:** pydantic discriminated unions (STACK.md), kr8s per-call client caching (STACK.md).
+**Implements:** the `Backend` Protocol seam (ARCHITECTURE.md §1); the accounting unification (ARCHITECTURE.md §2).
+**Acceptance gate:** a byte-identical characterization test proving single-backend dispatch decisions (including the GATE-1/GATE-2 asymmetry — Pitfall 10) are unchanged pre/post refactor.
+**Avoids:** Pitfall 1 (double/under-count), Pitfall 4 (dispatch-partial limbo), Pitfall 10 (GATE asymmetry silently erased), Pitfall 11 (untested multiplicity — must add per-method-per-kind unit tests here even though only one backend is live).
 
-**Delivers:** `shell.html` three-column layout; `_rail.html` nav spine with live count bindings; `_header.html`; `shell.py` thin router; `GET /` (Analyze default); `HX-Request` full-vs-fragment convention; all SHELL-05 redirects and render-in-shell branches; theme/brand reused from existing `base.html <head>` verbatim.
+### Phase 69: Tiered Drain Scheduler
+**Rationale:** The first behavior-changing phase — the moment >1 backend can run simultaneously. Isolated here (after 67-68 de-risk the substrate) so the single new behavior under test is multiplicity itself.
+**Delivers:** rank-first eligible dispatch evaluated per-file, spill-when-full, offline→next-eligible re-dispatch with the black-hole guard, dumb equal-rank tie-break, `recover_orphaned_work` delegating spillover back to the scheduler instead of re-homing to a named backend.
+**Addresses:** Q1 (rank/cap/spill/tie-break, FEATURES.md) — the milestone's core promise.
+**Avoids:** Pitfall 2 (drain↔reconcile race — needs the shared advisory lock), Pitfall 3 (double recovery), Pitfall 5 (backend thrash — needs attempt-budget split between global and per-backend cooldown).
 
-**Must lock in this phase (not deferred):**
-- The single stable swap target id (`#stage-workspace`)
-- Fragment-only stage responses (no `extends "base.html"` in swap targets)
-- `$store.pipeline` consumption pattern (not redefinition)
-- OOB id registry + `oob_counts` gate (no OOB at initial render)
-- Stage-resolvable `/` + `hx-push-url` + `htmx:historyRestore` handler
-- SHELL-05 redirect-loop test (≤1 hop to 200 for each of 8 legacy routes)
-- Focus/ARIA contract: `aria-current="page"` on active rail node, focus-to-heading after swap, skip link targeting `#stage-workspace`
-- Theme smoke test: FOUC absent, `dark:` utilities work, vendored Tailwind, phaze accent
-- Dead-template AST guard test (seeded green now; watched green through cutover)
+### Phase 70: Multi-Kueue (N Clusters)
+**Rationale:** Proves the registry's multiplicity extends to real N-cluster infrastructure without introducing a new provider type; depends on the Backend protocol and scheduler both existing.
+**Delivers:** N `KueueBackend` entries sharing one S3 bucket (DIST-01 preserved), per-cluster kube config + LocalQueue probe/reconcile, `reconcile_cloud_jobs` grouped by `backend_id`, per-backend dashboard-reachability flags.
+**Avoids:** Pitfall 8 (one cluster poisoning the whole tick — every per-backend call needs its own try/except), Pitfall 9 (cross-cluster S3 collision on spillover — cleanup must be scoped to "is this file still owned by the backend that staged it").
 
-**Research flag:** No phase research needed. All patterns are in-repo.
-
-### Phase 58 — Enrich & Analyze Workspaces (WORK-01..05)
-
-**Rationale:** First phase that populates the shell with real workspace content. The Analyze workspace is the densest live region and owns the critical "single poll" consolidation decision (WORK-05).
-
-**Delivers:** Discover/Metadata/Fingerprint/Analyze workspace fragments; 3 lane cards (local/A1/k8s) with capacity, utilization bar, and Kueue quota-wait vs. Inadmissible; per-file lane badge + windowed progress; live refresh via the existing `/pipeline/stats` 5s poll + `$store.pipeline` OOB seeds.
-
-**Key constraint:** No second poll loop. WORK-05 is not a feature to build — it is a discipline to maintain. Verify one request/5s in the network tab.
-
-**Research flag:** No phase research needed. All data sources in `pipeline.py`, `pipeline_scans.py`, `pipeline_stages.py`; lane-card partials exist from v6.0.
-
-### Phase 59 — Identify Workspaces (IDENT-01..02)
-
-**Rationale:** Simpler in implementation scope but blocked by the IDENT-01 scope decision. Do not plan this phase until the AcoustID/MusicBrainz question is resolved.
-
-**Delivers:** Tracklist workspace with Search→Scrape→Match 3-step chips; Track-ID workspace surfacing existing identity signals.
-
-**BLOCKING PREREQUISITE — choose one before Phase 59 planning:**
-- **Option 1 (recommended):** Re-label Track-ID to surface audfprint+panako fingerprint match/score + rapidfuzz tracklist match confidence. No backend change. Ship.
-- Option 2: Defer IDENT-01 to v7.x; ship only Tracklist in Phase 59.
-- Option 3: Treat AcoustID/MusicBrainz as an explicit deliberate backend exception. Requires scope amendment; adds API client + network dep + rate-limit surface.
-
-**Research flag:** No phase research needed for options 1 or 2. Option 3 requires targeted research before planning.
-
-### Phase 60 — Review & Apply (REVIEW-01..05)
-
-**Rationale:** The most correctness-sensitive phase. Collapses the highest-stakes user interaction (approvals on an irreplaceable archive) into a unified diff gate.
-
-**Delivers:** Unified before→after diff component across Rename/Tag/Move (one Jinja partial over three existing data sources); dedupe keeper-select; cue preview + approve; per-file Approve/Edit/Skip; bulk "approve all high-confidence" gated by a server-evaluated predicate.
-
-**Key constraints:**
-- REVIEW-02 bulk must send a predicate (threshold + action), not a client-built id list.
-- Pick a fixed server-side confidence threshold at Phase 60 plan time (REVIEW-06 deferred).
-- Every apply action must POST to existing endpoints that write `ExecutionLog`. Assert an audit row per apply.
-- The 5s diff-list poll must OOB-update counts only — never re-render the operator's in-progress selection subtree.
-
-**Research flag:** No phase research needed. All endpoints exist; pattern is standard `HX-Request` branch + existing approve/undo routers.
-
-### Phase 61 — Full Record + ⌘K + Agents (RECORD-01..04)
-
-**Rationale:** Additive features over the already-live shell and workspaces. The Agents page carries v6.0 KDEPLOY-04 intent (ephemeral k8s identity) into the new UI.
-
-**Delivers:** Full-record slide-in composing existing `analysis_timeline.html` + tag comparison + audit history; ⌘K palette (Alpine `x-data` + `@alpinejs/focus` `x-trap` + debounced `hx-get="/command"`); Agents page with ephemeral k8s burst identity; first-run empty state.
-
-**Key constraints:**
-- `@alpinejs/focus@3.15.12` introduced here — load plugin `<script defer>` before Alpine core; version must match Alpine core exactly.
-- Per-file pane and record must ride the existing single poll, not add a new one.
-- ⌘K quick commands must funnel through the same router endpoints and `enqueue_router` guards.
-
-**Research flag:** No phase research needed. Stack patterns documented in STACK.md; RECORD-01 composition mapped in ARCHITECTURE.md.
-
-### Phase 62 — Polish & Cutover (CUT-01..04)
-
-**Rationale:** Dead-code removal is only safe after every legacy route is served and every workspace has replaced its old page. CUT-02 must be last.
-
-**Delivers:** Full keyboard/ARIA audit (CUT-01 parity sign-off); dead-code removal with three-way grep + dead-template test green (CUT-02); docs/README update (CUT-03); narrow rail-collapse to icons (CUT-04).
-
-**What to delete in CUT-02:** `proposals/list.html`, `tags/list.html`, `duplicates/list.html`, `cue/list.html`, `tracklists/list.html`, `search/page.html`, `preview/tree.html`, `pipeline/dashboard.html`, and the nav block in `base.html`. Keep all `partials/` — they are the shell's fragments.
-
-**Research flag:** No phase research needed.
+### Phase 71: Deployment, Config, Docs & N-Lane UI
+**Rationale:** Closes out operator-facing surfaces once the scheduler and multi-Kueue are proven; presentation-only, rides existing infrastructure.
+**Delivers:** per-backend `_FILE` secrets + operator runbook, master revert-to-all-local toggle, N-lane admin surfacing generalizing v7.0 Phase 58's fixed 3 cards to N (available/offline, in-flight/cap, rank — read-only, on the existing `/pipeline/stats` poll).
+**Addresses:** Q4 (N-lane admin surfacing, FEATURES.md).
 
 ### Phase Ordering Rationale
 
-- 57 must be first — all later phases render into the shell.
-- 58 before 59 — the workspace pattern (header + counts + action + table) is established in 58 and reused in 59.
-- 58 before 60 — the file-row→pane plumbing used in Review is established in 58.
-- 61 after 58–60 — the record slide-in links into workspace fragments (lane badges, pending approval rows) that must exist first.
-- 62 last — CUT-02 deletes the legacy page wrappers; removing them before 57–61 are complete breaks the SHELL-05 redirects.
+- Dependency-strict, not just convenient: Q1's tiered scheduler hard-requires Q3's uniform in-flight accounting (a per-backend cap is unenforceable without a per-backend count) — this is why 68 (accounting) must precede 69 (scheduling), not run in parallel.
+- Behavior-preservation as a testing strategy: phases 67-68 are scoped so the system's observable behavior is unchanged (verified by the characterization test), which means any bug surfaced in 69+ is attributable to the new multiplicity logic, not an accidental refactor regression.
+- Incident-history avoidance: the dependency order is explicitly designed to avoid replaying Phase 30 (queue misrouting via a shim mapping to an empty/wrong backend list), the 44.5k-job over-enqueue incident (double recovery drivers), and the JOB-ENV-CONTRACT-style "looks covered but isn't" gap (Pitfall 11) — each of these has a named prevention phase in the Pitfalls mapping.
+- UI last: the N-lane surface (Q4) enhances but does not block the scheduler — its data (`available`/`in_flight`/`cap`/`rank`) is already computed by phase 69-70, so it is correctly sequenced last and kept cheap/read-only.
 
-### Research Flags Summary
+### Research Flags
 
-| Phase | Research needed? | Reason |
-|-------|-----------------|--------|
-| 57 — Shell & rail | No | All patterns in-repo |
-| 58 — Enrich + Analyze | No | All data sources in `pipeline.py`; lane-card partials from v6.0 |
-| 59 — Identify | CONDITIONAL | Only if IDENT-01 option 3 chosen; options 1/2 need no research |
-| 60 — Review & Apply | No | All endpoints exist; standard pattern |
-| 61 — Full record + ⌘K | No | Alpine focus + HTMX search pattern fully documented |
-| 62 — Polish & cutover | No | Standard cleanup; dead-template test seeded in 57 |
+Needs deeper research during planning (`/gsd:plan-phase --research-phase <N>`):
+- **Phase 69 (Tiered Scheduler):** the drain↔reconcile lock-ordering change and the attempt-budget/cooldown split (Pitfall 2, Pitfall 5) are novel correctness mechanisms with no existing phaze precedent — plan-time should work out the exact lock scope and the global-vs-per-backend attempt counters before implementation.
+- **Phase 70 (Multi-Kueue):** the two plan-time schema open questions are unresolved and should be settled during phase planning, not roadmap creation:
+  (a) does `cloud_job` stay one-row-per-file with `backend_id` mutated in place on spillover, or become one-row-per-(file, backend) for history/attempt-scoping (Pitfall 5's `attempts`-across-backends trap depends on this answer); and
+  (b) how `ComputeAgentBackend.is_available()`/dispatch resolves its specific bound agent via `agent_ref` → `Agent.id`, rather than today's `select_active_agent()` "most-recently-seen" heuristic, which breaks once N compute providers coexist.
+  Also verify live against a real cluster: kr8s auth/constructor form per distinct kubeconfig (STACK.md Q2 flags this as inherited from Phase 56), and the stale-Job-cleanup-before-re-dispatch ordering on cross-cluster spillover (Architecture §4).
 
----
+Phases with well-documented, standard patterns (research-phase can likely be skipped):
+- **Phase 67 (Registry & Config Model):** pydantic discriminated unions and pydantic-settings complex-field loading are stable, officially documented (Context7-verified) APIs already used elsewhere in the codebase.
+- **Phase 68 (Backend Protocol):** the bodies it wraps already exist and are already isolated; this is a re-homing exercise with a clear acceptance test, not new design.
+- **Phase 71 (Deploy/Docs/UI):** generalizes an existing, shipped v7.0 Phase 58 pattern (fixed-3 lane cards → N lane cards on the existing poll) — no new UI architecture.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All versions verified live on npm 2026-06-29; every pattern grounded in existing `src/phaze/` code; one new dep is official and CDN-delivered |
-| Features | HIGH | 25 requirements are locked; every feature traced to a present router/partial; IDENT-01 gap confirmed by grep |
-| Architecture | HIGH | Every integration point grounded in a real file under `src/phaze/`; `HX-Request` pattern verified in 8 routers; IDENT-01 backend gap flagged explicitly |
-| Pitfalls | HIGH | All 10 pitfalls anchored to specific file+line; HTMX history/OOB behavior verified against current docs via Context7 |
+| Stack | HIGH | Zero new dependencies; every claim verified against Context7 official docs (pydantic-settings, kr8s) and PyPI release metadata; installed versions confirmed equal to latest and cooldown-safe. |
+| Features | HIGH | Cross-checked against three independent, well-documented industry reference patterns (k8s cluster-autoscaler priority expander, Karpenter spot fallback, AWS SQS+Spot cost workers) plus direct reads of the locked design doc, `release_awaiting_cloud.py`, and PROJECT.md. |
+| Architecture | HIGH | Every seam cited resolves to a real, grep-verified file/line in the actual `SimplicityGuy/Multi-Cloud-Backends` codebase, not generic pattern advice; cross-referenced against the locked design doc. |
+| Pitfalls | HIGH | Grounded directly in the actual source (`release_awaiting_cloud.py`, `reconcile_cloud_jobs.py`, `cloud_staging.py`, `agent_push.py`, `cloud_job.py`, `config.py`, `pipeline.py`, `enqueue_router.py`) and the project's own documented incident history (Phase 30, v4.0.6/v4.0.8, the 44.5k over-enqueue purge, JOB-ENV-CONTRACT), not generic distributed-systems advice. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **IDENT-01 backend gap (resolve before Phase 59):** `grep -ri 'acoustid|musicbrainz' src/phaze` returns empty. Also verify what `models/fingerprint.py` + `routers/agent_fingerprint.py` actually persist — if pyacoustid lookup results are stored there, IDENT-01 option 1 can surface them directly. Resolve before Phase 59 planning.
-
-- **REVIEW-02 confidence threshold value:** Research confirms "ship a fixed threshold" but does not specify the value. Determine at Phase 60 plan time; check `tracklists.py` `reject-low` endpoint as a reference point.
-
-- **⌘K "artists" search facet:** Verify whether `search_queries.search` surfaces an artist dimension or whether "artists" maps to file/tracklist artist fields. Verify at Phase 61 plan time; no backend change either way.
-
-- **SRI hash recomputation:** Every version bump requires recomputing the `integrity=` hash. Mechanical but must happen in Phase 57; a stale hash silently blocks the script.
-
----
+- `cloud_job` schema shape for spillover history — one-row-per-file (mutate `backend_id` in place) vs. one-row-per-(file, backend) is unresolved; directly determines whether `attempts` needs to be split into a global dispatch budget plus a per-backend cooldown counter (Pitfall 5). Resolve at Phase 68/69 plan-time, not roadmap time.
+- `ComputeAgentBackend` agent resolution — must bind to a SPECIFIC agent via `agent_ref` → `Agent.id`, replacing today's `select_active_agent()` "most-recently-seen" heuristic once N compute providers coexist; the exact resolution mechanics (fallback behavior when `agent_ref` is unset, e.g. for the shim's synthesized `a1` entry) need to be nailed down at Phase 68/70 plan-time.
+- Exact drain↔reconcile lock scope — whether reconcile takes the same advisory-lock key as the drain or a documented finer-grained lock-ordering is an open implementation choice (Pitfall 2); both are viable, but the choice affects reconcile-tick latency under load and should be settled during Phase 69 planning.
+- Live-cluster verification carried over from Phase 56 — the exact kr8s auth/constructor form per distinct kubeconfig/context (not per-mutated-token) has not been verified against a real second cluster; flag as a Phase 70 live-E2E item, not a library gap.
+- Staleness guard on local — deliberately left as an open, off-by-default knob; only add the cheap age-threshold form if real-world operation shows blip-driven leakage to local (Phase 69, optional).
 
 ## Sources
 
 ### Primary (HIGH confidence)
-
-- `src/phaze/templates/base.html` — theme store, `$store.pipeline`, brand tokens, pre-flash IIFE, vendored Tailwind rationale, tab nav to retire
-- `src/phaze/templates/pipeline/{dashboard.html,partials/stats_bar.html}` — single-poll/OOB-fanout architecture, `oob_counts` gate, `dag-seed-<key>` id contract
-- `src/phaze/routers/pipeline.py:434,549,625,800,857,937,1023,1074,1202,1233,1280` — all stage trigger endpoints + `pipeline_stats_partial`
-- `src/phaze/routers/{search.py:74,proposals.py:157,tags.py:201,duplicates.py:105,cue.py:228,tracklists.py:152,execution.py:372,admin_agents.py}` — the `HX-Request` full-vs-fragment pattern in 8 routers
-- `src/phaze/templates/proposals/list.html` + `partials/bulk_actions.html` — `selectedRows` client-id bulk (the anti-pattern REVIEW-02 must fix)
-- `src/phaze/main.py:185-229` — router registration; no bare `/` handler; no `RedirectResponse` today
-- `src/phaze/models/analysis.py` + `templates/proposals/partials/analysis_timeline.html` — windowed timeline backing RECORD-01
-- `docs/superpowers/specs/2026-06-28-ui-redesign-dag-console-design.md` + `2026-06-28-ui-redesign-assets/prototype.html` — locked design spine
-- `.planning/REQUIREMENTS.md` — 25 locked requirements, phase 57–62 traceability
-- npm registry `registry.npmjs.org` (live, 2026-06-29) — htmx.org 2.0.10, alpinejs 3.15.12, @alpinejs/focus 3.15.12, @tailwindcss/browser 4.3.2
-- Context7 `/bigskysoftware/htmx` — `hx-push-url` DOM-snapshot behavior, `htmx:historyRestore`/`historyCacheMiss`, `hx-swap-oob` multi-target, `every Ns` polling semantics
+- `docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md` — the locked design spine (§1-8), source of all deferred-question framing
+- Context7 `/pydantic/pydantic-settings` — nested submodels, `env_nested_delimiter`, complex-field JSON parsing, custom settings sources, `NestedSecretsSettingsSource`
+- Context7 `/kr8s-org/kr8s` — `kr8s.api()`/`kr8s.asyncio.api()` parameters, arg-based client caching, explicit `api=` object binding
+- PyPI JSON API — current versions/release dates for pydantic, pydantic-settings, kr8s
+- Repo reads (direct): `src/phaze/config.py`, `src/phaze/services/kube_staging.py`, `src/phaze/tasks/release_awaiting_cloud.py`, `src/phaze/tasks/reconcile_cloud_jobs.py`, `src/phaze/services/cloud_staging.py`, `src/phaze/routers/agent_push.py`, `src/phaze/models/cloud_job.py`, `src/phaze/services/pipeline.py`, `src/phaze/services/enqueue_router.py`, `src/phaze/routers/pipeline.py`, `src/phaze/routers/agent_s3.py`, `src/phaze/tasks/controller.py`, `src/phaze/tasks/reenqueue.py`, `src/phaze/models/agent.py`
+- `.planning/PROJECT.md` — DIST-01 boundary, v5.0/v6.0/v7.0 context, out-of-scope items, key decisions, documented incident history
 
 ### Secondary (MEDIUM confidence)
+- Scaling Safely on AWS Spot Using the Cluster Autoscaler's Priority Expander (ZipRecruiter Tech) — confirms rank/weight-ordered "try cheapest first" is standard operator practice
+- Karpenter vs Cluster Autoscaler (cast.ai) — confirms automatic spot→on-demand fallback (= spillover) is first-class expected behavior
+- Running Cost-effective queue workers with Amazon SQS and EC2 Spot (AWS) — confirms one-queue/heterogeneous-priced-worker-pool shape
 
-- `grep -ri 'acoustid|musicbrainz' src/phaze` — returns empty; IDENT-01 backend absence confirmed (absence-of-evidence; `models/fingerprint.py` not deeply inspected for pyacoustid persistence)
-- [Command Palette Pattern — UX Patterns for Developers](https://uxpatterns.dev/patterns/advanced/command-palette) — ⌘K table-stakes conventions
-- [GitLab CI/CD pipelines](https://docs.gitlab.com/ci/pipelines/) — rail-as-nav prior art
+### Tertiary (LOW confidence)
+- Design a Distributed Job Scheduler (System Design Handbook) — general spillover/threshold-redirect background only
 
 ---
-*Research completed: 2026-06-29*
-*Ready for roadmap: yes — pending IDENT-01 scope decision before Phase 59 planning*
+*Research completed: 2026-07-03*
+*Ready for roadmap: yes*

@@ -18,11 +18,11 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     env_file: .env
-    environment:
-      # Cloud routing target (control-plane-only, ControlSettings). Replaces the
-      # removed v5.0 cloud-burst on/off toggle. One of local|a1|k8s; defaults
-      # to `local` (cloud off). NOT set on any agent compose file.
-      - PHAZE_CLOUD_TARGET=${PHAZE_CLOUD_TARGET:-local}
+    # Backend execution registry (control-plane-only, ControlSettings) is declared in a
+    # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
+    # an absent file resolves to the zero-config implicit all-local registry (cloud off).
+    # Replaces the removed cloud_target selector + flat s3_*/kube_*/compute_* fields
+    # (Phase 67, no back-compat). Mount a backends.toml to enable cloud backends.
     volumes:
       # ./certs/ is bind-mounted rw so phaze.cert_bootstrap can generate the
       # CA + leaf certificates on first start (idempotent on subsequent starts).
@@ -46,10 +46,10 @@ services:
     env_file: .env
     environment:
       - PHAZE_ROLE=control
-      # Cloud routing target (control-plane-only, ControlSettings). Replaces the
-      # removed v5.0 cloud-burst on/off toggle. One of local|a1|k8s; defaults
-      # to `local` (cloud off). NOT set on any agent compose file.
-      - PHAZE_CLOUD_TARGET=${PHAZE_CLOUD_TARGET:-local}
+      # Backend execution registry (control-plane-only, ControlSettings) is declared in a
+      # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
+      # an absent file resolves to the zero-config implicit all-local registry (cloud off).
+      # Replaces the removed cloud_target selector + flat fields (Phase 67, no back-compat).
     depends_on:
       postgres:
         condition: service_healthy

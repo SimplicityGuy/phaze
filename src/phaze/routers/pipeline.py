@@ -392,7 +392,7 @@ async def trigger_analysis(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_target != "local",
+        settings.cloud_enabled,
         settings.models_path,
     )
 
@@ -565,11 +565,14 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
-        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03) + the deployment-wide cloud
-        # target read (config.py:406, Literal["local","a1","k8s"]) that drives the D-05 "not
-        # configured" lane labels. Both read-only; no backend behavior change.
+        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03) + the registry-derived cloud
+        # lane kind (Phase 67 / D-14, REG-04) that drives the D-05 "not configured" lane labels. A
+        # transitional legacy-shaped value under the NEUTRAL `cloud_lane_kind` key: "local" when the
+        # registry is all-local, else the single non-local backend's kind ("compute"/"kueue"). The
+        # three Analyze partials compare against it (compute↔A1 lane, kueue↔k8s lane). Read-only; no
+        # backend behavior change. (# TRANSITIONAL — Phase 68/71: BEUI-01 owns the N-lane redesign.)
         "analyze_files": analyze_files,
-        "cloud_target": settings.cloud_target,
+        "cloud_lane_kind": "local" if not settings.cloud_enabled else settings.active_cloud_kind,
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -696,7 +699,7 @@ async def trigger_analysis_ui(
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_target != "local",
+        settings.cloud_enabled,
         settings.models_path,
     )
 
@@ -756,11 +759,12 @@ async def trigger_backfill_cloud(
     over-enqueue class (D-10): a double-click is a no-op (the candidates have already left the
     ANALYSIS_FAILED state), and short / never-failed files are never touched.
     """
-    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit cloud-target guard BEFORE the candidate query.
+    # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit cloud on/off guard BEFORE the candidate query.
     # Gating only the routing seam is insufficient -- backfill would still reset the 144
     # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
-    # target is 'local' (cloud off) this is a clean no-op that mutates ZERO file.state rows.
-    if settings.cloud_target == "local":
+    # registry is all-local (cloud_enabled False, Phase 67 / D-14) this is a clean no-op that mutates
+    # ZERO file.state rows -- byte-identical to the former all-local selector guard.
+    if not settings.cloud_enabled:
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/backfill_response.html",
@@ -788,9 +792,9 @@ async def trigger_backfill_cloud(
         session,
         candidates,
         threshold,
-        # cloud is enabled here: the `cloud_target == "local"` early-return guard above already
-        # short-circuited the local case, so cloud_target is statically 'a1' or 'k8s' (mypy narrows
-        # it, which is why a literal `!= "local"` here is a redundant comparison). Pass True.
+        # cloud is enabled here: the `not settings.cloud_enabled` early-return guard above already
+        # short-circuited the all-local case, so the registry holds a non-local backend and the router
+        # must hold the long files for the cloud path. Pass True unconditionally.
         True,
         settings.models_path,
     )
@@ -800,9 +804,10 @@ async def trigger_backfill_cloud(
     #     ``recover_orphaned_work`` replay the held file onto a LOCAL agent queue -- the ``cloud_job``
     #     row (seeded by the ``stage_cloud_window`` k8s branch), NOT the ledger, is the k8s in-flight
     #     registry. The k8s held file is advanced purely by the duration router + staging cron.
-    #   - a1 (cloud_target != "k8s"; "local" already returned early above): seed the row (D-09) so the
-    #     held file -- never enqueued, so no ``before_enqueue`` hook fired -- is durable scheduled work.
-    if settings.cloud_target == "k8s":
+    #   - compute (active_cloud_kind != "kueue"; all-local already returned early above): seed the row
+    #     (D-09) so the held file -- never enqueued, so no ``before_enqueue`` hook fired -- is durable
+    #     scheduled work.
+    if settings.active_cloud_kind == "kueue":  # TRANSITIONAL — Phase 68
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/backfill_response.html",
