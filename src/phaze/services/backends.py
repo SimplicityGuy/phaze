@@ -36,14 +36,21 @@ Secret hygiene (T-68-04): this module logs only ``{id, kind, rank, cap}``-level 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, cast
+import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.file import FileState
+from phaze.services import kube_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
+from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
+from phaze.tasks.release_awaiting_cloud import _enqueue_push_file
 
 
 if TYPE_CHECKING:
@@ -167,33 +174,146 @@ class LocalBackend(_BaseBackend):
 class ComputeAgentBackend(_BaseBackend):
     """Cloud-compute (rsync/push over Tailscale) backend -- re-homes the ``push_file`` control-side enqueue leg.
 
-    Fleshed out in Task 2. ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
+    ``is_available`` re-homes GATE-1 (``release_awaiting_cloud`` L145-150): True iff a compute agent is
+    online. ``dispatch`` owns the ``FileState -> PUSHING`` flip AND a NEW in-txn ``cloud_job`` write
+    (Pitfall 1 / D-03) then re-homes the ``_enqueue_push_file`` leg. ``reconcile`` is a no-op --
+    compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08).
+    ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
     """
 
     async def is_available(self, session: AsyncSession) -> bool:
-        raise NotImplementedError
+        """GATE-1 (D-01a): True iff a compute agent is online; False (never raises) when absent.
+
+        Re-homes ``stage_cloud_window``'s compute-agent gate. An absent agent degrades to a hold
+        (NoActiveAgentError -> False), preserving the cron no-op discipline (T-68-05).
+        """
+        try:
+            await select_active_agent(session, kind="compute")
+        except NoActiveAgentError:
+            return False
+        return True
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> None:
-        raise NotImplementedError
+        """Flip ``file`` to PUSHING + upsert its ``cloud_job`` row, THEN enqueue ``push_file`` -- one txn, no commit.
 
-    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:
-        raise NotImplementedError
+        D-03 write ordering: the ``FileState -> PUSHING`` flip and the ``cloud_job`` upsert
+        (``backend_id`` set, ``s3_key`` NULL -- compute carries no S3 object, ``status=SUBMITTED``) land
+        in the SAME caller-passed session, before the enqueue, so a rollback leaves no limbo row (a
+        committed PUSHING without a reconcilable ``cloud_job`` row would silently strand the file). The
+        fileserver gate runs first so an absent agent is a clean hold with nothing mutated. NEVER commits
+        -- the drain owns the single post-loop commit so the ``pg_advisory_xact_lock`` survives the tick
+        (Landmine L1).
+        """
+        # Gate on the fileserver agent (the push initiator) BEFORE mutating: absent -> clean hold, nothing written.
+        fileserver_agent = await select_active_agent(session, kind="fileserver")
+
+        # D-03: flip PUSHING + upsert the cloud_job row in the SAME session, before/with the flip.
+        file.state = FileState.PUSHING
+        stmt = pg_insert(CloudJob).values(
+            # Stamp the PK explicitly (CR-01 defensive; mirrors cloud_staging.py:109).
+            id=uuid.uuid4(),
+            file_id=file.id,
+            backend_id=self.id,
+            s3_key=None,  # compute has no S3 object -> s3_key nullable (D-08)
+            status=CloudJobStatus.SUBMITTED.value,  # single compute in-flight status (D-10)
+        )
+        stmt = stmt.on_conflict_do_update(
+            # id is OUT of set_: the PK is immutable, so a re-dispatch keeps the existing row's id.
+            index_elements=["file_id"],
+            set_={"backend_id": stmt.excluded.backend_id, "status": stmt.excluded.status},
+        )
+        await session.execute(stmt)
+
+        # Re-home the compute enqueue leg (release_awaiting_cloud._enqueue_push_file), verbatim.
+        push_queue = task_router.queue_for(fileserver_agent.id)
+        await _enqueue_push_file(push_queue, file, fileserver_agent.id)
+
+    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:  # noqa: ARG002 -- protocol signature; compute terminalizes via the /pushed callback
+        """No-op: compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08), not a cron read."""
+        return None
 
 
 class KueueBackend(_BaseBackend):
     """Kueue-cluster backend -- re-homes today's single-cluster S3-staging + kube submit/reconcile (D-05).
 
-    Fleshed out in Task 2. ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
+    ``is_available`` probes the Kueue LocalQueue with NO compute-agent dependency (D-01a); ``dispatch``
+    calls the no-commit S3-staging core VERBATIM (single-cluster, reads ``active_kube`` / ``active_bucket``);
+    ``reconcile`` re-homes the ``reconcile_cloud_jobs`` cron body, made ``backend_id``-aware, with NO
+    advisory lock (Pitfall 2 -- deferred to Phase 69). ``in_flight_count`` is inherited from
+    :class:`_BaseBackend` (the D-02 substrate).
     """
 
-    async def is_available(self, session: AsyncSession) -> bool:
-        raise NotImplementedError
+    async def is_available(self, session: AsyncSession) -> bool:  # noqa: ARG002 -- protocol signature; kueue probes the cluster, not a DB agent
+        """Probe the Kueue LocalQueue -- True iff reachable; False (never raises) on any probe failure (D-01a).
+
+        Re-homes the ``kube_staging.get_local_queue`` reachability probe. Deliberately has NO
+        compute-agent dependency (D-01a asymmetry): ephemeral Kueue pods have no persistent compute
+        agent. A ``NotFoundError`` (mis-named queue) or transient ``ServerError`` degrades to False rather
+        than raising (mirrors the controller's non-fatal catch), preserving the cron no-op discipline.
+        """
+        try:
+            local_queue = await kube_staging.get_local_queue()
+        except Exception:  # any kube/mesh failure degrades to "unavailable" (T-68-05 no-op discipline)
+            logger.info("KueueBackend.is_available: LocalQueue probe failed -> unavailable", backend_id=self.id)
+            return False
+        return local_queue is not None
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> None:
-        raise NotImplementedError
+        """Flip ``file`` to PUSHING then run the no-commit S3-staging core VERBATIM (single-cluster, D-05).
+
+        The S3 core (``cloud_staging._stage_file_to_s3``) already upserts the ``cloud_job`` row
+        (``UPLOADING``) + enqueues one ``s3_upload`` in the caller's session -- exactly as today's kueue
+        drain branch does -- so this writes NO second ``cloud_job`` row. D-05 keeps it single-cluster
+        (reads ``active_kube`` / ``active_bucket``); per-cluster parameterization is Phase 70. NEVER
+        commits (the drain owns the single post-loop commit -- Landmine L1).
+        """
+        # D-03: the drain flips PUSHING before the per-kind fork; own that flip here so dispatch is atomic.
+        file.state = FileState.PUSHING
+        await _stage_file_to_s3(session, file, task_router)
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:
-        raise NotImplementedError
+        """Reconcile THIS backend's in-flight ``cloud_job`` rows against their Kueue Job/Workload (backend_id-aware).
+
+        Re-homes ``reconcile_cloud_jobs`` (L282-322): iterate ``cloud_job`` rows in {SUBMITTED, RUNNING}
+        scoped to ``backend_id == self.id``, delegate each to the shared ``_reconcile_one`` under the
+        per-row ``session.rollback()`` guard so one bad row never aborts the tick. NO advisory lock this
+        phase (Pitfall 2 -- the lock change lands with the Phase-69 cap flip). ``ctx`` (carrying the
+        re-drive ``queue``) is threaded to ``_reconcile_one``; it defaults to ``{}`` for the lay-and-prove
+        unit path where no row reaches a re-drive.
+        """
+        cfg = cast("ControlSettings", get_settings())
+        cap = cfg.cloud_submit_max_attempts
+        tally = {"reconciled": 0, "succeeded": 0, "failed": 0, "redriven": 0, "inadmissible": 0, "pending": 0, "running": 0}
+        reconcile_ctx = ctx if ctx is not None else {}
+
+        rows = (
+            (
+                await session.execute(
+                    select(CloudJob).where(
+                        CloudJob.status.in_([CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value]),
+                        CloudJob.backend_id == self.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Capture primitive ids: the per-row guard's rollback expires the ORM identity map, so re-fetch
+        # each row fresh inside the loop rather than touching a stale/expired object (verbatim from the cron).
+        cloud_job_ids = [row.id for row in rows]
+
+        for cloud_job_id in cloud_job_ids:
+            try:
+                cloud_job = await session.get(CloudJob, cloud_job_id)
+                if cloud_job is None:
+                    continue
+                tally["reconciled"] += 1
+                await _reconcile_one(reconcile_ctx, session, cloud_job, cap, tally)
+            except Exception:
+                # Per-row guard: a single bad row never aborts the tick; roll back the partial mutation.
+                await session.rollback()
+                logger.warning("KueueBackend.reconcile: row reconcile failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True)
+        return None
 
 
 def resolve_backends(settings: ControlSettings) -> list[Backend]:
