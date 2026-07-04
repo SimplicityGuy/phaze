@@ -15,6 +15,7 @@ assert on. The probe seam ``phaze.services.kube_staging.get_local_queue`` is pat
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,10 +42,12 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock) 
 def _stub_controller(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock, *, active_cloud_kind: str | None) -> MagicMock:
     """Patch collaborators + a MagicMock ``get_settings``; return the fake_cfg.
 
-    Phase 67 (REG-04): the probe now gates on ``cfg.active_cloud_kind == "kueue"`` (the registry-derived
-    transitional accessor), NOT the flat ``cloud_target``. Pass ``active_cloud_kind="kueue"`` to run the
-    probe, or ``None`` (all-local) to skip it. ``log_effective_registry`` is a MagicMock no-op here (the
-    real projection is asserted in ``test_startup_logs_effective_registry_secret_free``).
+    Phase 68 (D-09): the probe now resolves the registry kind via ``resolve_backends(cfg)`` +
+    ``resolved_non_local_kind(cfg)`` (was ``cfg.active_cloud_kind``), so the stub sets the registry
+    shape -- ``cloud_enabled`` + a ``backends`` list whose single entry duck-types the Phase-67 submodel
+    (kind/id/rank/cap). Pass ``active_cloud_kind="kueue"`` to seed a one-kueue registry (probe runs) or
+    ``None`` (all-local, probe skipped). ``log_effective_registry`` is a MagicMock no-op here (the real
+    projection is asserted in ``test_startup_logs_effective_registry_secret_free``).
     """
     _stub_collaborators(monkeypatch, fake_redis)
 
@@ -61,6 +64,14 @@ def _stub_controller(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock, *, 
     fake_cfg.anthropic_api_key = None
     fake_cfg.openai_api_key = None
     fake_cfg.active_cloud_kind = active_cloud_kind
+    # Registry shape the rewired probe reads: an all-local registry (cloud disabled) skips the probe; a
+    # single non-local backend of the given kind runs it. Entries duck-type the submodel resolve_backends binds.
+    if active_cloud_kind is None:
+        fake_cfg.cloud_enabled = False
+        fake_cfg.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=0)]
+    else:
+        fake_cfg.cloud_enabled = True
+        fake_cfg.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=2)]
     monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
     return fake_cfg
 

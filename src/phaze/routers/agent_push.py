@@ -39,6 +39,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
@@ -117,6 +118,14 @@ async def report_pushed(
         return PushedResponse(file_id=file_id)
     await clear_ledger_entry(session, f"push_file:{file_id}")
 
+    # D-08: terminalize compute's cloud_job row (SUBMITTED -> SUCCEEDED) in the SAME transaction as the
+    # PUSHING -> PUSHED flip. ComputeAgentBackend.dispatch wrote this row (backend_id set, s3_key NULL,
+    # SUBMITTED) when the file was staged; the /pushed callback is compute's reconcile path (§4.2), so
+    # terminalizing it here drains in_flight_count(compute) and keeps the D-02 equivalence invariant
+    # (sum(in_flight_count) == get_cloud_window_count) true LIVE. Gated behind the WR-02 rowcount != 0
+    # guard above -- a duplicate/late callback (rowcount == 0) returned early and writes NOTHING here.
+    await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
+
     compute_queue = request.app.state.task_router.queue_for(compute_agent.id)
     # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
     scratch_path = f"{settings.active_compute_scratch_dir}/{file_id}.{file.file_type}"
@@ -175,6 +184,13 @@ async def report_push_mismatch(
     # Over the cap: terminal failure + ledger clear, one transaction (mirror report_analysis_failed).
     if next_attempt > settings.push_max_attempts:
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+        # CR-01 / D-08: terminalize compute's cloud_job row (SUBMITTED -> FAILED) in the SAME transaction
+        # as the ANALYSIS_FAILED flip, mirroring the /pushed success path (SUCCEEDED at L127). Without
+        # this the file leaves the {PUSHING, PUSHED} get_cloud_window_count window while its cloud_job row
+        # stays stranded at SUBMITTED -- SUBMITTED is in the D-10 in-flight set, so in_flight_count(compute)
+        # would over-count forever and break the D-02 equivalence invariant LIVE. A no-op for non-compute
+        # files (no cloud_job row -> 0 rows affected) and idempotent.
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.FAILED.value))
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
         logger.warning(

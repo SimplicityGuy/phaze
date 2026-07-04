@@ -21,7 +21,7 @@ Docker invocation (set by Plan 13's docker-compose.yml update):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import redis.asyncio as redis_async
 from saq import CronJob
@@ -32,6 +32,7 @@ from phaze.config import export_llm_api_keys, get_settings
 from phaze.logging_config import configure_logging
 from phaze.services import kube_staging
 from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.services.backends import resolve_backends, resolved_non_local_kind
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.deterministic_key import increment_completed
@@ -44,6 +45,10 @@ from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
+
+
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -165,18 +170,21 @@ async def startup(ctx: dict[str, Any]) -> None:
 
     # Phase 56 (KDEPLOY-04, D-05/D-06): live LocalQueue-reachability probe. This is a RUNTIME probe,
     # distinct from the three fail-fast kube config validators -- it GETs the configured Kueue
-    # LocalQueue and writes a cross-process flag the dashboard reads. Gated on active_cloud_kind == "kueue"
+    # LocalQueue and writes a cross-process flag the dashboard reads. Gated on the resolved kind == "kueue"
     # so a non-kueue control plane never touches kube. Wrapped in its OWN broad try/except mirroring the
     # recovery block above: a transient kube/mesh blip MUST NEVER abort controller boot (D-05 -- the
     # control plane still boots Postgres/Redis/UI/local-analysis). The WARNING names only the env var
     # PHAZE_KUBE_LOCAL_QUEUE; it never interpolates the SA token or kube DSN (T-56-LOG / T-54-07).
-    # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
-    # The ≤1-non-local accessor RAISES on a premature multi-cluster registry (>1 non-local — a valid
-    # schema whose dispatch lands in Phase 69). Reading it here must honor the D-05 boot invariant
+    # Phase 68 (D-09): registry-derived kind via the Backend registry (was the retired ≤1-non-local accessor).
+    # resolve_backends() carries the D-07 ≤1-non-local boot guard: it RAISES on a premature
+    # multi-cluster registry (>1 non-local — a valid schema whose dispatch lands in Phase 69),
+    # exactly as the retired accessor did. Reading it here must honor the D-05 boot invariant
     # documented above, so a raise degrades to "skip the Kueue probe" (falls through to the else branch
     # which clears any stale flag) rather than aborting the controller boot.
     try:
-        active_kind = cfg.active_cloud_kind  # type: ignore[attr-defined]
+        control_cfg = cast("ControlSettings", cfg)
+        resolve_backends(control_cfg)  # D-07 boot guard: raises on >1 non-local (preserves the retired accessor's raise)
+        active_kind = resolved_non_local_kind(control_cfg)
     except Exception:
         logger.warning(
             "phaze.controller startup: backend registry holds >1 non-local backend; multi-backend dispatch "

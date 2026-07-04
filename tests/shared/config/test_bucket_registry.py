@@ -279,21 +279,19 @@ bucket = "phaze-a"
 
 
 def test_cloud_enabled_false_for_implicit_local(monkeypatch: _pytest.MonkeyPatch) -> None:
-    """The implicit-local registry has no non-local backend → cloud_enabled is False; active_cloud_kind None (D-14)."""
+    """The implicit-local registry has no non-local backend → cloud_enabled is False (D-14)."""
     _clear_backends_env(monkeypatch)
     settings = ControlSettings()
     assert settings.cloud_enabled is False
-    assert settings.active_cloud_kind is None
+    assert settings.active_compute_scratch_dir is None
 
 
 def test_single_compute_backend_accessors(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """A single compute backend reduces through the transitional ≤1-non-local accessors (D-15)."""
+    """A single compute backend reduces through the retained ≤1-non-local value accessors (D-09/D-15)."""
     backends_toml_env(_ONE_COMPUTE)
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    assert settings.active_cloud_kind == "compute"
     assert settings.active_compute_scratch_dir == "/scratch/cloud"
-    assert settings.active_cap == 3
 
 
 def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
@@ -301,7 +299,6 @@ def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ign
     backends_toml_env(_ONE_KUEUE)
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    assert settings.active_cloud_kind == "kueue"
     assert settings.active_kube is not None
     assert settings.active_kube.api_url == "https://kube.example.com"
     assert settings.active_bucket is not None
@@ -309,12 +306,15 @@ def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ign
 
 
 def test_multiple_non_local_backends_accessor_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """>1 non-local backend → the transitional accessors raise (multi-backend dispatch is Phase 69) — never silently pick one.
+    """>1 non-local backend → the retained value accessors raise (multi-backend dispatch is Phase 69) — never silently pick one.
 
     The registry itself is VALID (multi-cluster is the milestone goal and D-09 polices bucket sharing
     across multiple kueue backends), so construction succeeds and ``cloud_enabled`` is True; only the
-    ≤1-non-local transitional reduction refuses to pick one until Phase 69 (SCHED). CR-01 hardened the
-    unguarded readers of these accessors so this raise degrades gracefully instead of crashing boot.
+    ≤1-non-local reduction inside ``_single_non_local`` (read by the retained value accessors) refuses
+    to pick one until Phase 69 (SCHED). The two dispatch-selector accessors were removed in Phase 68
+    (D-07/D-09); the ``>1``-non-local fail-fast now lives in ``resolve_backends`` at boot, with this
+    accessor raise kept as defense-in-depth. CR-01 hardened the unguarded readers so this raise
+    degrades gracefully instead of crashing boot.
     """
     backends_toml_env(
         """
@@ -338,7 +338,7 @@ def test_multiple_non_local_backends_accessor_raises(backends_toml_env) -> None:
     settings = ControlSettings()
     assert settings.cloud_enabled is True
     with pytest.raises(ValueError, match=r"Phase 69"):
-        _ = settings.active_cloud_kind
+        _ = settings.active_compute_scratch_dir
 
 
 def test_multi_bucket_kueue_active_bucket_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]

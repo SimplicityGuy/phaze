@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -32,9 +33,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
-from phaze.services import cloud_staging, s3_staging
+from phaze.services import cloud_staging, kube_staging, s3_staging
 from phaze.tasks.release_awaiting_cloud import push_file_job_key, stage_cloud_window
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
+from tests.kube_fakes import fake_local_queue
 
 
 if TYPE_CHECKING:
@@ -56,6 +58,13 @@ class _StubCfg:
         self.active_cap = active_cap
         self.cloud_enabled = cloud_enabled
         self.active_cloud_kind = active_cloud_kind
+        # Phase 68: the drain resolves its dispatch backend via resolve_backends(cfg), which reads the
+        # registry-shaped ``backends`` list (each entry duck-types the Phase-67 submodel's
+        # kind/id/rank/cap). One non-local backend of the cell's kind; a local entry when cloud disabled.
+        if active_cloud_kind is None:
+            self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
+        else:
+            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_kind: str | None = "compute") -> None:
@@ -208,6 +217,56 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
 
 
+# --- WR-02: fileserver vanishes mid-tick (present at GATE-2, gone at dispatch) -> clean hold ----
+
+
+@pytest.mark.asyncio
+async def test_fileserver_vanishes_mid_tick_holds_cleanly(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-02: a fileserver revoked between GATE-2 and the dispatch loop degrades to a clean hold, never a raise.
+
+    ComputeAgentBackend.dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a
+    fileserver revoked by a concurrent session AFTER GATE-2 passes but BEFORE a later loop iteration
+    raises NoActiveAgentError straight out of dispatch. The drain must catch it and hold the remaining
+    candidates (staged=0, skipped=len(candidates)), leaving them AWAITING_CLOUD -- NOT propagate the raise
+    (T-50-cron-raise). dispatch resolves the fileserver BEFORE any mutation, so the raising file is
+    untouched.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")
+    # Both agents present so GATE-1 (compute is_available) and GATE-2 (fileserver) pass upfront.
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(2)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    # Simulate the mid-tick revocation: backends.select_active_agent (called INSIDE dispatch) raises for
+    # the fileserver lookup while still resolving the compute agent GATE-1 (is_available) needs. GATE-2 in
+    # release_awaiting_cloud uses its OWN imported select_active_agent (unpatched), so it still passes.
+    from phaze.services import backends as backends_mod
+    from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+
+    async def _raise_for_fileserver(sess: AsyncSession, *, kind: str) -> Any:
+        if kind == "fileserver":
+            raise NoActiveAgentError(kind)
+        return await select_active_agent(sess, kind=kind)
+
+    monkeypatch.setattr(backends_mod, "select_active_agent", _raise_for_fileserver)
+
+    router = DedupFakeTaskRouter()
+    # Must NOT raise -- the cron degrades to a clean hold.
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 0, "skipped": 2}
+    assert router.queues == {}
+    # The raising file (and its peers) are untouched -- dispatch gates the fileserver BEFORE mutating.
+    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+
+
 # --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the staging cron ---------
 
 
@@ -259,9 +318,16 @@ async def test_cloud_compute_stages_normally(async_engine: AsyncEngine, session:
 
 
 def _patch_s3(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub the S3 SDK calls the k8s branch's ``_stage_file_to_s3`` core makes (no live backend)."""
+    """Stub the S3 SDK calls the k8s branch's ``_stage_file_to_s3`` core makes (no live backend).
+
+    Phase 68: also stub the Kueue LocalQueue probe -- the drain now clears GATE-1 through
+    ``KueueBackend.is_available``, which probes ``kube_staging.get_local_queue`` (a cluster reach test
+    with NO compute dependency, D-01a). Stub it "reachable" so the kueue cells proceed exactly as the
+    pre-refactor drain did (which took no such probe on the k8s branch).
+    """
     monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
     monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/part?1"]))
+    monkeypatch.setattr(kube_staging, "get_local_queue", AsyncMock(return_value=fake_local_queue()))
 
 
 @pytest.mark.asyncio

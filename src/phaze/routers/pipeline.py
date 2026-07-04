@@ -21,6 +21,7 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
+from phaze.services.backends import resolved_non_local_kind
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
@@ -572,7 +573,7 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         # three Analyze partials compare against it (compute↔A1 lane, kueue↔k8s lane). Read-only; no
         # backend behavior change. (# TRANSITIONAL — Phase 68/71: BEUI-01 owns the N-lane redesign.)
         "analyze_files": analyze_files,
-        "cloud_lane_kind": "local" if not settings.cloud_enabled else settings.active_cloud_kind,
+        "cloud_lane_kind": resolved_non_local_kind(settings),
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -804,10 +805,10 @@ async def trigger_backfill_cloud(
     #     ``recover_orphaned_work`` replay the held file onto a LOCAL agent queue -- the ``cloud_job``
     #     row (seeded by the ``stage_cloud_window`` k8s branch), NOT the ledger, is the k8s in-flight
     #     registry. The k8s held file is advanced purely by the duration router + staging cron.
-    #   - compute (active_cloud_kind != "kueue"; all-local already returned early above): seed the row
+    #   - compute (resolved kind != "kueue"; all-local already returned early above): seed the row
     #     (D-09) so the held file -- never enqueued, so no ``before_enqueue`` hook fired -- is durable
     #     scheduled work.
-    if settings.active_cloud_kind == "kueue":  # TRANSITIONAL — Phase 68
+    if resolved_non_local_kind(settings) == "kueue":
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/backfill_response.html",

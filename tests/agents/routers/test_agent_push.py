@@ -35,6 +35,7 @@ from sqlalchemy import select
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_push import router as agent_push_router
@@ -122,6 +123,25 @@ async def _seed_push_ledger(session: AsyncSession, file_id: uuid.UUID, *, push_a
         payload["push_attempt"] = push_attempt
     await upsert_ledger_entry(session, key=f"push_file:{file_id}", function="push_file", kwargs=payload)
     await session.commit()
+
+
+async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, *, status: CloudJobStatus = CloudJobStatus.SUBMITTED) -> None:
+    """Seed the compute cloud_job sidecar row ComputeAgentBackend.dispatch writes (backend_id set, s3_key NULL)."""
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            backend_id="oci-a1",
+            s3_key=None,
+            status=status.value,
+        )
+    )
+    await session.commit()
+
+
+async def _cloud_job_row(session: AsyncSession, file_id: uuid.UUID) -> CloudJob | None:
+    session.expire_all()
+    return (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
 
 
 async def _ledger_row(session: AsyncSession, key: str) -> SchedulingLedger | None:
@@ -334,6 +354,44 @@ async def test_mismatch_over_cap_fails_terminally_and_clears_ledger(
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row must be cleared on terminal failure"
     # No re-drive enqueue happened.
     assert task_router.queues == {}
+    # CR-01: a non-compute file (no cloud_job row) is unaffected -- the terminalizing UPDATE is a 0-row no-op.
+    assert await _cloud_job_row(session, file_id) is None
+
+
+@pytest.mark.asyncio
+async def test_mismatch_over_cap_terminalizes_compute_cloud_job(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """CR-01: a COMPUTE file with a SUBMITTED cloud_job row hitting the cap terminalizes it to FAILED.
+
+    ComputeAgentBackend.dispatch writes the cloud_job row as SUBMITTED (in the D-10 in-flight set) when the
+    file is staged. Without the terminal write, a mismatch-cap failure leaves the file out of the
+    {PUSHING, PUSHED} window while its cloud_job row stays stranded at SUBMITTED, so in_flight_count(compute)
+    over-counts forever and breaks the D-02 equivalence invariant. Assert the row is drained to FAILED.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds push_max_attempts=3
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
+    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is True
+
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.ANALYSIS_FAILED
+    # The compute cloud_job row is terminalized (drained from the D-10 in-flight set) in the same transaction.
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.FAILED.value
 
 
 @pytest.mark.asyncio

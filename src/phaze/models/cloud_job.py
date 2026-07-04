@@ -70,8 +70,10 @@ class CloudJob(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # Unique FK to files.id: one active cloud burst per file (metadata.py precedent).
     file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), unique=True, nullable=False)
-    # file_id-scoped staging key in the bucket (KSTAGE-04).
-    s3_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    # file_id-scoped staging key in the bucket (KSTAGE-04). Phase 68 (D-08): now nullable -- a compute
+    # burst carries no S3 object (it rsync-pushes over Tailscale), so its cloud_job row leaves s3_key NULL;
+    # Kueue/S3-staged rows still stamp it as before.
+    s3_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # String-backed CloudJobStatus; the DB CHECK below is the membership gate.
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     # Multipart upload id so the control plane can complete/abort the upload (D-01); NULL until
@@ -89,6 +91,11 @@ class CloudJob(TimestampMixin, Base):
     # Phase 55 (D-04): the Kueue admission progression (queued_behind_quota -> admitted -> running ->
     # finished). NULL for a1/local rows (admission is k8s-only); kept ORTHOGONAL to ``inadmissible``.
     cloud_phase: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Phase 68 (D-06): config-derived backend registry id stamped at dispatch (per-backend in-flight
+    # accounting substrate, BACK-02). NULLABLE with NO backfill -- the a1/k8s paths were never deployed
+    # live so there are ~zero rows to migrate, and a migration cannot know a registry entry id; new rows
+    # stamp it going forward. Plain free-text (no CHECK/enum).
+    backend_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     __table_args__ = (
         CheckConstraint(

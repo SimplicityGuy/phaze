@@ -19,10 +19,10 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (67+).
 
 ### BACK — Backend protocol & implementations
 
-- [ ] **BACK-01**: A single internal `Backend` protocol (`is_available` / `in_flight_count` / `dispatch` / `reconcile`) with `LocalBackend` / `ComputeAgentBackend` / `KueueBackend` implementations replaces the hardcoded `if/elif cloud_target` switch at every call site — the existing staging/push/submit bodies are re-homed as protocol-method bodies, not rewritten.
-- [ ] **BACK-02**: The `cloud_job` sidecar gains a `backend_id` column via an additive migration (with a backfill of existing rows to the current single backend) so in-flight counts and reconcile are per-backend.
-- [ ] **BACK-03**: Compute-agent pushes are recorded in the `cloud_job` registry (generalized from Kueue-only) so `in_flight_count()` returns one uniform count across all backend kinds instead of counting compute via `FileState{PUSHING,PUSHED}` and Kueue via rows separately.
-- [ ] **BACK-04**: The protocol refactor is proven behavior-preserving by a characterization test asserting single-backend dispatch decisions are byte-identical pre/post refactor — including the compute-requires-a-live-agent vs. Kueue-deliberately-skips-that-gate asymmetry.
+- [x] **BACK-01**: A single internal `Backend` protocol (`is_available` / `in_flight_count` / `dispatch` / `reconcile`) with `LocalBackend` / `ComputeAgentBackend` / `KueueBackend` implementations replaces the hardcoded `if/elif cloud_target` switch at every call site — the existing staging/push/submit bodies are re-homed as protocol-method bodies, not rewritten.
+- [x] **BACK-02**: The `cloud_job` sidecar gains a `backend_id` column via an additive migration (with a backfill of existing rows to the current single backend) so in-flight counts and reconcile are per-backend.
+- [x] **BACK-03**: Compute-agent pushes are recorded in the `cloud_job` registry (generalized from Kueue-only) so `in_flight_count()` returns one uniform count across all backend kinds instead of counting compute via `FileState{PUSHING,PUSHED}` and Kueue via rows separately.
+- [x] **BACK-04**: The protocol refactor is proven behavior-preserving by a characterization test asserting single-backend dispatch decisions are byte-identical pre/post refactor — including the compute-requires-a-live-agent vs. Kueue-deliberately-skips-that-gate asymmetry.
 
 ### SCHED — Tiered drain scheduler
 
@@ -82,10 +82,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | REG-03 | Phase 67 | Complete |
 | REG-04 | Phase 67 | Complete |
 | REG-05 | Phase 67 | Complete |
-| BACK-01 | Phase 68 | Pending |
-| BACK-02 | Phase 68 | Pending |
-| BACK-03 | Phase 68 | Pending |
-| BACK-04 | Phase 68 | Pending |
+| BACK-01 | Phase 68 | Complete |
+| BACK-02 | Phase 68 | Complete |
+| BACK-03 | Phase 68 | Complete |
+| BACK-04 | Phase 68 | Complete |
 | SCHED-01 | Phase 69 | Pending |
 | SCHED-02 | Phase 69 | Pending |
 | SCHED-03 | Phase 69 | Pending |
