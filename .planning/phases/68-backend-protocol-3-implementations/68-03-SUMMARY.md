@@ -101,3 +101,10 @@ None. `ComputeAgentBackend` / `KueueBackend` were committed as `raise NotImpleme
 
 ## Threat Flags
 None. No new network endpoint, auth path, or trust-boundary surface was introduced — every body is a verbatim re-home of an already-existing dispatch/staging/submit/reconcile path. Secret hygiene (T-68-04) is preserved: `backends.py` logs only `{id, kind, rank, cap}`/`backend_id`-level fields; the kube SA-token hack is read via the re-homed body but never logged.
+
+## Self-Check: PASSED
+- `src/phaze/services/backends.py` — FOUND
+- `.planning/phases/68-backend-protocol-3-implementations/68-03-SUMMARY.md` — FOUND
+- Commit `29a62c8` (Task 1) — FOUND
+- Commit `23592e8` (Task 2) — FOUND
+- Commit `166410b` (SUMMARY) — FOUND
