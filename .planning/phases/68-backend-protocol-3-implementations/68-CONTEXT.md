@@ -95,6 +95,32 @@ Covers **BACK-01..04**. Full requirements in `.planning/REQUIREMENTS.md` §BACK 
   call). The protocol methods are per-backend and unit-tested as such, but the scheduler wiring does not
   yet enumerate/tier N backends — that is Phase 69.
 
+### Plan-time resolutions (research surfaced these; resolved 2026-07-03 before planning)
+- **D-08 (Q2 — compute `cloud_job` row: write + terminalize live):** Migration 029 is additive but
+  changes **two** columns — add nullable `backend_id` **and make `s3_key` nullable** (compute has no S3
+  object, and `s3_key` is `NOT NULL` today). `ComputeAgentBackend.dispatch` writes the `cloud_job` row
+  **in-txn** with the `FileState → PUSHING` flip (D-03). Compute terminalization is the **existing
+  `report_pushed` callback path** (`routers/agent_push.py`) — this IS compute's `reconcile` per the
+  §4.2 protocol note ("compute: existing /pushed + callback path"); the callback gains a `cloud_job`
+  terminal write. This is a **deliberate, minimal nudge to design §5** ("`put_analysis` result return
+  untouched" still holds — the change is in the `/pushed` push-completion callback, not the analysis
+  result return). Consequence: the **D-02 equivalence invariant holds live AND in tests** (no prod
+  drift of un-terminalized compute rows). Chosen over the "defer compute rows / test-only invariant"
+  alternative because that alternative contradicts D-02 item 1 and D-03 as written.
+- **D-09 (Q1 — accessor removal scope):** Remove **only** the two dispatch-**selector** accessors
+  `active_cloud_kind` / `active_cap` (D-07); **keep and re-tag** the three config-**value** accessors
+  `active_kube` / `active_bucket` / `active_compute_scratch_dir` — they feed the single-cluster
+  `kube_staging` / `s3_staging` / `agent_push` reads that D-05 says stay verbatim until **Phase 70
+  (MKUE-01)**. `config.py`'s docstrings tagging **all five** "removed in Phase 68" are **stale** —
+  re-point the three retained ones to Phase 70. Removing `active_cloud_kind` also requires **rewiring
+  its 8 readers across 6 modules** (drain, dashboard `cloud_lane_kind`, pipeline ledger-seed fork
+  `pipeline.py:810`, `agent_s3` guard, controller LocalQueue-probe gate) to resolve through Backend
+  resolution — not a bare property deletion (Validation Layer 5 guards this).
+- **D-10 (Q3 — in-flight `CloudJobStatus` set):** `in_flight_count()` counts
+  `{UPLOADING, UPLOADED, SUBMITTED, RUNNING}` as non-terminal / in-flight (research recommendation;
+  CONTEXT had this under Claude's Discretion). Planner confirms against the live `CloudJobStatus`
+  members in `models/cloud_job.py`.
+
 ### Claude's Discretion
 - Exact module location for the protocol + implementations (research SUMMARY suggests a new
   `services/backends.py` — planner confirms).
