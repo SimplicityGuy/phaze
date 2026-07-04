@@ -2,7 +2,14 @@
 
 Out-of-scope discoveries logged during execution (not fixed in the plan that found them).
 
-## D-67-06-01 — `test_agent_presign_download.py` still uses the removed flat `PHAZE_S3_*` env vars (pre-existing wave-4 gap)
+## D-67-06-01 — RESOLVED (orchestrator post-merge fix, 2026-07-03) — `test_agent_presign_download.py` still uses the removed flat `PHAZE_S3_*` env vars (pre-existing wave-4 gap)
+
+- **Resolution:** The `s3_env` fixture was migrated to the shared `backends_toml_env` conftest
+  fixture (one-kueue-backend + one shared `[[buckets]]` block pointed at the moto server), exactly
+  as Plan 04 did for `test_s3_staging`. All 7 tests in the file pass; ruff clean; `tests/` is
+  excluded from the project mypy gate. Fixed by the phase orchestrator during the post-merge
+  integration gate rather than deferred to a follow-up phase.
+
 
 - **Found during:** Plan 67-06 (removal wave) overall verification.
 - **File:** `tests/agents/routers/test_agent_presign_download.py` (the `s3_env` fixture, lines ~50-61).
