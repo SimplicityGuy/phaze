@@ -7,6 +7,12 @@ here) and upserts the ``cloud_job`` row (status=SUBMITTED + ``kueue_workload=<jo
 (KSUBMIT-06, the CLOUDROUTE-02 hazard: a ledger row would let ``recover_orphaned_work`` re-enqueue
 a K8s file onto a LOCAL agent queue).
 
+Phase 70 (MKUE-01/D-04): the submit resolves THIS file's owning backend cluster from the recorded
+``cloud_job.backend_id`` (stamped at dispatch) BEFORE the POST, and threads that backend's
+``KubeConfig`` into ``kube_staging.submit_job``. A submit with no owning kueue backend is a
+misconfiguration -> ``KubeStagingError``. Each DB test therefore seeds a ``cloud_job`` row carrying
+``backend_id`` and pins ``get_settings`` to a one-kueue registry stub whose id matches.
+
 A re-submit for the same ``file_id`` is idempotent: the upsert keeps a single row and the seam's
 deterministic Job name + 409->refresh means no duplicate Job (modeled here by the spy returning the
 same name on every call).
@@ -19,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -30,6 +37,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.services import kube_staging
 import phaze.tasks.submit_cloud_job as submit_mod
 from phaze.tasks.submit_cloud_job import submit_cloud_job, submit_cloud_job_key
 
@@ -38,21 +46,39 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 
+# SCHED-05 / MKUE-01: the submit resolves the file's backend via cloud_job.backend_id against the
+# registry; the stub carries a single kueue entry whose id matches the seeded row's backend_id.
+_KUEUE_BACKEND_ID = "kueue-x64"
+
+
 class _SubmitSpy:
     """A monkeypatch stand-in for ``kube_staging.submit_job``.
 
-    Records each call and always returns the SAME ``(name, uid)`` -- modeling the seam's
-    deterministic Job name + 409->refresh idempotency (a re-submit yields no duplicate Job).
+    Records each call's ``file_id`` AND the threaded ``kube`` (MKUE-01) and always returns the SAME
+    ``(name, uid)`` -- modeling the seam's deterministic Job name + 409->refresh idempotency (a
+    re-submit yields no duplicate Job).
     """
 
     def __init__(self, name: str = "phaze-analyze-job", uid: str = "uid-1") -> None:
         self.name = name
         self.uid = uid
         self.calls: list[uuid.UUID] = []
+        self.kubes: list[Any] = []
 
-    async def __call__(self, file_id: uuid.UUID) -> tuple[str, str]:
+    async def __call__(self, file_id: uuid.UUID, kube: Any) -> tuple[str, str]:
         self.calls.append(file_id)
+        self.kubes.append(kube)
         return self.name, self.uid
+
+
+def _patch_settings(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Pin ``submit_cloud_job.get_settings`` to a one-kueue registry whose id == the seeded backend_id."""
+    from phaze.config_backends import KubeConfig
+
+    kube = KubeConfig(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq")
+    settings = SimpleNamespace(backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, kube=kube)])
+    monkeypatch.setattr("phaze.tasks.submit_cloud_job.get_settings", lambda: settings)
+    return kube
 
 
 def _make_file(*, state: str = FileState.AWAITING_CLOUD) -> FileRecord:
@@ -70,6 +96,20 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD) -> FileRecord:
     )
 
 
+async def _seed_cloud_job(session: AsyncSession, fid: uuid.UUID, *, backend_id: str | None = _KUEUE_BACKEND_ID) -> None:
+    """Seed the dispatch-stamped cloud_job row (backend_id set) the submit resolves its cluster from."""
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=fid,
+            backend_id=backend_id,
+            s3_key=f"phaze-staging/{fid}",
+            status=CloudJobStatus.UPLOADED.value,
+        )
+    )
+    await session.commit()
+
+
 def _make_ctx(async_engine: AsyncEngine) -> dict[str, Any]:
     """Build a controller-shaped ctx: just ``async_session`` (the submit task's only ctx need)."""
     sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
@@ -82,11 +122,13 @@ async def test_submit_creates_submitted_cloud_job_with_kueue_workload(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One submit -> one cloud_job row at SUBMITTED with ``kueue_workload`` set; one kube POST."""
+    """One submit -> the cloud_job row flips to SUBMITTED with ``kueue_workload`` set; one kube POST."""
     file = _make_file()
     session.add(file)
     await session.commit()
     fid = file.id
+    await _seed_cloud_job(session, fid)
+    _patch_settings(monkeypatch)
 
     spy = _SubmitSpy(name=f"phaze-analyze-{fid}")
     monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
@@ -103,6 +145,49 @@ async def test_submit_creates_submitted_cloud_job_with_kueue_workload(
 
 
 @pytest.mark.asyncio
+async def test_submit_resolves_backend_kube_from_recorded_backend_id(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MKUE-01: the POST is threaded THIS file's backend cluster, resolved via cloud_job.backend_id."""
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    fid = file.id
+    await _seed_cloud_job(session, fid)
+    kube = _patch_settings(monkeypatch)
+
+    spy = _SubmitSpy(name=f"phaze-analyze-{fid}")
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
+
+    await submit_cloud_job(_make_ctx(async_engine), fid)
+
+    # The seam received the registry-resolved KubeConfig for the recorded backend_id (not a global).
+    assert spy.kubes == [kube]
+    assert spy.kubes[0].api_url == "https://kube.example.com"
+
+
+@pytest.mark.asyncio
+async def test_submit_raises_when_no_owning_backend(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A submit whose file has no cloud_job (no recorded backend_id) is a misconfig -> KubeStagingError."""
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    fid = file.id
+    # No cloud_job seeded -> backend_id resolves to None.
+    _patch_settings(monkeypatch)
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", _SubmitSpy())
+
+    with pytest.raises(kube_staging.KubeStagingError):
+        await submit_cloud_job(_make_ctx(async_engine), fid)
+
+
+@pytest.mark.asyncio
 async def test_resubmit_is_idempotent_single_row(
     async_engine: AsyncEngine,
     session: AsyncSession,
@@ -113,6 +198,8 @@ async def test_resubmit_is_idempotent_single_row(
     session.add(file)
     await session.commit()
     fid = file.id
+    await _seed_cloud_job(session, fid)
+    _patch_settings(monkeypatch)
 
     spy = _SubmitSpy(name=f"phaze-analyze-{fid}")
     monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
@@ -139,6 +226,8 @@ async def test_submit_seeds_no_scheduling_ledger_row(
     session.add(file)
     await session.commit()
     fid = file.id
+    await _seed_cloud_job(session, fid)
+    _patch_settings(monkeypatch)
 
     monkeypatch.setattr("phaze.services.kube_staging.submit_job", _SubmitSpy(name=f"phaze-analyze-{fid}"))
 
@@ -162,6 +251,8 @@ async def test_submit_writes_no_analysis_result(
     session.add(file)
     await session.commit()
     fid = file.id
+    await _seed_cloud_job(session, fid)
+    _patch_settings(monkeypatch)
 
     monkeypatch.setattr("phaze.services.kube_staging.submit_job", _SubmitSpy(name=f"phaze-analyze-{fid}"))
 
@@ -204,6 +295,8 @@ async def test_submit_seeds_cloud_phase_queued_behind_quota(
     session.add(file)
     await session.commit()
     fid = file.id
+    await _seed_cloud_job(session, fid)
+    _patch_settings(monkeypatch)
 
     monkeypatch.setattr("phaze.services.kube_staging.submit_job", _SubmitSpy(name=f"phaze-analyze-{fid}"))
 
@@ -224,6 +317,8 @@ async def test_resubmit_resets_cloud_phase_to_queued_behind_quota(
     session.add(file)
     await session.commit()
     fid = file.id
+    await _seed_cloud_job(session, fid)
+    _patch_settings(monkeypatch)
 
     monkeypatch.setattr("phaze.services.kube_staging.submit_job", _SubmitSpy(name=f"phaze-analyze-{fid}"))
     ctx = _make_ctx(async_engine)

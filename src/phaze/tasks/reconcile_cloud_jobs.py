@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
+    from phaze.config_backends import KubeConfig
 
 
 logger = structlog.get_logger(__name__)
@@ -95,8 +96,8 @@ def _workload_condition(workload: Any, cond_type: str) -> dict[str, Any] | None:
     return None
 
 
-async def _job_gone(name: str) -> bool:
-    """Return whether the Job ``name`` is gone (deleted) -- ``get_job`` returns None or 404s.
+async def _job_gone(name: str, kube: KubeConfig) -> bool:
+    """Return whether the Job ``name`` is gone (deleted) on ``kube``'s cluster -- ``get_job`` returns None or 404s.
 
     The re-drive race guard (D-08): after ``delete_job`` we confirm the prior Job is GONE before
     enqueuing the fresh ``submit_cloud_job``. If it is still terminating, the deterministic-name
@@ -105,7 +106,7 @@ async def _job_gone(name: str) -> bool:
     (the desired end state); the fake-kube seam returns None.
     """
     try:
-        job = await kube_staging.get_job(name)
+        job = await kube_staging.get_job(name, kube)
     except kr8s.NotFoundError:
         return True
     return job is None
@@ -124,8 +125,8 @@ async def _enqueue_resubmit(ctx: dict[str, Any], file_id: uuid.UUID) -> None:
     await queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
 
 
-async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str, tally: dict[str, int]) -> None:
-    """Succeeded Job: record SUCCEEDED + COMMIT, THEN delete the Job (D-04). No S3 delete, no result.
+async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str, tally: dict[str, int], kube: KubeConfig) -> None:
+    """Succeeded Job: record SUCCEEDED + COMMIT, THEN delete the Job on ``kube``'s cluster (D-04). No S3 delete, no result.
 
     The analysis result already landed via the ``/api/internal/agent/*`` callback (KSUBMIT-03), which
     also deleted the staged S3 object inline (D-05) -- so the success path makes ZERO S3 calls and
@@ -136,7 +137,7 @@ async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str,
     cloud_job.inadmissible = False  # CR-01: a transiently-Inadmissible row that then succeeds must clear the alert flag.
     cloud_job.cloud_phase = CloudPhase.FINISHED.value  # D-04: admission progression terminus (orthogonal to the fault flag).
     await session.commit()
-    await kube_staging.delete_job(name)
+    await kube_staging.delete_job(name, kube)
     tally["succeeded"] += 1
 
 
@@ -147,6 +148,7 @@ async def _handle_no_callback_terminal(
     name: str,
     cap: int,
     tally: dict[str, int],
+    kube: KubeConfig,
 ) -> None:
     """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill back to AWAITING_CLOUD at cap (D-08/SCHED-03).
 
@@ -189,7 +191,7 @@ async def _handle_no_callback_terminal(
         await session.commit()
         if bucket is not None:
             await s3_staging.delete_staged_object(file_id, bucket)
-        await kube_staging.delete_job(name)
+        await kube_staging.delete_job(name, kube)
         tally["failed"] += 1
         logger.warning(
             "reconcile_cloud_jobs: submit cap reached -> spill back to AWAITING_CLOUD", file_id=str(file_id), attempt=next_attempt, cap=cap
@@ -197,8 +199,8 @@ async def _handle_no_callback_terminal(
         return
 
     # Under cap -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
-    await kube_staging.delete_job(name)
-    if not await _job_gone(name):
+    await kube_staging.delete_job(name, kube)
+    if not await _job_gone(name, kube):
         logger.info("reconcile_cloud_jobs: prior Job still terminating; deferring re-drive", file_id=str(file_id), kueue_workload=name)
         return
     cloud_job.attempts = next_attempt
@@ -210,8 +212,13 @@ async def _handle_no_callback_terminal(
     logger.info("reconcile_cloud_jobs: re-driving submit_cloud_job", file_id=str(file_id), attempt=next_attempt)
 
 
-async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, cap: int, tally: dict[str, int]) -> None:
-    """Reconcile a single in-flight ``cloud_job`` row against its Job + Kueue Workload."""
+async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, cap: int, tally: dict[str, int], kube: KubeConfig) -> None:
+    """Reconcile a single in-flight ``cloud_job`` row against its Job + Kueue Workload on ``kube``'s cluster.
+
+    Phase 70 (MKUE-01/D-04): ``kube`` is THIS row's owning backend ``KubeConfig`` (threaded from
+    ``KueueBackend.reconcile``), so every ``get_job`` / ``get_workload_for`` / ``delete_job`` targets the
+    file's own cluster.
+    """
     name = cloud_job.kueue_workload
     if not name:
         logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
@@ -223,24 +230,24 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     # and skipped every tick -- leaving the row stuck in-flight forever (e.g. a Failed Job GC'd by
     # ttlSecondsAfterFinished before reconcile read it, or an enqueue that raised after the attempt commit).
     try:
-        job = await kube_staging.get_job(name)
+        job = await kube_staging.get_job(name, kube)
     except kr8s.NotFoundError:
         job = None
     if job is None:
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally)
+        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
     # 1. Job terminal signals first -- the Job is the source of truth for succeeded-vs-failed.
     if _job_counter(job, "succeeded") >= 1 or _job_has_true_condition(job, "Complete"):
-        await _record_success(session, cloud_job, name, tally)
+        await _record_success(session, cloud_job, name, tally, kube)
         return
     if _job_counter(job, "failed") >= 1 or _job_has_true_condition(job, "Failed"):
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally)
+        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
     # 2. Not terminal -> read the paired Kueue Workload for admission state (D-02 by job-uid).
     uid = str(getattr(getattr(job, "metadata", None), "uid", "") or "")
-    workload = await kube_staging.get_workload_for(uid) if uid else None
+    workload = await kube_staging.get_workload_for(uid, kube) if uid else None
     if workload is None:
         # Admission state unreadable this tick (label miss + owner-ref miss) -> stay in-flight, no-op.
         return
@@ -248,7 +255,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     # Evicted/deactivated -> no-callback terminal (re-drive under cap).
     evicted = _workload_condition(workload, _TYPE_EVICTED)
     if evicted is not None and evicted.get("status") == "True":
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally)
+        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
     quota_reserved = _workload_condition(workload, _TYPE_QUOTA_RESERVED)
