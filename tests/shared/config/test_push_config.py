@@ -1,11 +1,16 @@
 """Unit tests for the Phase 50 push-pipeline config knobs.
 
-ControlSettings gains the bounded ≤N cloud window (`cloud_max_in_flight`, D-03),
-the push attempt cap (`push_max_attempts`, D-12), and the control-side scratch
-mirror (`compute_scratch_dir`). AgentSettings gains the rsync-over-SSH target
-fields plus two file-mounted secrets (`push_ssh_key`, `push_known_hosts`) wired
-into SECRET_FILE_FIELDS so the shared `_resolve_secret_files` validator resolves
-their `<VAR>_FILE` siblings. Pure pydantic-settings tests — no DB, no Redis.
+ControlSettings keeps the push attempt cap (`push_max_attempts`, D-12).
+AgentSettings keeps the rsync-over-SSH target fields (incl. `cloud_scratch_dir`)
+plus two file-mounted secrets (`push_ssh_key`, `push_known_hosts`) wired into
+SECRET_FILE_FIELDS so the shared `_resolve_secret_files` validator resolves their
+`<VAR>_FILE` siblings. Pure pydantic-settings tests — no DB, no Redis.
+
+Phase 67 (REG-04, D-12): the flat control-side cloud window and the control-side
+compute scratch-dir mirror were REMOVED (the window is now each backend's `cap`
+and the scratch dir is the compute backend's `scratch_dir` in backends.toml), so
+their tests were deleted from this file. `cloud_scratch_dir` below is the
+AgentSettings-side field and is unaffected.
 """
 
 from __future__ import annotations
@@ -44,28 +49,6 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ControlSettings: cloud_max_in_flight (D-03)
-# --------------------------------------------------------------------------- #
-def test_cloud_max_in_flight_default() -> None:
-    assert ControlSettings().cloud_max_in_flight == 2
-
-
-def test_cloud_max_in_flight_env_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PHAZE_CLOUD_MAX_IN_FLIGHT", "5")
-    assert ControlSettings().cloud_max_in_flight == 5
-
-
-def test_cloud_max_in_flight_rejects_zero() -> None:
-    with pytest.raises(ValueError, match="cloud_max_in_flight"):
-        ControlSettings(cloud_max_in_flight=0)
-
-
-def test_cloud_max_in_flight_rejects_too_large() -> None:
-    with pytest.raises(ValueError, match="cloud_max_in_flight"):
-        ControlSettings(cloud_max_in_flight=100)
-
-
-# --------------------------------------------------------------------------- #
 # ControlSettings: push_max_attempts (D-12)
 # --------------------------------------------------------------------------- #
 def test_push_max_attempts_default() -> None:
@@ -85,20 +68,6 @@ def test_push_max_attempts_rejects_zero() -> None:
 def test_push_max_attempts_rejects_too_large() -> None:
     with pytest.raises(ValueError, match="push_max_attempts"):
         ControlSettings(push_max_attempts=20)
-
-
-# --------------------------------------------------------------------------- #
-# ControlSettings: compute_scratch_dir
-# --------------------------------------------------------------------------- #
-def test_compute_scratch_dir_default_none() -> None:
-    c = ControlSettings()
-    assert hasattr(c, "compute_scratch_dir")
-    assert c.compute_scratch_dir is None
-
-
-def test_compute_scratch_dir_env_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PHAZE_COMPUTE_SCRATCH_DIR", "/scratch/cloud")
-    assert ControlSettings().compute_scratch_dir == "/scratch/cloud"
 
 
 # --------------------------------------------------------------------------- #

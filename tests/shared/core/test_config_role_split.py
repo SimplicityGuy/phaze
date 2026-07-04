@@ -254,23 +254,26 @@ def test_env_example_documents_auto_migrate_and_dev_seed() -> None:
         assert key in text, f".env.example missing migration/seed knob: {key}"
 
 
-def test_env_example_documents_cloud_target() -> None:
-    """``.env.example`` must document PHAZE_CLOUD_TARGET and call out the rename.
+def test_env_example_documents_backends_registry() -> None:
+    """``.env.example`` must document the backends.toml surface + carry a loud removal callout.
 
-    Phase 55 / v6.0: PHAZE_CLOUD_BURST_ENABLED is removed and replaced by the
-    PHAZE_CLOUD_TARGET selector (local/a1/k8s). The rename must be LOUD so an
-    operator redeploying does not keep the dead boolean and silently lose cloud
-    routing. The legacy key must not appear in .env.example as a live setting.
+    Phase 67 (REG-04, D-11/D-12): the flat ``PHAZE_CLOUD_TARGET`` selector and the flat
+    ``PHAZE_S3_*`` / ``PHAZE_KUBE_*`` connection surface are REMOVED with no shim — the typed
+    backend registry loaded from ``backends.toml`` (pointed at by ``PHAZE_BACKENDS_CONFIG_FILE``)
+    is the SOLE config surface, with an implicit-local zero-config default. The removal must be
+    LOUD so an operator redeploying deletes the dead vars instead of silently losing cloud
+    routing. This is the no-dead-token gate: the removed selector + the legacy cloud-burst toggle
+    must NOT appear in .env.example as live settings.
     """
     text = _read_env_example()
-    assert "PHAZE_CLOUD_TARGET" in text, ".env.example missing PHAZE_CLOUD_TARGET selector"
-    for value in ("local", "a1", "k8s"):
-        assert value in text, f".env.example must document cloud_target value: {value}"
-    # Loud rename callout: an operator who kept the old toggle must be told to
-    # delete it. The callout names the new var and flags the removal as breaking,
-    # WITHOUT re-introducing the dead `PHAZE_CLOUD_BURST_ENABLED` / `cloud_burst`
-    # tokens that the migration grep-gate forbids.
-    assert "BREAKING RENAME" in text, ".env.example must carry a loud breaking-rename callout"
+    # New surface documented.
+    assert "PHAZE_BACKENDS_CONFIG_FILE" in text, ".env.example missing the PHAZE_BACKENDS_CONFIG_FILE pointer"
+    assert "backends.toml" in text, ".env.example must reference the backends.toml surface"
+    # Loud breaking-removal callout so the operator deletes the dead vars.
+    assert "BREAKING" in text, ".env.example must carry a loud breaking-removal callout"
+    # No-dead-token gate: neither the removed selector nor the older cloud-burst toggle may
+    # survive as a live setting.
+    assert "PHAZE_CLOUD_TARGET" not in text, "the removed PHAZE_CLOUD_TARGET selector must not appear in .env.example"
     assert "PHAZE_CLOUD_BURST_ENABLED" not in text, "the removed legacy toggle token must not appear in .env.example"
     assert "cloud_burst" not in text, "the removed legacy `cloud_burst` token must not appear in .env.example"
 
