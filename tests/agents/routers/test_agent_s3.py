@@ -8,8 +8,11 @@ Two endpoints mirror the ``agent_push.py`` split (report_pushed / report_push_mi
   rowcount guard (a duplicate/late callback is an idempotent 200 that does NOT re-complete).
 - ``POST /api/internal/agent/s3/{file_id}/failed`` -- the agent reports an upload failure; under
   the re-drive cap control re-drives (``cloud_staging.redrive_upload``) and increments the ledger
-  attempt counter (cleared=False); at/over the cap control sets ``cloud_job`` FAILED, aborts the
-  multipart, deletes the staged object, and clears the ledger (cleared=True, KSTAGE-04).
+  attempt counter (cleared=False); at/over the cap control sets ``cloud_job`` FAILED (marking its
+  ``attempts`` spent, >= cloud_submit_max_attempts), aborts the multipart, deletes the staged object,
+  clears the ledger, and SPILLS the file back to ``AWAITING_CLOUD`` (Phase 69, SCHED-03/D-04) so the
+  next drain tick routes it to local -- ANALYSIS_FAILED now comes only from a LOCAL analysis failure
+  (cleared=True, KSTAGE-04).
 
 S3 SDK + re-drive calls are monkeypatched (AsyncMocks) so the contract is exercised without a live
 S3 backend; the FakeTaskRouter stands in for the per-agent queue.
@@ -444,20 +447,23 @@ async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     assert row.payload.get("s3_upload_attempt") == 1
 
 
-async def test_failed_at_cap_fails_terminally_and_cleans_up(
+async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """At the cap: cloud_job FAILED + abort multipart + delete staged object + ledger cleared -> cleared=True.
+    """At the cap: cloud_job FAILED (budget spent) + abort + delete + ledger cleared + SPILL to AWAITING_CLOUD.
 
-    CR-01: the terminal branch MUST also exit the FileRecord from PUSHING -> ANALYSIS_FAILED (else the
-    file permanently consumes a window slot and is invisible to backfill). WR-01: it MUST clear
-    cloud_phase so a FAILED row never inflates the admission-state "Running" tile.
+    Phase 69 (SCHED-03/D-04): a kueue upload that exhausts its re-drive cap no longer hard-fails. The
+    file spills back to AWAITING_CLOUD with its cloud budget marked spent (``attempts >=
+    cloud_submit_max_attempts``) so the next drain tick routes it to LOCAL -- ANALYSIS_FAILED now comes
+    only from a LOCAL analysis failure. The cleanup (abort multipart + delete staged object + ledger
+    clear) and WR-01 cloud_phase=None are PRESERVED; ``cleared`` stays True.
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
+    settings = ControlSettings()  # push_max_attempts=3, cloud_submit_max_attempts=3 (router defaults)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
     await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds the cap
@@ -473,14 +479,15 @@ async def test_failed_at_cap_fails_terminally_and_cleans_up(
 
     assert r.status_code == 200, r.text
     assert r.json()["cleared"] is True
-    redrive.assert_not_awaited()  # terminal, not re-driven
-    abort.assert_awaited_once()
+    redrive.assert_not_awaited()  # terminal for this backend, not re-driven
+    abort.assert_awaited_once()  # cleanup PRESERVED on the spill path
     delete.assert_awaited_once()
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.FAILED.value
     assert job.cloud_phase is None  # WR-01: terminal row no longer counts toward the "Running" tile
-    assert await _file_state(session, file_id) == FileState.ANALYSIS_FAILED  # CR-01: exits the window
+    assert job.attempts >= settings.cloud_submit_max_attempts  # SCHED-03/D-04: cloud budget spent -> local next tick
+    assert await _file_state(session, file_id) == FileState.AWAITING_CLOUD  # SCHED-03: spill, never ANALYSIS_FAILED
     assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
 
 

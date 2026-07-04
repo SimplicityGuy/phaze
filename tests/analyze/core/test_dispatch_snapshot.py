@@ -71,6 +71,12 @@ class _StubCfg:
         self.active_cap = active_cap
         self.cloud_enabled = cloud_enabled
         self.active_cloud_kind = active_cloud_kind
+        # Phase 69: the tiered drain routes each candidate through the pure select_backend policy, which
+        # reads these two bounded knobs (D-04 attempt-exclusion + D-01/D-03 staleness gate on local
+        # spill). The single-non-local cells here never exercise either path (0 attempts, no local
+        # backend), so the golden side-effect baseline stays byte-identical -- that is the BACK-04 proof.
+        self.cloud_submit_max_attempts = 3
+        self.cloud_spill_to_local_after_seconds = 900
         if active_cloud_kind is None:
             self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
         else:

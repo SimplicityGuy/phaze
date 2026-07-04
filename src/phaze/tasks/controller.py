@@ -32,7 +32,7 @@ from phaze.config import export_llm_api_keys, get_settings
 from phaze.logging_config import configure_logging
 from phaze.services import kube_staging
 from phaze.services.agent_task_router import AgentTaskRouter
-from phaze.services.backends import resolve_backends, resolved_non_local_kind
+from phaze.services.backends import resolved_non_local_kind
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.deterministic_key import increment_completed
@@ -176,14 +176,14 @@ async def startup(ctx: dict[str, Any]) -> None:
     # control plane still boots Postgres/Redis/UI/local-analysis). The WARNING names only the env var
     # PHAZE_KUBE_LOCAL_QUEUE; it never interpolates the SA token or kube DSN (T-56-LOG / T-54-07).
     # Phase 68 (D-09): registry-derived kind via the Backend registry (was the retired ≤1-non-local accessor).
-    # resolve_backends() carries the D-07 ≤1-non-local boot guard: it RAISES on a premature
-    # multi-cluster registry (>1 non-local — a valid schema whose dispatch lands in Phase 69),
-    # exactly as the retired accessor did. Reading it here must honor the D-05 boot invariant
-    # documented above, so a raise degrades to "skip the Kueue probe" (falls through to the else branch
-    # which clears any stale flag) rather than aborting the controller boot.
+    # Phase 69 (SCHED-01) retired resolve_backends()'s ≤1-non-local boot guard (N non-local backends now
+    # resolve), so the single-kind fail-fast this probe relies on now comes SOLELY from
+    # resolved_non_local_kind() below: it still RAISES on a premature >1-non-local registry (a valid
+    # schema whose Kueue LocalQueue probe is single-cluster). Reading it here must honor the D-05 boot
+    # invariant documented above, so a raise degrades to "skip the Kueue probe" (falls through to the else
+    # branch which clears any stale flag) rather than aborting the controller boot.
     try:
         control_cfg = cast("ControlSettings", cfg)
-        resolve_backends(control_cfg)  # D-07 boot guard: raises on >1 non-local (preserves the retired accessor's raise)
         active_kind = resolved_non_local_kind(control_cfg)
     except Exception:
         logger.warning(

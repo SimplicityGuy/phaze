@@ -54,14 +54,30 @@ class _StubCfg:
     regressions keep exercising the ON path.
     """
 
-    def __init__(self, *, active_cap: int = 2, cloud_enabled: bool = True, active_cloud_kind: str | None = "compute") -> None:
+    def __init__(
+        self,
+        *,
+        active_cap: int = 2,
+        cloud_enabled: bool = True,
+        active_cloud_kind: str | None = "compute",
+        backends: list[Any] | None = None,
+        cloud_submit_max_attempts: int = 3,
+        cloud_spill_to_local_after_seconds: int = 900,
+    ) -> None:
         self.active_cap = active_cap
         self.cloud_enabled = cloud_enabled
         self.active_cloud_kind = active_cloud_kind
-        # Phase 68: the drain resolves its dispatch backend via resolve_backends(cfg), which reads the
-        # registry-shaped ``backends`` list (each entry duck-types the Phase-67 submodel's
-        # kind/id/rank/cap). One non-local backend of the cell's kind; a local entry when cloud disabled.
-        if active_cloud_kind is None:
+        # Phase 69: the pure select_backend policy the drain calls reads these two bounded knobs
+        # (D-04 attempt-exclusion + D-01/D-03 staleness gate on local spill).
+        self.cloud_submit_max_attempts = cloud_submit_max_attempts
+        self.cloud_spill_to_local_after_seconds = cloud_spill_to_local_after_seconds
+        # Phase 68/69: the drain resolves its dispatch backends via resolve_backends(cfg), which reads
+        # the registry-shaped ``backends`` list (each entry duck-types the Phase-67 submodel's
+        # kind/id/rank/cap). ``backends`` (explicit) lets a multi-backend cell seed N entries; otherwise
+        # one non-local backend of the cell's kind, or a local entry when cloud disabled.
+        if backends is not None:
+            self.backends = backends
+        elif active_cloud_kind is None:
             self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
         else:
             self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
@@ -112,17 +128,38 @@ async def _states_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.
     return {r.id: r.state for r in rows}
 
 
+async def _seed_in_flight(
+    session: AsyncSession,
+    *,
+    backend_id: str,
+    count: int,
+    status: CloudJobStatus = CloudJobStatus.SUBMITTED,
+) -> None:
+    """Seed ``count`` in-flight cloud_job rows for ``backend_id`` (Phase 69 per-backend in_flight_count).
+
+    Phase 69 (D-05) counts a backend's in-flight window from its ``cloud_job`` rows
+    (``backend_id`` + status in the in-flight set), NOT the old FileState ``{PUSHING, PUSHED}`` window.
+    Each seeded row is a PUSHING file with a matching cloud_job so ``Backend.in_flight_count`` sees it.
+    """
+    for _ in range(count):
+        f = _make_file(state=FileState.PUSHING)
+        session.add(f)
+        await session.flush()
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, backend_id=backend_id, s3_key=None, status=status.value))
+    await session.commit()
+
+
 # --- Window full -> stage 0 -------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_window_full_stages_zero(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With N already in flight (PUSHING+PUSHED), the cron stages 0 new files."""
+    """With the backend's cap already in flight, the cron stages 0 new files (Phase 69: per-backend count)."""
     _patch_settings(monkeypatch, max_in_flight=2)
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    # Window already full: 1 PUSHING + 1 PUSHED == N=2.
-    session.add_all([_make_file(state=FileState.PUSHING), _make_file(state=FileState.PUSHED)])
+    # Window already full: 2 in-flight cloud_job rows for the compute backend == cap=2 (D-05 count).
+    await _seed_in_flight(session, backend_id="compute-1", count=2)
     held = [_make_file() for _ in range(3)]
     session.add_all(held)
     await session.commit()
@@ -142,11 +179,11 @@ async def test_window_full_stages_zero(async_engine: AsyncEngine, session: Async
 
 @pytest.mark.asyncio
 async def test_one_free_slot_stages_one(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With N-1 in flight, exactly one AWAITING_CLOUD file is staged to push_file + flipped to PUSHING."""
+    """With cap-1 in flight, exactly one AWAITING_CLOUD file is staged to push_file + flipped to PUSHING."""
     _patch_settings(monkeypatch, max_in_flight=2)
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    session.add(_make_file(state=FileState.PUSHING))  # 1 in flight, 1 slot free
+    await _seed_in_flight(session, backend_id="compute-1", count=1)  # 1 in flight (cloud_job), 1 slot free
     held = [_make_file() for _ in range(3)]
     session.add_all(held)
     await session.commit()
@@ -639,3 +676,213 @@ def test_staging_module_is_fastapi_free() -> None:
 
     assert not any(name == "fastapi" or name.startswith("fastapi.") for name in imported), "staging module must not import fastapi"
     assert not any(name.startswith("phaze.routers") for name in imported), "staging module must not import phaze.routers"
+
+
+# --- Phase 69: tiered multi-backend drain, per-backend overshoot, AWAITING_CLOUD-untouched guard ---
+
+
+def _patch_multi_backends(monkeypatch: pytest.MonkeyPatch, backends: list[Any], **cfg_kw: Any) -> None:
+    """Pin stage_cloud_window's get_settings() to a registry with N explicit (SimpleNamespace) backends."""
+    monkeypatch.setattr(
+        "phaze.tasks.release_awaiting_cloud.get_settings",
+        lambda: _StubCfg(backends=backends, **cfg_kw),
+    )
+
+
+async def _backend_ids_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str | None]:
+    """Return each file's ``cloud_job.backend_id`` (absent from the map when the file has no cloud_job)."""
+    session.expire_all()
+    rows = (await session.execute(select(CloudJob.file_id, CloudJob.backend_id).where(CloudJob.file_id.in_(ids)))).all()
+    return dict(rows)
+
+
+@pytest.mark.asyncio
+async def test_multi_backend_tick_dispatches_rank_first_and_spills(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SCHED-01: one tick routes candidates rank-first across N backends; a full top rank spills to the next.
+
+    Registry: compute-a (rank 10, cap 1) + compute-b (rank 20, cap 2). Both are available (one compute
+    agent + one fileserver online). With 4 FIFO candidates the free-slot limit is 1+2=3, so 3 stage in
+    one tick: the OLDEST fills the single top-rank (compute-a) slot, then the next two spill to compute-b
+    (compute-a is now full within the tick -- the local ``remaining`` decrement drives the spill). The
+    4th candidate is beyond total capacity and stays AWAITING_CLOUD.
+    """
+    _patch_multi_backends(
+        monkeypatch,
+        [
+            SimpleNamespace(kind="compute", id="compute-a", rank=10, cap=1),
+            SimpleNamespace(kind="compute", id="compute-b", rank=20, cap=2),
+        ],
+    )
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    base = datetime.now() - timedelta(hours=4)
+    oldest = _make_file(created_at=base)
+    second = _make_file(created_at=base + timedelta(hours=1))
+    third = _make_file(created_at=base + timedelta(hours=2))
+    fourth = _make_file(created_at=base + timedelta(hours=3))
+    session.add_all([fourth, oldest, third, second])  # insert out of order -- ORDER BY created_at drives it
+    await session.commit()
+    oldest_id, second_id, third_id, fourth_id = oldest.id, second.id, third.id, fourth.id  # capture before the drain expires the objects
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 3, "skipped": 0}
+    backend_ids = await _backend_ids_for(session, [oldest_id, second_id, third_id, fourth_id])
+    # Rank-first: the oldest candidate takes the single top-rank (compute-a) slot.
+    assert backend_ids[oldest_id] == "compute-a"
+    # Spill: compute-a's cap=1 is full within the tick, so the next two land on compute-b (rank 20).
+    assert backend_ids[second_id] == "compute-b"
+    assert backend_ids[third_id] == "compute-b"
+    # Beyond total capacity (1+2=3): the 4th candidate is never fetched and stays AWAITING_CLOUD.
+    assert fourth_id not in backend_ids
+    assert (await _states_for(session, [fourth_id]))[fourth_id] == FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_overlapping_ticks_never_overshoot_per_backend_cap(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SCHED-02: two overlapping ticks against the SAME backend never push its in_flight_count past cap.
+
+    Phase 69 counts a backend's in-flight window from its ``cloud_job`` rows (backend_id-scoped), so the
+    per-backend cap is the load-bearing bound. Two concurrent ticks serialize on the single advisory lock
+    (WR-04), so the committed cloud_job rows for the backend never exceed its cap even under concurrency.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")  # single compute-1 backend, cap 2
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backlog = [_make_file() for _ in range(20)]
+    session.add_all(backlog)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    ctx = _make_ctx(async_engine, router, DedupFakeQueue("controller"))
+    results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
+
+    from sqlalchemy import func
+
+    session.expire_all()
+    in_flight = int(
+        (
+            await session.execute(
+                select(func.count(CloudJob.id)).where(
+                    CloudJob.backend_id == "compute-1",
+                    CloudJob.status.in_(
+                        [s.value for s in (CloudJobStatus.UPLOADING, CloudJobStatus.UPLOADED, CloudJobStatus.SUBMITTED, CloudJobStatus.RUNNING)]
+                    ),
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    assert in_flight <= 2, f"per-backend cap overshot: compute-1 has {in_flight} in-flight cloud_job rows (cap is 2)"
+    assert sum(r["staged"] for r in results) <= 2, "concurrent ticks staged more than the per-backend cap"
+
+
+@pytest.mark.asyncio
+async def test_held_awaiting_untouched_keeps_updated_at(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RESEARCH A3: a file the drain considers but HOLDS is never UPDATE-dirtied -- its updated_at stays put.
+
+    The spill-to-local staleness gate reads ``now - file.updated_at`` as the file's wait duration, which
+    is only correct if no non-drain writer touches a parked AWAITING_CLOUD row (its ``updated_at`` must
+    stay equal to its entry timestamp). Here a file that has exhausted its cloud attempt budget (attempts
+    == cloud_submit_max_attempts) with NO local backend in the registry makes ``select_backend`` return
+    None -- a clean per-candidate hold. The drain must leave the row (and its updated_at) byte-untouched.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")  # single compute-1 backend; NO local
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    # A parked file whose cloud budget is spent: its terminal (FAILED) cloud_job holds attempts == max (3),
+    # so it is NOT in-flight (remaining stays 2) yet select_backend excludes it from cloud and finds no local.
+    f = _make_file()
+    f.updated_at = datetime.now() - timedelta(hours=5)  # backdated entry timestamp (naive, matches the column)
+    session.add(f)
+    await session.commit()
+    fid = f.id
+    session.add(CloudJob(id=uuid.uuid4(), file_id=fid, backend_id="compute-1", s3_key=None, status=CloudJobStatus.FAILED.value, attempts=3))
+    await session.commit()
+
+    session.expire_all()
+    before = (await session.execute(select(FileRecord.updated_at).where(FileRecord.id == fid))).scalar_one()
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    # Clean hold: the file is considered (it is the sole FIFO candidate) but held -- nothing staged.
+    assert result == {"staged": 0, "skipped": 1}
+    session.expire_all()
+    after = (await session.execute(select(FileRecord.updated_at).where(FileRecord.id == fid))).scalar_one()
+    assert after == before, "a held AWAITING_CLOUD row must not be UPDATE-dirtied (updated_at is the staleness clock)"
+    assert (await _states_for(session, [fid]))[fid] == FileState.AWAITING_CLOUD
+    # The drain never touched the cloud_job either -- attempts stays 3, status stays FAILED.
+    cj = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    assert cj.attempts == 3
+    assert cj.status == CloudJobStatus.FAILED.value
+
+
+# --- CR-01 (SCHED-01/03): a file spilled to local is NOT re-dispatched to cloud on a later tick ---
+
+
+@pytest.mark.asyncio
+async def test_local_spill_not_redispatched_to_cloud(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-01 verifier scenario: spill-to-local then cloud-frees -> the file is NOT re-dispatched to cloud.
+
+    Registry: compute-1 (rank 10) + local (rank 99). Tick 1 runs with the compute agent OFFLINE, so the
+    sole AWAITING_CLOUD file spills to local immediately (D-03 offline->local, not staleness-gated) and
+    LocalBackend.dispatch flips it to LOCAL_ANALYZING -- removing it from the AWAITING_CLOUD candidate set.
+    Tick 2 brings the compute agent ONLINE with a free slot; because the file is no longer AWAITING_CLOUD
+    it is NOT a drain candidate, so it stays LOCAL_ANALYZING and grows NO cloud_job row (no cross-backend
+    double-dispatch, no stranded SUBMITTED compute cloud_job / leaked cap slot).
+
+    Before the CR-01 fix (RED): tick 1 leaves the file in AWAITING_CLOUD, so tick 2 re-selects it and
+    dispatches it to the freed compute backend (PUSHING + a cloud_job row) -- the exact double-dispatch.
+    """
+    from sqlalchemy import func
+
+    _patch_multi_backends(
+        monkeypatch,
+        [
+            SimpleNamespace(kind="compute", id="compute-1", rank=10, cap=2),
+            SimpleNamespace(kind="local", id="local", rank=99, cap=4),
+        ],
+    )
+    # Tick 1: only the fileserver is online; the compute agent is OFFLINE (spill-to-local immediate).
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    f = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(f)
+    await session.commit()
+    fid = f.id
+
+    router = DedupFakeTaskRouter()
+    result1 = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    # The file spilled to local: dispatched exactly once, now LOCAL_ANALYZING (off the AWAITING_CLOUD set).
+    assert result1 == {"staged": 1, "skipped": 0}
+    assert (await _states_for(session, [fid]))[fid] == FileState.LOCAL_ANALYZING
+
+    # Tick 2: the compute agent comes online with a free slot -- a would-be cloud re-dispatch opportunity.
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    result2 = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    # No candidate remains (the file left AWAITING_CLOUD): it is untouched, still LOCAL_ANALYZING.
+    assert result2 == {"staged": 0, "skipped": 0}
+    assert (await _states_for(session, [fid]))[fid] == FileState.LOCAL_ANALYZING
+    # And it grew NO cloud_job row -- no cross-backend double-dispatch, no leaked compute cap slot.
+    session.expire_all()
+    cloud_job_count = int((await session.execute(select(func.count(CloudJob.id)).where(CloudJob.file_id == fid))).scalar() or 0)
+    assert cloud_job_count == 0

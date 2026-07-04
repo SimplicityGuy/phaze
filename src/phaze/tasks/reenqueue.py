@@ -70,7 +70,9 @@ from sqlalchemy import select, text
 import structlog
 
 from phaze.config import get_settings
+from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord, FileState
+from phaze.services.backends import IN_FLIGHT
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import (
     count_inflight_jobs,
@@ -199,6 +201,24 @@ async def _get_awaiting_cloud_ids(session: AsyncSession) -> set[str]:
     return {str(fid) for fid in (await session.scalars(select(FileRecord.id).where(FileRecord.state == FileState.AWAITING_CLOUD))).all()}
 
 
+async def _in_flight_cloud_job_ids(session: AsyncSession) -> set[str]:
+    """File-id strings for files that currently carry an in-flight ``cloud_job`` row (Phase 69, SCHED-05).
+
+    After Phase-68 BACK-03 a cloud-burst file has BOTH an in-flight ``cloud_job`` row (any
+    ``backend_id``) AND a ``process_file`` / ``push_file`` scheduling-ledger row. Both the backend
+    reconcile/``/pushed`` callback and this ledger recovery could otherwise claim ownership of that
+    file's re-drive -- a double-owner vector that is exactly the 44.5k over-enqueue incident class.
+    Excluding every file with a live ``cloud_job`` row from the ledger orphan set makes the backend
+    reconcile/callback the SINGLE owner for cloud-backed files, while a file with NO in-flight
+    ``cloud_job`` (a genuinely-orphaned held AWAITING_CLOUD file) keeps its existing recovery path.
+
+    ``IN_FLIGHT`` = {UPLOADING, UPLOADED, SUBMITTED, RUNNING} (terminal SUCCEEDED/FAILED excluded);
+    the set is small and bounded (in-flight rows only), read ONCE per recovery run alongside the
+    done-sets. Mirrors :func:`_get_awaiting_cloud_ids`.
+    """
+    return {str(fid) for fid in (await session.scalars(select(CloudJob.file_id).where(CloudJob.status.in_([s.value for s in IN_FLIGHT])))).all()}
+
+
 def _natural_id(row: SchedulingLedger) -> str | None:
     """Return the file-id natural id from a predicate-covered row's stored payload, or None.
 
@@ -314,8 +334,13 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         rows = await get_ledger_rows(session)
         live = await get_live_job_keys(session)
         done_sets = await _build_done_sets(session)
+        # SCHED-05: a file with an in-flight cloud_job row (any backend_id) is owned SOLELY by its
+        # backend reconcile/`/pushed` callback -- excluding it here keeps exactly one recovery owner
+        # per backend kind, so a compute-backed cloud file gains no second recovery path (no replay
+        # of the 44.5k over-enqueue incident class). Read ONCE, alongside live/done_sets.
+        in_flight = await _in_flight_cloud_job_ids(session)
 
-        orphaned = [r for r in rows if r.key not in live and not is_domain_completed(r, done_sets)]
+        orphaned = [r for r in rows if r.key not in live and not is_domain_completed(r, done_sets) and _natural_id(r) not in in_flight]
 
         # Initialize every keyed function to zero so the return shape is TOTAL (and a stage with no
         # orphaned rows reads as an explicit zero, not a missing key the startup-log/UI must guess at).

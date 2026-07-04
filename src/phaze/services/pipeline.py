@@ -1206,8 +1206,9 @@ async def get_pushing_count(session: AsyncSession) -> int:
     (files mid-rsync to the compute agent's scratch dir). Poll-safe via :func:`_safe_count`
     (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node to 0 and rolls back
     the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll. This is the
-    OBSERVATIONAL per-card count -- the load-bearing ≤N backpressure is :func:`get_cloud_window_count`,
-    which is intentionally NOT degrade-safe so the cron never over-stages on a transient error.
+    OBSERVATIONAL per-card count -- the load-bearing backpressure is now per-backend
+    ``Backend.in_flight_count`` (Phase 69, D-05), which the drain reads once per tick and which is
+    intentionally NOT degrade-safe so the drain never over-dispatches on a transient error.
     """
     return await _safe_count(
         session,
@@ -1221,8 +1222,8 @@ async def get_pushed_count(session: AsyncSession) -> int:
 
     Drives the dashboard "Analyzing (cloud)" card -- the right half of the bounded cloud window
     (files that finished rsync and are awaiting/within remote analysis). Poll-safe via
-    :func:`_safe_count`, exactly like :func:`get_pushing_count`. Observational only; the window
-    cap itself is enforced by :func:`get_cloud_window_count` from committed FileState.
+    :func:`_safe_count`, exactly like :func:`get_pushing_count`. Observational only; the per-backend
+    cap itself is enforced by ``Backend.in_flight_count`` (Phase 69, D-05) from committed cloud_job rows.
     """
     return await _safe_count(
         session,
@@ -1233,25 +1234,11 @@ async def get_pushed_count(session: AsyncSession) -> int:
 
 # --- Phase 50 bounded cloud-window helpers (D-03/D-08, CLOUDPIPE-01) ---------------------
 #
-# The window is the load-bearing ≤N backpressure: the count of files staged-or-in-flight to the
-# single compute agent (FileState IN {PUSHING, PUSHED}) must never exceed cloud_max_in_flight.
-# The ``stage_cloud_window`` cron composes these two helpers in ONE transaction -- count the
-# window from COMMITTED FileState truth (NOT the SAQ ledger), then SELECT ... FOR UPDATE SKIP
-# LOCKED up to the free slots so a concurrent tick cannot double-stage the same row (T-50-scratch-dos).
-
-
-async def get_cloud_window_count(session: AsyncSession) -> int:
-    """Return COUNT of files in the ≤N cloud window: ``state IN {PUSHING, PUSHED}`` (Phase 50, D-03/D-08).
-
-    The window is counted from COMMITTED FileState truth -- a row is in the window from the moment
-    the staging cron flips it to ``PUSHING`` (rsync in progress) through ``PUSHED`` (landed on the
-    compute scratch dir, within analysis). ``slots = cloud_max_in_flight - window`` is what the cron
-    is allowed to newly stage. NOT poll-safe-degraded like the dashboard counters: a real COUNT is
-    required so the cron never over-stages on a transient error (a raise holds the window instead).
-    """
-    return int(
-        (await session.execute(select(func.count(FileRecord.id)).where(FileRecord.state.in_([FileState.PUSHING, FileState.PUSHED])))).scalar() or 0
-    )
+# Phase 69 (D-05, SCHED-02) retired the global FileState-window count in favor of per-backend
+# ``Backend.in_flight_count`` (a ``cloud_job``-derived COUNT scoped by ``backend_id``). The
+# ``stage_cloud_window`` drain now snapshots each backend's free capacity once per tick and SELECTs
+# candidates via ``get_cloud_staging_candidates`` below -- still ``FOR UPDATE SKIP LOCKED`` in ONE
+# transaction so a concurrent tick cannot double-stage the same row (T-50-scratch-dos).
 
 
 async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> list[FileRecord]:

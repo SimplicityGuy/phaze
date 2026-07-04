@@ -26,11 +26,11 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (67+).
 
 ### SCHED — Tiered drain scheduler
 
-- [ ] **SCHED-01**: Per drain tick, each `AWAITING_CLOUD` file is dispatched to the *available* backend with the lowest `rank` whose `in_flight_count() < cap`, with eligibility evaluated per candidate file so a full top-rank backend spills to the next rank rather than blocking the tick.
-- [ ] **SCHED-02**: The global `cloud_max_in_flight` window becomes a per-backend `cap`, enforced by counting and claiming a slot in one transaction under the existing `pg_advisory_xact_lock`, so overlapping ticks never overshoot a backend's cap.
-- [ ] **SCHED-03**: A backend going offline, or a job failing mid-flight, returns the file to `AWAITING_CLOUD`; the next tick re-dispatches it to the next eligible backend chosen against *current* availability — a black-hole guard ensures a persistently-down backend does not repeatedly reclaim and re-fail its own files.
-- [ ] **SCHED-04**: Two or more equal-`rank` backends are tie-broken deterministically and statelessly (lowest current utilization `in_flight/cap`, then stable `id`) — no weighted or proportional fair-share.
-- [ ] **SCHED-05**: Exactly one recovery owner exists per backend kind — `reconcile_cloud_jobs` and the recovery ledger become `backend_id`-aware, and the existing AST over-enqueue guard is extended so compute-backed cloud files do not gain a second recovery path (no replay of the 44.5k-job over-enqueue incident class).
+- [x] **SCHED-01**: Per drain tick, each `AWAITING_CLOUD` file is dispatched to the *available* backend with the lowest `rank` whose `in_flight_count() < cap`, with eligibility evaluated per candidate file so a full top-rank backend spills to the next rank rather than blocking the tick.
+- [x] **SCHED-02**: The global `cloud_max_in_flight` window becomes a per-backend `cap`, enforced by counting and claiming a slot in one transaction under the existing `pg_advisory_xact_lock`, so overlapping ticks never overshoot a backend's cap.
+- [x] **SCHED-03**: A backend going offline, or a job failing mid-flight, returns the file to `AWAITING_CLOUD`; the next tick re-dispatches it to the next eligible backend chosen against *current* availability — a black-hole guard ensures a persistently-down backend does not repeatedly reclaim and re-fail its own files.
+- [x] **SCHED-04**: Two or more equal-`rank` backends are tie-broken deterministically and statelessly (lowest current utilization `in_flight/cap`, then stable `id`) — no weighted or proportional fair-share.
+- [x] **SCHED-05**: Exactly one recovery owner exists per backend kind — `reconcile_cloud_jobs` and the recovery ledger become `backend_id`-aware, and the existing AST over-enqueue guard is extended so compute-backed cloud files do not gain a second recovery path (no replay of the 44.5k-job over-enqueue incident class).
 
 ### MKUE — Multi-Kueue (N clusters)
 
@@ -86,11 +86,11 @@ Which phases cover which requirements. Populated during roadmap creation.
 | BACK-02 | Phase 68 | Complete |
 | BACK-03 | Phase 68 | Complete |
 | BACK-04 | Phase 68 | Complete |
-| SCHED-01 | Phase 69 | Pending |
-| SCHED-02 | Phase 69 | Pending |
-| SCHED-03 | Phase 69 | Pending |
-| SCHED-04 | Phase 69 | Pending |
-| SCHED-05 | Phase 69 | Pending |
+| SCHED-01 | Phase 69 | Complete |
+| SCHED-02 | Phase 69 | Complete |
+| SCHED-03 | Phase 69 | Complete |
+| SCHED-04 | Phase 69 | Complete |
+| SCHED-05 | Phase 69 | Complete |
 | MKUE-01 | Phase 70 | Pending |
 | MKUE-02 | Phase 70 | Pending |
 | MKUE-03 | Phase 70 | Pending |

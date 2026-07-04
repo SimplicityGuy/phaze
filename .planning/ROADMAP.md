@@ -22,7 +22,14 @@
 
 - [x] **Phase 67: Backend Registry & Config Model** — declarative `backends.toml` registry (id/kind/rank/cap) as the sole config surface + per-kind discriminated-union validators + the S3 staging-bucket registry (public/shared vs cluster-specific) + **removal** of `cloud_target` and the flat `s3_*`/`kube_*`/`compute_*` fields with **no back-compat shim** (call sites rewired to registry-derived reads); config-model-only, live all-local behavior preserved via a zero-config implicit-local default (REG-01..05) (completed 2026-07-04)
 - [x] **Phase 68: Backend Protocol + 3 Implementations** — one `Backend` protocol (`is_available`/`in_flight_count`/`dispatch`/`reconcile`) with Local/ComputeAgent/Kueue bodies re-homing existing logic + `cloud_job.backend_id` additive migration + uniform per-backend in-flight accounting; behavior-preserving, acceptance-gated by a byte-identical characterization test (BACK-01..04) (completed 2026-07-04)
-- [ ] **Phase 69: Tiered Drain Scheduler** — rank-first eligible dispatch per file, per-backend `cap`, spill-when-full, offline→next-eligible re-dispatch with black-hole guard, stateless equal-rank tie-break, single-recovery-owner per kind; the first behavior-changing phase (SCHED-01..05) — **research flag**
+- [x] **Phase 69: Tiered Drain Scheduler** — rank-first eligible dispatch per file, per-backend `cap`, spill-when-full, offline→next-eligible re-dispatch with black-hole guard, stateless equal-rank tie-break, single-recovery-owner per kind; the first behavior-changing phase (SCHED-01..05) — **research flag** (completed 2026-07-04)
+
+  **Plans:** 4 plans, 3 waves
+  - [x] 69-01-PLAN.md — Selection foundation: `cloud_spill_to_local_after_seconds` knob + pure `select_backend` policy (rank-first, staleness D-01/D-03, attempt-exclusion D-04, tie-break SCHED-04) + unit suites [Wave 1]
+  - [x] 69-02-PLAN.md — Drain rewire: remove >1-non-local boot guard + snapshot-once + per-candidate `select_backend` dispatch under the single advisory lock + retire `get_cloud_window_count` (SCHED-01/02) [Wave 2]
+  - [x] 69-03-PLAN.md — Reconcile: per-row shared advisory lock (cap-safe) + per-backend reconcile dispatch + at-cap spill-back to AWAITING_CLOUD (SCHED-02/03/05) [Wave 3]
+  - [x] 69-04-PLAN.md — Single-recovery-owner ledger guard + compute/kueue callback spill to AWAITING_CLOUD (SCHED-03/05) [Wave 3]
+  - [x] 69-05-PLAN.md — Gap closure (CR-01): `FileState.LOCAL_ANALYZING` + `LocalBackend.dispatch` flips out of AWAITING_CLOUD (stops cross-backend double-dispatch) + WR-01 honest return (SCHED-01/03) [Wave 1]
 - [ ] **Phase 70: Multi-Kueue (N Clusters)** — N concurrently-dispatched Kueue clusters, each staging to its REG-05-assigned bucket set (DIST-01 preserved), per-cluster probe + `backend_id`-scoped reconcile with per-backend failure isolation, per-(backend,bucket) cleanup (MKUE-01..04) — **research flag**
 - [ ] **Phase 71: Deployment, Config, Docs & N-Lane UI** — N registry-derived per-backend lanes (available/offline, in-flight/cap, rank) read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + operator runbook/config docs incl. the `cloud_target`→`backends` migration (BEUI-01..03)
 
@@ -222,7 +229,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete    | 2026-07-03 |
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 69. Tiered Drain Scheduler | 2026.7.1 | 0/TBD | Not started | - |
+| 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 0/TBD | Not started | - |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
 
