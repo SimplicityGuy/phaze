@@ -231,7 +231,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 1/5 | In Progress|  |
+| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 2/5 | In Progress|  |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1088,7 +1088,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 70-02-PLAN.md — MKUE-02: bucket-parameterize s3_staging + record staging_bucket at dispatch (D-06) + presign/delete read the recorded bucket + retire active_bucket
+- [x] 70-02-PLAN.md — MKUE-02: bucket-parameterize s3_staging + record staging_bucket at dispatch (D-06) + presign/delete read the recorded bucket + retire active_bucket
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
