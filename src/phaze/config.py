@@ -7,6 +7,7 @@ env var. `get_settings()` is the single dispatch point; module-level
 `from phaze.config import settings` call sites.
 """
 
+from collections import Counter
 from enum import StrEnum
 from functools import lru_cache
 import os
@@ -425,6 +426,14 @@ class ControlSettings(BaseSettings):
         """
         if not self.backends:
             raise ValueError("backend registry resolved to empty — refusing to start (REG-04)")
+        # WR-03: fail fast on duplicate [[buckets]] ids. `bucket_by_id` (and s3_staging.resolve_bucket_config)
+        # build a `{b.id: b}` dict that silently collapses duplicates to whichever entry appears LAST in the
+        # TOML list — with distinct endpoint_url/creds per entry, a copy-paste id typo would then non-
+        # deterministically redirect every presign/cleanup for that id to the wrong bucket. Surface it at boot
+        # like every other registry invariant here (REG-05).
+        dupes = sorted(bid for bid, count in Counter(b.id for b in self.buckets).items() if count > 1)
+        if dupes:
+            raise ValueError(f"duplicate bucket ids in registry: {dupes} — each [[buckets]] id must be unique (REG-05)")
         bucket_by_id = {b.id: b for b in self.buckets}
         cluster_specific_refs: dict[str, list[str]] = {}
         for be in self.backends:
