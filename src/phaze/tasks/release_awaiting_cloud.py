@@ -132,10 +132,25 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # each probed exactly M times HERE -- NEVER re-probed inside the candidate loop below.
         snapshot: dict[str, BackendSlot] = {}
         for backend in backends:
+            # MKUE-03 / D-07 (research Pitfall 8): per-backend failure isolation for the once-per-tick
+            # snapshot. is_available / in_flight_count are SUPPOSED to swallow their own failures (Phase
+            # 68's "is_available never raises" discipline), but a raise or timeout that escapes ONE flaky
+            # cluster's probe must NOT abort the whole drain tick -- it would starve every healthy backend
+            # (and local) of work. Treat a raising/timing-out backend as UNAVAILABLE (0 free slots) for
+            # this tick and log (backend_id only -- never a KubeConfig / SecretStr / exception payload
+            # carrying creds, T-70-03-02), then continue so the surrounding limit-gate simply sees this
+            # backend contribute nothing while every other backend proceeds normally.
+            try:
+                available = await backend.is_available(session)
+                remaining = max(0, backend.cap - await backend.in_flight_count(session))
+            except Exception:
+                logger.warning("stage_cloud_window: backend snapshot probe failed -> treating as unavailable (0 slots)", backend_id=backend.id)
+                snapshot[backend.id] = {"backend": backend, "available": False, "remaining": 0, "cap": backend.cap}
+                continue
             snapshot[backend.id] = {
                 "backend": backend,
-                "available": await backend.is_available(session),
-                "remaining": max(0, backend.cap - await backend.in_flight_count(session)),
+                "available": available,
+                "remaining": remaining,
                 "cap": backend.cap,
             }
 
@@ -196,6 +211,18 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
                 logger.info("stage_cloud_window hold: fileserver agent vanished mid-tick", held=remaining)
                 tally["skipped"] += remaining
                 break
+            except Exception:
+                # MKUE-03 / D-07 (research Pitfall 8): a GENERIC kube/S3 raise from ONE backend's dispatch
+                # (a cluster/bucket error, NOT the fileserver-vanish NoActiveAgentError above) is a clean
+                # hold of THIS candidate ONLY -- distinct from the fileserver-vanish break, which affects
+                # every remaining dispatch. dispatch resolves the fileserver BEFORE any state mutation, so
+                # the raising path touches nothing: the file stays AWAITING_CLOUD. Count it skipped, log
+                # (backend_id only, T-70-03-02), do NOT decrement the slot (no work was claimed), and
+                # continue to the NEXT candidate so a single flaky cluster cannot poison the whole tick --
+                # every other backend still receives work. The tick NEVER aborts and NEVER raises.
+                logger.warning("stage_cloud_window: backend dispatch failed -> holding this candidate", backend_id=target.id)
+                tally["skipped"] += 1
+                continue
             # The slot is claimed (cloud_job upserted) on both a genuine stage and a dedup no-op, so
             # decrement the local remaining unconditionally -- this is what makes a full top-rank backend
             # spill the NEXT candidate to the next rank within the same tick (SCHED-01), cap-safe (SCHED-02).
