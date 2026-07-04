@@ -339,7 +339,7 @@ class KueueBackend(_BaseBackend):
         return local_queue is not None
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
-        """Flip ``file`` to PUSHING, pick the D-06 bucket, then run the no-commit S3-staging core (MKUE-02).
+        """Pick the D-06 bucket, run the no-commit S3-staging core, THEN flip ``file`` to PUSHING (MKUE-02).
 
         Phase 70 (MKUE-02/D-06): pick the file's staging bucket deterministically over this backend's
         bound bucket set (``self.config.buckets``), resolve its ``BucketConfig``, thread it into the
@@ -348,17 +348,30 @@ class KueueBackend(_BaseBackend):
         ``in_flight_count`` (COUNT WHERE backend_id == self.id) counts the row and every downstream
         presign/cleanup READS the recorded bucket (never re-derives). NEVER commits (the drain owns the
         single post-loop commit -- Landmine L1). Always a genuine stage on the kueue path, so returns ``True``.
+
+        CR-01 (gate-before-mutate, Pitfall 4 limbo guard): the ``FileState -> PUSHING`` flip lands ONLY
+        AFTER ``_stage_file_to_s3`` returns successfully -- NOT before it, as ``LocalBackend`` /
+        ``ComputeAgentBackend`` also gate their fileserver-agent check before any state mutation.
+        ``_stage_file_to_s3`` resolves the fileserver agent FIRST (``select_active_agent(kind="fileserver")``)
+        and reads NOTHING from ``file.state``, so a ``NoActiveAgentError`` (or any pre-upsert S3 raise)
+        leaves ``file`` completely untouched. Were the flip to precede the call, SQLAlchemy's default
+        ``autoflush`` would flush the pending PUSHING change as a side effect of that gate's ``SELECT``,
+        and the drain's single post-loop commit would then persist a PUSHING file with no ``cloud_job``
+        row -- the exact "limbo row" this ordering forbids.
         """
         cfg = cast("ControlSettings", get_settings())
-        # D-03: the drain flips PUSHING before the per-kind fork; own that flip here so dispatch is atomic.
-        file.state = FileState.PUSHING
         # D-06: deterministic per-file bucket over this backend's bound set; the returned id is authoritative.
+        # Pure/no-DB: pick + resolve mutate nothing, so a resolution failure here is also mutation-free.
         bucket_ids = list(getattr(self.config, "buckets", []) or [])
         bucket_id = s3_staging.pick_bucket(file.id, bucket_ids)
         bucket = s3_staging.resolve_bucket_config(cfg, bucket_id)
         if bucket is None:
             raise s3_staging.S3StagingError(f"kueue backend {self.id!r} bucket {bucket_id!r} is not in the resolved registry")
+        # Gate (fileserver agent) + stage BEFORE the state flip: _stage_file_to_s3 reads no file.state, so a
+        # NoActiveAgentError / pre-upsert S3 raise touches nothing (CR-01 Pitfall 4 limbo guard).
         await _stage_file_to_s3(session, file, task_router, bucket)
+        # D-03: flip PUSHING only now that staging succeeded -- the file has genuinely left AWAITING_CLOUD.
+        file.state = FileState.PUSHING
         # Record backend_id + the D-06 staging_bucket in the SAME uncommitted session (MKUE-02/D-01):
         # in_flight_count is backend_id-scoped, and presign/cleanup read staging_bucket authoritatively.
         await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id, staging_bucket=bucket_id))
@@ -413,6 +426,8 @@ class KueueBackend(_BaseBackend):
                 if cloud_job is None:
                     continue
                 tally["reconciled"] += 1
+                # MKUE-01/D-04: thread THIS backend's KubeConfig so every get_job/get_workload_for/
+                # delete_job inside reconcile targets the file's own cluster.
                 # MKUE-01/D-04: thread THIS backend's KubeConfig so every get_job/get_workload_for/
                 # delete_job inside reconcile targets the file's own cluster.
                 await _reconcile_one(reconcile_ctx, session, cloud_job, cap, tally, self._kube())

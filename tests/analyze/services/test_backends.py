@@ -354,6 +354,44 @@ async def test_kueue_dispatch_bucket_is_deterministic_per_file(
 
 
 @pytest.mark.asyncio
+async def test_kueue_dispatch_no_fileserver_agent_leaves_file_untouched(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """CR-01 (gate-before-mutate): no fileserver agent -> dispatch raises, file stays AWAITING_CLOUD, no cloud_job.
+
+    Regression for the pre-fix limbo bug: KueueBackend.dispatch used to flip ``file.state = PUSHING``
+    UNCONDITIONALLY as its first statement, before ``_stage_file_to_s3`` gated on the fileserver agent.
+    Under SQLAlchemy autoflush that pending PUSHING change was flushed as a side effect of the gate's
+    SELECT, so a ``NoActiveAgentError`` (then a break-without-rollback in the drain) committed a PUSHING
+    file with NO ``cloud_job`` row -- exactly the Pitfall-4 limbo the module docstring forbids. Post-fix
+    the flip lands only AFTER ``_stage_file_to_s3`` returns, so the raising path is mutation-free: the
+    file stays AWAITING_CLOUD and no cloud_job row exists even after the drain's post-loop commit.
+    """
+    from sqlalchemy import select
+
+    from phaze.services.enqueue_router import NoActiveAgentError
+
+    _stub_s3(monkeypatch)  # unreached: the fileserver gate raises before any S3 call
+    # Deliberately NO fileserver agent seeded.
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file = _make_file(state=FileState.AWAITING_CLOUD, file_type="flac")
+    session.add(file)
+    await session.commit()
+    file_id = file.id  # capture before expire_all() so the re-read query builds without a lazy load
+
+    with pytest.raises(NoActiveAgentError):
+        await backend.dispatch(file, session, DedupFakeTaskRouter())
+
+    # Emulate the drain's single post-loop commit + a fresh DB read: no PUSHING flip may survive.
+    await session.commit()
+    session.expire_all()
+    refreshed = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert refreshed.state == FileState.AWAITING_CLOUD
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    assert job is None
+
+
+@pytest.mark.asyncio
 async def test_local_dispatch_writes_no_cloud_job_row(session: AsyncSession) -> None:
     """LocalBackend.dispatch stays on the local process_file path -- it writes no cloud_job row."""
     backend = _local()
