@@ -23,7 +23,7 @@ from sqlalchemy import select
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
-from phaze.services import cloud_staging
+from phaze.services import cloud_staging, s3_staging
 from phaze.services.enqueue_router import NoActiveAgentError
 from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
@@ -90,6 +90,12 @@ def s3_env(moto_s3_server: str, monkeypatch: pytest.MonkeyPatch, backends_toml_e
     get_settings.cache_clear()
 
 
+@pytest.fixture
+def bucket(s3_env: str):  # type: ignore[no-untyped-def]
+    """Resolve the single staging BucketConfig from the registry env (MKUE-02 per-file bucket param)."""
+    return s3_staging.resolve_bucket_config(get_settings(), "staging")  # type: ignore[arg-type]
+
+
 async def _seed_file(session: AsyncSession, agent_id: str, *, file_size: int) -> FileRecord:
     """Insert a FileRecord owned by ``agent_id`` with the given size."""
     file = FileRecord(
@@ -118,6 +124,7 @@ async def _cloud_job(session: AsyncSession, file_id: uuid.UUID) -> CloudJob | No
 async def test_stage_file_to_s3_creates_cloud_job_presigns_and_enqueues(
     s3_env: str,
     session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
 ) -> None:
     """The producer stages end-to-end: cloud_job row + multipart + presign + one s3_upload enqueue."""
     fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
@@ -128,14 +135,15 @@ async def test_stage_file_to_s3_creates_cloud_job_presigns_and_enqueues(
     expected_parts = math.ceil(file_size / _PART_SIZE)
 
     task_router = FakeTaskRouter()
-    await cloud_staging.stage_file_to_s3(session, file, task_router)
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
 
-    # cloud_job row: uploading + file_id-scoped key + multipart upload_id set.
+    # cloud_job row: uploading + file_id-scoped key + multipart upload_id set + recorded staging_bucket.
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADING.value
     assert job.s3_key == f"phaze-staging/{file_id}"
     assert job.upload_id  # multipart initiated
+    assert job.staging_bucket == bucket.id  # MKUE-02: the passed bucket is recorded on the row
 
     # Exactly one s3_upload job enqueued on the fileserver agent's queue.
     queue = task_router.queues[fileserver_id]
@@ -153,6 +161,7 @@ async def test_stage_file_to_s3_creates_cloud_job_presigns_and_enqueues(
 async def test_stage_file_to_s3_uses_deterministic_key_and_explicit_timeout(
     s3_env: str,
     session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
 ) -> None:
     """The enqueue carries the deterministic s3_upload:<file_id> key and the explicit SAQ timeout."""
     fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
@@ -161,7 +170,7 @@ async def test_stage_file_to_s3_uses_deterministic_key_and_explicit_timeout(
     file_id = file.id
 
     task_router = FakeTaskRouter()
-    await cloud_staging.stage_file_to_s3(session, file, task_router)
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
 
     policy = task_router.queues[fileserver_id].captured_policy[0]
     assert policy["key"] == f"s3_upload:{file_id}"
@@ -171,6 +180,7 @@ async def test_stage_file_to_s3_uses_deterministic_key_and_explicit_timeout(
 async def test_stage_file_to_s3_is_idempotent_on_file_id(
     s3_env: str,
     session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
 ) -> None:
     """A second stage for the same file_id upserts (unique FK) -- no duplicate cloud_job row."""
     fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
@@ -179,8 +189,8 @@ async def test_stage_file_to_s3_is_idempotent_on_file_id(
     file_id = file.id
 
     task_router = FakeTaskRouter()
-    await cloud_staging.stage_file_to_s3(session, file, task_router)
-    await cloud_staging.stage_file_to_s3(session, file, task_router)
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
 
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()
     assert len(rows) == 1  # unique FK on file_id -- the re-stage updated, not duplicated
@@ -189,6 +199,7 @@ async def test_stage_file_to_s3_is_idempotent_on_file_id(
 async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
     s3_env: str,
     session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
 ) -> None:
     """No fileserver online -> NoActiveAgentError surfaces and no half-written cloud_job is committed."""
     # Seed a COMPUTE agent only (to own the file) so the fileserver-scoped select finds nothing.
@@ -198,7 +209,7 @@ async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
 
     task_router = FakeTaskRouter()
     with pytest.raises(NoActiveAgentError):
-        await cloud_staging.stage_file_to_s3(session, file, task_router)
+        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
 
     assert await _cloud_job(session, file_id) is None  # nothing committed on the clean hold
     assert task_router.queues == {}  # nothing enqueued
@@ -207,23 +218,26 @@ async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
 async def test_redrive_upload_aborts_old_multipart_and_restages(
     s3_env: str,
     session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
 ) -> None:
-    """redrive_upload aborts the prior multipart (best-effort) and re-stages with a fresh upload."""
+    """redrive_upload aborts the prior multipart (best-effort) and re-stages onto the RECORDED bucket."""
     fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
     fileserver_id = fileserver.id
     file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
     file_id = file.id
 
     task_router = FakeTaskRouter()
-    await cloud_staging.stage_file_to_s3(session, file, task_router)
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
     first_upload_id = (await _cloud_job(session, file_id)).upload_id  # type: ignore[union-attr]
 
+    # redrive resolves the bucket from the RECORDED cloud_job.staging_bucket (MKUE-02) -- no bucket arg.
     await cloud_staging.redrive_upload(session, file, task_router)
 
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADING.value
     assert job.upload_id != first_upload_id  # a fresh multipart was initiated
+    assert job.staging_bucket == bucket.id  # re-staged onto the same recorded bucket
     # Two enqueues total (original + re-drive); only one cloud_job row (idempotent FK).
     assert len(task_router.queues[fileserver_id].captured) == 2
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()

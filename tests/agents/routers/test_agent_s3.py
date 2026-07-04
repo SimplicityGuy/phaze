@@ -94,6 +94,12 @@ _COMPUTE_REGISTRY = """
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "/srv/scratch"
+
+    [[buckets]]
+    id = "shared-bucket"
+    scope = "shared"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-staging"
 """
 
 
@@ -156,7 +162,10 @@ async def _seed_cloud_job(
     *,
     status: CloudJobStatus = CloudJobStatus.UPLOADING,
     cloud_phase: str | None = None,
+    staging_bucket: str | None = "shared-bucket",
 ) -> None:
+    # MKUE-02: stamp the recorded staging_bucket so the callbacks (complete / at-cap abort+delete)
+    # resolve it to its BucketConfig and act on exactly that bucket.
     session.add(
         CloudJob(
             id=uuid.uuid4(),
@@ -165,6 +174,7 @@ async def _seed_cloud_job(
             status=status.value,
             upload_id="upload-xyz",
             cloud_phase=cloud_phase,
+            staging_bucket=staging_bucket,
         )
     )
     await session.commit()

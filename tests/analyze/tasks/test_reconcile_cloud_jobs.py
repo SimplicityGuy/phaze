@@ -110,14 +110,20 @@ class DeleteJobSpy:
 
 
 class S3DeleteSpy:
-    """Monkeypatch stand-in for ``s3_staging.delete_staged_object`` -- records call order + file ids."""
+    """Monkeypatch stand-in for ``s3_staging.delete_staged_object`` -- records call order + file ids.
+
+    Phase 70 (MKUE-02): the delete now takes ``(file_id, bucket)``; the spy records the file_id and the
+    resolved bucket id so the at-cap terminal can be proven to act on the RECORDED staging bucket.
+    """
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.calls: list[uuid.UUID] = []
+        self.buckets: list[str] = []
 
-    async def __call__(self, file_id: uuid.UUID) -> None:
+    async def __call__(self, file_id: uuid.UUID, bucket: Any = None) -> None:
         self.calls.append(file_id)
+        self.buckets.append(getattr(bucket, "id", None))
         self.events.append("s3_delete")
 
 
@@ -127,6 +133,9 @@ class S3DeleteSpy:
 # The cron dispatches reconcile per-backend via ``resolve_backends`` (SCHED-05), so the settings stub
 # must carry a single kueue registry entry whose id matches the ``backend_id`` ``_seed`` stamps below.
 _KUEUE_BACKEND_ID = "kueue-x64"
+# MKUE-02: the seeded cloud_job records this staging_bucket id; the at-cap terminal resolves it via
+# ``s3_staging.resolve_bucket_config`` against the stub's ``buckets`` list and deletes on exactly it.
+_STAGING_BUCKET_ID = "staging-a"
 
 
 def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
@@ -134,12 +143,14 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
 
     The Phase-69 cron (SCHED-05) resolves backends via ``resolve_backends(get_settings())`` and dispatches
     ``KueueBackend.reconcile`` -- which reads the cap from ``phaze.services.backends.get_settings``. Patch
-    both bindings to the same stub carrying ``cloud_submit_max_attempts`` + a one-entry kueue registry.
+    both bindings to the same stub carrying ``cloud_submit_max_attempts`` + a one-entry kueue registry +
+    the ``buckets`` list the MKUE-02 at-cap staged-object delete resolves the recorded bucket against.
     """
     settings = SimpleNamespace(
         cloud_submit_max_attempts=cap,
         cloud_enabled=True,
         backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, rank=20, cap=cap)],
+        buckets=[SimpleNamespace(id=_STAGING_BUCKET_ID)],
     )
     monkeypatch.setattr("phaze.tasks.reconcile_cloud_jobs.get_settings", lambda: settings)
     monkeypatch.setattr("phaze.services.backends.get_settings", lambda: settings)
@@ -200,6 +211,7 @@ async def _seed(session: AsyncSession, *, status: str = CloudJobStatus.SUBMITTED
             status=status,
             kueue_workload=name,
             attempts=attempts,
+            staging_bucket=_STAGING_BUCKET_ID,  # MKUE-02: the at-cap staged-object delete acts on this recorded bucket.
         )
     )
     await session.commit()
@@ -375,6 +387,7 @@ async def test_max_attempts_cap_then_spill_back_to_awaiting_cloud(
     assert file.state == FileState.AWAITING_CLOUD  # spill back, NOT ANALYSIS_FAILED (SCHED-03)
     assert file.state != FileState.ANALYSIS_FAILED
     assert s3.calls == [fid]  # no-callback terminal deletes the staged object (D-05), after the record+commit
+    assert s3.buckets == [_STAGING_BUCKET_ID]  # MKUE-02: deleted on exactly the RECORDED staging bucket
     assert dj.calls == [name]
     assert queue.captured == []  # no re-drive at the cap
     assert tally["failed"] == 1
