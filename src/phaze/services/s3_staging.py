@@ -20,6 +20,7 @@ and addressing style (KSTAGE-05), not just AWS.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any, cast
 
 import aioboto3
@@ -63,6 +64,28 @@ def staged_object_key(file_id: uuid.UUID) -> str:
     delete legs -- reconcile-by-``file_id`` everywhere (no per-attempt suffixes).
     """
     return f"{_STAGING_PREFIX}/{file_id}"
+
+
+def pick_bucket(file_id: uuid.UUID, bucket_ids: list[str]) -> str:
+    """Deterministically map a file to one of the backend's bound bucket ids (D-06, MKUE-02).
+
+    Stable across process restarts: it hashes the UUID *bytes* with ``sha256`` -- NOT Python's
+    per-process salted ``hash()`` -- so cleanup/presign/reconcile can independently re-agree on the
+    same choice. ``sorted()`` gives a stable order independent of TOML/registry ordering.
+
+    The returned id is the AUTHORITATIVE value recorded on ``cloud_job.staging_bucket``. Presign and
+    cleanup READ that recorded column; they never re-derive here (re-deriving would drift the moment
+    the backend's bucket set changes in config or the row's ``backend_id`` is repurposed) (D-01/D-06).
+
+    Raises ``S3StagingError`` when the bound bucket set is empty -- an operator misconfiguration that
+    must fail loud rather than silently stage nowhere (the config validator already guards this too).
+    """
+    ordered = sorted(bucket_ids)
+    if not ordered:
+        raise S3StagingError("kueue backend resolves to an empty bucket set")
+    digest = hashlib.sha256(file_id.bytes).digest()
+    index = int.from_bytes(digest, "big") % len(ordered)
+    return ordered[index]
 
 
 def _staging_config() -> tuple[ControlSettings, BucketConfig]:
