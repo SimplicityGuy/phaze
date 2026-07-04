@@ -84,7 +84,18 @@ class _StubCfg:
         if active_cloud_kind is None:
             self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
         elif active_cloud_kind == "kueue":
-            self.backends = [SimpleNamespace(kind="kueue", id="kueue-1", rank=10, cap=active_cap, buckets=["staging-1"])]
+            # Phase 70 (MKUE-01/D-04): KueueBackend.is_available/reconcile thread self.config.kube into
+            # kube_staging; carry a minimal kube (the get_local_queue seam is stubbed in _run_cell).
+            self.backends = [
+                SimpleNamespace(
+                    kind="kueue",
+                    id="kueue-1",
+                    rank=10,
+                    cap=active_cap,
+                    buckets=["staging-1"],
+                    kube=SimpleNamespace(api_url="https://kube.test", namespace="phaze", local_queue="phaze-lq"),
+                )
+            ]
         else:
             self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
 

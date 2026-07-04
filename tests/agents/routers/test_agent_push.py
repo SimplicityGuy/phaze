@@ -76,13 +76,70 @@ _COMPUTE_REGISTRY = f"""
 """
 
 
-def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any) -> None:
-    """Pin the router's ``get_settings()`` to a real ControlSettings off a one-compute registry.
+# MKUE-01 (Pitfall 1): the milestone's target deploy -- local + 2 Kueue + 1 compute. Before Phase 70
+# ``active_compute_scratch_dir`` reduced through ``_single_non_local`` which raised on ≥2 non-local
+# backends, 500ing the /pushed callback. Re-based on a single-COMPUTE reduction, /pushed must resolve
+# the compute scratch_dir cleanly here.
+_LOCAL_2KUEUE_COMPUTE_REGISTRY = f"""
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-a"
+    rank = 10
+    cap = 4
+    buckets = ["bkt-a"]
+
+    [backends.kube]
+    api_url = "https://kube-a.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-a"
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-b"
+    rank = 20
+    cap = 4
+    buckets = ["bkt-b"]
+
+    [backends.kube]
+    api_url = "https://kube-b.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-b"
+
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 30
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "{_SCRATCH_DIR}"
+
+    [[buckets]]
+    id = "bkt-a"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-a"
+
+    [[buckets]]
+    id = "bkt-b"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-b"
+"""
+
+
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any, *, registry: str = _COMPUTE_REGISTRY) -> None:
+    """Pin the router's ``get_settings()`` to a real ControlSettings off ``registry`` (default one-compute).
 
     ``active_compute_scratch_dir`` resolves to ``_SCRATCH_DIR``; ``models_path`` / ``push_max_attempts``
     take the ControlSettings defaults (``/models`` / 3), matching the module constants above.
     """
-    backends_toml_env(_COMPUTE_REGISTRY)
+    backends_toml_env(registry)
     settings = ControlSettings()
     monkeypatch.setattr("phaze.routers.agent_push.get_settings", lambda: settings)
 
@@ -198,6 +255,38 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     task_name, payload = compute_queue.captured[0]
     assert task_name == "process_file"
     assert payload["expected_sha256"] == sha == "a" * 64
+    assert payload["scratch_path"] == f"{_SCRATCH_DIR}/{file_id}.flac"
+
+
+@pytest.mark.asyncio
+async def test_pushed_scratch_path_resolves_under_local_2kueue_1compute(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """Pitfall 1: /pushed resolves the compute scratch_path under local + 2 Kueue + 1 compute (no 500).
+
+    Before Phase 70 the ≥2-non-local registry routed ``active_compute_scratch_dir`` through the raising
+    ``_single_non_local`` reduction, 500ing this callback. The single-COMPUTE re-base makes /pushed
+    resolve the sole compute backend's scratch_dir cleanly even with N Kueue backends present.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, registry=_LOCAL_2KUEUE_COMPUTE_REGISTRY)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id)
+    compute = await seed_active_agent(session, agent_id="compute-01", kind="compute")
+    compute_id = compute.id
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    assert r.status_code == 200, r.text  # NOT a 500 despite ≥2 non-local backends
+    # scratch_path resolved off the single compute backend's scratch_dir.
+    compute_queue = task_router.queues[compute_id]
+    assert len(compute_queue.captured) == 1
+    _task_name, payload = compute_queue.captured[0]
     assert payload["scratch_path"] == f"{_SCRATCH_DIR}/{file_id}.flac"
 
 

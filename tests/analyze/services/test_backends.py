@@ -71,8 +71,26 @@ def _compute(**kw: Any) -> Any:
 
 
 def _kueue(**kw: Any) -> Any:
-    """Construct a KueueBackend bound to a single registry entry (single-cluster, D-05)."""
-    return backends.KueueBackend(id=kw.get("id", "kueue-x64"), rank=kw.get("rank", 20), cap=kw.get("cap", 5))
+    """Construct a KueueBackend bound to a registry entry carrying a ``[kube]`` config (MKUE-01/D-04).
+
+    Phase 70: ``is_available`` / ``reconcile`` thread ``self.config.kube`` into every ``kube_staging``
+    verb, so the backend must carry a ``config`` with a ``KubeConfig``. The ``kube_staging`` seam is
+    monkeypatched in these unit cells, so a minimal KubeConfig (api_url/namespace/local_queue) suffices.
+    """
+    from phaze.config_backends import KubeConfig, KueueBackend as KueueEntry
+
+    bid = kw.get("id", "kueue-x64")
+    rank = kw.get("rank", 20)
+    cap = kw.get("cap", 5)
+    entry = KueueEntry(
+        kind="kueue",
+        id=bid,
+        rank=rank,
+        cap=cap,
+        kube=KubeConfig(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq"),
+        buckets=list(kw.get("buckets", [])),
+    )
+    return backends.KueueBackend(id=bid, rank=rank, cap=cap, config=entry)
 
 
 def _kueue_with_buckets(backends_toml_env: Any, *, bucket_ids: list[str], backend_id: str = "kueue-x64") -> Any:
@@ -515,15 +533,15 @@ async def test_in_flight_equivalence(session: AsyncSession) -> None:
     assert per_backend == window
 
 
-# === WR-01: resolved_non_local_kind fail-fast on >1 non-local ============================
+# === resolved_non_local_kind: N-Kueue-safe (any-kueue) + compute-only fail-fast ===========
 
 
-def test_resolved_non_local_kind_raises_on_multiple_non_local(backends_toml_env: Any) -> None:
-    """WR-01: >1 non-local backend -> ValueError naming the offending ids, never silently non_local[0].
+def test_resolved_non_local_kind_raises_on_multiple_compute_only(backends_toml_env: Any) -> None:
+    """The compute-only ``>1`` fail-fast is RETAINED: two COMPUTE backends (no kueue) still raise.
 
-    Mirrors :func:`resolve_backends`'s boot guard (multi-backend dispatch is Phase 69 / SCHED). The
-    retired ``_single_non_local`` accessor raised here; the Phase-68 replacement must preserve that
-    single-non-local defense-in-depth for its three call sites (dashboard/backfill, agent_s3).
+    Phase 70 (MKUE-01) generalized ``resolved_non_local_kind`` to tolerate N Kueue backends, but the
+    genuinely-ambiguous compute-only ``>1`` case stays a loud ValueError naming the offending ids
+    (multi-compute agent_ref resolution lands in PROV-01; unreachable under D-05's ≤1-compute invariant).
     """
     from phaze.config import ControlSettings
 
@@ -548,8 +566,83 @@ def test_resolved_non_local_kind_raises_on_multiple_non_local(backends_toml_env:
     )
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    with pytest.raises(ValueError, match=r"Phase 69"):
+    with pytest.raises(ValueError, match=r"PROV-01"):
         backends.resolved_non_local_kind(settings)
+
+
+_LOCAL_2KUEUE_HEAD = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-a"
+    rank = 10
+    cap = 4
+    buckets = ["bkt-a"]
+
+    [backends.kube]
+    api_url = "https://kube-a.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-a"
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-b"
+    rank = 20
+    cap = 4
+    buckets = ["bkt-b"]
+
+    [backends.kube]
+    api_url = "https://kube-b.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-b"
+"""
+
+_TWO_BUCKETS = """
+    [[buckets]]
+    id = "bkt-a"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-a"
+
+    [[buckets]]
+    id = "bkt-b"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-b"
+"""
+
+
+def test_resolved_non_local_kind_returns_kueue_for_n_kueue(backends_toml_env: Any) -> None:
+    """MKUE-01: ANY-kueue registry resolves to "kueue" with NO raise -- the literal N-cluster scenario.
+
+    A local + 2-Kueue registry (the milestone target) previously 500'd every ``resolved_non_local_kind``
+    call site (report_uploaded / build_dashboard_context / backfill) via the old blanket ``>1`` raise.
+    The generalized helper returns "kueue" (the callers only ask "is the cloud lane kueue"). Adding a
+    compute backend to the mix STILL returns "kueue" (any-kueue wins).
+    """
+    from phaze.config import ControlSettings
+
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + _TWO_BUCKETS)
+    settings = ControlSettings()
+    assert backends.resolved_non_local_kind(settings) == "kueue"
+
+    compute_block = """
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 30
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "/srv/scratch"
+"""
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
+    settings = ControlSettings()
+    assert backends.resolved_non_local_kind(settings) == "kueue"
 
 
 # === SCHED-01: resolve_backends supports N non-local backends (Phase-69 guard removal) ====
@@ -598,3 +691,30 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
     non_local = [b for b in resolved if not isinstance(b, backends.LocalBackend)]
     assert len(non_local) == 2
     assert {b.id for b in non_local} == {"compute-a", "compute-b"}
+
+
+# === Pitfall 1: active_compute_scratch_dir on a single-compute reduction ==================
+
+
+def test_active_compute_scratch_dir_resolves_under_local_2kueue_1compute(backends_toml_env: Any) -> None:
+    """Pitfall 1: local + 2 Kueue + 1 compute resolves the compute scratch_dir -- no >1-non-local raise.
+
+    Before Phase 70 ``active_compute_scratch_dir`` reduced through ``_single_non_local`` which raised
+    the moment ≥2 non-local backends coexisted, 500ing the ``/pushed`` callback. Re-based on a
+    single-COMPUTE reduction, the milestone's target deploy resolves cleanly to the sole compute
+    backend's scratch_dir.
+    """
+    from phaze.config import ControlSettings
+
+    compute_block = """
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 30
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "/srv/scratch"
+"""
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
+    settings = ControlSettings()
+    assert settings.active_compute_scratch_dir == "/srv/scratch"

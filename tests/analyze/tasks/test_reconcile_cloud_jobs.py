@@ -62,7 +62,7 @@ class GetJobSpy:
         self._responses = responses if responses else (None,)
         self.calls: list[str] = []
 
-    async def __call__(self, name: str) -> Any:
+    async def __call__(self, name: str, kube: Any = None) -> Any:  # noqa: ARG002 -- MKUE-01 seam signature
         idx = min(len(self.calls), len(self._responses) - 1)
         self.calls.append(name)
         return self._responses[idx]
@@ -75,7 +75,7 @@ class GetWorkloadSpy:
         self.workload = workload
         self.calls: list[str] = []
 
-    async def __call__(self, uid: str) -> Any:
+    async def __call__(self, uid: str, kube: Any = None) -> Any:  # noqa: ARG002 -- MKUE-01 seam signature
         self.calls.append(uid)
         return self.workload
 
@@ -95,7 +95,7 @@ class DeleteJobSpy:
         self.calls: list[str] = []
         self.snapshots: list[dict[str, Any]] = []
 
-    async def __call__(self, name: str) -> None:
+    async def __call__(self, name: str, kube: Any = None) -> None:  # noqa: ARG002 -- MKUE-01 seam signature
         self.calls.append(name)
         self.events.append("delete_job")
         if self.engine is not None:
@@ -149,7 +149,17 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
     settings = SimpleNamespace(
         cloud_submit_max_attempts=cap,
         cloud_enabled=True,
-        backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, rank=20, cap=cap)],
+        backends=[
+            SimpleNamespace(
+                kind="kueue",
+                id=_KUEUE_BACKEND_ID,
+                rank=20,
+                cap=cap,
+                # MKUE-01/D-04: KueueBackend.reconcile threads self.config.kube into the seam; the
+                # get_job/delete_job spies are monkeypatched, so a minimal stand-in kube suffices.
+                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq"),
+            )
+        ],
         buckets=[SimpleNamespace(id=_STAGING_BUCKET_ID)],
     )
     monkeypatch.setattr("phaze.tasks.reconcile_cloud_jobs.get_settings", lambda: settings)
@@ -416,7 +426,15 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
     settings = SimpleNamespace(
         cloud_submit_max_attempts=3,
         cloud_enabled=True,
-        backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, rank=20, cap=cap)],
+        backends=[
+            SimpleNamespace(
+                kind="kueue",
+                id=_KUEUE_BACKEND_ID,
+                rank=20,
+                cap=cap,
+                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq"),
+            )
+        ],
     )
     monkeypatch.setattr("phaze.services.backends.get_settings", lambda: settings)
     [backend] = [b for b in resolve_backends(settings) if b.id == _KUEUE_BACKEND_ID]
@@ -681,7 +699,7 @@ async def test_one_bad_row_does_not_abort_tick(async_engine: AsyncEngine, sessio
     fid_ok, name_ok = await _seed(session)
 
     class _Flaky:
-        async def __call__(self, name: str) -> Any:
+        async def __call__(self, name: str, kube: Any = None) -> Any:  # noqa: ARG002 -- MKUE-01 seam signature
             if name == name_bad:
                 raise RuntimeError("transient kube API error")
             return fake_job(succeeded=1, name=name)

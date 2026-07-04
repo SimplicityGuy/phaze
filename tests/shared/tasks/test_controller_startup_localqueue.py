@@ -42,12 +42,13 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock) 
 def _stub_controller(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock, *, active_cloud_kind: str | None) -> MagicMock:
     """Patch collaborators + a MagicMock ``get_settings``; return the fake_cfg.
 
-    Phase 68 (D-09): the probe now resolves the registry kind via ``resolve_backends(cfg)`` +
-    ``resolved_non_local_kind(cfg)`` (was ``cfg.active_cloud_kind``), so the stub sets the registry
-    shape -- ``cloud_enabled`` + a ``backends`` list whose single entry duck-types the Phase-67 submodel
-    (kind/id/rank/cap). Pass ``active_cloud_kind="kueue"`` to seed a one-kueue registry (probe runs) or
-    ``None`` (all-local, probe skipped). ``log_effective_registry`` is a MagicMock no-op here (the real
-    projection is asserted in ``test_startup_logs_effective_registry_secret_free``).
+    Phase 70 (MKUE-01/03): the probe now iterates EVERY configured kueue backend, threading each
+    backend's own ``KubeConfig`` into ``kube_staging.get_local_queue(kube)``; the flag is set iff ANY
+    configured cluster is unreachable. The stub sets the registry shape -- ``cloud_enabled`` + a
+    ``backends`` list whose kueue entry duck-types the Phase-67 submodel (kind/id/rank/cap + ``kube``).
+    Pass ``active_cloud_kind="kueue"`` to seed a one-kueue registry (probe runs) or ``None`` (all-local,
+    probe skipped). ``log_effective_registry`` is a MagicMock no-op here (the real projection is asserted
+    in ``test_startup_logs_effective_registry_secret_free``).
     """
     _stub_collaborators(monkeypatch, fake_redis)
 
@@ -64,14 +65,17 @@ def _stub_controller(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock, *, 
     fake_cfg.anthropic_api_key = None
     fake_cfg.openai_api_key = None
     fake_cfg.active_cloud_kind = active_cloud_kind
-    # Registry shape the rewired probe reads: an all-local registry (cloud disabled) skips the probe; a
-    # single non-local backend of the given kind runs it. Entries duck-type the submodel resolve_backends binds.
+    # Registry shape the rewired per-cluster probe reads: an all-local registry (cloud disabled) skips
+    # the probe; a kueue backend runs it (threaded its own KubeConfig). Entries duck-type the submodel.
     if active_cloud_kind is None:
         fake_cfg.cloud_enabled = False
         fake_cfg.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=0)]
     else:
         fake_cfg.cloud_enabled = True
-        fake_cfg.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=2)]
+        entry_kwargs: dict[str, Any] = {"kind": active_cloud_kind, "id": f"{active_cloud_kind}-1", "rank": 10, "cap": 2}
+        if active_cloud_kind == "kueue":
+            entry_kwargs["kube"] = SimpleNamespace(api_url="https://kube.test", namespace="phaze", local_queue="phaze-lq")
+        fake_cfg.backends = [SimpleNamespace(**entry_kwargs)]
     monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: fake_cfg)
     return fake_cfg
 
@@ -300,9 +304,8 @@ async def test_startup_logs_effective_registry_secret_free(
     probe.assert_awaited()
 
 
-# Two kueue backends sharing one shared bucket: a VALID multi-cluster schema (D-09 allows a shared-scope
-# bucket to be referenced by many kueue backends), but the ≤1-non-local transitional accessor
-# active_cloud_kind RAISES on it until multi-backend dispatch lands in Phase 69 (SCHED).
+# Two kueue backends sharing one shared bucket: the literal MKUE-01 multi-cluster schema (D-09 allows a
+# shared-scope bucket to be referenced by many kueue backends). Phase 70 probes EACH cluster.
 _MULTI_KUEUE_REGISTRY = """
     [[backends]]
     kind = "kueue"
@@ -314,7 +317,7 @@ _MULTI_KUEUE_REGISTRY = """
     [backends.kube]
     api_url = "https://kube-a.example.com"
     namespace = "phaze"
-    local_queue = "phaze-lq"
+    local_queue = "phaze-lq-a"
 
     [[backends]]
     kind = "kueue"
@@ -326,7 +329,7 @@ _MULTI_KUEUE_REGISTRY = """
     [backends.kube]
     api_url = "https://kube-b.example.com"
     namespace = "phaze"
-    local_queue = "phaze-lq"
+    local_queue = "phaze-lq-b"
 
     [[buckets]]
     id = "shared-bucket"
@@ -337,16 +340,16 @@ _MULTI_KUEUE_REGISTRY = """
 
 
 @pytest.mark.asyncio
-async def test_multi_backend_registry_does_not_abort_boot(
+async def test_multi_kueue_registry_probes_every_cluster(
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """CR-01/D-05: a valid >1-non-local registry makes active_cloud_kind raise -- startup must skip the probe and boot regardless.
+    """MKUE-01/03: a valid N-Kueue registry probes EVERY cluster's LocalQueue -- no >1-non-local skip/abort.
 
-    The registry is schema-valid (two kueue clusters sharing a shared-scope bucket, D-09), so
-    ControlSettings() constructs and cloud_enabled is True; the transitional active_cloud_kind accessor
-    raises because it reduces only a ≤1-non-local registry. Reading it in the startup probe must NOT
-    propagate out of the startup hook -- the control plane boots regardless (D-05).
+    The registry is the literal multi-cluster scenario (two kueue clusters sharing a shared-scope bucket,
+    D-09), so ControlSettings() constructs and cloud_enabled is True. Phase 70 iterates every kueue
+    backend (was a single ≤1-non-local-gated global probe), threading each backend's own KubeConfig, so
+    BOTH clusters are probed; boot never aborts (D-05).
     """
     from phaze.config import ControlSettings
 
@@ -357,14 +360,18 @@ async def test_multi_backend_registry_does_not_abort_boot(
     settings = ControlSettings()
     monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: settings)
 
-    probe = AsyncMock()
+    probe = AsyncMock(return_value=MagicMock())
     monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
 
     from phaze.tasks import controller
 
     ctx: dict[str, Any] = {}
-    # Must NOT raise even though active_cloud_kind raises on this (valid, multi-cluster) registry.
+    # Must NOT raise -- N Kueue clusters are the milestone target, each probed independently.
     await controller.startup(ctx)
 
-    # The transitional accessor can't reduce >1 non-local yet, so the kueue probe is skipped.
-    probe.assert_not_called()
+    # Both clusters were probed (one get_local_queue call per configured kueue backend).
+    assert probe.await_count == 2
+    # All reachable -> the stale unreachable flag is cleared, never set.
+    delete_keys = [call.args[0] for call in fake_redis.delete.await_args_list if call.args]
+    assert _FLAG_KEY in delete_keys
+    fake_redis.set.assert_not_awaited()

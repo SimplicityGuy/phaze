@@ -296,31 +296,32 @@ def test_single_compute_backend_accessors(backends_toml_env) -> None:  # type: i
 
 
 def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """A single kueue backend exposes its KubeConfig via the retained accessor (D-15).
+    """A single kueue backend's KubeConfig is resolvable off ``settings.backends`` (MKUE-01, D-04).
 
-    Phase 70 (MKUE-02): ``active_bucket`` is RETIRED -- per-file bucket selection is deterministic via
-    ``s3_staging.pick_bucket`` recorded on ``cloud_job.staging_bucket``; the bucket registry is still
-    resolvable off ``settings.buckets`` (asserted here) but there is no single module-global bucket read.
+    Phase 70: ``active_kube`` is RETIRED (each backend's ``KubeConfig`` is threaded per-call from
+    ``KueueBackend.config.kube`` into ``kube_staging``); ``active_bucket`` (MKUE-02) is likewise gone.
+    Both surfaces stay resolvable off the registry (``settings.backends`` / ``settings.buckets``) but
+    there is no single module-global kube/bucket read.
     """
     backends_toml_env(_ONE_KUEUE)
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    assert settings.active_kube is not None
-    assert settings.active_kube.api_url == "https://kube.example.com"
+    kueue = next(backend for backend in settings.backends if backend.kind == "kueue")
+    assert kueue.kube is not None
+    assert kueue.kube.api_url == "https://kube.example.com"
+    assert not hasattr(settings, "active_kube")  # MKUE-01: retired
     assert not hasattr(settings, "active_bucket")  # MKUE-02: retired
     assert {bucket.id for bucket in settings.buckets} == {"bucket-a"}
 
 
-def test_multiple_non_local_backends_accessor_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """>1 non-local backend → the retained value accessors raise (multi-backend dispatch is Phase 69) — never silently pick one.
+def test_multiple_compute_backends_scratch_dir_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """>1 COMPUTE backend → ``active_compute_scratch_dir`` raises (multi-compute lands in PROV-01) — never silently pick one.
 
-    The registry itself is VALID (multi-cluster is the milestone goal and D-09 polices bucket sharing
-    across multiple kueue backends), so construction succeeds and ``cloud_enabled`` is True; only the
-    ≤1-non-local reduction inside ``_single_non_local`` (read by the retained value accessors) refuses
-    to pick one until Phase 69 (SCHED). The two dispatch-selector accessors were removed in Phase 68
-    (D-07/D-09); the ``>1``-non-local fail-fast now lives in ``resolve_backends`` at boot, with this
-    accessor raise kept as defense-in-depth. CR-01 hardened the unguarded readers so this raise
-    degrades gracefully instead of crashing boot.
+    Phase 70 (MKUE-01, Pitfall 1) re-based ``active_compute_scratch_dir`` on a single-COMPUTE reduction
+    (so a local + N-Kueue + 1-compute registry no longer 500s /pushed via the retired ``_single_non_local``
+    ≤1-non-local raise). The genuinely-ambiguous >1-COMPUTE case stays a loud ValueError naming the ids
+    (multi-compute agent_ref resolution is deferred to PROV-01, unreachable under D-05's ≤1-compute
+    invariant). The registry itself is VALID; only the scratch_dir reduction refuses to pick one.
     """
     backends_toml_env(
         """
@@ -343,7 +344,7 @@ def test_multiple_non_local_backends_accessor_raises(backends_toml_env) -> None:
     )
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    with pytest.raises(ValueError, match=r"Phase 69"):
+    with pytest.raises(ValueError, match=r"PROV-01"):
         _ = settings.active_compute_scratch_dir
 
 
@@ -419,10 +420,11 @@ def test_log_effective_registry_is_secret_free_projection(backends_toml_env) -> 
         """
     )
     settings = ControlSettings()
-    # The secret parsed into a SecretStr on the kube config...
-    assert settings.active_kube is not None
-    assert settings.active_kube.sa_token is not None
-    assert settings.active_kube.sa_token.get_secret_value() == secret_value
+    # The secret parsed into a SecretStr on the kube config (resolved off the registry, MKUE-01)...
+    kueue = next(backend for backend in settings.backends if backend.kind == "kueue")
+    assert kueue.kube is not None
+    assert kueue.kube.sa_token is not None
+    assert kueue.kube.sa_token.get_secret_value() == secret_value
 
     with capture_logs() as logs:
         settings.log_effective_registry()

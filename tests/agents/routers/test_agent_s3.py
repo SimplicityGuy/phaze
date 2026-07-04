@@ -103,13 +103,57 @@ _COMPUTE_REGISTRY = """
 """
 
 
+# MKUE-01: two Kueue backends (the literal N-cluster scenario) sharing one bucket. Before Phase 70
+# the ``resolved_non_local_kind`` >1-non-local raise 500'd report_uploaded here; the generalized helper
+# returns "kueue" so the post-staging seam still fires. Both backends carry their own [kube] cluster.
+_TWO_KUEUE_REGISTRY = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-a"
+    rank = 10
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube-a.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-a"
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-b"
+    rank = 20
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube-b.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-b"
+
+    [[buckets]]
+    id = "shared-bucket"
+    scope = "shared"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-staging"
+"""
+
+
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any, *, kind: str = "kueue") -> None:
-    """Build a real ControlSettings off a one-backend registry and pin the router's get_settings.
+    """Build a real ControlSettings off a registry and pin the router's get_settings.
 
     ``kind="kueue"`` → the S3 post-staging seam fires (``active_cloud_kind == "kueue"``);
+    ``kind="two_kueue"`` → the N-Kueue scenario (MKUE-01): the seam still fires, no >1-non-local 500;
     ``kind="compute"`` → the defensive non-kueue guard preserves the cloud_job-only flow.
     """
-    backends_toml_env(_KUEUE_REGISTRY if kind == "kueue" else _COMPUTE_REGISTRY)
+    registry = {"kueue": _KUEUE_REGISTRY, "two_kueue": _TWO_KUEUE_REGISTRY, "compute": _COMPUTE_REGISTRY}[kind]
+    backends_toml_env(registry)
     settings = ControlSettings()
     monkeypatch.setattr("phaze.routers.agent_s3.get_settings", lambda: settings)
 
@@ -315,6 +359,38 @@ async def test_uploaded_k8s_flips_pushed_and_enqueues_submit(
     assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
     assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
     # The existing cloud_job UPLOADING -> UPLOADED flip still happened.
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value
+
+
+async def test_uploaded_two_kueue_flips_pushed_and_enqueues_submit(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """MKUE-01: with TWO Kueue backends declared, report_uploaded flips PUSHING->PUSHED + enqueues submit.
+
+    The literal N-cluster scenario: before Phase 70 the ``resolved_non_local_kind`` >1-non-local raise
+    500'd this hot-path callback (stalling every Kueue file's upload completion). The generalized
+    (any-kueue -> "kueue") helper makes it degrade gracefully -- no 500 / no ValueError.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, kind="two_kueue")
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
+
+    controller_queue = FakeQueue("controller")
+    body = {"parts": [{"part_number": 1, "etag": '"e1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token, controller_queue=controller_queue) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text  # NOT a 500 despite 2 Kueue backends
+    assert await _file_state(session, file_id) == FileState.PUSHED
+    assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
+    assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADED.value

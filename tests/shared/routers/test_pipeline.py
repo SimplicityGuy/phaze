@@ -1048,6 +1048,19 @@ async def test_dashboard_context_binds_cloud_lane_kind(client: AsyncClient, sess
     ctx_kueue = await build_dashboard_context(app_state, session)
     assert ctx_kueue["cloud_lane_kind"] == "kueue"
 
+    # MKUE-01: N Kueue backends (the literal multi-cluster scenario) -> "kueue", NO >1-non-local raise.
+    # This is the /pipeline/stats poll's guard; before Phase 70 a 2nd Kueue backend 500'd it.
+    kueue_a = KueueBackend(kind="kueue", id="k8s-a", rank=10, cap=2, kube=KubeConfig())
+    kueue_b = KueueBackend(kind="kueue", id="k8s-b", rank=20, cap=2, kube=KubeConfig())
+    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND, kueue_a, kueue_b])
+    ctx_two_kueue = await build_dashboard_context(app_state, session)
+    assert ctx_two_kueue["cloud_lane_kind"] == "kueue"
+
+    # local + 2 Kueue + 1 compute still reports "kueue" (any-kueue wins), no raise.
+    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND, kueue_a, kueue_b, _COMPUTE_BACKEND])
+    ctx_mixed = await build_dashboard_context(app_state, session)
+    assert ctx_mixed["cloud_lane_kind"] == "kueue"
+
 
 # ---------------------------------------------------------------------------
 # Phase 44 Plan 03: POST /pipeline/files/{file_id}/deepen — re-analyze ONE
