@@ -231,7 +231,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 0/TBD | Not started | - |
+| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 1/5 | In Progress|  |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1084,7 +1084,7 @@ Plans:
 **Plans**: 5 plans in 4 waves
 **Wave 1**
 
-- [ ] 70-01-PLAN.md — Foundation: cloud_job.staging_bucket column + migration 030 (D-01/D-02), pick_bucket selector (D-06), KubeConfig.context field (A1) — additive, non-breaking
+- [x] 70-01-PLAN.md — Foundation: cloud_job.staging_bucket column + migration 030 (D-01/D-02), pick_bucket selector (D-06), KubeConfig.context field (A1) — additive, non-breaking
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
