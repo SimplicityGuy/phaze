@@ -11,11 +11,11 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (67+).
 
 ### REG — Backend config registry & model
 
-- [ ] **REG-01**: Operator can declare a list of execution backends in config (`backends:`) — each entry carrying an `id`, a `kind` (`local` / `compute` / `kueue`), an integer `rank`, and an integer `cap` — as the single source of truth for which execution targets exist, replacing the 3-value `cloud_target` Literal.
-- [ ] **REG-02**: Each backend entry is validated per-kind at startup with fail-fast errors (kueue requires its kube config; compute requires its bound-agent reference; local needs neither), consolidating the three current per-target `_enforce_*_when_*` validators into one per-entry discriminated-union validator.
-- [ ] **REG-03**: Per-backend secrets (kube tokens/kubeconfigs, S3 credentials, agent tokens) load via the existing `<VAR>_FILE` convention, scoped per backend entry.
-- [ ] **REG-04**: `cloud_target` and the flat `s3_*` / `kube_*` / `compute_scratch_dir` `ControlSettings` fields (plus the three `_enforce_*_when_*` validators) are **removed** this phase — `backends.toml` is the sole config surface, with **no back-compat shim** (neither the `a1` nor `k8s` cloud path was ever deployed live; only `cloud_target=local` ever ran, and nothing in the wild depends on the flat fields). Absence of any `backends` config resolves to an implicit all-local registry (the zero-config no-op), a resolved-registry line is logged at startup (`id`/`kind`/`rank`/`cap` only), and a registry that resolves to empty fails fast rather than wedging the backlog. *(Operator decision 2026-07-03, CONTEXT D-11..D-14 — supersedes the earlier shim clause; the ~10 `settings.cloud_target` call sites are rewired to registry-derived reads this phase.)*
-- [ ] **REG-05**: Operator can declare an S3 staging-bucket registry — one or more buckets, each with its own endpoint + credentials (via `<VAR>_FILE` secrets) and a scope of either **shared/public** (Internet-reachable, usable by any Kueue cluster) or **cluster-specific** (bound to one Kueue backend) — and assign each Kueue backend the bucket set it stages to (its cluster-specific set, or the shared/public set). Validation is fail-fast (a Kueue backend must resolve to a non-empty, reachable-by-that-cluster bucket set; a `cluster-specific` bucket may be referenced by **at most one** Kueue backend, a `shared`/public bucket by many). The flat single global S3 config is **removed** with the other flat fields (REG-04, no shim). (Config model only — bucket selection/presigning/cleanup behavior is MKUE-02/04 in Phase 70.)
+- [x] **REG-01**: Operator can declare a list of execution backends in config (`backends:`) — each entry carrying an `id`, a `kind` (`local` / `compute` / `kueue`), an integer `rank`, and an integer `cap` — as the single source of truth for which execution targets exist, replacing the 3-value `cloud_target` Literal.
+- [x] **REG-02**: Each backend entry is validated per-kind at startup with fail-fast errors (kueue requires its kube config; compute requires its bound-agent reference; local needs neither), consolidating the three current per-target `_enforce_*_when_*` validators into one per-entry discriminated-union validator.
+- [x] **REG-03**: Per-backend secrets (kube tokens/kubeconfigs, S3 credentials, agent tokens) load via the existing `<VAR>_FILE` convention, scoped per backend entry.
+- [x] **REG-04**: `cloud_target` and the flat `s3_*` / `kube_*` / `compute_scratch_dir` `ControlSettings` fields (plus the three `_enforce_*_when_*` validators) are **removed** this phase — `backends.toml` is the sole config surface, with **no back-compat shim** (neither the `a1` nor `k8s` cloud path was ever deployed live; only `cloud_target=local` ever ran, and nothing in the wild depends on the flat fields). Absence of any `backends` config resolves to an implicit all-local registry (the zero-config no-op), a resolved-registry line is logged at startup (`id`/`kind`/`rank`/`cap` only), and a registry that resolves to empty fails fast rather than wedging the backlog. *(Operator decision 2026-07-03, CONTEXT D-11..D-14 — supersedes the earlier shim clause; the ~10 `settings.cloud_target` call sites are rewired to registry-derived reads this phase.)*
+- [x] **REG-05**: Operator can declare an S3 staging-bucket registry — one or more buckets, each with its own endpoint + credentials (via `<VAR>_FILE` secrets) and a scope of either **shared/public** (Internet-reachable, usable by any Kueue cluster) or **cluster-specific** (bound to one Kueue backend) — and assign each Kueue backend the bucket set it stages to (its cluster-specific set, or the shared/public set). Validation is fail-fast (a Kueue backend must resolve to a non-empty, reachable-by-that-cluster bucket set; a `cluster-specific` bucket may be referenced by **at most one** Kueue backend, a `shared`/public bucket by many). The flat single global S3 config is **removed** with the other flat fields (REG-04, no shim). (Config model only — bucket selection/presigning/cleanup behavior is MKUE-02/04 in Phase 70.)
 
 ### BACK — Backend protocol & implementations
 
@@ -77,11 +77,11 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REG-01 | Phase 67 | Pending |
-| REG-02 | Phase 67 | Pending |
-| REG-03 | Phase 67 | Pending |
-| REG-04 | Phase 67 | Pending |
-| REG-05 | Phase 67 | Pending |
+| REG-01 | Phase 67 | Complete |
+| REG-02 | Phase 67 | Complete |
+| REG-03 | Phase 67 | Complete |
+| REG-04 | Phase 67 | Complete |
+| REG-05 | Phase 67 | Complete |
 | BACK-01 | Phase 68 | Pending |
 | BACK-02 | Phase 68 | Pending |
 | BACK-03 | Phase 68 | Pending |
