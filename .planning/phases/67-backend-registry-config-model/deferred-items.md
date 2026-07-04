@@ -36,3 +36,27 @@ Out-of-scope discoveries logged during execution (not fixed in the plan that fou
   URL), exactly as Plan 04 did for `test_s3_staging` / `test_cloud_staging`. Small, mechanical, and
   fully in the spirit of the removal wave; left out of Plan 06 because it is outside this plan's
   named file set and the failure is a pre-existing Wave-4 defect.
+
+## D-67-CR-01b — remaining unguarded transitional-accessor reads degrade to page/cron/route errors under a premature multi-cluster registry (Phase 68/69 hardening)
+
+- **Found during:** Phase 67 code-review gate (67-REVIEW.md CR-01).
+- **Context:** A registry with >1 non-local backend is SCHEMA-VALID (multi-cluster is the milestone
+  goal; D-09 exists precisely to police shared-vs-cluster-specific bucket sharing across multiple
+  kueue backends), so `ControlSettings()` constructs and `cloud_enabled` is `True`. The ≤1-non-local
+  transitional accessors (`active_cloud_kind`/`active_cap`/`active_bucket`/…) then raise on read
+  because single-selection dispatch lands in Phase 69 (SCHED). The reviewer's proposed
+  construction-time rejection was NOT applied — it would break the valid multi-cluster schema and make
+  the D-09 validation dead code.
+- **Resolved here (the severe case):** `controller.startup` read `cfg.active_cloud_kind` OUTSIDE its
+  try/except, so a valid multi-cluster registry aborted the whole control-worker boot — a direct
+  violation of the D-05 "control plane boots regardless" invariant the same function documents. Fixed
+  by wrapping the read so it degrades to "skip the Kueue probe" + clears the stale flag; locked by
+  `test_multi_backend_registry_does_not_abort_boot`.
+- **Deferred (lower-severity graceful degradation):** the same premature-multi-cluster config still
+  makes these unguarded reads raise a page/cron/route error rather than degrading cleanly —
+  `routers/pipeline.py` (`build_dashboard_context` "never 500s" + the second read ~810),
+  `routers/agent_s3.py` (~113, a partial-state 500 after the multipart already completed), and the
+  `release_awaiting_cloud.py` staging cron (~131/145/180, documented "NEVER raise"). These are NOT
+  boot-fatal and only trigger when an operator configures multi-cluster before Phase 69 supports it.
+  Fold the per-site graceful handling into Phase 69 (SCHED), where multi-backend dispatch replaces the
+  transitional accessors entirely and the "pick one" reduction goes away.

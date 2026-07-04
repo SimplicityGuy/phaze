@@ -45,7 +45,7 @@ def test_local_backend_parses() -> None:
 
 
 def test_compute_backend_parses() -> None:
-    """A compute entry carries agent_ref + optional scratch_dir (D-13)."""
+    """A compute entry carries agent_ref + scratch_dir (D-13)."""
     be = ComputeBackend(kind="compute", id="compute-a1", rank=10, cap=2, agent_ref="a1-node", scratch_dir="/scratch")
     assert be.agent_ref == "a1-node"
     assert be.scratch_dir == "/scratch"
@@ -55,6 +55,12 @@ def test_compute_backend_missing_agent_ref_fails_fast_with_id() -> None:
     """A compute entry without agent_ref fails fast, message contains the entry id (REG-02)."""
     with pytest.raises(ValidationError, match=r"backend 'compute-x'"):
         ComputeBackend(kind="compute", id="compute-x", rank=10, cap=2)
+
+
+def test_compute_backend_missing_scratch_dir_fails_fast_with_id() -> None:
+    """WR-01: a compute entry without scratch_dir fails fast (the rsync push target), message names the id."""
+    with pytest.raises(ValidationError, match=r"backend 'compute-y'.*scratch_dir"):
+        ComputeBackend(kind="compute", id="compute-y", rank=10, cap=2, agent_ref="y-node")
 
 
 def test_kueue_backend_parses() -> None:

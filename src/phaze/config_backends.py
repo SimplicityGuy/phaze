@@ -89,11 +89,18 @@ class ComputeBackend(BaseModel):
     scratch_dir: str | None = None  # was ControlSettings.compute_scratch_dir (D-13)
 
     @model_validator(mode="after")
-    def _require_agent_ref(self) -> "ComputeBackend":
-        """A compute backend without ``agent_ref`` cannot be dispatched to -- fail fast, id-tagged."""
+    def _require_dispatch_fields(self) -> "ComputeBackend":
+        """A compute backend needs both dispatch fields -- fail fast, id-tagged.
+
+        ``agent_ref`` names the node to dispatch to (REG-02). ``scratch_dir`` is the rsync push target
+        the push pipeline interpolates per file (WR-01): without it, ``agent_push`` would build a literal
+        ``"None/<file_id>.<ext>"`` scratch path and silently corrupt every push — so a missing
+        ``scratch_dir`` fails construction here rather than at read time.
+        """
         if not self.agent_ref:
-            msg = f"backend {self.id!r} (kind=compute) requires an agent_ref"
-            raise ValueError(msg)
+            raise ValueError(f"backend {self.id!r} (kind=compute) requires an agent_ref")
+        if not self.scratch_dir:
+            raise ValueError(f"backend {self.id!r} (kind=compute) requires a scratch_dir")
         return self
 
 

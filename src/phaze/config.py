@@ -396,7 +396,11 @@ class ControlSettings(BaseSettings):
         """
         if not isinstance(data, dict):
             return data
-        path = os.environ.get("PHAZE_BACKENDS_CONFIG_FILE", "/etc/phaze/backends.toml")
+        # WR-02: resolve the pointer through the same .env-aware map every other var uses
+        # (`_resolution_env`, process env wins over `.env`) rather than `os.environ` alone — otherwise a
+        # `.env`-declared PHAZE_BACKENDS_CONFIG_FILE is silently ignored and all cloud config is dropped
+        # in favor of implicit-local.
+        path = _resolution_env(cls.model_config).get("PHAZE_BACKENDS_CONFIG_FILE", "/etc/phaze/backends.toml")
         toml_path = Path(path)
         if not toml_path.exists():
             # Absent file → inject nothing; the default_factory fires (implicit-local, D-03).

@@ -287,3 +287,73 @@ async def test_startup_logs_effective_registry_secret_free(
     assert "SUPERSECRETTOKEN" not in out
     # The registry-gated probe ran (active_cloud_kind == "kueue" derived from the real registry).
     probe.assert_awaited()
+
+
+# Two kueue backends sharing one shared bucket: a VALID multi-cluster schema (D-09 allows a shared-scope
+# bucket to be referenced by many kueue backends), but the ≤1-non-local transitional accessor
+# active_cloud_kind RAISES on it until multi-backend dispatch lands in Phase 69 (SCHED).
+_MULTI_KUEUE_REGISTRY = """
+    [[backends]]
+    kind = "kueue"
+    id = "cluster-a"
+    rank = 10
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube-a.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq"
+
+    [[backends]]
+    kind = "kueue"
+    id = "cluster-b"
+    rank = 20
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube-b.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq"
+
+    [[buckets]]
+    id = "shared-bucket"
+    scope = "shared"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-staging"
+"""
+
+
+@pytest.mark.asyncio
+async def test_multi_backend_registry_does_not_abort_boot(
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """CR-01/D-05: a valid >1-non-local registry makes active_cloud_kind raise -- startup must skip the probe and boot regardless.
+
+    The registry is schema-valid (two kueue clusters sharing a shared-scope bucket, D-09), so
+    ControlSettings() constructs and cloud_enabled is True; the transitional active_cloud_kind accessor
+    raises because it reduces only a ≤1-non-local registry. Reading it in the startup probe must NOT
+    propagate out of the startup hook -- the control plane boots regardless (D-05).
+    """
+    from phaze.config import ControlSettings
+
+    fake_redis = AsyncMock()
+    _stub_collaborators(monkeypatch, fake_redis)
+
+    backends_toml_env(_MULTI_KUEUE_REGISTRY)
+    settings = ControlSettings()
+    monkeypatch.setattr("phaze.tasks.controller.get_settings", lambda: settings)
+
+    probe = AsyncMock()
+    monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    # Must NOT raise even though active_cloud_kind raises on this (valid, multi-cluster) registry.
+    await controller.startup(ctx)
+
+    # The transitional accessor can't reduce >1 non-local yet, so the kueue probe is skipped.
+    probe.assert_not_called()

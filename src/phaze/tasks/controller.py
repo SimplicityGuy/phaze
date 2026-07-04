@@ -171,7 +171,19 @@ async def startup(ctx: dict[str, Any]) -> None:
     # control plane still boots Postgres/Redis/UI/local-analysis). The WARNING names only the env var
     # PHAZE_KUBE_LOCAL_QUEUE; it never interpolates the SA token or kube DSN (T-56-LOG / T-54-07).
     # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
-    if cfg.active_cloud_kind == "kueue":  # type: ignore[attr-defined]
+    # The ≤1-non-local accessor RAISES on a premature multi-cluster registry (>1 non-local — a valid
+    # schema whose dispatch lands in Phase 69). Reading it here must honor the D-05 boot invariant
+    # documented above, so a raise degrades to "skip the Kueue probe" (falls through to the else branch
+    # which clears any stale flag) rather than aborting the controller boot.
+    try:
+        active_kind = cfg.active_cloud_kind  # type: ignore[attr-defined]
+    except Exception:
+        logger.warning(
+            "phaze.controller startup: backend registry holds >1 non-local backend; multi-backend dispatch "
+            "lands in Phase 69, so skipping the Kueue LocalQueue probe; control plane boots regardless (D-05)"
+        )
+        active_kind = None
+    if active_kind == "kueue":
         # Probe the LocalQueue and persist the flag in two INDEPENDENTLY-guarded steps. CR-01: the flag
         # write is the FIRST Redis call in startup (backfill/recovery above use Postgres), so a Redis-down
         # boot would let an unguarded ``.set``/``.delete`` propagate and crash the control worker -- the

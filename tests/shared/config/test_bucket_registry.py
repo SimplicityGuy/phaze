@@ -309,7 +309,13 @@ def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ign
 
 
 def test_multiple_non_local_backends_accessor_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """>1 non-local backend → the transitional accessors raise (multi-backend dispatch is Phase 69) — never silently pick one."""
+    """>1 non-local backend → the transitional accessors raise (multi-backend dispatch is Phase 69) — never silently pick one.
+
+    The registry itself is VALID (multi-cluster is the milestone goal and D-09 polices bucket sharing
+    across multiple kueue backends), so construction succeeds and ``cloud_enabled`` is True; only the
+    ≤1-non-local transitional reduction refuses to pick one until Phase 69 (SCHED). CR-01 hardened the
+    unguarded readers of these accessors so this raise degrades gracefully instead of crashing boot.
+    """
     backends_toml_env(
         """
         [[backends]]
