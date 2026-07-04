@@ -242,6 +242,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     name = cloud_job.kueue_workload
     if not name:
         logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
+        await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
         return
 
     # WR-01: a vanished Job (real kube 404 -> NotFoundError; fake seam -> None) on an in-flight row is a
@@ -270,6 +271,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     workload = await kube_staging.get_workload_for(uid, kube) if uid else None
     if workload is None:
         # Admission state unreadable this tick (label miss + owner-ref miss) -> stay in-flight, no-op.
+        await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
         return
 
     # Evicted/deactivated -> no-callback terminal (re-drive under cap).
@@ -284,7 +286,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_INADMISSIBLE:
         if not cloud_job.inadmissible:
             cloud_job.inadmissible = True
-            await session.commit()
+        await session.commit()  # WR-01: commit unconditionally (no-op when already flagged) to release the lock.
         tally["inadmissible"] += 1
         logger.warning(
             "reconcile_cloud_jobs: Workload Inadmissible -- K8s Jobs not admitting; check LocalQueue config",
@@ -296,15 +298,12 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
 
     # Healthy Pending: silent hold, waits indefinitely -- no cap, no alert (D-07, Pitfall 3).
     if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_PENDING:
-        dirty = False
         if cloud_job.inadmissible:  # CR-01: the misconfig was fixed -- Workload is back to a healthy quota wait.
             cloud_job.inadmissible = False
-            dirty = True
         if cloud_job.cloud_phase != CloudPhase.QUEUED_BEHIND_QUOTA.value:  # D-04: behind quota, waiting for admission.
             cloud_job.cloud_phase = CloudPhase.QUEUED_BEHIND_QUOTA.value
-            dirty = True
-        if dirty:
-            await session.commit()
+        # WR-01: commit unconditionally (a clean no-op when neither field changed) to release the per-row lock.
+        await session.commit()
         tally["pending"] += 1
         return
 
@@ -322,11 +321,13 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
             cloud_job.status = CloudJobStatus.RUNNING.value
             cloud_job.inadmissible = False  # CR-01: an admitted Workload is no longer Inadmissible -- clear the alert.
             cloud_job.cloud_phase = next_phase
-            await session.commit()
+        # WR-01: commit unconditionally (a clean no-op when already RUNNING in the target phase) to release the lock.
+        await session.commit()
         tally["running"] += 1
         return
 
     # Unknown in-flight condition set -> leave the row untouched for a later tick.
+    await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
 
 
 async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
