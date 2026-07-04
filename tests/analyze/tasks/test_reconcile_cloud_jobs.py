@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
@@ -788,3 +788,192 @@ async def test_inadmissible_does_not_touch_cloud_phase(async_engine: AsyncEngine
     cj = await _read_cloud_job(session, fid)
     assert cj.inadmissible is True
     assert cj.cloud_phase is None  # the fault flag is orthogonal: it never repurposes the admission phase
+
+
+# --- MKUE-04: clean-before-flip spillover cleanup (delete under the lock, before the AWAITING_CLOUD flip) ---
+#
+# The crux of Plan 05 (D-01/D-03, Pitfall 9): on the at-cap spill-back the old (backend_id,
+# staging_bucket) staged object must be deleted WHILE the per-row pg_advisory_xact_lock(5_000_504) is
+# still held -- i.e. BEFORE the commit that flips the file to AWAITING_CLOUD and thus releases the lock,
+# making the file a drain candidate. Deleting before the flip guarantees the old object is gone before
+# any concurrent drain tick can re-dispatch + re-stage a NEW object under the same file_id-scoped key.
+
+_DRAIN_ADVISORY_LOCK_KEY = 5_000_504
+
+
+def _patch_commit_marker(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
+    """Record a ``"commit"`` marker into the shared ``events`` list on every ``AsyncSession.commit``.
+
+    Lets the ordering assertion prove the S3 delete precedes the AWAITING_CLOUD commit (the lock-release
+    boundary) which precedes the post-commit Job delete: ``index(s3_delete) < index(commit) < index(delete_job)``.
+    Reconcile issues exactly one commit for the single at-cap row under test.
+    """
+    original = AsyncSession.commit
+
+    async def _spy(self: AsyncSession) -> None:
+        events.append("commit")
+        await original(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", _spy)
+
+
+@pytest.mark.asyncio
+async def test_clean_before_flip_ordering_delete_precedes_commit_precedes_job(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At cap the S3 delete of the old object is recorded BEFORE the AWAITING_CLOUD commit and BEFORE delete_job (D-01/MKUE-04)."""
+    _patch_cap(monkeypatch, cap=3)
+    _fid, name = await _seed(session, attempts=3)  # next_attempt = 4 > cap -> the at-cap clean terminal
+    events: list[str] = []
+    dj = DeleteJobSpy(events)
+    s3 = S3DeleteSpy(events)
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)), delete_job=dj, s3_delete=s3)
+    _patch_commit_marker(monkeypatch, events)
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    # The delete runs under the still-held lock, before the flip commit; the Job delete stays post-commit.
+    assert events == ["s3_delete", "commit", "delete_job"]
+    assert events.index("s3_delete") < events.index("commit") < events.index("delete_job")
+
+
+@pytest.mark.asyncio
+async def test_clean_before_flip_deletes_recorded_bucket_and_clears_it(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The delete targets the RECORDED staging_bucket (captured pre-mutation), and the row's staging_bucket is cleared to None (D-01/D-06)."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=3)
+    _, _, _, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)))
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    # Deleted on exactly the recorded staging bucket -- never a re-derived one.
+    assert s3.calls == [fid]
+    assert s3.buckets == [_STAGING_BUCKET_ID]
+    # The terminal row clears staging_bucket so no pre-repurpose reader is misled (T-70-04-04).
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.FAILED.value
+    assert cj.staging_bucket is None
+
+
+@pytest.mark.asyncio
+async def test_spillover_same_bucket_redispatch_preserves_new_object(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A same-bucket re-dispatch that re-stages a NEW object under the same file_id key survives (Pitfall 9).
+
+    Model: a tiny object store keyed by presence. The reconcile's delete runs BEFORE the AWAITING_CLOUD
+    commit (the lock-release / drain-candidate boundary), so the drain's post-commit re-stage of a new
+    object on the SAME bucket + SAME file_id-scoped key can never be clobbered by the trailing old delete.
+    """
+    _patch_cap(monkeypatch, cap=3)
+    _fid, name = await _seed(session, attempts=3)
+    events: list[str] = []
+    store = {"present": True}
+
+    class _OrderedS3Delete:
+        def __init__(self) -> None:
+            self.calls: list[uuid.UUID] = []
+            self.buckets: list[str] = []
+
+        async def __call__(self, file_id: uuid.UUID, bucket: Any = None) -> None:
+            self.calls.append(file_id)
+            self.buckets.append(getattr(bucket, "id", None))
+            store["present"] = False  # the OLD object is deleted
+            events.append("s3_delete")
+
+    s3 = _OrderedS3Delete()
+    dj = DeleteJobSpy(events)
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(failed=1, name=name)))
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", dj)
+    monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
+    _patch_commit_marker(monkeypatch, events)
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    # The delete ran BEFORE the commit that releases the file to the drain.
+    assert events.index("s3_delete") < events.index("commit")
+    assert s3.buckets == [_STAGING_BUCKET_ID]
+    # Simulate the drain's post-commit re-dispatch re-staging a NEW object on the same key/bucket.
+    store["present"] = True
+    # The old delete already ran pre-commit, so it cannot clobber the freshly-staged object.
+    assert store["present"] is True
+
+
+@pytest.mark.asyncio
+async def test_drain_reconcile_concurrency_delete_runs_under_advisory_lock(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clean-before-flip delete executes WHILE reconcile holds pg_advisory_xact_lock(5_000_504) (Pitfall 2/9).
+
+    Proof that a concurrent drain cannot claim the file until reconcile commits: from a SEPARATE session,
+    ``pg_try_advisory_xact_lock`` on the drain's key must FAIL during the delete (reconcile holds it),
+    then SUCCEED after the txn commits. Since the drain takes the same lock across its whole candidate
+    claim, no file can end assigned to two backends and no object the new pod needs is deleted.
+    """
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=3)
+    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    probe_states: dict[str, bool] = {}
+
+    class _LockProbingS3Delete:
+        def __init__(self) -> None:
+            self.calls: list[uuid.UUID] = []
+
+        async def __call__(self, file_id: uuid.UUID, bucket: Any = None) -> None:  # noqa: ARG002 -- seam signature
+            self.calls.append(file_id)
+            # From a distinct connection, try to grab the drain lock reconcile is currently holding.
+            async with sm() as probe:
+                got = (await probe.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _DRAIN_ADVISORY_LOCK_KEY})).scalar()
+                probe_states["during_delete"] = bool(got)
+                await probe.rollback()
+
+    s3 = _LockProbingS3Delete()
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(failed=1, name=name)))
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", DeleteJobSpy([]))
+    monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
+
+    await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    # During the delete the lock was held by reconcile -> the concurrent probe could NOT acquire it.
+    assert probe_states["during_delete"] is False
+    # After the reconcile txn commits, the lock is free again.
+    async with sm() as probe:
+        got = (await probe.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _DRAIN_ADVISORY_LOCK_KEY})).scalar()
+        assert bool(got) is True
+        await probe.rollback()
+    assert s3.calls == [fid]
+    # The file spilled back to AWAITING_CLOUD (single-owner: staging_bucket cleared, no double assignment).
+    assert (await _read_file(session, fid)).state == FileState.AWAITING_CLOUD
+    assert (await _read_cloud_job(session, fid)).staging_bucket is None
+
+
+@pytest.mark.asyncio
+async def test_clean_before_flip_delete_is_best_effort(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raising delete_staged_object is swallowed and does NOT block the spill / re-dispatch (D-03, T-70-04-02)."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=3)
+
+    class _RaisingS3Delete:
+        def __init__(self) -> None:
+            self.calls: list[uuid.UUID] = []
+
+        async def __call__(self, file_id: uuid.UUID, bucket: Any = None) -> None:  # noqa: ARG002 -- seam signature
+            self.calls.append(file_id)
+            raise RuntimeError("S3 unreachable")
+
+    s3 = _RaisingS3Delete()
+    dj = DeleteJobSpy([])
+    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(failed=1, name=name)))
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", dj)
+    monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
+
+    tally = await reconcile_cloud_jobs(_make_ctx(async_engine))
+
+    # The raising delete was attempted but swallowed -> the spill still committed and the Job still deleted.
+    assert s3.calls == [fid]
+    assert (await _read_file(session, fid)).state == FileState.AWAITING_CLOUD
+    assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.FAILED.value
+    assert dj.calls == [name]  # Job delete stays post-commit and still runs despite the swallowed S3 error
+    assert tally["failed"] == 1
