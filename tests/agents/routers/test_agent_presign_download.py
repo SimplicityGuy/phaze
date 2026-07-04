@@ -104,7 +104,11 @@ async def _seed_file(session: AsyncSession, agent: Agent, *, sha256: str = _SHA)
 
 
 async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, *, status: CloudJobStatus = CloudJobStatus.UPLOADED) -> None:
-    """Insert a CloudJob row for ``file_id`` (defaults to UPLOADED -- the staged-object-ready state)."""
+    """Insert a CloudJob row for ``file_id`` (defaults to UPLOADED -- the staged-object-ready state).
+
+    Phase 70 (MKUE-02): stamps ``staging_bucket`` = the registry bucket id ("staging") so the presign
+    handler resolves it to a ``BucketConfig`` and mints the GET against exactly that recorded bucket.
+    """
     session.add(
         CloudJob(
             id=uuid.uuid4(),
@@ -112,6 +116,7 @@ async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, *, status: 
             s3_key=f"phaze-staging/{file_id}",
             status=status.value,
             upload_id="upload-xyz",
+            staging_bucket="staging",
         )
     )
     await session.commit()
@@ -221,3 +226,24 @@ async def test_presign_download_no_cloud_job_returns_409(
     resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
 
     assert resp.status_code == 409, resp.text
+
+
+async def test_presign_download_unresolvable_bucket_returns_409(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> None:
+    """An UPLOADED row whose ``staging_bucket`` is absent from the registry returns 409, not a dead URL (MKUE-02)."""
+    agent, _token = seed_test_agent
+    file = await _seed_file(session, agent)
+    # UPLOADED but the recorded bucket id is not in the registry -> resolve_bucket_config -> None -> 409.
+    session.add(
+        CloudJob(id=uuid.uuid4(), file_id=file.id, s3_key=f"phaze-staging/{file.id}", status=CloudJobStatus.UPLOADED.value, staging_bucket="ghost"),
+    )
+    await session.commit()
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 409, resp.text
+    assert "staging bucket" in resp.json()["detail"]

@@ -497,25 +497,10 @@ class ControlSettings(BaseSettings):
         backend = self._single_non_local()
         return backend.kube if isinstance(backend, KueueBackend) else None
 
-    @property
-    def active_bucket(self) -> "BucketConfig | None":
-        """The single kueue backend's single resolved BucketConfig, else None.
-
-        TRANSITIONAL — retained through Phase 70 (MKUE-01): feeds the single-cluster s3_staging read.
-        Raises when the resolved set has >1 bucket — per-file bucket selection lands in Phase 70
-        (MKUE-02); this reduction must NEVER silently pick one.
-        """
-        backend = self._single_non_local()
-        if not isinstance(backend, KueueBackend):
-            return None
-        bucket_by_id = {bucket.id: bucket for bucket in self.buckets}
-        resolved = [bucket_by_id[bid] for bid in backend.buckets if bid in bucket_by_id]
-        if len(resolved) > 1:
-            raise ValueError(
-                f"per-file bucket selection lands in Phase 70 (MKUE-02): kueue backend {backend.id!r} resolves to "
-                f"{len(resolved)} buckets, but the transitional accessor reduces only a single-bucket set"
-            )
-        return resolved[0] if resolved else None
+    # Phase 70 (MKUE-02): ``active_bucket`` is RETIRED. Per-file bucket selection is now deterministic
+    # via ``s3_staging.pick_bucket`` at dispatch time; the chosen id is recorded on
+    # ``cloud_job.staging_bucket`` and every presign/cleanup call site READS that recorded value and
+    # resolves it via ``s3_staging.resolve_bucket_config`` (never a module-global bucket read).
 
     def log_effective_registry(self) -> None:
         """Emit a secret-free id/kind/rank/cap projection of the resolved registry at startup (REG-04, Pitfall 5).

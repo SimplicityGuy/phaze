@@ -26,7 +26,7 @@ doesn't raise `NotNullViolationError`. `ON CONFLICT DO UPDATE` preserves the
 existing row's id (`excluded.id` is not in the SET clause).
 """
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 import uuid
 
 from fastapi import APIRouter, Depends, status
@@ -35,6 +35,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
@@ -51,6 +52,10 @@ from phaze.schemas.agent_analysis import (
 )
 from phaze.services import s3_staging
 from phaze.services.scheduling_ledger import clear_ledger_entry
+
+
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -104,19 +109,27 @@ async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UU
     guard must short-circuit BEFORE any ``s3_staging`` call so the all-local path never raises
     on an unconfigured backend.
 
-    When a staging row IS present, the staged object is provably no longer needed the moment the
-    result lands, so it is deleted at that point (the inline-delete half of KSTAGE-04). The
-    analysis result was already recorded above (record-first discipline), so a transient cleanup
-    error is logged-and-swallowed -- a delete blip must never lose the recorded result (T-53-21).
-    The bucket-lifecycle TTL (Plan 02) is the backstop for a missed delete; Phase 54's reconcile
-    may invoke the same delete for an evicted Job. ``file_id`` is the PATH value only (AUTH-01).
+    MKUE-02: the delete acts on the RECORDED ``staging_bucket`` (resolved to its ``BucketConfig``,
+    never re-derived). A row whose ``staging_bucket`` is NULL (a compute row with no S3 object, or an
+    unstaged file) ALSO short-circuits with zero S3 calls -- mirroring the all-local guard.
+
+    When a bucketed staging row IS present, the staged object is provably no longer needed the moment
+    the result lands, so it is deleted at that point (the inline-delete half of KSTAGE-04). The analysis
+    result was already recorded above (record-first discipline), so a transient cleanup error is
+    logged-and-swallowed -- a delete blip must never lose the recorded result (T-53-21). The
+    bucket-lifecycle TTL (Plan 02) is the backstop for a missed delete; Phase 54's reconcile may invoke
+    the same delete for an evicted Job. ``file_id`` is the PATH value only (AUTH-01).
     """
-    has_cloud_job = (await session.execute(select(CloudJob.id).where(CloudJob.file_id == file_id))).scalar_one_or_none()
-    if has_cloud_job is None:
+    row = (await session.execute(select(CloudJob.id, CloudJob.staging_bucket).where(CloudJob.file_id == file_id))).first()
+    if row is None:
         # All-local path: no staged object exists -> no S3 call, no client build (T-53-22).
         return
+    bucket = s3_staging.resolve_bucket_config(cast("ControlSettings", get_settings()), row.staging_bucket)
+    if bucket is None:
+        # Compute / unstaged row: no S3 object was staged -> skip the S3 op cleanly (no client build).
+        return
     try:
-        await s3_staging.delete_staged_object(file_id)
+        await s3_staging.delete_staged_object(file_id, bucket)
     except Exception:
         # Record-first: the result is already written; a cleanup blip is logged, never raised,
         # so the recorded analysis result is preserved (T-53-21). The lifecycle TTL reaps the
