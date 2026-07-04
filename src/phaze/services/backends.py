@@ -394,4 +394,13 @@ def resolved_non_local_kind(settings: ControlSettings) -> str:
     if not settings.cloud_enabled:
         return "local"
     non_local = [backend for backend in settings.backends if backend.kind != "local"]
+    # WR-01: preserve the ≤1-non-local defense-in-depth the retired ``_single_non_local`` accessor gave the
+    # three call sites (pipeline dashboard / backfill, agent_s3). Fail fast naming the offending ids rather
+    # than silently picking non_local[0] -- mirrors :func:`resolve_backends`'s boot guard (multi-backend
+    # dispatch is Phase 69 / SCHED). This keeps the all-local and single-non-local paths byte-identical.
+    if len(non_local) > 1:
+        raise ValueError(
+            f"multi-backend dispatch lands in Phase 69 (SCHED): {len(non_local)} non-local backends "
+            f"{[backend.id for backend in non_local]} are configured, but Phase 68 resolves only a ≤1-non-local registry"
+        )
     return non_local[0].kind

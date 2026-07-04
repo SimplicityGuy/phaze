@@ -294,3 +294,40 @@ async def test_in_flight_equivalence(session: AsyncSession) -> None:
     per_backend = sum([await b.in_flight_count(session) for b in resolved])
     window = await get_cloud_window_count(session)
     assert per_backend == window
+
+
+# === WR-01: resolved_non_local_kind fail-fast on >1 non-local ============================
+
+
+def test_resolved_non_local_kind_raises_on_multiple_non_local(backends_toml_env: Any) -> None:
+    """WR-01: >1 non-local backend -> ValueError naming the offending ids, never silently non_local[0].
+
+    Mirrors :func:`resolve_backends`'s boot guard (multi-backend dispatch is Phase 69 / SCHED). The
+    retired ``_single_non_local`` accessor raised here; the Phase-68 replacement must preserve that
+    single-non-local defense-in-depth for its three call sites (dashboard/backfill, agent_s3).
+    """
+    from phaze.config import ControlSettings
+
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+
+        [[backends]]
+        kind = "compute"
+        id = "compute-b"
+        rank = 20
+        cap = 2
+        agent_ref = "agent-b"
+        scratch_dir = "/scratch/b"
+        """
+    )
+    settings = ControlSettings()
+    assert settings.cloud_enabled is True
+    with pytest.raises(ValueError, match=r"Phase 69"):
+        backends.resolved_non_local_kind(settings)
