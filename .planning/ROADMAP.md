@@ -231,7 +231,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 3/5 | In Progress|  |
+| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete   | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1096,8 +1096,8 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 70-04-PLAN.md — MKUE-03: per-backend drain isolation (D-07) so one flaky cluster can't poison the tick
-- [ ] 70-05-PLAN.md — MKUE-04: clean-before-flip spillover cleanup ordering (D-01/D-03) under the advisory lock
+- [x] 70-04-PLAN.md — MKUE-03: per-backend drain isolation (D-07) so one flaky cluster can't poison the tick
+- [x] 70-05-PLAN.md — MKUE-04: clean-before-flip spillover cleanup ordering (D-01/D-03) under the advisory lock
 
 **Research**: needed — unresolved plan-time schema/resolution questions: (a) `cloud_job` one-row-per-file (mutate `backend_id` in place) vs. one-row-per-(file,backend) for attempt-scoping; (b) `ComputeAgentBackend.is_available()`/dispatch resolving its specific agent via `agent_ref`→`Agent.id` (replacing the "most-recently-seen" heuristic); plus a live-cluster verify of kr8s auth per distinct kubeconfig/context and cross-cluster stale-Job cleanup ordering (`/gsd:plan-phase --research-phase 70`).
 **PR**: own worktree branch — never a direct commit to `main`.
