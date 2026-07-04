@@ -117,6 +117,10 @@ None - no external service configuration required.
 - `uv run ruff check .` → All checks passed; `uv run mypy .` → no issues in 192 source files.
 - All pre-commit hooks green on every task commit.
 
+## Self-Check: PASSED
+
+All created files exist on disk (migration 030, its test, SUMMARY) and all six task/doc commits are present in git history.
+
 ---
 *Phase: 70-multi-kueue-n-clusters*
 *Completed: 2026-07-04*
