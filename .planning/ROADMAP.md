@@ -31,7 +31,7 @@
   - [x] 69-03-PLAN.md — Reconcile: per-row shared advisory lock (cap-safe) + per-backend reconcile dispatch + at-cap spill-back to AWAITING_CLOUD (SCHED-02/03/05) [Wave 3]
   - [x] 69-04-PLAN.md — Single-recovery-owner ledger guard + compute/kueue callback spill to AWAITING_CLOUD (SCHED-03/05) [Wave 3]
   - [x] 69-05-PLAN.md — Gap closure (CR-01): `FileState.LOCAL_ANALYZING` + `LocalBackend.dispatch` flips out of AWAITING_CLOUD (stops cross-backend double-dispatch) + WR-01 honest return (SCHED-01/03) [Wave 1]
-- [ ] **Phase 70: Multi-Kueue (N Clusters)** — N concurrently-dispatched Kueue clusters, each staging to its REG-05-assigned bucket set (DIST-01 preserved), per-cluster probe + `backend_id`-scoped reconcile with per-backend failure isolation, per-(backend,bucket) cleanup (MKUE-01..04) — **research flag**
+- [x] **Phase 70: Multi-Kueue (N Clusters)** — N concurrently-dispatched Kueue clusters, each staging to its REG-05-assigned bucket set (DIST-01 preserved), per-cluster probe + `backend_id`-scoped reconcile with per-backend failure isolation, per-(backend,bucket) cleanup (MKUE-01..04) — **research flag** (completed 2026-07-04)
 - [ ] **Phase 71: Deployment, Config, Docs & N-Lane UI** — N registry-derived per-backend lanes (available/offline, in-flight/cap, rank) read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + operator runbook/config docs incl. the `cloud_target`→`backends` migration (BEUI-01..03)
 
 <details>
@@ -231,7 +231,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete   | 2026-07-04 |
+| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
