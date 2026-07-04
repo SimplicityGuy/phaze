@@ -99,6 +99,11 @@ None - plan executed exactly as written. All three verify commands pass; the com
 - Wave 1 (68-02): when `alembic/versions/029_add_cloud_job_backend_id.py` lands, the migration scaffold auto-activates — it expects `revision == "029"`, `down_revision == "028"`, nullable `backend_id` (no backfill), and nullable `s3_key`.
 - Wave 2: when `src/phaze/services/backends.py` lands with `LocalBackend`/`ComputeAgentBackend`/`KueueBackend` + `resolve_backends`, the protocol scaffold auto-activates. Constructor signatures were factored into `_local`/`_compute`/`_kueue` helpers; if the finalized signatures differ, adjust only those three factories.
 
+## Self-Check: PASSED
+
+- All 3 created test files exist on disk.
+- All 4 commits (563707b, 0103404, cc67b62, fc1f0b0) present in git history.
+
 ---
 *Phase: 68-backend-protocol-3-implementations*
 *Completed: 2026-07-03*
