@@ -48,6 +48,19 @@ class FileState(enum.StrEnum):
     # chars) → no enum migration is needed (ANALYSIS_FAILED / AWAITING_CLOUD precedent).
     PUSHING = "pushing"
     PUSHED = "pushed"
+    # Phase 69 (SCHED-01/03, CR-01 gap-close): a long file the tiered drain spilled to the LOCAL
+    # backend (rank 99) and is analyzing on-prem via ``process_file``. Code-only StrEnum over the
+    # existing String(30) state column ("local_analyzing" is 15 chars ≤ 30) → no enum migration is
+    # needed (ANALYSIS_FAILED / AWAITING_CLOUD / PUSHING precedent). This is the drain-local
+    # in-analysis lane: it removes the file from ``get_cloud_staging_candidates`` (which selects
+    # ``state == AWAITING_CLOUD``) while its local ``process_file`` is in flight, so a locally-spilled
+    # file can NOT be double-dispatched to a cloud backend once a slot frees. Deliberately NOT
+    # analyze-done and NOT push-done (it is in neither ``_select_done_analyze_ids`` nor
+    # ``_select_done_push_ids`` in reenqueue.py), so a lost local job re-drives via the scheduling
+    # ledger; and it carries no ``cloud_job`` row, so reconcile/recovery never misclassifies it as
+    # cloud-owned. ``put_analysis`` flips it → ANALYZED on a non-empty result body (never gated on
+    # prior state), so completion proceeds normally.
+    LOCAL_ANALYZING = "local_analyzing"
     PROPOSAL_GENERATED = "proposal_generated"
     APPROVED = "approved"
     REJECTED = "rejected"

@@ -18,8 +18,9 @@ The cells are authored correct-by-construction against design §4.2 and the 68-P
   non-terminal ``cloud_job`` row (no limbo row).
 * ``reconcile`` -- Kueue cron read; Local/Compute callback-driven (no-op in the unit cells).
 
-Layer 2 (D-02): ``sum(in_flight_count(b) for b in backends) == get_cloud_window_count(session)`` for
-the single-backend case, over constructed FileState / ``cloud_job`` states.
+Layer 2 (D-02): ``sum(in_flight_count(b) for b in backends)`` equals the FileState ``{PUSHING,
+PUSHED}`` window count for the single-backend case, over constructed FileState / ``cloud_job`` states
+(Phase 69 / D-05 retired the global ``get_cloud_window_count`` helper; the window is counted inline).
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ import pytest
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.services import kube_staging, s3_staging
-from phaze.services.pipeline import get_cloud_window_count
 from tests._queue_fakes import DedupFakeTaskRouter, seed_active_agent
 from tests.kube_fakes import fake_local_queue
 
@@ -251,6 +251,92 @@ async def test_local_dispatch_writes_no_cloud_job_row(session: AsyncSession) -> 
     assert count == 0
 
 
+# === CR-01 (SCHED-01/03): LocalBackend.dispatch removes the file from the AWAITING_CLOUD set =====
+
+
+@pytest.mark.asyncio
+async def test_local_dispatch_flips_to_local_analyzing(session: AsyncSession) -> None:
+    """CR-01: LocalBackend.dispatch flips an AWAITING_CLOUD file to LOCAL_ANALYZING in the caller session.
+
+    Mirrors the compute/kueue ``FileState -> PUSHING`` flip (backends.py:252/:316): a locally-spilled
+    file must leave the ``AWAITING_CLOUD`` candidate predicate atomically so it is not re-selected on a
+    later drain tick and double-dispatched to a cloud backend while its ``process_file`` is in flight.
+    """
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backend = _local()
+    file = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    await backend.dispatch(file, session, router)
+
+    assert file.state == FileState.LOCAL_ANALYZING
+
+
+@pytest.mark.asyncio
+async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSession) -> None:
+    """CR-01: after a local dispatch the file is absent from ``get_cloud_staging_candidates`` (no re-selection).
+
+    ``get_cloud_staging_candidates`` (pipeline.py) selects ``state == AWAITING_CLOUD``; the state flip
+    performed by ``LocalBackend.dispatch`` is exactly what removes the file from that candidate set --
+    the missing link the Phase-69 verifier flagged (LocalBackend.dispatch -> get_cloud_staging_candidates).
+    """
+    from phaze.services.pipeline import get_cloud_staging_candidates
+
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backend = _local()
+    file = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(file)
+    await session.commit()
+    fid = file.id
+
+    router = DedupFakeTaskRouter()
+    await backend.dispatch(file, session, router)
+    await session.commit()
+
+    candidates = await get_cloud_staging_candidates(session, limit=10)
+    assert fid not in {c.id for c in candidates}
+
+
+@pytest.mark.asyncio
+async def test_local_dispatch_returns_true_on_enqueue(session: AsyncSession) -> None:
+    """WR-01: a genuine ``process_file`` enqueue reports a truthy dispatch (new work staged)."""
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backend = _local()
+    file = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    assert await backend.dispatch(file, session, router) is True
+
+
+@pytest.mark.asyncio
+async def test_local_dispatch_returns_false_on_dedup_noop(session: AsyncSession) -> None:
+    """WR-01: a deterministic-key ``process_file:<id>`` dedup no-op reports False (not newly staged).
+
+    ``enqueue_process_file`` returns ``None`` when SAQ dedups the deterministic key (the file is already
+    being analyzed locally); LocalBackend.dispatch must report that as ``False`` so the drain's staged
+    tally is honest -- mirroring ``ComputeAgentBackend.dispatch``'s ``return job is not None``.
+    """
+    from phaze.services.analysis_enqueue import process_file_job_key
+
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backend = _local()
+    file = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    # Pre-enqueue the deterministic key on the fileserver's queue so dispatch's enqueue dedups to None.
+    live_queue = router.queue_for("nox")
+    await live_queue.enqueue("process_file", key=process_file_job_key(file.id))
+    router.queue_for_calls.clear()
+
+    assert await backend.dispatch(file, session, router) is False
+
+
 # === reconcile (3 impls) =================================================================
 
 
@@ -268,11 +354,37 @@ async def test_compute_reconcile_is_callback_driven_noop(session: AsyncSession) 
 
 @pytest.mark.asyncio
 async def test_kueue_reconcile_reads_own_backend_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Kueue.reconcile iterates its own {SUBMITTED, RUNNING} cloud_job rows without raising."""
+    """Kueue.reconcile iterates its own {SUBMITTED, RUNNING} cloud_job rows and returns a per-backend tally."""
     _stub_kube_available(monkeypatch)
     await _seed_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.SUBMITTED)
-    # A backend_id-aware reconcile must run cleanly (no advisory lock yet -- that is Phase 69).
-    assert await _kueue(id="kueue-x64").reconcile(session) is None
+    # Phase 69 (SCHED-02/05): a backend_id-aware reconcile runs cleanly under the per-row advisory lock and
+    # returns its tally (the cron aggregates it) rather than None.
+    tally = await _kueue(id="kueue-x64").reconcile(session)
+    assert tally is not None
+    assert tally["reconciled"] == 1
+
+
+@pytest.mark.asyncio
+async def test_kueue_reconcile_scope_ignores_other_backend_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SCHED-05: KueueBackend.reconcile touches ONLY its own ``backend_id`` rows; a compute row stays untouched.
+
+    Removing the cron's global un-scoped ``cloud_job`` query means a compute row is owned solely by its
+    ``/pushed`` callback. Proven here: a kueue SUBMITTED row is reconciled (tally ``reconciled == 1``)
+    while a sibling compute SUBMITTED row's status is byte-untouched by the kueue reconcile pass.
+    """
+    from sqlalchemy import select
+
+    _stub_kube_available(monkeypatch)
+    await _seed_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.SUBMITTED)
+    compute_fid = await _seed_cloud_job(session, backend_id="compute-a1", status=CloudJobStatus.SUBMITTED)
+
+    tally = await _kueue(id="kueue-x64").reconcile(session)
+
+    assert tally is not None
+    assert tally["reconciled"] == 1  # only the kueue-scoped row was reconciled
+    session.expire_all()
+    compute_row = (await session.execute(select(CloudJob).where(CloudJob.file_id == compute_fid))).scalar_one()
+    assert compute_row.status == CloudJobStatus.SUBMITTED.value  # the compute row is left for its /pushed callback
 
 
 # === Layer 2: D-02 equivalence invariant =================================================
@@ -280,19 +392,25 @@ async def test_kueue_reconcile_reads_own_backend_rows(session: AsyncSession, mon
 
 @pytest.mark.asyncio
 async def test_in_flight_equivalence(session: AsyncSession) -> None:
-    """D-02: sum(in_flight_count(b)) == get_cloud_window_count() for the single-backend case.
+    """D-02: sum(in_flight_count(b)) == the FileState {PUSHING, PUSHED} window for the single-backend case.
 
     Construct a set of in-flight cloud_job rows for one compute backend whose files are all in the
     FileState window (PUSHING); the per-backend cloud_job count must equal the FileState-window count.
-    A divergence is the Pitfall-1 double/under-count bug.
+    A divergence is the Pitfall-1 double/under-count bug. Phase 69 (D-05) retired the global
+    ``get_cloud_window_count`` helper, so the FileState window is counted inline here (the invariant the
+    Phase-68 substrate proved still holds -- every in-flight row maps to exactly one windowed file).
     """
+    from sqlalchemy import func, select
+
     backend = _compute(id="compute-a1")
     for status in IN_FLIGHT_STATUSES:
         await _seed_cloud_job(session, backend_id="compute-a1", status=status)
 
     resolved = [backend]
     per_backend = sum([await b.in_flight_count(session) for b in resolved])
-    window = await get_cloud_window_count(session)
+    window = int(
+        (await session.execute(select(func.count(FileRecord.id)).where(FileRecord.state.in_([FileState.PUSHING, FileState.PUSHED])))).scalar() or 0
+    )
     assert per_backend == window
 
 
@@ -331,3 +449,51 @@ def test_resolved_non_local_kind_raises_on_multiple_non_local(backends_toml_env:
     assert settings.cloud_enabled is True
     with pytest.raises(ValueError, match=r"Phase 69"):
         backends.resolved_non_local_kind(settings)
+
+
+# === SCHED-01: resolve_backends supports N non-local backends (Phase-69 guard removal) ====
+
+
+def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
+    """SCHED-01: a registry of 2+ non-local backends resolves to a list of that length -- no ValueError.
+
+    Phase 69 removed the Phase-68 ``>1``-non-local boot guard from :func:`resolve_backends` (multi-backend
+    simultaneous dispatch is exactly this phase's job). The registry must now resolve cleanly to N
+    ``Backend`` impls so the tiered drain can snapshot + route across all of them. The single-kind
+    fail-fast survives only in :func:`resolved_non_local_kind` (asserted above), never here.
+    """
+    from phaze.config import ControlSettings
+
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+
+        [[backends]]
+        kind = "compute"
+        id = "compute-b"
+        rank = 20
+        cap = 3
+        agent_ref = "agent-b"
+        scratch_dir = "/scratch/b"
+
+        [[backends]]
+        kind = "local"
+        id = "local"
+        rank = 99
+        cap = 4
+        """
+    )
+    settings = ControlSettings()
+    resolved = backends.resolve_backends(settings)
+
+    # All three entries resolve (2 non-local + 1 local) -- no ValueError on the 2 non-local backends.
+    assert len(resolved) == 3
+    non_local = [b for b in resolved if not isinstance(b, backends.LocalBackend)]
+    assert len(non_local) == 2
+    assert {b.id for b in non_local} == {"compute-a", "compute-b"}

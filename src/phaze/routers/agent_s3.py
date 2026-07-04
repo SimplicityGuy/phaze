@@ -171,23 +171,29 @@ async def report_upload_failed(
         current_attempt = int(row.payload.get("s3_upload_attempt", 0) or 0)
     next_attempt = current_attempt + 1
 
-    # Over the cap: terminal failure + cleanup (abort + delete) + ledger clear, one transaction.
+    # Over the cap: cleanup (abort + delete) + ledger clear + SPILL to AWAITING_CLOUD, one transaction.
     if next_attempt > settings.push_max_attempts:
         cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
-        # CR-01: terminal cleanup must also exit the FileRecord from PUSHING -> ANALYSIS_FAILED. Phase 55
-        # (55-03) made the k8s staging path flip AWAITING_CLOUD -> PUSHING; the window math counts
-        # PUSHING toward cloud_max_in_flight, so a file left in PUSHING here permanently consumes a slot
-        # (and is invisible to backfill, which filters ANALYSIS_FAILED). Mirrors reconcile + report_push_mismatch.
-        # WR-01: clear cloud_phase so a terminal row never inflates the admission-state "Running" tile.
-        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.FAILED.value, cloud_phase=None))
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+        # SCHED-03/D-04 (Phase 69): a kueue upload that exhausts its re-drive cap no longer HARD-fails.
+        # Terminalize cloud_job (FAILED, cloud_phase=None per WR-01 so it never inflates the "Running" tile),
+        # mark its total-cloud budget SPENT (attempts >= cloud_submit_max_attempts) so select_backend excludes
+        # cloud on the next tick, and SPILL the file back to AWAITING_CLOUD so the drain routes it to LOCAL --
+        # ANALYSIS_FAILED comes ONLY from a local analysis failure. Mirrors report_push_mismatch's spill.
+        await session.execute(
+            update(CloudJob)
+            .where(CloudJob.file_id == file_id)
+            .values(status=CloudJobStatus.FAILED.value, cloud_phase=None, attempts=settings.cloud_submit_max_attempts)
+        )
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
+        # Cleanup PRESERVED on the spill path: abort the multipart + delete the staged object so no orphaned
+        # in-flight upload / leaked object survives (KSTAGE-04 / T-53-17) even though the file lives on locally.
         if cloud_job is not None and cloud_job.upload_id:
             await s3_staging.abort_multipart_upload(file_id, cloud_job.upload_id)
         await s3_staging.delete_staged_object(file_id)
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
         logger.warning(
-            "report_upload_failed: re-drive cap reached -> cloud_job FAILED + cleaned up",
+            "report_upload_failed: re-drive cap reached -> cloud_job FAILED + cleaned up + spill to AWAITING_CLOUD (routes to local)",
             file_id=str(file_id),
             agent_id=agent.id,
             attempt=next_attempt,

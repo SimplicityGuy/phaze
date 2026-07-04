@@ -574,15 +574,16 @@ class ControlSettings(BaseSettings):
     # every reader resolved through the Backend protocol. The per-backend concurrency cap comes from
     # each backend's `cap` in backends.toml. See D-11/D-12.
 
-    # Phase 50 D-12: how many times control re-drives a push that failed sha256 verification
-    # before giving up and marking the file ANALYSIS_FAILED. Bounded (gt=0, lt=20) so a misconfig
-    # cannot create an unbounded retry storm (T-50-config-oob).
+    # Phase 50 D-12: how many times control re-drives a push that failed sha256 verification before
+    # giving up. Phase 69 (SCHED-03/D-04): at the cap the file no longer hard-fails -- it SPILLS back to
+    # AWAITING_CLOUD with its cloud budget marked spent so the next drain tick routes it to local.
+    # Bounded (gt=0, lt=20) so a misconfig cannot create an unbounded retry storm (T-50-config-oob).
     push_max_attempts: int = Field(
         default=3,
         gt=0,
         lt=20,
         validation_alias=AliasChoices("PHAZE_PUSH_MAX_ATTEMPTS", "push_max_attempts"),
-        description="Max push attempts before a sha256-mismatched file is marked ANALYSIS_FAILED (Phase 50, D-12). Default 3; bounded gt=0, lt=20.",
+        description="Max push re-drives of a sha256-mismatched file before it spills back to AWAITING_CLOUD to fall to local (Phase 50 D-12, Phase 69 SCHED-03). Default 3; bounded gt=0, lt=20.",
     )
     # Phase 54 D-08: how many times control re-submits a Kueue Job for a file before giving up and
     # marking it ANALYSIS_FAILED. A DISTINCT budget from push_max_attempts (the rsync push leg) --
@@ -596,6 +597,20 @@ class ControlSettings(BaseSettings):
         lt=20,
         validation_alias=AliasChoices("PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS", "cloud_submit_max_attempts"),
         description="Max kube Job submit attempts before a file is marked ANALYSIS_FAILED (Phase 54, D-08). A distinct budget from push_max_attempts. Default 3; bounded gt=0, lt=20.",
+    )
+    # Phase 69 D-02: seconds a long file waits in AWAITING_CLOUD while higher-rank backends are
+    # online-but-FULL before the slow local (rank-99) backend becomes an eligible spill target. The
+    # pure `select_backend` policy (services/backend_selection.py) compares (now - file.updated_at)
+    # against this knob to decide whether a full-cloud file may spill to local. Offline backends spill
+    # to local immediately (D-03, NOT staleness-gated). Bounded (gt=0, lt=86400) like
+    # cloud_route_threshold_sec so an out-of-range operator value fails fast at startup (T-69-01-01)
+    # and never reaches selection. Lives on ControlSettings because the control plane owns routing.
+    cloud_spill_to_local_after_seconds: int = Field(
+        default=900,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS", "cloud_spill_to_local_after_seconds"),
+        description="Seconds a long file waits in AWAITING_CLOUD while higher-rank backends are FULL before slow local becomes an eligible spill target (Phase 69, D-02). Default 900 (15 min); offline backends spill immediately (D-03).",
     )
     # Phase 67 (REG-04, D-12): the flat compute scratch-dir field and the flat S3
     # connection/credential surface (endpoint / bucket / region / addressing-style / access-key /

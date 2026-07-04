@@ -18,8 +18,9 @@ outcome phaze records the result in the DB and COMMITS *before* it deletes the J
 can never lose to GC -- ``ttlSecondsAfterFinished`` (900s) is only the never-reconciled backstop. On a
 no-callback terminal (Failed/Evicted) it also deletes the staged S3 object (D-05); the success path
 does NOT (the callback already deleted it inline). A no-callback terminal under the cap re-drives a
-fresh ``submit_cloud_job`` (D-08); at the cap the FileRecord is marked ANALYSIS_FAILED with NO
-cross-target fallback. Inadmissible (operator misconfig) holds indefinitely + alerts and NEVER consumes
+fresh ``submit_cloud_job`` (D-08); at the cap the FileRecord SPILLS BACK to AWAITING_CLOUD (SCHED-03/D-04)
+so the next drain tick routes it to the local safety net (``attempts >= cap``) rather than hard-failing.
+Inadmissible (operator misconfig) holds indefinitely + alerts and NEVER consumes
 the cap (D-06/D-07); healthy Pending is silent.
 
 CONTROL-ONLY: needs PostgreSQL (``ctx["async_session"]``) + the controller queue (``ctx["queue"]``) for
@@ -35,7 +36,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
-from sqlalchemy import select, update
+from sqlalchemy import update
 import structlog
 
 from phaze.config import get_settings
@@ -49,6 +50,8 @@ if TYPE_CHECKING:
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -145,11 +148,14 @@ async def _handle_no_callback_terminal(
     cap: int,
     tally: dict[str, int],
 ) -> None:
-    """Failed/Evicted (no-callback terminal): bounded re-drive under cap, ANALYSIS_FAILED at cap (D-08).
+    """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill back to AWAITING_CLOUD at cap (D-08/SCHED-03).
 
     At cap (``attempts + 1 > cloud_submit_max_attempts``) the ordering is the load-bearing terminal
-    sequence (D-04): record FAILED + FileRecord ANALYSIS_FAILED + COMMIT -> ``delete_staged_object``
-    (D-05) -> ``delete_job``. There is NO cross-target fallback (KSUBMIT-05).
+    sequence (D-04): record cloud_job FAILED + flip the FileRecord back to AWAITING_CLOUD + COMMIT ->
+    ``delete_staged_object`` (D-05) -> ``delete_job``. The file is NOT hard-failed on cloud flakiness
+    (SCHED-03): because ``cloud_job.attempts`` already equals ``cap``, the next drain tick's
+    ``select_backend`` excludes every cloud backend (``attempts >= cap``) and routes the file to the local
+    safety net -- ANALYSIS_FAILED then comes only from a local failure (D-04), never from this branch.
 
     Under cap it is a re-drive: delete the prior Job and CONFIRM it is gone (the race guard) BEFORE
     incrementing ``attempts`` + committing and enqueuing the fresh ``submit_cloud_job``. If the prior
@@ -162,15 +168,24 @@ async def _handle_no_callback_terminal(
     next_attempt = cloud_job.attempts + 1
 
     if next_attempt > cap:
+        # SCHED-03/D-04: at the cloud cap DO NOT hard-fail. Terminalize the cloud_job (FAILED decrements
+        # in-flight -- the reconcile-only-decrements invariant) and SPILL the file back to AWAITING_CLOUD.
+        # ``cloud_job.attempts`` already equals ``cap`` here (the last under-cap re-drive set it), so the
+        # next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file to local (the
+        # guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
+        # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
+        # ``updated_at`` on the flip gives a fresh staleness clock (desirable).
         cloud_job.status = CloudJobStatus.FAILED.value
         cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit.
         cloud_job.cloud_phase = None  # WR-01: terminal row must not inflate the admission-state "Running" tile.
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
         await session.commit()
         await s3_staging.delete_staged_object(file_id)
         await kube_staging.delete_job(name)
         tally["failed"] += 1
-        logger.warning("reconcile_cloud_jobs: submit cap reached -> ANALYSIS_FAILED", file_id=str(file_id), attempt=next_attempt, cap=cap)
+        logger.warning(
+            "reconcile_cloud_jobs: submit cap reached -> spill back to AWAITING_CLOUD", file_id=str(file_id), attempt=next_attempt, cap=cap
+        )
         return
 
     # Under cap -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
@@ -195,7 +210,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         return
 
     # WR-01: a vanished Job (real kube 404 -> NotFoundError; fake seam -> None) on an in-flight row is a
-    # no-callback terminal, NOT a transient error. Route it to the bounded re-drive / ANALYSIS_FAILED
+    # no-callback terminal, NOT a transient error. Route it to the bounded re-drive / at-cap spill-back
     # handler instead of letting NotFoundError bubble to the per-row guard, where it would be rolled back
     # and skipped every tick -- leaving the row stuck in-flight forever (e.g. a Failed Job GC'd by
     # ttlSecondsAfterFinished before reconcile read it, or an enqueue that raised after the attempt commit).
@@ -280,43 +295,33 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
 
 
 async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
-    """Reconcile every in-flight ``cloud_job`` against its Kueue Job/Workload; return a tally dict.
+    """Reconcile every backend's in-flight ``cloud_job`` rows per-backend; return an aggregate tally.
 
-    The ``*/5`` cron body (D-01/D-03). Iterates ``cloud_job`` rows in SUBMITTED/RUNNING (D-02), maps
-    each Job + Workload condition set to an outcome, enforces the delete-after-record ordering + S3
-    cleanup (D-04/D-05), drives the bounded re-drive to ANALYSIS_FAILED (D-08), surfaces Inadmissible
-    without consuming the cap (D-06/D-07), and NEVER writes an analysis result (KSUBMIT-03). Each row is
-    guarded so one bad row never aborts the tick (the cron no-op discipline).
+    The ``*/5`` cron body (D-01/D-03), Phase-69 SCHED-05 form: dispatch reconcile PER-BACKEND
+    (``for b in resolve_backends(cfg): await b.reconcile(session, ctx)``) instead of a single global
+    ``select(CloudJob WHERE status IN {SUBMITTED, RUNNING})`` query. Removing that global un-scoped query
+    closes the double-owner vector: a compute ``cloud_job`` row is now touched ONLY by its ``/pushed``
+    callback (Compute/Local ``reconcile`` are no-ops); the Kueue rows are owned by ``KueueBackend.reconcile``
+    (backend_id-scoped, per-row advisory-locked). Each backend's tally is aggregated into the cron's
+    return dict (same shape); the per-row guard + delete-after-record ordering + "never raise out of the
+    cron" discipline live inside each backend's ``reconcile`` (KSUBMIT-03: still never writes a result).
+
+    ``resolve_backends`` is imported FUNCTION-LOCALLY (deferred) because ``services.backends`` does a
+    module-top ``from phaze.tasks.reconcile_cloud_jobs import _reconcile_one`` -- a module-top import
+    here would be a ``backends -> reconcile_cloud_jobs -> backends`` collection-time ImportError.
     """
-    cfg = get_settings()
-    cap = cfg.cloud_submit_max_attempts  # type: ignore[attr-defined]
+    from phaze.services.backends import resolve_backends  # noqa: PLC0415 -- deferred to break the backends<->reconcile_cloud_jobs import cycle
+
+    cfg = cast("ControlSettings", get_settings())
     tally = {"reconciled": 0, "succeeded": 0, "failed": 0, "redriven": 0, "inadmissible": 0, "pending": 0, "running": 0}
 
     async with ctx["async_session"]() as session:
-        rows = (
-            (await session.execute(select(CloudJob).where(CloudJob.status.in_([CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value]))))
-            .scalars()
-            .all()
-        )
-        # Capture the primitive ids while the rows are live -- the per-row guard's ``session.rollback``
-        # expires the ORM identity map, so we re-fetch each row fresh (async) inside the loop rather
-        # than touching a stale/expired ORM object after a sibling row rolled back.
-        cloud_job_ids = [row.id for row in rows]
-
-        for cloud_job_id in cloud_job_ids:
-            try:
-                cloud_job = await session.get(CloudJob, cloud_job_id)
-                if cloud_job is None:
-                    continue
-                # IN-01: count only rows that actually reach reconcile (a concurrently deleted/terminalized
-                # row resolves to None above and must not inflate the log-only tally).
-                tally["reconciled"] += 1
-                await _reconcile_one(ctx, session, cloud_job, cap, tally)
-            except Exception:
-                # Per-row guard: a single bad row (transient kube error, unexpected shape) never aborts
-                # the tick. Roll back any partial mutation so the session stays usable for the next row.
-                await session.rollback()
-                logger.warning("reconcile_cloud_jobs: row reconcile failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True)
+        for backend in resolve_backends(cfg):
+            backend_tally = await backend.reconcile(session, ctx)
+            # Kueue returns its per-backend tally; Local/Compute reconcile are no-ops (None). Aggregate.
+            if backend_tally:
+                for key, value in backend_tally.items():
+                    tally[key] = tally.get(key, 0) + value
 
     logger.info("reconcile_cloud_jobs complete", **tally)
     return tally

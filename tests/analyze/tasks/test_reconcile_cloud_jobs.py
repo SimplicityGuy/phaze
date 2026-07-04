@@ -10,7 +10,7 @@ The load-bearing properties under test:
   * delete-after-record ordering (D-04): the Job delete follows the committed outcome; the S3 delete
     precedes the Job delete on the no-callback terminal; the success path makes ZERO S3 calls.
   * bounded re-drive (D-08): a no-callback terminal under the cap increments ``attempts`` and re-drives
-    a fresh ``submit_cloud_job``; at the cap the FileRecord is marked ANALYSIS_FAILED (no fallback).
+    a fresh ``submit_cloud_job``; at the cap the FileRecord SPILLS BACK to AWAITING_CLOUD (SCHED-03/D-04).
   * re-drive race guard: the prior Job is deleted AND confirmed gone (``get_job`` -> None) BEFORE the
     fresh submit is enqueued; a still-terminating Job defers the re-drive with no extra attempt burned.
   * Inadmissible holds + alerts and NEVER consumes the cap (D-06/D-07); healthy Pending is silent.
@@ -124,9 +124,25 @@ class S3DeleteSpy:
 # --- Fixtures / builders ----------------------------------------------------------------------------
 
 
+# The cron dispatches reconcile per-backend via ``resolve_backends`` (SCHED-05), so the settings stub
+# must carry a single kueue registry entry whose id matches the ``backend_id`` ``_seed`` stamps below.
+_KUEUE_BACKEND_ID = "kueue-x64"
+
+
 def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
-    """Pin reconcile's ``get_settings()`` so ``cloud_submit_max_attempts`` is deterministic."""
-    monkeypatch.setattr("phaze.tasks.reconcile_cloud_jobs.get_settings", lambda: SimpleNamespace(cloud_submit_max_attempts=cap))
+    """Pin ``get_settings()`` for BOTH the cron and ``KueueBackend.reconcile`` so cap + registry are deterministic.
+
+    The Phase-69 cron (SCHED-05) resolves backends via ``resolve_backends(get_settings())`` and dispatches
+    ``KueueBackend.reconcile`` -- which reads the cap from ``phaze.services.backends.get_settings``. Patch
+    both bindings to the same stub carrying ``cloud_submit_max_attempts`` + a one-entry kueue registry.
+    """
+    settings = SimpleNamespace(
+        cloud_submit_max_attempts=cap,
+        cloud_enabled=True,
+        backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, rank=20, cap=cap)],
+    )
+    monkeypatch.setattr("phaze.tasks.reconcile_cloud_jobs.get_settings", lambda: settings)
+    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: settings)
 
 
 def _patch_seam(
@@ -179,6 +195,7 @@ async def _seed(session: AsyncSession, *, status: str = CloudJobStatus.SUBMITTED
         CloudJob(
             id=uuid.uuid4(),
             file_id=file.id,
+            backend_id=_KUEUE_BACKEND_ID,  # SCHED-05: KueueBackend.reconcile is backend_id-scoped -> stamp so the per-backend query owns this row.
             s3_key=f"phaze-staging/{file.id}",
             status=status,
             kueue_workload=name,
@@ -331,12 +348,19 @@ async def test_eviction_triggers_redrive(async_engine: AsyncEngine, session: Asy
     assert tally["redriven"] == 1
 
 
-# --- Cap reached -> ANALYSIS_FAILED ----------------------------------------------------------------
+# --- Cap reached -> spill back to AWAITING_CLOUD (SCHED-03/D-04) ------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_max_attempts_cap_then_analysis_failed(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """At the cap a no-callback terminal marks the FileRecord ANALYSIS_FAILED (no cross-target fallback)."""
+async def test_max_attempts_cap_then_spill_back_to_awaiting_cloud(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SCHED-03/D-04: at the cloud cap a no-callback terminal SPILLS the file back to AWAITING_CLOUD, not ANALYSIS_FAILED.
+
+    The cloud_job is terminalized (FAILED -> in-flight decremented) and its staged object + Job are
+    cleaned up, but the FileRecord is NOT hard-failed: it returns to AWAITING_CLOUD so the next drain tick
+    routes it to the local safety net (``attempts >= cap``). ANALYSIS_FAILED comes only from local failure.
+    """
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, attempts=3)  # next_attempt = 4 > cap 3
     queue = DedupFakeQueue("controller")
@@ -346,13 +370,55 @@ async def test_max_attempts_cap_then_analysis_failed(async_engine: AsyncEngine, 
     tally = await reconcile_cloud_jobs(ctx)
 
     cj = await _read_cloud_job(session, fid)
-    assert cj.status == CloudJobStatus.FAILED.value
+    assert cj.status == CloudJobStatus.FAILED.value  # cloud_job terminalized -> in-flight decremented
     file = await _read_file(session, fid)
-    assert file.state == FileState.ANALYSIS_FAILED
-    assert s3.calls == [fid]  # no-callback terminal deletes the staged object (D-05)
+    assert file.state == FileState.AWAITING_CLOUD  # spill back, NOT ANALYSIS_FAILED (SCHED-03)
+    assert file.state != FileState.ANALYSIS_FAILED
+    assert s3.calls == [fid]  # no-callback terminal deletes the staged object (D-05), after the record+commit
     assert dj.calls == [name]
     assert queue.captured == []  # no re-drive at the cap
     assert tally["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SCHED-02: a reconcile decrement keeps ``sum(in_flight) <= sum(cap)`` (reconcile only ever decrements).
+
+    The cap-safety proof (RESEARCH reconcile-only-decrements): reconcile NEVER claims an in-flight slot,
+    it only terminalizes rows (FAILED) which DECREASES the per-backend ``in_flight_count``. So after a
+    reconcile pass the in-flight count a concurrent drain snapshot would read is strictly ``<=`` the cap
+    -- overshoot is impossible from the reconcile side. Here a kueue backend at cap (2 in-flight, cap 2)
+    reconciles one failed row; the post-reconcile in-flight count drops to 1, still ``<= cap``.
+    """
+    from phaze.services.backends import resolve_backends
+
+    _patch_cap(monkeypatch, cap=3)
+    cap = 2
+    # Two in-flight rows for the kueue backend: one will fail-terminalize, one stays RUNNING.
+    fid_fail, name_fail = await _seed(session, status=CloudJobStatus.SUBMITTED.value, attempts=3)  # at cap -> terminal
+    await _seed(session, status=CloudJobStatus.RUNNING.value)  # stays in-flight
+
+    settings = SimpleNamespace(
+        cloud_submit_max_attempts=3,
+        cloud_enabled=True,
+        backends=[SimpleNamespace(kind="kueue", id=_KUEUE_BACKEND_ID, rank=20, cap=cap)],
+    )
+    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: settings)
+    [backend] = [b for b in resolve_backends(settings) if b.id == _KUEUE_BACKEND_ID]
+
+    before = await backend.in_flight_count(session)
+    assert before == 2 == cap  # start exactly at cap
+
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name_fail)))
+    await backend.reconcile(session, _make_ctx(async_engine))
+
+    session.expire_all()
+    after = await backend.in_flight_count(session)
+    assert after == 1  # reconcile only decremented (terminalized the failed row)
+    assert after <= cap  # cap-safe: never overshoots
+    assert (await _read_file(session, fid_fail)).state == FileState.AWAITING_CLOUD  # spilled back, not hard-failed
 
 
 # --- Delete-after-record ordering (D-04) -----------------------------------------------------------
@@ -373,7 +439,7 @@ async def test_delete_after_record_ordering(async_engine: AsyncEngine, session: 
     # S3 delete precedes Job delete.
     assert events == ["s3_delete", "delete_job"]
     # The outcome was already committed when the Job delete fired (the snapshot reads committed state).
-    assert dj.snapshots == [{"cloud_status": CloudJobStatus.FAILED.value, "attempts": 3, "file_state": FileState.ANALYSIS_FAILED}]
+    assert dj.snapshots == [{"cloud_status": CloudJobStatus.FAILED.value, "attempts": 3, "file_state": FileState.AWAITING_CLOUD}]
 
 
 # --- S3 delete only on the no-callback terminal ----------------------------------------------------
@@ -576,8 +642,10 @@ async def test_vanished_job_routes_to_terminal_redrive(async_engine: AsyncEngine
 
 
 @pytest.mark.asyncio
-async def test_vanished_job_at_cap_marks_analysis_failed(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """At the cap a vanished Job is a terminal no-callback -> ANALYSIS_FAILED, never an eternal skip (WR-01)."""
+async def test_vanished_job_at_cap_spills_back_to_awaiting_cloud(
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At the cap a vanished Job is a terminal no-callback -> spill back to AWAITING_CLOUD, never an eternal skip (WR-01/SCHED-03)."""
     _patch_cap(monkeypatch, cap=3)
     fid, _name = await _seed(session, attempts=3)  # next_attempt = 4 > cap
     _, _, _, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
@@ -585,7 +653,7 @@ async def test_vanished_job_at_cap_marks_analysis_failed(async_engine: AsyncEngi
     await reconcile_cloud_jobs(_make_ctx(async_engine))
 
     assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.FAILED.value
-    assert (await _read_file(session, fid)).state == FileState.ANALYSIS_FAILED
+    assert (await _read_file(session, fid)).state == FileState.AWAITING_CLOUD
     assert s3.calls == [fid]
 
 

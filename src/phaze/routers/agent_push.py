@@ -19,9 +19,11 @@ Mirrors ``agent_analysis.py`` (``put_analysis`` / ``report_analysis_failed``):
 - ``/mismatch`` (D-12 integrity re-drive loop): increment the ``push_attempt`` counter
   living in the ``push_file`` ledger payload JSONB (Pitfall 4). Under
   ``push_max_attempts`` re-enqueue ``push_file`` on the FILESERVER queue while the file
-  stays ``PUSHING`` (the slot is retained, Open-Q1); at/over the cap set
-  ``FileState.ANALYSIS_FAILED`` and clear the ledger row in one transaction so a corrupt
-  source surfaces on the dashboard instead of looping forever (T-50-loop).
+  stays ``PUSHING`` (the slot is retained, Open-Q1); at/over the cap SPILL the file back
+  to ``FileState.AWAITING_CLOUD`` with its cloud budget marked spent and clear the ledger
+  row in one transaction (Phase 69, SCHED-03/D-04) so the next drain tick routes the file
+  to local instead of looping forever (T-50-loop) -- ANALYSIS_FAILED comes only from a
+  local analysis failure.
 
 AUTH-01 discipline: ``file_id`` always travels on the URL PATH and the agent identity
 comes from the token dependency -- never from a request body (the agent client sends
@@ -121,8 +123,8 @@ async def report_pushed(
     # D-08: terminalize compute's cloud_job row (SUBMITTED -> SUCCEEDED) in the SAME transaction as the
     # PUSHING -> PUSHED flip. ComputeAgentBackend.dispatch wrote this row (backend_id set, s3_key NULL,
     # SUBMITTED) when the file was staged; the /pushed callback is compute's reconcile path (§4.2), so
-    # terminalizing it here drains in_flight_count(compute) and keeps the D-02 equivalence invariant
-    # (sum(in_flight_count) == get_cloud_window_count) true LIVE. Gated behind the WR-02 rowcount != 0
+    # terminalizing it here drains in_flight_count(compute) so the file leaves the backend's per-backend
+    # in-flight window as its FileState flips (Phase 69, D-05). Gated behind the WR-02 rowcount != 0
     # guard above -- a duplicate/late callback (rowcount == 0) returned early and writes NOTHING here.
     await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
 
@@ -160,9 +162,10 @@ async def report_push_mismatch(
     The ``push_attempt`` counter lives in the ``push_file:<file_id>`` ledger payload JSONB
     (migration-free, Pitfall 4). Read it (default 0) and increment:
 
-    - ``attempt + 1 > push_max_attempts`` -> ``FileState.ANALYSIS_FAILED`` + ``clear_ledger_entry``
-      in one transaction (mirror ``report_analysis_failed``): the corrupt source surfaces on the
-      dashboard instead of re-pushing forever (T-50-loop).
+    - ``attempt + 1 > push_max_attempts`` -> SPILL to ``FileState.AWAITING_CLOUD`` + cloud_job FAILED
+      with ``attempts`` marked spent + ``clear_ledger_entry`` in one transaction (Phase 69, SCHED-03/D-04):
+      the file falls to local on the next drain tick instead of re-pushing forever (T-50-loop). The
+      terminal ``ANALYSIS_FAILED`` now comes only from a local analysis failure.
     - otherwise -> re-enqueue ``push_file`` on the FILESERVER queue (the rsync initiator) keeping
       the file ``PUSHING`` (the slot is retained, Open-Q1), and stamp the incremented
       ``push_attempt`` back onto the ledger row. The deterministic ``push_file:<id>`` key dedups a
@@ -181,20 +184,28 @@ async def report_push_mismatch(
         current_attempt = int(row.payload.get("push_attempt", 0) or 0)
     next_attempt = current_attempt + 1
 
-    # Over the cap: terminal failure + ledger clear, one transaction (mirror report_analysis_failed).
+    # Over the cap: SPILL back to AWAITING_CLOUD + ledger clear, one transaction (Phase 69, SCHED-03/D-04).
     if next_attempt > settings.push_max_attempts:
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
-        # CR-01 / D-08: terminalize compute's cloud_job row (SUBMITTED -> FAILED) in the SAME transaction
-        # as the ANALYSIS_FAILED flip, mirroring the /pushed success path (SUCCEEDED at L127). Without
-        # this the file leaves the {PUSHING, PUSHED} get_cloud_window_count window while its cloud_job row
-        # stays stranded at SUBMITTED -- SUBMITTED is in the D-10 in-flight set, so in_flight_count(compute)
-        # would over-count forever and break the D-02 equivalence invariant LIVE. A no-op for non-compute
-        # files (no cloud_job row -> 0 rows affected) and idempotent.
-        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.FAILED.value))
+        # SCHED-03/D-04: a compute push that exhausts its push_max_attempts re-drives no longer HARD-fails.
+        # Spill the file back to AWAITING_CLOUD so the next release_awaiting_cloud drain tick can route it
+        # to a lower-rank backend -- and, because this backend's cloud budget is now exhausted, to LOCAL.
+        # ANALYSIS_FAILED comes ONLY from a local analysis failure; every cloud-failure path spills to local.
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
+        # Terminalize compute's cloud_job row (SUBMITTED -> FAILED) in the SAME transaction, mirroring the
+        # /pushed success path (SUCCEEDED at L127): FAILED drains the row from the D-10 in-flight set so
+        # in_flight_count(compute) stays honest and the backend's cap slot is released (Phase 69, D-05).
+        # Mark the total-cloud budget SPENT (attempts >= cloud_submit_max_attempts): select_backend reads
+        # cloud_job.attempts to exclude cloud, so this stamp forces the next drain tick onto local (D-04).
+        # A no-op for non-compute files (no cloud_job row -> 0 rows affected) and idempotent.
+        await session.execute(
+            update(CloudJob)
+            .where(CloudJob.file_id == file_id)
+            .values(status=CloudJobStatus.FAILED.value, attempts=settings.cloud_submit_max_attempts)
+        )
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
         logger.warning(
-            "report_push_mismatch: push cap reached -> ANALYSIS_FAILED",
+            "report_push_mismatch: push cap reached -> spill to AWAITING_CLOUD (routes to local)",
             file_id=str(file_id),
             agent_id=agent.id,
             attempt=next_attempt,

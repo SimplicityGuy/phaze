@@ -5,13 +5,12 @@ This is the phase's center of gravity. It houses one ``typing.Protocol`` (design
 ``LocalBackend`` / ``ComputeAgentBackend`` / ``KueueBackend`` that **re-home** the existing staging /
 push / submit / reconcile bodies verbatim -- this is a behavior-preserving refactor, NOT a rewrite.
 
-Phase 68 is a **lay-and-prove** phase (D-02): it defines the protocol + the uniform per-backend
-``in_flight_count`` substrate and proves the equivalence invariant ``sum(in_flight_count(b)) ==
-get_cloud_window_count()`` for the single-backend case, but it does NOT flip the drain onto per-backend
-caps (that is Phase 69 / SCHED-02). This module is **purely additive** this phase -- the live drain
-(``release_awaiting_cloud.stage_cloud_window``), the reconcile cron, and the config accessors are NOT
-rewired here (Wave 3 / plan 68-04 owns that). The protocol methods are per-backend and unit-tested as
-such.
+Phase 68 was a **lay-and-prove** phase (D-02): it defined the protocol + the uniform per-backend
+``in_flight_count`` substrate and proved its equivalence to the (now Phase-69-retired) global
+FileState ``{PUSHING, PUSHED}`` window for the single-backend case. Phase 69 (SCHED-02) then flipped
+the drain (``release_awaiting_cloud.stage_cloud_window``) onto these per-backend caps: it snapshots
+each backend's ``in_flight_count`` once per tick and enforces the per-backend ``cap``. The protocol
+methods are per-backend and unit-tested as such.
 
 Decisions realized here:
 
@@ -23,8 +22,9 @@ Decisions realized here:
   SAME caller-passed session, before/with the flip, NEVER after a separate commit (Pitfall 4 limbo guard).
 * **D-05** -- ``KueueBackend`` calls today's single-cluster ``_stage_file_to_s3`` / ``kube_staging``
   VERBATIM (reads ``active_kube`` / ``active_bucket``); per-cluster parameterization is Phase 70.
-* **D-07** -- the raise-on-``>1``-non-local guard is relocated into :func:`resolve_backends` (fail fast at
-  boot); ``cloud_enabled`` stays in config as the registry on/off gate.
+* **D-07** -- the raise-on-``>1``-non-local guard is Phase-69-retired from :func:`resolve_backends` (N
+  non-local backends now resolve; SCHED-01) and survives ONLY in :func:`resolved_non_local_kind` for the
+  non-drain single-kind callers (WR-01); ``cloud_enabled`` stays in config as the registry on/off gate.
 * **D-10** -- the in-flight status set is ``{UPLOADING, UPLOADED, SUBMITTED, RUNNING}``.
 
 Cron no-op discipline (T-68-05): ``is_available`` / ``dispatch`` / ``reconcile`` degrade to a clean hold
@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, cast
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
@@ -52,7 +52,7 @@ from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
-from phaze.tasks.release_awaiting_cloud import push_file_job_key
+from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
 
 
 if TYPE_CHECKING:
@@ -135,8 +135,12 @@ class Backend(Protocol):
         """
         ...
 
-    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:
-        """Advance this backend's in-flight ``cloud_job`` rows toward terminal (kueue: cron read; local/compute: no-op)."""
+    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:
+        """Advance this backend's in-flight ``cloud_job`` rows toward terminal (kueue: cron read; local/compute: no-op).
+
+        Returns a per-backend outcome ``tally`` dict for the cron to aggregate (kueue), or ``None`` for
+        the callback-driven no-op backends (local/compute) that own no cron read.
+        """
         ...
 
 
@@ -145,7 +149,7 @@ class _BaseBackend:
 
     Each concrete backend binds to a single Phase-67 registry entry (``config``). The shared
     ``in_flight_count`` is the D-02/D-10 substrate: a pure DB COUNT filtered by ``backend_id`` + the
-    in-flight status set (modelled on ``pipeline.get_cloud_window_count``).
+    in-flight status set (the per-backend replacement for the Phase-69-retired global window count).
     """
 
     def __init__(self, *, id: str, rank: int, cap: int, config: BackendConfig | None = None) -> None:
@@ -187,11 +191,21 @@ class LocalBackend(_BaseBackend):
         return 0
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
-        """Enqueue ``process_file`` on the fileserver agent's queue; a clean hold when no agent is online.
+        """Flip ``file`` to LOCAL_ANALYZING then enqueue ``process_file`` on the fileserver queue -- one txn, no commit.
 
         Re-homes the local ``enqueue_process_file`` producer (``analysis_enqueue``). Writes NO
         ``cloud_job`` row. An absent agent degrades to a clean hold (NoActiveAgentError -> ``False``),
-        matching the cron no-op discipline -- never a raise. Returns ``True`` once the job is enqueued.
+        matching the cron no-op discipline -- never a raise.
+
+        CR-01 (SCHED-01/03): AFTER the fileserver gate (so an absent agent leaves the file untouched) and
+        BEFORE the enqueue, flip ``file.state = FileState.LOCAL_ANALYZING`` in the caller-passed session --
+        mirroring ``ComputeAgentBackend``/``KueueBackend``'s ``FileState -> PUSHING`` flip. This removes the
+        file from ``get_cloud_staging_candidates`` (which selects ``state == AWAITING_CLOUD``), so a
+        locally-spilled file is no longer a drain candidate and can NOT be double-dispatched to a cloud
+        backend while its ``process_file`` is in flight (the Backend.dispatch contract: dispatch "removes
+        the file from further drain consideration"). NEVER commits -- the drain owns the single post-loop
+        commit under the advisory lock, so the flip+enqueue are atomic (a rollback leaves the file
+        AWAITING_CLOUD, safe to re-try, never a limbo LOCAL_ANALYZING without a queued job).
         """
         cfg = cast("ControlSettings", get_settings())
         try:
@@ -199,11 +213,17 @@ class LocalBackend(_BaseBackend):
         except NoActiveAgentError:
             logger.info("LocalBackend.dispatch hold: no fileserver agent online", file_id=str(file.id))
             return False
+        # CR-01: leave the AWAITING_CLOUD candidate set in the SAME session, before the enqueue, no commit.
+        file.state = FileState.LOCAL_ANALYZING
         queue = task_router.queue_for(agent.id)
-        await enqueue_process_file(queue, file, agent.id, cfg.models_path)
-        return True
+        job = await enqueue_process_file(queue, file, agent.id, cfg.models_path)
+        # WR-01: a deterministic-key ``process_file:<id>`` dedup returns None (the file is already being
+        # analyzed locally) -> report NOT-newly-staged so the drain's staged tally is honest; a genuine
+        # enqueue returns a saq.Job -> staged. Mirrors ComputeAgentBackend/KueueBackend's return contract.
+        # The state flip above stands regardless of the dedup outcome (the file has left AWAITING_CLOUD).
+        return job is not None
 
-    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:  # noqa: ARG002 -- protocol signature; local has no cron read
+    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:  # noqa: ARG002 -- protocol signature; local has no cron read
         """No-op: local analysis completion is synchronous -- there is no cron read to run."""
         return None
 
@@ -268,7 +288,7 @@ class ComputeAgentBackend(_BaseBackend):
         # it as skipped, not staged (T-50-double-enqueue); a genuine enqueue returns a saq.Job -> staged.
         return job is not None
 
-    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:  # noqa: ARG002 -- protocol signature; compute terminalizes via the /pushed callback
+    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:  # noqa: ARG002 -- protocol signature; compute terminalizes via the /pushed callback
         """No-op: compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08), not a cron read."""
         return None
 
@@ -311,17 +331,29 @@ class KueueBackend(_BaseBackend):
         # D-03: the drain flips PUSHING before the per-kind fork; own that flip here so dispatch is atomic.
         file.state = FileState.PUSHING
         await _stage_file_to_s3(session, file, task_router)
+        # Phase 69 (SCHED-02): the shared ``_stage_file_to_s3`` core upserts the cloud_job row but does
+        # NOT stamp ``backend_id`` (it predates the registry). Stamp it here, in the SAME uncommitted
+        # session, so this backend's ``in_flight_count`` (COUNT WHERE backend_id == self.id) counts the
+        # row -- without it the drain would read kueue in-flight as 0 and overshoot the kueue cap.
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id))
         return True
 
-    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> None:
+    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int]:
         """Reconcile THIS backend's in-flight ``cloud_job`` rows against their Kueue Job/Workload (backend_id-aware).
 
         Re-homes ``reconcile_cloud_jobs`` (L282-322): iterate ``cloud_job`` rows in {SUBMITTED, RUNNING}
         scoped to ``backend_id == self.id``, delegate each to the shared ``_reconcile_one`` under the
-        per-row ``session.rollback()`` guard so one bad row never aborts the tick. NO advisory lock this
-        phase (Pitfall 2 -- the lock change lands with the Phase-69 cap flip). ``ctx`` (carrying the
+        per-row ``session.rollback()`` guard so one bad row never aborts the tick. ``ctx`` (carrying the
         re-drive ``queue``) is threaded to ``_reconcile_one``; it defaults to ``{}`` for the lay-and-prove
         unit path where no row reaches a re-drive.
+
+        SCHED-02: each per-row unit of work FIRST acquires the drain's ``pg_advisory_xact_lock(5_000_504)``
+        so a reconcile row-mutation and a ``stage_cloud_window`` snapshot are mutually exclusive per-row.
+        ``_reconcile_one`` commits per row, which auto-releases the xact lock -- that per-row granularity
+        is REQUIRED (Pitfall 2: a whole-tick lock would break the load-bearing delete-after-record
+        ordering, which commits mid-tick). Reconcile only ever DECREMENTS in-flight (it never claims a
+        slot), so this single shared drain lock is provably cap-safe (RESEARCH reconcile-only-decrements
+        proof).
         """
         cfg = cast("ControlSettings", get_settings())
         cap = cfg.cloud_submit_max_attempts
@@ -346,6 +378,11 @@ class KueueBackend(_BaseBackend):
 
         for cloud_job_id in cloud_job_ids:
             try:
+                # SCHED-02: acquire the drain's advisory lock at the TOP of each per-row unit of work
+                # (per-row, not whole-tick) so this reconcile row-mutation is mutually exclusive with a
+                # ``stage_cloud_window`` snapshot. ``_reconcile_one`` commits per row -> the xact lock
+                # auto-releases at that commit, preserving the delete-after-record ordering.
+                await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
                 cloud_job = await session.get(CloudJob, cloud_job_id)
                 if cloud_job is None:
                     continue
@@ -355,16 +392,23 @@ class KueueBackend(_BaseBackend):
                 # Per-row guard: a single bad row never aborts the tick; roll back the partial mutation.
                 await session.rollback()
                 logger.warning("KueueBackend.reconcile: row reconcile failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True)
-        return None
+        # SCHED-05: return the per-backend tally so the cron aggregates it (replaces the old global tally).
+        return tally
 
 
 def resolve_backends(settings: ControlSettings) -> list[Backend]:
-    """Build one :class:`Backend` impl per registry entry; raise fast at boot if >1 non-local resolves.
+    """Build one :class:`Backend` impl per registry entry -- N non-local backends supported (Phase 69, SCHED-01).
 
-    D-07 boot guard (relocated from ``config._single_non_local``): Phase 68 stays single-dispatch-path,
-    so the registry must reduce to exactly one non-local backend (+ any locals). A ``>1``-non-local
-    registry is a Phase-69 (SCHED) capability -- fail fast here naming the offending ids rather than
-    silently picking one. Each impl binds to its Phase-67 discriminated-union submodel (``config``).
+    Phase 69 (SCHED-01) removes the Phase-68 ``>1``-non-local boot guard: multi-backend simultaneous
+    dispatch is exactly this phase's job, so a registry with N non-local entries now resolves to a full
+    ``list[Backend]`` of length N (+ any locals). The tiered drain
+    (``release_awaiting_cloud.stage_cloud_window``) iterates this list, snapshots each backend's
+    ``is_available`` / ``in_flight_count`` once per tick, and routes each candidate via the pure
+    ``select_backend`` policy. Each impl binds to its Phase-67 discriminated-union submodel (``config``).
+
+    The historical ``>1``-non-local defense-in-depth is retained ONLY for the non-drain call sites that
+    still assume a single non-local kind (pipeline dashboard / backfill, agent_s3) -- it lives in
+    :func:`resolved_non_local_kind` (WR-01), which those callers use; the drain no longer consults it.
     """
     resolved: list[Backend] = []
     for entry in settings.backends:
@@ -375,12 +419,6 @@ def resolve_backends(settings: ControlSettings) -> list[Backend]:
         elif entry.kind == "kueue":
             resolved.append(KueueBackend(id=entry.id, rank=entry.rank, cap=entry.cap, config=entry))
 
-    non_local = [backend for backend in resolved if not isinstance(backend, LocalBackend)]
-    if len(non_local) > 1:
-        raise ValueError(
-            f"multi-backend dispatch lands in Phase 69 (SCHED): {len(non_local)} non-local backends "
-            f"{[backend.id for backend in non_local]} are configured, but Phase 68 resolves only a ≤1-non-local registry"
-        )
     return resolved
 
 

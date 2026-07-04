@@ -38,6 +38,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import clear_ledger_entry, upsert_ledger_entry
@@ -1026,6 +1027,121 @@ async def test_startup_survives_raising_backfill(monkeypatch: pytest.MonkeyPatch
     backfill_mock.assert_awaited_once()
     # Recovery still runs even though the backfill failed (independent try/except blocks).
     recover_mock.assert_awaited_once_with(ctx)
+
+
+# --- Phase 69 SCHED-05: single recovery owner per backend kind (in-flight cloud_job exclusion) -----
+#
+# After Phase-68 BACK-03 a cloud-burst file carries BOTH an in-flight cloud_job row (any backend_id)
+# AND a process_file / push_file scheduling-ledger row. Both the backend reconcile/`/pushed` callback
+# and this ledger recovery could otherwise claim ownership of that file's re-drive -- the exact
+# double-owner vector that produced the 44.5k over-enqueue incident. recover_orphaned_work MUST skip
+# any ledger row whose file has an in-flight cloud_job, leaving the backend callback/reconcile as the
+# single owner. A file with NO in-flight cloud_job (a genuinely-orphaned held AWAITING_CLOUD file)
+# keeps its existing held recovery path -- the fix must not over-exclude.
+
+
+async def _seed_cloud_job(
+    session: AsyncSession,
+    file_id: uuid.UUID,
+    *,
+    status: CloudJobStatus = CloudJobStatus.SUBMITTED,
+    backend_id: str = "oci-a1",
+) -> None:
+    """Seed the compute cloud_job sidecar row ComputeAgentBackend.dispatch writes (backend_id set, s3_key NULL)."""
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file_id, backend_id=backend_id, s3_key=None, status=status.value))
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_single_owner_in_flight_cloud_job_skips_ledger_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SCHED-05: a compute file with an in-flight cloud_job + a process_file ledger row is NOT re-enqueued.
+
+    The backend reconcile / `/pushed` callback is the single owner for any file with a live cloud_job
+    row; recovery must exclude it so the file gains no second recovery path (the 44.5k over-enqueue
+    incident class). Even with a compute agent online (so the held path COULD otherwise route it),
+    the in-flight cloud_job exclusion wins.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)  # genuine queue-loss
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    burst = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(burst)
+    await session.commit()
+    await _seed_cloud_job(session, burst.id, status=CloudJobStatus.SUBMITTED)  # in-flight -> owned by its callback
+    await _seed_ledger(session, function="process_file", file_id=burst.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # The in-flight cloud_job file must NOT be recovered by the ledger -- its callback/reconcile owns it.
+    assert "cloud" not in router.queues
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_single_owner_terminal_cloud_job_does_not_block_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SCHED-05 guard: a file whose cloud_job is TERMINAL (FAILED) is NOT in the in-flight set.
+
+    Only {UPLOADING, UPLOADED, SUBMITTED, RUNNING} are in-flight; a spilled/terminal FAILED row means
+    no backend owns the re-drive anymore, so a still-held AWAITING_CLOUD file must recover via the
+    held path (routing to a compute agent). The exclusion is by in-flight status, not by row presence.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    held = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(held)
+    await session.commit()
+    await _seed_cloud_job(session, held.id, status=CloudJobStatus.FAILED)  # terminal -> NOT in-flight
+    await _seed_ledger(session, function="process_file", file_id=held.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # Terminal cloud_job -> no backend owner -> the held file recovers via the compute-only held path.
+    assert "cloud" in router.queues
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SCHED-05 guard: a held AWAITING_CLOUD file with NO cloud_job still recovers via the held path.
+
+    A genuinely-orphaned held file (no cloud_job row was ever written) is not owned by any backend
+    callback, so the existing compute-only held recovery path must still re-drive it -- no regression.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    held = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(held)
+    await session.commit()
+    # No cloud_job row seeded -- genuinely orphaned.
+    await _seed_ledger(session, function="process_file", file_id=held.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert "cloud" in router.queues
+    assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
 # Silence the unused-import lint for the analysis model imported for parity with the prior

@@ -13,7 +13,10 @@ split (RESEARCH §Critical Finding 1):
   reports a sha256 mismatch; under ``push_max_attempts`` control re-drives
   ``push_file`` on the FILESERVER queue (keeping the PUSHING slot, Open-Q1) and
   increments the ``push_attempt`` counter in the ledger payload; at/over the cap
-  control sets ``ANALYSIS_FAILED`` and clears the ledger (D-12).
+  control SPILLS the file back to ``AWAITING_CLOUD`` (Phase 69, SCHED-03/D-04)
+  with its cloud budget marked spent (``cloud_job.attempts >= cloud_submit_max_attempts``)
+  so the next drain tick routes it to local, and clears the ledger — the terminal
+  ``ANALYSIS_FAILED`` now comes only from a LOCAL analysis failure.
 
 Smoke-app pattern (mirrors ``test_agent_analysis.py``): a real DB session via the
 ``session`` fixture, a ``FakeTaskRouter`` on ``app.state``, and a monkeypatched
@@ -327,13 +330,18 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
 
 
 @pytest.mark.asyncio
-async def test_mismatch_over_cap_fails_terminally_and_clears_ledger(
+async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """At/over the cap: state -> ANALYSIS_FAILED + ledger cleared, in one transaction (no re-drive)."""
+    """At/over the cap: state -> AWAITING_CLOUD (spill, SCHED-03) + ledger cleared, one transaction (no re-drive).
+
+    Phase 69 (D-04): a compute push that exhausts its push_max_attempts re-drives no longer hard-fails.
+    The file spills back to AWAITING_CLOUD so the next drain tick can route it to local -- ANALYSIS_FAILED
+    now comes only from a LOCAL analysis failure. ``cleared`` stays True (the ledger row is cleared).
+    """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
@@ -347,33 +355,35 @@ async def test_mismatch_over_cap_fails_terminally_and_clears_ledger(
 
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["cleared"] is True, "over the cap the file is terminally failed and the ledger cleared"
+    assert body["cleared"] is True, "over the cap the ledger is cleared even though the file spills (not hard-fails)"
 
     file_row = await _file_row(session, file_id)
-    assert file_row.state == FileState.ANALYSIS_FAILED
-    assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row must be cleared on terminal failure"
+    assert file_row.state == FileState.AWAITING_CLOUD, "SCHED-03: spill back to AWAITING_CLOUD, never ANALYSIS_FAILED"
+    assert file_row.state != FileState.ANALYSIS_FAILED
+    assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row must be cleared on spill"
     # No re-drive enqueue happened.
     assert task_router.queues == {}
-    # CR-01: a non-compute file (no cloud_job row) is unaffected -- the terminalizing UPDATE is a 0-row no-op.
+    # A non-compute file (no cloud_job row) simply spills -- the cloud_job UPDATE is a 0-row no-op.
     assert await _cloud_job_row(session, file_id) is None
 
 
 @pytest.mark.asyncio
-async def test_mismatch_over_cap_terminalizes_compute_cloud_job(
+async def test_push_mismatch_over_cap_compute_spill_marks_cloud_budget_spent(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """CR-01: a COMPUTE file with a SUBMITTED cloud_job row hitting the cap terminalizes it to FAILED.
+    """SCHED-03/D-04 compute_spill: a COMPUTE file hitting the cap spills to AWAITING_CLOUD with cloud budget spent.
 
-    ComputeAgentBackend.dispatch writes the cloud_job row as SUBMITTED (in the D-10 in-flight set) when the
-    file is staged. Without the terminal write, a mismatch-cap failure leaves the file out of the
-    {PUSHING, PUSHED} window while its cloud_job row stays stranded at SUBMITTED, so in_flight_count(compute)
-    over-counts forever and breaks the D-02 equivalence invariant. Assert the row is drained to FAILED.
+    ComputeAgentBackend.dispatch writes the cloud_job row as SUBMITTED (in the D-10 in-flight set). On the
+    cap spill the row must be terminalized (FAILED, drained from the in-flight set so in_flight_count stays
+    honest) AND its ``attempts`` bumped to >= cloud_submit_max_attempts so select_backend excludes cloud on
+    the next drain tick and routes the spilled file to LOCAL (D-04 total-cloud budget).
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
+    settings = ControlSettings()  # same defaults the router sees: push_max_attempts=3, cloud_submit_max_attempts=3
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds push_max_attempts=3
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
@@ -387,11 +397,13 @@ async def test_mismatch_over_cap_terminalizes_compute_cloud_job(
     assert r.json()["cleared"] is True
 
     file_row = await _file_row(session, file_id)
-    assert file_row.state == FileState.ANALYSIS_FAILED
-    # The compute cloud_job row is terminalized (drained from the D-10 in-flight set) in the same transaction.
+    assert file_row.state == FileState.AWAITING_CLOUD  # spill, not ANALYSIS_FAILED
+    # The compute cloud_job row is terminalized (drained from the D-10 in-flight set) AND its cloud
+    # budget is marked spent so the next drain tick routes the file to local (D-04).
     cloud_job = await _cloud_job_row(session, file_id)
     assert cloud_job is not None
     assert cloud_job.status == CloudJobStatus.FAILED.value
+    assert cloud_job.attempts >= settings.cloud_submit_max_attempts, "cloud budget must be marked spent -> select_backend picks local"
 
 
 @pytest.mark.asyncio
