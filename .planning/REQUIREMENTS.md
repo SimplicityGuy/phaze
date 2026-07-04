@@ -34,7 +34,7 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (67+).
 
 ### MKUE — Multi-Kueue (N clusters)
 
-- [ ] **MKUE-01**: Operator can declare N Kueue-cluster backends, each with its own kube config (per-cluster kubeconfig/context), dispatched to concurrently from the one control plane.
+- [x] **MKUE-01**: Operator can declare N Kueue-cluster backends, each with its own kube config (per-cluster kubeconfig/context), dispatched to concurrently from the one control plane.
 - [ ] **MKUE-02**: Each Kueue cluster stages long files to a bucket drawn from its REG-05-assigned set — either one or more Internet-reachable ("public") buckets shared across clusters, or one or more cluster-specific buckets — so a cluster that cannot reach the homelab bucket (e.g. a cloud cluster) uses a reachable one; when a set holds multiple buckets, staging selects one deterministically per file. The control plane remains the **sole** S3 importer/presigner for every bucket (DIST-01 no-media boundary preserved), and pods/agents stay credential-free, receiving only presigned, `file_id`-scoped, TTL-bounded URLs — objects are never world-readable despite an Internet-reachable endpoint.
 - [ ] **MKUE-03**: Each cluster has its own LocalQueue reachability probe and a `backend_id`-scoped reconcile, and one cluster's probe/dispatch failure is isolated (per-backend try/except) so it cannot poison the whole drain tick.
 - [ ] **MKUE-04**: Cross-cluster/cross-bucket staged-object cleanup is scoped to the (backend, bucket) that staged the object, so a spillover re-dispatch never deletes an object another cluster or bucket is still using; a per-bucket lifecycle TTL remains the backstop.
@@ -91,7 +91,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SCHED-03 | Phase 69 | Complete |
 | SCHED-04 | Phase 69 | Complete |
 | SCHED-05 | Phase 69 | Complete |
-| MKUE-01 | Phase 70 | Pending |
+| MKUE-01 | Phase 70 | Complete |
 | MKUE-02 | Phase 70 | Pending |
 | MKUE-03 | Phase 70 | Pending |
 | MKUE-04 | Phase 70 | Pending |
