@@ -183,55 +183,78 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # dedup no-op; either way the cloud_job slot was claimed, so the local remaining is decremented.
         task_router = ctx["task_router"]
         tally = {"staged": 0, "skipped": 0}
-        for index, file in enumerate(candidates):
-            cloud_attempts = await _cloud_attempts_for(session, file.id)
-            # models/base.py: created_at/updated_at carry no timezone=True, so create_all yields naive
-            # datetimes while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the
-            # candidate's awareness (assume-UTC, the scan_reaper / pipeline_scans convention) so the pure
-            # select_backend staleness subtraction (now - file.updated_at) never raises -- WITHOUT
-            # mutating the parked AWAITING_CLOUD row (its updated_at is the staleness clock, RESEARCH A3).
-            now = datetime.now(UTC)
-            if file.updated_at.tzinfo is None:
-                now = now.replace(tzinfo=None)
-            target = select_backend(file, cloud_attempts, snapshot, now, cfg)
-            if target is None:
-                # Clean per-candidate hold: no eligible backend for this file this tick. No state change
-                # -- the file stays AWAITING_CLOUD (guards the updated_at staleness signal, RESEARCH A3).
-                tally["skipped"] += 1
-                continue
-            # WR-02: dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a fileserver
-            # revoked by a concurrent session AFTER GATE-2 above but BEFORE this iteration raises
-            # NoActiveAgentError straight out of dispatch. Catch it -> CLEAN HOLD of the remaining
-            # not-yet-dispatched candidates (this one included), which stay AWAITING_CLOUD (cron NEVER
-            # raises). dispatch resolves the fileserver BEFORE any mutation, so the raising file is untouched.
-            try:
-                dispatched = await target.dispatch(file, session, task_router)
-            except NoActiveAgentError:
-                remaining = len(candidates) - index
-                logger.info("stage_cloud_window hold: fileserver agent vanished mid-tick", held=remaining)
-                tally["skipped"] += remaining
-                break
-            except Exception:
-                # MKUE-03 / D-07 (research Pitfall 8): a GENERIC kube/S3 raise from ONE backend's dispatch
-                # (a cluster/bucket error, NOT the fileserver-vanish NoActiveAgentError above) is a clean
-                # hold of THIS candidate ONLY -- distinct from the fileserver-vanish break, which affects
-                # every remaining dispatch. dispatch resolves the fileserver BEFORE any state mutation, so
-                # the raising path touches nothing: the file stays AWAITING_CLOUD. Count it skipped, log
-                # (backend_id only, T-70-03-02), do NOT decrement the slot (no work was claimed), and
-                # continue to the NEXT candidate so a single flaky cluster cannot poison the whole tick --
-                # every other backend still receives work. The tick NEVER aborts and NEVER raises.
-                logger.warning("stage_cloud_window: backend dispatch failed -> holding this candidate", backend_id=target.id)
-                tally["skipped"] += 1
-                continue
-            # The slot is claimed (cloud_job upserted) on both a genuine stage and a dedup no-op, so
-            # decrement the local remaining unconditionally -- this is what makes a full top-rank backend
-            # spill the NEXT candidate to the next rank within the same tick (SCHED-01), cap-safe (SCHED-02).
-            snapshot[target.id]["remaining"] -= 1
-            if dispatched:
-                tally["staged"] += 1
-            else:
-                tally["skipped"] += 1
-        await session.commit()
+        # CR-02 safety net (T-50-cron-raise): the candidate loop + the single post-loop commit run under
+        # ONE outer guard so an UNEXPECTED raise -- e.g. a Postgres serialization/deadlock surfaced from a
+        # session.execute mid-loop (which aborts the txn, so every subsequent statement INCLUDING the final
+        # commit raises), or a raise from _cloud_attempts_for outside the per-candidate try below -- can
+        # NEVER propagate out of this cron. On any such error we roll back the WHOLE tick (discarding every
+        # partial/uncommitted write so no phantom dispatch is ever committed) and report a clean hold; the
+        # held candidates stay AWAITING_CLOUD and re-stage next tick. This is the ONLY rollback: we never
+        # roll back mid-loop (that would end the txn and release the pg_advisory_xact_lock, re-opening the
+        # over-stage class, Landmine L1). The advisory-lock scope + single post-loop commit are unchanged.
+        try:
+            for index, file in enumerate(candidates):
+                cloud_attempts = await _cloud_attempts_for(session, file.id)
+                # models/base.py: created_at/updated_at carry no timezone=True, so create_all yields naive
+                # datetimes while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the
+                # candidate's awareness (assume-UTC, the scan_reaper / pipeline_scans convention) so the pure
+                # select_backend staleness subtraction (now - file.updated_at) never raises -- WITHOUT
+                # mutating the parked AWAITING_CLOUD row (its updated_at is the staleness clock, RESEARCH A3).
+                now = datetime.now(UTC)
+                if file.updated_at.tzinfo is None:
+                    now = now.replace(tzinfo=None)
+                target = select_backend(file, cloud_attempts, snapshot, now, cfg)
+                if target is None:
+                    # Clean per-candidate hold: no eligible backend for this file this tick. No state change
+                    # -- the file stays AWAITING_CLOUD (guards the updated_at staleness signal, RESEARCH A3).
+                    tally["skipped"] += 1
+                    continue
+                # WR-02: dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a fileserver
+                # revoked by a concurrent session AFTER GATE-2 above but BEFORE this iteration raises
+                # NoActiveAgentError straight out of dispatch. Catch it -> CLEAN HOLD of the remaining
+                # not-yet-dispatched candidates (this one included), which stay AWAITING_CLOUD (cron NEVER
+                # raises). Every dispatch gates its fileserver agent BEFORE any state mutation (CR-01), so the
+                # raising file is untouched and the already-staged prior candidates are genuine -> break (NOT
+                # rollback), letting the post-loop commit persist that good prior work.
+                try:
+                    dispatched = await target.dispatch(file, session, task_router)
+                except NoActiveAgentError:
+                    remaining = len(candidates) - index
+                    logger.info("stage_cloud_window hold: fileserver agent vanished mid-tick", held=remaining)
+                    tally["skipped"] += remaining
+                    break
+                except Exception:
+                    # MKUE-03 / D-07 (research Pitfall 8): a GENERIC kube/S3 raise from ONE backend's dispatch
+                    # (a cluster/bucket error, NOT the fileserver-vanish NoActiveAgentError above) is a clean
+                    # hold of THIS candidate ONLY -- distinct from the fileserver-vanish break, which affects
+                    # every remaining dispatch. Each dispatch gates its fileserver agent + runs its fallible
+                    # S3 setup BEFORE the FileState flip (CR-01), so the common pre-upsert raise touches
+                    # nothing and the file stays AWAITING_CLOUD. We do NOT roll back here (a mid-loop rollback
+                    # would drop the advisory lock, Landmine L1); if the raise instead POISONED the txn (a PG
+                    # statement error), the outer safety net rolls the whole tick back so nothing partial is
+                    # committed. Count it skipped, log (backend_id only, T-70-03-02), do NOT decrement the slot
+                    # (no work claimed), and continue so a single flaky cluster cannot starve the other
+                    # backends. The tick NEVER aborts and NEVER raises.
+                    logger.warning("stage_cloud_window: backend dispatch failed -> holding this candidate", backend_id=target.id)
+                    tally["skipped"] += 1
+                    continue
+                # The slot is claimed (cloud_job upserted) on both a genuine stage and a dedup no-op, so
+                # decrement the local remaining unconditionally -- this is what makes a full top-rank backend
+                # spill the NEXT candidate to the next rank within the same tick (SCHED-01), cap-safe (SCHED-02).
+                snapshot[target.id]["remaining"] -= 1
+                if dispatched:
+                    tally["staged"] += 1
+                else:
+                    tally["skipped"] += 1
+            await session.commit()
+        except Exception:
+            # A poisoned transaction (or any unexpected raise from the pre-dispatch loop body / the commit)
+            # must degrade to a clean hold, never a cron raise. Roll back the whole tick -- this discards any
+            # uncommitted partial write, so a dispatch that raised AFTER a DB mutation can never leave a
+            # committed limbo/phantom row -- and report every candidate held; they stay AWAITING_CLOUD.
+            logger.warning("stage_cloud_window: tick aborted by an unexpected error -> rolling back, holding all", exc_info=True)
+            await session.rollback()
+            return {"staged": 0, "skipped": len(candidates)}
 
     logger.info("stage_cloud_window complete", agent_id=fileserver_agent.id, staged=tally["staged"], skipped=tally["skipped"])
     return tally

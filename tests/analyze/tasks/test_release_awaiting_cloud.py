@@ -24,6 +24,7 @@ exactly the Kueue role these tests model.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
@@ -278,5 +279,48 @@ async def test_stage_cloud_window_isolation_dispatch_noactiveagent_holds_all_and
     assert result == {"staged": 0, "skipped": 2}
     # BREAK semantics: the fileserver-vanish path holds ALL remaining after ONE failing dispatch.
     assert vanish.dispatch_calls == 1
+    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert await _backend_ids_for(session, ids) == {}
+
+
+# --- CR-02: an unexpected raise (poisoned txn) is caught by the tick safety net (cron NEVER raises) ---
+
+
+@pytest.mark.asyncio
+async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-02 safety net: an unexpected raise from the loop body (a poisoned-txn statement) is caught, the tick rolls back, and the cron returns a clean hold.
+
+    Models a Postgres serialization/deadlock surfaced from a ``session.execute`` in the loop body that sits
+    OUTSIDE the per-candidate dispatch try (here: ``_cloud_attempts_for``). Before the fix this propagated
+    straight out of ``stage_cloud_window`` (and, downstream, a poisoned txn made the single post-loop
+    ``session.commit()`` raise), violating the T-50-cron-raise NEVER-raises discipline. After the fix the
+    outer guard rolls the whole tick back and returns ``{"staged": 0, "skipped": len(candidates)}`` -- every
+    candidate stays AWAITING_CLOUD with no cloud_job row, and no partial write is committed.
+    """
+    healthy = _StubBackend(id="kueue-a", rank=10, cap=5)
+    _patch_backends(monkeypatch, [healthy])
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(2)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    # Force an unexpected raise from the loop body OUTSIDE the per-candidate dispatch try.
+    monkeypatch.setattr(
+        "phaze.tasks.release_awaiting_cloud._cloud_attempts_for",
+        AsyncMock(side_effect=RuntimeError("current transaction is aborted")),
+    )
+
+    router = DedupFakeTaskRouter()
+    # MUST NOT raise -- the tick safety net degrades an unexpected/poisoned-txn error to a clean hold.
+    result = await stage_cloud_window(_make_ctx(async_engine, router))
+
+    assert result == {"staged": 0, "skipped": 2}
+    assert healthy.dispatch_calls == 0  # the raise fired before any dispatch was attempted
+    # Whole tick rolled back: no file flipped AWAITING_CLOUD -> PUSHING, no cloud_job row written.
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
     assert await _backend_ids_for(session, ids) == {}
