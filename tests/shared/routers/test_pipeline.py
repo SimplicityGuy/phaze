@@ -65,7 +65,7 @@ async def _drain_background() -> None:
 # cloud_enabled False (all-local). The pipeline endpoints read the singleton's ``backends`` field via
 # the registry-derived ``cloud_enabled`` / ``active_cloud_kind`` properties, so patching ``backends``
 # drives every rewired call site through the real property logic.
-_COMPUTE_BACKEND = ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1")
+_COMPUTE_BACKEND = ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1", scratch_dir="/scratch")
 _KUEUE_BACKEND = KueueBackend(kind="kueue", id="k8s", rank=10, cap=2, kube=KubeConfig())
 _LOCAL_BACKEND = LocalBackend(kind="local", id="local", rank=99, cap=1)
 

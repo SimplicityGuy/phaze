@@ -401,7 +401,7 @@ async def test_lane_cards_render_on_compute_registry(client: AsyncClient, sessio
     # A file must exist or the analyze node swaps to the first-run empty-state (shell.py:176) instead
     # of the lane workspace.
     await _seed_file(session, state=FileState.PUSHED, original_filename="held.mp3")
-    monkeypatch.setattr(settings, "backends", [ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1")])
+    monkeypatch.setattr(settings, "backends", [ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1", scratch_dir="/scratch")])
 
     resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert resp.status_code == 200
