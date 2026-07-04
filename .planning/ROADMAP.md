@@ -221,7 +221,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 65. CalVer Adoption | 2026.7.0 | 2/2 | Complete   | 2026-07-03 |
 | 66. Docs-Drift Gate & Dead-Code Sweep | 2026.7.0 | 3/3 | Complete    | 2026-07-03 |
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
-| 68. Backend Protocol + 3 Implementations | 2026.7.1 | 0/TBD | Not started | - |
+| 68. Backend Protocol + 3 Implementations | 2026.7.1 | 0/5 | Planned | - |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 0/TBD | Not started | - |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 0/TBD | Not started | - |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
