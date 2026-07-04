@@ -217,6 +217,56 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
 
 
+# --- WR-02: fileserver vanishes mid-tick (present at GATE-2, gone at dispatch) -> clean hold ----
+
+
+@pytest.mark.asyncio
+async def test_fileserver_vanishes_mid_tick_holds_cleanly(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-02: a fileserver revoked between GATE-2 and the dispatch loop degrades to a clean hold, never a raise.
+
+    ComputeAgentBackend.dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a
+    fileserver revoked by a concurrent session AFTER GATE-2 passes but BEFORE a later loop iteration
+    raises NoActiveAgentError straight out of dispatch. The drain must catch it and hold the remaining
+    candidates (staged=0, skipped=len(candidates)), leaving them AWAITING_CLOUD -- NOT propagate the raise
+    (T-50-cron-raise). dispatch resolves the fileserver BEFORE any mutation, so the raising file is
+    untouched.
+    """
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")
+    # Both agents present so GATE-1 (compute is_available) and GATE-2 (fileserver) pass upfront.
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(2)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    # Simulate the mid-tick revocation: backends.select_active_agent (called INSIDE dispatch) raises for
+    # the fileserver lookup while still resolving the compute agent GATE-1 (is_available) needs. GATE-2 in
+    # release_awaiting_cloud uses its OWN imported select_active_agent (unpatched), so it still passes.
+    from phaze.services import backends as backends_mod
+    from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+
+    async def _raise_for_fileserver(sess: AsyncSession, *, kind: str) -> Any:
+        if kind == "fileserver":
+            raise NoActiveAgentError(kind)
+        return await select_active_agent(sess, kind=kind)
+
+    monkeypatch.setattr(backends_mod, "select_active_agent", _raise_for_fileserver)
+
+    router = DedupFakeTaskRouter()
+    # Must NOT raise -- the cron degrades to a clean hold.
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 0, "skipped": 2}
+    assert router.queues == {}
+    # The raising file (and its peers) are untouched -- dispatch gates the fileserver BEFORE mutating.
+    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+
+
 # --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the staging cron ---------
 
 

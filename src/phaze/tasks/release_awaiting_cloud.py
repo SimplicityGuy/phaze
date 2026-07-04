@@ -151,8 +151,22 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # False for a deterministic-key dedup no-op, preserving the Phase-50 staged/skipped tally.
         task_router = ctx["task_router"]
         tally = {"staged": 0, "skipped": 0}
-        for file in candidates:
-            if await backend.dispatch(file, session, task_router):
+        for index, file in enumerate(candidates):
+            # WR-02: ComputeAgentBackend.dispatch re-resolves the fileserver agent per file (the push
+            # initiator). Under READ COMMITTED a fileserver revoked by a concurrent session AFTER GATE-2
+            # above but BEFORE this iteration makes select_active_agent raise NoActiveAgentError straight
+            # out of dispatch. Catch it here so the cron degrades to a CLEAN HOLD of the not-yet-dispatched
+            # candidates (T-50-cron-raise: the cron NEVER raises). dispatch resolves the fileserver BEFORE
+            # any mutation, so the raising file is untouched; break and count the remaining candidates
+            # (this one included) as skipped -- they stay AWAITING_CLOUD and re-stage on a later tick.
+            try:
+                dispatched = await backend.dispatch(file, session, task_router)
+            except NoActiveAgentError:
+                remaining = len(candidates) - index
+                logger.info("stage_cloud_window hold: fileserver agent vanished mid-tick", held=remaining)
+                tally["skipped"] += remaining
+                break
+            if dispatched:
                 tally["staged"] += 1
             else:
                 tally["skipped"] += 1
