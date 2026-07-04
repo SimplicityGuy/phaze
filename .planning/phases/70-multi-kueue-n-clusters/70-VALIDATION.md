@@ -1,10 +1,11 @@
 ---
 phase: 70
 slug: multi-kueue-n-clusters
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-07-04
+validated: 2026-07-04
 ---
 
 # Phase 70 — Validation Strategy
@@ -38,24 +39,26 @@ created: 2026-07-04
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 70-01-* | 01 | 1 | MKUE-01 | T-70-01 | Distinct kr8s client per backend; token-hack retired; no shared-global auth mutation across N clusters | unit + seam | `uv run pytest tests/analyze/services/test_kube_staging.py -k "auth or client or multi" -x` | ✅ extend | ⬜ pending |
-| 70-02-* | 02 | 1 | MKUE-02 | T-70-02 | Deterministic per-file bucket; presign/delete read recorded `staging_bucket`, never re-derive; objects never world-readable (presigned TTL only) | unit | `uv run pytest tests/analyze/services/test_s3_staging.py -k "pick_bucket or staging_bucket" -x` | ❌ W0 | ⬜ pending |
-| 70-03-* | 03 | 2 | MKUE-03 | T-70-03 | One backend raising on snapshot/dispatch is isolated (0 slots, logged); healthy backends + local still get work | unit | `uv run pytest tests/analyze/tasks/ -k "stage_cloud_window and isolation" -x` | ❌ W0 | ⬜ pending |
-| 70-04-* | 04 | 2 | MKUE-04 | T-70-04 | Clean-before-flip: old `(backend_id, staging_bucket)` object deleted BEFORE the `AWAITING_CLOUD` commit, under the per-row advisory lock; same-bucket re-dispatch never destroys the new owner's object; TTL is backstop only | unit + concurrency | `uv run pytest tests/analyze/tasks/test_reconcile_cloud_jobs.py -k "clean_before_flip or spillover" -x` | ❌ W0 | ⬜ pending |
-| 70-04-* | 04 | 2 | MKUE-04 | — | migration 030 upgrade/downgrade round-trips; `staging_bucket` nullable, no backfill | integration | `uv run pytest tests/integration/test_migrations/ -k "030 or staging_bucket" -x` | ❌ W0 | ⬜ pending |
+| 70-01-* | 01 | 1 | MKUE-01 | T-70-01 | Distinct kr8s client per backend; token-hack retired; no shared-global auth mutation across N clusters | unit + seam | `uv run pytest tests/analyze/services/test_kube_staging.py -k "kubeconfig or api or distinct or token or bearer"` | ✅ | ✅ green (8) |
+| 70-02-* | 02 | 1 | MKUE-02 | T-70-02 | Deterministic per-file bucket; presign/delete read recorded `staging_bucket`, never re-derive; objects never world-readable (presigned TTL only) | unit | `uv run pytest tests/analyze/services/test_s3_staging.py -k "pick_bucket or resolve_bucket_config or _acts_on_the_called_bucket"` | ✅ | ✅ green (9) |
+| 70-03-* | 03 | 2 (exec W4) | MKUE-03 | T-70-03 | One backend raising on snapshot/dispatch is isolated (0 slots, logged); healthy backends + local still get work | unit | `uv run pytest tests/analyze/tasks/test_release_awaiting_cloud.py -k "isolation or unexpected_error"` | ✅ | ✅ green (5) |
+| 70-04-* | 04 | 2 (exec W4) | MKUE-04 | T-70-04 | Clean-before-flip: old `(backend_id, staging_bucket)` object deleted BEFORE the `AWAITING_CLOUD` commit, under the per-row advisory lock; same-bucket re-dispatch never destroys the new owner's object; TTL is backstop only | unit + concurrency | `uv run pytest tests/analyze/tasks/test_reconcile_cloud_jobs.py -k "clean_before_flip or spill or delete_after_record or concurrency"` | ✅ | ✅ green (8) |
+| 70-04-* | 04 | 2 (exec W4) | MKUE-04 | — | migration 030 upgrade/downgrade round-trips; `staging_bucket` nullable, no backfill; never references saq_jobs | integration | `uv run pytest tests/integration/test_migrations/test_migration_030_staging_bucket.py` | ✅ | ✅ green (3) |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+> **Note:** the plan-time `-k` filters were keyword guesses that deselected all tests; the commands above are corrected to the real test names. Actual wave layout differed from the plan-time estimate (MKUE-03/04 landed in exec Wave 4 as plans 70-04/70-05, not Wave 2). All coverage verified green 2026-07-04 against the ephemeral Postgres test DB (localhost:5433).
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] `tests/analyze/services/test_s3_staging.py` — add `pick_bucket` determinism + stability-across-restart + empty-set-raises cases; per-bucket `BucketConfig`-param cases for presign/delete (MKUE-02)
-- [ ] `tests/analyze/services/test_kube_staging.py` — synthesized-kubeconfig-dict auth cases (both `kubeconfig+context` and `api_url+sa_token` forms) + distinct-client-per-backend; assert no `_create_session` usage (MKUE-01)
-- [ ] `tests/analyze/tasks/test_release_awaiting_cloud*.py` — N≥2 backend fixture where one backend raises on `is_available`/`in_flight_count`/`dispatch`; assert the tick survives and healthy backends get work (MKUE-03)
-- [ ] `tests/analyze/tasks/test_reconcile_cloud_jobs.py` — clean-before-flip ordering test + same-bucket re-dispatch preservation test + drain↔reconcile concurrency test (no file in two backends; no object the new pod needs is deleted) (MKUE-04 / Pitfall 9)
-- [ ] `tests/integration/test_migrations/test_030_staging_bucket.py` — upgrade/downgrade round-trip (mirror the 029 migration test)
-- [ ] Import-boundary guard: keep `s3_staging` and `kube_staging` ORM-free after parameterization (extend existing purity tests)
+- [x] `tests/analyze/services/test_s3_staging.py` — `pick_bucket` determinism (`test_pick_bucket_matches_stable_sha256_formula_not_salted_hash`) + order-independence + empty-set-raises + always-member; per-bucket `resolve_bucket_config` + `_acts_on_the_called_bucket` presign/delete cases (MKUE-02) ✅
+- [x] `tests/analyze/services/test_kube_staging.py` — synthesized-kubeconfig-dict auth cases (both `kubeconfig+context` via `test_kubeconfig_dict_from_parses_inline_kubeconfig_yaml`/`test_api_passes_dict_kubeconfig_and_context` and `api_url+sa_token` via `test_kubeconfig_dict_from_synthesizes_from_api_url_and_token`/`test_sa_token_applied_as_bearer`) + distinct-client-per-backend (`test_distinct_kubeconfigs_yield_distinct_clients`) + no token-hack (`test_source_has_no_token_hack`) (MKUE-01) ✅
+- [x] `tests/analyze/tasks/test_release_awaiting_cloud.py` — one backend raises on `is_available`/`in_flight_count`/`dispatch` and the tick survives + healthy backends get work (`test_stage_cloud_window_isolation_*`), plus the CR-02 poisoned-txn guard `test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises` (MKUE-03) ✅
+- [x] `tests/analyze/tasks/test_reconcile_cloud_jobs.py` — clean-before-flip ordering (`test_clean_before_flip_ordering_delete_precedes_commit_precedes_job`) + same-bucket re-dispatch preservation (`test_spillover_same_bucket_redispatch_preserves_new_object`) + drain↔reconcile concurrency under the advisory lock (`test_drain_reconcile_concurrency_delete_runs_under_advisory_lock`) + best-effort delete (MKUE-04 / Pitfall 9) ✅
+- [x] `tests/integration/test_migrations/test_migration_030_staging_bucket.py` — upgrade/downgrade round-trip + `test_migration_never_references_saq_jobs` (mirror the 029 migration test) ✅
+- [x] Import-boundary guard: `s3_staging` and `kube_staging` stay ORM-free (`test_kube_staging.py:480` "NO sqlalchemy / phaze.models imports"; s3_staging purity retained) ✅
 
 ---
 
@@ -68,13 +71,29 @@ created: 2026-07-04
 
 ---
 
+## Validation Audit 2026-07-04
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 5 (MKUE-01..04 + migration 030) |
+| Covered (green) | 5 |
+| Partial | 0 |
+| Missing | 0 |
+| Gaps found | 0 |
+| Resolved | 0 (no gaps — all coverage authored TDD in-phase) |
+| Escalated to manual-only | 2 (pre-existing: live 2nd-cluster kr8s auth, real-S3 cross-bucket spillover — deployment-gated) |
+
+State A audit: every plan-time Per-Task Map row resolves to real, green tests (33 targeted tests: 8+9+5+8+3). No gsd-nyquist-auditor spawn needed — zero gaps. The only guessed `-k` filters were corrected to real test names. Manual-only rows remain deployment-gated (no 2nd live Kueue cluster / dual live buckets in-session), consistent with the Phase-56/68/69 live-E2E carryover.
+
+---
+
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (all Wave 0 items shipped + green)
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s (targeted per-requirement runs ≤ 3s)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** verified 2026-07-04 (2 deployment-gated manual-only items remain, tracked)
