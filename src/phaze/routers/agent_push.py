@@ -184,6 +184,13 @@ async def report_push_mismatch(
     # Over the cap: terminal failure + ledger clear, one transaction (mirror report_analysis_failed).
     if next_attempt > settings.push_max_attempts:
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+        # CR-01 / D-08: terminalize compute's cloud_job row (SUBMITTED -> FAILED) in the SAME transaction
+        # as the ANALYSIS_FAILED flip, mirroring the /pushed success path (SUCCEEDED at L127). Without
+        # this the file leaves the {PUSHING, PUSHED} get_cloud_window_count window while its cloud_job row
+        # stays stranded at SUBMITTED -- SUBMITTED is in the D-10 in-flight set, so in_flight_count(compute)
+        # would over-count forever and break the D-02 equivalence invariant LIVE. A no-op for non-compute
+        # files (no cloud_job row -> 0 rows affected) and idempotent.
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.FAILED.value))
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
         logger.warning(
