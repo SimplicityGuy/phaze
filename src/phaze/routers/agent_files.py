@@ -12,7 +12,7 @@ request schema has no agent_id field, so accidental body forgery returns
 422 `extra_forbidden`.
 """
 
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 import unicodedata
 import uuid
 
@@ -21,6 +21,7 @@ from sqlalchemy import Executable, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -30,6 +31,10 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadResponse
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
 from phaze.services import s3_staging
+
+
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
 
 
 router = APIRouter(prefix="/api/internal/agent/files", tags=["agent-internal"])
@@ -168,12 +173,22 @@ async def presign_download(
     # to be UPLOADED; otherwise 409 so the pod (or Phase 54 reconcile) sees "not ready" at the control
     # plane instead of taking an opaque 403/404 from S3 mid-download. Single-user system: NO per-agent
     # ownership predicate -- cross-agent access is by design (file_id is path-only, AUTH-01), not an IDOR.
-    cloud_job_status = (await session.execute(select(CloudJob.status).where(CloudJob.file_id == file_id))).scalar_one_or_none()
-    if cloud_job_status != CloudJobStatus.UPLOADED.value:
+    cloud_job_row = (await session.execute(select(CloudJob.status, CloudJob.staging_bucket).where(CloudJob.file_id == file_id))).first()
+    cloud_job_status = cloud_job_row.status if cloud_job_row is not None else None
+    if cloud_job_row is None or cloud_job_status != CloudJobStatus.UPLOADED.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"staged object not ready (cloud_job status={cloud_job_status!r})",
         )
 
-    download_url = await s3_staging.presign_get(file_id)
+    # MKUE-02 (Pitfall 4): presign against the RECORDED staging bucket -- resolve the id stamped at stage
+    # time, never re-derive via pick_bucket (a config-set change would then mis-point the presign). An
+    # UPLOADED row with no resolvable bucket is a corrupt state -> 409 rather than a dead URL from S3.
+    bucket = s3_staging.resolve_bucket_config(cast("ControlSettings", get_settings()), cloud_job_row.staging_bucket)
+    if bucket is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="staged object has no resolvable staging bucket recorded",
+        )
+    download_url = await s3_staging.presign_get(file_id, bucket)
     return PresignDownloadResponse(download_url=download_url, expected_sha256=file.sha256_hash)

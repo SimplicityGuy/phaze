@@ -175,12 +175,20 @@ async def _handle_no_callback_terminal(
         # guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
         # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
         # ``updated_at`` on the flip gives a fresh staleness clock (desirable).
+        # MKUE-02: resolve the RECORDED staging bucket BEFORE the commit terminalizes the row, and delete
+        # the staged object on it (a bucketless row -- no S3 object -- skips the delete cleanly). NOTE
+        # (Plan 05): this KEEPS the current commit-then-delete ordering; the clean-before-flip reorder
+        # (delete UNDER the still-held advisory lock, before the commit that makes the file a drain
+        # candidate) lands in Plan 05 -- this plan only makes the delete bucket-aware.
+        cfg = cast("ControlSettings", get_settings())
+        bucket = s3_staging.resolve_bucket_config(cfg, cloud_job.staging_bucket)
         cloud_job.status = CloudJobStatus.FAILED.value
         cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit.
         cloud_job.cloud_phase = None  # WR-01: terminal row must not inflate the admission-state "Running" tile.
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
         await session.commit()
-        await s3_staging.delete_staged_object(file_id)
+        if bucket is not None:
+            await s3_staging.delete_staged_object(file_id, bucket)
         await kube_staging.delete_job(name)
         tally["failed"] += 1
         logger.warning(

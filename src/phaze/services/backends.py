@@ -46,7 +46,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileState
 from phaze.schemas.agent_tasks import PushFilePayload
-from phaze.services import kube_staging
+from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
@@ -319,23 +319,29 @@ class KueueBackend(_BaseBackend):
         return local_queue is not None
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
-        """Flip ``file`` to PUSHING then run the no-commit S3-staging core VERBATIM (single-cluster, D-05).
+        """Flip ``file`` to PUSHING, pick the D-06 bucket, then run the no-commit S3-staging core (MKUE-02).
 
-        The S3 core (``cloud_staging._stage_file_to_s3``) already upserts the ``cloud_job`` row
-        (``UPLOADING``) + enqueues one ``s3_upload`` in the caller's session -- exactly as today's kueue
-        drain branch does -- so this writes NO second ``cloud_job`` row. D-05 keeps it single-cluster
-        (reads ``active_kube`` / ``active_bucket``); per-cluster parameterization is Phase 70. NEVER
-        commits (the drain owns the single post-loop commit -- Landmine L1). Always a genuine stage on
-        the kueue path (the current drain counts every kueue file staged), so returns ``True``.
+        Phase 70 (MKUE-02/D-06): pick the file's staging bucket deterministically over this backend's
+        bound bucket set (``self.config.buckets``), resolve its ``BucketConfig``, thread it into the
+        shared ``_stage_file_to_s3`` core (which stamps ``staging_bucket`` on the upsert), and RECORD both
+        ``backend_id`` AND ``staging_bucket`` in the SAME uncommitted session so this backend's
+        ``in_flight_count`` (COUNT WHERE backend_id == self.id) counts the row and every downstream
+        presign/cleanup READS the recorded bucket (never re-derives). NEVER commits (the drain owns the
+        single post-loop commit -- Landmine L1). Always a genuine stage on the kueue path, so returns ``True``.
         """
+        cfg = cast("ControlSettings", get_settings())
         # D-03: the drain flips PUSHING before the per-kind fork; own that flip here so dispatch is atomic.
         file.state = FileState.PUSHING
-        await _stage_file_to_s3(session, file, task_router)
-        # Phase 69 (SCHED-02): the shared ``_stage_file_to_s3`` core upserts the cloud_job row but does
-        # NOT stamp ``backend_id`` (it predates the registry). Stamp it here, in the SAME uncommitted
-        # session, so this backend's ``in_flight_count`` (COUNT WHERE backend_id == self.id) counts the
-        # row -- without it the drain would read kueue in-flight as 0 and overshoot the kueue cap.
-        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id))
+        # D-06: deterministic per-file bucket over this backend's bound set; the returned id is authoritative.
+        bucket_ids = list(getattr(self.config, "buckets", []) or [])
+        bucket_id = s3_staging.pick_bucket(file.id, bucket_ids)
+        bucket = s3_staging.resolve_bucket_config(cfg, bucket_id)
+        if bucket is None:
+            raise s3_staging.S3StagingError(f"kueue backend {self.id!r} bucket {bucket_id!r} is not in the resolved registry")
+        await _stage_file_to_s3(session, file, task_router, bucket)
+        # Record backend_id + the D-06 staging_bucket in the SAME uncommitted session (MKUE-02/D-01):
+        # in_flight_count is backend_id-scoped, and presign/cleanup read staging_bucket authoritatively.
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id, staging_bucket=bucket_id))
         return True
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int]:
