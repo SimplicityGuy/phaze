@@ -107,7 +107,7 @@ async def _enqueue_push_file(queue: Any, file: FileRecord, agent_id: str) -> Any
 
 
 class Backend(Protocol):
-    """The single internal dispatch seam that removes the ``if active_cloud_kind == …`` fork (§4.2).
+    """The single internal dispatch seam that removes the ``if kind == …`` cloud-target fork (§4.2).
 
     Structural (``typing.Protocol``): the three impls below conform by shape, no explicit subclassing.
     ``id`` / ``rank`` / ``cap`` mirror the Phase-67 registry submodel fields (cost-tier rank, concurrency
@@ -387,7 +387,7 @@ def resolve_backends(settings: ControlSettings) -> list[Backend]:
 def resolved_non_local_kind(settings: ControlSettings) -> str:
     """Return the registry-derived active kind: ``"local"`` when all-local, else the single non-local kind.
 
-    The Wave-3 replacement for the deleted ``active_cloud_kind`` accessor (D-07/D-09): ``"local"`` when
+    The Wave-3 replacement for the deleted config dispatch-selector accessor (D-07/D-09): ``"local"`` when
     ``cloud_enabled`` is False, otherwise the sole non-local backend's kind (``"compute"`` | ``"kueue"``).
     The single-non-local invariant is enforced by :func:`resolve_backends`'s boot guard.
     """

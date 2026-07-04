@@ -463,9 +463,11 @@ class ControlSettings(BaseSettings):
     def _single_non_local(self) -> "BackendConfig | None":
         """Return the sole non-local backend, or None when all-local.
 
-        TRANSITIONAL — removed in Phase 68 (BACK-01): the ≤1-non-local reduction the legacy dispatch
-        call sites read through the accessors below. Raises when >1 non-local backend exists —
+        TRANSITIONAL — retained through Phase 70 (MKUE-01): the ≤1-non-local reduction the retained
+        value accessors below read through. Raises when >1 non-local backend exists —
         multi-backend dispatch lands in Phase 69 (SCHED); this reduction must NEVER silently pick one.
+        The boot-time fail-fast is enforced by ``resolve_backends`` (services/backends.py); this raise
+        is kept as defense-in-depth for the value accessors.
         """
         non_local = [backend for backend in self.backends if backend.kind != "local"]
         if not non_local:
@@ -478,35 +480,28 @@ class ControlSettings(BaseSettings):
         return non_local[0]
 
     @property
-    def active_cloud_kind(self) -> Literal["compute", "kueue"] | None:
-        """The single non-local backend's kind, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
-        backend = self._single_non_local()
-        if backend is None or backend.kind == "local":
-            return None
-        return backend.kind
-
-    @property
-    def active_cap(self) -> int | None:
-        """The single non-local backend's concurrency cap, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
-        backend = self._single_non_local()
-        return backend.cap if backend is not None else None
-
-    @property
     def active_compute_scratch_dir(self) -> str | None:
-        """The single compute backend's scratch_dir, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        """The single compute backend's scratch_dir, else None.
+
+        TRANSITIONAL — retained through Phase 70 (MKUE-01): feeds the single-cluster agent_push read.
+        """
         backend = self._single_non_local()
         return backend.scratch_dir if isinstance(backend, ComputeBackend) else None
 
     @property
     def active_kube(self) -> "KubeConfig | None":
-        """The single kueue backend's KubeConfig, else None. TRANSITIONAL — removed in Phase 68 (BACK-01)."""
+        """The single kueue backend's KubeConfig, else None.
+
+        TRANSITIONAL — retained through Phase 70 (MKUE-01): feeds the single-cluster kube_staging read.
+        """
         backend = self._single_non_local()
         return backend.kube if isinstance(backend, KueueBackend) else None
 
     @property
     def active_bucket(self) -> "BucketConfig | None":
-        """The single kueue backend's single resolved BucketConfig, else None. TRANSITIONAL — removed in Phase 68 (BACK-01).
+        """The single kueue backend's single resolved BucketConfig, else None.
 
+        TRANSITIONAL — retained through Phase 70 (MKUE-01): feeds the single-cluster s3_staging read.
         Raises when the resolved set has >1 bucket — per-file bucket selection lands in Phase 70
         (MKUE-02); this reduction must NEVER silently pick one.
         """
@@ -574,8 +569,10 @@ class ControlSettings(BaseSettings):
 
     # Phase 67 (REG-04, D-12): the flat cloud-target selector and the flat in-flight window field
     # were REMOVED with no shim. The active target is now derived from the typed backend registry
-    # (`cloud_enabled` gate + the transitional `active_cloud_kind`/`active_cap` accessors above);
-    # the per-backend concurrency cap comes from each backend's `cap` in backends.toml. See D-11/D-12.
+    # (`cloud_enabled` gate + `resolve_backends`/`resolved_non_local_kind` in services/backends.py);
+    # the two transitional dispatch-selector accessors were removed in Phase 68 (BACK-01/D-07) once
+    # every reader resolved through the Backend protocol. The per-backend concurrency cap comes from
+    # each backend's `cap` in backends.toml. See D-11/D-12.
 
     # Phase 50 D-12: how many times control re-drives a push that failed sha256 verification
     # before giving up and marking the file ANALYSIS_FAILED. Bounded (gt=0, lt=20) so a misconfig
@@ -603,8 +600,9 @@ class ControlSettings(BaseSettings):
     # Phase 67 (REG-04, D-12): the flat compute scratch-dir field and the flat S3
     # connection/credential surface (endpoint / bucket / region / addressing-style / access-key /
     # secret-key) were REMOVED with no shim. Compute scratch dir now comes from the compute
-    # backend's `scratch_dir` (transitional `active_compute_scratch_dir`); bucket identity/creds
-    # come from the `[[buckets]]` registry (transitional `active_bucket`). The D-15 GLOBAL S3
+    # backend's `scratch_dir` (`active_compute_scratch_dir`, retained through Phase 70 / MKUE-01);
+    # bucket identity/creds come from the `[[buckets]]` registry (`active_bucket`, retained through
+    # Phase 70 / MKUE-01). The D-15 GLOBAL S3
     # tuning knobs below (presign TTLs / lifecycle / part-size) are NOT per-backend and REMAIN on
     # ControlSettings.
 
@@ -643,7 +641,7 @@ class ControlSettings(BaseSettings):
     # namespace / local-queue / job-image / cpu-request / memory-request / workload-api-version /
     # ca-secret-name / env-configmap-name / env-secret-name / kubeconfig / sa-token) was REMOVED
     # with no shim. Kueue cluster config now lives in each kueue backend's `[kube]` table in
-    # backends.toml (config_backends KubeConfig; transitional `active_kube`). The three
+    # backends.toml (config_backends KubeConfig; `active_kube`, retained through Phase 70 / MKUE-01). The three
     # per-target fail-fast model validators and the S3-endpoint field-validator were removed too —
     # their per-variant equivalents now live on the Plan-01 submodels (KubeConfig / BucketConfig
     # required fields + endpoint validation) and the whole-registry `_validate_registry`
@@ -819,7 +817,8 @@ class AgentSettings(BaseSettings):
     # the compute agent's scratch dir). The SSH host/user identify the static push target;
     # cloud_scratch_dir is the remote landing directory whose path MUST match the control-plane's
     # compute-backend scratch dir (Phase 67: the compute backend's `scratch_dir` in backends.toml,
-    # read control-side via the transitional `active_compute_scratch_dir` accessor). The two
+    # read control-side via the `active_compute_scratch_dir` accessor, retained through Phase 70
+    # / MKUE-01). The two
     # timeouts bracket the transport: push_timeout_sec
     # is the rsync I/O-stall timeout (must stay below the SAQ push_file job net), and
     # push_connect_timeout_sec caps the SSH connect handshake. Operator-provisioned in Phase 51;
