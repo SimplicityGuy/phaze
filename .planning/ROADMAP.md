@@ -1080,7 +1080,12 @@ Plans:
   3. Each cluster has its own LocalQueue reachability probe and a `backend_id`-scoped reconcile, and one cluster's probe/dispatch failure is isolated (per-backend try/except; `is_available()` returns bool, never raises) so it cannot poison the whole drain tick — healthy clusters and local still receive work.
   4. Cross-cluster/cross-bucket staged-object cleanup is scoped to the (backend, bucket) that staged the object, so a spillover re-dispatch never deletes an object another cluster or bucket is still using; the per-bucket lifecycle TTL remains the backstop.
 
-**Plans**: TBD (decomposed at `/gsd:plan-phase 70`)
+**Plans**: 5 plans in 4 waves
+- [ ] 70-01-PLAN.md — Foundation: cloud_job.staging_bucket column + migration 030 (D-01/D-02), pick_bucket selector (D-06), KubeConfig.context field (A1) — additive, non-breaking
+- [ ] 70-02-PLAN.md — MKUE-02: bucket-parameterize s3_staging + record staging_bucket at dispatch (D-06) + presign/delete read the recorded bucket + retire active_bucket
+- [ ] 70-03-PLAN.md — MKUE-01: per-backend kr8s client (retire the token hack, D-04) + thread KubeConfig through kube callers + per-cluster controller probe + active_compute_scratch_dir companion fix (Pitfall 1)
+- [ ] 70-04-PLAN.md — MKUE-03: per-backend drain isolation (D-07) so one flaky cluster can't poison the tick
+- [ ] 70-05-PLAN.md — MKUE-04: clean-before-flip spillover cleanup ordering (D-01/D-03) under the advisory lock
 **Research**: needed — unresolved plan-time schema/resolution questions: (a) `cloud_job` one-row-per-file (mutate `backend_id` in place) vs. one-row-per-(file,backend) for attempt-scoping; (b) `ComputeAgentBackend.is_available()`/dispatch resolving its specific agent via `agent_ref`→`Agent.id` (replacing the "most-recently-seen" heuristic); plus a live-cluster verify of kr8s auth per distinct kubeconfig/context and cross-cluster stale-Job cleanup ordering (`/gsd:plan-phase --research-phase 70`).
 **PR**: own worktree branch — never a direct commit to `main`.
 
