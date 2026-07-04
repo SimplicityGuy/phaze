@@ -16,7 +16,7 @@
 
 | New/Modified File | Role | Data Flow | Closest Analog | Match Quality |
 |-------------------|------|-----------|----------------|---------------|
-| `src/phaze/services/backends.py` *(NEW)* | service (protocol + 3 impls + `resolve_backends`) | dispatch / event-driven | `services/cloud_staging.py` (`_stage_file_to_s3`) + `tasks/push.py` + `tasks/submit_cloud_job.py`/`services/kube_staging.py` + `process_file` | exact (thin adapter over these bodies) |
+| `src/phaze/services/backends.py` *(NEW)* | service (protocol + 3 impls + `resolve_backends`) | dispatch / event-driven | `services/cloud_staging.py` (`_stage_file_to_s3`) + `release_awaiting_cloud.py::_enqueue_push_file` (compute enqueue, control-side — NOT `tasks/push.py`) + `tasks/submit_cloud_job.py`/`services/kube_staging.py` + `process_file` | exact (thin adapter over these bodies) |
 | `alembic/versions/029_add_cloud_job_backend_id.py` *(NEW)* | migration | DDL (additive) | `alembic/versions/026_add_cloud_job_kube_columns.py` | exact |
 | `tests/analyze/services/test_backends.py` *(NEW)* | test (protocol unit + D-02 invariant) | request-response / CRUD | `tests/analyze/core/test_staging_cron.py` + `tests/_queue_fakes.py` + `tests/kube_fakes.py` | exact (same harness) |
 | `tests/analyze/core/test_dispatch_snapshot.py` *(NEW)* | test (D-01 golden matrix) | characterization | `tests/analyze/core/test_staging_cron.py` (side-effect assertions) | exact (same harness) |
@@ -25,7 +25,8 @@
 | `src/phaze/routers/agent_push.py` *(MOD `report_pushed`)* | controller (callback) | request-response | *self* — add compute `cloud_job` terminal write (D-08) | in-place refactor |
 | `src/phaze/config.py` *(MOD)* | config | — | *self* — remove 2 accessors, keep+re-tag 3 (D-09), relocate `_single_non_local` raise | in-place refactor |
 | `src/phaze/models/cloud_job.py` *(MOD)* | model | — | *self* — add nullable `backend_id`, make `s3_key` nullable (D-08) | in-place refactor |
-| `src/phaze/tasks/push.py` *(MOD — body re-homed)* | task (rsync push) | file-I/O / transport | *self* → becomes `ComputeAgentBackend.dispatch` enqueue leg | body re-home |
+| `src/phaze/tasks/release_awaiting_cloud.py::_enqueue_push_file` *(control-side enqueue leg re-homed)* | control task (enqueue) | dispatch / event-driven | *self* → becomes `ComputeAgentBackend.dispatch` enqueue leg | body re-home |
+| `src/phaze/tasks/push.py` *(UNTOUCHED — do NOT modify)* | agent-side task (rsync push) | file-I/O / transport | n/a — agent-side, Postgres-free | **NOT re-homed.** push.py MUST NOT import `phaze.database`/`phaze.models.*`/`sqlalchemy` (D-25 import boundary, enforced by `tests/test_task_split.py`) — it cannot write a `cloud_job` row. The control-side `_enqueue_push_file` (above) is the actual `dispatch` enqueue body. |
 | `src/phaze/routers/pipeline.py` + `routers/agent_s3.py` + `tasks/controller.py` *(MOD — rewire)* | controller/config readers | — | *self* — rewire `active_cloud_kind` readers to registry-derived (D-09) | in-place refactor |
 
 ---

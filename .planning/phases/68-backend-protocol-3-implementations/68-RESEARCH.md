@@ -280,9 +280,12 @@ def downgrade() -> None:
 | A3 | Compute `cloud_job` needs a terminalization seam to keep the invariant true in production | Q2 | If left un-terminalized, prod `in_flight_count` diverges (harmless in 68 since not consulted, but tech-debt to 69) |
 | A4 | Migration head is `028`; next is `029` | Migration | Verified via `ls alembic/versions/` — LOW risk |
 
-## Open Questions
+## Open Questions (RESOLVED 2026-07-03 at plan-time — see 68-CONTEXT.md "Plan-time resolutions")
 
-### Q1 — Which `active_*` accessors does Phase 68 remove? (TOP contradiction)
+> **RESOLVED:** Q1 → **D-09**, Q2 → **D-08**, Q3 → **D-10** (68-CONTEXT.md). The plans implement all
+> three. Retained below for the reasoning that led to each resolution.
+
+### Q1 — Which `active_*` accessors does Phase 68 remove? (TOP contradiction) — RESOLVED: D-09 (remove only the 2 dispatch selectors; keep+re-tag the 3 config-value accessors to Phase 70)
 - **What we know:** D-07 names `active_cloud_kind` (config.py:481) + `active_cap` (config.py:489). But
   `config.py` tags **five** accessors "removed in Phase 68 (BACK-01)": also `active_compute_scratch_dir`
   (:495, read at agent_push.py:122), `active_kube` (:501, read at kube_staging.py:84), `active_bucket`
@@ -305,7 +308,7 @@ def downgrade() -> None:
   real Wave work, not just deleting two properties. **Planner must confirm scope and resolve the
   config.py docstring/D-07 discrepancy.**
 
-### Q2 — How is the compute `cloud_job` row terminalized? (sharpest correctness edge)
+### Q2 — How is the compute `cloud_job` row terminalized? (sharpest correctness edge) — RESOLVED: D-08 (write + terminalize live: nullable s3_key, dispatch writes row in-txn, report_pushed callback terminalizes)
 - **What we know:** Kueue `cloud_job` is terminalized by `reconcile_cloud_jobs` (→SUCCEEDED) and by
   `report_uploaded`/submit chain. Compute has **no** `cloud_job` today; its FileState leaves the window
   via `put_analysis` (→ANALYZED) or `report_analysis_failed`. Design §5 says `put_analysis` is
@@ -323,7 +326,7 @@ def downgrade() -> None:
   assertion over constructed states in Phase 68 and explicitly defer production terminalization wiring to
   Phase 69 with a documented `truth`. Option (b) is more faithful to "lay + prove, don't flip" (D-02).
 
-### Q3 — In-flight `CloudJobStatus` set (Claude's Discretion)
+### Q3 — In-flight `CloudJobStatus` set (Claude's Discretion) — RESOLVED: D-10 ({UPLOADING, UPLOADED, SUBMITTED, RUNNING})
 Recommend non-terminal = {UPLOADING, UPLOADED, SUBMITTED, RUNNING}; terminal = {SUCCEEDED, FAILED}.
 For compute rows (no S3/submit lifecycle), pick a single in-flight status (e.g. SUBMITTED or RUNNING)
 that the terminalization seam from Q2 clears. Confirm at plan-time.
