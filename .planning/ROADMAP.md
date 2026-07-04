@@ -231,7 +231,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 2/5 | In Progress|  |
+| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 3/5 | In Progress|  |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1092,7 +1092,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 70-03-PLAN.md — MKUE-01: per-backend kr8s client (retire the token hack, D-04) + thread KubeConfig through kube callers + per-cluster controller probe + active_compute_scratch_dir companion fix (Pitfall 1)
+- [x] 70-03-PLAN.md — MKUE-01: per-backend kr8s client (retire the token hack, D-04) + thread KubeConfig through kube callers + per-cluster controller probe + active_compute_scratch_dir companion fix (Pitfall 1)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
