@@ -9,6 +9,7 @@ agent/pod do in production; the control plane never touches file bytes (DIST-01/
 
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -80,6 +81,42 @@ def s3_env(moto_s3_server: str, monkeypatch: pytest.MonkeyPatch, backends_toml_e
     boto3.client("s3", endpoint_url=moto_s3_server, region_name="us-east-1", **_CREDS).create_bucket(Bucket=_BUCKET)
     yield moto_s3_server
     get_settings.cache_clear()
+
+
+def test_pick_bucket_is_order_independent_via_sorted() -> None:
+    """pick_bucket sorts the id list, so registry/TOML ordering never changes the choice (D-06)."""
+    fid = uuid.uuid4()
+    assert s3_staging.pick_bucket(fid, ["b", "a", "c"]) == s3_staging.pick_bucket(fid, ["c", "b", "a"])
+
+
+def test_pick_bucket_matches_stable_sha256_formula_not_salted_hash() -> None:
+    """pick_bucket is restart-stable: it equals the hand-computed sha256-of-UUID-bytes mod (D-06).
+
+    Computing the expected index by hand proves the selector uses a stable digest of the UUID bytes,
+    NOT Python's per-process salted ``hash()`` (which would vary across a simulated restart).
+    """
+    fid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    bucket_ids = ["bucket-x", "bucket-a", "bucket-m"]
+    ordered = sorted(bucket_ids)
+    digest = hashlib.sha256(fid.bytes).digest()
+    expected = ordered[int.from_bytes(digest, "big") % len(ordered)]
+    assert s3_staging.pick_bucket(fid, bucket_ids) == expected
+    # Stable across repeated calls (a "restart" cannot change a pure sha256-of-bytes result).
+    assert s3_staging.pick_bucket(fid, bucket_ids) == expected
+
+
+def test_pick_bucket_empty_set_raises_s3_staging_error() -> None:
+    """An empty bound bucket set is an operator misconfiguration -- fail loud (D-06)."""
+    with pytest.raises(s3_staging.S3StagingError):
+        s3_staging.pick_bucket(uuid.uuid4(), [])
+
+
+def test_pick_bucket_always_returns_a_member_of_the_set() -> None:
+    """Over many random UUIDs, every chosen id is a member of the bound bucket set (D-06)."""
+    bucket_ids = ["b-1", "b-2", "b-3"]
+    members = set(bucket_ids)
+    for _ in range(500):
+        assert s3_staging.pick_bucket(uuid.uuid4(), bucket_ids) in members
 
 
 def test_staged_object_key_is_deterministic_and_file_id_scoped() -> None:
