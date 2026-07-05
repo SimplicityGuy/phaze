@@ -7,12 +7,13 @@ env var. `get_settings()` is the single dispatch point; module-level
 `from phaze.config import settings` call sites.
 """
 
+from collections import Counter
 from enum import StrEnum
 from functools import lru_cache
 import os
 from pathlib import Path
 import tomllib
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values
@@ -28,10 +29,6 @@ from phaze.config_backends import (
     _default_local_registry,
     _read_secret_file,
 )
-
-
-if TYPE_CHECKING:
-    from phaze.config_backends import KubeConfig
 
 
 logger = structlog.get_logger(__name__)
@@ -429,6 +426,14 @@ class ControlSettings(BaseSettings):
         """
         if not self.backends:
             raise ValueError("backend registry resolved to empty — refusing to start (REG-04)")
+        # WR-03: fail fast on duplicate [[buckets]] ids. `bucket_by_id` (and s3_staging.resolve_bucket_config)
+        # build a `{b.id: b}` dict that silently collapses duplicates to whichever entry appears LAST in the
+        # TOML list — with distinct endpoint_url/creds per entry, a copy-paste id typo would then non-
+        # deterministically redirect every presign/cleanup for that id to the wrong bucket. Surface it at boot
+        # like every other registry invariant here (REG-05).
+        dupes = sorted(bid for bid, count in Counter(b.id for b in self.buckets).items() if count > 1)
+        if dupes:
+            raise ValueError(f"duplicate bucket ids in registry: {dupes} — each [[buckets]] id must be unique (REG-05)")
         bucket_by_id = {b.id: b for b in self.buckets}
         cluster_specific_refs: dict[str, list[str]] = {}
         for be in self.backends:
@@ -460,62 +465,37 @@ class ControlSettings(BaseSettings):
         """
         return any(backend.kind != "local" for backend in self.backends)
 
-    def _single_non_local(self) -> "BackendConfig | None":
-        """Return the sole non-local backend, or None when all-local.
-
-        TRANSITIONAL — retained through Phase 70 (MKUE-01): the ≤1-non-local reduction the retained
-        value accessors below read through. Raises when >1 non-local backend exists —
-        multi-backend dispatch lands in Phase 69 (SCHED); this reduction must NEVER silently pick one.
-        The boot-time fail-fast is enforced by ``resolve_backends`` (services/backends.py); this raise
-        is kept as defense-in-depth for the value accessors.
-        """
-        non_local = [backend for backend in self.backends if backend.kind != "local"]
-        if not non_local:
-            return None
-        if len(non_local) > 1:
-            raise ValueError(
-                f"multi-backend dispatch lands in Phase 69 (SCHED): {len(non_local)} non-local backends "
-                f"{[backend.id for backend in non_local]} are configured, but the transitional accessors reduce only a ≤1-non-local registry"
-            )
-        return non_local[0]
-
     @property
     def active_compute_scratch_dir(self) -> str | None:
         """The single compute backend's scratch_dir, else None.
 
-        TRANSITIONAL — retained through Phase 70 (MKUE-01): feeds the single-cluster agent_push read.
+        Phase 70 (MKUE-01, Pitfall 1): reduces over the ≤1 COMPUTE backend (``kind == "compute"``, still
+        ≤1 until PROV-01), NOT the retired ≤1-non-local reduction. With the milestone's target deploy
+        (local + N-Kueue + 1-compute) there are ≥2 non-local backends, so the old ``_single_non_local``
+        reduction raised and 500'd the ``/pushed`` callback (agent_push reads this accessor). This is a
+        scratch_dir-resolution change ONLY, distinct from the deferred D-05 compute agent_ref fix.
+        Fail-fast naming the ids if >1 compute backend exists (genuinely-ambiguous PROV-01 territory,
+        unreachable under D-05's ≤1-compute invariant), mirroring ``resolved_non_local_kind``.
         """
-        backend = self._single_non_local()
+        compute = [backend for backend in self.backends if backend.kind == "compute"]
+        if not compute:
+            return None
+        if len(compute) > 1:
+            raise ValueError(
+                f"multiple compute backends {[backend.id for backend in compute]} are configured, but "
+                f"active_compute_scratch_dir reduces a single compute backend (multi-compute lands in PROV-01)"
+            )
+        backend = compute[0]
         return backend.scratch_dir if isinstance(backend, ComputeBackend) else None
 
-    @property
-    def active_kube(self) -> "KubeConfig | None":
-        """The single kueue backend's KubeConfig, else None.
+    # Phase 70 (MKUE-01): ``active_kube`` is RETIRED. Each Kueue backend's ``KubeConfig`` is threaded
+    # per-call from ``KueueBackend.config.kube`` into every ``kube_staging`` verb (D-04) -- one control
+    # plane dispatches to N distinct clusters, so there is no single module-global kube read.
 
-        TRANSITIONAL — retained through Phase 70 (MKUE-01): feeds the single-cluster kube_staging read.
-        """
-        backend = self._single_non_local()
-        return backend.kube if isinstance(backend, KueueBackend) else None
-
-    @property
-    def active_bucket(self) -> "BucketConfig | None":
-        """The single kueue backend's single resolved BucketConfig, else None.
-
-        TRANSITIONAL — retained through Phase 70 (MKUE-01): feeds the single-cluster s3_staging read.
-        Raises when the resolved set has >1 bucket — per-file bucket selection lands in Phase 70
-        (MKUE-02); this reduction must NEVER silently pick one.
-        """
-        backend = self._single_non_local()
-        if not isinstance(backend, KueueBackend):
-            return None
-        bucket_by_id = {bucket.id: bucket for bucket in self.buckets}
-        resolved = [bucket_by_id[bid] for bid in backend.buckets if bid in bucket_by_id]
-        if len(resolved) > 1:
-            raise ValueError(
-                f"per-file bucket selection lands in Phase 70 (MKUE-02): kueue backend {backend.id!r} resolves to "
-                f"{len(resolved)} buckets, but the transitional accessor reduces only a single-bucket set"
-            )
-        return resolved[0] if resolved else None
+    # Phase 70 (MKUE-02): ``active_bucket`` is RETIRED. Per-file bucket selection is now deterministic
+    # via ``s3_staging.pick_bucket`` at dispatch time; the chosen id is recorded on
+    # ``cloud_job.staging_bucket`` and every presign/cleanup call site READS that recorded value and
+    # resolves it via ``s3_staging.resolve_bucket_config`` (never a module-global bucket read).
 
     def log_effective_registry(self) -> None:
         """Emit a secret-free id/kind/rank/cap projection of the resolved registry at startup (REG-04, Pitfall 5).

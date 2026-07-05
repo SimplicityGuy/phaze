@@ -33,6 +33,7 @@ narrow, in-flight K8s reconcile ONLY (mirror the ``controller.py`` cron-scope gu
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
+    from phaze.config_backends import KubeConfig
 
 
 logger = structlog.get_logger(__name__)
@@ -95,8 +97,8 @@ def _workload_condition(workload: Any, cond_type: str) -> dict[str, Any] | None:
     return None
 
 
-async def _job_gone(name: str) -> bool:
-    """Return whether the Job ``name`` is gone (deleted) -- ``get_job`` returns None or 404s.
+async def _job_gone(name: str, kube: KubeConfig) -> bool:
+    """Return whether the Job ``name`` is gone (deleted) on ``kube``'s cluster -- ``get_job`` returns None or 404s.
 
     The re-drive race guard (D-08): after ``delete_job`` we confirm the prior Job is GONE before
     enqueuing the fresh ``submit_cloud_job``. If it is still terminating, the deterministic-name
@@ -105,7 +107,7 @@ async def _job_gone(name: str) -> bool:
     (the desired end state); the fake-kube seam returns None.
     """
     try:
-        job = await kube_staging.get_job(name)
+        job = await kube_staging.get_job(name, kube)
     except kr8s.NotFoundError:
         return True
     return job is None
@@ -124,8 +126,8 @@ async def _enqueue_resubmit(ctx: dict[str, Any], file_id: uuid.UUID) -> None:
     await queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
 
 
-async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str, tally: dict[str, int]) -> None:
-    """Succeeded Job: record SUCCEEDED + COMMIT, THEN delete the Job (D-04). No S3 delete, no result.
+async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str, tally: dict[str, int], kube: KubeConfig) -> None:
+    """Succeeded Job: record SUCCEEDED + COMMIT, THEN delete the Job on ``kube``'s cluster (D-04). No S3 delete, no result.
 
     The analysis result already landed via the ``/api/internal/agent/*`` callback (KSUBMIT-03), which
     also deleted the staged S3 object inline (D-05) -- so the success path makes ZERO S3 calls and
@@ -136,7 +138,7 @@ async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str,
     cloud_job.inadmissible = False  # CR-01: a transiently-Inadmissible row that then succeeds must clear the alert flag.
     cloud_job.cloud_phase = CloudPhase.FINISHED.value  # D-04: admission progression terminus (orthogonal to the fault flag).
     await session.commit()
-    await kube_staging.delete_job(name)
+    await kube_staging.delete_job(name, kube)
     tally["succeeded"] += 1
 
 
@@ -147,13 +149,19 @@ async def _handle_no_callback_terminal(
     name: str,
     cap: int,
     tally: dict[str, int],
+    kube: KubeConfig,
 ) -> None:
     """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill back to AWAITING_CLOUD at cap (D-08/SCHED-03).
 
     At cap (``attempts + 1 > cloud_submit_max_attempts``) the ordering is the load-bearing terminal
-    sequence (D-04): record cloud_job FAILED + flip the FileRecord back to AWAITING_CLOUD + COMMIT ->
-    ``delete_staged_object`` (D-05) -> ``delete_job``. The file is NOT hard-failed on cloud flakiness
-    (SCHED-03): because ``cloud_job.attempts`` already equals ``cap``, the next drain tick's
+    sequence (MKUE-04 clean-before-flip, D-01/D-03/D-04): capture the OLD (backend_id, staging_bucket)
+    identity, ``delete_staged_object`` the old object UNDER the still-held per-row advisory lock (before
+    the flip commit) -> record cloud_job FAILED + clear ``staging_bucket`` + flip the FileRecord back to
+    AWAITING_CLOUD + COMMIT (which releases the lock) -> ``delete_job`` (post-commit). Deleting the old
+    object before the commit that makes the file a drain candidate closes Pitfall 9: a concurrent drain
+    tick cannot re-dispatch + re-stage a new object under the same ``file_id`` key until this txn commits,
+    so the trailing delete can never destroy the new owner's object. The file is NOT hard-failed on cloud
+    flakiness (SCHED-03): because ``cloud_job.attempts`` already equals ``cap``, the next drain tick's
     ``select_backend`` excludes every cloud backend (``attempts >= cap``) and routes the file to the local
     safety net -- ANALYSIS_FAILED then comes only from a local failure (D-04), never from this branch.
 
@@ -175,13 +183,35 @@ async def _handle_no_callback_terminal(
         # guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
         # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
         # ``updated_at`` on the flip gives a fresh staleness clock (desirable).
+        #
+        # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
+        # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
+        # (acquired at the TOP of this ``KueueBackend.reconcile`` per-row unit, backends.py) -- i.e. BEFORE
+        # the ``session.commit()`` that flips the file to AWAITING_CLOUD and thus RELEASES the lock, making
+        # the file a drain candidate. The re-dispatch reuses the SAME ``file_id``-scoped S3 key; if D-06
+        # lands the re-stage on the same bucket, a delete that ran AFTER the lock released would race the
+        # new stage and destroy the object the new pod needs. Deleting before the flip guarantees the old
+        # object is gone before any re-stage can occur (the drain holds the same lock across its whole
+        # candidate claim, so it physically cannot pick up the file until this txn commits).
+        #
+        # Capture the OLD identity into locals BEFORE any mutation, resolve the RECORDED staging bucket
+        # (never re-derive -- Pitfall 4/T-70-04-04), and delete it UNDER the lock. The delete is best-effort
+        # (D-03): ``contextlib.suppress(Exception)`` so a slow/failed/absent S3 delete never blocks the spill
+        # nor pins the lock beyond one network timeout (the per-bucket TTL is the backstop). A bucketless row
+        # (no staged object) resolves to None and skips the delete cleanly.
+        cfg = cast("ControlSettings", get_settings())
+        old_bucket_id = cloud_job.staging_bucket  # captured pre-mutation -- the authoritative old identity.
+        bucket = s3_staging.resolve_bucket_config(cfg, old_bucket_id)
+        with contextlib.suppress(Exception):
+            if bucket is not None:
+                await s3_staging.delete_staged_object(file_id, bucket)
         cloud_job.status = CloudJobStatus.FAILED.value
         cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit.
         cloud_job.cloud_phase = None  # WR-01: terminal row must not inflate the admission-state "Running" tile.
+        cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
-        await session.commit()
-        await s3_staging.delete_staged_object(file_id)
-        await kube_staging.delete_job(name)
+        await session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
+        await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
         tally["failed"] += 1
         logger.warning(
             "reconcile_cloud_jobs: submit cap reached -> spill back to AWAITING_CLOUD", file_id=str(file_id), attempt=next_attempt, cap=cap
@@ -189,8 +219,8 @@ async def _handle_no_callback_terminal(
         return
 
     # Under cap -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
-    await kube_staging.delete_job(name)
-    if not await _job_gone(name):
+    await kube_staging.delete_job(name, kube)
+    if not await _job_gone(name, kube):
         logger.info("reconcile_cloud_jobs: prior Job still terminating; deferring re-drive", file_id=str(file_id), kueue_workload=name)
         return
     cloud_job.attempts = next_attempt
@@ -202,11 +232,17 @@ async def _handle_no_callback_terminal(
     logger.info("reconcile_cloud_jobs: re-driving submit_cloud_job", file_id=str(file_id), attempt=next_attempt)
 
 
-async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, cap: int, tally: dict[str, int]) -> None:
-    """Reconcile a single in-flight ``cloud_job`` row against its Job + Kueue Workload."""
+async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, cap: int, tally: dict[str, int], kube: KubeConfig) -> None:
+    """Reconcile a single in-flight ``cloud_job`` row against its Job + Kueue Workload on ``kube``'s cluster.
+
+    Phase 70 (MKUE-01/D-04): ``kube`` is THIS row's owning backend ``KubeConfig`` (threaded from
+    ``KueueBackend.reconcile``), so every ``get_job`` / ``get_workload_for`` / ``delete_job`` targets the
+    file's own cluster.
+    """
     name = cloud_job.kueue_workload
     if not name:
         logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
+        await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
         return
 
     # WR-01: a vanished Job (real kube 404 -> NotFoundError; fake seam -> None) on an in-flight row is a
@@ -215,32 +251,33 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     # and skipped every tick -- leaving the row stuck in-flight forever (e.g. a Failed Job GC'd by
     # ttlSecondsAfterFinished before reconcile read it, or an enqueue that raised after the attempt commit).
     try:
-        job = await kube_staging.get_job(name)
+        job = await kube_staging.get_job(name, kube)
     except kr8s.NotFoundError:
         job = None
     if job is None:
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally)
+        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
     # 1. Job terminal signals first -- the Job is the source of truth for succeeded-vs-failed.
     if _job_counter(job, "succeeded") >= 1 or _job_has_true_condition(job, "Complete"):
-        await _record_success(session, cloud_job, name, tally)
+        await _record_success(session, cloud_job, name, tally, kube)
         return
     if _job_counter(job, "failed") >= 1 or _job_has_true_condition(job, "Failed"):
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally)
+        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
     # 2. Not terminal -> read the paired Kueue Workload for admission state (D-02 by job-uid).
     uid = str(getattr(getattr(job, "metadata", None), "uid", "") or "")
-    workload = await kube_staging.get_workload_for(uid) if uid else None
+    workload = await kube_staging.get_workload_for(uid, kube) if uid else None
     if workload is None:
         # Admission state unreadable this tick (label miss + owner-ref miss) -> stay in-flight, no-op.
+        await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
         return
 
     # Evicted/deactivated -> no-callback terminal (re-drive under cap).
     evicted = _workload_condition(workload, _TYPE_EVICTED)
     if evicted is not None and evicted.get("status") == "True":
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally)
+        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
     quota_reserved = _workload_condition(workload, _TYPE_QUOTA_RESERVED)
@@ -249,7 +286,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_INADMISSIBLE:
         if not cloud_job.inadmissible:
             cloud_job.inadmissible = True
-            await session.commit()
+        await session.commit()  # WR-01: commit unconditionally (no-op when already flagged) to release the lock.
         tally["inadmissible"] += 1
         logger.warning(
             "reconcile_cloud_jobs: Workload Inadmissible -- K8s Jobs not admitting; check LocalQueue config",
@@ -261,15 +298,12 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
 
     # Healthy Pending: silent hold, waits indefinitely -- no cap, no alert (D-07, Pitfall 3).
     if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_PENDING:
-        dirty = False
         if cloud_job.inadmissible:  # CR-01: the misconfig was fixed -- Workload is back to a healthy quota wait.
             cloud_job.inadmissible = False
-            dirty = True
         if cloud_job.cloud_phase != CloudPhase.QUEUED_BEHIND_QUOTA.value:  # D-04: behind quota, waiting for admission.
             cloud_job.cloud_phase = CloudPhase.QUEUED_BEHIND_QUOTA.value
-            dirty = True
-        if dirty:
-            await session.commit()
+        # WR-01: commit unconditionally (a clean no-op when neither field changed) to release the per-row lock.
+        await session.commit()
         tally["pending"] += 1
         return
 
@@ -287,11 +321,13 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
             cloud_job.status = CloudJobStatus.RUNNING.value
             cloud_job.inadmissible = False  # CR-01: an admitted Workload is no longer Inadmissible -- clear the alert.
             cloud_job.cloud_phase = next_phase
-            await session.commit()
+        # WR-01: commit unconditionally (a clean no-op when already RUNNING in the target phase) to release the lock.
+        await session.commit()
         tally["running"] += 1
         return
 
     # Unknown in-flight condition set -> leave the row untouched for a later tick.
+    await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
 
 
 async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:

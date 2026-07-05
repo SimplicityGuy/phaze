@@ -28,17 +28,41 @@ Mirrors the ``cloud_staging.stage_file_to_s3`` producer discipline (``__future__
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
+from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.services import kube_staging, s3_staging
 
 
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
+    from phaze.config_backends import KubeConfig
+
+
 logger = structlog.get_logger(__name__)
+
+
+def _resolve_backend_kube(settings: ControlSettings, backend_id: str | None) -> KubeConfig:
+    """Resolve THIS file's owning kueue backend ``KubeConfig`` from ``cloud_job.backend_id`` (MKUE-01).
+
+    The drain stamped ``cloud_job.backend_id`` at dispatch, so a submit resolves its target cluster from
+    the recorded id -- NEVER a module-global ``active_kube``. A submit with no ``cloud_job`` row / no
+    matching kueue backend is a misconfiguration: fail loud (``KubeStagingError``) rather than POST to an
+    arbitrary cluster.
+    """
+    if backend_id:
+        for entry in settings.backends:
+            if entry.id == backend_id and entry.kind == "kueue" and getattr(entry, "kube", None) is not None:
+                return cast("KubeConfig", entry.kube)
+    raise kube_staging.KubeStagingError(
+        f"submit_cloud_job: no kueue backend resolves cloud_job.backend_id={backend_id!r} (a submit with no owning backend is a misconfiguration)"
+    )
 
 
 def submit_cloud_job_key(file_id: uuid.UUID) -> str:
@@ -65,11 +89,19 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
     is coerced to ``uuid.UUID`` once so the seam + ORM see a real UUID.
     """
     fid = file_id if isinstance(file_id, uuid.UUID) else uuid.UUID(str(file_id))
+    cfg = cast("ControlSettings", get_settings())
 
-    # One fast kube POST. The deterministic name + 409->refresh inside the seam makes a duplicate
-    # submit safe (no duplicate Job); on a non-409 server error KubeStagingError surfaces and nothing
-    # is written below -- a clean retry leaves no orphan cloud_job row.
-    name, _uid = await kube_staging.submit_job(fid)
+    # MKUE-01: resolve THIS file's owning backend cluster from the recorded cloud_job.backend_id BEFORE
+    # the POST (the drain stamped it at dispatch). Read it in a short session, resolve the KubeConfig,
+    # then POST outside the txn so no DB connection is held across the kube call.
+    async with ctx["async_session"]() as session:
+        backend_id = (await session.execute(select(CloudJob.backend_id).where(CloudJob.file_id == fid))).scalar_one_or_none()
+    kube = _resolve_backend_kube(cfg, backend_id)
+
+    # One fast kube POST against the resolved cluster. The deterministic name + 409->refresh inside the
+    # seam makes a duplicate submit safe (no duplicate Job); on a non-409 server error KubeStagingError
+    # surfaces and nothing is written below -- a clean retry leaves no orphan cloud_job row.
+    name, _uid = await kube_staging.submit_job(fid, kube)
 
     async with ctx["async_session"]() as session:
         # Idempotent upsert against the unique file_id FK (mirrors the cloud_staging / scheduling_ledger

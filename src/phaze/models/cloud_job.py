@@ -96,6 +96,12 @@ class CloudJob(TimestampMixin, Base):
     # live so there are ~zero rows to migrate, and a migration cannot know a registry entry id; new rows
     # stamp it going forward. Plain free-text (no CHECK/enum).
     backend_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Phase 70 (D-01/D-06): records which ``BucketConfig.id`` staged the current object (MKUE-04).
+    # NULLABLE with NO backfill -- the a1/k8s paths were never deployed live (~zero rows) and a
+    # migration cannot know a per-file bucket choice; new rows stamp it going forward. Plain
+    # free-text (no CHECK/enum). The recorded value is AUTHORITATIVE -- presign/cleanup READ it,
+    # never re-derive. ``unique(file_id)`` (L72) is preserved -- cloud_job stays one-row-per-file (D-02).
+    staging_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     __table_args__ = (
         CheckConstraint(

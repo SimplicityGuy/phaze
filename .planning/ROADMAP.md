@@ -25,12 +25,13 @@
 - [x] **Phase 69: Tiered Drain Scheduler** — rank-first eligible dispatch per file, per-backend `cap`, spill-when-full, offline→next-eligible re-dispatch with black-hole guard, stateless equal-rank tie-break, single-recovery-owner per kind; the first behavior-changing phase (SCHED-01..05) — **research flag** (completed 2026-07-04)
 
   **Plans:** 4 plans, 3 waves
+
   - [x] 69-01-PLAN.md — Selection foundation: `cloud_spill_to_local_after_seconds` knob + pure `select_backend` policy (rank-first, staleness D-01/D-03, attempt-exclusion D-04, tie-break SCHED-04) + unit suites [Wave 1]
   - [x] 69-02-PLAN.md — Drain rewire: remove >1-non-local boot guard + snapshot-once + per-candidate `select_backend` dispatch under the single advisory lock + retire `get_cloud_window_count` (SCHED-01/02) [Wave 2]
   - [x] 69-03-PLAN.md — Reconcile: per-row shared advisory lock (cap-safe) + per-backend reconcile dispatch + at-cap spill-back to AWAITING_CLOUD (SCHED-02/03/05) [Wave 3]
   - [x] 69-04-PLAN.md — Single-recovery-owner ledger guard + compute/kueue callback spill to AWAITING_CLOUD (SCHED-03/05) [Wave 3]
   - [x] 69-05-PLAN.md — Gap closure (CR-01): `FileState.LOCAL_ANALYZING` + `LocalBackend.dispatch` flips out of AWAITING_CLOUD (stops cross-backend double-dispatch) + WR-01 honest return (SCHED-01/03) [Wave 1]
-- [ ] **Phase 70: Multi-Kueue (N Clusters)** — N concurrently-dispatched Kueue clusters, each staging to its REG-05-assigned bucket set (DIST-01 preserved), per-cluster probe + `backend_id`-scoped reconcile with per-backend failure isolation, per-(backend,bucket) cleanup (MKUE-01..04) — **research flag**
+- [x] **Phase 70: Multi-Kueue (N Clusters)** — N concurrently-dispatched Kueue clusters, each staging to its REG-05-assigned bucket set (DIST-01 preserved), per-cluster probe + `backend_id`-scoped reconcile with per-backend failure isolation, per-(backend,bucket) cleanup (MKUE-01..04) — **research flag** (completed 2026-07-04)
 - [ ] **Phase 71: Deployment, Config, Docs & N-Lane UI** — N registry-derived per-backend lanes (available/offline, in-flight/cap, rank) read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + operator runbook/config docs incl. the `cloud_target`→`backends` migration (BEUI-01..03)
 
 <details>
@@ -230,7 +231,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 67. Backend Registry & Config Model | 2026.7.1 | 6/6 | Complete    | 2026-07-04 |
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 0/TBD | Not started | - |
+| 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1080,7 +1081,24 @@ Plans:
   3. Each cluster has its own LocalQueue reachability probe and a `backend_id`-scoped reconcile, and one cluster's probe/dispatch failure is isolated (per-backend try/except; `is_available()` returns bool, never raises) so it cannot poison the whole drain tick — healthy clusters and local still receive work.
   4. Cross-cluster/cross-bucket staged-object cleanup is scoped to the (backend, bucket) that staged the object, so a spillover re-dispatch never deletes an object another cluster or bucket is still using; the per-bucket lifecycle TTL remains the backstop.
 
-**Plans**: TBD (decomposed at `/gsd:plan-phase 70`)
+**Plans**: 5 plans in 4 waves
+**Wave 1**
+
+- [x] 70-01-PLAN.md — Foundation: cloud_job.staging_bucket column + migration 030 (D-01/D-02), pick_bucket selector (D-06), KubeConfig.context field (A1) — additive, non-breaking
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 70-02-PLAN.md — MKUE-02: bucket-parameterize s3_staging + record staging_bucket at dispatch (D-06) + presign/delete read the recorded bucket + retire active_bucket
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 70-03-PLAN.md — MKUE-01: per-backend kr8s client (retire the token hack, D-04) + thread KubeConfig through kube callers + per-cluster controller probe + active_compute_scratch_dir companion fix (Pitfall 1)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 70-04-PLAN.md — MKUE-03: per-backend drain isolation (D-07) so one flaky cluster can't poison the tick
+- [x] 70-05-PLAN.md — MKUE-04: clean-before-flip spillover cleanup ordering (D-01/D-03) under the advisory lock
+
 **Research**: needed — unresolved plan-time schema/resolution questions: (a) `cloud_job` one-row-per-file (mutate `backend_id` in place) vs. one-row-per-(file,backend) for attempt-scoping; (b) `ComputeAgentBackend.is_available()`/dispatch resolving its specific agent via `agent_ref`→`Agent.id` (replacing the "most-recently-seen" heuristic); plus a live-cluster verify of kr8s auth per distinct kubeconfig/context and cross-cluster stale-Job cleanup ordering (`/gsd:plan-phase --research-phase 70`).
 **PR**: own worktree branch — never a direct commit to `main`.
 

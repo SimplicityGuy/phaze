@@ -79,7 +79,7 @@ Use frozen SHAs (not just tags) for all hooks. Required hooks:
 
 ## Testing
 
-- Minimum **85% code coverage** required
+- Minimum **90% code coverage** required
 - Upload coverage to Codecov with service-specific flags
 - Codecov config: precision 2, round down, range 70-100%, project target auto with 1% threshold, patch target 80% with 5% threshold
 

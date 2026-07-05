@@ -2,7 +2,7 @@
 
 ``scripts/coverage_floor.py`` is a CI-load-bearing script: it runs inside ``just coverage-combine``
 on the COMBINED ``coverage.json`` and fails the required check if any tracked ``phaze/**`` module
-falls below the uniform 85% floor. Because it gates merges, it gets its own tests -- the same
+falls below the uniform 90% floor. Because it gates merges, it gets its own tests -- the same
 precedent as ``scripts/classify-changed-files.sh`` / ``tests/shared/test_change_gate.py`` (Phase 63).
 
 These tests write synthetic ``coverage.json`` fixtures into ``tmp_path``, ``chdir`` into it, and
@@ -54,7 +54,7 @@ def _write_coverage_json(tmp_path: Path, files: dict[str, dict[str, float]]) -> 
 
 
 def test_sub_floor_module_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """A module below 85% -> exit 1 AND its path is reported on stdout (case 1)."""
+    """A module below 90% -> exit 1 AND its path is reported on stdout (case 1)."""
     module = _load_floor_module()
     _write_coverage_json(
         tmp_path,
@@ -67,13 +67,13 @@ def test_sub_floor_module_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
 
 def test_all_modules_at_or_above_floor_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every tracked module >= 85.0 -> exit 0 (case 2). Boundary 85.0 is not a failure."""
+    """Every tracked module >= 90.0 -> exit 0 (case 2). Boundary 90.0 is not a failure."""
     module = _load_floor_module()
     _write_coverage_json(
         tmp_path,
         {
             "src/phaze/main.py": {"num_statements": 40, "missing_lines": 0, "percent_covered": 100.0},
-            "src/phaze/services/pipeline.py": {"num_statements": 200, "missing_lines": 30, "percent_covered": 85.0},
+            "src/phaze/services/pipeline.py": {"num_statements": 200, "missing_lines": 20, "percent_covered": 90.0},
         },
     )
     monkeypatch.chdir(tmp_path)

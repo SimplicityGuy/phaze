@@ -20,6 +20,7 @@ and addressing style (KSTAGE-05), not just AWS.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any, cast
 
 import aioboto3
@@ -65,22 +66,43 @@ def staged_object_key(file_id: uuid.UUID) -> str:
     return f"{_STAGING_PREFIX}/{file_id}"
 
 
-def _staging_config() -> tuple[ControlSettings, BucketConfig]:
-    """Return ControlSettings + the active backend's staging bucket, validated as present.
+def pick_bucket(file_id: uuid.UUID, bucket_ids: list[str]) -> str:
+    """Deterministically map a file to one of the backend's bound bucket ids (D-06, MKUE-02).
 
-    Raises ``S3StagingError`` if no active backend bucket resolves so a presign/upload never
-    proceeds against a half-configured backend. The bucket identity/creds come from the registry's
-    single non-local backend via the transitional ``active_bucket`` accessor; the kept-global TTL /
-    part-size tuning knobs (D-15) stay on ``ControlSettings``.
+    Stable across process restarts: it hashes the UUID *bytes* with ``sha256`` -- NOT Python's
+    per-process salted ``hash()`` -- so cleanup/presign/reconcile can independently re-agree on the
+    same choice. ``sorted()`` gives a stable order independent of TOML/registry ordering.
+
+    The returned id is the AUTHORITATIVE value recorded on ``cloud_job.staging_bucket``. Presign and
+    cleanup READ that recorded column; they never re-derive here (re-deriving would drift the moment
+    the backend's bucket set changes in config or the row's ``backend_id`` is repurposed) (D-01/D-06).
+
+    Raises ``S3StagingError`` when the bound bucket set is empty -- an operator misconfiguration that
+    must fail loud rather than silently stage nowhere (the config validator already guards this too).
     """
-    cfg = cast("ControlSettings", get_settings())
-    # TRANSITIONAL — Phase 68 (per-file bucket selection = Phase 70 MKUE-02)
-    bucket = cfg.active_bucket
-    if bucket is None:
-        raise S3StagingError(
-            "S3 staging requires an active backend bucket to be configured (declare a kueue backend with a bound bucket in backends.toml)"
-        )
-    return cfg, bucket
+    ordered = sorted(bucket_ids)
+    if not ordered:
+        raise S3StagingError("kueue backend resolves to an empty bucket set")
+    digest = hashlib.sha256(file_id.bytes).digest()
+    index = int.from_bytes(digest, "big") % len(ordered)
+    return ordered[index]
+
+
+def resolve_bucket_config(cfg: ControlSettings, bucket_id: str | None) -> BucketConfig | None:
+    """Resolve a recorded ``cloud_job.staging_bucket`` id to its ``BucketConfig`` (MKUE-02, Pitfall 4).
+
+    The AUTHORITATIVE inverse of :func:`pick_bucket`: presign / cleanup call sites read the value
+    recorded on ``cloud_job.staging_bucket`` at stage time and resolve it here -- they NEVER re-derive
+    via ``pick_bucket`` (a config change to the backend's bucket set would then mis-point the lookup).
+
+    Returns ``None`` when ``bucket_id`` is ``None`` (a compute/all-local row that staged no S3 object,
+    or an unstaged file) so the caller can skip the S3 op cleanly, or when the id is absent from the
+    resolved registry (an operator removed the bucket). Pure + ORM-free: it reads only ``cfg.buckets``,
+    so ``s3_staging`` stays model-free (the router/caller passes ``cfg`` down).
+    """
+    if bucket_id is None:
+        return None
+    return {bucket.id: bucket for bucket in cfg.buckets}.get(bucket_id)
 
 
 def _client(bucket: BucketConfig) -> Any:
@@ -102,37 +124,51 @@ def _client(bucket: BucketConfig) -> Any:
     )
 
 
-async def create_multipart_upload(file_id: uuid.UUID) -> str:
-    """Initiate a multipart upload for ``file_id`` and return its ``UploadId`` (D-01)."""
-    _cfg, bucket = _staging_config()
+async def create_multipart_upload(file_id: uuid.UUID, bucket: BucketConfig) -> str:
+    """Initiate a multipart upload for ``file_id`` on ``bucket`` and return its ``UploadId`` (D-01).
+
+    WR-02: wrap a raw ``ClientError`` (bad creds, missing bucket, network failure) in ``S3StagingError``
+    so this verb presents the module's single fail-loud error surface, matching its
+    ``complete``/``abort``/``delete`` siblings -- a caller's ``except S3StagingError`` sees every S3-SDK
+    failure class uniformly, never a leaked ``botocore.exceptions.ClientError``.
+    """
     key = staged_object_key(file_id)
-    async with _client(bucket) as client:
-        resp = await client.create_multipart_upload(Bucket=bucket.bucket, Key=key)
-    upload_id: str = resp["UploadId"]
-    return upload_id
+    try:
+        async with _client(bucket) as client:
+            resp = await client.create_multipart_upload(Bucket=bucket.bucket, Key=key)
+            upload_id: str = resp["UploadId"]
+            return upload_id
+    except ClientError as exc:
+        raise S3StagingError(f"failed to create multipart upload for {file_id}") from exc
 
 
-async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: int) -> list[str]:
-    """Presign ``part_count`` PUT URLs (PartNumber 1..part_count) for the upload leg (D-01).
+async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: int, bucket: BucketConfig) -> list[str]:
+    """Presign ``part_count`` PUT URLs (PartNumber 1..part_count) on ``bucket`` for the upload leg (D-01).
 
     Each URL is bounded by ``s3_presign_put_ttl_sec``. The agent PUTs each part's bytes
     to its URL over httpx and reports back the ``(part_number, etag)`` pairs.
+
+    WR-02: wrap a raw ``ClientError`` in ``S3StagingError`` so this verb matches the module's fail-loud
+    error surface (see :func:`create_multipart_upload`).
     """
-    cfg, bucket = _staging_config()
+    cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     key = staged_object_key(file_id)
     urls: list[str] = []
-    async with _client(bucket) as client:
-        for part_number in range(1, part_count + 1):
-            url: str = await client.generate_presigned_url(
-                "upload_part",
-                Params={"Bucket": bucket.bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
-                ExpiresIn=cfg.s3_presign_put_ttl_sec,  # kept-global tuning knob (D-15)
-            )
-            urls.append(url)
-    return urls
+    try:
+        async with _client(bucket) as client:
+            for part_number in range(1, part_count + 1):
+                url: str = await client.generate_presigned_url(
+                    "upload_part",
+                    Params={"Bucket": bucket.bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
+                    ExpiresIn=cfg.s3_presign_put_ttl_sec,  # kept-global tuning knob (D-15)
+                )
+                urls.append(url)
+        return urls
+    except ClientError as exc:
+        raise S3StagingError(f"failed to presign upload parts for {file_id}") from exc
 
 
-async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: list[tuple[int, str]]) -> None:
+async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: list[tuple[int, str]], bucket: BucketConfig) -> None:
     """Assemble the staged object from its uploaded parts (control-side, never the agent).
 
     ``parts`` is a list of ``(part_number, etag)`` pairs; they are sorted by part number so
@@ -146,7 +182,6 @@ async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: l
     already assembled) instead of a permanent 500-retry loop (WR-01). Any other ``ClientError``
     is re-raised as ``S3StagingError``.
     """
-    _cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
     multipart = {"Parts": [{"PartNumber": part_number, "ETag": etag} for part_number, etag in sorted(parts)]}
     async with _client(bucket) as client:
@@ -159,8 +194,8 @@ async def complete_multipart_upload(file_id: uuid.UUID, upload_id: str, parts: l
             raise S3StagingError(f"failed to complete multipart upload for {file_id}") from exc
 
 
-async def abort_multipart_upload(file_id: uuid.UUID, upload_id: str) -> None:
-    """Abort an in-flight multipart upload (control-side cleanup of a failed/abandoned upload).
+async def abort_multipart_upload(file_id: uuid.UUID, upload_id: str, bucket: BucketConfig) -> None:
+    """Abort an in-flight multipart upload on ``bucket`` (control-side cleanup of a failed upload).
 
     Idempotent -- a missing upload is the desired end state, so an already-absent upload error
     (``NoSuchUpload``: aborted, completed, or expired by the bucket lifecycle rule) is swallowed.
@@ -168,7 +203,6 @@ async def abort_multipart_upload(file_id: uuid.UUID, upload_id: str) -> None:
     500-retry loop when a prior partial run already aborted the multipart (CR-02). Mirrors
     ``delete_staged_object``; any other ``ClientError`` is re-raised as ``S3StagingError``.
     """
-    _cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
     async with _client(bucket) as client:
         try:
@@ -180,32 +214,38 @@ async def abort_multipart_upload(file_id: uuid.UUID, upload_id: str) -> None:
             raise S3StagingError(f"failed to abort multipart upload for {file_id}") from exc
 
 
-async def presign_get(file_id: uuid.UUID) -> str:
-    """Mint a short-TTL presigned GET URL for the staged object, just-in-time (KSTAGE-03).
+async def presign_get(file_id: uuid.UUID, bucket: BucketConfig) -> str:
+    """Mint a short-TTL presigned GET URL for the staged object on ``bucket``, just-in-time (KSTAGE-03).
 
     Bounded by ``s3_presign_get_ttl_sec`` (short, minted at pod start so it never expires
     during a Kueue wait). The download leg fetches the bytes from this URL; the control
     plane never reads them.
+
+    WR-02: wrap a raw ``ClientError`` in ``S3StagingError`` so this verb matches the module's fail-loud
+    error surface (see :func:`create_multipart_upload`).
     """
-    cfg, bucket = _staging_config()
+    cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     key = staged_object_key(file_id)
-    async with _client(bucket) as client:
-        url: str = await client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket.bucket, "Key": key},
-            ExpiresIn=cfg.s3_presign_get_ttl_sec,  # kept-global tuning knob (D-15)
-        )
-    return url
+    try:
+        async with _client(bucket) as client:
+            url: str = await client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket.bucket, "Key": key},
+                ExpiresIn=cfg.s3_presign_get_ttl_sec,  # kept-global tuning knob (D-15)
+            )
+            return url
+    except ClientError as exc:
+        raise S3StagingError(f"failed to presign GET for {file_id}") from exc
 
 
-async def delete_staged_object(file_id: uuid.UUID) -> None:
-    """Delete the staged object for ``file_id`` -- idempotent (D-02 inline-delete capability).
+async def delete_staged_object(file_id: uuid.UUID, bucket: BucketConfig) -> None:
+    """Delete the staged object for ``file_id`` on ``bucket`` -- idempotent (D-02 inline-delete).
 
     A missing object/upload is the desired end state, so an absent-object error is swallowed:
-    safe to call when no object was ever staged (the all-local path) or when a prior delete /
-    lifecycle sweep already removed it.
+    safe to call when a prior delete / lifecycle sweep already removed it. The caller resolves the
+    recorded ``staging_bucket`` first and SKIPS this call entirely for a bucketless (compute /
+    unstaged) row, so no client is ever built for a file that staged no S3 object.
     """
-    _cfg, bucket = _staging_config()
     key = staged_object_key(file_id)
     async with _client(bucket) as client:
         try:
@@ -217,14 +257,14 @@ async def delete_staged_object(file_id: uuid.UUID) -> None:
             raise S3StagingError(f"failed to delete staged object for {file_id}") from exc
 
 
-async def ensure_bucket_lifecycle_ttl() -> None:
-    """Configure the bucket lifecycle so staged objects expire after ``s3_lifecycle_ttl_days``.
+async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> None:
+    """Configure ``bucket``'s lifecycle so staged objects expire after ``s3_lifecycle_ttl_days``.
 
     The TTL backstop (KSTAGE-04, D-02) reaps any object the inline delete missed -- e.g. a
     Kueue eviction with no completion callback. Scoped to the ``phaze-staging/`` prefix so it
     never touches unrelated objects in an operator-shared bucket.
     """
-    cfg, bucket = _staging_config()
+    cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     async with _client(bucket) as client:
         await client.put_bucket_lifecycle_configuration(
             Bucket=bucket.bucket,

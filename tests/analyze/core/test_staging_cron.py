@@ -71,6 +71,10 @@ class _StubCfg:
         # (D-04 attempt-exclusion + D-01/D-03 staleness gate on local spill).
         self.cloud_submit_max_attempts = cloud_submit_max_attempts
         self.cloud_spill_to_local_after_seconds = cloud_spill_to_local_after_seconds
+        # Phase 70 (MKUE-02): KueueBackend.dispatch picks a per-file bucket over ``config.buckets`` and
+        # resolves its BucketConfig via ``resolve_bucket_config(get_settings(), id)`` -- so the stub carries
+        # a ``buckets`` registry and the kueue backend entry binds that id-list.
+        self.buckets = [SimpleNamespace(id="staging-1", bucket="phaze-staging")]
         # Phase 68/69: the drain resolves its dispatch backends via resolve_backends(cfg), which reads
         # the registry-shaped ``backends`` list (each entry duck-types the Phase-67 submodel's
         # kind/id/rank/cap). ``backends`` (explicit) lets a multi-backend cell seed N entries; otherwise
@@ -79,6 +83,19 @@ class _StubCfg:
             self.backends = backends
         elif active_cloud_kind is None:
             self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
+        elif active_cloud_kind == "kueue":
+            # Phase 70 (MKUE-01/D-04): KueueBackend.is_available threads self.config.kube into
+            # kube_staging.get_local_queue; carry a minimal kube (the seam is stubbed in these cells).
+            self.backends = [
+                SimpleNamespace(
+                    kind="kueue",
+                    id="kueue-1",
+                    rank=10,
+                    cap=active_cap,
+                    buckets=["staging-1"],
+                    kube=SimpleNamespace(api_url="https://kube.test", namespace="phaze", local_queue="phaze-lq"),
+                )
+            ]
         else:
             self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
 
@@ -90,10 +107,11 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, 
     implicit-local registry); ``"compute"`` -> the rsync-push path (GATE-1 compute probe active);
     ``"kueue"`` -> the S3 path (GATE-1 skipped). ``max_in_flight`` becomes the stub's ``active_cap``.
     """
-    monkeypatch.setattr(
-        "phaze.tasks.release_awaiting_cloud.get_settings",
-        lambda: _StubCfg(active_cap=max_in_flight, cloud_enabled=cloud_kind is not None, active_cloud_kind=cloud_kind),
-    )
+    stub = _StubCfg(active_cap=max_in_flight, cloud_enabled=cloud_kind is not None, active_cloud_kind=cloud_kind)
+    monkeypatch.setattr("phaze.tasks.release_awaiting_cloud.get_settings", lambda: stub)
+    # Phase 70 (MKUE-02): KueueBackend.dispatch resolves the picked bucket via ``backends.get_settings()``;
+    # pin it to the SAME stub so ``resolve_bucket_config`` finds the stub's ``buckets`` registry.
+    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: stub)
 
 
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
@@ -617,7 +635,8 @@ async def test_stage_file_to_s3_core_does_not_commit(
     monkeypatch.setattr(session, "commit", commit_spy)
 
     router = DedupFakeTaskRouter()
-    await cloud_staging._stage_file_to_s3(session, file, router)
+    bucket = SimpleNamespace(id="staging-1", bucket="phaze-staging")
+    await cloud_staging._stage_file_to_s3(session, file, router, bucket)
 
     # (a) The core defers the commit -- the caller (the cron loop / the public wrapper) owns it.
     commit_spy.assert_not_awaited()
@@ -648,7 +667,8 @@ async def test_public_stage_file_to_s3_still_commits(
     monkeypatch.setattr(session, "commit", commit_spy)
 
     router = DedupFakeTaskRouter()
-    await cloud_staging.stage_file_to_s3(session, file, router)
+    bucket = SimpleNamespace(id="staging-1", bucket="phaze-staging")
+    await cloud_staging.stage_file_to_s3(session, file, router, bucket)
 
     commit_spy.assert_awaited_once()
 

@@ -1,6 +1,6 @@
 """Behavior-asserting degrade + formatter tests for phaze.services.review (COV-01, D-07).
 
-Raises the ``services/review.py`` combined coverage above the 85% per-module floor (it was
+Raises the ``services/review.py`` combined coverage above the 90% per-module floor (it was
 the ONLY sub-floor module at 83.16%). Every test asserts an OBSERVABLE outcome (D-07): each
 degrade branch returns ``[]`` AND emits its named ``*_degraded`` warning; each formatter
 returns the documented string. No ``src/phaze`` edit — the degrade tests inject a raising

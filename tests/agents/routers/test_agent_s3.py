@@ -26,7 +26,7 @@ import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -36,6 +36,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_s3 import router as agent_s3_router
 from phaze.services import cloud_staging, s3_staging
+from phaze.services.enqueue_router import NoActiveAgentError
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
 from tests._queue_fakes import FakeQueue, FakeTaskRouter
@@ -94,16 +95,66 @@ _COMPUTE_REGISTRY = """
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "/srv/scratch"
+
+    [[buckets]]
+    id = "shared-bucket"
+    scope = "shared"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-staging"
+"""
+
+
+# MKUE-01: two Kueue backends (the literal N-cluster scenario) sharing one bucket. Before Phase 70
+# the ``resolved_non_local_kind`` >1-non-local raise 500'd report_uploaded here; the generalized helper
+# returns "kueue" so the post-staging seam still fires. Both backends carry their own [kube] cluster.
+_TWO_KUEUE_REGISTRY = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-a"
+    rank = 10
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube-a.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-a"
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-b"
+    rank = 20
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube-b.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-b"
+
+    [[buckets]]
+    id = "shared-bucket"
+    scope = "shared"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-staging"
 """
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any, *, kind: str = "kueue") -> None:
-    """Build a real ControlSettings off a one-backend registry and pin the router's get_settings.
+    """Build a real ControlSettings off a registry and pin the router's get_settings.
 
     ``kind="kueue"`` → the S3 post-staging seam fires (``active_cloud_kind == "kueue"``);
+    ``kind="two_kueue"`` → the N-Kueue scenario (MKUE-01): the seam still fires, no >1-non-local 500;
     ``kind="compute"`` → the defensive non-kueue guard preserves the cloud_job-only flow.
     """
-    backends_toml_env(_KUEUE_REGISTRY if kind == "kueue" else _COMPUTE_REGISTRY)
+    registry = {"kueue": _KUEUE_REGISTRY, "two_kueue": _TWO_KUEUE_REGISTRY, "compute": _COMPUTE_REGISTRY}[kind]
+    backends_toml_env(registry)
     settings = ControlSettings()
     monkeypatch.setattr("phaze.routers.agent_s3.get_settings", lambda: settings)
 
@@ -156,7 +207,10 @@ async def _seed_cloud_job(
     *,
     status: CloudJobStatus = CloudJobStatus.UPLOADING,
     cloud_phase: str | None = None,
+    staging_bucket: str | None = "shared-bucket",
 ) -> None:
+    # MKUE-02: stamp the recorded staging_bucket so the callbacks (complete / at-cap abort+delete)
+    # resolve it to its BucketConfig and act on exactly that bucket.
     session.add(
         CloudJob(
             id=uuid.uuid4(),
@@ -165,6 +219,7 @@ async def _seed_cloud_job(
             status=status.value,
             upload_id="upload-xyz",
             cloud_phase=cloud_phase,
+            staging_bucket=staging_bucket,
         )
     )
     await session.commit()
@@ -250,6 +305,59 @@ async def test_uploaded_duplicate_is_idempotent_noop_without_recompleting(
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
+async def test_uploaded_unresolvable_staging_bucket_returns_409(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """An UPLOADING row whose recorded staging_bucket does not resolve to a registry BucketConfig -> 409 (never a dead complete)."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    # staging_bucket=None -> resolve_bucket_config returns None -> the 409 guard fires.
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, staging_bucket=None)
+    complete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", complete)
+
+    body = {"parts": [{"part_number": 1, "etag": '"etag-1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 409, r.text
+    complete.assert_not_awaited()  # never complete against an unresolvable bucket
+
+
+async def test_uploaded_lost_flip_race_is_idempotent_noop(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """The status pre-check passes but the rowcount-guarded UPLOADING->UPLOADED flip matches 0 rows (lost race) -> idempotent 200."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+
+    # Simulate the concurrent winner: complete_multipart_upload flips the row to UPLOADED on the shared
+    # session, so the handler's own guarded UPDATE ... WHERE status==UPLOADING then matches 0 rows.
+    async def _flip_then_return(*_args: Any, **_kwargs: Any) -> None:
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.UPLOADED.value))
+
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", _flip_then_return)
+
+    body = {"parts": [{"part_number": 1, "etag": '"etag-1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["file_id"] == str(file_id)
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value  # the winner's flip stands
+
+
 async def test_uploaded_rejects_identity_in_body(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
@@ -305,6 +413,38 @@ async def test_uploaded_k8s_flips_pushed_and_enqueues_submit(
     assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
     assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
     # The existing cloud_job UPLOADING -> UPLOADED flip still happened.
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value
+
+
+async def test_uploaded_two_kueue_flips_pushed_and_enqueues_submit(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """MKUE-01: with TWO Kueue backends declared, report_uploaded flips PUSHING->PUSHED + enqueues submit.
+
+    The literal N-cluster scenario: before Phase 70 the ``resolved_non_local_kind`` >1-non-local raise
+    500'd this hot-path callback (stalling every Kueue file's upload completion). The generalized
+    (any-kueue -> "kueue") helper makes it degrade gracefully -- no 500 / no ValueError.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, kind="two_kueue")
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
+
+    controller_queue = FakeQueue("controller")
+    body = {"parts": [{"part_number": 1, "etag": '"e1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token, controller_queue=controller_queue) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text  # NOT a 500 despite 2 Kueue backends
+    assert await _file_state(session, file_id) == FileState.PUSHED
+    assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
+    assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADED.value
@@ -395,6 +535,34 @@ async def test_failed_under_cap_redrives_and_increments_counter(
     row = await _ledger_row(session, f"s3_upload:{file_id}")
     assert row is not None
     assert row.payload.get("s3_upload_attempt") == 1
+
+
+async def test_failed_under_cap_redrive_no_fileserver_holds_uploading(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """Under the cap, if no fileserver is online the re-drive raises NoActiveAgentError -> clean 200 hold, cleared=False, cloud_job stays UPLOADING."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    await _seed_ledger(session, file_id, attempt=0)
+
+    async def _raise_no_agent(*_args: Any, **_kwargs: Any) -> None:
+        raise NoActiveAgentError("no fileserver online")
+
+    monkeypatch.setattr(cloud_staging, "redrive_upload", _raise_no_agent)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "transfer error"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False  # held for a later re-drive, not cleared
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADING.value  # slot kept
 
 
 async def test_failed_under_cap_redrive_keeps_fresh_part_urls(

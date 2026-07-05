@@ -77,8 +77,25 @@ class _StubCfg:
         # backend), so the golden side-effect baseline stays byte-identical -- that is the BACK-04 proof.
         self.cloud_submit_max_attempts = 3
         self.cloud_spill_to_local_after_seconds = 900
+        # Phase 70 (MKUE-02): KueueBackend.dispatch picks a per-file bucket over ``config.buckets`` and
+        # resolves its BucketConfig via ``resolve_bucket_config(get_settings(), id)`` -- so carry a
+        # ``buckets`` registry and bind the kueue backend entry to it (a no-op for compute/local cells).
+        self.buckets = [SimpleNamespace(id="staging-1", bucket="phaze-staging")]
         if active_cloud_kind is None:
             self.backends = [SimpleNamespace(kind="local", id="local", rank=0, cap=active_cap)]
+        elif active_cloud_kind == "kueue":
+            # Phase 70 (MKUE-01/D-04): KueueBackend.is_available/reconcile thread self.config.kube into
+            # kube_staging; carry a minimal kube (the get_local_queue seam is stubbed in _run_cell).
+            self.backends = [
+                SimpleNamespace(
+                    kind="kueue",
+                    id="kueue-1",
+                    rank=10,
+                    cap=active_cap,
+                    buckets=["staging-1"],
+                    kube=SimpleNamespace(api_url="https://kube.test", namespace="phaze", local_queue="phaze-lq"),
+                )
+            ]
         else:
             self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
 
@@ -161,11 +178,11 @@ async def _run_cell(
     a non-local cell that clears GATE-1 can actually stage).
     """
     cloud_enabled = kind is not None
-    monkeypatch.setattr(
-        release_awaiting_cloud,
-        "get_settings",
-        lambda: _StubCfg(active_cap=active_cap, cloud_enabled=cloud_enabled, active_cloud_kind=kind),
-    )
+    stub = _StubCfg(active_cap=active_cap, cloud_enabled=cloud_enabled, active_cloud_kind=kind)
+    monkeypatch.setattr(release_awaiting_cloud, "get_settings", lambda: stub)
+    # Phase 70 (MKUE-02): KueueBackend.dispatch resolves the picked bucket via ``backends.get_settings()``;
+    # pin it to the SAME stub so ``resolve_bucket_config`` finds the stub's ``buckets`` registry.
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: stub)
 
     # D-01a spy: record the gate kinds. GATE-2 (fileserver) fires through the drain's own reference;
     # GATE-1 (compute) now fires through ComputeAgentBackend.is_available (the backends module ref), so

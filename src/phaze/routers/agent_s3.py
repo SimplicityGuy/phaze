@@ -87,8 +87,17 @@ async def report_uploaded(
         logger.info("report_uploaded: idempotent no-op (cloud_job absent or not UPLOADING)", file_id=str(file_id), agent_id=agent.id)
         return UploadedResponse(file_id=file_id)
 
-    # Complete the multipart upload control-side with the agent-reported parts (KSTAGE-01).
-    await s3_staging.complete_multipart_upload(file_id, cloud_job.upload_id, [(p.part_number, p.etag) for p in body.parts])
+    # Complete the multipart upload control-side with the agent-reported parts (KSTAGE-01), on the
+    # RECORDED staging bucket (MKUE-02 -- a kueue UPLOADING row always carries the staging_bucket
+    # KueueBackend.dispatch stamped; resolve it, never re-derive).
+    settings = cast("ControlSettings", get_settings())
+    bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket)
+    if bucket is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="staged upload has no resolvable staging bucket recorded",
+        )
+    await s3_staging.complete_multipart_upload(file_id, cloud_job.upload_id, [(p.part_number, p.etag) for p in body.parts], bucket)
 
     # Idempotent flip guarded on the CURRENT status so a concurrent duplicate that also passed the
     # pre-check above does not double-flip. An UPDATE returns a CursorResult at runtime (exposing
@@ -108,8 +117,7 @@ async def report_uploaded(
 
     # Phase 55 (D-01b): kueue post-staging seam. Advance the FileRecord PUSHING -> PUSHED and enqueue
     # the routed submit_cloud_job. Defensive guard -- a1 uses rsync and never hits these callbacks,
-    # so a non-kueue target keeps today's cloud_job-only flow.
-    settings = cast("ControlSettings", get_settings())
+    # so a non-kueue target keeps today's cloud_job-only flow. (``settings`` resolved above.)
     # Phase 68 (D-09): registry-derived kind via the Backend registry helper (was the retired ≤1-non-local accessor).
     if resolved_non_local_kind(settings) == "kueue":
         # Rowcount-guarded idempotent flip (mirrors agent_push.report_pushed): a duplicate/late
@@ -187,9 +195,12 @@ async def report_upload_failed(
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
         # Cleanup PRESERVED on the spill path: abort the multipart + delete the staged object so no orphaned
         # in-flight upload / leaked object survives (KSTAGE-04 / T-53-17) even though the file lives on locally.
-        if cloud_job is not None and cloud_job.upload_id:
-            await s3_staging.abort_multipart_upload(file_id, cloud_job.upload_id)
-        await s3_staging.delete_staged_object(file_id)
+        # MKUE-02: act on the RECORDED staging bucket; a bucketless row (no S3 object) skips the S3 ops cleanly.
+        bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket) if cloud_job is not None else None
+        if bucket is not None:
+            if cloud_job is not None and cloud_job.upload_id:
+                await s3_staging.abort_multipart_upload(file_id, cloud_job.upload_id, bucket)
+            await s3_staging.delete_staged_object(file_id, bucket)
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
         logger.warning(

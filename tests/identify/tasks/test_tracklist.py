@@ -225,6 +225,36 @@ async def test_scrape_and_store_tracklist(mock_scraper_cls: MagicMock) -> None:
     mock_scraper.close.assert_awaited_once()
 
 
+@patch("phaze.tasks.tracklist.TracklistScraper")
+async def test_scrape_and_store_tracklist_parses_non_first_date_format(mock_scraper_cls: MagicMock) -> None:
+    """A scraped date not in the first ("%Y-%m-%d") format falls through the ValueError branch to a later format."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    tracklist_id = uuid.uuid4()
+
+    mock_tracklist = MagicMock()
+    mock_tracklist.id = tracklist_id
+    mock_tracklist.source_url = "https://www.1001tracklists.com/tracklist/abc/test.html"
+    mock_tl_result = MagicMock()
+    mock_tl_result.scalar_one_or_none.return_value = mock_tracklist
+    mock_existing_result = MagicMock()
+    mock_existing_result.scalar_one_or_none.return_value = mock_tracklist
+    mock_version_result = MagicMock()
+    mock_version = MagicMock()
+    mock_version.version_number = 2
+    mock_version_result.scalar_one_or_none.return_value = mock_version
+    session.execute.side_effect = [mock_tl_result, mock_existing_result, mock_version_result, mock_version_result]
+
+    scraped = _make_scraped_tracklist()
+    scraped.date = "14 Apr 2024"  # "%d %b %Y" -- the FIRST format "%Y-%m-%d" raises ValueError -> continue -> this matches
+    mock_scraper = AsyncMock()
+    mock_scraper.scrape_tracklist.return_value = scraped
+    mock_scraper_cls.return_value = mock_scraper
+
+    result = await scrape_and_store_tracklist(ctx, tracklist_id=str(tracklist_id))
+    assert result["tracklist_id"] == str(tracklist_id)
+
+
 @patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
 @patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
 async def test_refresh_tracklists(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:

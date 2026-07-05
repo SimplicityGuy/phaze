@@ -71,8 +71,69 @@ def _compute(**kw: Any) -> Any:
 
 
 def _kueue(**kw: Any) -> Any:
-    """Construct a KueueBackend bound to a single registry entry (single-cluster, D-05)."""
-    return backends.KueueBackend(id=kw.get("id", "kueue-x64"), rank=kw.get("rank", 20), cap=kw.get("cap", 5))
+    """Construct a KueueBackend bound to a registry entry carrying a ``[kube]`` config (MKUE-01/D-04).
+
+    Phase 70: ``is_available`` / ``reconcile`` thread ``self.config.kube`` into every ``kube_staging``
+    verb, so the backend must carry a ``config`` with a ``KubeConfig``. The ``kube_staging`` seam is
+    monkeypatched in these unit cells, so a minimal KubeConfig (api_url/namespace/local_queue) suffices.
+    """
+    from phaze.config_backends import KubeConfig, KueueBackend as KueueEntry
+
+    bid = kw.get("id", "kueue-x64")
+    rank = kw.get("rank", 20)
+    cap = kw.get("cap", 5)
+    entry = KueueEntry(
+        kind="kueue",
+        id=bid,
+        rank=rank,
+        cap=cap,
+        kube=KubeConfig(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq"),
+        buckets=list(kw.get("buckets", [])),
+    )
+    return backends.KueueBackend(id=bid, rank=rank, cap=cap, config=entry)
+
+
+def _kueue_with_buckets(backends_toml_env: Any, *, bucket_ids: list[str], backend_id: str = "kueue-x64") -> Any:
+    """Build a KueueBackend bound to ``bucket_ids`` via a real registry (MKUE-02 dispatch picks a bucket).
+
+    ``KueueBackend.dispatch`` now resolves the D-06 bucket via ``pick_bucket`` over ``self.config.buckets``
+    and ``s3_staging.resolve_bucket_config`` over ``get_settings().buckets`` -- so the backend must carry a
+    real ``config`` (its bound bucket id-list) AND the process registry must resolve those ids. This helper
+    writes a one-kueue backends.toml (via the shared conftest fixture, which points the env + clears the
+    get_settings cache) and returns the resolved ``KueueBackend`` whose ``self.config`` is that entry.
+    """
+    from phaze.config import ControlSettings
+
+    id_array = ", ".join(f'"{bid}"' for bid in bucket_ids)
+    bucket_blocks = "".join(
+        f"""
+        [[buckets]]
+        id = "{bid}"
+        scope = "shared"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-{bid}"
+        """
+        for bid in bucket_ids
+    )
+    backends_toml_env(
+        f"""
+        [[backends]]
+        kind = "kueue"
+        id = "{backend_id}"
+        rank = 20
+        cap = 5
+        buckets = [{id_array}]
+
+        [backends.kube]
+        api_url = "https://kube.example.com"
+        namespace = "phaze"
+        local_queue = "phaze-lq"
+        {bucket_blocks}
+        """
+    )
+    settings = ControlSettings()
+    [backend] = [b for b in backends.resolve_backends(settings) if b.id == backend_id]
+    return backend
 
 
 def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3") -> FileRecord:
@@ -214,11 +275,11 @@ async def test_compute_dispatch_flips_pushing_and_writes_cloud_job_in_txn(sessio
 
 
 @pytest.mark.asyncio
-async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any) -> None:
     """Kueue dispatch runs the no-commit S3 core: cloud_job UPLOADING + s3_upload enqueue, no commit."""
     _stub_s3(monkeypatch)
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    backend = _kueue(id="kueue-x64")
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
     file = _make_file(state=FileState.PUSHING, file_type="flac")
     session.add(file)
     await session.commit()
@@ -232,6 +293,102 @@ async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSess
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADING.value
     assert [t for t, _ in router.queues["nox"].captured] == ["s3_upload"]
+
+
+@pytest.mark.asyncio
+async def test_kueue_dispatch_records_picked_staging_bucket_and_backend_id(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """MKUE-02/D-06: dispatch stamps staging_bucket == pick_bucket(file.id, sorted(config.buckets)) + backend_id.
+
+    Over an N=2-bucket backend the recorded bucket is EXACTLY the deterministic pick over the sorted
+    bound set, and backend_id is this backend's id -- both written in the same uncommitted session.
+    """
+    _stub_s3(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    bucket_ids = ["staging-b", "staging-a"]  # unsorted on purpose -- pick_bucket sorts internally
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=bucket_ids, backend_id="kueue-x64")
+    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    session.add(file)
+    await session.commit()
+
+    await backend.dispatch(file, session, DedupFakeTaskRouter())
+
+    from sqlalchemy import select
+
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
+    assert job is not None
+    assert job.backend_id == "kueue-x64"
+    assert job.staging_bucket == s3_staging.pick_bucket(file.id, bucket_ids)  # authoritative D-06 pick
+
+
+@pytest.mark.asyncio
+async def test_kueue_dispatch_bucket_is_deterministic_per_file(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """D-06: the same file always lands on the same bucket; two files may land on different buckets.
+
+    Determinism is proven by re-staging the SAME file (idempotent FK upsert) -- the recorded bucket is
+    stable -- and by the pure ``pick_bucket`` mapping two distinct ids into the 2-bucket set (at least one
+    of many random files lands on each member, so the set is genuinely partitioned, not collapsed to one).
+    """
+    _stub_s3(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    bucket_ids = ["staging-a", "staging-b"]
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=bucket_ids, backend_id="kueue-x64")
+    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    session.add(file)
+    await session.commit()
+
+    from sqlalchemy import select
+
+    await backend.dispatch(file, session, DedupFakeTaskRouter())
+    first = (await session.execute(select(CloudJob.staging_bucket).where(CloudJob.file_id == file.id))).scalar_one()
+    await backend.dispatch(file, session, DedupFakeTaskRouter())  # idempotent re-stage
+    second = (await session.execute(select(CloudJob.staging_bucket).where(CloudJob.file_id == file.id))).scalar_one()
+    assert first == second == s3_staging.pick_bucket(file.id, bucket_ids)  # same file -> same bucket
+
+    # The 2-bucket set is genuinely partitioned across many files (not collapsed to a single member).
+    landed = {s3_staging.pick_bucket(uuid.uuid4(), bucket_ids) for _ in range(200)}
+    assert landed == set(bucket_ids)
+
+
+@pytest.mark.asyncio
+async def test_kueue_dispatch_no_fileserver_agent_leaves_file_untouched(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """CR-01 (gate-before-mutate): no fileserver agent -> dispatch raises, file stays AWAITING_CLOUD, no cloud_job.
+
+    Regression for the pre-fix limbo bug: KueueBackend.dispatch used to flip ``file.state = PUSHING``
+    UNCONDITIONALLY as its first statement, before ``_stage_file_to_s3`` gated on the fileserver agent.
+    Under SQLAlchemy autoflush that pending PUSHING change was flushed as a side effect of the gate's
+    SELECT, so a ``NoActiveAgentError`` (then a break-without-rollback in the drain) committed a PUSHING
+    file with NO ``cloud_job`` row -- exactly the Pitfall-4 limbo the module docstring forbids. Post-fix
+    the flip lands only AFTER ``_stage_file_to_s3`` returns, so the raising path is mutation-free: the
+    file stays AWAITING_CLOUD and no cloud_job row exists even after the drain's post-loop commit.
+    """
+    from sqlalchemy import select
+
+    from phaze.services.enqueue_router import NoActiveAgentError
+
+    _stub_s3(monkeypatch)  # unreached: the fileserver gate raises before any S3 call
+    # Deliberately NO fileserver agent seeded.
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file = _make_file(state=FileState.AWAITING_CLOUD, file_type="flac")
+    session.add(file)
+    await session.commit()
+    file_id = file.id  # capture before expire_all() so the re-read query builds without a lazy load
+
+    with pytest.raises(NoActiveAgentError):
+        await backend.dispatch(file, session, DedupFakeTaskRouter())
+
+    # Emulate the drain's single post-loop commit + a fresh DB read: no PUSHING flip may survive.
+    await session.commit()
+    session.expire_all()
+    refreshed = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert refreshed.state == FileState.AWAITING_CLOUD
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    assert job is None
 
 
 @pytest.mark.asyncio
@@ -414,15 +571,15 @@ async def test_in_flight_equivalence(session: AsyncSession) -> None:
     assert per_backend == window
 
 
-# === WR-01: resolved_non_local_kind fail-fast on >1 non-local ============================
+# === resolved_non_local_kind: N-Kueue-safe (any-kueue) + compute-only fail-fast ===========
 
 
-def test_resolved_non_local_kind_raises_on_multiple_non_local(backends_toml_env: Any) -> None:
-    """WR-01: >1 non-local backend -> ValueError naming the offending ids, never silently non_local[0].
+def test_resolved_non_local_kind_raises_on_multiple_compute_only(backends_toml_env: Any) -> None:
+    """The compute-only ``>1`` fail-fast is RETAINED: two COMPUTE backends (no kueue) still raise.
 
-    Mirrors :func:`resolve_backends`'s boot guard (multi-backend dispatch is Phase 69 / SCHED). The
-    retired ``_single_non_local`` accessor raised here; the Phase-68 replacement must preserve that
-    single-non-local defense-in-depth for its three call sites (dashboard/backfill, agent_s3).
+    Phase 70 (MKUE-01) generalized ``resolved_non_local_kind`` to tolerate N Kueue backends, but the
+    genuinely-ambiguous compute-only ``>1`` case stays a loud ValueError naming the offending ids
+    (multi-compute agent_ref resolution lands in PROV-01; unreachable under D-05's ≤1-compute invariant).
     """
     from phaze.config import ControlSettings
 
@@ -447,8 +604,83 @@ def test_resolved_non_local_kind_raises_on_multiple_non_local(backends_toml_env:
     )
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    with pytest.raises(ValueError, match=r"Phase 69"):
+    with pytest.raises(ValueError, match=r"PROV-01"):
         backends.resolved_non_local_kind(settings)
+
+
+_LOCAL_2KUEUE_HEAD = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-a"
+    rank = 10
+    cap = 4
+    buckets = ["bkt-a"]
+
+    [backends.kube]
+    api_url = "https://kube-a.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-a"
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-b"
+    rank = 20
+    cap = 4
+    buckets = ["bkt-b"]
+
+    [backends.kube]
+    api_url = "https://kube-b.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq-b"
+"""
+
+_TWO_BUCKETS = """
+    [[buckets]]
+    id = "bkt-a"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-a"
+
+    [[buckets]]
+    id = "bkt-b"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-b"
+"""
+
+
+def test_resolved_non_local_kind_returns_kueue_for_n_kueue(backends_toml_env: Any) -> None:
+    """MKUE-01: ANY-kueue registry resolves to "kueue" with NO raise -- the literal N-cluster scenario.
+
+    A local + 2-Kueue registry (the milestone target) previously 500'd every ``resolved_non_local_kind``
+    call site (report_uploaded / build_dashboard_context / backfill) via the old blanket ``>1`` raise.
+    The generalized helper returns "kueue" (the callers only ask "is the cloud lane kueue"). Adding a
+    compute backend to the mix STILL returns "kueue" (any-kueue wins).
+    """
+    from phaze.config import ControlSettings
+
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + _TWO_BUCKETS)
+    settings = ControlSettings()
+    assert backends.resolved_non_local_kind(settings) == "kueue"
+
+    compute_block = """
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 30
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "/srv/scratch"
+"""
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
+    settings = ControlSettings()
+    assert backends.resolved_non_local_kind(settings) == "kueue"
 
 
 # === SCHED-01: resolve_backends supports N non-local backends (Phase-69 guard removal) ====
@@ -497,3 +729,30 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
     non_local = [b for b in resolved if not isinstance(b, backends.LocalBackend)]
     assert len(non_local) == 2
     assert {b.id for b in non_local} == {"compute-a", "compute-b"}
+
+
+# === Pitfall 1: active_compute_scratch_dir on a single-compute reduction ==================
+
+
+def test_active_compute_scratch_dir_resolves_under_local_2kueue_1compute(backends_toml_env: Any) -> None:
+    """Pitfall 1: local + 2 Kueue + 1 compute resolves the compute scratch_dir -- no >1-non-local raise.
+
+    Before Phase 70 ``active_compute_scratch_dir`` reduced through ``_single_non_local`` which raised
+    the moment ≥2 non-local backends coexisted, 500ing the ``/pushed`` callback. Re-based on a
+    single-COMPUTE reduction, the milestone's target deploy resolves cleanly to the sole compute
+    backend's scratch_dir.
+    """
+    from phaze.config import ControlSettings
+
+    compute_block = """
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 30
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "/srv/scratch"
+"""
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
+    settings = ControlSettings()
+    assert settings.active_compute_scratch_dir == "/srv/scratch"

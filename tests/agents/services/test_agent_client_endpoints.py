@@ -304,3 +304,83 @@ async def test_heartbeat_posts_to_correct_url_and_returns_none(client):  # type:
     assert sent_body["agent_version"] == "1.0.0"
     assert sent_body["worker_pid"] == 12345
     assert sent_body["queue_depth"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Terminal-ack / push endpoint wrappers (coverage for the thin POST adapters).
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_report_pushed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """report_pushed -> POST /push/{file_id}/pushed, parses PushedResponse."""
+    from phaze.schemas.agent_push import PushedResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/push/{file_id}/pushed").mock(
+        return_value=httpx.Response(200, json={"file_id": str(file_id), "status": "pushed"})
+    )
+    result = await client.report_pushed(file_id)
+    assert route.called
+    assert isinstance(result, PushedResponse)
+    assert result.file_id == file_id
+
+
+@respx.mock
+async def test_report_push_mismatch_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """report_push_mismatch -> POST /push/{file_id}/mismatch, parses PushMismatchResponse."""
+    from phaze.schemas.agent_push import PushMismatchResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/push/{file_id}/mismatch").mock(
+        return_value=httpx.Response(200, json={"file_id": str(file_id), "status": "mismatch", "cleared": True})
+    )
+    result = await client.report_push_mismatch(file_id)
+    assert route.called
+    assert isinstance(result, PushMismatchResponse)
+    assert result.cleared is True
+
+
+@respx.mock
+async def test_report_metadata_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """report_metadata_failed -> POST /metadata/{file_id}/failed, parses MetadataFailureResponse."""
+    from phaze.schemas.agent_metadata import MetadataFailureResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/metadata/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "agent-1", "file_id": str(file_id), "cleared": True})
+    )
+    result = await client.report_metadata_failed(file_id)
+    assert route.called
+    assert isinstance(result, MetadataFailureResponse)
+    assert result.file_id == file_id
+
+
+@respx.mock
+async def test_report_fingerprint_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """report_fingerprint_failed -> POST /fingerprints/{file_id}/failed, parses FingerprintFailureResponse."""
+    from phaze.schemas.agent_fingerprint import FingerprintFailureResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/fingerprints/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "agent-1", "file_id": str(file_id), "cleared": True})
+    )
+    result = await client.report_fingerprint_failed(file_id)
+    assert route.called
+    assert isinstance(result, FingerprintFailureResponse)
+    assert result.file_id == file_id
+
+
+@respx.mock
+async def test_report_scan_terminal_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """report_scan_terminal -> POST /tracklists/{file_id}/scanned, parses ScanTerminalAckResponse."""
+    from phaze.schemas.agent_tracklists import ScanTerminalAckResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/tracklists/{file_id}/scanned").mock(
+        return_value=httpx.Response(200, json={"file_id": str(file_id), "cleared": True})
+    )
+    result = await client.report_scan_terminal(file_id)
+    assert route.called
+    assert isinstance(result, ScanTerminalAckResponse)
+    assert result.cleared is True
