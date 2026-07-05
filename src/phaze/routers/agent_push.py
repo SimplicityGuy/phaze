@@ -48,6 +48,7 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file
+from phaze.services.backends import resolve_compute_backend
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
@@ -73,13 +74,16 @@ async def report_pushed(
 
     One committed transaction (mirrors ``put_analysis``'s state-update + ``clear_ledger_entry``
     idiom). ``expected_sha256`` is read CONTROL-SIDE from ``FileRecord.sha256_hash`` (D-11) -- the
-    untrusted agent never supplies it -- and ``scratch_path`` is built from
-    ``ControlSettings.active_compute_scratch_dir`` (the control-side mirror of the compute agent's
-    ``cloud_scratch_dir``). ``file_id`` is the PATH value only; ``agent`` comes from the token
+    untrusted agent never supplies it -- and the compute queue + ``scratch_path`` are resolved from the
+    file's RECORDED ``cloud_job.backend_id`` via ``resolve_compute_backend`` (D-06 record-don't-rederive),
+    NOT ``select_active_agent(kind="compute")`` / ``active_compute_scratch_dir`` (Pitfall 4): the
+    terminalization, scratch dir, and process_file routing all attribute to the agent this file was
+    dispatched to (MCOMP-06). ``file_id`` is the PATH value only; ``agent`` comes from the token
     dependency (AUTH-01).
 
-    No compute agent online -> a clean 200 hold (NOT a 500): nothing is enqueued and the file is
-    left ``PUSHING`` with its ledger row so the staging cron / recovery re-drives it later.
+    No attributed compute backend (no ``cloud_job``, or an operator-removed ``backend_id``) -> a clean
+    200 hold (NOT a 500): nothing is enqueued and the file is left ``PUSHING`` with its ledger row so the
+    staging cron / recovery re-drives it later.
     """
     settings = cast("ControlSettings", get_settings())
 
@@ -87,13 +91,26 @@ async def report_pushed(
     # the state flip is fine -- both fields are immutable here and untouched by the UPDATE below.
     file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
 
-    # Gate on an online compute agent BEFORE mutating anything: with none available this is a clean
-    # hold (D-02) -- no state change, no ledger clear, no enqueue, no 500.
-    try:
-        compute_agent = await select_active_agent(session, kind="compute")
-    except NoActiveAgentError:
-        logger.warning("report_pushed held: no compute agent online", file_id=str(file_id), agent_id=agent.id)
+    # D-06 (record-don't-rederive, Pitfall 4): resolve the file's OWN compute backend from the RECORDED
+    # cloud_job.backend_id -- NOT select_active_agent(kind="compute"). The scratch dir, the process_file
+    # target queue, AND the cloud_job terminalization must all attribute to the agent this file was
+    # dispatched to (MCOMP-06 no-cross-attribution), so route off the backend ComputeAgentBackend.dispatch
+    # stamped on this file's cloud_job, never "the active compute agent". The /pushed reporter is the
+    # FILESERVER agent (tasks/push.py runs report_pushed after rsync), so there is NO reporter==agent_ref
+    # gate here (that D-07 gate belongs on /mismatch, whose reporter IS the compute agent).
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    backend = resolve_compute_backend(settings, cloud_job.backend_id if cloud_job else None)
+    # No attributed compute backend (no cloud_job, or an operator-removed / unattributed backend_id ->
+    # resolve returns None): a clean 200 hold (NOT a 500) mirroring the old no-compute-agent hold -- no
+    # state change, no ledger clear, no enqueue. The file stays PUSHING with its ledger row so the staging
+    # cron / recovery re-drives it once the backend is resolvable.
+    if backend is None:
+        logger.warning("report_pushed held: no attributed compute backend", file_id=str(file_id), agent_id=agent.id)
         return PushedResponse(file_id=file_id)
+    # agent_ref / scratch_dir are Optional at the ComputeBackend type level but guaranteed non-empty at
+    # construction by _require_dispatch_fields, so narrow for mypy (same discipline as backends._destination).
+    agent_ref = cast("str", backend.agent_ref)
+    scratch_dir = cast("str", backend.scratch_dir)
 
     # One transaction: PUSHING -> PUSHED, clear the push ledger row, enqueue compute analysis.
     # WR-02: guard the transition on the CURRENT state being PUSHING so a duplicate/late callback
@@ -128,13 +145,15 @@ async def report_pushed(
     # guard above -- a duplicate/late callback (rowcount == 0) returned early and writes NOTHING here.
     await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
 
-    compute_queue = request.app.state.task_router.queue_for(compute_agent.id)
-    # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
-    scratch_path = f"{settings.active_compute_scratch_dir}/{file_id}.{file.file_type}"
+    # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
+    # transitional settings.active_compute_scratch_dir reduction accessor is now UNUSED here (its deletion
+    # is Plan 04); scratch resolution is per-agent off the recorded backend.
+    compute_queue = request.app.state.task_router.queue_for(agent_ref)
+    scratch_path = f"{scratch_dir}/{file_id}.{file.file_type}"
     await enqueue_process_file(
         compute_queue,
         file,
-        compute_agent.id,
+        agent_ref,
         settings.models_path,
         expected_sha256=file.sha256_hash,
         scratch_path=scratch_path,
@@ -145,7 +164,8 @@ async def report_pushed(
         "report_pushed: file -> PUSHED + process_file enqueued",
         file_id=str(file_id),
         agent_id=agent.id,
-        compute_agent_id=compute_agent.id,
+        backend_id=backend.id,
+        compute_agent_id=agent_ref,
     )
     return PushedResponse(file_id=file_id)
 
