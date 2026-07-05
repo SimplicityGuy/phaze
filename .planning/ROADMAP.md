@@ -236,7 +236,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
-| 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 2/4 | In Progress|  |
+| 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete   | 2026-07-05 |
 | 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 0/— | Not started | - |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 0/— | Not started | - |
 
@@ -1035,8 +1035,8 @@ Plans:
 
 **Wave 3** *(parallel — no file overlap; both blocked on Wave 2's config.py/backends.py edits)*
 
-- [ ] 72-03-PLAN.md — Per-entry compute binding (D-01/D-02/D-05): `select_agent_by_id` selector + `ComputeAgentBackend` binding accessor + `is_available` rewired to the bound `agent_ref`→`Agent.id`, degrade-to-hold when absent
-- [ ] 72-04-PLAN.md — Boot-time duplicate-`agent_ref` fail-fast (D-04) in `_validate_registry` (Counter, id-tagged, static/no-DB per D-05)
+- [x] 72-03-PLAN.md — Per-entry compute binding (D-01/D-02/D-05): `select_agent_by_id` selector + `ComputeAgentBackend` binding accessor + `is_available` rewired to the bound `agent_ref`→`Agent.id`, degrade-to-hold when absent
+- [x] 72-04-PLAN.md — Boot-time duplicate-`agent_ref` fail-fast (D-04) in `_validate_registry` (Counter, id-tagged, static/no-DB per D-05)
 
 ### Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation
 **Goal**: N cloud-compute agents dispatch, route, reconcile, and fail-isolate simultaneously — each long file pushed to and attributed to the specific agent that analyzes it, cost-tiered across a mixed arm64/x86 fleet by rank and per-agent `cap`, with one flaky agent isolated to 0 slots. The behavior core — the direct compute-side twin of Phase 70's multi-Kueue work.
