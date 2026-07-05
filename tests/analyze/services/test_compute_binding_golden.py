@@ -11,11 +11,12 @@ Every cell pins CURRENT behavior, not a future contract:
 
 * The ≤1-compute lane (cite D-06): a single-compute registry whose compute ``agent_ref`` EQUALS the
   online compute agent's ``Agent.id`` -- the byte-identical single-compute deploy D-01 binds to --
-  resolves to ``resolved_non_local_kind == "compute"``, ``cloud_enabled is True``,
-  ``active_compute_scratch_dir == "/srv/scratch"``, the exact ``/pushed`` scratch-path format
-  ``f"{scratch_dir}/{file_id}.{file_type}"`` (the D-07 boundary agent_push.py must keep
-  byte-identical), and ``ComputeAgentBackend.is_available`` True when that agent is online / False
-  (never raising) when absent.
+  resolves to ``resolved_non_local_kind == "compute"``, ``cloud_enabled is True``, the sole compute
+  backend's ``scratch_dir == "/srv/scratch"`` (resolved per file via ``resolve_compute_backend`` now
+  that the ``active_compute_scratch_dir`` global was retired in Phase 73 / MCOMP-03), the exact
+  ``/pushed`` scratch-path format ``f"{scratch_dir}/{file_id}.{file_type}"`` (the D-07 boundary
+  agent_push.py must keep byte-identical), and ``ComputeAgentBackend.is_available`` True when that
+  agent is online / False (never raising) when absent.
 * The zero-compute lane (Task 2): the implicit ``_default_local_registry`` all-local baseline has no
   cloud activity at all.
 
@@ -67,8 +68,10 @@ def test_single_compute_registry_resolution_is_byte_identical(backends_toml_env:
 
     Pins the pure (no-DB) resolution surface Waves 2-3 must keep byte-identical: a single-compute
     registry is a live cloud lane (``cloud_enabled``), reduces to the ``"compute"`` non-local kind,
-    exposes the sole compute backend's ``scratch_dir``, and composes the exact ``/pushed`` scratch path
-    ``f"{active_compute_scratch_dir}/{file_id}.{file_type}"`` -- the D-07 boundary agent_push.py holds.
+    exposes the sole compute backend's ``scratch_dir`` (resolved per file via ``resolve_compute_backend``
+    now that the ``active_compute_scratch_dir`` global was retired in Phase 73 / MCOMP-03), and composes
+    the exact ``/pushed`` scratch path ``f"{scratch_dir}/{file_id}.{file_type}"`` -- the D-07 boundary
+    agent_push.py holds.
     """
     from phaze.config import ControlSettings
 
@@ -77,12 +80,15 @@ def test_single_compute_registry_resolution_is_byte_identical(backends_toml_env:
 
     assert settings.cloud_enabled is True
     assert backends.resolved_non_local_kind(settings) == "compute"
-    assert settings.active_compute_scratch_dir == "/srv/scratch"
+    # MCOMP-03: scratch is now resolved per file from the recorded backend_id, not a single global.
+    backend = backends.resolve_compute_backend(settings, "oci-a1")
+    assert backend is not None
+    assert backend.scratch_dir == "/srv/scratch"
 
     # D-07 boundary: the /pushed scratch-path format string (agent_push.py ~L133) must stay byte-identical.
     file_id = uuid.UUID("00000000-0000-0000-0000-0000000000ab")
     file_type = "mp3"
-    scratch_path = f"{settings.active_compute_scratch_dir}/{file_id}.{file_type}"
+    scratch_path = f"{backend.scratch_dir}/{file_id}.{file_type}"
     assert scratch_path == "/srv/scratch/00000000-0000-0000-0000-0000000000ab.mp3"
 
 
@@ -130,8 +136,8 @@ def test_implicit_all_local_registry_has_no_cloud_activity(monkeypatch: pytest.M
     With NO ``backends.toml`` present the ``backends`` default_factory synthesizes the single
     ``id=local, rank=99, cap=1`` entry (config_backends._default_local_registry, D-03). This cell pins
     the "no cloud activity" surface Waves 2-3 must keep byte-identical: ``cloud_enabled is False``,
-    ``resolved_non_local_kind == "local"``, ``active_compute_scratch_dir is None``, and
-    ``resolve_backends`` yields exactly one ``LocalBackend`` with ZERO ``ComputeAgentBackend``.
+    ``resolved_non_local_kind == "local"``, ``resolve_compute_backend`` finds no compute entry (None),
+    and ``resolve_backends`` yields exactly one ``LocalBackend`` with ZERO ``ComputeAgentBackend``.
 
     Env-clearing discipline: point ``PHAZE_BACKENDS_CONFIG_FILE`` at a NONEXISTENT path so no stray
     process/.env pointer leaks a real registry in (mirrors the default-registry test's isolation), then
@@ -147,7 +153,7 @@ def test_implicit_all_local_registry_has_no_cloud_activity(monkeypatch: pytest.M
 
     assert settings.cloud_enabled is False
     assert backends.resolved_non_local_kind(settings) == "local"
-    assert settings.active_compute_scratch_dir is None
+    assert backends.resolve_compute_backend(settings, "oci-a1") is None
 
     resolved = backends.resolve_backends(settings)
     assert len(resolved) == 1

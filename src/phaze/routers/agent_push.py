@@ -146,8 +146,8 @@ async def report_pushed(
     await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
 
     # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
-    # transitional settings.active_compute_scratch_dir reduction accessor is now UNUSED here (its deletion
-    # is Plan 04); scratch resolution is per-agent off the recorded backend.
+    # transitional settings.active_compute_scratch_dir reduction accessor was DELETED in Phase 73
+    # (MCOMP-03); scratch resolution is per-agent off the recorded backend.
     compute_queue = request.app.state.task_router.queue_for(agent_ref)
     scratch_path = f"{scratch_dir}/{file_id}.{file.file_type}"
     await enqueue_process_file(

@@ -1020,16 +1020,17 @@ def test_resolve_compute_backend(backends_toml_env: Any) -> None:
     assert backends.resolve_compute_backend(settings, "local") is None
 
 
-# === Pitfall 1: active_compute_scratch_dir on a single-compute reduction ==================
+# === MCOMP-03: per-file compute scratch resolution under local + 2 Kueue + 1 compute ======
 
 
-def test_active_compute_scratch_dir_resolves_under_local_2kueue_1compute(backends_toml_env: Any) -> None:
-    """Pitfall 1: local + 2 Kueue + 1 compute resolves the compute scratch_dir -- no >1-non-local raise.
+def test_resolve_compute_backend_scratch_under_local_2kueue_1compute(backends_toml_env: Any) -> None:
+    """MCOMP-03: local + 2 Kueue + 1 compute resolves the compute scratch_dir per file -- no global accessor.
 
-    Before Phase 70 ``active_compute_scratch_dir`` reduced through ``_single_non_local`` which raised
-    the moment ≥2 non-local backends coexisted, 500ing the ``/pushed`` callback. Re-based on a
-    single-COMPUTE reduction, the milestone's target deploy resolves cleanly to the sole compute
-    backend's scratch_dir.
+    The transitional ``active_compute_scratch_dir`` global was RETIRED in Phase 73: scratch is now
+    resolved PER FILE from the recorded ``cloud_job.backend_id`` via ``resolve_compute_backend`` (the
+    ``/pushed`` reader was rewired in Plan 03). This pins the milestone's target deploy (≥2 non-local
+    backends) resolving cleanly to the sole compute backend's ``scratch_dir`` through the per-file path;
+    a kueue id resolves to None (only ``kind == "compute"`` entries are considered).
     """
     from phaze.config import ControlSettings
 
@@ -1045,4 +1046,8 @@ def test_active_compute_scratch_dir_resolves_under_local_2kueue_1compute(backend
 """
     backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
     settings = ControlSettings()
-    assert settings.active_compute_scratch_dir == "/srv/scratch"
+    backend = backends.resolve_compute_backend(settings, "oci-a1")
+    assert backend is not None
+    assert backend.scratch_dir == "/srv/scratch"
+    # A kueue id is not a compute entry -> None (per-file resolution never mis-attributes to a cluster).
+    assert backends.resolve_compute_backend(settings, "kueue-a") is None

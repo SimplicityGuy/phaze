@@ -21,6 +21,7 @@ import pytest
 
 from phaze.config import ControlSettings
 from phaze.config_backends import BucketConfig, ComputeBackend, KueueBackend, LocalBackend
+from phaze.services.backends import resolve_compute_backend
 
 
 if TYPE_CHECKING:
@@ -286,15 +287,20 @@ def test_cloud_enabled_false_for_implicit_local(monkeypatch: _pytest.MonkeyPatch
     _clear_backends_env(monkeypatch)
     settings = ControlSettings()
     assert settings.cloud_enabled is False
-    assert settings.active_compute_scratch_dir is None
+    # MCOMP-03: the ``active_compute_scratch_dir`` global was retired; an all-local registry has no
+    # compute entry to resolve, so the per-file inverse-lookup returns None for any id.
+    assert resolve_compute_backend(settings, "oci-a1") is None
 
 
 def test_single_compute_backend_accessors(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """A single compute backend reduces through the retained ≤1-non-local value accessors (D-09/D-15)."""
+    """A single compute backend resolves its scratch_dir per file via ``resolve_compute_backend`` (MCOMP-03)."""
     backends_toml_env(_ONE_COMPUTE)
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    assert settings.active_compute_scratch_dir == "/scratch/cloud"
+    # MCOMP-03: scratch is resolved per file from the recorded backend_id, not the retired global accessor.
+    backend = resolve_compute_backend(settings, "oci-a1")
+    assert backend is not None
+    assert backend.scratch_dir == "/scratch/cloud"
 
 
 def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
@@ -316,14 +322,13 @@ def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ign
     assert {bucket.id for bucket in settings.buckets} == {"bucket-a"}
 
 
-def test_multiple_compute_backends_scratch_dir_no_longer_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """>1 COMPUTE backend → ``active_compute_scratch_dir`` returns the first entry's scratch_dir (D-03), no raise.
+def test_multiple_compute_backends_each_resolve_their_own_scratch_dir(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """MCOMP-03: >1 COMPUTE backend -> each resolves its OWN scratch_dir per file (no global reduction).
 
-    Phase 70 (MKUE-01, Pitfall 1) re-based ``active_compute_scratch_dir`` on a single-COMPUTE reduction
-    (so a local + N-Kueue + 1-compute registry no longer 500s /pushed). Phase 72 (MCOMP-01, D-03) retires
-    the >1-COMPUTE fail-fast: for N compute backends the accessor returns the first compute entry's
-    ``scratch_dir`` as a documented TRANSITIONAL reduction. Per-agent scratch resolution (D-07) is
-    deferred to Phase 73 (MCOMP-03); the ≤1 return stays byte-identical.
+    Phase 72 kept a transitional single-COMPUTE ``active_compute_scratch_dir`` reduction that returned the
+    FIRST compute entry's scratch_dir for N compute backends. Phase 73 (MCOMP-03) retired that global: each
+    file resolves scratch PER FILE from its recorded ``cloud_job.backend_id`` via ``resolve_compute_backend``,
+    so N compute backends each attribute to their OWN scratch_dir (never a first-entry collapse).
     """
     backends_toml_env(
         """
@@ -348,8 +353,13 @@ def test_multiple_compute_backends_scratch_dir_no_longer_raises(backends_toml_en
     )
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    # D-03: the >1-compute fail-fast is retired; returns the first compute entry's scratch_dir, no raise.
-    assert settings.active_compute_scratch_dir == "/scratch/a"
+    # MCOMP-03: each compute id resolves to its OWN scratch_dir (no first-entry global reduction).
+    backend_a = resolve_compute_backend(settings, "compute-a")
+    backend_b = resolve_compute_backend(settings, "compute-b")
+    assert backend_a is not None
+    assert backend_b is not None
+    assert backend_a.scratch_dir == "/scratch/a"
+    assert backend_b.scratch_dir == "/scratch/b"
 
 
 # --------------------------------------------------------------------------- #
