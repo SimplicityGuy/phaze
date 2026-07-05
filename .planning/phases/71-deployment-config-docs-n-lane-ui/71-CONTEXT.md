@@ -108,16 +108,24 @@ model; weighted fair-share (milestone non-goals).
   `_FILE` secrets + a **short** deprecation note. `docs/cloud-burst.md` / `docs/k8s-burst.md` get
   pointers to the unified `backends` model. The runbook earns its place on the toggle + per-lane
   reading + spillover content **independent of migration**.
-- **D-12 (`cloud_target` = trivial deprecation, no migration guide):** Per operator: **no one ever
+- **D-12 (`cloud_target` = docs-only note, no migration guide):** Per operator: **no one ever
   deployed `cloud_target=a1|k8s` live — there is no config to migrate** (matches the ~zero-live-rows
   note carried from Phases 68/70). So the requirement's "migration path" collapses to: document
-  `backends:` as the way, show the trivial **1:1 `cloud_target`→`backends` equivalence** for
-  completeness, and mark `cloud_target` **deprecated**. **No migration runbook, no removal date**;
-  the back-compat shim stays (harmless).
-- **D-13 (docs + one-line startup deprecation log):** Deprecation is **docs + a single deprecation
-  log-warning emitted at startup when `cloud_target` is set** (tiny code touch), so any future/legacy
-  deploy that trips the shim gets a nudge in the logs. The shim keeps working silently otherwise; no
-  removal version pinned.
+  `backends:` as the way and show the trivial **1:1 `cloud_target`→`backends` equivalence** for
+  anyone reading old configs. **No migration runbook, no removal date.**
+  **FACTUAL CORRECTION (Phase-71 research A1, 2026-07-04):** the discuss-phase premise that a
+  `cloud_target=a1|k8s` **back-compat shim still exists** was WRONG — **Phase 67 already removed
+  `cloud_target` entirely, with no shim** (`docs/configuration.md:123`), and Pydantic
+  `extra="ignore"` **silently drops** a stale `PHAZE_CLOUD_TARGET` env var. There is nothing to
+  "keep working." So the docs must say `cloud_target` was **removed in Phase 67 — use `backends:`**
+  (not "deprecated but still works").
+- **D-13 (docs-only — startup deprecation log DROPPED):** Superseded by the A1 correction + operator
+  decision (2026-07-04). The originally-planned "one-line startup deprecation log when `cloud_target`
+  is set" is **DROPPED**: there is no shim to warn about and the env var is already silently ignored,
+  so a log would require brand-new env-var-detector code for a variable nobody ever set — rejected as
+  over-engineering. **BEUI-03 deprecation coverage is DOCS-ONLY**: `configuration.md` states
+  `cloud_target` is removed + shows the 1:1 `backends:` equivalence. **No new runtime code for
+  deprecation.**
 
 ### Claude's Discretion (planner / UI-phase decides)
 - Fate of the 6 global cloud-state cards (D-07) — lean keep-as-roll-up, but planner/UI-phase may fold.
@@ -205,8 +213,10 @@ model; weighted fair-share (milestone non-goals).
   consumed by the looped `_lane_card.html` in `analyze_workspace.html`.
 - Force-local control row (new) → written by a new thin endpoint (header toggle) → read in
   `select_backend`/router where `cloud_enabled` / pause controls are already consulted.
-- Startup deprecation log (D-13) → wherever config validation / the `cloud_target` back-compat shim
-  is resolved (Phase 67, `config.py`).
+- BEUI-03 deprecation (D-12/D-13) → **docs-only**, NO code integration point. `cloud_target` was
+  already fully removed in Phase 67 (`config.py`); `configuration.md` documents that removal + the
+  1:1 `backends:` equivalence. (Original "startup deprecation log" integration point DROPPED — see
+  D-13 correction.)
 
 </code_context>
 
@@ -232,8 +242,8 @@ model; weighted fair-share (milestone non-goals).
 - **Folding the 6 global cloud-state cards fully into per-lane cards** (removing the global roll-up) —
   considered under D-07, deferred as higher-risk; default keeps them as a roll-up. A future UI polish
   pass could revisit once N-lane usage is observed.
-- **`cloud_target` shim removal** — no removal date this phase (D-12/D-13); a future milestone can
-  schedule it if the two config styles ever cause friction.
+- **`cloud_target` removal** — already DONE in Phase 67 (no shim exists; research A1). Nothing to
+  remove this phase; BEUI-03 just documents the removal (D-12/D-13, docs-only).
 
 </deferred>
 
