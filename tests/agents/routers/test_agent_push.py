@@ -135,6 +135,59 @@ _LOCAL_2KUEUE_COMPUTE_REGISTRY = f"""
 """
 
 
+# MCOMP-03/06 (D-06): two DISTINCT compute backends (distinct agent_ref + scratch_dir). /pushed must
+# route process_file to the queue named by the file's RECORDED cloud_job.backend_id -- never
+# select_active_agent(kind=compute) -- so a file dispatched to backend A lands on A's agent_ref queue
+# with A's scratch_dir even when a different compute agent is the "active" one (Pitfall 4 fix).
+_TWO_COMPUTE_REGISTRY = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 10
+    cap = 2
+    agent_ref = "compute-agent-a"
+    scratch_dir = "/srv/scratch-a"
+    push_host = "a.push.example"
+
+    [[backends]]
+    kind = "compute"
+    id = "oci-a2"
+    rank = 20
+    cap = 2
+    agent_ref = "compute-agent-b"
+    scratch_dir = "/srv/scratch-b"
+    push_host = "b.push.example"
+"""
+
+
+# D-07 (/mismatch reporter authorization): the /mismatch reporter IS the compute agent running
+# process_file, so agent.id must equal the recorded backend's agent_ref. Pin the sole compute backend's
+# agent_ref to the seed_test_agent id ("test-agent-01") so the token-authed reporter passes the D-07 gate
+# and the re-drive / spill paths can be exercised end-to-end.
+_COMPUTE_REPORTER_REGISTRY = f"""
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 10
+    cap = 2
+    agent_ref = "test-agent-01"
+    scratch_dir = "{_SCRATCH_DIR}"
+    push_host = "oci-a1.push.example"
+"""
+
+
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any, *, registry: str = _COMPUTE_REGISTRY) -> None:
     """Pin the router's ``get_settings()`` to a real ControlSettings off ``registry`` (default one-compute).
 
@@ -228,13 +281,18 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """pushed -> PUSHED + push ledger cleared + ONE process_file with pinned sha256 + scratch_path."""
+    """pushed -> PUSHED + push ledger cleared + ONE process_file with pinned sha256 + scratch_path.
+
+    D-06 (record-don't-rederive): process_file routes to the queue named by the file's RECORDED
+    cloud_job.backend_id ("oci-a1" -> agent_ref "compute-agent-01"), NOT select_active_agent, with the
+    scratch_path built from that backend's scratch_dir.
+    """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id)
-    compute = await seed_active_agent(session, agent_id="compute-01", kind="compute")
-    compute_id = compute.id  # capture before any expire_all() detaches the attribute
+    # ComputeAgentBackend.dispatch stamped this row (backend_id="oci-a1") when the file was staged.
+    await _seed_cloud_job(session, file_id)
 
     task_router = FakeTaskRouter()
     async with _make_client(session, task_router, raw_token) as ac:
@@ -250,9 +308,13 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     assert file_row.state == FileState.PUSHED
     sha = file_row.sha256_hash  # read before the next expire_all() to avoid a lazy reload
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "push_file ledger row must be cleared"
+    # D-08: the recorded cloud_job is terminalized (SUBMITTED -> SUCCEEDED) in the same transaction.
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value
 
-    # Exactly one process_file enqueued on the COMPUTE queue with the pinned payload.
-    compute_queue = task_router.queues[compute_id]
+    # Exactly one process_file enqueued on the RECORDED backend's agent_ref queue with the pinned payload.
+    compute_queue = task_router.queues["compute-agent-01"]
     assert len(compute_queue.captured) == 1
     task_name, payload = compute_queue.captured[0]
     assert task_name == "process_file"
@@ -277,29 +339,68 @@ async def test_pushed_scratch_path_resolves_under_local_2kueue_1compute(
     _patch_settings(monkeypatch, backends_toml_env, registry=_LOCAL_2KUEUE_COMPUTE_REGISTRY)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_push_ledger(session, file_id)
-    compute = await seed_active_agent(session, agent_id="compute-01", kind="compute")
-    compute_id = compute.id
+    await _seed_cloud_job(session, file_id)  # backend_id="oci-a1"
 
     task_router = FakeTaskRouter()
     async with _make_client(session, task_router, raw_token) as ac:
         r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
 
     assert r.status_code == 200, r.text  # NOT a 500 despite ≥2 non-local backends
-    # scratch_path resolved off the single compute backend's scratch_dir.
-    compute_queue = task_router.queues[compute_id]
+    # scratch_path resolved off the RECORDED compute backend's scratch_dir; routed to its agent_ref queue.
+    compute_queue = task_router.queues["compute-agent-01"]
     assert len(compute_queue.captured) == 1
     _task_name, payload = compute_queue.captured[0]
     assert payload["scratch_path"] == f"{_SCRATCH_DIR}/{file_id}.flac"
 
 
 @pytest.mark.asyncio
-async def test_pushed_holds_cleanly_when_no_compute_agent(
+async def test_pushed_routes_to_recorded_backend_not_active_agent(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """No compute agent online -> 200 hold (no 500), state stays PUSHING, ledger intact."""
+    """D-06 (Pitfall 4): with two compute backends, /pushed routes to the RECORDED backend, not the active one.
+
+    The file's cloud_job.backend_id names backend A ("oci-a1" -> agent_ref "compute-agent-a",
+    scratch_dir "/srv/scratch-a"). Even with a DIFFERENT compute agent online (backend B's
+    "compute-agent-b"), process_file must land on A's agent_ref queue with A's scratch_dir -- never B's
+    -- so terminalization/scratch/compute-queue attribute to the agent the file was dispatched to.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, registry=_TWO_COMPUTE_REGISTRY)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id)  # backend_id="oci-a1" == backend A
+    # A different compute agent is the "active" one (backend B's agent_ref) -- routing must ignore it.
+    await seed_active_agent(session, agent_id="compute-agent-b", kind="compute")
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    assert r.status_code == 200, r.text
+    # Routed to backend A's agent_ref queue with A's scratch_dir -- never B's.
+    assert "compute-agent-b" not in task_router.queues, "must not route to the active compute agent"
+    compute_queue = task_router.queues["compute-agent-a"]
+    assert len(compute_queue.captured) == 1
+    _task_name, payload = compute_queue.captured[0]
+    assert payload["scratch_path"] == f"/srv/scratch-a/{file_id}.flac"
+
+
+@pytest.mark.asyncio
+async def test_pushed_holds_cleanly_when_no_cloud_job(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """D-06: no cloud_job recorded (unattributed file) -> 200 hold (no 500), state stays PUSHING, ledger intact.
+
+    With no cloud_job the file has no attributed compute backend to resolve, so /pushed cannot route
+    process_file: it holds cleanly (mirroring the old no-compute-agent hold) so the staging cron /
+    recovery re-drives it once the backend is resolvable.
+    """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
@@ -313,7 +414,38 @@ async def test_pushed_holds_cleanly_when_no_compute_agent(
     file_row = await _file_row(session, file_id)
     assert file_row.state == FileState.PUSHING, "held file must stay PUSHING for the staging cron / recovery"
     assert await _ledger_row(session, f"push_file:{file_id}") is not None, "ledger row must survive a hold"
-    assert task_router.queues == {}, "nothing enqueued when no compute agent is online"
+    assert task_router.queues == {}, "nothing enqueued when no compute backend is attributed"
+
+
+@pytest.mark.asyncio
+async def test_pushed_holds_when_backend_id_unresolvable(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """D-06: a cloud_job whose backend_id names no compute backend (operator-removed) -> clean 200 hold.
+
+    resolve_compute_backend returns None for an unknown/removed backend_id, so /pushed holds without
+    mutating state -- it never routes to a phantom backend or 500s.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id)
+    # A cloud_job pointing at a backend_id absent from the registry (e.g. an operator removed it).
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file_id, backend_id="removed-backend", s3_key=None, status=CloudJobStatus.SUBMITTED.value))
+    await session.commit()
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    assert r.status_code == 200, r.text
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.PUSHING
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None
+    assert task_router.queues == {}, "nothing enqueued for an unresolvable backend_id"
 
 
 @pytest.mark.asyncio
@@ -333,7 +465,10 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     _patch_settings(monkeypatch, backends_toml_env)
     # The file has already advanced all the way to ANALYZED (the first callback + analysis ran).
     file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
-    await seed_active_agent(session, agent_id="compute-01", kind="compute")
+    # Seed the cloud_job so the backend RESOLVES -- this exercises the WR-02 rowcount==0 idempotent guard
+    # (not the no-cloud_job hold): with a resolvable backend the flip is still a no-op because the file
+    # is no longer PUSHING.
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
 
     task_router = FakeTaskRouter()
     async with _make_client(session, task_router, raw_token) as ac:
@@ -345,6 +480,11 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     assert file_row.state == FileState.ANALYZED
     # Nothing re-enqueued -- the finished file is not re-analyzed.
     assert task_router.queues == {}
+    # WR-02: the cloud_job terminalization is gated behind the rowcount guard, so it stays SUBMITTED
+    # (NOT flipped to SUCCEEDED) on the idempotent no-op.
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUBMITTED.value
 
 
 @pytest.mark.asyncio
