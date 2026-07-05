@@ -34,34 +34,24 @@ Sound is invisible architecture. Every visual mark is a waveform — each line, 
 | `blue-900` | `#004455` | Deep accents |
 | `blue-950` | `#002233` | Darkest accent |
 
-### Surface Colors
+### Surface, Border & Text Colors (as implemented)
 
-| Token | Dark Mode | Light Mode | Usage |
-|-------|-----------|------------|-------|
-| `--bg-primary` | `#0a0c12` | `#eef0f5` | Page background |
-| `--bg-surface` | `#10141c` | `#ffffff` | Cards, panels |
-| `--bg-raised` | `#181d28` | `#f8f9fb` | Elevated surfaces |
-| `--bg-sunken` | `#060810` | `#e4e6ec` | Inset areas |
-| `--bg-hover` | `#1c2230` | `#e8eaf0` | Hover states |
+The build defines exactly **three** surface/border tokens in the Tailwind v4 `@theme` block (`assets/src/app.css`). There are no separate `--bg-*`, `--border-*`, or `--text-*` custom properties — light/dark is handled by Tailwind's `dark:` variant (a `.dark` class flip on the root, see `@custom-variant dark` in `app.css`), **not** by swapping CSS-variable values.
 
-### Border Colors
+| Token | Value | Tailwind utilities | Usage |
+|-------|-------|--------------------|-------|
+| `--color-phaze-bg` | `#0a0c12` | `bg-phaze-bg`, `text-phaze-bg` | Page background |
+| `--color-phaze-panel` | `#10141c` | `bg-phaze-panel` | Cards, panels |
+| `--color-phaze-border` | `#232832` | `border-phaze-border` | Borders, dividers |
 
-| Token | Dark Mode | Light Mode | Usage |
-|-------|-----------|------------|-------|
-| `--border-default` | `#232832` | `#d1d5db` | Standard borders |
-| `--border-subtle` | `#1a1f28` | `#e5e7eb` | Subtle dividers |
-| `--border-strong` | `#2d3340` | `#9ca3af` | Emphasized borders |
-| `--border-focus` | `#1abbdb` | `#008caf` | Focus rings |
+Everything else — text, muted captions, hover states, light-mode surfaces — is expressed with **stock Tailwind gray/blue utilities plus `dark:` variants**, e.g.:
 
-### Text Colors
+- Primary text: `text-gray-900 dark:text-gray-100`
+- Secondary / muted text: `text-gray-500 dark:text-gray-400`
+- Accent text: `text-blue-400` (dark), `text-blue-700` (light)
+- Focus ring: `focus:ring-blue-400/50`
 
-| Token | Dark Mode | Light Mode | Usage |
-|-------|-----------|------------|-------|
-| `--text-primary` | `#f0f1f5` | `#1a1f2e` | Primary content |
-| `--text-secondary` | `#a0a8b8` | `#4b5563` | Secondary content |
-| `--text-muted` | `#667c8a` | `#6b7280` | Muted / captions |
-| `--text-inverse` | `#0a0c12` | `#f0f1f5` | Inverse surfaces |
-| `--text-accent` | `#1abbdb` | `#008caf` | Accent text |
+> **Aspirational (NOT yet implemented):** an earlier draft of this system proposed a fuller semantic token set — `--bg-primary/-surface/-raised/-sunken/-hover`, `--border-default/-subtle/-strong/-focus`, and `--text-primary/-secondary/-muted/-inverse/-accent` with explicit dark/light value pairs. **None of these exist in the build.** Treat them as a future roadmap, not as classes you can use today.
 
 ### Status Colors
 
@@ -73,10 +63,12 @@ Sound is invisible architecture. Every visual mark is a waveform — each line, 
 | Error | `#ef4444` | `#ef444414` | Failed, critical |
 | Disabled | `#6b7280` | `#6b728014` | Inactive |
 
-### CSS Custom Properties (Dark Mode)
+### CSS Custom Properties
+
+These live in the Tailwind v4 `@theme { }` block in `assets/src/app.css` (not `:root`). Declaring them in `@theme` is what generates the `blue-*` and `phaze-*` utility classes at build time.
 
 ```css
-:root {
+@theme {
   /* Brand accent */
   --color-blue-50: #e6f7fb;
   --color-blue-100: #b3e8f3;
@@ -187,7 +179,7 @@ Use status colors with `/10` (10% opacity) background tints.
 
 **Ghost:**
 ```html
-<button class="rounded px-4 py-2 text-sm text-phaze-text-secondary
+<button class="rounded px-4 py-2 text-sm text-gray-400
   hover:bg-phaze-panel transition-colors">
   Cancel
 </button>
@@ -203,7 +195,7 @@ Use status colors with `/10` (10% opacity) background tints.
 
 ### Tables
 
-- Header row: `bg-phaze-bg` with `text-text-muted`, uppercase `text-xs`, `tracking-wider`
+- Header row: `bg-phaze-bg` with `text-gray-400`, uppercase `text-xs`, `tracking-wider`
 - Body rows: `bg-phaze-panel`, `border-b border-phaze-border`
 - Hover: `hover:bg-phaze-bg/50`
 - Cell padding: `px-4 py-3`
@@ -212,7 +204,7 @@ Use status colors with `/10` (10% opacity) background tints.
 
 ```html
 <input class="rounded border border-phaze-border bg-phaze-bg px-3 py-2
-  text-sm text-text-primary placeholder-text-muted
+  text-sm text-gray-100 placeholder-gray-500
   focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400/50">
 ```
 
@@ -274,7 +266,7 @@ Border radius: 6px (default)
 | `square_light.png` | PNG | 512x512 | `logos/phaze-square-light.svg` |
 | `banner_dark.png` | PNG | 1200x400 | `banners/phaze-banner-static.svg` |
 | `banner_light.png` | PNG | 1200x400 | Light variant of static banner |
-| `favicon-{16,32,48,64,128,192,256,512}.png` | PNG | Matching px | `favicons/favicon-{size}.svg` |
+| `favicon-{16,32,48,64,128,256,512}.png` | PNG | Matching px | `favicons/favicon-{size}.svg` |
 | `og_image.png` | PNG | 1200x630 | Social sharing image |
 | `design_showcase.png` | PNG | 2400x1800 | `showcase.html` screenshot |
 

@@ -11,8 +11,10 @@ The service wraps the Panako Java CLI via subprocess calls, with `asyncio.to_thr
 ## Build
 
 ```bash
-docker compose build panako
+docker compose -f docker-compose.agent.yml build panako
 ```
+
+> **Caveat:** `docker-compose.agent.yml` pulls the prebuilt GHCR image (`ghcr.io/simplicityguy/phaze/panako`) by default; its `build:` stanza is commented out. To build locally you must uncomment that `build:` block for the `panako` service and pass `-f docker-compose.agent.yml` (the root `docker-compose.yml` is application-server-only post-Phase-29 and does not define this service).
 
 The Dockerfile uses a multi-stage build:
 1. **Stage 1 (JDK):** Clones the Panako repository and builds the shadow JAR with Gradle

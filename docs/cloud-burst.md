@@ -14,16 +14,18 @@ the deploy ordering, and the smoke test. For the canonical per-knob config refer
 [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings) — this page does
 not duplicate that table.
 
-> **Renamed in v6.0 (breaking).** The old single on/off cloud-burst boolean is **removed** and
-> replaced by the `PHAZE_CLOUD_TARGET` selector (`local` \| `a1` \| `k8s`). If you kept the old
-> enable boolean in your live env it is now **ignored** — cloud silently stays `local` on redeploy.
-> Delete it and set `PHAZE_CLOUD_TARGET` instead. See *Cloud target & runtime-state semantics* below.
+> **Enable by declaring a `kind="compute"` backend.** There is **no** on/off boolean and **no**
+> `PHAZE_CLOUD_TARGET` selector — both were **removed in Phase 67 (2026.7.1) with no shim**. Cloud
+> burst is on iff the [backend registry](configuration.md#backend-registry-backendstoml)
+> (`backends.toml`) declares any non-local backend; a `compute` backend is the OCI A1 lane this
+> page documents. See *Enabling the compute backend & runtime-state semantics* below.
 
-> **The feature ships OFF by default.** `PHAZE_CLOUD_TARGET=local` (the default) means a fresh
-> deploy behaves **all-local** with zero cloud activity. Provision the infrastructure below first,
-> then set the target and restart the control plane (Step 6). Use `PHAZE_CLOUD_TARGET=a1` for the
-> OCI A1 compute agent documented on this page, or `PHAZE_CLOUD_TARGET=k8s` for the Kubernetes
-> (Kueue) target — documented in its own runbook, [k8s-burst.md](k8s-burst.md).
+> **The feature ships OFF by default.** An **absent** `backends.toml` synthesizes an implicit
+> single `kind="local"` backend, so a fresh deploy behaves **all-local** with zero cloud activity
+> (`cloud_enabled` is derived `False`). Provision the infrastructure below first, then add a
+> `kind="compute"` entry to `backends.toml` and restart the control plane (Step 6). For the
+> Kubernetes (Kueue) lane declare a `kind="kueue"` backend instead — documented in its own
+> runbook, [k8s-burst.md](k8s-burst.md).
 
 > **Superseded in 2026.7.1 (Phase 67).** The single `PHAZE_CLOUD_TARGET` selector this page
 > describes was **removed** in favor of the declarative **[backend registry](configuration.md#backend-registry-backendstoml)**
@@ -41,19 +43,28 @@ flowchart LR
   subgraph nox["nox (file server)"]
     noxc["docker-compose.agent.yml<br/>(worker+watcher+fprint+media)"]
   end
-  subgraph a1["OCI A1 (compute agent)"]
+  subgraph a1["OCI A1 (compute backend, rank R)"]
     a1c["docker-compose.cloud-agent.yml<br/>worker (kind=compute)<br/>no media, scratch volume<br/>-arm64 image"]
   end
   subgraph lux["lux (application server)"]
     luxapi["api(:8000) · Postgres(:5432 app ORM + saq_jobs broker) · Redis(:6379)"]
-    luxctl["controller worker (stage_cloud_window cron)"]
+    luxctl["controller worker (stage_cloud_window drain — resolve_backends → select_backend)"]
     luxbroker["broker role 'phaze_broker' → saq_jobs ONLY (least-privilege)"]
+    luxlocal["local backend (rank 99, safety net)"]
   end
+  kueue["...N other backends (kind=kueue clusters, own ranks)"]
   noxc -->|"rsync over SSH (nox → A1:22)"| a1c
   a1c -->|"HTTP API + saq_jobs + cache (A1 → lux:{5432,6379,8000})"| luxapi
+  luxctl -.->|"rank-first dispatch"| a1c
+  luxctl -.->|"spill to next rank when a lane is FULL"| kueue
+  luxctl -.->|"staleness-gated spill (all cloud FULL, waited) / immediate (all cloud OFFLINE)"| luxlocal
 ```
 
-_PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, staging cron no-ops, backfill rejected, A1 idle. (all-local)_
+_The compute (A1) backend is **one rank-tiered lane among N** the registry resolves simultaneously.
+`cloud_enabled` derived `False` (no non-local backend) ⇒ long files route LOCAL, the drain no-ops,
+backfill rejected, A1 idle (all-local). With a `kind="compute"` entry present, the tiered drain
+routes each FIFO candidate rank-first, spilling to the next rank when a lane is at `cap` and to
+local only under the staleness gate below._
 
 Key invariants:
 
@@ -220,7 +231,7 @@ broker zero rights in `public` (`CREATE SCHEMA saq; ALTER TABLE … SET SCHEMA s
 ## Step 4 — Release the `-arm64` image
 
 Ship a CalVer release. The Phase 47 `build-arm64` CI job publishes the native arm64 image as a
-separate `-arm64` tag — `ghcr.io/simplicityguy/phaze:2026.7.0-arm64` (and `:latest-arm64` on the
+separate `-arm64` tag — `ghcr.io/simplicityguy/phaze:2026.7.1-arm64` (and `:latest-arm64` on the
 default branch). The cloud-agent compose pins it via `PHAZE_IMAGE_TAG` (see
 [arm64-agent-image.md → Tag naming](arm64-agent-image.md)). There is no multi-arch manifest, so
 the `-arm64` suffix is mandatory.
@@ -255,7 +266,7 @@ PHAZE_CLOUD_SCRATCH_DIR=/scratch                               # MUST match cont
 WORKER_MAX_JOBS=1                                              # single RAM-bound analysis on the 12 GB A1
 MODELS_PATH=/models
 PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt
-PHAZE_IMAGE_TAG=2026.7.0                                      # pulls 2026.7.0-arm64
+PHAZE_IMAGE_TAG=2026.7.1                                      # pulls 2026.7.1-arm64
 # NO DATABASE_URL (DIST-04). NO SCAN_PATH / PHAZE_AGENT_SCAN_ROOTS (kind=compute relaxes it).
 ```
 
@@ -268,22 +279,43 @@ PHAZE_IMAGE_TAG=2026.7.0                                      # pulls 2026.7.0-a
 (lux control plane) and the named-volume mount path — a drift surfaces as a sha256/transfer
 failure, never silent corruption.
 
-## Step 6 — Select the cloud target and restart the control plane (lux)
+## Step 6 — Declare the compute backend and restart the control plane (lux)
 
-On the **lux control plane**, set the routing selector and restart so the new value is read:
+On the **lux control plane**, add a `kind="compute"` entry to the
+[backend registry](configuration.md#backend-registry-backendstoml) TOML file
+(`PHAZE_BACKENDS_CONFIG_FILE`, default `/etc/phaze/backends.toml`) and restart so the registry is
+re-read. There is **no** `PHAZE_CLOUD_TARGET` env var — on/off is **derived** from whether the
+registry holds any non-local backend (`cloud_enabled`).
 
-```bash
-# In the lux .env (A1 / rsync target):
-PHAZE_CLOUD_TARGET=a1
-# then restart the controller worker + api
+```toml
+# /etc/phaze/backends.toml on lux. An absent file = implicit all-local; adding this compute
+# entry is what turns cloud burst ON (cloud_enabled becomes True).
+
+# The always-present local safety net (rank 99 = last-resort spill target).
+[[backends]]
+id   = "local"
+kind = "local"
+rank = 99
+cap  = 1
+
+# The OCI A1 compute lane this page provisions. rank < 99 so the drain prefers it over local.
+[[backends]]
+id          = "a1"
+kind        = "compute"
+rank        = 10                 # cost-tier ordering — lower runs sooner
+cap         = 1                  # concurrency cap (RAM-bound single analysis on the 12 GB A1)
+agent_ref   = "phaze-agent-<compute_agent_id>"   # REQUIRED — the agent node the rsync push dispatches to
+scratch_dir = "/scratch"         # REQUIRED — remote scratch dir the push lands in; MUST match the A1's PHAZE_CLOUD_SCRATCH_DIR
 ```
 
-`cloud_target` is a **startup-read** of the settings singleton — setting the env var on a running
-controller does **nothing** until the controller worker + api restart. Once set to `a1`, long files
-begin routing to the A1, and any pre-existing `AWAITING_CLOUD` rows held from before the change are
-released by the staging cron. For the Kubernetes target set `PHAZE_CLOUD_TARGET=k8s` instead and
-provide the kube/S3 knobs — see the dedicated [k8s-burst.md](k8s-burst.md) runbook. See *Cloud
-target & runtime-state semantics* below.
+The registry is **startup-read** — editing `backends.toml` on a running controller does **nothing**
+until the controller worker + api restart. Once the `compute` backend is declared, long files begin
+routing to the A1 rank-first, and any pre-existing `AWAITING_CLOUD` rows held from before the change
+are released by the tiered drain. For the Kubernetes lane declare a `kind="kueue"` backend (with a
+`[backends.kube]` submodel and a `[[buckets]]` staging entry) instead — see the dedicated
+[k8s-burst.md](k8s-burst.md) runbook. Both lanes can be declared **simultaneously**; the scheduler
+drains across all of them by rank. See *Enabling the compute backend & runtime-state semantics*
+below.
 
 ## Step 7 — Smoke test
 
@@ -300,47 +332,87 @@ Confirm the end-to-end path with this checklist:
       scratch, analyzes it, and posts results that reconcile by `file_id`.
 - [ ] **Scratch is cleaned.** The pushed file is deleted from the A1 scratch volume after
       analysis (no scratch leak).
-- [ ] **`local` reverts cleanly (optional).** With `PHAZE_CLOUD_TARGET=local` + a control-plane
-      restart, a new long file routes **local** and the staging cron no-ops.
+- [ ] **Reverts cleanly (optional).** Engage the runtime **force-local** pill (no restart) — or
+      drop the `kind="compute"` entry from `backends.toml` and restart — and confirm a new long file
+      routes **local** and the drain no-ops.
 
-## Cloud target & runtime-state semantics
+## Enabling the compute backend & runtime-state semantics
 
-> **Renamed in v6.0 (breaking).** The old single on/off cloud-burst boolean is **removed**. The
-> `PHAZE_CLOUD_TARGET` selector (`local` \| `a1` \| `k8s`) replaces it. An operator who kept the old
-> enable boolean set in their live env must **delete it** — it is ignored and cloud silently stays
-> `local` on redeploy.
+> **Superseded in 2026.7.1 (Phase 67).** The old single on/off boolean **and** the
+> `PHAZE_CLOUD_TARGET` (`local` \| `a1` \| `k8s`) selector that replaced it are **both removed with
+> no shim**. On/off is now **derived** (`cloud_enabled`): the feature is on iff `backends.toml`
+> declares any non-local backend. A stale `PHAZE_CLOUD_TARGET=…` left in a live `.env` is **silently
+> dropped** (`model_config` is `extra="ignore"`) — it does **not** pin routing. Delete it.
 
-`PHAZE_CLOUD_TARGET` (`cloud_target`, `ControlSettings`) is the **single routing selector** for the
-whole feature (CLOUDDEPLOY-04):
+The compute (A1) lane is a `[[backends]] kind="compute"` entry in the
+[backend registry](configuration.md#backend-registry-backendstoml) — **one rank-tiered lane among
+N** the registry resolves simultaneously (`resolve_backends`), not a single global target:
 
-- **`local` (default) = all-local, no other change.** Every file — short and long — routes
-  to the local file-server queue exactly as before cloud burst existed. The routing seam never
-  sets `AWAITING_CLOUD`, the staging cron no-ops, and backfill-to-cloud is rejected. Long files
-  may then time out locally and fail cleanly as `ANALYSIS_FAILED`. A fresh deploy ships
-  **dormant** this way until the operator selects a target and completes Steps 1–6.
-- **`a1` = OCI A1 compute agent (this page).** Long files route to the A1 via rsync-over-SSH.
-  Requires `compute_scratch_dir` (control plane) matched to the A1's `cloud_scratch_dir`.
-- **`k8s` = Kubernetes (Kueue).** Long files stage to S3 and the control plane submits a suspended
-  Kueue Job. Requires the kube + S3 knobs. Documented in its own runbook —
-  [k8s-burst.md](k8s-burst.md).
-- **Changing the target requires a control-plane restart** (startup-read — Pitfall 6). The
-  controller worker + api must restart for a change to take effect.
-- **In-flight work drains; switching to `local` only stops NEW cloud work.** Files already
+- **All-local (default) = no non-local backend.** With an absent `backends.toml` (or a registry of
+  only `kind="local"`), `cloud_enabled` derives **`False`**: every file — short and long — routes
+  to the local file-server queue exactly as before cloud burst existed. The routing seam never sets
+  `AWAITING_CLOUD`, the drain no-ops, and backfill-to-cloud is rejected. Long files may then time
+  out locally and fail cleanly as `ANALYSIS_FAILED`. A fresh deploy ships **dormant** this way until
+  the operator declares a non-local backend and completes Steps 1–6.
+- **`kind="compute"` = OCI A1 compute agent (this page).** Long files route to the A1 via
+  rsync-over-SSH. Requires the backend's `agent_ref` and `scratch_dir` (the latter matched to the
+  A1's `cloud_scratch_dir`). Held ≤1 (deferred PROV-01 invariant), but still **one rank-tiered lane
+  among N**.
+- **`kind="kueue"` = Kubernetes (Kueue).** Long files stage to S3 and the control plane submits a
+  suspended Kueue Job. Requires the backend's `[backends.kube]` submodel and a `[[buckets]]` staging
+  entry. Documented in its own runbook — [k8s-burst.md](k8s-burst.md). N Kueue clusters may be
+  declared at once.
+- **Changing the registry requires a control-plane restart** (startup-read — Pitfall 6). The
+  controller worker + api must restart for a `backends.toml` edit to take effect. (For a
+  *no-restart* incident revert, use the force-local pill — see *Reverting to local* below.)
+- **In-flight work drains; dropping a cloud backend only stops NEW cloud work.** Files already
   `PUSHING`/`PUSHED` finish across a restart (state is durable in Postgres); no mid-transfer/
-  mid-analysis abort, no scratch reclaim. Held `AWAITING_CLOUD` rows from before a `local`→cloud
-  change release once a cloud target is selected.
+  mid-analysis abort, no scratch reclaim. Held `AWAITING_CLOUD` rows from before a backend is added
+  release once a cloud backend is declared.
 - **`nox`'s `PHAZE_PUSH_KNOWN_HOSTS` must be re-provisioned** with the A1's SSH **host key** after
   the A1 is up (Phase 50 strict known_hosts), or the rsync-over-SSH push fails host verification.
 
-### Selecting the `k8s` target
+### Tiered drain & spillover (Phase 69, SCHED-01)
 
-The Kubernetes (Kueue) target — the kube + S3 config knobs, the cluster-admin runbook
-(ResourceFlavor / ClusterQueue / LocalQueue / RBAC / Secret), the apiVersion-lockstep rule, the
-transport-agnostic endpoint notes, the deploy ordering, and the submit → reconcile lifecycle —
+With N backends resolved, the controller's `stage_cloud_window` drain replaces the old
+single-backend "stay one ahead" in-flight window with a **rank-first tiered drain**. Each tick it
+snapshots every backend's `is_available()` and `remaining = cap - in_flight_count()` once, then
+routes each FIFO `AWAITING_CLOUD` candidate through the pure `select_backend` policy:
+
+- **Rank-first dispatch.** The available lowest-`rank` backend with a free slot wins; a lowest-rank
+  backend that is at `cap` **spills to the next rank**, per candidate.
+- **Staleness-gated spill to local.** Slow local (rank 99) becomes an eligible spill target only
+  after the file has waited past `cloud_spill_to_local_after_seconds` (default 900s) while all
+  higher-rank backends are **online-but-FULL** — but when every non-local backend is **OFFLINE**,
+  local is eligible **immediately** (the gate guards the full→local path, not the offline→local
+  path).
+- **Attempt-exclusion (anti-thrash).** A file whose cloud attempt count has reached
+  `cloud_submit_max_attempts` is excluded from cloud/Kueue candidates and routes to local only —
+  local is never excluded, it is the guaranteed safety net.
+- **Clean holds.** When nothing is eligible this tick, `select_backend` returns `None` and the file
+  stays `AWAITING_CLOUD` (a no-op hold, never a failure).
+
+### Reverting to local
+
+Two paths, matching the incident-vs-planned distinction:
+
+- **Incident revert (no restart).** Engage the pipeline header **force-local** pill (BEUI-02): it
+  writes a durable `route_control` row that gates both the drain and the duration router **live**.
+  Files already held `AWAITING_CLOUD` stay held (the drain no-ops); new long files route local.
+  Reversible, no redeploy — see [runbook.md → Force-local incident revert](runbook.md#force-local-incident-revert).
+- **Planned revert.** Drop the `kind="compute"` (and/or `kind="kueue"`) entry from `backends.toml`
+  and restart the controller worker + api. `cloud_enabled` derives back to `False` and the deploy is
+  all-local again.
+
+### Declaring a `kind="kueue"` backend
+
+The Kubernetes (Kueue) lane — the `[backends.kube]` + `[[buckets]]` config, the cluster-admin
+runbook (ResourceFlavor / ClusterQueue / LocalQueue / RBAC / Secret), the apiVersion-lockstep rule,
+the transport-agnostic endpoint notes, the deploy ordering, and the submit → reconcile lifecycle —
 is documented in its own self-contained runbook:
 
 > **➡ See [k8s-burst.md](k8s-burst.md)** for the full Kubernetes burst setup. This page stays
-> A1-specific; the k8s target is **not** folded in here.
+> A1-specific; the Kueue backend is **not** folded in here.
 
 See also [configuration.md → Kube submit/reconcile settings](configuration.md#kube-submitreconcile-settings-phase-54-v60)
 for the full per-knob reference (defaults, `_FILE` support).
@@ -349,8 +421,8 @@ for the full per-knob reference (defaults, `_FILE` support).
 
 - [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings) — the canonical
   per-knob reference (env var, default, `_FILE` support, description).
-- [k8s-burst.md](k8s-burst.md) — the **Kubernetes (Kueue)** burst target (`PHAZE_CLOUD_TARGET=k8s`):
-  the cluster-admin runbook, RBAC, and submit → reconcile lifecycle.
+- [k8s-burst.md](k8s-burst.md) — the **Kubernetes (Kueue)** burst lane (a `[[backends]] kind="kueue"`
+  entry): the cluster-admin runbook, RBAC, and submit → reconcile lifecycle.
 - [deployment.md](deployment.md) — the two-host base deployment the cloud agent extends.
 - [arm64-agent-image.md](arm64-agent-image.md) — how the `-arm64` image is built and tagged.
 - [`51-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md)

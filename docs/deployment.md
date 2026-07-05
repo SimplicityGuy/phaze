@@ -1,12 +1,65 @@
 <!-- generated-by: gsd-doc-writer -->
-# Phaze v4.0 Deployment Guide
+# Phaze 2026.7.1 Deployment Guide
 
-Production deployment of Phaze v4.0 (Distributed Agents) runs as **two compose files on two (or more) hosts**:
+Production deployment of Phaze 2026.7.1 (Distributed Agents + Multi-Cloud Backends) runs as **two compose files on two (or more) hosts**:
 
 - **Application server** (`docker-compose.yml`): API/UI, controller worker, Postgres, Redis. No music/model/output file mounts. HTTPS via an internal CA. Redis `requirepass` + LAN binding.
 - **File servers** (`docker-compose.agent.yml`, one per host): agent worker, watcher, and the `audfprint` + `panako` fingerprint sidecars. Holds music/video files locally; reaches the app-server over HTTPS for every state change.
 
 This guide walks through bringing up a fresh two-host deployment from a clean checkout, then covers the build pipeline, rollback, and monitoring.
+
+Optionally, the control plane can offload analysis to **cloud backends** declared in a `backends.toml` — a cloud-compute agent and/or one-or-more Kueue clusters. Cloud offload is entirely additive: with no `backends.toml` mounted, the deployment is the local-only two-host topology below.
+
+```mermaid
+flowchart TB
+    subgraph app["Application server (docker-compose.yml)"]
+        api["api<br/>FastAPI + admin UI (TLS :8000)"]
+        ctl["worker<br/>PHAZE_ROLE=control"]
+        pg[("postgres :5432<br/>metadata + SAQ broker")]
+        rd[("redis :6379<br/>cache / counters")]
+        cfg{{"backends.toml<br/>(optional, mounted)"}}
+        api --- pg
+        api --- rd
+        ctl --- pg
+        ctl --- rd
+        cfg -. loaded by .-> api
+        cfg -. loaded by .-> ctl
+    end
+
+    subgraph fs["File server(s) (docker-compose.agent.yml, one per host)"]
+        aw["worker<br/>PHAZE_ROLE=agent"]
+        wt["watcher"]
+        af["audfprint"]
+        pk["panako"]
+        media[("/data/music (ro)")]
+        aw --- media
+        wt --- media
+        aw --- af
+        aw --- pk
+    end
+
+    subgraph cloud["Cloud-compute agent (docker-compose.cloud-agent.yml)"]
+        ca["worker (arm64, kind=compute)<br/>network_mode: host over Tailscale"]
+    end
+
+    subgraph kueue["N Kueue clusters (kind=kueue)"]
+        k1["Cluster A<br/>LocalQueue"]
+        s1[("S3 staging A")]
+        k2["Cluster B<br/>LocalQueue"]
+        s2[("S3 staging B")]
+        k1 --- s1
+        k2 --- s2
+    end
+
+    fs -->|"HTTPS :8000 API (DIST-04)"| api
+    fs -->|"Postgres :5432 SAQ broker"| pg
+    fs -->|"Redis :6379 cache"| rd
+    cloud -->|"HTTPS :8000 API + Postgres :5432 broker"| api
+    api -->|"submit/watch Jobs (kube API)"| k1
+    api -->|"submit/watch Jobs (kube API)"| k2
+    k1 -->|"callback HTTPS :8000 API"| api
+    k2 -->|"callback HTTPS :8000 API"| api
+```
 
 ## Deployment Targets
 
@@ -41,56 +94,72 @@ The repo ships three deployment compose files plus a dev override:
 
 All four services mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis (cache) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker** directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service; the agent's only Postgres connection is the SAQ broker pool.
 
-## Cloud-burst compute agent
+## Cloud backends (`backends.toml`)
 
-`docker-compose.cloud-agent.yml` is a fourth, optional deployment target (v5.0): a **worker-only**
-compute agent that runs on a free OCI Ampere A1 (arm64) over Tailscale and analyzes **long** audio
-sets that would otherwise time out on a file server. It owns no media, mounts a named scratch
-volume, and reaches lux only via the SAQ Postgres broker + the HTTP API (DIST-04). The feature
-ships **off by default** (`PHAZE_CLOUD_TARGET=local`; set `a1` to enable this compute agent, or
-`k8s` for the Kubernetes target). **Renamed in v6.0** — `PHAZE_CLOUD_TARGET` replaces the old
-cloud-burst on/off boolean.
+Cloud offload is **optional and additive**. The control plane discovers its execution backends from a
+`backends.toml` file mounted into the `api` + `worker` (control) services and loaded via
+`PHAZE_BACKENDS_CONFIG_FILE` (default `/etc/phaze/backends.toml`). **If no file is mounted, the app
+resolves an implicit local-only registry and cloud offload is off** — there is no env master toggle
+to set. (As of Phase 67, the old `PHAZE_CLOUD_TARGET=local|a1|k8s` selector and the flat
+`kube_*` / `s3_*` / `compute_*` fields are **removed with no back-compat**; the app-server compose
+comments document the mount that replaces them.)
 
-The full compose walkthrough, the homelab provisioning runbook (OCI A1 OpenTofu spec, Tailscale
-grants ACL, and the least-privilege `phaze_broker` Postgres role), the deploy ordering, and the
-smoke test live in **[cloud-burst.md](cloud-burst.md)** — they are intentionally kept out of this
-guide. See also [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings)
-for the per-knob reference.
+`backends.toml` is a typed list of `[[backends]]` entries, each with a `kind`, a cost-tier `rank`
+(lower runs sooner), and a concurrency `cap`:
 
-For the **Kubernetes (Kueue) burst** target (`PHAZE_CLOUD_TARGET=k8s`) — the cluster-admin
-Kueue objects (ResourceFlavor / ClusterQueue / LocalQueue), the namespaced RBAC Role phaze's
-ServiceAccount needs to submit/watch Jobs, the `_FILE`-mounted kubeconfig/SA-token + S3-credential
-Secret, the S3 staging bucket + lifecycle rule, and the transport (Tailscale **or** WireGuard) to
-the kube API and S3 endpoint — see the dedicated runbook in **[k8s-burst.md](k8s-burst.md)**.
+| `kind` | Purpose | Requires |
+|--------|---------|----------|
+| `local` | On-prem file-server queues (the default). | nothing beyond `rank`/`cap` |
+| `compute` | Cloud-compute agent (rsync/push) — e.g. an OCI Ampere A1 (arm64) over Tailscale for **long** sets that would time out on a file server. | `agent_ref` + `scratch_dir` |
+| `kueue` | A Kubernetes **Kueue** cluster that runs one-shot Jobs. **N clusters can be declared simultaneously**, each with its own LocalQueue and S3 staging bucket. | a nested `[backends.kube]` table (api_url / namespace / local_queue + `_file`-mounted kubeconfig/SA-token) |
 
-### Revert / single-toggle (disable cloud offload)
+Per-backend S3 staging is declared in `[[buckets]]` entries bound to backends by id. Each bucket
+carries a `scope` — `shared` (referenceable by any number of kueue backends) or `cluster-specific`
+(the sharing-cardinality invariant D-09 fails fast if a `cluster-specific` bucket is referenced by
+more than one kueue backend). Bucket `endpoint_url` values carry a per-bucket http(s) SSRF guard.
 
-`PHAZE_CLOUD_TARGET` is the **single master switch** for the whole cloud-offload feature, so
-reverting is one env-var flip plus a restart — **no other change**:
+Cloud on/off is therefore **derived** from the registry (`cloud_enabled` is true iff at least one
+non-`local` backend resolves), never set by an env flag.
 
-1. Set `PHAZE_CLOUD_TARGET=local` on the application server (the `api` + `worker` services).
-   `local` is also the shipped default, so simply **removing** the var has the same effect.
-2. Restart the controller worker **and** the api (`docker compose up -d --force-recreate worker api`).
-   `cloud_target` is read from the import-time settings singleton, so the flip takes effect only
-   after a restart — like every other knob.
+### Deep-dive runbooks
 
-After the restart, **every** file — short and long alike — routes to the local file-server queue
-exactly as it did before cloud burst existed: no file is held `AWAITING_CLOUD`, the staging cron
-no-ops, and backfill-to-cloud is rejected. (Long files may then time out locally and fail cleanly
-as `ANALYSIS_FAILED`.) In-flight work drains rather than aborting — files already `PUSHING`/`PUSHED`
-finish on their current target.
+The current configuration surface for **every** cloud path is this one `backends.toml`. The two
+sibling runbooks below are the operational deep-dives (provisioning, transport, credentials, deploy
+ordering); both are being updated to the registry model, so treat `backends.toml` as authoritative
+where they differ:
 
-You do **not** need to tear down the K8s/S3 (or A1) objects to revert: the kube API, the LocalQueue,
-the S3 bucket, the mounted Secret, and the OCI A1 compute agent can all be left in place, inert. The
-toggle alone fully disables the path; re-enabling later is the reverse flip (`a1` or `k8s`) plus a
-restart, with no re-provisioning. To switch *between* cloud targets instead of fully reverting, set
-`a1` (rsync → OCI A1; requires `compute_scratch_dir`) or `k8s` (S3 → Kueue; requires
-`kube_api_url` / `kube_namespace` / `kube_local_queue` + `s3_bucket` / `s3_endpoint_url`, all
-fail-fast at startup) — full cluster/bucket/secret setup for `k8s` is in **[k8s-burst.md](k8s-burst.md)**.
+- **[cloud-burst.md](cloud-burst.md)** — the `kind=compute` agent: the `docker-compose.cloud-agent.yml`
+  walkthrough, the OCI A1 provisioning runbook (OpenTofu spec, Tailscale grants ACL, least-privilege
+  `phaze_broker` Postgres role), and the smoke test. On the file-server/agent host, bring the compute
+  agent up/down with **`just cloud-agent-up`** / **`just cloud-agent-down`** (standalone
+  `docker-compose.cloud-agent.yml`).
+- **[k8s-burst.md](k8s-burst.md)** — the `kind=kueue` clusters: the cluster-admin Kueue objects
+  (ResourceFlavor / ClusterQueue / LocalQueue), the namespaced RBAC Role phaze's ServiceAccount needs
+  to submit/watch Jobs, the `_FILE`-mounted kubeconfig/SA-token + S3-credential Secret, the S3 staging
+  bucket + lifecycle rule, and the transport (Tailscale **or** WireGuard) to the kube API and S3
+  endpoint.
+
+### Disabling cloud offload
+
+Because on/off is derived from the registry, disabling cloud offload means **removing the non-`local`
+entries from `backends.toml`** (or unmounting the file entirely, which resolves the implicit
+local-only registry), then restarting the control services:
+
+```bash
+docker compose up -d --force-recreate worker api
+```
+
+The registry is read from the import-time settings singleton, so the change takes effect only after a
+restart — like every other knob. After the restart, **every** file routes to the local file-server
+queues exactly as it did before any cloud backend existed; in-flight work drains rather than aborting
+(files already dispatched finish on their current backend). You do **not** need to tear down the kube
+API, LocalQueues, S3 buckets, mounted Secrets, or the OCI A1 host to disable — they can all be left in
+place, inert. Re-enabling later is just re-adding the `[[backends]]`/`[[buckets]]` entries plus a
+restart, with no re-provisioning.
 
 ## Controller vs Agent roles
 
-Phaze v4.0 selects its settings class at process boot from the `PHAZE_ROLE` env var (default `control`), via `phaze.config.get_settings()`:
+Phaze 2026.7.1 selects its settings class at process boot from the `PHAZE_ROLE` env var (default `control`), via `phaze.config.get_settings()`:
 
 - `PHAZE_ROLE=control` → `ControlSettings` (LLM proposal generation, Discogs matching, fileless tasks). Used by the app-server `api` + `worker`.
 - `PHAZE_ROLE=agent` → `AgentSettings` (HTTP client to the app-server, file-bound tasks). Used by the file-server `worker` + `watcher`. The validators in `AgentSettings` raise at construction time if `PHAZE_AGENT_API_URL`, `PHAZE_AGENT_TOKEN`, or `PHAZE_AGENT_SCAN_ROOTS` is missing — agents fail fast with a clear error rather than emitting runtime 401s.
@@ -259,7 +328,7 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
 - `MODELS_PATH=./models`
 - `CA_PATH=./certs`
 - `PHAZE_AGENT_SCAN_ROOTS=/data/music,/data/concerts`
-- `PHAZE_IMAGE_TAG=2026.7.0` (or `latest` for first-time setup)
+- `PHAZE_IMAGE_TAG=2026.7.1` (or `latest` for first-time setup)
 
 See [docs/configuration.md](configuration.md) for the complete env-var reference and defaults.
 
@@ -333,7 +402,7 @@ Images are built and published to the GitHub Container Registry (GHCR) by two re
 
 Called from the CI `docker` job (after `quality`, only when non-markdown files change). It:
 
-- Builds each Dockerfile (`Dockerfile`, `services/audfprint/Dockerfile.audfprint`, `services/panako/Dockerfile.panako`) via a matrix and lints them with **hadolint** (`failure-threshold: error`).
+- Builds each Dockerfile via a **four-entry** matrix and lints them with **hadolint** (`failure-threshold: error`): `Dockerfile` (api), `services/audfprint/Dockerfile.audfprint`, `services/panako/Dockerfile.panako`, and `Dockerfile.agent-arm64` (the cloud-compute arm64 agent image — **lint-only** here, its `build:`/`push:` steps are guarded off because a full QEMU C++ essentia compile on the x86 runner is forbidden; the real native build runs in `docker-publish.yml`).
 - Validates both compose files parse cleanly: `docker compose -f docker-compose.yml config --quiet` (with placeholder `REDIS_PASSWORD`/`REDIS_BIND_IP`) and `docker compose -f docker-compose.agent.yml --env-file .env.agent config --quiet` (with placeholder agent vars).
 
 No images are pushed by this workflow — it is a gate.
@@ -342,9 +411,21 @@ No images are pushed by this workflow — it is a gate.
 
 Called from the CI `docker-publish` job, which runs only after `aggregate-results` passes and only when code changed. It:
 
-- Builds the same three images in a matrix and pushes to GHCR. `push` is `true` for non-PR events.
-- The `api` image publishes to the bare repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s `worker` + `watcher` can pull it directly; the sidecars publish under `/audfprint` and `/panako` suffixes.
-- **Authoritative image paths:** `ghcr.io/simplicityguy/phaze` is the authoritative api/worker/watcher image; `ghcr.io/simplicityguy/phaze/audfprint` and `ghcr.io/simplicityguy/phaze/panako` are the sidecar images. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a pre-D-15 convention — it is no longer published and must NOT be pulled or referenced.
+This workflow produces **five** GHCR artifacts across three build stages (`push` is `true` for non-PR events):
+
+- A **3-image matrix** (`build-and-push`) builds `Dockerfile` (api), `services/audfprint/Dockerfile.audfprint`, and `services/panako/Dockerfile.panako` on `linux/amd64`.
+- A native-arm64 stage builds `Dockerfile.agent-arm64` on an `ubuntu-24.04-arm` runner. It `load`s (does not push) the image, runs an import smoke test, and hands the resolved `-arm64` tags + OCI labels to a **parity-gated pusher** (`parity-guard`) — the arm64 image reaches GHCR only after its analysis output matches the x86 golden byte-for-byte, so a parity-divergent image can never publish ahead of the guard.
+- A `build-job-runner` stage builds `Dockerfile.job` **FROM** the freshly-pushed x86 api image (a `needs: build-and-push` dependent, not a matrix row) — the Kueue one-shot Job image.
+
+| Artifact | Dockerfile | Platform | Consumed by |
+|----------|------------|----------|-------------|
+| `ghcr.io/simplicityguy/phaze` | `Dockerfile` | amd64 | app-server `api`/`worker` (built locally) **and** `docker-compose.agent.yml`'s `worker`/`watcher` (pulled) |
+| `ghcr.io/simplicityguy/phaze/audfprint` | `Dockerfile.audfprint` | amd64 | `docker-compose.agent.yml` `audfprint` sidecar |
+| `ghcr.io/simplicityguy/phaze/panako` | `Dockerfile.panako` | amd64 | `docker-compose.agent.yml` `panako` sidecar |
+| `ghcr.io/simplicityguy/phaze:*-arm64` | `Dockerfile.agent-arm64` | arm64 | `docker-compose.cloud-agent.yml` cloud-compute agent (`kind=compute`); parity-gated push |
+| `ghcr.io/simplicityguy/phaze/job` | `Dockerfile.job` | amd64 | Kueue backend (`kind=kueue`) one-shot Jobs submitted by the control plane |
+
+- The `api` image publishes to the **bare** repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s `worker` + `watcher` can pull it directly; the arm64 variant is the same bare URL with a `-arm64` tag suffix. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a pre-D-15 convention — it is no longer published and must NOT be pulled or referenced.
 - Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:<version>`.
 - Release tags MUST be 3-part CalVer (`YYYY.MM.REVISION`, e.g. `2026.7.0`) — `ci.yml` triggers the publish pipeline on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part ref. A 2-part tag (`2026.7`) will not match the trigger and will not publish version-pinnable images, so the 3-part shape is still required.
 - Builds with `provenance: true` and `sbom: true` for supply-chain attestation, on `linux/amd64`.
@@ -352,6 +433,25 @@ Called from the CI `docker-publish` job, which runs only after `aggregate-result
 **Release version scheme (CalVer).** Releases use CalVer `YYYY.MM.REVISION` with a **bare** tag (no `v` prefix — the first CalVer tag is `2026.7.0`) and a **no-leading-zero month** (`2026.7.0`, not `2026.07.0`). REVISION is a **per-month zero-based** counter: the Nth release within a given `YYYY.MM`, starting at `0` and **resetting each calendar month**, so same-month patch releases just increment REVISION (`2026.7.0` → `2026.7.1`). Milestones are named; versions are dated — the two are decoupled.
 
 **Publish trigger (invariant).** GHCR publish fires on the **push of an annotated tag** (`git tag -a 2026.7.0 -m "…"` then `git push origin 2026.7.0`) — creating the tag locally publishes nothing; the *push* of the tag ref is the sole trigger. If a tag was pushed wrong (bad SHA, premature), delete-and-recreate it: `git push --delete origin 2026.7.0`, fix, then re-tag and push again to re-fire the pipeline. `docker-publish.yml`'s metadata-action is scheme-agnostic (`type=semver` parses `2026.7.0` → `{{version}}=2026.7.0`, `{{major}}.{{minor}}=2026.7`), so no workflow edit is needed to adopt CalVer.
+
+```mermaid
+flowchart LR
+    df1["Dockerfile"] --> api["ghcr.io/…/phaze<br/>(amd64)"]
+    df2["Dockerfile.audfprint"] --> aud["…/phaze/audfprint"]
+    df3["Dockerfile.panako"] --> pk["…/phaze/panako"]
+
+    api -->|"docker-compose.yml + agent.yml"| use1["api / worker / watcher / sidecars"]
+
+    api -.->|"FROM (needs build-and-push)"| dfjob["Dockerfile.job"]
+    dfjob --> job["…/phaze/job (amd64)"]
+    job -->|"kind=kueue Jobs"| kueue["Kueue backend"]
+
+    df4["Dockerfile.agent-arm64"] --> loadarm["build + load (arm64)<br/>import smoke"]
+    loadarm --> gate{"parity guard<br/>arm64 == x86 golden?"}
+    gate -->|"pass"| arm["…/phaze:*-arm64"]
+    gate -->|"fail"| block["push blocked"]
+    arm -->|"docker-compose.cloud-agent.yml"| compute["kind=compute agent"]
+```
 
 The single-stage `Dockerfile` (`FROM python:3.14-slim AS base`) installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
 
@@ -371,7 +471,7 @@ Production-critical variables:
 | `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url` (CR-01) and passwordless `redis_url` (D-06). Note: there is no production credential guard on `PHAZE_QUEUE_URL` yet — protect it via the LAN-scoped firewall + a strong DB password. |
 | `PHAZE_AGENT_TOKEN` | file-server | The plaintext bearer token; must match the `token_hash` row in `agents`. Generate via `secrets.token_urlsafe(32)`. |
 | `PHAZE_AGENT_CA_FILE` | file-server | Path to the operator-distributed `phaze-ca.crt`; the agent's HTTP client verifies the app-server TLS chain against it. |
-| `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (`2026.7.0`) in production rather than `latest`. |
+| `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (`2026.7.1`) in production rather than `latest`. |
 | `SCAN_PATH` | file-server | The music-library root, bind-mounted read-only into all agent services. Compose parse fails if unset. |
 
 ### Secrets via files (Docker secrets)
@@ -480,10 +580,10 @@ For first-time setup, `PHAZE_IMAGE_TAG=latest` pulls the most recent tagged rele
 
 ```bash
 # On the file-server host's .env:
-PHAZE_IMAGE_TAG=2026.7.0
+PHAZE_IMAGE_TAG=2026.7.1
 ```
 
-Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.MM.REVISION` value (e.g. `2026.7.0`) matching a published release tag (`ci.yml` only publishes on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag).
+Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.MM.REVISION` value (e.g. `2026.7.1`) matching a published release tag (`ci.yml` only publishes on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag).
 
 ## Pre-warming models (skip the first-start wait)
 
@@ -506,7 +606,7 @@ Before shipping a file-server host to production:
 - [ ] `PHAZE_AGENT_TOKEN` generated via `secrets.token_urlsafe(32)`, not a placeholder
 - [ ] `phaze-ca.crt` distributed via secure channel (scp over SSH, not email/chat)
 - [ ] `phaze-ca.key` NEVER copied off the app-server host
-- [ ] `PHAZE_IMAGE_TAG` pinned to a specific version (`2026.7.0`), not `latest`
+- [ ] `PHAZE_IMAGE_TAG` pinned to a specific version (`2026.7.1`), not `latest`
 - [ ] `SCAN_PATH` points at the actual music library root (compose parse fails if unset)
 - [ ] `docker-compose.override.yml` not present / not active on production hosts (it bypasses the cert-bootstrap entrypoint)
 - [ ] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"
@@ -518,8 +618,10 @@ Before shipping a file-server host to production:
 - `.env.example.agent` — file-server agent environment template
 - `docker-compose.yml` — app-server compose
 - `docker-compose.agent.yml` — file-server agent compose
-- `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (cloud burst)
+- `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (`just cloud-agent-up` / `cloud-agent-down`)
 - `docker-compose.override.yml` — dev-only overlay (live reload)
-- [docs/cloud-burst.md](cloud-burst.md) — cloud-burst compute-agent deploy, runbook, and toggle
+- `backends.toml` — the cloud-backend registry (mounted at `PHAZE_BACKENDS_CONFIG_FILE`; absent ⇒ implicit local-only)
+- [docs/cloud-burst.md](cloud-burst.md) — `kind=compute` agent deploy + runbook (deep-dive; config surface is `backends.toml`)
+- [docs/k8s-burst.md](k8s-burst.md) — `kind=kueue` cluster deploy + runbook (deep-dive; config surface is `backends.toml`)
 - [docs/configuration.md](configuration.md) — full environment-variable reference
 - [docs/architecture.md](architecture.md) — system architecture overview

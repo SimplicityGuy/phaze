@@ -1,19 +1,26 @@
 <!-- generated-by: gsd-doc-writer -->
 # Kubernetes Burst — Kueue Job target (v6.0)
 
-**Kubernetes burst** is the **third** `PHAZE_CLOUD_TARGET` (`local` | `a1` | `k8s`), alongside
-the all-local default and the v5.0 [OCI A1 compute agent](cloud-burst.md). When
-`PHAZE_CLOUD_TARGET=k8s`, the control plane offloads **long** audio sets (≥
-`PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`) to a remote **x64 Kubernetes cluster running
-[Kueue](https://kueue.sigs.k8s.io/)**: it stages the file's bytes to an operator-provided
-S3-compatible bucket, submits a **suspended one-shot Kueue `Job`**, and a pod analyzes the
-file and POSTs the result back to `/api/internal/agent/*` — reconciled by `file_id`. The
+**Kubernetes burst** offloads analysis to **one or more** x64 Kubernetes clusters running
+[Kueue](https://kueue.sigs.k8s.io/), alongside the all-local default and the v5.0
+[OCI A1 compute agent](cloud-burst.md). A Kueue cluster is declared as a
+`[[backends]] kind="kueue"` entry in [`backends.toml`](configuration.md#backend-registry-backendstoml)
+(REG-01) — and you can declare **several at once**, each with its own cost-tier `rank`,
+concurrency `cap`, `[backends.kube]` connection block, and `buckets` staging set. For every
+**long** audio set (duration ≥ `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`) the tiered drain routes the
+file rank-first to a Kueue backend: the control plane stages the file's bytes to that backend's
+S3-compatible staging bucket, submits a **suspended one-shot Kueue `Job`**, and a pod analyzes
+the file and POSTs the result back to `/api/internal/agent/*` — reconciled by `file_id`. The
 object is deleted after analysis. There is **no persistent pod disk** and **no long-lived
 compute host** — the execution unit is an ephemeral, quota-scheduled batch Job.
 
-> **The feature ships OFF by default.** `PHAZE_CLOUD_TARGET=local` (the default) means a fresh
-> deploy behaves **all-local** with zero cloud activity. Stand up the cluster objects in the
-> **Cluster-admin runbook** below first, then set the target and restart the control plane.
+> **The feature ships OFF by default.** With **no** `kind="kueue"` (or `kind="compute"`) entry in
+> `backends.toml` a fresh deploy behaves **all-local** with zero cloud activity — the zero-config
+> default is an implicit single `kind="local"` backend. On/off is **derived**: `cloud_enabled` is
+> True iff the registry holds a non-local backend (the old `PHAZE_CLOUD_TARGET=k8s` selector was
+> **removed** in Phase 67). Stand up the cluster objects in the **Cluster-admin runbook** below
+> first — in **each** cluster the registry targets — then add the `[[backends]] kind="kueue"`
+> entry and restart the control plane.
 
 > **Superseded in 2026.7.1 (Phase 67 / 70).** The single `PHAZE_CLOUD_TARGET=k8s` selector this
 > page describes was **removed** in favor of the declarative **[backend registry](configuration.md#backend-registry-backendstoml)**
@@ -24,48 +31,180 @@ compute host** — the execution unit is an ephemeral, quota-scheduled batch Job
 > mapping, see [configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67).
 
 **phaze does NOT create any cluster objects.** Kueue admission, RBAC, and the bearer-token
-Secret are **cluster-admin** responsibilities. phaze references a LocalQueue **by name**
-(`PHAZE_KUBE_LOCAL_QUEUE`) and submits Jobs into it; it never authors quota, RBAC, or Secret
-objects at runtime. This document is the **authoritative spec** for those operator-owned
-objects (D-02); the live cluster is the operator's infrastructure. The ready-to-paste homelab
-change request is [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
+Secret are **cluster-admin** responsibilities. Per Kueue backend, phaze references a LocalQueue
+**by name** (its `[backends.kube].local_queue`) and submits Jobs into it; it never authors quota,
+RBAC, or Secret objects at runtime. This document is the **authoritative spec** for those
+operator-owned objects (D-02), applied **once per cluster** the registry targets; the live
+clusters are the operator's infrastructure. The ready-to-paste homelab change request is
+[`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
 
-For the canonical per-knob config reference (env var, default, `_FILE` support), see
-[configuration.md → Kube submit/reconcile settings](configuration.md#kube-submitreconcile-settings-phase-54-v60)
-and [configuration.md → S3 object-staging settings](configuration.md#s3-object-staging-settings-phase-53-v60).
-This page does not duplicate those tables.
+For the canonical per-field config reference (the `[[backends]]` / `[backends.kube]` / `[[buckets]]`
+schema, defaults, inline `*_file` secret support), see
+[configuration.md → Backend registry (`backends.toml`)](configuration.md#backend-registry-backendstoml).
+The flat `PHAZE_KUBE_*` / `PHAZE_S3_*` env-knob tables it links from Phase 54/53 are **superseded**
+by that registry (retained there only as a historical field reference). This page does not duplicate
+those tables.
 
 ## Architecture at a glance
+
+**Multi-Kueue topology** — one control plane, N Kueue backends. Each `[[backends]] kind="kueue"`
+entry gets its own constructor-authed kr8s client (selected by its `[backends.kube].context`), its
+own LocalQueue, and its own `buckets` staging set:
 
 ```mermaid
 flowchart LR
   %% transport-agnostic mesh (Tailscale OR WireGuard)
-  subgraph lux["lux (application server / control plane)"]
+  subgraph lux["application server / control plane"]
     luxsvc["api(:8000) · Postgres · Redis"]
-    s3_staging["s3_staging"]
-    submit_cloud_job["submit_cloud_job"]
-    reconcile["reconcile_cloud_jobs (*/5 cron)"]
-    lqprobe["LocalQueue probe (startup)"]
+    drain["stage_cloud_window (*/5 cron)<br/>tiered rank-first drain"]
+    selbk["select_backend (rank-first + spillover)"]
+    s3_staging["s3_staging (pick_bucket per file)"]
+    reconcile["reconcile_cloud_jobs (*/5 cron)<br/>per-backend, backend_id-scoped"]
+    kc_a["kr8s client A (context: kueue-a)"]
+    kc_b["kr8s client B (context: kueue-b)"]
     callback["POST /api/internal/agent/analysis/{file_id}<br/>(the ONLY result channel)"]
   end
-  s3bucket["S3 bucket"]
-  subgraph cluster["x64 Kueue cluster"]
-    ns["namespace: phaze"]
-    rf["ResourceFlavor phaze-cpu"]
-    cq["ClusterQueue phaze-cq"]
-    lq["LocalQueue phaze-lq"]
-    rbac["SA/Role/RoleBinding"]
-    secret["Secret phaze-agent-token"]
-    job["suspended batch Job"]
-    pod["one-shot pod (presign GET → analyze → POST result → exit)"]
+  subgraph clusterA["Kueue backend A (rank 10, cap N_A)"]
+    lqA["LocalQueue phaze-lq"]
+    podA["one-shot pod (presign GET → analyze → POST → exit)"]
+    bktA["buckets: A staging set"]
   end
-  s3_staging -->|"presign PUT/GET"| s3bucket
-  submit_cloud_job -->|"kube POST"| job
-  lq -->|"Kueue admits"| pod
-  pod -->|"POST /api/internal/agent/analysis/{file_id} (the ONLY result channel)"| callback
+  subgraph clusterB["Kueue backend B (rank 20, cap N_B)"]
+    lqB["LocalQueue phaze-lq"]
+    podB["one-shot pod (presign GET → analyze → POST → exit)"]
+    bktB["buckets: B staging set"]
+  end
+  drain --> selbk
+  selbk -->|"rank-first pick"| kc_a
+  selbk -->|"spill on full/offline"| kc_b
+  kc_a -->|"kube POST suspended Job"| lqA
+  kc_b -->|"kube POST suspended Job"| lqB
+  s3_staging -->|"presign PUT/GET"| bktA
+  s3_staging -->|"presign PUT/GET"| bktB
+  lqA -->|"Kueue admits"| podA
+  lqB -->|"Kueue admits"| podB
+  podA -->|"POST result (the ONLY result channel)"| callback
+  podB -->|"POST result (the ONLY result channel)"| callback
 ```
 
-_PHAZE_CLOUD_TARGET=local ⇒ long files route LOCAL, no kube submit, no S3 staging. (all-local)_
+**Rank-tiered spillover** — per candidate file, `select_backend` prefers the lowest-`rank`
+available Kueue lane with a free `cap` slot, spilling to the next rank when a lane is FULL or
+OFFLINE, and finally to slow local (staleness-gated):
+
+```mermaid
+flowchart TD
+  f["AWAITING_CLOUD file (oldest first)"] --> r1{"rank 10 Kueue<br/>available & slot free?"}
+  r1 -->|yes| d1["dispatch → stage to A's bucket + submit Job"]
+  r1 -->|"FULL or OFFLINE"| r2{"rank 20 Kueue<br/>available & slot free?"}
+  r2 -->|yes| d2["dispatch → stage to B's bucket + submit Job"]
+  r2 -->|"FULL or OFFLINE"| loc{"spill to local?"}
+  loc -->|"all cloud OFFLINE → immediately"| dl["route LOCAL (rank 99)"]
+  loc -->|"cloud online-but-FULL → after cloud_spill_to_local_after_seconds"| dl
+  loc -->|"cloud budget spent (attempts exhausted)"| dl
+  loc -->|"otherwise"| hold["hold in AWAITING_CLOUD (next tick)"]
+```
+
+_A registry with no non-local backend (`cloud_enabled` False) ⇒ long files route LOCAL, no kube
+submit, no S3 staging. (all-local)_
+
+## Multiple clusters, ranks, caps & the tiered drain
+
+Since 2026.7.1 (Phases 69/70) the control plane drives **N** Kueue clusters simultaneously. Each is
+a `[[backends]] kind="kueue"` registry entry:
+
+- **`rank`** — cost-tier ordering; **lower runs sooner**. The tiered drain (`stage_cloud_window`,
+  `*/5` cron) and the pure `select_backend` policy prefer the lowest-rank **available** Kueue lane
+  with free capacity, spilling to the next rank when a lane is FULL or OFFLINE, and finally
+  staleness-gated to slow local (rank 99). Local becomes an eligible spill target **immediately**
+  when every non-local backend is OFFLINE, **after `cloud_spill_to_local_after_seconds`** when they
+  are online-but-FULL, or when a file's cloud budget is spent.
+- **`cap`** — this backend's concurrency cap. The drain snapshots each backend's
+  `in_flight_count` (a `cloud_job` COUNT scoped by `backend_id`) once per tick and tops it up to
+  `cap`; a single advisory lock serializes overlapping ticks so no cap is ever overshot.
+- **`[backends.kube].context`** — the **per-cluster kubeconfig context** that selects among N
+  clusters. Each backend builds its **own** constructor-time-authed kr8s client from an in-memory
+  kubeconfig (either the inline `kubeconfig` YAML + `context`, or a synthesized `api_url` + `sa_token`
+  dict) — the module-global "active kube" read is retired, so one control plane authenticates against
+  each file's target cluster independently. When `context` is omitted the client uses the kubeconfig's
+  current-context.
+- **Per-cluster failure isolation** — a flaky cluster whose availability probe raises or times out is
+  caught in the drain snapshot and treated as **0 free slots** for that tick (logged by `backend_id`
+  only, never a `KubeConfig`/`SecretStr`/exception payload); every healthy backend and local proceed
+  normally. `reconcile_cloud_jobs` likewise iterates the registry and calls each backend's
+  **`backend_id`-scoped** `reconcile` (`for b in resolve_backends(cfg): await b.reconcile(...)`), so
+  one cluster's reconcile never touches another's `cloud_job` rows.
+
+**Per-cluster staging buckets (REG-05, MKUE-02).** Each Kueue backend owns a `buckets` list of
+`[[buckets]]` registry ids — there is no single shared bucket. Per file, `s3_staging.pick_bucket`
+deterministically hashes the `file_id` bytes (sha256, restart-stable) across the backend's bound,
+`sorted()` bucket set; the chosen id is recorded on `cloud_job.staging_bucket` and **read back**
+(never re-derived) by presign and cleanup. A `[[buckets]]` entry's **`scope`** is a cardinality
+invariant enforced at startup: `shared` (any number of Kueue backends may reference it) vs
+`cluster-specific` (**at most one** Kueue backend may reference it).
+
+**Example — two Kueue backends over three buckets.** Declared in `backends.toml` (path from
+`PHAZE_BACKENDS_CONFIG_FILE`, default `/etc/phaze/backends.toml`):
+
+```toml
+# Cheapest cluster first (rank 10); its own staging buckets.
+[[backends]]
+kind = "kueue"
+id = "kueue-a"
+rank = 10
+cap = 4
+buckets = ["stage-a", "stage-shared"]
+
+  [backends.kube]
+  api_url = "https://kueue-a.mesh:6443"
+  namespace = "phaze"
+  local_queue = "phaze-lq"
+  context = "kueue-a"                      # per-cluster kubeconfig context (MKUE-01)
+  workload_api_version = "kueue.x-k8s.io/v1beta1"
+  ca_secret_name = "phaze-internal-ca"     # operator-created §7 Secret name (cluster A)
+  env_configmap_name = "phaze-agent-env"   # operator-created §6 ConfigMap name (cluster A)
+  env_secret_name = "phaze-agent-token"    # operator-created §5 Secret name (cluster A)
+  kubeconfig_file = "/run/secrets/kueue-a-kubeconfig"   # inline *_file secret pointer (control-plane only)
+
+# Pricier fallback cluster (rank 20); drained only when rank 10 is full/offline.
+[[backends]]
+kind = "kueue"
+id = "kueue-b"
+rank = 20
+cap = 2
+buckets = ["stage-b"]
+
+  [backends.kube]
+  api_url = "https://kueue-b.mesh:6443"
+  namespace = "phaze"
+  local_queue = "phaze-lq"
+  context = "kueue-b"
+  sa_token_file = "/run/secrets/kueue-b-sa-token"
+
+# Staging-bucket registry (REG-05). `id` is the registry key; `bucket` is the real S3 name.
+[[buckets]]
+id = "stage-a"
+scope = "cluster-specific"                 # at most one kueue backend may reference it
+bucket = "phaze-stage-a"
+endpoint_url = "https://minio.mesh:9000"
+access_key_id_file = "/run/secrets/s3-access-key"
+secret_access_key_file = "/run/secrets/s3-secret-key"
+
+[[buckets]]
+id = "stage-b"
+scope = "cluster-specific"
+bucket = "phaze-stage-b"
+endpoint_url = "https://minio.mesh:9000"
+access_key_id_file = "/run/secrets/s3-access-key"
+secret_access_key_file = "/run/secrets/s3-secret-key"
+
+[[buckets]]
+id = "stage-shared"
+scope = "shared"                           # any number of kueue backends may reference it
+bucket = "phaze-stage-shared"
+endpoint_url = "https://minio.mesh:9000"
+access_key_id_file = "/run/secrets/s3-access-key"
+secret_access_key_file = "/run/secrets/s3-secret-key"
+```
 
 ## Submit → reconcile lifecycle (Phase 54)
 
@@ -111,21 +250,26 @@ dropped/expired watch never loses or duplicates a result" true.
 
 ## Cluster-admin runbook
 
-Everything below is **copy-paste-ready** and **apply-ready**. The operator edits the
-placeholder names/quota/namespace to match the cluster, then `kubectl apply`s each block in
-order. The placeholder object names are DNS-1123-safe: `phaze-cpu` (ResourceFlavor),
-`phaze-cq` (ClusterQueue), `phaze-lq` (LocalQueue), `phaze` (namespace), `phaze-submitter`
-(ServiceAccount/Role/RoleBinding), `phaze-agent-token` (Secret).
+Everything below is **copy-paste-ready** and **apply-ready**, and must be applied **once in each
+cluster** the registry targets (a `[[backends]] kind="kueue"` entry per cluster). The operator
+edits the placeholder names/quota/namespace to match the cluster, then `kubectl apply`s each block
+in order **against that cluster's kubeconfig context** (the same context named in the backend's
+`[backends.kube].context`). The placeholder object names are DNS-1123-safe: `phaze-cpu`
+(ResourceFlavor), `phaze-cq` (ClusterQueue), `phaze-lq` (LocalQueue), `phaze` (namespace),
+`phaze-submitter` (ServiceAccount/Role/RoleBinding), `phaze-agent-token` (Secret). The names may
+differ per cluster — each backend's `[backends.kube]` block references them by name
+(`local_queue`, `namespace`, `env_configmap_name`, `env_secret_name`, `ca_secret_name`).
 
 > **⚠ apiVersion lockstep (read first — see *apiVersion lockstep* below).** Every Kueue
-> manifest here is `kueue.x-k8s.io/v1beta1`, matching the phaze config default
-> `PHAZE_KUBE_WORKLOAD_API_VERSION=kueue.x-k8s.io/v1beta1`. The manifest apiVersion, the
-> cluster's served Kueue version, and `PHAZE_KUBE_WORKLOAD_API_VERSION` **must all agree**.
+> manifest here is `kueue.x-k8s.io/v1beta1`, matching each backend's default
+> `[backends.kube].workload_api_version = "kueue.x-k8s.io/v1beta1"`. The manifest apiVersion, the
+> cluster's served Kueue version, and that backend's `workload_api_version` **must all agree** —
+> per cluster.
 
 ### 0 — Create the namespace
 
-All phaze objects live in one namespace (`PHAZE_KUBE_NAMESPACE`, default `phaze`). The
-namespaced RBAC below scopes every grant to exactly this namespace.
+All phaze objects for a cluster live in one namespace (the backend's `[backends.kube].namespace`,
+default `phaze`). The namespaced RBAC below scopes every grant to exactly this namespace.
 
 ```bash
 kubectl create namespace phaze
@@ -192,10 +336,10 @@ spec:
 
 ### 3 — LocalQueue (the object phaze references by name)
 
-This is the object `PHAZE_KUBE_LOCAL_QUEUE` names and the startup probe GETs.
-`metadata.name` **must equal** `PHAZE_KUBE_LOCAL_QUEUE` and `metadata.namespace` **must equal**
-`PHAZE_KUBE_NAMESPACE`. Submitted Jobs carry the `kueue.x-k8s.io/queue-name: phaze-lq` label so
-Kueue admits them through this LocalQueue → `phaze-cq`.
+This is the object the backend's `[backends.kube].local_queue` names and the availability probe
+GETs. `metadata.name` **must equal** `[backends.kube].local_queue` and `metadata.namespace` **must
+equal** `[backends.kube].namespace`. Submitted Jobs carry the `kueue.x-k8s.io/queue-name: phaze-lq`
+label so Kueue admits them through this LocalQueue → `phaze-cq`.
 
 ```bash
 kubectl apply -f localqueue.yaml
@@ -206,8 +350,8 @@ kubectl apply -f localqueue.yaml
 apiVersion: kueue.x-k8s.io/v1beta1
 kind: LocalQueue
 metadata:
-  name: phaze-lq            # == PHAZE_KUBE_LOCAL_QUEUE
-  namespace: phaze          # == PHAZE_KUBE_NAMESPACE
+  name: phaze-lq            # == [backends.kube].local_queue
+  namespace: phaze          # == [backends.kube].namespace
 spec:
   clusterQueue: phaze-cq    # == the ClusterQueue above
 ```
@@ -318,8 +462,8 @@ The one-shot pod needs more than the file id to run: its entrypoint builds the a
 calls back to the control plane, so it must know its role, where the control-plane API lives, and
 where the analysis models are on disk. phaze sources that **static, per-deployment** env into the
 suspended Job's analyze container via `envFrom` from an operator-created `core/v1` ConfigMap —
-named **by name only** (`PHAZE_KUBE_ENV_CONFIGMAP_NAME`, default `phaze-agent-env`); **phaze does
-not create it**.
+named **by name only** (the backend's `[backends.kube].env_configmap_name`, default
+`phaze-agent-env`); **phaze does not create it**.
 
 ```bash
 # On the control plane: create the agent-env ConfigMap. Use the reachable control-plane HTTPS URL
@@ -354,9 +498,10 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
 - `PHAZE_JOB_FILE_ID` is **not** in this ConfigMap and is **not** operator-managed — it varies per
   file, so phaze injects it **per-Job at submit time** into the container env directly.
 
-> If you name the ConfigMap or the env Secret something other than the defaults, set
-> `PHAZE_KUBE_ENV_CONFIGMAP_NAME` / `PHAZE_KUBE_ENV_SECRET_NAME` on the control plane to match
-> (mirrors the `PHAZE_KUBE_CA_SECRET_NAME` note in §7).
+> If you name the ConfigMap or the env Secret something other than the defaults, set this
+> backend's `[backends.kube].env_configmap_name` / `env_secret_name` to match (mirrors the
+> `[backends.kube].ca_secret_name` note in §7). These are per-backend, so different clusters may
+> use different object names.
 
 ### 7 — Internal-CA Secret (the control-plane TLS trust anchor)
 
@@ -367,9 +512,9 @@ runtime by `cert_bootstrap` on the app-server (the public `./certs/phaze-ca.crt`
 unique to your install, so there is no canonical CA a published image could carry. Instead, the
 operator creates a `core/v1` Secret holding that public CA cert, and the suspended Job mounts it
 **read-only** at `/certs`; the container's `PHAZE_AGENT_CA_FILE` points at `/certs/phaze-ca.crt`.
-phaze references this Secret **by name only** (`PHAZE_KUBE_CA_SECRET_NAME`, default
-`phaze-internal-ca`) — like the LocalQueue, RBAC, and bearer-token objects, **phaze does not create
-it** (KDEPLOY-01).
+phaze references this Secret **by name only** (the backend's `[backends.kube].ca_secret_name`,
+default `phaze-internal-ca`) — like the LocalQueue, RBAC, and bearer-token objects, **phaze does not
+create it** (KDEPLOY-01).
 
 ```bash
 # On the control plane: create the CA Secret from the public CA cert generated by
@@ -402,28 +547,28 @@ stringData:
 >
 > **CA rotation** is a Secret update + re-submit, **no image rebuild**: regenerate the CA on the
 > app-server, re-create this Secret with the new `phaze-ca.crt`, and let in-flight Jobs re-submit.
-> If you name the Secret something other than `phaze-internal-ca`, set `PHAZE_KUBE_CA_SECRET_NAME`
-> on the control plane to match.
+> If you name the Secret something other than `phaze-internal-ca`, set this backend's
+> `[backends.kube].ca_secret_name` to match.
 
 ## apiVersion lockstep
 
 There is **one rule** that prevents the single most likely failure:
 
 > **The manifest apiVersion == the cluster's served Kueue version ==
-> `PHAZE_KUBE_WORKLOAD_API_VERSION` — all three must agree.**
+> the backend's `[backends.kube].workload_api_version` — all three must agree, per cluster.**
 
-phaze defaults to `kueue.x-k8s.io/v1beta1` (`PHAZE_KUBE_WORKLOAD_API_VERSION`,
-`config.py`), and every Kueue manifest in the runbook above is `v1beta1`. If these drift, the
-symptoms are: `submit_job` 404s the Workload group, the reconcile cron's `get_workload_for`
-always returns `None`, or the LocalQueue probe 404s a LocalQueue that exists under a different
-version.
+Each Kueue backend defaults `[backends.kube].workload_api_version` to `kueue.x-k8s.io/v1beta1`, and
+every Kueue manifest in the runbook above is `v1beta1`. If these drift, the symptoms are:
+`submit_job` 404s the Workload group, the reconcile cron's `get_workload_for` always returns
+`None`, or the LocalQueue probe 404s a LocalQueue that exists under a different version. Because
+`workload_api_version` is **per backend**, clusters on different Kueue versions each set their own.
 
 **v1beta2 upgrade note.** Kueue introduced **`v1beta2`** and **deprecated `v1beta1`** (still
-served, with a deprecation warning on write). If your cluster's Kueue serves **`v1beta2` only**:
+served, with a deprecation warning on write). If a cluster's Kueue serves **`v1beta2` only**:
 
-1. Set `PHAZE_KUBE_WORKLOAD_API_VERSION=kueue.x-k8s.io/v1beta2` on the control plane.
+1. Set `[backends.kube].workload_api_version = "kueue.x-k8s.io/v1beta2"` on **that** backend.
 2. Change the `apiVersion:` on the ResourceFlavor, ClusterQueue, and LocalQueue manifests above
-   to `kueue.x-k8s.io/v1beta2` and re-apply.
+   to `kueue.x-k8s.io/v1beta2` and re-apply **in that cluster**.
 3. Confirm both agree with the installed Kueue release before restarting the control plane.
 
 The fields phaze actually reads — Workload admission **conditions** and **LocalQueue
@@ -440,42 +585,49 @@ control plane reaches the cluster over **Tailscale**, **WireGuard**, a VPN, or a
 network is entirely the operator's choice; phaze just needs the endpoints below to resolve and
 connect from the control-plane host:
 
-| Endpoint | Consumed by | Config knob | Direction |
-|----------|-------------|-------------|-----------|
-| Kube API server | control plane (kr8s submit / reconcile / probe) | `PHAZE_KUBE_API_URL` | control plane → cluster |
-| S3-compatible bucket | control plane (presign) + pod (GET) | `PHAZE_S3_ENDPOINT_URL` / `PHAZE_S3_BUCKET` | both → S3 |
-| phaze HTTP API (`/api/internal/agent/*`) | one-shot pod (result callback) | `PHAZE_AGENT_API_URL` (in the Job env) | pod → control plane |
+| Endpoint | Consumed by | Config field | Direction |
+|----------|-------------|--------------|-----------|
+| Kube API server | control plane (kr8s submit / reconcile / probe) | `[backends.kube].api_url` (or the inline `kubeconfig`'s server) | control plane → cluster |
+| S3-compatible bucket | control plane (presign) + pod (GET) | `[[buckets]]` `endpoint_url` / `bucket` | both → S3 |
+| phaze HTTP API (`/api/internal/agent/*`) | one-shot pod (result callback) | `PHAZE_AGENT_API_URL` (from the §6 ConfigMap, in the Job env) | pod → control plane |
 
-Reachable-endpoint expectations only:
+Each field above is **per entry** — every Kueue backend names its own `[backends.kube].api_url`
+(or inline `kubeconfig` + `context`) and its own `buckets` set, so the endpoints resolve per
+cluster. Reachable-endpoint expectations only:
 
-- The control-plane host can reach `PHAZE_KUBE_API_URL` and the S3 endpoint.
-- Cluster pods can reach the S3 endpoint and the phaze HTTP API (`https://`).
+- The control-plane host can reach each backend's `[backends.kube].api_url` and each bucket's
+  `endpoint_url`.
+- Cluster pods can reach their staging bucket's endpoint and the phaze HTTP API (`https://`).
 - No port-forwarding, mesh DNS, or specific overlay is assumed — supply whatever endpoints your
   mesh exposes. If you run Tailscale, MagicDNS names work; if you run WireGuard, peer IPs work;
   phaze treats them identically.
 
 ## Deploy ordering
 
-Apply cluster objects **before** flipping the control plane to `k8s` (the LocalQueue must exist
-before the startup probe runs and before any Job submits). The ready-to-paste homelab change
-request — with `datum@nox` / `datum@lux` SSH steps — is
+Apply cluster objects **before** adding the `kind="kueue"` entry to `backends.toml` (the
+LocalQueue must exist before the availability probe runs and before any Job submits). Repeat
+steps 1–3 **in each cluster** the registry targets. The ready-to-paste homelab change request —
+with `datum@nox` / `datum@lux` SSH steps — is
 [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
 
-1. **Cluster (operator):** create the namespace, then `kubectl apply` the ResourceFlavor →
-   ClusterQueue → LocalQueue (runbook §1–§3).
-2. **Cluster (operator):** `kubectl apply` the namespaced RBAC — ServiceAccount + Role +
-   RoleBinding (runbook §4).
-3. **Control plane:** mint the compute-agent token (`phaze agents add --kind compute`); paste
-   it into the Secret and `kubectl apply` it (runbook §5). Then `kubectl apply` the agent-env
-   ConfigMap and the internal-CA Secret (runbook §6–§7).
-4. **Control plane (`datum@lux`):** set `PHAZE_CLOUD_TARGET=k8s` plus the kube + S3 knobs (see
-   the configuration links above), then **restart** the controller worker + api — `cloud_target`
-   is a startup-read; the running process will not pick up the change until it restarts.
+1. **Cluster (operator), per cluster:** create the namespace, then `kubectl apply` the
+   ResourceFlavor → ClusterQueue → LocalQueue (runbook §1–§3), against that cluster's context.
+2. **Cluster (operator), per cluster:** `kubectl apply` the namespaced RBAC — ServiceAccount +
+   Role + RoleBinding (runbook §4).
+3. **Control plane, per cluster:** mint the compute-agent token (`phaze agents add --kind
+   compute`); paste it into the Secret and `kubectl apply` it (runbook §5). Then `kubectl apply`
+   the agent-env ConfigMap and the internal-CA Secret (runbook §6–§7).
+4. **Control plane (`datum@lux`):** add a `[[backends]] kind="kueue"` entry (with its
+   `[backends.kube]` block + `buckets` list) and the referenced `[[buckets]]` entries to
+   `backends.toml` (see the [Backend registry](configuration.md#backend-registry-backendstoml)),
+   then **restart** the controller worker + api — the registry is a startup-read; the running
+   process will not pick up the change until it restarts. `cloud_enabled` becomes True as soon as a
+   non-local backend is present.
 5. **Smoke test:** run the checklist below.
 
-> **Confirm the Kueue version first.** Before step 1, check the cluster's served Kueue version
-> and keep the manifest apiVersion + `PHAZE_KUBE_WORKLOAD_API_VERSION` in lockstep with it (see
-> *apiVersion lockstep*).
+> **Confirm the Kueue version first.** Before step 1, check each cluster's served Kueue version
+> and keep the manifest apiVersion + that backend's `[backends.kube].workload_api_version` in
+> lockstep with it (see *apiVersion lockstep*).
 
 ## Smoke test
 
@@ -491,24 +643,32 @@ cluster:
 - [ ] **The ServiceAccount can submit a Job.** Using the `phaze-submitter` SA, a test
       `batch/v1` Job labeled `kueue.x-k8s.io/queue-name: phaze-lq` is created and admitted by
       Kueue (`kubectl get workloads -n phaze` shows it `Admitted`).
-- [ ] **The startup probe is happy.** With `PHAZE_CLOUD_TARGET=k8s` and the control plane
-      restarted, the pipeline dashboard shows **no** "K8s LocalQueue unreachable" alert (the
-      probe GETs the LocalQueue successfully — confirms `localqueues: get` is granted).
-- [ ] **A long file routes through k8s.** Trigger analysis on a set whose duration ≥
-      `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`; confirm the file stages to S3, a
-      `phaze-analyze-<file_id>` Job is submitted, the pod analyzes it, and the result
-      reconciles by `file_id` (the `/api/internal/agent/analysis/{file_id}` callback writes it).
-- [ ] **`local` reverts cleanly.** With `PHAZE_CLOUD_TARGET=local` + a control-plane restart, a
-      new long file routes **local** and no kube Job is submitted.
+- [ ] **The availability probe is happy.** With the `kind="kueue"` entry added and the control
+      plane restarted, the pipeline dashboard shows **no** "K8s LocalQueue unreachable" alert for
+      that backend (the probe GETs the LocalQueue via the backend's `context` — confirms
+      `localqueues: get` is granted). Repeat per backend.
+- [ ] **A long file routes through Kueue.** Trigger analysis on a set whose duration ≥
+      `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`; confirm the tiered drain picks the lowest-rank available
+      backend, the file stages to that backend's `pick_bucket` choice (recorded on
+      `cloud_job.staging_bucket`), a `phaze-analyze-<file_id>` Job is submitted, the pod analyzes
+      it, and the result reconciles by `file_id` (the `/api/internal/agent/analysis/{file_id}`
+      callback writes it).
+- [ ] **Spillover works.** Fill the rank-N backend (or take it offline) and confirm the next
+      candidate spills to the next-rank Kueue lane, then staleness-gated to local after
+      `cloud_spill_to_local_after_seconds` when every cloud lane is online-but-full.
+- [ ] **All-local reverts cleanly.** Remove the non-local `[[backends]]` entries (or set the
+      Phase 71 force-local override) + restart; `cloud_enabled` is False, a new long file routes
+      **local**, and no kube Job is submitted.
 
 ## See also
 
 - [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md)
   — the ready-to-paste homelab apply steps + deploy ordering (D-02).
-- [configuration.md → Kube submit/reconcile settings](configuration.md#kube-submitreconcile-settings-phase-54-v60)
-  and [→ S3 object-staging settings](configuration.md#s3-object-staging-settings-phase-53-v60)
-  — the canonical per-knob reference (`_FILE` support, defaults).
-- [deployment.md](deployment.md) — the two-host base deployment + the single-`cloud_target`
-  revert toggle.
-- [cloud-burst.md](cloud-burst.md) — the v5.0 OCI A1 compute-agent target (the other
-  `PHAZE_CLOUD_TARGET`).
+- [configuration.md → Backend registry (`backends.toml`)](configuration.md#backend-registry-backendstoml)
+  — the canonical per-field reference for `[[backends]]` / `[backends.kube]` / `[[buckets]]`
+  (inline `*_file` secrets, defaults, startup invariants). The flat `PHAZE_KUBE_*` / `PHAZE_S3_*`
+  tables it retains from Phase 54/53 are a **historical** reference only, superseded by the registry.
+- [deployment.md](deployment.md) — the two-host base deployment + the all-local revert
+  (remove the non-local backends, or the Phase 71 force-local override).
+- [cloud-burst.md](cloud-burst.md) — the v5.0 OCI A1 compute-agent target (a `kind="compute"`
+  backend in the same registry).

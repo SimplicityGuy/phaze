@@ -50,15 +50,43 @@ per-file pane. `/` renders the shell with **Analyze** selected by default.
   counts ride the single `/pipeline/stats` 5-second poll.
 - **⌘K command palette.** A Cmd-K command palette unifies search across files, tracklists,
   and artists plus quick commands — it replaces the old global-search tab.
-- **Header status strip.** Compute/agent liveness (local · A1 · k8s burst) surfaces in a
-  header status strip; the k8s burst lane is modeled as an ephemeral Job-based identity, so
-  it is never shown as perpetually dead.
+- **Header status strip.** Compute/agent liveness surfaces in a header status strip
+  alongside the **force-local pill** (the runtime routing override, below); Kueue lanes are
+  modeled as ephemeral Job-based identities, so they are never shown as perpetually dead.
+- **N-lane Analyze grid.** The Analyze workspace renders a server-derived **N-lane grid** —
+  one card per registry backend, sorted rank-ascending — showing each lane's kind, cost-tier
+  rank, per-lane in-flight/cap, live availability, and a Kueue admission caption
+  (quota-waiting / inadmissible counts). The grid is built from
+  `get_backend_lane_snapshot()` and OOB-swaps as a unit off the shared poll.
 - **Per-file record slide-in.** Opening a file row (or picking it from ⌘K) slides a full
   per-file record — windowed analysis timeline, metadata/identity, and this file's pending
   approvals — in over the shell.
 
 This is an information-architecture and presentation layer over the **existing** routers and
 services — the analysis, identify, proposal, and execution behavior is unchanged.
+
+### ☁️ Multi-Cloud Backends (2026.7.1)
+
+Analysis dispatch runs over a **pluggable backend registry**. Backends are declared in a
+`backends.toml` file (loaded via `PHAZE_BACKENDS_CONFIG_FILE`, default
+`/etc/phaze/backends.toml`); an absent file means an implicit **local-only** registry (a
+single `kind=local` backend at `rank=99`, `cap=1`). The file is a typed `[[backends]]` list,
+discriminated by `kind` — `local` | `compute` | `kueue` — where each backend carries a
+cost-tier `rank` (ascending = preferred; local sorts last at 99) and a concurrency `cap`.
+A `compute` backend is one rsync-over-Tailscale OCI A1 agent (≤1); a `kueue` backend is a
+Kueue cluster, and **N Kueue clusters are supported simultaneously**. Each non-local backend
+stages payloads through a per-backend S3 bucket declared in a `[[buckets]]` registry.
+
+Cloud is **derived, not toggled** — `cloud_enabled` is simply "the registry has any non-local
+backend," so there is no env master switch (the old `PHAZE_CLOUD_TARGET` selector was removed
+in Phase 67). Dispatch is a **tiered drain**: rank-first, spilling to the next rank, and only
+spilling to slow local after `cloud_spill_to_local_after_seconds` when higher ranks are
+online-but-full (immediate to local only when every non-local backend is offline). A runtime
+**force-local pill** (`POST /pipeline/routing/force-local`, a durable `route_control` row)
+lets an operator route everything local during an incident — reversible, no redeploy.
+
+Deep detail lives in [Architecture Overview](docs/architecture.md) and the
+[Runbook](docs/runbook.md).
 
 ### ⚙️ Services
 
@@ -94,6 +122,13 @@ graph TD
         PAN["🎼 Panako :8002<br/>tempo-robust"]
     end
 
+    subgraph Backends ["☁️ Analysis Backends — rank-tiered drain"]
+        LOCAL["🖥️ Local<br/>essentia · rank 99"]
+        COMPUTE["☁️ Compute agent<br/>OCI A1 · rsync/Tailscale · ≤1"]
+        KUEUE["⎈ Kueue clusters<br/>N ClusterQueues"]
+        S3[("🪣 Per-backend S3 staging")]
+    end
+
     UI --> API
     API --> PG
     API --> REDIS
@@ -102,6 +137,12 @@ graph TD
     WORKER --> PAN
     WORKER --> PG
 
+    API -->|dispatch by rank| LOCAL
+    API -->|dispatch by rank| COMPUTE
+    API -->|dispatch by rank| KUEUE
+    COMPUTE --> S3
+    KUEUE --> S3
+
     style UI fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
     style API fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style WORKER fill:#fff3e0,stroke:#e65100,stroke-width:2px
@@ -109,6 +150,10 @@ graph TD
     style REDIS fill:#ffebee,stroke:#b71c1c,stroke-width:2px
     style AUD fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style PAN fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    style LOCAL fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style COMPUTE fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
+    style KUEUE fill:#fff8e1,stroke:#ff8f00,stroke-width:2px
+    style S3 fill:#ede7f6,stroke:#4527a0,stroke-width:2px
 ```
 
 See [Architecture Overview](docs/architecture.md) for detailed diagrams covering data flow, service communication, and the approval pipeline.
@@ -238,7 +283,7 @@ curl http://localhost:8000/health   # Verify: {"status": "ok"}
 
 > **Logging:** all processes log through one structlog pipeline (JSON when not a TTY, console otherwise). Tune with `PHAZE_LOG_LEVEL` (`DEBUG`\|`INFO`\|`WARNING`\|`ERROR`, default `INFO`) and `PHAZE_LOG_JSON` (`true`\|`false`, default auto); set `PHAZE_LOG_LEVEL=DEBUG` to watch a running scan or model download in detail. See [Configuration → Logging / observability](docs/configuration.md#logging--observability-all-roles).
 
-> **Scan activity & stall reaping:** RUNNING scans show a live activity indicator (a green pulsing dot + "·Ns ago" in the Recent Scans table and the in-progress card) and flip to an amber "stalled?" warning when quiet. A control-side cron auto-fails scans that make no progress for `PHAZE_SCAN_STALL_SECONDS` (default `600`). See the [`PHAZE_SCAN_STALL_SECONDS` configuration row](docs/configuration.md#worker--task-queue-settings-all-roles).
+> **Scan activity & stall reaping:** RUNNING scans show a live activity indicator (a green pulsing dot + "·Ns ago" in the Recent Scans table and the in-progress card) and flip to an amber "stalled?" warning when quiet (at half the reap window — 12h). A control-side cron auto-fails scans that make no progress for `PHAZE_SCAN_STALL_SECONDS` (default `86400` — 24h). See the [`PHAZE_SCAN_STALL_SECONDS` configuration row](docs/configuration.md#worker--task-queue-settings-all-roles).
 >
 > **Deleting a scan:** terminal scans (`completed` / `failed`) carry a delete control in the Recent Scans table that removes the scan batch and every row associated with its files in one transaction (scoped strictly to that batch — no other scan's data is touched). Running scans and the live watcher sentinel cannot be deleted.
 
@@ -324,7 +369,7 @@ GitHub Actions runs on every push and PR:
 | **Audio Tags** | mutagen                                 | Read/write audio metadata            |
 | **Analysis**   | essentia-tensorflow                     | BPM, key, mood, style detection      |
 | **Fingerprint**| audfprint + Panako                      | Audio deduplication + identification |
-| **AI/LLM**     | litellm (pinned <1.82.7)               | Unified LLM API for rename proposals |
+| **AI/LLM**     | litellm (pinned `>=1.85.6,<1.86.0`)    | Unified LLM API for rename proposals (capped after the 1.82.7/1.82.8 supply-chain incident) |
 | **Scraping**   | BeautifulSoup4 + lxml                   | 1001Tracklists integration           |
 | **Matching**   | rapidfuzz                               | Fuzzy string matching                |
 | **UI**         | Jinja2 + HTMX + Tailwind CSS + Alpine.js| Server-rendered interactive UI       |
