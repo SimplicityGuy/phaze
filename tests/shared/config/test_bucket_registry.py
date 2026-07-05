@@ -314,14 +314,14 @@ def test_single_kueue_backend_accessors(backends_toml_env) -> None:  # type: ign
     assert {bucket.id for bucket in settings.buckets} == {"bucket-a"}
 
 
-def test_multiple_compute_backends_scratch_dir_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """>1 COMPUTE backend → ``active_compute_scratch_dir`` raises (multi-compute lands in PROV-01) — never silently pick one.
+def test_multiple_compute_backends_scratch_dir_no_longer_raises(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """>1 COMPUTE backend → ``active_compute_scratch_dir`` returns the first entry's scratch_dir (D-03), no raise.
 
     Phase 70 (MKUE-01, Pitfall 1) re-based ``active_compute_scratch_dir`` on a single-COMPUTE reduction
-    (so a local + N-Kueue + 1-compute registry no longer 500s /pushed via the retired ``_single_non_local``
-    ≤1-non-local raise). The genuinely-ambiguous >1-COMPUTE case stays a loud ValueError naming the ids
-    (multi-compute agent_ref resolution is deferred to PROV-01, unreachable under D-05's ≤1-compute
-    invariant). The registry itself is VALID; only the scratch_dir reduction refuses to pick one.
+    (so a local + N-Kueue + 1-compute registry no longer 500s /pushed). Phase 72 (MCOMP-01, D-03) retires
+    the >1-COMPUTE fail-fast: for N compute backends the accessor returns the first compute entry's
+    ``scratch_dir`` as a documented TRANSITIONAL reduction. Per-agent scratch resolution (D-07) is
+    deferred to Phase 73 (MCOMP-03); the ≤1 return stays byte-identical.
     """
     backends_toml_env(
         """
@@ -344,8 +344,8 @@ def test_multiple_compute_backends_scratch_dir_raises(backends_toml_env) -> None
     )
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    with pytest.raises(ValueError, match=r"PROV-01"):
-        _ = settings.active_compute_scratch_dir
+    # D-03: the >1-compute fail-fast is retired; returns the first compute entry's scratch_dir, no raise.
+    assert settings.active_compute_scratch_dir == "/scratch/a"
 
 
 def test_multi_bucket_kueue_registry_now_resolves(backends_toml_env) -> None:  # type: ignore[no-untyped-def]

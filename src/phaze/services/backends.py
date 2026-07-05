@@ -478,24 +478,18 @@ def resolved_non_local_kind(settings: ControlSettings) -> str:
     the moment a 2nd Kueue backend was declared, because the old ``>1``-non-local blanket raise fired on
     the literal MKUE-01 scenario. Generalize: when ANY non-local backend is ``"kueue"``, return
     ``"kueue"`` -- this tolerates N Kueue backends AND a local + N-Kueue + 1-compute registry (the
-    callers degrade gracefully by construction, no per-site try/except needed). The fail-fast is retained
-    ONLY for the genuinely-ambiguous compute-only ``>1`` case (PROV-01 territory, unreachable under
-    D-05's ≤1-compute invariant), mirroring ``active_compute_scratch_dir``'s single-compute reduction.
-    All-local -> ``"local"``, single-kueue -> ``"kueue"``, single-compute -> ``"compute"`` stay
-    byte-identical.
+    callers degrade gracefully by construction, no per-site try/except needed). Phase 72 (MCOMP-01,
+    D-03) retires the compute-only ``>1`` fail-fast too: the compute-only branch now returns ``"compute"``
+    for N compute backends (per-agent dispatch attribution lands in Phase 73). All-local -> ``"local"``,
+    single-kueue -> ``"kueue"``, single-compute -> ``"compute"`` stay byte-identical.
     """
     if not settings.cloud_enabled:
         return "local"
     non_local = [backend for backend in settings.backends if backend.kind != "local"]
     if any(backend.kind == "kueue" for backend in non_local):
         return "kueue"
-    # No kueue backend -> compute-only. Retain the fail-fast on the ambiguous >1-compute case (multi-
-    # compute agent_ref resolution lands in PROV-01; unreachable under D-05's ≤1-compute invariant).
-    if len(non_local) > 1:
-        raise ValueError(
-            f"multiple compute backends {[backend.id for backend in non_local]} are configured, but "
-            f"resolved_non_local_kind reduces a single compute lane (multi-compute lands in PROV-01)"
-        )
+    # No kueue backend -> compute-only. Phase 72 (D-03) retired the ambiguous >1-compute fail-fast; the
+    # compute-only branch returns "compute" for any N compute (per-agent attribution lands in Phase 73).
     return non_local[0].kind
 
 
