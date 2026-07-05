@@ -348,6 +348,52 @@ def test_multiple_compute_backends_scratch_dir_no_longer_raises(backends_toml_en
     assert settings.active_compute_scratch_dir == "/scratch/a"
 
 
+# --------------------------------------------------------------------------- #
+# Phase 73 (D-01): ComputeBackend.push_host required (id-tagged fail-fast) + optional ssh_user
+# --------------------------------------------------------------------------- #
+def test_compute_backend_missing_push_host_fails_fast_with_id() -> None:
+    """D-01: a compute entry with agent_ref + scratch_dir but NO push_host fails fast, id-tagged.
+
+    The push host later lands in the ssh remote spec (Plan 02), so an absent push_host must fail at
+    construction with the offending backend id and the token ``push_host`` -- mirroring the existing
+    scratch_dir clause -- rather than silently building a ``None/...`` remote destination.
+    """
+    with pytest.raises(ValueError, match=r"backend 'c'.*push_host"):
+        ComputeBackend(kind="compute", id="c", rank=0, cap=1, agent_ref="a", scratch_dir="/s")
+
+
+def test_two_compute_backends_carry_distinct_push_hosts(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """D-01: a valid N=2 compute registry carries a distinct push_host (+ optional ssh_user) per entry."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+        push_host = "a1.push.example"
+
+        [[backends]]
+        kind = "compute"
+        id = "compute-b"
+        rank = 20
+        cap = 2
+        agent_ref = "agent-b"
+        scratch_dir = "/scratch/b"
+        push_host = "x86.push.example"
+        ssh_user = "phaze"
+        """
+    )
+    settings = ControlSettings()
+    compute = [b for b in settings.backends if b.kind == "compute"]
+    assert [b.push_host for b in compute] == ["a1.push.example", "x86.push.example"]
+    # ssh_user is optional: unset defaults None, set carries the operator value.
+    assert compute[0].ssh_user is None
+    assert compute[1].ssh_user == "phaze"
+
+
 def test_multi_bucket_kueue_registry_now_resolves(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
     """MKUE-02: a kueue bound to >1 bucket now constructs cleanly (per-file selection replaces the old raise).
 
