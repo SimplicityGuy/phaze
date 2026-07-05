@@ -474,17 +474,14 @@ class ControlSettings(BaseSettings):
         (local + N-Kueue + 1-compute) there are ≥2 non-local backends, so the old ``_single_non_local``
         reduction raised and 500'd the ``/pushed`` callback (agent_push reads this accessor). This is a
         scratch_dir-resolution change ONLY, distinct from the deferred D-05 compute agent_ref fix.
-        Fail-fast naming the ids if >1 compute backend exists (genuinely-ambiguous PROV-01 territory,
-        unreachable under D-05's ≤1-compute invariant), mirroring ``resolved_non_local_kind``.
+        Phase 72 (MCOMP-01, D-03) retires the ``>1``-compute fail-fast: for N compute backends this
+        returns the first compute entry's ``scratch_dir`` as a documented TRANSITIONAL reduction. The ≤1
+        return value stays byte-identical (D-07) and ``agent_push.py`` is unchanged in Phase 72; per-agent
+        scratch resolution replaces this global accessor in Phase 73 (MCOMP-03).
         """
         compute = [backend for backend in self.backends if backend.kind == "compute"]
         if not compute:
             return None
-        if len(compute) > 1:
-            raise ValueError(
-                f"multiple compute backends {[backend.id for backend in compute]} are configured, but "
-                f"active_compute_scratch_dir reduces a single compute backend (multi-compute lands in PROV-01)"
-            )
         backend = compute[0]
         return backend.scratch_dir if isinstance(backend, ComputeBackend) else None
 
