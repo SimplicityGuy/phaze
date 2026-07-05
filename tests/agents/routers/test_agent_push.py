@@ -609,6 +609,39 @@ async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger
 
 
 @pytest.mark.asyncio
+async def test_push_mismatch_over_cap_does_not_clobber_advanced_file(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """CR-01 regression: an over-cap /mismatch on a file that already advanced past PUSHING is an idempotent no-op.
+
+    The WR-02-symmetric CAS guard on the spill (state == PUSHING) prevents a duplicate/late /mismatch -- or a
+    stale/unattributed reporter that skipped the D-07 gate (no cloud_job -> backend is None) -- from clobbering
+    an ANALYZED/PROPOSED/EXECUTED file back to AWAITING_CLOUD. Nothing is mutated: state, ledger, cloud_job all
+    stay put and ``cleared`` is False.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    # Already advanced past PUSHING (a local file that completed analysis), with no attributed compute
+    # backend (no cloud_job) so the D-07 reporter gate is skipped -- the exact CR-01 attack shape.
+    file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
+    await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds push_max_attempts=3
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False, "no-op must not report the ledger as cleared"
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.ANALYZED, "an already-advanced file must NOT be clobbered to AWAITING_CLOUD"
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None, "ledger row must be retained on the no-op"
+    assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
 async def test_push_mismatch_over_cap_compute_spill_marks_cloud_budget_spent(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,

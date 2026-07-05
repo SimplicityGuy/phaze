@@ -235,7 +235,26 @@ async def report_push_mismatch(
         # Spill the file back to AWAITING_CLOUD so the next release_awaiting_cloud drain tick can route it
         # to a lower-rank backend -- and, because this backend's cloud budget is now exhausted, to LOCAL.
         # ANALYSIS_FAILED comes ONLY from a local analysis failure; every cloud-failure path spills to local.
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
+        # CR-01 (WR-02-symmetric CAS guard): gate the spill on the CURRENT state being PUSHING, exactly like
+        # /pushed's PUSHING->PUSHED transition. A duplicate/late /mismatch (SAQ retry, or a stale/removed-backend
+        # reporter that skipped the D-07 gate) must NOT clobber a file that has already advanced past PUSHING
+        # (ANALYZED/PROPOSED/EXECUTED/...) back to AWAITING_CLOUD -- that reintroduces the exact stranding the
+        # /pushed guard prevents. Only a file genuinely still PUSHING may be spilled.
+        res = cast(
+            "CursorResult[Any]",
+            await session.execute(
+                update(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.PUSHING).values(state=FileState.AWAITING_CLOUD)
+            ),
+        )
+        if res.rowcount == 0:
+            # Already advanced past PUSHING: idempotent no-op. No cloud_job terminalization, no ledger clear.
+            await session.commit()
+            logger.info(
+                "report_push_mismatch: idempotent no-op (file no longer PUSHING, over-cap spill skipped)",
+                file_id=str(file_id),
+                agent_id=agent.id,
+            )
+            return PushMismatchResponse(file_id=file_id, cleared=False)
         # Terminalize compute's cloud_job row (SUBMITTED -> FAILED) in the SAME transaction, mirroring the
         # /pushed success path (SUCCEEDED at L127): FAILED drains the row from the D-10 in-flight set so
         # in_flight_count(compute) stays honest and the backend's cap slot is released (Phase 69, D-05).
