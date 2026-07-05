@@ -57,6 +57,10 @@ def _payload() -> PushFilePayload:
         original_path="/media/Coachella 2026 - Some Long Set.flac",
         file_type="flac",
         agent_id="fileserver-01",
+        # Phase 73 (D-04): the destination is payload-driven. These match the _fake_cfg globals so
+        # the argv-invariant tests stay byte-identical while exercising the per-file dest path.
+        dest_host="compute.tailnet.ts.net",
+        dest_scratch_dir="/srv/scratch",
     )
 
 
