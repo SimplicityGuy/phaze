@@ -237,7 +237,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
 | 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
-| 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 3/4 | In Progress|  |
+| 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 4/4 | Complete   | 2026-07-05 |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 0/— | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1066,7 +1066,7 @@ Plans:
 
 **Wave 3** *(blocked on 73-01..03 — golden needs the shipped seams)*
 
-- [ ] 73-04-PLAN.md — MCOMP-02/04/05 regressions (D-08 test-only) + delete active_compute_scratch_dir + ≤1-compute behavior-preservation golden + reenqueue.py:374 known-limitation note
+- [x] 73-04-PLAN.md — MCOMP-02/04/05 regressions (D-08 test-only) + delete active_compute_scratch_dir + ≤1-compute behavior-preservation golden + reenqueue.py:374 known-limitation note
 
 ### Phase 74: Docs, Runbook & N-Lane Compute UI Verification
 **Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. Closes the milestone.
