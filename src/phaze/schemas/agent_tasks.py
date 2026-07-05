@@ -99,8 +99,13 @@ class PushFilePayload(BaseModel):
     def _dest_scratch_absolute(cls, v: str | None) -> str | None:
         # Same shape as _original_path_absolute: the scratch dir is interpolated into the rsync remote
         # operand (`<dest_scratch_dir>/<file_id>.<ext>`), so a non-absolute value is rejected.
-        if v is not None and not v.startswith("/"):
-            raise ValueError("dest_scratch_dir must be an absolute path")
+        if v is not None:
+            if not v.startswith("/"):
+                raise ValueError("dest_scratch_dir must be an absolute path")
+            # WR-01: the scratch dir lands in the SAME ssh remote spec as dest_host/dest_ssh_user, so it
+            # gets the same defense-in-depth shell-metacharacter guard (an absolute path never needs them).
+            if any(ch in cls._DEST_HOST_FORBIDDEN for ch in v):
+                raise ValueError("dest_scratch_dir must not contain whitespace or shell metacharacters")
         return v
 
     # Chars that must never reach the ssh remote spec / rsync operand: whitespace + shell metacharacters.

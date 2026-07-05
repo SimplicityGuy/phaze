@@ -104,6 +104,12 @@ def _build_rsync_argv(
         f"-o ConnectTimeout={cfg.push_connect_timeout_sec}"
     )
     ssh_user = payload.dest_ssh_user or cfg.push_ssh_user
+    # WR-02: fail fast on a destination-less payload rather than building a broken `...@None:None/...`
+    # remote spec. A push_file payload MUST carry its dest_host/dest_scratch_dir (stamped by
+    # ComputeAgentBackend.dispatch or the /mismatch re-drive); a None here is a producer bug and matches
+    # the phase's "never a destination-less payload" must-have (Landmine 1).
+    if payload.dest_host is None or payload.dest_scratch_dir is None:
+        raise ValueError(f"push payload for {payload.file_id} is missing dest_host/dest_scratch_dir (destination-less push)")
     remote_dest = f"{ssh_user}@{payload.dest_host}:{payload.dest_scratch_dir}/{payload.file_id}.{payload.file_type}"
     return [
         "rsync",
