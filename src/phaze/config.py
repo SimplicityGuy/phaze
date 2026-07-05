@@ -434,6 +434,21 @@ class ControlSettings(BaseSettings):
         dupes = sorted(bid for bid, count in Counter(b.id for b in self.buckets).items() if count > 1)
         if dupes:
             raise ValueError(f"duplicate bucket ids in registry: {dupes} — each [[buckets]] id must be unique (REG-05)")
+        # D-04: fail fast on a duplicate compute agent_ref. Plan 02 retired the ≤1-compute blanket
+        # fail-fast so N distinct compute agents dispatch in parallel; without this guard two compute
+        # backends naming the SAME agent_ref would silently double-bind (a copy-paste id typo routing two
+        # entries at one node). STATIC check only — a Counter over config values, mirroring the bucket-id
+        # idiom above. Per D-05 an agent_ref naming a not-yet-checked-in agent is LEGAL at boot (agents
+        # register dynamically via check-in), so this opens NO DB session; that path degrades to a runtime
+        # hold (Plan 03). Skip ``agent_ref is None`` so the per-variant ``_require_dispatch_fields``
+        # "requires an agent_ref" message is never masked by this container-level guard.
+        compute_agent_refs = [be.agent_ref for be in self.backends if isinstance(be, ComputeBackend) and be.agent_ref is not None]
+        agent_dupes = sorted(ref for ref, count in Counter(compute_agent_refs).items() if count > 1)
+        if agent_dupes:
+            collisions = {ref: sorted(be.id for be in self.backends if isinstance(be, ComputeBackend) and be.agent_ref == ref) for ref in agent_dupes}
+            raise ValueError(
+                f"duplicate compute agent_ref(s) {agent_dupes} bound by backends {collisions} — each compute backend must bind a distinct agent_ref (D-04)"
+            )
         bucket_by_id = {b.id: b for b in self.buckets}
         cluster_specific_refs: dict[str, list[str]] = {}
         for be in self.backends:
