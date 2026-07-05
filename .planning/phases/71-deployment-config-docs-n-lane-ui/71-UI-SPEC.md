@@ -41,30 +41,38 @@ plus the Inter-500 numeral.
 
 ## Spacing Scale
 
-Preserved from the Phase-58 `_lane_card.html` unit — **card size and internal rhythm unchanged** (D-05).
+Preserved from the Phase-58 `_lane_card.html` unit — **card size and internal rhythm unchanged** (D-05). The
+main scale holds only standard-set values actually used this phase.
 
 | Token | Value | Usage (this phase) |
 |-------|-------|--------------------|
 | xs | 4px | icon/glyph gap in title row (`gap-1`, `gap-2`) |
 | sm | 8px | numeral-to-state gap; `mt-2` sub-label offset |
-| md-12 | 12px | `mt-3` title→capacity-bar offset (existing card rhythm; multiple of 4) |
 | md | 16px | card padding `p-4`; grid gutter `gap-4`; header control gap |
 | lg | 24px | workspace body padding `p-6` |
 
-Exceptions: **none** — every value is a multiple of 4 (12px `mt-3` inclusive). The card's `p-4` / `gap-4` /
-`h-1.5` bar / `rounded-xl` are frozen from Phase 58; the redesign changes only the **grid container** around
-the cards, never the card box model.
+### Spacing Exceptions
+
+- **`mt-3 = 12px`** — the frozen Phase-58 `_lane_card.html` title→capacity-bar internal offset. **PRESERVED
+  VERBATIM** under locked decision D-05 ("card box model frozen, size/rhythm unchanged"). It is **NOT a new
+  value introduced by this phase** — the shipped card renders byte-identical; this phase changes only the
+  **grid container** around the cards (`p-6` / `gap-4`, both standard-set), never the card box model
+  (`p-4` / `mt-3` / `mt-2` / `h-1.5` / `rounded-xl`). **Orchestrator-approved exception** (recorded on the
+  operator's behalf; rationale = locked D-05). This is the only non-standard-set value in the phase and it is
+  inherited, not authored here.
 
 ---
 
 ## Typography
 
+Three concrete sizes only — union = {12px, 14px, 20px} (≤4). No size ranges.
+
 | Role | Size | Weight | Line Height | Applied to |
 |------|------|--------|-------------|-----------|
-| Display | 18–20px (`text-lg`/`text-xl`) | Jura 500 | 1.2 | workspace `<h1>` "ANALYZE" (existing scaffold) |
+| Display | 20px (`text-xl`) | Jura 500 | 1.2 | workspace `<h1>` "ANALYZE" (existing scaffold) |
 | Heading/Label | 14px (`text-sm`) | Jura 500 uppercase `tracking-wider` | 1.3 | lane title `{glyph} {KIND · ID}`, toggle label, action buttons |
-| Micro-label | 10–12px (`text-[10px]`/`text-xs`) | Jura 500 uppercase `tracking-wider` | 1.4 | **rank caption** (`RANK {n}`), per-lane admission caption |
-| Body | 12–14px (`text-xs`/`text-sm`) | Inter 400 | 1.5 | sub-labels, empty-state copy, tooltips |
+| Micro-label | 12px (`text-xs`) | Jura 500 uppercase `tracking-wider` | 1.4 | **rank caption** (`RANK {n}`), per-lane admission caption, lane sub-labels |
+| Body | 14px (`text-sm`) | Inter 400 | 1.5 | empty-state copy, tooltips |
 | Numeral | 14px (`text-sm`) | **Inter 500** `font-mono` | 1 | **capacity numeral `{in_flight}/{cap}`** (never semibold) |
 
 ---
@@ -134,6 +142,13 @@ Generalizes Phase 58's fixed `grid grid-cols-3` (local/A1/k8s, included 3× by h
 grid over the D-01 `get_backend_lane_snapshot()` list. **`_lane_card.html` stays the per-card unit** (extended,
 not replaced); the redesign owns the grid container, the ordering, and three new per-card data points.
 
+**Primary focal point (Dimension 2 Visuals):** the **N-lane grid is the primary visual anchor** of the Analyze
+workspace — the first thing the operator's eye lands on and the screen's densest information region. Its
+rank-ascending order (D-06) doubles as read priority: top-left = "what gets used first." The header force-local
+toggle is a *persistent global control*, not this screen's anchor; the 6-card global roll-up (D-07) is a
+secondary summary below the grid. Visual hierarchy: lane grid (primary) → global roll-up (secondary) → per-file
+table (tertiary detail).
+
 ### Grid layout (D-05)
 
 - **Replace** `grid grid-cols-3` on `#analyze-lanes` with a responsive **wrapping** grid.
@@ -159,7 +174,7 @@ not replaced); the redesign owns the grid container, the ordering, and three new
 
 Three data points are new relative to `_lane_card.html`; extend the card contract to render them:
 
-1. **Rank** — `RANK {n}` micro-label (Jura 500, `text-[10px]` uppercase `tracking-wider`,
+1. **Rank** — `RANK {n}` micro-label (Jura 500, `text-xs` uppercase `tracking-wider`,
    `text-gray-400 dark:text-gray-500`), placed **inline after the lane title** in the title row (secondary,
    muted — must not compete with the title or the numeral).
 2. **In-flight / cap** — the capacity numeral becomes **`{in_flight}/{cap}`** (Inter 500 mono, lane color).
