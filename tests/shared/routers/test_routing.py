@@ -130,3 +130,53 @@ async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSes
 
     await session.refresh(long_file)
     assert long_file.state != FileState.AWAITING_CLOUD
+
+
+# --- Plan 04: force-local write endpoint + header pill -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncSession) -> None:
+    """POST engage=true flips the persisted row and the returned pill shows FORCED LOCAL; false reverts (D-08/D-10).
+
+    The thin endpoint (mirroring the pause/resume thin-endpoint pattern) writes the durable
+    ``route_control`` 'global' row and returns the ``_force_local_pill.html`` partial reflecting the
+    JUST-COMMITTED state (authoritative, never optimistic -- T-71-10) plus the OOB confirmation toast.
+    """
+    # Engage -> row true; pill FORCED LOCAL (aria-checked=false) + engage toast.
+    engaged = await client.post("/pipeline/routing/force-local", data={"engage": "true"})
+    assert engaged.status_code == 200
+    assert "FORCED" in engaged.text
+    assert 'aria-checked="false"' in engaged.text
+    assert "forced to LOCAL" in engaged.text  # OOB engage toast copy
+    assert await get_route_control(session) is True
+
+    # Revert -> row false; pill CLOUD ROUTING (aria-checked=true) + revert toast.
+    reverted = await client.post("/pipeline/routing/force-local", data={"engage": "false"})
+    assert reverted.status_code == 200
+    assert "CLOUD" in reverted.text
+    assert 'aria-checked="true"' in reverted.text
+    assert "Cloud routing restored" in reverted.text  # OOB revert toast copy
+    assert await get_route_control(session) is False
+
+
+@pytest.mark.asyncio
+async def test_force_local_pill_seeded_on_shell_page(client: AsyncClient) -> None:
+    """A NON-Analyze shell page seeds the header pill from the persisted row on EVERY page.
+
+    The seed reads ``get_route_control`` in ``shell.py`` ``_render_stage`` (base shell context),
+    NOT the Analyze-only dashboard context -- so the global control shows correct state everywhere.
+    """
+    # Engage, then load a non-Analyze stage: the header pill must reflect the persisted engaged state.
+    await client.post("/pipeline/routing/force-local", data={"engage": "true"})
+    page = await client.get("/s/discover")
+    assert page.status_code == 200
+    assert 'id="force-local-pill"' in page.text
+    assert 'aria-checked="false"' in page.text
+    assert "FORCED" in page.text
+
+    # Revert, then reload: the pill must now show the normal CLOUD ROUTING state.
+    await client.post("/pipeline/routing/force-local", data={"engage": "false"})
+    page2 = await client.get("/s/discover")
+    assert 'aria-checked="true"' in page2.text
+    assert "CLOUD" in page2.text

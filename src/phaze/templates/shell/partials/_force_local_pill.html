@@ -1,0 +1,45 @@
+{#
+  BEUI-02 force-local master toggle pill (Phase 71, Plan 04). A `role="switch"` button living in the
+  header `ml-auto` status-strip cluster, immediately LEFT of the Agents pill. Two SERVER-RENDERED
+  states from `force_local` (state carried by the WORD label, NEVER hue-only — WCAG 1.4.1):
+
+    - normal  (force_local False): neutral pill, `CLOUD ROUTING`,  aria-checked="true"
+    - engaged (force_local True):  loud amber incident pill + warning glyph, `FORCED LOCAL`, aria-checked="false"
+
+  Instant-on both directions, no confirm modal (R-4 — reverting to local is the safe direction). It
+  `hx-post`s the OPPOSITE `engage` to the thin write endpoint; the authoritative new state comes from
+  the server response (no optimistic mutation — T-71-10), swapped in place (`hx-target="this"`,
+  `hx-swap="outerHTML"`). Seeded on EVERY shell page from `get_route_control` (shell.py _render_stage),
+  so the global control is correct everywhere. The OOB toast (rendered only on a write, not the seed)
+  targets the base `#toast-container` polite aria-live region and does NOT steal focus.
+#}
+<button type="button"
+        id="force-local-pill"
+        role="switch"
+        aria-checked="{{ 'false' if force_local else 'true' }}"
+        aria-label="Force all analysis routing to local (incident revert)"
+        hx-post="/pipeline/routing/force-local"
+        hx-vals='{"engage": {{ 'false' if force_local else 'true' }}}'
+        hx-target="this"
+        hx-swap="outerHTML"
+        class="font-jura tracking-wider px-3 h-8 flex items-center gap-1.5 rounded-lg border focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if force_local %}bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300{% else %}bg-white dark:bg-phaze-panel border-gray-200 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5{% endif %}">
+    {% if force_local %}
+    {# Warning triangle glyph — the loud incident affordance (decorative; the word label carries state). #}
+    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+    </svg>
+    <span>FORCED&nbsp;LOCAL</span>
+    {% else %}
+    <span class="w-2 h-2 rounded-full bg-blue-500 dark:bg-blue-400" aria-hidden="true"></span>
+    <span>CLOUD&nbsp;ROUTING</span>
+    {% endif %}
+</button>
+{% if toast_message is defined and toast_message %}
+<div hx-swap-oob="beforeend:#toast-container">
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status" aria-live="polite"
+         x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
+         x-transition>
+        {{ toast_message }}
+    </div>
+</div>
+{% endif %}
