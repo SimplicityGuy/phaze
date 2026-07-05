@@ -44,19 +44,19 @@ Which phases cover which requirements. Populated during roadmap creation (phases
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MCOMP-01 | TBD | Pending |
-| MCOMP-02 | TBD | Pending |
-| MCOMP-03 | TBD | Pending |
-| MCOMP-04 | TBD | Pending |
-| MCOMP-05 | TBD | Pending |
-| MCOMP-06 | TBD | Pending |
-| MCOMP-07 | TBD | Pending |
+| MCOMP-01 | Phase 72 | Pending |
+| MCOMP-02 | Phase 73 | Pending |
+| MCOMP-03 | Phase 73 | Pending |
+| MCOMP-04 | Phase 73 | Pending |
+| MCOMP-05 | Phase 73 | Pending |
+| MCOMP-06 | Phase 73 | Pending |
+| MCOMP-07 | Phase 74 | Pending |
 
 **Coverage:**
 - v1 requirements: 7 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 7 ⚠️ (resolved at roadmap creation)
+- Mapped to phases: 7 ✓ (MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74)
+- Unmapped: 0 ✓ (no orphans, no duplicates)
 
 ---
 *Requirements defined: 2026-07-05*
-*Last updated: 2026-07-05 after initial definition*
+*Last updated: 2026-07-05 after roadmap creation (Phases 72-74 mapped)*
