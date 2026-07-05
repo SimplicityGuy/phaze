@@ -296,6 +296,32 @@ async def test_select_agent_by_id_honors_kind_filter(session: AsyncSession) -> N
         await select_agent_by_id(session, "oci-a1", kind="compute")
 
 
+@pytest.mark.asyncio
+async def test_select_agent_by_id_treats_sql_metacharacters_as_a_literal_value(session: AsyncSession) -> None:
+    """D-01: an ``agent_id`` shaped like a SQL-injection payload is bound as a literal, never executed.
+
+    The docstring's "parameterized query" claim has no dedicated adversarial cell elsewhere in this
+    suite -- every existing D-01 test passes an ordinary slug. This cell feeds a classic
+    tautology/statement-injection payload as the ``agent_id`` argument and proves TWO things a
+    string-interpolated (unparameterized) query would fail: (1) the lookup raises
+    ``NoActiveAgentError`` -- the payload matches no row rather than short-circuiting a tautology like
+    ``OR '1'='1'`` into matching every row -- and (2) a genuine, unrelated agent seeded in the SAME
+    session survives the call untouched (a `; DROP TABLE agents; --`-shaped value never reaches the
+    database as executable SQL).
+    """
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    survivor = await _seed_agent_row(session, agent_id="oci-real", kind="compute")
+    payload = "oci-real' OR '1'='1'; DROP TABLE agents; --"
+
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, payload, kind="compute")
+
+    # The unrelated legitimate agent must still resolve -- proof no injected statement executed.
+    resolved = await select_agent_by_id(session, survivor.id, kind="compute")
+    assert resolved.id == "oci-real"
+
+
 # === is_available (3 impls) ==============================================================
 
 
