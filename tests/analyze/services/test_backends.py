@@ -68,8 +68,31 @@ def _local(**kw: Any) -> Any:
 
 
 def _compute(**kw: Any) -> Any:
-    """Construct a ComputeAgentBackend bound to a single registry entry."""
-    return backends.ComputeAgentBackend(id=kw.get("id", "compute-a1"), rank=kw.get("rank", 10), cap=kw.get("cap", 2))
+    """Construct a ComputeAgentBackend bound to a single registry entry.
+
+    Phase 72 (MCOMP-01/D-02): ``is_available`` resolves ``self.config.agent_ref`` against ``Agent.id``,
+    so the backend must carry a real ``ComputeBackend`` config. ``agent_ref`` defaults to the backend id
+    (the byte-identical single-compute deploy binds agent_ref == the online agent's id); pass
+    ``agent_ref=`` to bind a specific / mismatched node, or ``config=None`` to exercise the unbound
+    fail-loud accessor path.
+    """
+    from phaze.config_backends import ComputeBackend as ComputeEntry
+
+    bid = kw.get("id", "compute-a1")
+    rank = kw.get("rank", 10)
+    cap = kw.get("cap", 2)
+    if "config" in kw:
+        config = kw["config"]
+    else:
+        config = ComputeEntry(
+            kind="compute",
+            id=bid,
+            rank=rank,
+            cap=cap,
+            agent_ref=kw.get("agent_ref", bid),
+            scratch_dir=kw.get("scratch_dir", "/srv/scratch"),
+        )
+    return backends.ComputeAgentBackend(id=bid, rank=rank, cap=cap, config=config)
 
 
 def _kueue(**kw: Any) -> Any:
@@ -283,16 +306,50 @@ async def test_local_is_available_always_true(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compute_is_available_true_when_agent_online(session: AsyncSession) -> None:
-    """ComputeAgentBackend.is_available is True only when a compute agent is online (GATE-1)."""
+async def test_compute_is_available_true_when_bound_agent_online(session: AsyncSession) -> None:
+    """D-02: is_available is True when the bound ``agent_ref`` names an ONLINE compute agent (Agent.id)."""
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
-    assert await _compute().is_available(session) is True
+    # Bind the backend to THIS agent's id -- the per-entry reference, not "the single active compute agent".
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is True
 
 
 @pytest.mark.asyncio
-async def test_compute_is_available_false_when_agent_absent(session: AsyncSession) -> None:
-    """No compute agent -> is_available returns False, NEVER raises (cron no-op discipline)."""
-    assert await _compute().is_available(session) is False
+async def test_compute_is_available_false_when_bound_agent_absent(session: AsyncSession) -> None:
+    """D-05: bound agent absent / not-yet-registered -> is_available False, NEVER raises (degrade-to-hold)."""
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is False
+
+
+@pytest.mark.asyncio
+async def test_compute_is_available_false_when_online_agent_id_mismatches_ref(session: AsyncSession) -> None:
+    """D-02 behavior change: a compute agent is online but its id != agent_ref -> False (not the retired pick).
+
+    The intended change vs the retired ``select_active_agent(kind="compute")`` single-active pick: a
+    DIFFERENT online compute agent no longer satisfies THIS backend's binding. Only the specifically-bound
+    node counts.
+    """
+    await seed_active_agent(session, agent_id="some-other-compute", kind="compute")
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is False
+
+
+@pytest.mark.asyncio
+async def test_compute_is_available_reads_bound_ref_not_single_active_pick(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-02 record-don't-rederive: is_available resolves the bound ref and does NOT call select_active_agent."""
+    import phaze.services.backends as backends_mod
+
+    sentinel = AsyncMock(side_effect=AssertionError("is_available must not use the single-active pick"))
+    monkeypatch.setattr(backends_mod, "select_active_agent", sentinel)
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is True
+    sentinel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compute_is_available_fails_loud_when_no_agent_ref_bound(session: AsyncSession) -> None:
+    """A defensively-unbound compute backend (no agent_ref) fails loud via the accessor, mirroring _kube()."""
+    # config=None -> the accessor has nothing to resolve -> a clear raise (NOT a silent False).
+    backend = _compute(id="compute-a1", config=None)
+    with pytest.raises(ValueError, match="compute-a1"):
+        await backend.is_available(session)
 
 
 @pytest.mark.asyncio
