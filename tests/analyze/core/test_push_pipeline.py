@@ -421,6 +421,21 @@ def test_require_push_config_rejects_exact_boundary() -> None:
         push._require_push_config(_fake_cfg(push_timeout_sec=boundary))
 
 
+def test_require_push_config_no_longer_requires_retired_remote_target() -> None:
+    # D-04: push_ssh_host + cloud_scratch_dir are payload-carried now (the fileserver's remote-target
+    # env is retired), so their absence must NOT raise as long as the secrets + fallback user are set.
+    cfg = _fake_cfg(push_ssh_host=None, cloud_scratch_dir=None)
+    push._require_push_config(cfg)  # must NOT raise
+
+
+@pytest.mark.parametrize("missing_field", ["push_ssh_user", "push_ssh_key", "push_known_hosts"])
+def test_require_push_config_still_requires_secret_material_and_fallback_user(missing_field: str) -> None:
+    # D-03: the SSH secret material (push_ssh_key + push_known_hosts) AND the dest_ssh_user None-fallback
+    # source (push_ssh_user) stay required — dropping any of them still fails fast.
+    with pytest.raises(RuntimeError, match="missing required push config"):
+        push._require_push_config(_fake_cfg(**{missing_field: None}))
+
+
 # ----------------------------------------------------------------------
 # compute-only startup janitor (Task 2 — converted from the Wave 0 stub there)
 # ----------------------------------------------------------------------
