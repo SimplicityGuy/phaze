@@ -87,6 +87,24 @@ async def test_route_control_degrades_on_db_error() -> None:
     assert rolled_back, "get_route_control must roll back the aborted transaction on a DB error"
 
 
+@pytest.mark.asyncio
+async def test_route_control_degrades_when_rollback_also_fails() -> None:
+    """A failed guarded rollback after a DB error is swallowed too -> still False, never raises (T-71-03).
+
+    Mirrors the get_backend_lane_snapshot double-fault guard: if BOTH the read and the recovery
+    rollback raise, the reader must still degrade to cloud-enabled (False) rather than propagate.
+    """
+
+    class _DoubleBoomSession:
+        async def get(self, *_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("get boom")
+
+        async def rollback(self) -> None:
+            raise RuntimeError("rollback boom")
+
+    assert await get_route_control(_DoubleBoomSession()) is False  # type: ignore[arg-type]
+
+
 # --- Task 3: duration router routes-local when force-local engaged ----------------------
 
 
