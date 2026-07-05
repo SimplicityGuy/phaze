@@ -237,7 +237,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
 | 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
-| 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 0/— | Not started | - |
+| 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 1/4 | In Progress|  |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 0/— | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1057,7 +1057,7 @@ Plans:
 
 **Wave 1** *(contracts + dispatch destination stamp — interface-first)*
 
-- [ ] 73-01-PLAN.md — ComputeBackend.push_host + PushFilePayload dest_* fields + resolve_compute_backend helper + dispatch stamps the per-file destination (record-don't-rederive)
+- [x] 73-01-PLAN.md — ComputeBackend.push_host + PushFilePayload dest_* fields + resolve_compute_backend helper + dispatch stamps the per-file destination (record-don't-rederive)
 
 **Wave 2** *(parallel — disjoint files; both blocked on 73-01's contracts)*
 
