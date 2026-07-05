@@ -21,7 +21,7 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
-from phaze.services.backends import resolved_non_local_kind
+from phaze.services.backends import get_backend_lane_snapshot, resolved_non_local_kind
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
@@ -553,6 +553,15 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # try/except here — same wiring idiom as get_queue_activity / dag_ctx above.
     recon = await get_global_reconciliation(session)
 
+    # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot -- one rank-ascending, secret-free dict
+    # per registry backend {id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}. Seeded
+    # IDENTICALLY in pipeline_stats_partial() below so the WHOLE #analyze-lanes grid OOB-swaps on the SAME
+    # existing 5s poll (no second loop, no new read endpoint -- Pitfall 2: N is dynamic, no per-lane store
+    # keys). The snapshot helper owns the never-500 degrade (-> [] on any error), so NO try/except here --
+    # same service-owns-degrade idiom as the cloud counts above. This SUPERSEDES the transitional single
+    # non-local lane-kind key (retired); resolved_non_local_kind stays for the :811 callers.
+    lanes = await get_backend_lane_snapshot(session)
+
     return {
         "stats": stats,
         "current_page": "pipeline",
@@ -572,14 +581,11 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
-        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03) + the registry-derived cloud
-        # lane kind (Phase 67 / D-14, REG-04) that drives the D-05 "not configured" lane labels. A
-        # transitional legacy-shaped value under the NEUTRAL `cloud_lane_kind` key: "local" when the
-        # registry is all-local, else the single non-local backend's kind ("compute"/"kueue"). The
-        # three Analyze partials compare against it (compute↔A1 lane, kueue↔k8s lane). Read-only; no
-        # backend behavior change. (# TRANSITIONAL — Phase 68/71: BEUI-01 owns the N-lane redesign.)
+        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03).
         "analyze_files": analyze_files,
-        "cloud_lane_kind": resolved_non_local_kind(settings),
+        # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored identically
+        # in pipeline_stats_partial). Retires the transitional single non-local lane-kind context key.
+        "lanes": lanes,
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -648,6 +654,11 @@ async def pipeline_stats_partial(
     # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
     # the inadmissible_count wiring.
     cloud_phase_counts = await get_cloud_phase_counts(session)
+    # Phase 71 (71-03, BEUI-01 / D-04): the SAME N-lane snapshot the dashboard seeds, re-pushed on every
+    # 5s poll so the WHOLE #analyze-lanes grid OOB-swaps as a unit (stats_bar.html includes _analyze_lanes
+    # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
+    # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
+    lanes = await get_backend_lane_snapshot(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -671,6 +682,7 @@ async def pipeline_stats_partial(
             "admitted_count": cloud_phase_counts["admitted"],
             "running_count": cloud_phase_counts["running"],
             "finished_count": cloud_phase_counts["finished"],
+            "lanes": lanes,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
