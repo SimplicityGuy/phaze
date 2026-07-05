@@ -269,7 +269,7 @@ See [docs/README.md](docs/README.md) for the full documentation index.
 just install          # Install dependencies
 just up / just down   # Start / stop services
 just test             # Run tests
-just test-cov         # Tests with coverage (85% min)
+just test-cov         # Tests with coverage (90% min)
 just check            # Lint + typecheck + test
 just pre-commit       # Run all pre-commit hooks
 ```

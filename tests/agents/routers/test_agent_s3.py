@@ -26,7 +26,7 @@ import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -36,6 +36,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_s3 import router as agent_s3_router
 from phaze.services import cloud_staging, s3_staging
+from phaze.services.enqueue_router import NoActiveAgentError
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
 from tests._queue_fakes import FakeQueue, FakeTaskRouter
@@ -304,6 +305,59 @@ async def test_uploaded_duplicate_is_idempotent_noop_without_recompleting(
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
+async def test_uploaded_unresolvable_staging_bucket_returns_409(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """An UPLOADING row whose recorded staging_bucket does not resolve to a registry BucketConfig -> 409 (never a dead complete)."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    # staging_bucket=None -> resolve_bucket_config returns None -> the 409 guard fires.
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, staging_bucket=None)
+    complete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", complete)
+
+    body = {"parts": [{"part_number": 1, "etag": '"etag-1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 409, r.text
+    complete.assert_not_awaited()  # never complete against an unresolvable bucket
+
+
+async def test_uploaded_lost_flip_race_is_idempotent_noop(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """The status pre-check passes but the rowcount-guarded UPLOADING->UPLOADED flip matches 0 rows (lost race) -> idempotent 200."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+
+    # Simulate the concurrent winner: complete_multipart_upload flips the row to UPLOADED on the shared
+    # session, so the handler's own guarded UPDATE ... WHERE status==UPLOADING then matches 0 rows.
+    async def _flip_then_return(*_args: Any, **_kwargs: Any) -> None:
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.UPLOADED.value))
+
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", _flip_then_return)
+
+    body = {"parts": [{"part_number": 1, "etag": '"etag-1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["file_id"] == str(file_id)
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value  # the winner's flip stands
+
+
 async def test_uploaded_rejects_identity_in_body(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
@@ -481,6 +535,34 @@ async def test_failed_under_cap_redrives_and_increments_counter(
     row = await _ledger_row(session, f"s3_upload:{file_id}")
     assert row is not None
     assert row.payload.get("s3_upload_attempt") == 1
+
+
+async def test_failed_under_cap_redrive_no_fileserver_holds_uploading(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """Under the cap, if no fileserver is online the re-drive raises NoActiveAgentError -> clean 200 hold, cleared=False, cloud_job stays UPLOADING."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    await _seed_ledger(session, file_id, attempt=0)
+
+    async def _raise_no_agent(*_args: Any, **_kwargs: Any) -> None:
+        raise NoActiveAgentError("no fileserver online")
+
+    monkeypatch.setattr(cloud_staging, "redrive_upload", _raise_no_agent)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "transfer error"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False  # held for a later re-drive, not cleared
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADING.value  # slot kept
 
 
 async def test_failed_under_cap_redrive_keeps_fresh_part_urls(

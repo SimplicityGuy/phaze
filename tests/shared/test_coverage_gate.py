@@ -13,7 +13,7 @@ regresses back to/below the baseline — a silent gate weakening (RESEARCH Pitfa
 
 It also asserts the per-module floor wiring stays inside ``coverage-combine``: the recipe
 must still emit ``coverage json`` (the floor script's input) and invoke
-``scripts/coverage_floor.py`` (the per-module 85% floor, COV-01/D-02). Dropping either
+``scripts/coverage_floor.py`` (the per-module 90% floor, COV-01/D-02). Dropping either
 would re-open a false-green hole in the combined-coverage gate.
 
 This guard is DB-free and subprocess-free: it parses ``justfile`` as text and

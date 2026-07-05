@@ -164,6 +164,23 @@ async def test_write_tags_success(client: AsyncClient, session: AsyncSession) ->
 
 
 @pytest.mark.asyncio
+async def test_write_tags_non_integer_year_and_track_number_kept_as_string(client: AsyncClient, session: AsyncSession) -> None:
+    """A non-integer year/track_number falls through the int() ValueError branch and is kept as the raw string."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(
+            f"/tags/{file_record.id}/write",
+            data={"artist": "New Artist", "year": "not-a-year", "track_number": "A1"},
+        )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_write_tags_non_executed_rejected(client: AsyncClient, session: AsyncSession) -> None:
     """POST /tags/{file_id}/write for non-EXECUTED file returns error."""
     file_record, _ = await _create_executed_file(session, state=FileState.DISCOVERED)

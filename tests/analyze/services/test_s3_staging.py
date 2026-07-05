@@ -285,6 +285,62 @@ async def test_complete_multipart_upload_other_clienterror_raises(monkeypatch: p
         await s3_staging.complete_multipart_upload(uuid.uuid4(), "upload-id", [(1, '"deadbeef"')], stub_bucket)
 
 
+def _stub_client_method_raising(monkeypatch: pytest.MonkeyPatch, method: str, exc: Exception) -> None:
+    """Patch ``s3_staging._client`` so ``client.<method>`` raises ``exc`` (WR-02 fail-loud error paths)."""
+
+    class _FakeClientCM:
+        async def __aenter__(self) -> AsyncMock:
+            client = AsyncMock()
+            getattr(client, method).side_effect = exc
+            return client
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr(s3_staging, "_client", lambda _bucket: _FakeClientCM())
+
+
+async def test_create_multipart_upload_clienterror_raises_s3_staging_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raw ClientError from create_multipart_upload surfaces as S3StagingError (WR-02)."""
+    _stub_client_method_raising(monkeypatch, "create_multipart_upload", ClientError({"Error": {"Code": "NoSuchBucket"}}, "CreateMultipartUpload"))
+    with pytest.raises(s3_staging.S3StagingError, match="create multipart upload"):
+        await s3_staging.create_multipart_upload(uuid.uuid4(), _bucket_config("http://minio.test:9000", _BUCKET))
+
+
+async def test_presign_upload_parts_clienterror_raises_s3_staging_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raw ClientError while presigning part URLs surfaces as S3StagingError (WR-02)."""
+    _stub_client_method_raising(monkeypatch, "generate_presigned_url", ClientError({"Error": {"Code": "AccessDenied"}}, "GeneratePresignedUrl"))
+    with pytest.raises(s3_staging.S3StagingError, match="presign upload parts"):
+        await s3_staging.presign_upload_parts(uuid.uuid4(), "upload-id", 3, _bucket_config("http://minio.test:9000", _BUCKET))
+
+
+async def test_presign_get_clienterror_raises_s3_staging_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raw ClientError while presigning a GET URL surfaces as S3StagingError (WR-02)."""
+    _stub_client_method_raising(monkeypatch, "generate_presigned_url", ClientError({"Error": {"Code": "AccessDenied"}}, "GeneratePresignedUrl"))
+    with pytest.raises(s3_staging.S3StagingError, match="presign GET"):
+        await s3_staging.presign_get(uuid.uuid4(), _bucket_config("http://minio.test:9000", _BUCKET))
+
+
+async def test_abort_multipart_upload_other_clienterror_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-absent ClientError from abort is re-raised as S3StagingError (CR-02 -- fail loud)."""
+    _stub_client_method_raising(monkeypatch, "abort_multipart_upload", ClientError({"Error": {"Code": "AccessDenied"}}, "AbortMultipartUpload"))
+    with pytest.raises(s3_staging.S3StagingError, match="abort multipart upload"):
+        await s3_staging.abort_multipart_upload(uuid.uuid4(), "upload-id", _bucket_config("http://minio.test:9000", _BUCKET))
+
+
+async def test_delete_staged_object_other_clienterror_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-absent ClientError from delete is re-raised as S3StagingError (D-02 -- fail loud)."""
+    _stub_client_method_raising(monkeypatch, "delete_object", ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObject"))
+    with pytest.raises(s3_staging.S3StagingError, match="delete staged object"):
+        await s3_staging.delete_staged_object(uuid.uuid4(), _bucket_config("http://minio.test:9000", _BUCKET))
+
+
+async def test_delete_staged_object_absent_code_clienterror_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An absent-object ClientError (NoSuchKey) is swallowed -> idempotent no-op (S3 itself never raises this, but a strict backend can)."""
+    _stub_client_method_raising(monkeypatch, "delete_object", ClientError({"Error": {"Code": "NoSuchKey"}}, "DeleteObject"))
+    await s3_staging.delete_staged_object(uuid.uuid4(), _bucket_config("http://minio.test:9000", _BUCKET))  # no raise
+
+
 async def test_presign_get_encodes_short_ttl(bucket: BucketConfig) -> None:
     """The presigned GET URL is file_id-scoped and encodes a TTL <= s3_presign_get_ttl_sec (KSTAGE-03)."""
     cfg = get_settings()

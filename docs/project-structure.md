@@ -137,7 +137,7 @@ phaze/
 ├── services/                   # Fingerprint microservices
 │   ├── audfprint/              #   Landmark-based fingerprinting
 │   └── panako/                 #   Tempo-robust fingerprinting
-├── tests/                      # Test suite (85%+ coverage)
+├── tests/                      # Test suite (90%+ coverage)
 │   ├── conftest.py             #   Fixtures + test DB setup
 │   ├── test_models/            #   ORM model tests
 │   ├── test_routers/           #   Endpoint integration tests

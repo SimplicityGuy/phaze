@@ -1,7 +1,7 @@
 """Fail if any tracked phaze module is below the per-module coverage floor (COV-01, D-01/D-02/D-03).
 
 Reads ``coverage json`` output (``coverage.json`` in the current working directory) and enforces a
-single uniform floor (D-04 = 85) over every tracked source file. Runs inside ``just coverage-combine``
+single uniform floor (D-04, raised 85 -> 90 once every module cleared 90%) over every tracked source file. Runs inside ``just coverage-combine``
 AFTER ``coverage combine`` + ``coverage json``, so it sees the authoritative COMBINED coverage
 (Phase 63 D-02) -- never a partial per-bucket shard.
 
@@ -30,7 +30,7 @@ from pathlib import Path
 import sys
 
 
-FLOOR = 85.0
+FLOOR = 90.0
 # D-09 exemptions: {relative_path: "written justification"}. Keep empty unless a module is genuinely
 # untestable AND D-08 seams cannot help. Each entry MUST carry a written justification and a reviewer
 # must confirm it. Given D-08 seams are allowed, this is expected to stay empty.
