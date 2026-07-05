@@ -22,15 +22,24 @@ Every cell pins CURRENT behavior, not a future contract:
 
 The "compute agent online but id != agent_ref" case is DELIBERATELY NOT characterized here -- that is
 the intended behavior CHANGE Plan 03 introduces (per-entry binding), not a byte-identical invariant.
+
+KNOWN LIMITATION (Phase 73, PROV-01 backlog -- documented, NOT fixed here): ``reenqueue.py:374``
+``recover_orphaned_work`` still re-drives held files through ``select_active_agent(kind="compute")`` --
+a single-active reader. It is OUT OF SCOPE for Phase 73 (not a dispatch / push / reconcile seam) and is
+NOT widened here: silently broadening its sweep risks the 44.5k over-enqueue incident class (STATE.md).
+Tracked as a PROV-01 follow-up; ``reenqueue.py`` receives NO change this plan.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
 
+from phaze.schemas.agent_tasks import PushFilePayload
+from phaze.tasks import push
 from tests._queue_fakes import seed_active_agent
 
 
@@ -159,3 +168,81 @@ def test_implicit_all_local_registry_has_no_cloud_activity(monkeypatch: pytest.M
     assert len(resolved) == 1
     assert isinstance(resolved[0], backends.LocalBackend)
     assert not any(isinstance(b, backends.ComputeAgentBackend) for b in resolved)
+
+
+# === Task 3: ≤1-compute behavior-preservation golden (D-05, no schema change) =============
+#
+# These pin that once the payload carries the single destination (Plan 01/02) the observable
+# push STRINGS for a SINGLE-compute registry are byte-identical to the pre-Phase-73 behavior --
+# on the SAME one-row-per-file cloud_job schema (D-05: no migration, no column). Only the
+# resolution PATH changed (global accessor -> per-file resolve_compute_backend), never the value.
+# The reenqueue.py:374 PROV-01 single-active reader is documented in the module docstring above and
+# is deliberately NOT exercised/widened here.
+
+
+def _fake_push_cfg(**overrides: Any) -> SimpleNamespace:
+    """A duck-typed AgentSettings stand-in carrying only the fields ``_build_rsync_argv`` reads."""
+    base: dict[str, Any] = {
+        "push_ssh_user": "bursty",  # the dest_ssh_user=None fallback source (A3)
+        "push_timeout_sec": 600,
+        "push_connect_timeout_sec": 30,
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_single_compute_rsync_remote_dest_is_byte_identical(backends_toml_env: Any) -> None:
+    """D-05/A3: a SINGLE-compute registry's rsync remote_dest is byte-identical with dest_ssh_user=None -> cfg fallback.
+
+    The compute backend is resolved from the registry, its ``push_host`` / ``scratch_dir`` are stamped
+    onto the payload (Plan 01/02 record-don't-rederive), and ``dest_ssh_user`` is left unset so
+    ``_build_rsync_argv`` falls back to ``cfg.push_ssh_user`` -- proving A3 (the fallback preserves the
+    user). The resulting ``<user>@<host>:<scratch_dir>/<file_id>.<file_type>`` string equals the exact
+    pre-Phase-73 single-global remote target, so the ≤1-compute deploy pushes to the identical location.
+    """
+    from phaze.config import ControlSettings
+
+    backends_toml_env(_LOCAL_1COMPUTE_MATCHING_REF)
+    settings = ControlSettings()
+    backend = backends.resolve_compute_backend(settings, "oci-a1")
+    assert backend is not None
+
+    file_id = uuid.UUID("00000000-0000-0000-0000-0000000000ab")
+    payload = PushFilePayload(
+        file_id=file_id,
+        original_path="/media/Coachella 2026 - Some Long Set.mp3",
+        file_type="mp3",
+        agent_id="fileserver-01",
+        dest_host=backend.push_host,
+        dest_scratch_dir=backend.scratch_dir,
+        dest_ssh_user=None,  # -> cfg.push_ssh_user fallback (A3)
+    )
+    argv = push._build_rsync_argv(_fake_push_cfg(), payload, key_path="/k", known_hosts_path="/kh")
+
+    # The remote_dest is the LAST argv element (after the "--" terminator + the source path).
+    remote_dest = argv[-1]
+    assert remote_dest == "bursty@oci-a1.push.example:/srv/scratch/00000000-0000-0000-0000-0000000000ab.mp3"
+
+
+def test_single_compute_pushed_scratch_path_from_recorded_backend_id_is_byte_identical(backends_toml_env: Any) -> None:
+    """D-05/D-06: the /pushed scratch_path resolved from the RECORDED backend_id is byte-identical.
+
+    ``report_pushed`` composes ``f"{backend.scratch_dir}/{file_id}.{file_type}"`` after resolving the
+    file's ``cloud_job.backend_id`` via ``resolve_compute_backend`` (Plan 03). For the ≤1-compute registry
+    this is the SAME string the retired ``active_compute_scratch_dir`` global produced -- proving the
+    per-file resolution preserved the scratch location on the unchanged one-row-per-file schema.
+    """
+    from phaze.config import ControlSettings
+
+    backends_toml_env(_LOCAL_1COMPUTE_MATCHING_REF)
+    settings = ControlSettings()
+
+    # Simulate the value RECORDED on cloud_job.backend_id at dispatch time (D-02 stamp).
+    recorded_backend_id = "oci-a1"
+    backend = backends.resolve_compute_backend(settings, recorded_backend_id)
+    assert backend is not None
+
+    file_id = uuid.UUID("00000000-0000-0000-0000-0000000000ab")
+    file_type = "mp3"
+    scratch_path = f"{backend.scratch_dir}/{file_id}.{file_type}"
+    assert scratch_path == "/srv/scratch/00000000-0000-0000-0000-0000000000ab.mp3"
