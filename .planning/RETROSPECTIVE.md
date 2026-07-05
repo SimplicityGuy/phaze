@@ -260,6 +260,43 @@ An engineering-debt paydown milestone with **zero product/backend behavior chang
 
 ---
 
+## Milestone: 2026.7.1 — Multi-Cloud Backends
+
+**Shipped:** 2026-07-05
+**Phases:** 5 (67-71) | **Plans:** 26
+
+### What Was Built
+Generalized the single `cloud_target` selector into a declarative, cost-tiered `backends.toml` registry draining long files across **local + N Kueue clusters + N cloud-compute agents simultaneously**, statically configured with zero new dependencies. Shipped as a dependency-strict chain: a config-only registry with a per-file S3 bucket registry and no back-compat shim (67), a single `Backend` protocol + 3 implementations proven byte-identical by a D-01 golden characterization gate (68), a tiered per-file rank-first drain scheduler with per-backend caps under one advisory lock + staleness/black-hole guards (69, the first behavior-changing phase), N distinct-kr8s-client Kueue clusters with deterministic per-file buckets and concurrency-safe clean-before-flip cleanup (70), and an N-lane read-only UI + no-redeploy force-local kill-switch (71). Milestone audit PASSED 21/21 reqs, 5/5 cross-phase flows.
+
+### What Worked
+- **Refactor-first with a byte-identical golden gate paid off exactly as designed.** 67→68 were behavior-preserving (68 gated by a D-01 characterization snapshot that changed exactly one deliberate field); when 69 introduced multiplicity, any behavior diff was unambiguously attributable to the new scheduler, not an accidental regression.
+- **The integration checker live-verified the force-local gate end-to-end** (real Postgres + FastAPI app), catching that the drain + both duration-router callers + backfill all fold on `get_route_control` — a confidence the static traceability table alone couldn't give.
+- **Reversing the design's one-shared-bucket decision (REG-05) mid-milestone was clean** because dispatch RECORDS `staging_bucket` and every reader reads the recorded value — the per-file `pick_bucket` selection never has to be re-derived, which also made the clean-before-flip cleanup concurrency-safe (closed Pitfall 9).
+- **Per-cluster failure isolation via a per-backend snapshot try/except** meant one flaky Kueue cluster degrades to 0 slots without poisoning the whole drain tick.
+
+### What Was Inefficient
+- **Phase 70 flipped the MKUE-01 requirement checkbox to Complete mid-phase**, before its VERIFICATION passed — which tripped the 2026.7.0 docs-drift guard's D-02 invariant and left the branch red-suite until the verifier reconciled it. Every prior phase in the milestone flipped checkboxes atomically at phase-completion; 70 deviated for one requirement.
+- **Phase 69 needed a gap-closure plan (69-05, CR-01)** after code-review found a cross-backend double-dispatch race — a locally-spilled file stayed in the drain-candidate set; fixed by adding `FileState.LOCAL_ANALYZING`. Phase 70 code-review also found 2 BLOCKERs (autoflush-strand on Kueue dispatch, drain rollback discipline).
+- **Coverage-floor CI failed right after the Phase 70 merge** on `cloud_staging`, forcing a follow-up that raised all modules ≥90% and lifted the per-module floor 85→90 — the per-module gate from 2026.7.0 fired on new low-coverage modules the phase added.
+- **The force-local gate shipped without a committed regression test** at the two duration-router sites (live-verified only in the audit) — carried as deferred W2.
+
+### Patterns Established
+- **Byte-identical characterization gate before any behavior change**: land the protocol/refactor with a golden snapshot proving zero behavior diff, THEN change behavior — isolates attribution.
+- **Record-don't-rederive for per-file routing**: stamp the selected bucket/backend on the row at dispatch; every downstream read (presign/delete/reconcile/callback) reads the recorded value, never recomputes — makes concurrent cleanup safe.
+- **No-redeploy operational kill-switch as a persisted one-row flag** with a degrade-safe reader (False on absent row / any DB error) gating every enqueue site — an operator can revert to safe-mode instantly.
+- **Per-backend snapshot-and-isolate**: wrap each backend's probe in try/except so one backend's failure is a local 0-slot degrade, not a tick-wide raise.
+
+### Key Lessons
+1. Flip requirement checkboxes atomically at phase close, AFTER verification passes — Phase 70's early MKUE-01 flip tripped the docs-drift guard and left a red branch. The guard from the prior milestone did its job.
+2. A per-module coverage floor will fire on the next phase that adds a low-coverage module — budget coverage work into phases that add new modules, don't let it surface as a post-merge CI failure.
+3. When a gate is verified live during the audit but has no committed test (force-local W2), commit the test in the same pass — "live-verified" doesn't survive into the regression suite.
+4. Refactor-first ordering with a golden gate is the right shape for a risky behavior change — it made the milestone's one behavior-changing phase (69) debuggable.
+
+### Cost Observations
+- 5 phases / 26 plans / 56 tasks over 2 days (2026-07-03 → 2026-07-04); 5 squash-merged PRs (#201/#202/#203/#204/#206). Code-review caught real blockers in 69 (CR-01 double-dispatch) and 70 (2 BLOCKERs); a post-70 coverage follow-up raised all modules ≥90%. Net +29,032 / −13,211 lines across the range (includes the protocol re-home + planning docs).
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -271,6 +308,7 @@ An engineering-debt paydown milestone with **zero product/backend behavior chang
 | v3.0 | 6 | 11 | Enrichment layer (search, Discogs, tag writing, CUE) on stable foundation; HTMX OOB swaps + Alpine.js patterns reused everywhere |
 | v4.0 | 6 | 47 | Two-host distributed architecture (HTTP-only agent boundary, per-agent SAQ queues, internal CA, settings split via `get_settings()` factory); subprocess import-boundary tests enforce invariants; 4× plan count from contract-heavy API surface |
 | 2026.7.0 | 4 | 13 | First CalVer milestone (names decoupled from versions); parallel-CI bucket partition + combined coverage; docs-drift lesson finally automated as a hermetic CI gate; engineering-debt paydown, zero behavior change |
+| 2026.7.1 | 5 | 26 | Pluggable multi-backend registry (local + N Kueue + N compute simultaneously); refactor-first with a byte-identical golden characterization gate isolating the one behavior-changing phase; integration checker live-verified cross-phase flows; per-module coverage floor raised to 90 |
 
 ### Cumulative Quality
 
@@ -283,6 +321,7 @@ An engineering-debt paydown milestone with **zero product/backend behavior chang
 | v5.0 | (full suite passing) | (arm64 essentia image + cloud-burst push pipeline) | 5 |
 | v6.0 | 2,474 passing | ~8,452 lines added across 61 files since v5.0 tag | 5 |
 | 2026.7.0 | 2,566 passing (9 buckets) | net −9,314 (test-bucket reorg + dead-code confirmation) | 4 |
+| 2026.7.1 | 2,637+ passing (all modules ≥90%) | net +15,821 across range (protocol re-home + N-backend registry) | 5 |
 
 ### Top Lessons (Verified Across Milestones)
 
