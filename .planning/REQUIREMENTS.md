@@ -9,7 +9,7 @@
 
 ### Multi-Compute Agents (MCOMP)
 
-- [ ] **MCOMP-01**: Operator can declare **N `compute` backends** in `backends.toml`, each bound to a specific registered compute Agent, and all N are accepted at boot — the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) are retired and generalized for a `local + N-Kueue + N-compute` registry.
+- [x] **MCOMP-01**: Operator can declare **N `compute` backends** in `backends.toml`, each bound to a specific registered compute Agent, and all N are accepted at boot — the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) are retired and generalized for a `local + N-Kueue + N-compute` registry.
 - [ ] **MCOMP-02**: Each compute backend probes **its own bound agent's** liveness; an offline agent makes only *that* backend unavailable (the file holds or spills to the next eligible backend — it never dispatches to a dead agent). Replaces `ComputeAgentBackend.is_available`'s `select_active_agent(kind="compute")` "the single active compute agent" assumption.
 - [ ] **MCOMP-03**: A file dispatched to a specific compute backend is pushed to **that agent's** host/scratch destination — the push pipeline (`_enqueue_push_file` → fileserver → rsync) and the `/pushed` callback (`routers/agent_push.py`) resolve the destination per-agent, not from a single global `active_compute_scratch_dir`.
 - [ ] **MCOMP-04**: The tiered drain scheduler spreads long files across N compute agents by **rank** (free arm64 preferred over paid/trial x86) and **per-agent `cap`**, spilling to the next-eligible backend when one is at cap or offline. Reuses the Phase-69 rank/cap `select_backend` policy — no capability-matching.
@@ -44,7 +44,7 @@ Which phases cover which requirements. Populated during roadmap creation (phases
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MCOMP-01 | Phase 72 | Pending |
+| MCOMP-01 | Phase 72 | Complete |
 | MCOMP-02 | Phase 73 | Pending |
 | MCOMP-03 | Phase 73 | Pending |
 | MCOMP-04 | Phase 73 | Pending |
