@@ -25,12 +25,14 @@ PUSHED}`` window count for the single-backend case, over constructed FileState /
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
+from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.services import kube_staging, s3_staging
@@ -175,6 +177,100 @@ def _stub_s3(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _stub_kube_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kube_staging, "get_local_queue", AsyncMock(return_value=fake_local_queue()))
+
+
+async def _seed_agent_row(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    name: str | None = None,
+    kind: str = "compute",
+    online: bool = True,
+    revoked: bool = False,
+) -> Agent:
+    """Insert one Agent row with explicit id / name / liveness so binding-key edge cases are seedable.
+
+    ``seed_active_agent`` always sets ``name == agent_id`` and always-online, so it cannot express the
+    name-only-match / revoked / never-seen fixtures the D-01 selector must reject. This helper does.
+    """
+    now = datetime.now(UTC)
+    agent = Agent(
+        id=agent_id,
+        name=name if name is not None else agent_id,
+        token_hash=None,
+        kind=kind,
+        scan_roots=[],
+        last_seen_at=now if online else None,
+        revoked_at=(now - timedelta(hours=1)) if revoked else None,
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    return agent
+
+
+# === select_agent_by_id (per-entry binding, D-01) ========================================
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_returns_agent_matched_on_id(session: AsyncSession) -> None:
+    """D-01: select_agent_by_id resolves the online agent whose Agent.id equals the arg."""
+    from phaze.services.enqueue_router import select_agent_by_id
+
+    await _seed_agent_row(session, agent_id="oci-a1", kind="compute")
+    agent = await select_agent_by_id(session, "oci-a1", kind="compute")
+    assert agent.id == "oci-a1"
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_matches_id_only_never_name(session: AsyncSession) -> None:
+    """D-01 (no fallback): an agent whose NAME (not id) equals the arg does NOT match -> raises."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    # id="oci-real", name="oci-a1" -- the arg "oci-a1" collides with the free-form NAME only.
+    await _seed_agent_row(session, agent_id="oci-real", name="oci-a1", kind="compute")
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_revoked_agent_raises(session: AsyncSession) -> None:
+    """A matching-id agent that is revoked (revoked_at set) does NOT match -> raises (liveness filter)."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    await _seed_agent_row(session, agent_id="oci-a1", kind="compute", revoked=True)
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_never_seen_agent_raises(session: AsyncSession) -> None:
+    """A matching-id agent that never checked in (last_seen_at NULL) does NOT match -> raises."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    await _seed_agent_row(session, agent_id="oci-a1", kind="compute", online=False)
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_absent_agent_raises(session: AsyncSession) -> None:
+    """An id with NO matching agent raises NoActiveAgentError (the degrade-to-hold signal D-05 consumes)."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "nope", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_honors_kind_filter(session: AsyncSession) -> None:
+    """When kind is given, a same-id agent of a different kind does not cross-match -> raises."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    # A fileserver agent with the same id must NOT satisfy a kind="compute" lookup.
+    await _seed_agent_row(session, agent_id="oci-a1", kind="fileserver")
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
 
 
 # === is_available (3 impls) ==============================================================
