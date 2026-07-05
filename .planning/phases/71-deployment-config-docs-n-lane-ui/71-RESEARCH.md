@@ -377,17 +377,20 @@ async with ctx["async_session"]() as session:
 
 **Non-empty table:** the planner + discuss-phase should confirm A1 (blocking for D-13) and A4 (affects runbook copy) before execution.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **D-13 deprecation log placement (blocking).**
    - What we know: no `cloud_target` shim exists; `PHAZE_CLOUD_TARGET` is silently ignored (A1).
    - What's unclear: does the operator want a genuinely-new legacy-env-var detector (log a warning if `PHAZE_CLOUD_TARGET` is set), or is docs-only sufficient?
    - Recommendation: surface in plan-check/discuss; default to docs-only + an OPTIONAL 3-line startup check reading the raw env var if the operator wants the nudge.
+   - **RESOLVED:** CONTEXT.md D-12/D-13 correction (2026-07-04) — DOCS-ONLY, no startup-log code; there is no shim and `PHAZE_CLOUD_TARGET` is already silently ignored. Closed by plan **71-05** (configuration.md states `cloud_target` removed in Phase 67 + 1:1 `backends:` equivalence).
 2. **Held-file behavior under force-local (A4).**
    - What we know: drain-gate stops new dispatch; router-gate stops new HOLDS.
    - What's unclear: what happens to files ALREADY in `AWAITING_CLOUD` when force-local engages — stay held (drain no-op) or spill to local?
    - Recommendation: gate both; document that already-held files remain held until unforced (or add a note that the staleness spill won't fire while the drain is no-op'd). Runbook must state this so an operator isn't surprised.
+   - **RESOLVED:** plan **71-02 Task 3** gates BOTH the drain and the duration-router; already-held `AWAITING_CLOUD` files stay held while forced, documented for the runbook (plan **71-05** Task 2, A4 note).
 3. **Fate of the 6 global cards (D-07 discretion).** Recommendation: keep as roll-up (lowest risk, unchanged OOB ids). Planner/UI-phase may fold.
+   - **RESOLVED:** plan **71-03 Task 2** keeps the 6 global cards VERBATIM as a cross-lane roll-up below the N-lane grid (unchanged ids + OOB swaps).
 
 ## Environment Availability
 
