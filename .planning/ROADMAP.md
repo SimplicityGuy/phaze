@@ -1114,11 +1114,17 @@ Plans:
   3. The operator runbook and configuration docs cover the `backends:` schema, per-backend `_FILE` secrets, and the `cloud_target`→`backends` migration and deprecation path.
 
 **Plans**: 5 plans in 2 waves
+**Wave 1**
+
 - [ ] 71-01-PLAN.md — BEUI-01 read-only backend-lane snapshot service (bounded probes + per-backend admission) [Wave 1]
 - [ ] 71-02-PLAN.md — BEUI-02 force-local mechanism: route_control model + migration 031 + degrade-safe read + drain/router gates [Wave 1]
 - [ ] 71-05-PLAN.md — BEUI-03 operator runbook + configuration.md reconciliation (cloud_target removed → backends) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 71-03-PLAN.md — BEUI-01 N-lane grid UI: seed lanes in both context builders + OOB grid over N cards (depends 01, 02) [Wave 2]
 - [ ] 71-04-PLAN.md — BEUI-02 control surface: thin force-local endpoint + header status-strip pill + shell seed (depends 02) [Wave 2]
+
 **UI hint**: yes
 **PR**: own worktree branch — never a direct commit to `main`. Presentation/ops only.
 
