@@ -236,7 +236,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
-| 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 0/— | Not started | - |
+| 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 1/4 | In Progress|  |
 | 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 0/— | Not started | - |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 0/— | Not started | - |
 
@@ -1027,7 +1027,7 @@ Plans:
 
 **Wave 1** *(golden safety net, test-only)*
 
-- [ ] 72-01-PLAN.md — D-06 golden byte-identical characterization of the ≤1-compute path + explicit zero-compute (all-local) regression, committed green against current behavior
+- [x] 72-01-PLAN.md — D-06 golden byte-identical characterization of the ≤1-compute path + explicit zero-compute (all-local) regression, committed green against current behavior
 
 **Wave 2** *(blocked on Wave 1 — the D-06 net must be green first)*
 

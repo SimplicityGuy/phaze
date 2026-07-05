@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
 status: executing
-last_updated: "2026-07-05T16:50:50.275Z"
-last_activity: 2026-07-05 -- Phase 72 planning complete
+last_updated: "2026-07-05T16:53:32.306Z"
+last_activity: 2026-07-05 -- Phase 72 execution started
 progress:
   total_phases: 36
   completed_phases: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** 2026.7.2 Multi-Compute Agents — roadmap created (3 phases, 72-74). Next: `/gsd:plan-phase 72` (or `/gsd:discuss-phase 72`). Separate, non-milestone ship step still pending: the 2026.7.1 release PR bumping `pyproject`/`uv.lock` to `2026.7.1` + pushing the `2026.7.1` tag (fires GHCR publish — see [[project_release_procedure]]).
+**Current focus:** Phase 72 — per-entry-compute-binding-fail-fast-retirement
 
 ## Current Position
 
-Phase: 72 (Per-Entry Compute Binding & Fail-Fast Retirement) — not started
-Plan: —
-Status: Ready to execute
-Last activity: 2026-07-05 -- Phase 72 planning complete
+Phase: 72 (per-entry-compute-binding-fail-fast-retirement) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 72
+Last activity: 2026-07-05 -- Phase 72 execution started
 
 ## Performance Metrics
 
