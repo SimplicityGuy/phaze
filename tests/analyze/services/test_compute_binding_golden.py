@@ -118,3 +118,37 @@ async def test_compute_backend_is_available_false_when_agent_absent_never_raises
 
     # Deliberately NO compute agent seeded.
     assert await backend.is_available(session) is False
+
+
+# === Task 2: explicit zero-compute (implicit all-local) regression =======================
+
+
+def test_implicit_all_local_registry_has_no_cloud_activity(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """D-06: the implicit ``_default_local_registry`` baseline produces no cloud lane and no compute backend.
+
+    With NO ``backends.toml`` present the ``backends`` default_factory synthesizes the single
+    ``id=local, rank=99, cap=1`` entry (config_backends._default_local_registry, D-03). This cell pins
+    the "no cloud activity" surface Waves 2-3 must keep byte-identical: ``cloud_enabled is False``,
+    ``resolved_non_local_kind == "local"``, ``active_compute_scratch_dir is None``, and
+    ``resolve_backends`` yields exactly one ``LocalBackend`` with ZERO ``ComputeAgentBackend``.
+
+    Env-clearing discipline: point ``PHAZE_BACKENDS_CONFIG_FILE`` at a NONEXISTENT path so no stray
+    process/.env pointer leaks a real registry in (mirrors the default-registry test's isolation), then
+    clear the ``get_settings`` lru_cache so no cached singleton bleeds across.
+    """
+    from phaze.config import ControlSettings, get_settings
+
+    # Nonexistent pointer -> the before-validator injects nothing -> the default_factory fires (D-03).
+    monkeypatch.setenv("PHAZE_BACKENDS_CONFIG_FILE", str(tmp_path / "nonexistent-backends.toml"))
+    get_settings.cache_clear()
+
+    settings = ControlSettings()
+
+    assert settings.cloud_enabled is False
+    assert backends.resolved_non_local_kind(settings) == "local"
+    assert settings.active_compute_scratch_dir is None
+
+    resolved = backends.resolve_backends(settings)
+    assert len(resolved) == 1
+    assert isinstance(resolved[0], backends.LocalBackend)
+    assert not any(isinstance(b, backends.ComputeAgentBackend) for b in resolved)
