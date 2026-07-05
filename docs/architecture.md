@@ -2,8 +2,10 @@
 # 🏛️ Architecture Overview
 
 This document covers Phaze's internals in depth: the full processing pipeline, how
-services communicate, the human-in-the-loop approval gate, and the v4.0 distributed
-file-server agent subsystem. For the high-level summary and service port table, see the
+services communicate, the human-in-the-loop approval gate, the v4.0 distributed
+file-server agent subsystem, and the cloud-burst / Kueue / pluggable-backend subsystem
+(Phases 47–71, headlined by [Multi-Cloud Backends](#-multi-cloud-backends-202671)). For
+the high-level summary and service port table, see the
 [README](../README.md). For the codebase layout, see
 [Project Structure](project-structure.md); for the schema, see [Database](database.md);
 for endpoints, see [API Reference](api.md); for env vars, see
@@ -33,9 +35,10 @@ DAG-centric shell (Phase 35 removed the implicit auto-chaining), and every stage
 construction (see [Pipeline Determinism & Observability](#-pipeline-determinism--observability-phase-35)).
 
 The system is layered and asynchronous: a FastAPI application server owns the database and
-the UI, while CPU- and disk-bound work runs in SAQ workers backed by Redis. As of v4.0,
-that worker tier can be **distributed** across remote file-server hosts that reach the
-application server only over an authenticated HTTP boundary.
+the UI, while CPU- and disk-bound work runs in SAQ workers backed by a **Postgres-broker
+queue** (`PostgresQueue`, since Phase 36 — Redis is cache/rate-limit/exec-progress only). As
+of v4.0, that worker tier can be **distributed** across remote file-server hosts that reach
+the application server only over an authenticated HTTP boundary.
 
 ## 📐 Service Architecture
 
@@ -49,8 +52,8 @@ graph TD
     UI["🖥️ Web UI<br/>HTMX + Tailwind<br/>proposals · duplicates · admin/agents"]
     API["🚀 FastAPI :8000<br/>UI + /api/v1 + /api/internal/agent"]
     CTRL["🎛️ Control Worker<br/>SAQ queue: controller<br/>proposals · tracklists · discogs"]
-    PG[("🐘 PostgreSQL 18<br/>:5432")]
-    REDIS[("🔴 Redis 8<br/>:6379 — broker + cache")]
+    PG[("🐘 PostgreSQL 18<br/>:5432 — DB + SAQ broker")]
+    REDIS[("🔴 Redis 8<br/>:6379 — cache")]
     AGENT["🤖 Agent Worker + Watcher<br/>SAQ queue: phaze-agent-&lt;id&gt;<br/>scan · metadata · fingerprint · analyze · execute"]
     AUD["🎯 audfprint :8001"]
     PAN["🎼 Panako :8002"]
@@ -61,7 +64,8 @@ graph TD
     API -->|HTTP /api/internal/agent| AGENT
     CTRL --> REDIS
     CTRL --> PG
-    AGENT -->|enqueue per-agent jobs| REDIS
+    AGENT -->|enqueue per-agent jobs| PG
+    AGENT -->|cache / progress| REDIS
     AGENT --> AUD
     AGENT --> PAN
 
@@ -81,8 +85,8 @@ graph TD
 | **Control Worker** | -- | Fileless SAQ jobs (LLM, tracklists, Discogs) | Yes (direct) | `saq phaze.tasks.controller.settings` |
 | **Agent Worker** | -- | File-bound SAQ jobs (scan, fingerprint, analyze, execute) | No (HTTP only) | `saq phaze.tasks.agent_worker.settings` |
 | **Watcher** | -- | Filesystem observer that POSTs settled files | No (HTTP only) | `python -m phaze.agent_watcher` |
-| **Postgres** | 5432 | Primary database | -- | `docker-compose.yml` |
-| **Redis** | 6379 | SAQ broker, LLM rate-limit cache, exec-progress hash, pipeline counters | -- | `docker-compose.yml` |
+| **Postgres** | 5432 | Primary database + SAQ `PostgresQueue` broker (Phase 36) | -- | `docker-compose.yml` |
+| **Redis** | 6379 | LLM rate-limit cache, exec-progress hash, pipeline counters | -- | `docker-compose.yml` |
 | **audfprint** | 8001 | Landmark fingerprint sidecar | No | `services/audfprint/` |
 | **Panako** | 8002 | Tempo-robust fingerprint sidecar | No | `services/panako/` |
 
@@ -102,7 +106,15 @@ stateDiagram-v2
     [*] --> DISCOVERED
     DISCOVERED --> METADATA_EXTRACTED : mutagen
     METADATA_EXTRACTED --> FINGERPRINTED : audfprint + Panako
-    FINGERPRINTED --> ANALYZED : essentia
+    FINGERPRINTED --> ANALYZED : essentia (short files)
+    FINGERPRINTED --> AWAITING_CLOUD : long file, cloud routed
+    FINGERPRINTED --> LOCAL_ANALYZING : drain spill to local
+    AWAITING_CLOUD --> PUSHING : rsync to cloud scratch
+    PUSHING --> PUSHED : landed on compute
+    PUSHED --> ANALYZED : cloud/Kueue result PUT
+    PUSHED --> ANALYSIS_FAILED : timeout / crash
+    LOCAL_ANALYZING --> ANALYZED : local essentia PUT
+    LOCAL_ANALYZING --> ANALYSIS_FAILED : timeout / crash
     ANALYZED --> PROPOSAL_GENERATED : LLM via litellm
     PROPOSAL_GENERATED --> APPROVED : human review
     PROPOSAL_GENERATED --> REJECTED : human review
@@ -118,8 +130,14 @@ records a successful copy-verify-delete and `UNCHANGED` records a failed/cancell
 where the file stayed at its original path; these are set jointly with the matching
 `ProposalStatus` via the internal `PATCH .../proposals/{id}/state` endpoint as batch
 execution adopts them. `EXECUTED` / `FAILED` are the original Phase 25 names retained for
-compatibility with the existing execution-log emit paths. The full enum list, plus the
-`ProposalStatus` and `ScanStatus` enums, is documented in [Database](database.md).
+compatibility with the existing execution-log emit paths. Five further states carry the
+cloud-burst / tiered-drain subsystem (all code-only over the existing `String(30)` state
+column, no enum migration): `ANALYSIS_FAILED` (Phase 43 — windowed analysis timed out or
+crashed), `AWAITING_CLOUD` (Phase 49 — a long file held for cloud/compute analysis),
+`PUSHING` / `PUSHED` (Phase 50 — rsync-to-cloud-scratch in progress / landed), and
+`LOCAL_ANALYZING` (Phase 69 — a long file the drain spilled to the local backend, analyzing
+on-prem). That is **17** members in all. The full enum list, plus the `ProposalStatus` and
+`ScanStatus` enums, is documented in [Database](database.md).
 
 ## 🌊 Data Flow
 
@@ -289,10 +307,15 @@ lifespan as `app.state.task_router`.
 
 - **Control role** (`tasks/controller.py`) runs the fileless queue `controller`:
   `generate_proposals`, the 1001Tracklists scrape/search/refresh jobs, and Discogs
-  matching. It connects to Postgres directly.
+  matching. It also owns the **cloud/backend control plane**: `stage_cloud_window` (the
+  tiered-drain top-up cron, `tasks/release_awaiting_cloud.py`), `submit_cloud_job`
+  (Kueue Job submission), and `reconcile_cloud_jobs` (the `*/5` in-flight cloud-job
+  reconcile cron). It connects to Postgres directly.
 - **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the
   file-bound functions: `process_file`, `extract_file_metadata`, `fingerprint_file`,
-  `scan_live_set`, `scan_directory`, and `execute_approved_batch`. Its startup hook
+  `scan_live_set`, `scan_directory`, `execute_approved_batch`, and `push_file` (Phase 50 —
+  the fileserver rsync-over-SSH push of a long file to the compute agent's scratch dir).
+  Its startup hook
   authenticates against the application server, downloads essentia weights if missing, builds
   the `FingerprintOrchestrator` (audfprint + Panako adapters), creates the essentia process
   pool, and launches the liveness heartbeat as an asyncio background task (Phase 46).
@@ -376,6 +399,109 @@ All agent → server communication funnels through routers under
 bearer token (`get_authenticated_agent`), never from the request body, so a forged body
 field returns `422`. Full endpoint reference: [API Reference](api.md).
 
+## ☁️ Multi-Cloud Backends (2026.7.1)
+
+Phases 47–71 grew the single on-prem worker tier into a **pluggable, cost-tiered backend
+registry**: one control plane dispatches long (slow-to-analyze) files across the **local**
+file-server, **one-or-more Kueue clusters**, and **one-or-more cloud compute agents**
+simultaneously — statically configured, no runtime provisioning. Short files still analyze
+in-place on their owning file-server agent as before; only the long-file lane is routed.
+
+### Backend registry
+
+Backends are declared in a **`backends.toml`** file (pointed at by `PHAZE_BACKENDS_CONFIG_FILE`,
+default `/etc/phaze/backends.toml`). An absent file means an **implicit local-only** registry
+(one `kind=local` backend, `id=local`, `rank=99`, `cap=1`). The file is a typed `[[backends]]`
+list discriminated by `kind` — `local | compute | kueue` — each carrying a cost-tier `rank`
+(ascending = preferred first; local sits last at rank 99) and a concurrency `cap`. The registry
+schema (pydantic v2 discriminated union + `[kube]` / `[[buckets]]` tables) lives in
+`src/phaze/config_backends.py`; the runtime dispatch objects — `LocalBackend`,
+`ComputeAgentBackend`, `KueueBackend`, conforming to a structural `Backend`
+`typing.Protocol` — live in `src/phaze/services/backends.py`. Whether cloud is on at all is
+**derived**, not a flag: `ControlSettings.cloud_enabled` is true when any non-local backend
+is resolved. (The flat `PHAZE_CLOUD_TARGET` env switch and `s3_*` / `kube_*` / `compute_*`
+scalar fields were **removed** in Phase 67.) N Kueue clusters each hold their own `kr8s`
+client and are **failure-isolated** — one unreachable cluster never blocks the others — and
+each backend stages its per-file bytes through its own S3 bucket (`CloudJob` tracks per-file
+staging).
+
+```mermaid
+graph TD
+    CTRL["🎛️ Control Plane<br/>stage_cloud_window · select_backend<br/>submit_cloud_job · reconcile_cloud_jobs"]
+    REG["📄 backends.toml<br/>[[backends]] kind · rank · cap<br/>PHAZE_BACKENDS_CONFIG_FILE"]
+    LOCAL["🏠 LocalBackend<br/>rank 99 · cap N<br/>process_file (on-prem)"]
+    KUE1["☸️ KueueBackend #1<br/>rank r · cap N · own kr8s client"]
+    KUEn["☸️ KueueBackend #N<br/>rank r' · cap N · own kr8s client"]
+    CMP1["🖥️ ComputeAgentBackend<br/>rank r'' · cap N · rsync push"]
+    S3A[("🪣 S3 bucket<br/>per-backend staging")]
+    S3B[("🪣 S3 bucket<br/>per-backend staging")]
+
+    REG -.resolves.-> CTRL
+    CTRL -->|rank-first dispatch| LOCAL
+    CTRL -->|submit suspended Job| KUE1
+    CTRL -->|submit suspended Job| KUEn
+    CTRL -->|push_file rsync| CMP1
+    KUE1 --> S3A
+    KUEn --> S3A
+    CMP1 --> S3B
+
+    style CTRL fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style REG fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style LOCAL fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
+    style KUE1 fill:#ede7f6,stroke:#311b92,stroke-width:2px
+    style KUEn fill:#ede7f6,stroke:#311b92,stroke-width:2px
+    style CMP1 fill:#fff8e1,stroke:#f57f17,stroke-width:2px
+    style S3A fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style S3B fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+```
+
+### Tiered drain & backend selection
+
+The bounded top-up cron `stage_cloud_window` (`tasks/release_awaiting_cloud.py`) fires every
+~5 minutes under a single advisory lock. Once per tick it **snapshots** every resolved
+backend's `is_available()` and its `remaining = cap - in_flight_count()`, pulls that many of
+the oldest `AWAITING_CLOUD` files (FIFO, `FOR UPDATE SKIP LOCKED`), and routes each through
+the pure policy `select_backend` (`services/backend_selection.py`). The policy is
+**rank-first with spillover**: the available lowest-rank backend with a free slot wins; a
+full lowest-rank tier spills to the next rank (ties broken by in-flight/cap utilization, then
+id). The **local backend (detected by class identity, not the rank-99 literal) is gated**:
+when higher ranks are *online-but-full* it becomes eligible only after the file has waited
+past `cloud_spill_to_local_after_seconds`; but when every non-local backend is *offline*,
+local is eligible **immediately** (the staleness gate covers the full→local path, not the
+offline→local path). A per-file attempt count excludes backends past
+`cloud_submit_max_attempts`, and `select_backend` returning `None` is a clean hold to the
+next tick. The whole snapshot + select + dispatch runs in one transaction, so overlapping
+ticks serialize on the lock and no backend's `cap` is ever overshot.
+
+An operator can hard-override the whole subsystem: `POST /pipeline/routing/force-local`
+writes a durable `route_control` row; while set, the **effective** `cloud_enabled` is
+`registry cloud_enabled AND NOT force_local`, so every file routes to the local backend.
+
+```mermaid
+flowchart TD
+    START([held AWAITING_CLOUD file]) --> RANK[take next backend by ascending rank]
+    RANK --> AVAIL{backend available?}
+    AVAIL -->|no| NEXT[skip to next rank]
+    AVAIL -->|yes| SLOT{in_flight < cap?}
+    SLOT -->|yes| PICK[dispatch to this backend]
+    SLOT -->|no, full| MORE{more non-local ranks?}
+    MORE -->|yes| NEXT
+    NEXT --> RANK
+    MORE -->|no| OFFLINE{all non-local offline?}
+    OFFLINE -->|yes| LOCALNOW[spill to local immediately]
+    OFFLINE -->|no, just full| STALE{waited past<br/>cloud_spill_to_local_after_seconds?}
+    STALE -->|yes| LOCALNOW
+    STALE -->|no| HOLD([hold for next tick])
+    PICK --> DONE([backend.dispatch — decrement remaining])
+    LOCALNOW --> DONE
+
+    style START fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
+    style PICK fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style LOCALNOW fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
+    style HOLD fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style DONE fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+```
+
 ## 🪵 Observability / logging
 
 Every process configures logging through one entry point —
@@ -407,7 +533,7 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
-| `FileRecord` + `FileState` | `file.py` | Central record + 12-state pipeline machine |
+| `FileRecord` + `FileState` | `file.py` | Central record + 17-state pipeline machine |
 | `RenameProposal` + `ProposalStatus` | `proposal.py` | AI rename proposal (one active PENDING row, upserted in place) + approval status; partial unique index `uq_proposals_file_id_pending` |
 | `ExecutionLog` | `execution.py` | Append-only copy-verify-delete audit trail |
 | `Agent` | `agent.py` | File-server identity (token, scan roots, liveness) |
@@ -485,9 +611,12 @@ existing `/pipeline/stats` 5-second poll (Phase 35/57) via out-of-band swaps int
 - **⌘K command palette** (`shell/partials/cmdk_modal.html`) — a Cmd-K combobox unifying
   search over files / tracklists / artists plus quick commands; it reuses the existing
   `/search/` HX branch and replaces the former Search tab.
-- **Header status strip** (`shell/partials/header.html`) — compute/agent liveness dots for
-  the local / A1 / k8s burst lanes; the k8s burst lane derives liveness from in-flight Kueue
-  workloads (an ephemeral Job-based identity), so it is never rendered as perpetually-DEAD.
+- **Header status strip** (`shell/partials/header.html`) — a single `agentOnline` liveness
+  dot plus an **Agents · {n}** link (bound to `$store.pipeline.agentOnline`, refreshed by the
+  existing `/pipeline/stats` 5-second OOB poll), and the Phase 71 **force-local** routing-override
+  pill (`shell/partials/_force_local_pill.html`, seeded from `get_route_control`, hx-posting the
+  thin write endpoint). The per-backend N-lane grid lives in the **Analyze** workspace, not the
+  header.
 - **Per-file record slide-in** (`shell/partials/record_host.html`) — a `role="dialog"
   aria-modal` panel that slides in over the shell from a file row or from ⌘K, carrying the
   file's windowed analysis timeline, metadata/identity, and its pending approvals.

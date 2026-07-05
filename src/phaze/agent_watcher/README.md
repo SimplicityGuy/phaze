@@ -12,6 +12,27 @@ uv run python -m phaze.agent_watcher
 
 The Dockerfile's same image runs both the SAQ agent worker (`uv run saq phaze.tasks.agent_worker.settings`) and the watcher; the compose service distinguishes by `command:`.
 
+## Event pipeline
+
+```mermaid
+flowchart LR
+    fs[("scan_roots<br/>(filesystem)")]
+    obs["watchdog Observer<br/>/ PollingObserver"]
+    handler["WatcherEventHandler<br/>(observer.py)"]
+    deb["Debouncer.touch<br/>(debouncer.py)"]
+    sweep["_sweep_loop<br/>(__main__.py)"]
+    poster["Poster.post_one<br/>(poster.py)"]
+    api["POST /api/internal/agent/files<br/>(application server)"]
+
+    fs -- "fs events" --> obs
+    obs -- "on_created / on_modified" --> handler
+    handler -- "touch(path)" --> deb
+    sweep -- "poll every<br/>sweep_interval_seconds" --> deb
+    deb -- "mtime settled<br/>(settle_period)" --> sweep
+    sweep -- "settled path" --> poster
+    poster -- "HTTP POST" --> api
+```
+
 ## Fresh Install Quickstart
 
 The watcher requires a registered agent in the `agents` table. On a brand-new docker compose stack (empty database), use the dev-seeded agent path to get up and running:
@@ -61,6 +82,7 @@ The watcher requires a registered agent in the `agents` table. On a brand-new do
 - `PHAZE_WATCHER_SETTLE_SECONDS=10` -- seconds of mtime stability before posting (D-01)
 - `PHAZE_WATCHER_MAX_PENDING_SECONDS=3600` -- stuck-file cap; entries older than this are evicted without posting (D-02)
 - `PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS=2` -- sweep task cadence
+- `PHAZE_WATCHER_POLLING_MODE=false` -- when `true`, use watchdog's `PollingObserver` instead of the native inotify `Observer`. Required for macOS docker bind mounts (rancher-desktop / Docker Desktop) where inotify events do not propagate through 9p/virtiofs. Adds modest CPU overhead (polls each `watcher_sweep_interval_seconds`) but works on any filesystem.
 - `PHAZE_SCAN_CHUNK_SIZE=500` -- used by `scan_directory` task (not the watcher itself, but shared AgentSettings field)
 - `PHAZE_LOG_LEVEL=INFO` -- root log level (`DEBUG`|`INFO`|`WARNING`|`ERROR`); set `DEBUG` to see each settled-file post in detail
 - `PHAZE_LOG_JSON` -- `true`=JSON, `false`=console, unset=auto (JSON when stdout is not a TTY)
@@ -80,12 +102,12 @@ Output respects `PHAZE_LOG_LEVEL` / `PHAZE_LOG_JSON` (above): JSON when stdout i
 
 This module MUST NOT import `phaze.database`, `phaze.tasks.session`, `sqlalchemy.ext.asyncio`, or `phaze.tasks.agent_worker`. Enforced by `tests/test_task_split.py::test_agent_watcher_does_not_import_phaze_database`. The watcher reaches the database only via the HTTP boundary (DIST-04).
 
-## Phase 29 migration note
+## Compose layout (post-Phase-29)
 
-Phase 27 lands the watcher in the root `docker-compose.yml` alongside `worker`, `audfprint`, and `panako`. Phase 29 will move all four to a new `docker-compose.agent.yml` and strip them from the root compose (which becomes application-server-only). The watcher module itself does not change.
+Phase 27 originally landed the watcher in the root `docker-compose.yml` alongside `worker`, `audfprint`, and `panako`. Phase 29 moved all four to `docker-compose.agent.yml` and stripped them from the root compose (which is now application-server-only). The watcher module itself did not change.
 
 ## Operational notes
 
 - Container restart count climbing in `docker compose ps`: usually transient API boot (~63s budget absorbed by `whoami_with_retry`). If persistent, check `docker compose logs watcher` for `AgentApiAuthError` (RESEARCH Pitfall 7 -- bad PHAZE_AGENT_TOKEN).
-- Inotify fallback for NFS/FUSE: swap `Observer` for `watchdog.observers.polling.PollingObserver` in `__main__.py` (one-line change). Not a Phase 27 deliverable.
+- Inotify fallback for NFS/FUSE (or macOS docker bind mounts): set `PHAZE_WATCHER_POLLING_MODE=true`. `main()` branches on `cfg.watcher_polling_mode` to construct a `PollingObserver(timeout=watcher_sweep_interval_seconds)` instead of the native `Observer()`. No code edit required — it is a runtime env toggle.
 - Catch-up on startup is intentionally NOT performed (D-04). Operator runs a manual `/pipeline/` scan trigger after a watcher restart if they want to backfill files that landed during downtime.

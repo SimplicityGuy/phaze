@@ -43,6 +43,27 @@ staging bucket is throwing errors) and you want **all** analysis to run on the l
 - **The duration router** — new long files (duration ≥ the route threshold) route to the **local**
   queue instead of being held for cloud.
 
+```mermaid
+stateDiagram-v2
+    [*] --> CLOUD_ROUTING
+    CLOUD_ROUTING: CLOUD ROUTING
+    CLOUD_ROUTING: backends dispatch by rank (multi-backend)
+    FORCED_LOCAL: FORCED LOCAL
+    FORCED_LOCAL: durable route_control row · reversible · no redeploy
+    CLOUD_ROUTING --> FORCED_LOCAL: click pill (engage)
+    FORCED_LOCAL --> CLOUD_ROUTING: click pill (revert)
+
+    state FORCED_LOCAL {
+        [*] --> Gates
+        Gates: Two gates fire at once
+        Gates --> Drain: stage_cloud_window no-ops (no stage/push)
+        Gates --> Router: duration router → local queue
+        --
+        Held: Files already held in AWAITING_CLOUD
+        Held: stay held (drain no-ops — neither dispatched nor spilled)
+    }
+```
+
 **Reverting it.** Click the pill again to toggle `FORCED LOCAL` → `CLOUD ROUTING`. You will see the
 confirmation "Cloud routing restored — backends dispatch by rank." Normal rank-tiered dispatch
 resumes on the next drain tick. Reverting is the **safe** direction — there is nothing destructive
@@ -113,15 +134,48 @@ The tiered scheduler drains long files across the registry **by rank, then spill
    is below its `cap`**.
 3. If the top-ranked backend is **at `cap`** (its lane shows `{cap}/{cap}`), the file **spills** to
    the next eligible backend down the rank order. If an entire tier is full or offline, work
-   continues spilling to the next tier — and ultimately the `local` backend (rank 99) is the final
-   catch.
+   continues spilling to the next tier — and ultimately the `local` backend (rank 99) can be the
+   final catch.
 4. A backend that goes **offline** is simply skipped for that drain tick; its would-be work spills to
    the next eligible lane, and it re-enters the rotation automatically when its probe recovers.
 
+**The full→local spill is staleness-gated; the offline→local spill is not.** The final catch to
+`local` is **not** unconditional — the two ways a tier can be unusable are treated differently
+(`services/backend_selection.py`):
+
+- **Every non-local backend is `offline`** (probe failed) → `local` becomes eligible **immediately**;
+  the file spills to local on that same drain tick.
+- **Higher-rank backends are online but `FULL`** (`in_flight` at `cap`) → `local` is eligible **only
+  after** the file has waited in `AWAITING_CLOUD` past `cloud_spill_to_local_after_seconds`
+  (`PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS`, default **900 s / 15 min**). Until that threshold the
+  file **stays held** rather than spilling to slow local — this absorbs a transient full window so
+  short cap spikes do not dump long sets onto the local file server. Once the wait elapses (or the
+  file exhausts its cloud attempt budget), local becomes eligible and it spills.
+
 Reading this off the grid: when you see the top-left lane sitting at `{cap}/{cap}` and the next lane
-picking up new in-flight work, that is spillover working as designed — not a fault. Persistent
-spillover all the way to `local` for **long** files usually means every cloud tier is either at cap
-or offline; check the offline lanes and any Inadmissible Kueue caption.
+picking up new in-flight work, that is spillover working as designed — not a fault. If **every** cloud
+tier is at cap and files are **not** yet spilling to `local`, that is the staleness gate holding them
+for the 15-minute window, not a stall. Persistent spillover all the way to `local` for **long** files
+usually means every cloud tier is either offline or has been at cap past the threshold; check the
+offline lanes and any Inadmissible Kueue caption.
+
+```mermaid
+flowchart TD
+    start([Long file eligible for cloud]) --> rank[Walk backends in ascending rank]
+    rank --> avail{Backend available?<br/>probe passed}
+    avail -- no --> nextoff[Skip this tick; try next rank]
+    avail -- yes --> slot{in_flight &lt; cap?}
+    slot -- yes --> disp[["Dispatch here (rank-first winner)"]]
+    slot -- no --> nextfull[Spill to next rank]
+    nextoff --> more{More backends?}
+    nextfull --> more
+    more -- yes --> rank
+    more -- no --> localcatch{Why is every<br/>non-local tier unusable?}
+    localcatch -- "all OFFLINE" --> localnow[["local eligible NOW → spill to local"]]
+    localcatch -- "online but FULL" --> gate{"waited &ge; cloud_spill_to_local_after_seconds?<br/>(default 900s)"}
+    gate -- no --> hold[["Stay held in AWAITING_CLOUD this tick"]]
+    gate -- yes --> localgated[["local eligible → spill to local"]]
+```
 
 While **force-local** is engaged, none of this runs — the drain no-ops and new long files route
 straight to local (see [Force-local incident revert](#force-local-incident-revert)).

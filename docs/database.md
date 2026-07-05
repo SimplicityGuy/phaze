@@ -26,6 +26,35 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
 | `discogs_links`       | Candidate/accepted Discogs release matches per tracklist track        |
+| `cloud_job`           | Per-`file_id` sidecar for the S3 object-staging / cloud-burst leg (1:1 with `files`) |
+| `pipeline_stage_control` | Durable per-stage pause/priority operator intent (one row per agent pipeline stage) |
+| `scheduling_ledger`   | Durable "this stage was scheduled for this item" record (recovery source of truth)  |
+| `route_control`       | Single-row (`id = 'global'`) force-local routing override switch       |
+
+### Entity relationships
+
+Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
+deleted); `analysis_window` and `file_companions` cascade with their `files` row
+(`ON DELETE CASCADE`); the remaining per-file sidecars (`metadata`, `analysis`,
+`fingerprint_results`, `proposals`, `cloud_job`) and the tracklist chain use the default
+restricting FK (no cascade).
+
+```mermaid
+erDiagram
+    agents ||--o{ files : "owns (RESTRICT)"
+    agents ||--o{ scan_batches : "owns (RESTRICT)"
+    files ||--|| metadata : "1:1"
+    files ||--|| analysis : "1:1"
+    files ||--o{ analysis_window : "CASCADE"
+    files ||--o{ fingerprint_results : "per engine"
+    files ||--o{ proposals : "rename/move"
+    files ||--o| cloud_job : "0..1 sidecar"
+    files ||--o{ file_companions : "CASCADE"
+    tracklists ||--o{ tracklist_versions : "versions"
+    tracklist_versions ||--o{ tracklist_tracks : "tracks"
+    tracklist_tracks ||--o{ discogs_links : "match candidates"
+    tracklists }o--o| files : "optional link"
+```
 
 ### Agent attribution
 
@@ -50,14 +79,42 @@ structurally protected from being overwritten by a re-run.
 
 ### State enums
 
-- `FileState` (`src/phaze/models/file.py`): `discovered`, `metadata_extracted`,
-  `fingerprinted`, `analyzed`, `proposal_generated`, `approved`, `rejected`, `executed`,
-  `failed`, `duplicate_resolved`, `moved`, `unchanged`.
+- `FileState` (`src/phaze/models/file.py`, 17 states): `discovered`, `metadata_extracted`,
+  `fingerprinted`, `analyzed`, `analysis_failed`, `awaiting_cloud`, `pushing`, `pushed`,
+  `local_analyzing`, `proposal_generated`, `approved`, `rejected`, `executed`, `failed`,
+  `duplicate_resolved`, `moved`, `unchanged`. The 5 cloud-pipeline states (`analysis_failed`,
+  `awaiting_cloud`, `pushing`, `pushed`, `local_analyzing`) are code-only `StrEnum` members over
+  the existing `String(30)` `state` column — no enum migration is needed.
 - `ScanStatus` (`scan_batch.py`): `running`, `completed`, `failed`, `live`.
 - `ProposalStatus` (`proposal.py`): `pending`, `approved`, `rejected`, `executed`, `failed`.
 - `TagWriteStatus` (`tag_write_log.py`): `completed`, `failed`, `discrepancy`.
 - `ExecutionStatus` is defined in `src/phaze/enums/execution.py` and re-exported from
   `models/execution.py`.
+
+The 17-state `FileState` pipeline, including the cloud-burst detour off `analyzed`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> discovered
+    discovered --> metadata_extracted
+    metadata_extracted --> fingerprinted
+    fingerprinted --> analyzed
+    fingerprinted --> analysis_failed
+    fingerprinted --> awaiting_cloud : long file → cloud burst
+    awaiting_cloud --> pushing
+    pushing --> pushed
+    pushed --> analyzed
+    awaiting_cloud --> local_analyzing : drain spill → on-prem
+    local_analyzing --> analyzed
+    analyzed --> proposal_generated
+    proposal_generated --> approved
+    proposal_generated --> rejected
+    approved --> executed
+    executed --> moved
+    executed --> unchanged
+    fingerprinted --> duplicate_resolved
+    analyzed --> failed
+```
 
 ### Full-text search
 
@@ -70,8 +127,8 @@ matching. `discogs_links` carries its own GIN FTS index on denormalized artist/t
 
 Schema is managed by Alembic with the async template (`alembic/env.py` overrides
 `sqlalchemy.url` from application settings, so no URL is hard-coded in `alembic.ini`).
-Migrations run sequentially from `001` through `019` in `alembic/versions/`; `019` is the
-current head.
+Migrations run sequentially from `001` through `031` in `alembic/versions/`;
+`031_add_route_control` is the current head.
 
 ```bash
 just db-upgrade              # Apply all pending migrations (alembic upgrade head)
@@ -99,6 +156,18 @@ just db-history              # Show migration history (alembic history)
 | 017 | Add nullable `scan_batches.last_progress_at` heartbeat column + backfill from `updated_at` |
 | 018 | Create `analysis_window` table (per-window time-series rows) with composite/partial/label indexes |
 | 019 | Dedupe existing pending proposals, then add partial unique index `uq_proposals_file_id_pending` |
+| 020 | Create `pipeline_stage_control` table (durable per-stage pause/priority intent)           |
+| 021 | Add analysis coverage columns (windowed-analysis progress tracking)                       |
+| 022 | Create `scheduling_ledger` table (durable per-item "stage scheduled" record)              |
+| 023 | Add `scheduling_ledger` job-policy columns (routing/replay hints)                         |
+| 024 | Add `agents.kind` (+ `ck_agents_kind_enum` CHECK `{'fileserver','compute'}`, default `fileserver`) |
+| 025 | Create `cloud_job` table (per-`file_id` S3 object-staging sidecar)                        |
+| 026 | Add `cloud_job` Kube columns (`kueue_workload`, `attempts`, `inadmissible`)               |
+| 027 | Add `cloud_job.cloud_phase` column                                                        |
+| 028 | Add `analysis.completed_at` column                                                       |
+| 029 | Add `cloud_job.backend_id` column (multi-backend registry attribution)                    |
+| 030 | Add `cloud_job.staging_bucket` column (multi-Kueue per-cluster bucket)                    |
+| 031 | Create `route_control` table + seed the single `'global'` force-local override row        |
 
 Migration 013's downgrade fails loudly if the same `original_path` now exists under multiple
 agents — duplicates must be resolved manually before rolling back, since silent dedup is

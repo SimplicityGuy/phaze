@@ -11,8 +11,10 @@ The service wraps the audfprint CLI via subprocess calls, with `asyncio.to_threa
 ## Build
 
 ```bash
-docker compose build audfprint
+docker compose -f docker-compose.agent.yml build audfprint
 ```
+
+> **Caveat:** `docker-compose.agent.yml` pulls the prebuilt GHCR image (`ghcr.io/simplicityguy/phaze/audfprint`) by default; its `build:` stanza is commented out. To build locally you must uncomment that `build:` block for the `audfprint` service and pass `-f docker-compose.agent.yml` (the root `docker-compose.yml` is application-server-only post-Phase-29 and does not define this service).
 
 The Dockerfile clones the audfprint repository, installs FFmpeg for audio decoding, and sets up the FastAPI wrapper with uv.
 

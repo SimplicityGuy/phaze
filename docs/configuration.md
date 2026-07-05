@@ -58,6 +58,20 @@ Example (Docker secret mounted at `/run/secrets/anthropic_api_key`):
 ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY needed
 ```
 
+Resolution order for a single secret-bearing field (`_resolve_secret_files`):
+
+```mermaid
+flowchart TD
+    A[Direct env var set?<br/>e.g. ANTHROPIC_API_KEY] -->|yes| B[Use env value verbatim<br/>_FILE sibling ignored]
+    A -->|no| C[_FILE sibling set?<br/>e.g. ANTHROPIC_API_KEY_FILE]
+    C -->|yes| D[Read file at path]
+    D -->|readable| E{push_ssh_key /<br/>push_known_hosts?}
+    E -->|yes| F[Keep verbatim<br/>trailing newline preserved]
+    E -->|no| G[.strip whitespace/newline]
+    D -->|missing / unreadable| H[Fail fast:<br/>ValidationError names var + path]
+    C -->|no| I[Field default]
+```
+
 ## Core settings (all roles)
 
 | Variable                          | Required | Default                                                  | Description                                                                 |
@@ -84,13 +98,26 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 | `WORKER_PROCESS_POOL_SIZE`    | No       | `4`     | CPU-bound process pool size.                         |
 | `WORKER_HEALTH_CHECK_INTERVAL`| No       | `60`    | SAQ health-check interval in seconds.                |
 | `WORKER_KEEP_RESULT`          | No       | `3600`  | Seconds SAQ retains a finished job's result.         |
-| `PHAZE_SCAN_STALL_SECONDS` (or `SCAN_STALL_SECONDS`) | No | `600` | Seconds with no progress before a RUNNING scan is reaped as stalled by the control worker's every-minute cron. Lives on `BaseSettings`, so both roles parse it, but only the control worker runs the reaper. The admin UI flips a RUNNING scan to an amber "stalled?" indicator at **half** this threshold, before the hard reap. |
+| `PHAZE_SCAN_STALL_SECONDS` (or `SCAN_STALL_SECONDS`) | No | `86400` (24h) | Seconds with no progress before a RUNNING scan is reaped as stalled by the control worker's every-minute cron. Lives on `BaseSettings`, so both roles parse it, but only the control worker runs the reaper. `scan_directory` is an unbounded (`timeout=0`) BULK job, so this progress-based reaper is its sole liveness guard — the generous 24h default keeps a healthy-but-slow scan (e.g. SHA-256 hashing a multi-GB concert video on a network mount) from being falsely reaped. The admin UI flips a RUNNING scan to an amber "stalled?" indicator at **half** this threshold (12h), before the hard reap. `.env.example` ships only a commented example, so the effective default is the field default. |
 
 ## Backend registry (`backends.toml`)
 
 **As of 2026.7.1 (Phase 67, REG-01/04/05, D-11/D-12) the typed backend registry is the SOLE cloud config surface.** It replaces the flat `PHAZE_CLOUD_TARGET` selector and the flat `PHAZE_S3_*` / `PHAZE_KUBE_*` / compute-scratch env vars, which were **removed with no back-compat shim**. Instead of one global cloud target, you declare a *registry* of backends (and their staging buckets) in a TOML file.
 
 **Loading + zero-config default.** The registry is loaded from a TOML file pointed at by `PHAZE_BACKENDS_CONFIG_FILE` (default `/etc/phaze/backends.toml`). If the file is **absent**, the control plane synthesizes an **implicit single `kind=local` backend** — an all-local deploy needs **zero** config edits. The registry is sourced **only** from the TOML file (it is deliberately not an env var), and a present-but-empty `backends = []` fails fast at startup rather than silently booting with no backend.
+
+```mermaid
+flowchart TD
+    A[PHAZE_BACKENDS_CONFIG_FILE] --> B{File present?}
+    B -->|no| C[Implicit single kind=local backend<br/>id=local, rank=99, cap=1<br/>zero-config all-local]
+    B -->|yes| D[Parse TOML — authoritative]
+    D --> E{backends = empty?}
+    E -->|yes| F[Fail fast:<br/>refuse to boot with no backend]
+    E -->|no| G[_validate_registry model validator]
+    G --> H{Per-variant + whole-registry<br/>invariants hold?}
+    H -->|no| I[Fail fast:<br/>id-tagged ValidationError<br/>compute→agent_ref+scratch_dir,<br/>kueue→[kube]+non-empty buckets,<br/>cluster-specific bucket ≤1 ref]
+    H -->|yes| J[Registry live<br/>logged secret-free as id/kind/rank/cap]
+```
 
 **`[[backends]]` — the analysis backends.** An array-of-tables; each entry is a discriminated union on `kind`:
 
@@ -100,18 +127,22 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 | `kind` | all | `local` \| `compute` \| `kueue`. Selects the variant + its required config. |
 | `rank` | all | Cost-tier ordering; lower ranks are preferred by the scheduler. |
 | `cap` | all | Concurrency cap for this backend (replaces the old flat in-flight window). |
-| `scratch_dir` | `compute` | Remote scratch dir the rsync push lands in (was the flat compute-scratch mirror). |
-| `[backends.kube]` | `kueue` | Nested Kueue cluster config: API URL, namespace, local-queue, Job image/resources, workload apiVersion, CA/ConfigMap/Secret names, and inline `kubeconfig_file` / `sa_token_file` secret pointers. |
+| `agent_ref` | `compute` | **REQUIRED** — names the compute agent node the rsync push dispatches to. Construction **fails fast** (id-tagged `ValueError`) if absent (REG-02, D-13). |
+| `scratch_dir` | `compute` | **REQUIRED** — remote scratch dir the rsync push lands in (was the flat compute-scratch mirror). Construction fails fast if absent (a missing value would build a literal `"None/<file_id>"` push path). |
+| `[backends.kube]` | `kueue` | Nested Kueue cluster config: API URL, namespace, per-cluster kubeconfig `context`, local-queue, Job image/resources, workload apiVersion, CA/ConfigMap/Secret names, and inline `kubeconfig_file` / `sa_token_file` secret pointers. |
 | `buckets` | `kueue` | List of `[[buckets]]` `id`s this Kueue backend stages through. |
+
+`[backends.kube]` keys of note: `api_url`, `namespace`, `local_queue` (all **required** on a `kind="kueue"` backend), plus `context` — the **per-cluster kubeconfig context** name (MKUE-01) that selects among N clusters; when omitted the client uses the kubeconfig's current-context. `context` is a plain kubeconfig context name, **not** a secret.
 
 **`[[buckets]]` — the S3 staging-bucket registry (REG-05).** An array-of-tables of the S3-compatible staging buckets Kueue backends reference:
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique bucket identifier referenced by a backend's `buckets` list. |
-| `scope` | `shared` (any number of Kueue backends may reference it) or `cluster-specific` (**at most one** Kueue backend may reference it — a cardinality invariant enforced at startup). |
-| `endpoint` | S3-compatible endpoint URL (validated as a well-formed http(s) URL). |
-| `region`, `addressing_style` | Optional S3 connection tuning. |
+| `id` | **REQUIRED** — unique **registry key** referenced by a backend's `buckets` list. This is *not* the S3 bucket name (see `bucket`). |
+| `bucket` | **REQUIRED** — the actual **S3 bucket name** the staging objects are written to (distinct from `id`, which is only the registry key). |
+| `scope` | **REQUIRED** — `shared` (any number of Kueue backends may reference it) or `cluster-specific` (**at most one** Kueue backend may reference it — a cardinality invariant enforced at startup). |
+| `endpoint_url` | **REQUIRED** — S3-compatible endpoint URL (validated as a well-formed http(s) URL with a host at registry construction; a scheme-less or non-http value is rejected — SSRF guard). |
+| `region`, `addressing_style` | Optional S3 connection tuning (`addressing_style` defaults to `path`). |
 | `access_key_id_file`, `secret_access_key_file` | Inline `*_file` secret pointers (control-plane only; never sent to the agent or pod). |
 
 Whole-registry invariants (enforced by the `_validate_registry` model validator at startup): non-empty registry; every Kueue backend's `buckets` ids resolve to a declared bucket and the resolved set is non-empty; a `cluster-specific` bucket is referenced by at most one Kueue backend. The resolved registry is logged **secret-free** at boot as an `{id, kind, rank, cap}` projection.
@@ -120,7 +151,7 @@ The global tuning knobs below (route threshold, retry budgets, S3 presign/lifecy
 
 ## Cloud-burst settings
 
-> **Superseded in 2026.7.1 (Phase 67):** the flat `cloud_target` / `cloud_max_in_flight` / compute-scratch and flat `s3_*` / `kube_*` knobs in the tables below were **removed with no shim** — backend selection, caps, cluster config, and bucket config now come from the **[Backend registry](#backend-registry-backendstoml)** above. The rows are retained only as a historical field reference; the **global** knobs still marked as kept (`cloud_route_threshold_sec`, `push_max_attempts`, `cloud_submit_max_attempts`, the `s3_presign_*` / `s3_lifecycle_ttl_days` / `s3_multipart_part_size_bytes` knobs, and the agent-side `cloud_scratch_dir` / push-SSH fields) remain live env vars.
+> **Superseded in 2026.7.1 (Phase 67):** the flat `cloud_target` / `cloud_max_in_flight` / compute-scratch and flat `s3_*` / `kube_*` knobs in the tables below were **removed with no shim** — backend selection, caps, cluster config, and bucket config now come from the **[Backend registry](#backend-registry-backendstoml)** above. The rows are retained only as a historical field reference; the **global** knobs still marked as kept (`cloud_route_threshold_sec`, `push_max_attempts`, `cloud_submit_max_attempts`, `cloud_spill_to_local_after_seconds`, the `s3_presign_*` / `s3_lifecycle_ttl_days` / `s3_multipart_part_size_bytes` knobs, and the agent-side `cloud_scratch_dir` / push-SSH fields) remain live env vars.
 
 Cloud burst (Phase 49/50/51, v5.0) offloads **long** audio sets (duration ≥ the route threshold) to a free OCI A1 arm64 **compute agent** over Tailscale via an rsync push — instead of letting them time out on the local file server. The full feature walkthrough, runbook, and smoke test live in [cloud-burst.md](cloud-burst.md); this section is the canonical knob reference.
 
@@ -131,9 +162,10 @@ Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](.
 | `cloud_target` | ~~`PHAZE_CLOUD_TARGET`~~ (removed) | Control | *n/a* | no | **REMOVED in 2026.7.1 (Phase 67, REG-01/04) — no shim.** This flat selector no longer exists; backend selection now comes from the [Backend registry](#backend-registry-backendstoml). Nothing in `src/phaze/` reads it, and because `model_config` is `extra="ignore"` a stale `PHAZE_CLOUD_TARGET` env var left in a live `.env` is **silently dropped** (not honored) — it does **not** change routing. Delete it. See the 1:1 `cloud_target`→`backends` equivalence in *[Cloud target](#cloud-target-removed-in-phase-67)* below. |
 | `cloud_route_threshold_sec` | `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` (or `cloud_route_threshold_sec`) | Control | `5400` | no | Duration threshold (seconds) at/above which a file is routed to a cloud compute agent. Default 5400 (90 min); bounded `gt=0, lt=86400` (out-of-range fails fast at startup). |
 | `cloud_max_in_flight` | `PHAZE_CLOUD_MAX_IN_FLIGHT` (or `cloud_max_in_flight`) | Control | `2` | no | Max cloud files staged-or-in-flight (`PUSHING`+`PUSHED`); the load-bearing ≤N window — the only backpressure keeping an unbounded backlog off the single compute agent. Bounded `gt=0, lt=100`. |
-| `push_max_attempts` | `PHAZE_PUSH_MAX_ATTEMPTS` (or `push_max_attempts`) | Control | `3` | no | Max push attempts before a sha256-mismatched file is marked `ANALYSIS_FAILED`. Bounded `gt=0, lt=20`. |
+| `push_max_attempts` | `PHAZE_PUSH_MAX_ATTEMPTS` (or `push_max_attempts`) | Control | `3` | no | Max push re-drives of a sha256-mismatched file before it **spills back to `AWAITING_CLOUD`** (Phase 69 SCHED-03: at the cap the file no longer hard-fails — its cloud budget is marked spent so the next drain tick routes it to local). Bounded `gt=0, lt=20`. |
+| `cloud_spill_to_local_after_seconds` | `PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS` (or `cloud_spill_to_local_after_seconds`) | Control | `900` | no | **Live (Phase 69, D-02) — the tiered-drain staleness gate.** Seconds a long file waits in `AWAITING_CLOUD` while higher-rank backends are online-but-**FULL** before slow local (rank 99) becomes an eligible spill target. Offline backends spill to local immediately (D-03, not staleness-gated). Bounded `gt=0, lt=86400`. |
 | `compute_scratch_dir` | `PHAZE_COMPUTE_SCRATCH_DIR` (or `compute_scratch_dir`) | Control | `None` | no | Control-side mirror of the compute agent's scratch directory; the push callback builds the `process_file` scratch path from it. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
-| `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match `compute_scratch_dir`** on the control plane; it is also the cloud-agent compose's named-volume mount path. |
+| `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match the control-plane compute backend's `scratch_dir` in [`backends.toml`](#backend-registry-backendstoml)** (the flat control-side `compute_scratch_dir` field was **removed in Phase 67**); it is also the cloud-agent compose's named-volume mount path. |
 | `push_ssh_host` | `PHAZE_PUSH_SSH_HOST` (or `push_ssh_host`) | Agent | `None` | no | Hostname/IP of the rsync-over-SSH push target (the compute agent). Operator-provisioned in Phase 51. |
 | `push_ssh_user` | `PHAZE_PUSH_SSH_USER` (or `push_ssh_user`) | Agent | `None` | no | SSH username for the rsync push target. |
 | `push_timeout_sec` | `PHAZE_PUSH_TIMEOUT_SEC` (or `push_timeout_sec`) | Agent | `600` | no | rsync I/O-stall timeout (seconds) for a single `push_file` transfer; MUST stay below the SAQ `push_file` job timeout so the kill is deterministic. Bounded `gt=0, lt=86400`. |
@@ -174,8 +206,8 @@ All bounded knobs (`gt`/`ge`/`lt`) reject an out-of-range operator value at star
 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
-| `endpoint` | `[[buckets]]` `endpoint` | Control | `None` | no | S3-compatible endpoint URL (e.g. `https://s3.us-west-1.amazonaws.com` or a MinIO/Backblaze URL). Must be a well-formed **http(s)** URL with a host — a scheme-less or non-http value is rejected at registry validation (T-53-02 SSRF surface). **Required on each `[[buckets]]` entry.** |
-| `id` (bucket name) | `[[buckets]]` `id` / bucket name | Control | `None` | no | Operator-created bucket used for ephemeral `file_id`-scoped staging objects, referenced by a Kueue backend's `buckets` list. **Required on each `[[buckets]]` entry.** |
+| `endpoint` | `[[buckets]]` `endpoint_url` | Control | `None` | no | S3-compatible endpoint URL (e.g. `https://s3.us-west-1.amazonaws.com` or a MinIO/Backblaze URL). Must be a well-formed **http(s)** URL with a host — a scheme-less or non-http value is rejected at registry validation (T-53-02 SSRF surface). **Required on each `[[buckets]]` entry** — the current TOML key is `endpoint_url`. |
+| `id` (bucket name) | `[[buckets]]` `id` + `bucket` | Control | `None` | no | The old flat `s3_bucket` splits into two required `[[buckets]]` keys: `id` (the **registry key** a Kueue backend's `buckets` list references) and `bucket` (the **actual S3 bucket name** staging objects are written to). Both required on each `[[buckets]]` entry. |
 | `s3_region` | `PHAZE_S3_REGION` (or `s3_region`) | Control | `None` | no | S3 region (e.g. `us-west-1`). Optional for many S3-compatible backends. |
 | `s3_addressing_style` | `PHAZE_S3_ADDRESSING_STYLE` (or `s3_addressing_style`) | Control | `path` | no | S3 addressing style. `path` (default) maximizes S3-compatible-backend support; `virtual` for AWS virtual-hosted-style. |
 | `s3_access_key_id` | `PHAZE_S3_ACCESS_KEY_ID` (or `s3_access_key_id`) | Control | `None` | **YES** | S3 access key id (control-plane only; file-mount via `PHAZE_S3_ACCESS_KEY_ID_FILE`). KSTAGE-02 / T-53-01. Never logged. |
@@ -294,6 +326,12 @@ These fields exist only on `ControlSettings` (the application server).
 | `DISCOGSOGRAPHY_URL`        | No       | `http://discogsography:8000`  | Discogsography service endpoint.     |
 | `DISCOGS_MATCH_CONCURRENCY` | No       | `5`                           | Concurrent Discogs match tasks.      |
 
+### Pipeline dashboard settings
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PHAZE_STRAGGLER_THRESHOLD_SEC` (or `straggler_threshold_sec`) | No | `6600` | Running-age threshold (seconds) above which an in-flight `process_file` analyze job is flagged a **straggler** on the pipeline dashboard (Phase 44) — still grinding, distinct from `ANALYSIS_FAILED` which gave up. Default 6600 mirrors the agent's `analysis_inner_timeout_sec` (a job past the inner-timeout horizon is by definition overdue). Bounded `gt=0, lt=86400`. |
+
 ## Agent role settings (`PHAZE_ROLE=agent`)
 
 These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=agent`, a model validator fails fast at startup if any **required** field is missing.
@@ -311,6 +349,7 @@ These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=a
 
 | Variable                                          | Required | Default              | Description                                                                 |
 |---------------------------------------------------|----------|----------------------|-----------------------------------------------------------------------------|
+| `PHAZE_AGENT_KIND` (or `kind`)                    | No       | `fileserver`         | Agent capability marker: `fileserver` (owns media + scan roots) or `compute` (cloud agent — owns no media/scan roots, which relaxes the empty-`scan_roots` required-field gate). Phase 48; middle layer of the 3-layer kind defense (CLI `choices=` + DB CHECK bracket it). |
 | `PHAZE_AGENT_ENV` (or `AGENT_ENV`)                | No       | `dev`                | Deployment mode: `dev` or `production`. `production` enforces `https://` agent URL and a passworded Redis URL. |
 | `PHAZE_AGENT_CA_FILE` (or `AGENT_CA_FILE`)        | No       | `/certs/phaze-ca.crt`| Path to the operator-distributed CA cert the agent's HTTP client uses to verify the app-server TLS endpoint. |
 | `PHAZE_WATCHER_SETTLE_SECONDS` (or `WATCHER_SETTLE_SECONDS`) | No | `10` | Seconds a file's mtime must be stable before the watcher posts it.          |
@@ -318,6 +357,20 @@ These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=a
 | `PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS` (or `WATCHER_SWEEP_INTERVAL_SECONDS`) | No | `2` | How often the watcher's sweep task checks for settled files.               |
 | `PHAZE_WATCHER_POLLING_MODE` (or `WATCHER_POLLING_MODE`) | No | `false` | Use watchdog's `PollingObserver` instead of native inotify. Required for macOS Docker bind mounts where inotify events do not propagate. |
 | `PHAZE_SCAN_CHUNK_SIZE` (or `SCAN_CHUNK_SIZE`)    | No       | `500`                | Number of file-upsert rows per chunk in `scan_directory`.                   |
+
+### Agent analysis tuning (windowed analysis — Phase 31/43/57.1)
+
+The agent worker reads these to size the per-window decode loop in `services/analysis.py::analyze_file` (windowed time-series audio analysis).
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PHAZE_ANALYSIS_FINE_WINDOW_SEC` (or `analysis_fine_window_sec`) | No | `30` | Fine-tier (BPM/key) window length in seconds (Phase 31). |
+| `PHAZE_ANALYSIS_COARSE_WINDOW_SEC` (or `analysis_coarse_window_sec`) | No | `180` | Coarse-tier (mood/style/danceability) window length in seconds (Phase 31). |
+| `PHAZE_ANALYSIS_FINE_MIN_SEC` (or `analysis_fine_min_sec`) | No | `15` | Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31). |
+| `PHAZE_ANALYSIS_INNER_TIMEOUT_SEC` (or `analysis_inner_timeout_sec`) | No | `6600` | Inner pebble per-task analysis timeout (kill-on-timeout). MUST stay below the 7200s SAQ `process_file` net so the kill is deterministic; enforced `gt=0, lt=7200` (Phase 43). |
+| `PHAZE_ANALYSIS_FINE_CAP` (or `analysis_fine_cap`) | No | `60` | Max FINE-tier (BPM/key) windows `analyze_file` decodes per file. Bounded `ge=2` (even-stride keeps first+last) (Phase 43). |
+| `PHAZE_ANALYSIS_COARSE_CAP` (or `analysis_coarse_cap`) | No | `30` | Max COARSE-tier (mood/style/danceability) windows `analyze_file` decodes per file. Bounded `ge=2` (Phase 43). |
+| `PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC` (or `analysis_progress_interval_sec`) | No | `5.0` | Minimum seconds between mid-flight analyze-progress POSTs; the final count is always flushed regardless, and `0` disables throttling. Bounded `ge=0.0` (Phase 57.1 D-04). |
 
 ## Docker Compose-only variables
 

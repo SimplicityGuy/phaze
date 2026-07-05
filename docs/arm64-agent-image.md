@@ -3,8 +3,9 @@
 
 `Dockerfile.agent-arm64` builds the production **linux/arm64 (aarch64)** essentia
 analysis agent. It is the foundation of the v5.0 Cloud Burst path — the perpetual-free
-OCI Always-Free **Ampere A1** (4 cores / 24 GB) compute agent that drains the long-set
-analysis backlog the homelab can't keep up with.
+OCI Always-Free **Ampere A1** (2 OCPU / 12 GB, the June 2026 capacity reduction — see
+[cloud-burst.md](cloud-burst.md)) compute agent that drains the long-set analysis backlog
+the homelab can't keep up with.
 
 The recipe transcribes the proven spike (`spike/arm64-essentia-analysis`, PASS
 2026-06-23) into a hardened, reproducible build: **Python 3.13 + TensorFlow 2.20.0 +
@@ -126,7 +127,7 @@ essentia C++ compile is ~324 s cold; **no QEMU** (a cross-compile is prohibitive
 ```bash
 # Operator fallback (mirrors the CI build-arm64 job):
 just image-build-arm64            # builds ghcr.io/<owner>/phaze:latest-arm64
-just image-build-arm64 2026.7.0   # builds ...:2026.7.0-arm64
+just image-build-arm64 2026.7.1   # builds ...:2026.7.1-arm64
 
 # Raw docker:
 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 \
@@ -144,6 +145,18 @@ the parity guard (below).
 
 The arm64 image is built, parity-checked against an x86 golden, and pushed to GHCR
 **only after parity passes**. A parity-divergent image never reaches the registry.
+
+```mermaid
+flowchart LR
+  build["build-arm64<br/>(native ubuntu-24.04-arm)<br/>multi-stage build → 4 spike fixes baked in<br/>load + import-smoke, warm scope=arm64 cache<br/>NO push"]
+  golden["parity-golden-x86<br/>dump_analysis.py in x86 api image<br/>→ golden-x86.json"]
+  guard["parity-guard<br/>rebuild arm64 from cache (identical digest)<br/>dump via python3 → compare vs golden<br/>BPM/key exact · scores within --atol"]
+  push["gated push<br/>push:true + provenance + sbom<br/>-arm64 tags + OCI labels"]
+  build --> guard
+  golden --> guard
+  guard -->|"compare PASS (non-PR)"| push
+  guard -->|"non-zero exit"| fail["build FAILS<br/>divergent image never pushed"]
+```
 
 | Tool | What it does |
 |------|--------------|
@@ -189,8 +202,9 @@ investigate**, not a tolerance to widen.
 ## Tag naming (consumed by Phase 51)
 
 The image is published as `ghcr.io/<owner>/phaze:<tag>-arm64` — `latest-arm64` on the
-default branch and `<version>-arm64` on a release tag (via
-`flavor: suffix=-arm64,onlatest=true`). The **Phase 51 cloud-agent compose** pins
-`<version>-arm64` to run this image on the OCI A1 compute agent.
-</content>
-</invoke>
+default branch and `<version>-arm64` (e.g. `2026.7.1-arm64`) on a release tag (via
+`flavor: suffix=-arm64,onlatest=true`). The **Phase 51 cloud-agent compose** defaults to
+`${PHAZE_IMAGE_TAG:-latest}-arm64` — i.e. **`latest-arm64` unless pinned**
+([`docker-compose.cloud-agent.yml`](../docker-compose.cloud-agent.yml)). Production should
+**pin a specific `<version>-arm64`** by setting `PHAZE_IMAGE_TAG=2026.7.1` in the A1's `.env`,
+rather than tracking the moving `latest-arm64`.

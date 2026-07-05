@@ -1,6 +1,18 @@
 <!-- generated-by: gsd-doc-writer -->
 # API Reference
 
+## v7.0 Console (shell)
+
+The v7.0 "Hybrid Console" three-column shell. `shell.py` owns the application root (`GET /`) and the per-stage rail-node workspaces; `record.py` serves the per-file full-record fragment.
+
+| Method | Path              | Description                                                              |
+|--------|-------------------|-------------------------------------------------------------------------|
+| GET    | `/`               | DAG console shell root (Analyze node selected by default)               |
+| GET    | `/s/{stage}`      | Single rail-node stage workspace (`stage` whitelisted via `STAGE_PARTIALS`; unknown stage 404s) |
+| GET    | `/record/{file_id}` | Per-file full-record read-only detail fragment (typed `uuid.UUID`, strictly `file_id`-scoped) |
+
+A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrome; an `HX-Request` rail swap returns a bare content fragment. `stage` is never interpolated into a template path — the partial name always comes from the static `STAGE_PARTIALS` dict (template-path-injection mitigation, T-57-01).
+
 ## Health
 
 | Method | Path      | Description     |
@@ -61,6 +73,55 @@ The agent worker validates each payload with `extra="forbid"`, so a `file_id`-on
 
 **DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `fingerprintDone`/`fingerprintTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `searchBusy` (Phase 39, the Search-node in-flight gate), `scanBusy` + `agentOnline` (Phase 40, the Fingerprint-Scan node's in-flight gate + online-agent signal), `scrapeDone`/`scrapeTotal`, `scrapeBusy` (Phase 41, the Scrape-node in-flight gate), `matchDone`/`matchTotal`, `matchBusy` (Phase 41, the Match-node in-flight gate), `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The `scanBusy` (in-flight `scan_live_set` count) and `agentOnline` (online-agent count) reads each run inside a degrade-safe SAVEPOINT and fall back to `0` on any DB error — `agentOnline === 0` fails closed (the node stays blocked "Needs agent"), so a liveness-read outage can never enable a scan with no agent. The 35-05 DAG canvas mirrors these store keys.
 
+### Multi-cloud backend lanes (2026.7.1)
+
+Operator overrides and control-side agent callbacks for the pluggable multi-backend routing lanes (local → Kueue(N) → cloud-compute, cost-tier ranks). These extend the pipeline dashboard with cloud-lane controls and back the S3-staging / rsync-push transports.
+
+| Method | Path                                   | Description                                                                 |
+|--------|----------------------------------------|-----------------------------------------------------------------------------|
+| POST   | `/pipeline/backfill-cloud`             | Backfill timed-out long files (`ANALYSIS_FAILED ∧ duration ≥ threshold`) to the cloud lane (HTMX) |
+| POST   | `/pipeline/files/{file_id}/deepen`     | Re-analyze one file at the full/unbounded window budget (`fine_cap=0`/`coarse_cap=0`) (HTMX) |
+| POST   | `/pipeline/routing/force-local`        | Flip the global force-local routing override (durable `route_control` `'global'` row) (HTMX) |
+
+`force-local` engages/reverts an all-local routing override in one click with no redeploy; it is the write surface for the `route_control` mechanism and returns the re-rendered header pill plus an OOB toast. `backfill-cloud` and `deepen` route through the same duration router / `enqueue_router` seams as "Run Analysis" (never the consumer-less default queue), and both honor the force-local / cloud-enabled gates.
+
+**Control-side agent callbacks (`/api/internal/agent`).** The Postgres-free file-server / compute / pod agents cannot touch the ORM, so the S3-staging and rsync-push transports report outcomes through these token-authed internal callbacks (same bearer-token contract as the Distributed Agent API below; `file_id` always on the URL path, never the body).
+
+| Method | Path                                                | Description                                                                 |
+|--------|-----------------------------------------------------|-----------------------------------------------------------------------------|
+| POST   | `/api/internal/agent/s3/{file_id}/uploaded`         | S3-staging multipart-upload success ack (control completes the multipart, flips `cloud_job` `UPLOADING → UPLOADED`) |
+| POST   | `/api/internal/agent/s3/{file_id}/failed`           | S3-staging upload failure (bounded re-drive, or terminal cleanup + spill to `AWAITING_CLOUD` at the cap) |
+| POST   | `/api/internal/agent/push/{file_id}/pushed`         | rsync push success (`PUSHING → PUSHED` + ledger clear + `process_file` enqueue on the compute queue) |
+| POST   | `/api/internal/agent/push/{file_id}/mismatch`       | rsync post-transfer sha256 mismatch (capped re-drive, or spill to `AWAITING_CLOUD` at the cap) |
+| POST   | `/api/internal/agent/files/{file_id}/presign-download` | Mint a fresh short-TTL presigned GET URL for a file's staged bytes (409 unless `cloud_job` is `UPLOADED`) |
+
+```mermaid
+flowchart LR
+    D[DISCOVERED file] --> R{select_backend<br/>by cost-tier rank}
+    FL[/force-local override<br/>route_control 'global'/]:::override -.forces.-> R
+    R -->|rank 0| L[Local analyze]
+    R -->|rank 1..N| K[Kueue cluster 1..N<br/>S3 staging]
+    R -->|rank N+1| C[Cloud compute<br/>rsync push]
+    K -->|upload ack /s3/.../uploaded| KP[PUSHED → submit_cloud_job]
+    C -->|push ack /push/.../pushed| CP[PUSHED → process_file]
+    K -. cap exhausted .-> SP[spill AWAITING_CLOUD → local]
+    C -. cap exhausted .-> SP
+    L -.timeout ANALYSIS_FAILED.-> BF[/backfill-cloud<br/>re-route long files/]:::override
+    BF --> R
+    DP[/deepen: full-window<br/>re-analyze one file/]:::override --> R
+    classDef override fill:#fde68a,stroke:#b45309,color:#000;
+```
+
+### Per-stage pause / priority controls (drain scheduler)
+
+Operator controls that steer the three agent pipeline stages (`metadata` / `analyze` / `fingerprint`) at runtime. Each endpoint mutates the durable `PipelineStageControl` intent row **and** the live `saq_jobs` backlog in one transaction, then returns `{stage, priority, paused}` from the control row. `stage` is validated against the `STAGE_TO_FUNCTION` allowlist (unknown stage → 422).
+
+| Method | Path                                  | Description                                                              |
+|--------|---------------------------------------|-------------------------------------------------------------------------|
+| POST   | `/pipeline/stages/{stage}/priority`   | Apply a signed priority delta (clamped `[0,100]`, lower dequeues sooner) and reorder the queued backlog |
+| POST   | `/pipeline/stages/{stage}/pause`      | Drain-pause: active jobs finish, the queued backlog is parked           |
+| POST   | `/pipeline/stages/{stage}/resume`     | Un-park ONLY the pause-parked backlog rows                              |
+
 ## Pipeline Scans (`/pipeline/scans`)
 
 Admin-UI endpoints that drive the user-initiated scan flow on the pipeline dashboard. Separate from the `pipeline` router (which serves the dashboard page and pipeline-stage triggers).
@@ -68,6 +129,7 @@ Admin-UI endpoints that drive the user-initiated scan flow on the pipeline dashb
 | Method | Path                           | Description                                        |
 |--------|--------------------------------|----------------------------------------------------|
 | GET    | `/pipeline/scans/agent-roots`  | Agent scan-root selector (HTMX partial)            |
+| GET    | `/pipeline/scans/recent`       | Recent Scans mini-table (HTMX 5s poll partial)     |
 | POST   | `/pipeline/scans`              | Create a scan batch and dispatch it to an agent    |
 | GET    | `/pipeline/scans/{batch_id}`   | Scan-batch progress (HTMX poll partial)            |
 | DELETE | `/pipeline/scans/{batch_id}`   | Delete a terminal scan + all associated DB data (HTMX) |
@@ -83,6 +145,9 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | PATCH  | `/proposals/{id}/reject`      | Reject a proposal                  |
 | PATCH  | `/proposals/{id}/undo`        | Revert to pending                  |
 | GET    | `/proposals/{id}/detail`      | Expanded detail panel              |
+| GET    | `/proposals/{id}/timeline`    | Windowed multi-lane analysis timeline |
+| PATCH  | `/proposals/{id}/edit`        | Inline-edit a pending proposal's filename/path |
+| PATCH  | `/proposals/bulk-approve-high-confidence` | Server-predicate bulk approve (confidence ≥ 0.9) |
 | PATCH  | `/proposals/bulk`             | Bulk approve/reject                |
 
 ## Execution (`/execution`, `/audit`)
@@ -140,6 +205,8 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | GET    | `/tags/{file_id}/edit/{field}`| Inline edit input                  |
 | PUT    | `/tags/{file_id}/edit/{field}`| Save inline edit                   |
 | POST   | `/tags/{file_id}/write`       | Execute tag write to file          |
+| POST   | `/tags/bulk-write-no-discrepancies` | Server-predicate bulk tag-write over files with no discrepancies |
+| POST   | `/tags/{file_id}/undo`        | Undo a tag write (restore prior tags) |
 
 ## CUE Sheets (`/cue`)
 
@@ -207,9 +274,14 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | POST   | `/api/internal/agent/heartbeat`                       | Liveness signal; updates `last_seen_at` and `last_status` (204 No Content)  |
 | POST   | `/api/internal/agent/files`                           | Idempotent chunked upsert of discovered file records (persists rows only; no auto-enqueue, `enqueued` is always 0 per Phase 35 D-06) |
 | PUT    | `/api/internal/agent/metadata/{file_id}`              | Idempotent tag-metadata write for a file                                    |
+| POST   | `/api/internal/agent/metadata/{file_id}/failed`       | Terminal-ack for a retries-exhausted `extract_file_metadata` run (clears the ledger row) |
 | PUT    | `/api/internal/agent/fingerprints/{file_id}/{engine}` | Idempotent fingerprint write keyed on `(file_id, engine)`                   |
+| POST   | `/api/internal/agent/fingerprints/{file_id}/failed`   | Terminal-ack for a retries-exhausted `fingerprint_file` run (clears the ledger row) |
 | PUT    | `/api/internal/agent/analysis/{file_id}`              | Idempotent audio-analysis upsert for a file                                 |
+| POST   | `/api/internal/agent/analysis/{file_id}/progress`     | Counter-only mid-flight progress upsert (fine-window counts; no completion side effects) |
+| POST   | `/api/internal/agent/analysis/{file_id}/failed`       | Mark a file's analysis terminally failed (`ANALYSIS_FAILED`)                |
 | POST   | `/api/internal/agent/tracklists`                       | Idempotent atomic create of a tracklist + version + tracks (keyed on `request_id`) |
+| POST   | `/api/internal/agent/tracklists/{file_id}/scanned`     | Terminal-ack for a no-match / failed `scan_live_set` run (clears the ledger row) |
 | PATCH  | `/api/internal/agent/proposals/{proposal_id}/state`   | Joint Proposal + FileRecord state transition in one transaction            |
 | POST   | `/api/internal/agent/execution-log`                   | Create an execution-log (audit-trail) row; agent supplies the row `id`      |
 | PATCH  | `/api/internal/agent/execution-log/{execution_log_id}`| Update an existing execution-log row                                        |

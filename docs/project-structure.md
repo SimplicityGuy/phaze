@@ -5,11 +5,18 @@
 phaze/
 ├── src/phaze/                  # Application package
 │   ├── config.py               # Pydantic settings (env vars, role split)
+│   ├── config_backends.py      # Backend-registry schema (backends.toml: local + Kueue + cloud)
 │   ├── constants.py            # File categories, extension map, tuning constants
 │   ├── database.py             # Async SQLAlchemy engine + session factory
 │   ├── main.py                 # FastAPI app factory with lifespan
 │   ├── entrypoint.py           # Container entrypoint shim: runs cert bootstrap, then execvp's uvicorn
 │   ├── cert_bootstrap.py       # Pre-uvicorn TLS/mTLS cert bootstrap for distributed agents (DB-free, idempotent)
+│   ├── job_runner.py           # One-shot Kueue Job entrypoint (cloud compute-agent analysis)
+│   ├── logging_config.py       # Central structlog configuration for every Phaze process
+│   ├── cli/                    # phaze management CLI (argparse): `agents add` mints token + agents row
+│   │   └── __init__.py         #   Command groups + entry point
+│   ├── web/                    # Web mount helpers
+│   │   └── saq_mount.py        #   Testable mount for the SAQ monitoring dashboard (/saq)
 │   ├── enums/                  # DB-free enums (importable without SQLAlchemy)
 │   │   └── execution.py        #   ExecutionStatus enum (re-exported by models/execution.py)
 │   ├── utils/                  # Pure helpers (no deps)
@@ -22,7 +29,7 @@ phaze/
 │   │   ├── file.py             #   FileRecord + FileState enum
 │   │   ├── scan_batch.py       #   ScanBatch progress tracking
 │   │   ├── metadata.py         #   FileMetadata (audio tags)
-│   │   ├── analysis.py         #   AnalysisResult (BPM, key, mood, style)
+│   │   ├── analysis.py         #   AnalysisResult (BPM, key, mood, style) + AnalysisWindow (per-window rows)
 │   │   ├── fingerprint.py      #   FingerprintResult (per-engine)
 │   │   ├── proposal.py         #   RenameProposal + ProposalStatus
 │   │   ├── execution.py        #   ExecutionLog (audit trail)
@@ -30,6 +37,10 @@ phaze/
 │   │   ├── file_companion.py   #   FileCompanion (companion-media join)
 │   │   ├── agent.py            #   Agent (file-server identity for distributed agents)
 │   │   ├── discogs_link.py     #   DiscogsLink (candidate Discogs release matches per track)
+│   │   ├── cloud_job.py        #   CloudJob (per-file S3 object-staging / cloud-burst sidecar)
+│   │   ├── pipeline_stage_control.py # PipelineStageControl (durable per-stage pause/priority intent)
+│   │   ├── scheduling_ledger.py #   SchedulingLedger (durable "stage scheduled" recovery record)
+│   │   ├── route_control.py    #   RouteControl (single-row force-local routing override)
 │   │   └── tag_write_log.py    #   TagWriteLog (append-only tag-write audit trail)
 │   ├── routers/                # API + UI endpoints
 │   │   ├── health.py           #   GET /health
@@ -47,18 +58,22 @@ phaze/
 │   │   ├── search.py           #   Unified cross-entity search UI
 │   │   ├── tags.py             #   Tag review UI (side-by-side compare, inline edit, write)
 │   │   ├── admin_agents.py     #   Admin agents page + HTMX table partial
-│   │   └── agent_*.py          #   Distributed-agent internal API (12 routers under /api/internal/agent):
+│   │   ├── pipeline_stages.py  #   Per-stage control plane: pause/resume/priority endpoints
+│   │   ├── record.py           #   Per-file full-record read-only fragment route
+│   │   ├── routing.py          #   Force-local master routing override (thin write endpoint)
+│   │   └── agent_*.py          #   Distributed-agent internal API (14 routers under /api/internal/agent):
 │   │       │                   #     auth, identity, heartbeat, files, metadata, fingerprint,
 │   │       │                   #     analysis, proposals, execution, exec_batches,
-│   │       │                   #     scan_batches, tracklists
+│   │       │                   #     scan_batches, tracklists, push, s3
 │   ├── schemas/                # Pydantic request/response models
 │   │   ├── scan.py             #   Scan API schemas
 │   │   ├── companion.py        #   Companion/duplicate schemas
 │   │   ├── pipeline_scans.py   #   Pipeline scan-trigger schemas
 │   │   ├── agent_tasks.py      #   Agent task-routing payload schemas
-│   │   └── agent_*.py          #   Distributed-agent contract schemas (DB-free, loaded in agent worker):
+│   │   └── agent_*.py          #   Distributed-agent contract schemas (13, DB-free, loaded in agent worker):
 │   │       │                   #     identity, heartbeat, files, metadata, fingerprint, analysis,
-│   │       │                   #     proposals, execution, exec_batches, scan_batches, tracklists
+│   │       │                   #     proposals, execution, exec_batches, scan_batches, tracklists,
+│   │       │                   #     push, s3
 │   ├── services/               # Business logic
 │   │   ├── ingestion.py        #   File discovery, hashing, bulk upsert
 │   │   ├── hashing.py          #   Shared hashing utilities
@@ -87,7 +102,17 @@ phaze/
 │   │   ├── agent_bootstrap.py  #   Dev-agent seeding for the api lifespan
 │   │   ├── agent_client.py     #   PhazeAgentClient (internal-agent HTTP wrapper)
 │   │   ├── agent_liveness.py   #   Agent liveness classification (status pills)
-│   │   └── agent_task_router.py#   Controller-side per-agent SAQ enqueuer
+│   │   ├── agent_task_router.py#   Controller-side per-agent SAQ enqueuer
+│   │   ├── review.py           #   Degrade-safe read helpers for the Review diff workspaces
+│   │   ├── stage_control.py    #   Raw saq_jobs backlog-mutation helpers for per-stage control
+│   │   ├── scheduling_ledger.py#   Control-only scheduling-ledger service (recovery source of truth)
+│   │   ├── route_control.py    #   Degrade-safe reader for the force-local routing override
+│   │   ├── backends.py         #   Internal Backend protocol + its 3 implementations (local/kube/cloud)
+│   │   ├── backend_selection.py#   Pure select_backend policy over the Backend substrate
+│   │   ├── analysis_wire.py    #   Shared wire-format converters for essentia analysis features
+│   │   ├── cloud_staging.py    #   Control-plane cloud-staging producer + re-drive helper
+│   │   ├── s3_staging.py       #   Control-plane S3 object-staging service (presign/complete/abort)
+│   │   └── kube_staging.py     #   Control-plane Kubernetes (Kueue) Job-staging service
 │   ├── tasks/                  # SAQ async background jobs
 │   │   ├── controller.py       #   SAQ controller settings (application-server entry point)
 │   │   ├── agent_worker.py     #   SAQ agent_worker settings (agent process entry point)
@@ -102,12 +127,19 @@ phaze/
 │   │   ├── tracklist.py        #   scrape/search/refresh tracklists
 │   │   ├── discogs.py          #   match tracklist tracks to Discogs releases
 │   │   ├── heartbeat.py        #   30s cron: POST agent heartbeat
+│   │   ├── push.py             #   push_file: rsync-over-SSH push of media to compute scratch
+│   │   ├── s3_upload.py        #   upload_file_s3: multipart-PUT upload to presigned URLs
+│   │   ├── submit_cloud_job.py #   Control-plane fast Kube-submit producer
+│   │   ├── reconcile_cloud_jobs.py # */5 cron: reconcile in-flight K8s cloud jobs
+│   │   ├── release_awaiting_cloud.py # Control-side tiered multi-backend drain (route AWAITING_CLOUD)
 │   │   ├── pool.py             #   ProcessPoolExecutor for CPU work
 │   │   └── _shared/            #   Cross-process startup helpers (DB-free where required)
 │   │       ├── agent_bootstrap.py  # Shared agent-startup helpers
 │   │       ├── deterministic_key.py # Central before_enqueue deterministic-key + after_process completion hooks
 │   │       ├── model_bootstrap.py  # Auto-download essentia weights when /models empty
-│   │       └── queue_defaults.py   # Shared SAQ before_enqueue Job defaults
+│   │       ├── queue_defaults.py   # Shared SAQ before_enqueue Job defaults
+│   │       ├── queue_factory.py    # Single PostgresQueue construction seam for the pipeline
+│   │       └── stage_control.py    # Canonical per-stage control constants (DB-free)
 │   ├── agent_watcher/          # Filesystem watcher service (file-server role, not a SAQ worker)
 │   │   ├── __main__.py         #   Entry point: asyncio.run(main())
 │   │   ├── observer.py         #   watchdog observer over agent scan_roots
@@ -152,7 +184,7 @@ phaze/
 │   ├── test_utils/             #   Helper tests
 │   └── test_template_helpers/  #   Template/Jinja helper tests
 ├── alembic/                    # Database migrations (async template)
-│   └── versions/               #   Migration scripts (001-019)
+│   └── versions/               #   Migration scripts (001-031)
 ├── .github/workflows/          # CI/CD pipelines
 │   ├── ci.yml                  #   Main orchestrator
 │   ├── code-quality.yml        #   Pre-commit hooks
@@ -206,3 +238,59 @@ into a template path (template-path-injection mitigation) — and an unknown sta
 `404`. The legacy top-level page routes (`/proposals`, `/tracklists`, `/tags`, `/cue`,
 `/duplicates`, `/preview`, `/pipeline`, `/search`) `302`-redirect into their corresponding
 shell stage so existing bookmarks keep working.
+
+## Module layering
+
+The flat tree above lists *where* modules live; this graph shows *how they depend*. The core
+rule is one-directional: `routers → services → models` (routers never touch the ORM directly,
+models never import services). Two SAQ settings modules define the two-process split — the
+control plane (`tasks/controller.py`) and the compute/file-server agent (`tasks/agent_worker.py`)
+— which is why background jobs are grouped by which process registers them. The cloud-burst
+dispatch fans out through the `Backend` protocol so the drain and the staging tasks never
+hard-code a single backend.
+
+```mermaid
+graph TD
+    subgraph edge["HTTP / UI"]
+        routers[routers/*]
+    end
+    subgraph logic["Business logic"]
+        services[services/*]
+    end
+    subgraph data["Persistence"]
+        models[models/*]
+    end
+    routers --> services --> models
+
+    subgraph procs["Two-process split (SAQ settings)"]
+        controller[tasks/controller.py<br/>control plane]
+        worker[tasks/agent_worker.py<br/>compute / file-server agent]
+    end
+    controller --> services
+    worker --> services
+
+    subgraph dispatch["Backend dispatch fan-out"]
+        sel[services/backend_selection.py]
+        be[services/backends.py<br/>Backend protocol]
+        cloud[services/cloud_staging.py]
+        kube[services/kube_staging.py]
+        s3[services/s3_staging.py]
+    end
+    controller --> sel --> be
+    be --> cloud
+    be --> kube
+    be --> s3
+
+    subgraph ctasks["Cloud-burst tasks"]
+        submit[tasks/submit_cloud_job.py]
+        push[tasks/push.py]
+        upload[tasks/s3_upload.py]
+        reconcile[tasks/reconcile_cloud_jobs.py]
+    end
+    controller --> submit
+    controller --> reconcile
+    worker --> push
+    worker --> upload
+    submit --> kube
+    upload --> s3
+```

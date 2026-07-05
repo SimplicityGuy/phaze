@@ -39,8 +39,13 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
 2. **Install Python dependencies.**
 
    ```bash
-   uv sync          # equivalent: just install
+   uv sync          # just install does this PLUS builds the Tailwind app.css
    ```
+
+   > `just install` runs the `tailwind` recipe first (compiling `assets/src/app.css` →
+   > `src/phaze/static/css/app.css` with the standalone Tailwind binary, no Node) and *then*
+   > `uv sync`. Bare `uv sync` installs Python deps only and **skips the CSS build**, so prefer
+   > `just install` (or run `just tailwind` once) if you are serving the Web UI locally.
 
 3. **Create your environment file.**
 
@@ -50,7 +55,8 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
 
    The defaults in `.env.example` work for single-host local development out of the box
    (the `DATABASE_URL` and `REDIS_URL` already point at the `postgres` and `redis`
-   Docker service names). Before going further, review:
+   Docker service names; `PHAZE_QUEUE_URL` defaults to the Postgres DSN, since the SAQ task
+   broker has run on Postgres — not Redis — since Phase 36). Before going further, review:
 
    - `SCAN_PATH` — the music directory mounted into the containers for scanning
      (default `/data/music`).
@@ -74,10 +80,12 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
 5. **Start the core services.**
 
    ```bash
-   just up                  # docker compose up -d
+   just up                  # rebuilds app.css (tailwind), then docker compose up -d
    ```
 
-   This launches four containers: `api` (FastAPI), `worker` (SAQ), `postgres`, and `redis`.
+   `just up` depends on the `tailwind` recipe, so it recompiles `app.css` before starting the
+   stack — you always serve fresh CSS. This launches four containers: `api` (FastAPI),
+   `worker` (SAQ), `postgres`, and `redis`.
 
 6. **Apply database migrations.**
 
@@ -126,9 +134,22 @@ If you get a connection error, the containers may still be starting — check
 
 ## 🔄 Your First Workflow
 
-A file moves through these states:
-`DISCOVERED → METADATA_EXTRACTED → FINGERPRINTED → ANALYZED → PROPOSAL_GENERATED →
-APPROVED → EXECUTED`. You drive each stage from either a `just` recipe (curl wrapper) or
+A file moves through seven states, and the numbered steps below map 1:1 onto the transitions:
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> DISCOVERED: scan
+    DISCOVERED --> METADATA_EXTRACTED: extract-metadata
+    METADATA_EXTRACTED --> FINGERPRINTED: fingerprint
+    FINGERPRINTED --> ANALYZED: analyze
+    ANALYZED --> PROPOSAL_GENERATED: proposals
+    PROPOSAL_GENERATED --> APPROVED: review + approve
+    APPROVED --> EXECUTED: execute batch
+    EXECUTED --> [*]
+```
+
+You drive each stage from either a `just` recipe (curl wrapper) or
 the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<stage>` per stage).
 
 1. **Open the console.**
