@@ -1,0 +1,31 @@
+{# Phase 71 (71-03, BEUI-01, UI-SPEC §BEUI-01): the OOB-swappable N-lane grid.
+
+   Loops _lane_card.html over the seeded `lanes` list (get_backend_lane_snapshot, rank-ascending server-side
+   so the template loops verbatim, D-06). Extracted into its own partial so it can be rendered TWO ways off
+   ONE existing poll (D-04):
+     * analyze_workspace.html includes it with NO `oob` -> the initial full-page grid.
+     * stats_bar.html includes it inside the oob_counts gate `{% with oob = True %}` -> the whole grid
+       hx-swap-oob's as a unit on the 5s poll (Pitfall 2: N is dynamic + every datum changes per tick, so
+       the grid swaps as one block rather than inventing N per-lane $store.pipeline keys).
+
+   Responsive wrapping grid (D-05, WCAG-reflow-safe): N=1 keeps a 1/3 track (no full-bleed stretch), N=3
+   matches the Phase-58 lg layout, N=6+ wraps to a second row; xl:grid-cols-4 caps wide-screen row width.
+   Card box model is unchanged -- only the CONTAINER generalized from the fixed grid-cols-3.
+
+   Degrade-safe (D-01): get_backend_lane_snapshot returns [] on ANY DB/probe error, so when `lanes` is
+   falsy the grid renders a single full-width muted panel (same rounded-xl border shell) with the empty
+   heading -- NEVER a page error, NEVER a 500, and it MUST NOT collapse the layout. Self-heals next poll. #}
+<div id="analyze-lanes"
+     class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 p-6"
+     {% if oob %}hx-swap-oob="true"{% endif %}>
+    {% if lanes %}
+        {% for lane in lanes %}
+        {% include "pipeline/partials/_lane_card.html" %}
+        {% endfor %}
+    {% else %}
+        <div class="col-span-full rounded-xl border border-gray-200 p-4 dark:border-phaze-border">
+            <p class="text-sm font-medium text-gray-700 dark:text-gray-200">Lane status unavailable</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Backend lane status could not be read this cycle. It refreshes on the next update.</p>
+        </div>
+    {% endif %}
+</div>
