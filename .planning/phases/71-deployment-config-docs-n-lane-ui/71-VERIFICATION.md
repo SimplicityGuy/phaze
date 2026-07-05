@@ -1,7 +1,8 @@
 ---
 phase: 71-deployment-config-docs-n-lane-ui
 verified: 2026-07-05T00:00:00Z
-status: human_needed
+status: passed
+human_uat: complete (agent-driven Playwright on local uvicorn + fresh phaze_uat DB, 3-backend registry — see 71-HUMAN-UAT.md; both items pass; 2 OOB-cleanliness defects found + fixed: fe1f0032, 1c0473b2)
 score: 8/8 must-haves verified
 overrides_applied: 0
 human_verification:
