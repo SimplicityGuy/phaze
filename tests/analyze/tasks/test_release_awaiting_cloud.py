@@ -211,6 +211,44 @@ async def test_stage_cloud_window_isolation_in_flight_count_raise_treats_backend
     assert flaky.dispatch_calls == 0
 
 
+# --- MCOMP-05: a flaky COMPUTE lane degrades to 0 slots; a healthy sibling compute lane still dispatches ---
+
+
+@pytest.mark.asyncio
+async def test_mcomp05_flaky_compute_backend_degrades_to_zero_slots_healthy_compute_lane_still_dispatches(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MCOMP-05 (compute failure isolation): N=2 COMPUTE lanes; lane A.is_available RAISES -> A gets 0 slots, the tick COMPLETES, and healthy lane B still dispatches.
+
+    The per-agent twin of the Kueue isolation cell: one flaky compute backend (its liveness probe
+    raises / times out) must NOT abort the whole ``*/5`` drain tick and starve every healthy compute
+    lane. The per-backend snapshot try/except (release_awaiting_cloud.py:151-157) degrades the flaky
+    lane to ``available=False / remaining=0`` (T-73-11 DoS mitigation), so both FIFO candidates route to
+    the healthy sibling compute lane, and the flaky lane is never selected (0 dispatch calls). Runs on
+    the existing one-row-per-file cloud_job schema (D-05, no migration).
+    """
+    flaky_compute = _StubBackend(id="compute-a", rank=10, cap=5, raise_on="is_available")
+    healthy_compute = _StubBackend(id="compute-b", rank=20, cap=5)
+    _patch_backends(monkeypatch, [flaky_compute, healthy_compute])
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(2)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    # The tick MUST COMPLETE (never raise) despite the flaky compute lane's probe blowing up.
+    result = await stage_cloud_window(_make_ctx(async_engine, router))
+
+    assert result == {"staged": 2, "skipped": 0}
+    # Every candidate landed on the HEALTHY compute lane; the flaky one contributed nothing.
+    assert set((await _backend_ids_for(session, ids)).values()) == {"compute-b"}
+    assert set((await _states_for(session, ids)).values()) == {FileState.PUSHING}
+    assert flaky_compute.dispatch_calls == 0  # a 0-slot flaky lane is never selected
+
+
 # --- MKUE-03 / D-07: a GENERIC dispatch raise is a clean per-candidate hold (loop continues) ---
 
 
