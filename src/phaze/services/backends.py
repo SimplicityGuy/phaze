@@ -38,6 +38,7 @@ Secret hygiene (T-68-04): this module logs only ``{id, kind, rank, cap}``-level 
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Protocol, cast
 import uuid
 
@@ -46,7 +47,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
 from phaze.config import get_settings
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileState
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging, s3_staging
@@ -496,3 +497,90 @@ def resolved_non_local_kind(settings: ControlSettings) -> str:
             f"resolved_non_local_kind reduces a single compute lane (multi-compute lands in PROV-01)"
         )
     return non_local[0].kind
+
+
+# --- Phase 71 (BEUI-01): read-only backend-lane snapshot for the N-lane UI poll -----------
+#
+# A pure read over the Phase-67 registry + the ``cloud_job`` in-flight/admission substrate that feeds
+# the BEUI-01 N-lane grid on the existing 5s ``/pipeline/stats`` poll (Plan 03 seeds + renders it). Every
+# leg is degrade-safe -- a DB hiccup or a hung Kueue probe can NEVER raise into the hot poll (T-71-03) --
+# and secret-free: only ``{id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}`` ever
+# leaves this module; a probe-failure log carries ``backend_id`` ONLY, never a SecretStr / kube SA token
+# / S3 key (SP-5, T-71-01). This plan builds the DATA path only -- no template, no context wiring.
+
+
+# D-02/A2: the per-probe availability timeout -- well under the 5s poll, yet tolerant of a slow-healthy
+# kr8s ``LocalQueue`` RTT. A hung Kueue cluster times out to "offline" for THAT lane alone (T-71-02).
+_PROBE_TIMEOUT_SEC = 1.5
+
+# The zero-admission fallback merged into a lane with no attributed ``cloud_job`` rows (idle/local lanes).
+_ZERO_ADMISSION: dict[str, int] = {"quota_wait": 0, "inadmissible": 0}
+
+
+async def _admission_by_backend_id(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Return per-``backend_id`` admission counts ``{quota_wait, inadmissible}`` via one ``GROUP BY`` (D-03).
+
+    Generalizes the GLOBAL ``pipeline.get_cloud_phase_counts`` (``cloud_phase == QUEUED_BEHIND_QUOTA``) +
+    ``pipeline.get_inadmissible_count`` (``inadmissible`` AND ``status IN {SUBMITTED, RUNNING}``) predicates
+    to a per-``backend_id`` ``GROUP BY`` so each Kueue lane owns its OWN quota-wait-vs-Inadmissible counts.
+    ``cloud_phase`` is NULL for local/compute rows, so they contribute 0 to ``quota_wait``; ``backend_id``
+    -NULL (legacy / unattributed) rows are excluded entirely (they belong to no lane). Degrades to ``{}``
+    on any DB error with a guarded rollback (mirrors ``pipeline._safe_count``) so it never raises into the
+    hot 5s poll (T-71-03).
+    """
+    try:
+        stmt = (
+            select(
+                CloudJob.backend_id,
+                func.count().filter(CloudJob.cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value).label("quota_wait"),
+                func.count()
+                .filter(
+                    CloudJob.inadmissible.is_(True),
+                    CloudJob.status.in_([CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value]),
+                )
+                .label("inadmissible"),
+            )
+            .where(CloudJob.backend_id.is_not(None))
+            .group_by(CloudJob.backend_id)
+        )
+        rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.warning("backend_lane_admission_degraded", exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("backend_lane_admission_rollback_failed", exc_info=True)
+        return {}
+    return {backend_id: {"quota_wait": int(quota_wait or 0), "inadmissible": int(inadmissible or 0)} for backend_id, quota_wait, inadmissible in rows}
+
+
+async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool]:
+    """Probe ONE backend's live availability, bounded + degrade-safe -> ``(backend_id, available)`` (D-02).
+
+    A :class:`LocalBackend` is short-circuited to ``True`` with NO I/O (local dispatch never depends on a
+    remote agent). Every other backend's ``is_available`` is awaited under an ``asyncio.wait_for`` bounded
+    by ``_PROBE_TIMEOUT_SEC``; a timeout OR any probe exception degrades THAT lane to offline and logs the
+    ``backend_id`` ONLY (never a SecretStr / kube token, T-71-01). A single hung Kueue cluster can
+    therefore never stall the shared read (T-71-02).
+    """
+    if isinstance(backend, LocalBackend):
+        return (backend.id, True)
+    try:
+        available = await asyncio.wait_for(backend.is_available(session), _PROBE_TIMEOUT_SEC)
+    except Exception:
+        logger.info("backend_lane_probe_offline", backend_id=backend.id)
+        return (backend.id, False)
+    return (backend.id, bool(available))
+
+
+async def _probe_availability(session: AsyncSession, backends: list[Backend]) -> dict[str, bool]:
+    """Fan :func:`_probe_one` out over all backends concurrently -> ``{backend_id: available}`` (D-02).
+
+    ``asyncio.gather`` runs the per-backend probes concurrently, so the WHOLE fan-out is bounded to
+    ~one ``_PROBE_TIMEOUT_SEC`` even when a lane hangs. Session-safety (Pitfall 2): only a compute probe
+    touches the shared ``session`` (``select_active_agent``), and the D-05 invariant caps compute at ≤1,
+    so at most ONE probe ever uses the session concurrently; Kueue probes ignore it (kr8s I/O) and local
+    is short-circuited (no I/O).
+    """
+    results = await asyncio.gather(*(_probe_one(session, backend) for backend in backends))
+    return dict(results)
