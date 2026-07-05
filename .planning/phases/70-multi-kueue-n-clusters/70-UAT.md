@@ -1,15 +1,15 @@
 ---
-status: partial
+status: complete
 phase: 70-multi-kueue-n-clusters
 source: [70-01-SUMMARY.md, 70-02-SUMMARY.md, 70-03-SUMMARY.md, 70-04-SUMMARY.md, 70-05-SUMMARY.md]
 started: 2026-07-04
-updated: 2026-07-04
+updated: 2026-07-05
 mode: agent-driven
 ---
 
 ## Current Test
 
-(complete — orchestrator drove tests 1-6 against real infra; test 7 blocked, deployment-gated)
+(complete — orchestrator drove tests 1-6 against real infra: 6/6 pass, 0 issues. Test 7 is deployment-gated live E2E — needs a real 2nd Kueue cluster + dual live S3 bucket endpoints, unavailable in-session; carried as a deployment-deferred rollout-verification item, accepted at milestone close per the v6.0 JOB-ENV-CONTRACT precedent.)
 
 ## Tests
 
