@@ -41,9 +41,9 @@ Requirements for this milestone. Each maps to exactly one roadmap phase (67+).
 
 ### BEUI — Deployment, config, docs & N-lane UI
 
-- [ ] **BEUI-01**: The admin UI renders N per-backend lanes derived from the registry — each showing available/offline, in-flight/cap, and rank (preserving the Kueue quota-wait-vs-Inadmissible distinction per lane) — read-only and riding the existing `/pipeline/stats` 5s poll, generalizing v7.0 Phase 58's fixed 3 local/A1/k8s cards to N dynamic lanes.
-- [ ] **BEUI-02**: A master toggle reverts all routing to local for incident response (the `backends`-era equivalent of today's `cloud_target=local` no-op gate).
-- [ ] **BEUI-03**: The operator runbook and configuration docs cover the `backends:` schema, per-backend `_FILE` secrets, and the `cloud_target`→`backends` migration and deprecation path.
+- [x] **BEUI-01**: The admin UI renders N per-backend lanes derived from the registry — each showing available/offline, in-flight/cap, and rank (preserving the Kueue quota-wait-vs-Inadmissible distinction per lane) — read-only and riding the existing `/pipeline/stats` 5s poll, generalizing v7.0 Phase 58's fixed 3 local/A1/k8s cards to N dynamic lanes.
+- [x] **BEUI-02**: A master toggle reverts all routing to local for incident response (the `backends`-era equivalent of today's `cloud_target=local` no-op gate).
+- [x] **BEUI-03**: The operator runbook and configuration docs cover the `backends:` schema, per-backend `_FILE` secrets, and the `cloud_target`→`backends` migration and deprecation path.
 
 ## Future Requirements
 
@@ -95,9 +95,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 | MKUE-02 | Phase 70 | Complete |
 | MKUE-03 | Phase 70 | Complete |
 | MKUE-04 | Phase 70 | Complete |
-| BEUI-01 | Phase 71 | Pending |
-| BEUI-02 | Phase 71 | Pending |
-| BEUI-03 | Phase 71 | Pending |
+| BEUI-01 | Phase 71 | Complete |
+| BEUI-02 | Phase 71 | Complete |
+| BEUI-03 | Phase 71 | Complete |
 
 **Coverage:**
 - Milestone requirements: 21 total

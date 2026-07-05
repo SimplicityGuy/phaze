@@ -32,7 +32,7 @@
   - [x] 69-04-PLAN.md — Single-recovery-owner ledger guard + compute/kueue callback spill to AWAITING_CLOUD (SCHED-03/05) [Wave 3]
   - [x] 69-05-PLAN.md — Gap closure (CR-01): `FileState.LOCAL_ANALYZING` + `LocalBackend.dispatch` flips out of AWAITING_CLOUD (stops cross-backend double-dispatch) + WR-01 honest return (SCHED-01/03) [Wave 1]
 - [x] **Phase 70: Multi-Kueue (N Clusters)** — N concurrently-dispatched Kueue clusters, each staging to its REG-05-assigned bucket set (DIST-01 preserved), per-cluster probe + `backend_id`-scoped reconcile with per-backend failure isolation, per-(backend,bucket) cleanup (MKUE-01..04) — **research flag** (completed 2026-07-04)
-- [ ] **Phase 71: Deployment, Config, Docs & N-Lane UI** — N registry-derived per-backend lanes (available/offline, in-flight/cap, rank) read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + operator runbook/config docs incl. the `cloud_target`→`backends` migration (BEUI-01..03)
+- [x] **Phase 71: Deployment, Config, Docs & N-Lane UI** — N registry-derived per-backend lanes (available/offline, in-flight/cap, rank) read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + operator runbook/config docs incl. the `cloud_target`→`backends` migration (BEUI-01..03) (completed 2026-07-05)
 
 <details>
 <summary>✅ 2026.7.0 Engineering Improvements (Phases 63-66) — SHIPPED 2026-07-03</summary>
@@ -232,7 +232,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete   | 2026-07-05 |
+| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
