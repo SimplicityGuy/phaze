@@ -237,7 +237,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
 | 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
-| 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 1/4 | In Progress|  |
+| 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 3/4 | In Progress|  |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 0/— | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
@@ -1061,8 +1061,8 @@ Plans:
 
 **Wave 2** *(parallel — disjoint files; both blocked on 73-01's contracts)*
 
-- [ ] 73-02-PLAN.md — Fileserver _build_rsync_argv reads payload.dest_* (dest_ssh_user→cfg fallback) + reduced _require_push_config keeping secret material (Landmine 2: keep cloud_scratch_dir field)
-- [ ] 73-03-PLAN.md — /pushed resolves scratch+queue from recorded backend_id (Pitfall 4) + /mismatch D-07 reporter validation (compute reporter) + destination re-stamp (Landmine 1)
+- [x] 73-02-PLAN.md — Fileserver _build_rsync_argv reads payload.dest_* (dest_ssh_user→cfg fallback) + reduced _require_push_config keeping secret material (Landmine 2: keep cloud_scratch_dir field)
+- [x] 73-03-PLAN.md — /pushed resolves scratch+queue from recorded backend_id (Pitfall 4) + /mismatch D-07 reporter validation (compute reporter) + destination re-stamp (Landmine 1)
 
 **Wave 3** *(blocked on 73-01..03 — golden needs the shipped seams)*
 
