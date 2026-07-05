@@ -11,6 +11,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.route_control import RouteControl
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
@@ -34,6 +35,7 @@ __all__ = [
     "PipelineStageControl",
     "ProposalStatus",
     "RenameProposal",
+    "RouteControl",
     "ScanBatch",
     "ScanStatus",
     "SchedulingLedger",

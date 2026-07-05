@@ -56,6 +56,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
 )
 from phaze.services.pipeline_counters import read_counters
+from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import insert_ledger_if_absent
 from phaze.tasks.reenqueue import recover_orphaned_work
 
@@ -388,12 +389,17 @@ async def trigger_analysis(
     if not files_with_duration:
         return {"enqueued": 0, "message": "No files in DISCOVERED state"}
 
+    # Phase 71 (BEUI-02, D-08): fold the force-local override into the routing flag. The effective
+    # cloud_enabled is ``registry cloud_enabled AND NOT force_local`` -- when forced, nothing is "long"
+    # so every file routes local (byte-identical to an all-local registry), and no new row is held in
+    # AWAITING_CLOUD. select_backend stays pure (untouched); the flag is read only here at the caller.
+    effective_cloud_enabled = settings.cloud_enabled and not await get_route_control(session)
     counts = await _route_discovered_by_duration(
         request.app.state,
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_enabled,
+        effective_cloud_enabled,
         settings.models_path,
     )
 
@@ -695,12 +701,15 @@ async def trigger_analysis_ui(
             context={"request": request, "action": "analysis", "count": 0, "no_active_agent": False},
         )
 
+    # Phase 71 (BEUI-02, D-08): same force-local fold as the JSON trigger -- effective cloud_enabled is
+    # ``registry cloud_enabled AND NOT force_local``, so a forced registry routes every file local.
+    effective_cloud_enabled = settings.cloud_enabled and not await get_route_control(session)
     counts = await _route_discovered_by_duration(
         request.app.state,
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_enabled,
+        effective_cloud_enabled,
         settings.models_path,
     )
 
@@ -765,7 +774,11 @@ async def trigger_backfill_cloud(
     # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
     # registry is all-local (cloud_enabled False, Phase 67 / D-14) this is a clean no-op that mutates
     # ZERO file.state rows -- byte-identical to the former all-local selector guard.
-    if not settings.cloud_enabled:
+    # Phase 71 (BEUI-02, D-08, T-71-08): the force-local override is the THIRD gate site. Forced-local
+    # must behave EXACTLY like the all-local path here too -- otherwise backfill would reset the failed
+    # long files to DISCOVERED and HOLD them in AWAITING_CLOUD while the (forced) drain no-ops, stranding
+    # them. Folding force_local into this same early-return keeps backfill a clean ZERO-mutation no-op.
+    if not settings.cloud_enabled or await get_route_control(session):
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/backfill_response.html",
