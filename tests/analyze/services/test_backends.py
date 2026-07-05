@@ -456,6 +456,50 @@ async def test_compute_dispatch_flips_pushing_and_writes_cloud_job_in_txn(sessio
 
 
 @pytest.mark.asyncio
+async def test_compute_dispatch_stamps_destination_on_push_payload(session: AsyncSession) -> None:
+    """D-02: dispatch stamps dest_host/dest_scratch_dir/dest_ssh_user off self.config onto the push_file payload.
+
+    Record-don't-rederive originates here: the enqueued push carries THIS backend's own push_host /
+    scratch_dir / ssh_user (read off the bound ComputeBackend), so every downstream reader (the Plan-02
+    rsync argv) uses the RECORDED destination rather than re-deriving it.
+    """
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    backend = _compute(id="compute-a1", scratch_dir="/srv/scratch", push_host="a1.push.example", ssh_user="phaze")
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    await backend.dispatch(file, session, router)
+
+    pushes = [(task, payload) for task, payload in router.queues["nox"].captured if task == "push_file"]
+    assert len(pushes) == 1
+    _task, payload = pushes[0]
+    assert payload["dest_host"] == "a1.push.example"
+    assert payload["dest_scratch_dir"] == "/srv/scratch"
+    assert payload["dest_ssh_user"] == "phaze"
+
+
+@pytest.mark.asyncio
+async def test_compute_dispatch_stamps_none_ssh_user_when_unset(session: AsyncSession) -> None:
+    """dest_ssh_user is None on the push payload when the backend omits ssh_user (D-01 optional)."""
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    backend = _compute(id="compute-a1", scratch_dir="/srv/scratch", push_host="a1.push.example")
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    await backend.dispatch(file, session, router)
+
+    _task, payload = next((t, p) for t, p in router.queues["nox"].captured if t == "push_file")
+    assert payload["dest_host"] == "a1.push.example"
+    assert payload["dest_ssh_user"] is None
+
+
+@pytest.mark.asyncio
 async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any) -> None:
     """Kueue dispatch runs the no-commit S3 core: cloud_job UPLOADING + s3_upload enqueue, no commit."""
     _stub_s3(monkeypatch)
@@ -916,6 +960,43 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
     non_local = [b for b in resolved if not isinstance(b, backends.LocalBackend)]
     assert len(non_local) == 2
     assert {b.id for b in non_local} == {"compute-a", "compute-b"}
+
+
+# === D-06: resolve_compute_backend inverse-lookup (backend_id -> ComputeBackend) ==========
+
+
+def test_resolve_compute_backend(backends_toml_env: Any) -> None:
+    """D-06: the authoritative inverse-lookup returns the compute entry by id; None for miss/non-compute.
+
+    resolve_compute_backend(cfg, None) -> None; an unknown id -> None; a real compute id -> that
+    ComputeBackend; a kueue/local id -> None (only kind==compute entries are considered). Every
+    downstream scratch/terminalization reader resolves a recorded cloud_job.backend_id through this.
+    """
+    from phaze.config import ControlSettings
+
+    compute_block = """
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 30
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
+"""
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
+    settings = ControlSettings()
+
+    assert backends.resolve_compute_backend(settings, None) is None
+    assert backends.resolve_compute_backend(settings, "does-not-exist") is None
+    hit = backends.resolve_compute_backend(settings, "oci-a1")
+    assert hit is not None
+    assert hit.id == "oci-a1"
+    assert hit.kind == "compute"
+    assert hit.push_host == "oci-a1.push.example"
+    # A kueue id and the local id are NOT compute entries -> None (kind-filtered).
+    assert backends.resolve_compute_backend(settings, "kueue-a") is None
+    assert backends.resolve_compute_backend(settings, "local") is None
 
 
 # === Pitfall 1: active_compute_scratch_dir on a single-compute reduction ==================
