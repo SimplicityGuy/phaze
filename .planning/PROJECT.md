@@ -8,9 +8,22 @@ A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus
 
 Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
+## Current Milestone: 2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)
+
+**Goal:** Finish the 2026.7.1 registry's deliberate compute-side descope — make **N cloud-compute agents** dispatch / route / reconcile / fail-isolate simultaneously, exactly as N Kueue clusters do today. Retire the `≤1-compute invariant`. Parity only; no new routing semantics, no provisioning.
+
+**Target features:**
+- **Per-entry agent binding** — each `compute` backend in `backends.toml` binds to a specific registered Agent, retiring `select_active_agent(kind="compute")`'s "the single active compute agent" assumption.
+- **Per-agent liveness + scratch + push destination** — each `ComputeAgentBackend.is_available`/`dispatch` probes *its own* agent; the push pipeline (`_enqueue_push_file` → fileserver → rsync) carries the *specific* target agent's host/scratch, retiring `active_compute_scratch_dir`'s single-compute reduction and the `/pushed` callback's single-scratch resolution.
+- **Retire the ≤1-compute fail-fasts** — generalize `resolved_non_local_kind` + `active_compute_scratch_dir` for a `local + N-Kueue + N-compute` registry; the compute-only `>1` raise goes away.
+- **Per-compute-backend failure isolation** — one flaky/offline compute agent degrades to 0 slots without poisoning the drain tick (mirror the Phase 70 per-backend snapshot try/except).
+- **Cost-tiered load-spread proven across a mixed arm64+x86 fleet** — free arm64 A1 (better rank) preferred, spill to a paid/trial x86 box under load; per-agent `cap`. Reuses the existing Phase-69 rank/cap scheduler — no capability-matching policy (any compute agent analyzes any file; essentia runs on both arches).
+
+**Key context:** Pure application-code extension of the existing `Backend` protocol + push/rsync pipeline — the direct compute-side twin of Phase 70's multi-Kueue work. Zero new dependencies expected. The N-lane read-only UI (Phase 71) and per-backend `cap`/in-flight accounting (Phase 69) already generalize; this milestone fills the compute dispatch/liveness/scratch seams they sit on. Likely research flags for the planning phase: (a) how a `compute` entry references a specific `Agent` (by name/id) and whether the `/pushed` + `/api/internal/agent/*` reconcile callbacks already scope correctly per-agent; (b) whether `cloud_job` stays one-row-per-file or needs per-(file,backend) — the same question MKUE raised for Kueue. Continues phase numbering from 71 → **starts at Phase 72**. Separate, non-milestone ship step still pending: the `2026.7.1` release PR + tag.
+
 ## Last Milestone: 2026.7.1 Multi-Cloud Backends — SHIPPED 2026-07-05
 
-**Next:** Planning the next milestone (`/gsd:new-milestone`). The 2026.7.1 goal and delivered summary below are retained as shipped-milestone context.
+**Next:** 2026.7.2 Multi-Compute Agents is now the active milestone (see Current Milestone above). The 2026.7.1 goal and delivered summary below are retained as shipped-milestone context.
 
 **Goal (shipped):** Generalize the single `cloud_target` selector (`local`/`a1`/`k8s`) into a declarative, pluggable **`backends.toml` config registry** that drains long, locally-timing-out audio files across **local + N Kueue clusters + N cloud-compute agents simultaneously** — cost-tiered by operator-assigned **ranks + per-backend caps**, preferring free/owned capacity and spilling to paid only under load. Static routing, no provisioning, zero new dependencies.
 
@@ -234,7 +247,7 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 ### Active
 
-**No active milestone — 2026.7.1 Multi-Cloud Backends shipped 2026-07-05.** Next milestone not yet defined; run `/gsd:new-milestone` to scope it (questioning → research → requirements → roadmap). Candidate work lives in the ROADMAP Backlog and the 2026.7.1 RETROSPECTIVE. A release PR (bump `pyproject`/`uv.lock` to `2026.7.1` + push the `2026.7.1` tag) is the remaining ship step — see [[project_release_procedure]].
+**2026.7.2 Multi-Compute Agents — active (scoping → requirements → roadmap).** Parity milestone extending the 2026.7.1 `Backend` registry to N cloud-compute agents (the compute-side twin of Phase 70's N-Kueue work): per-entry agent binding, per-agent liveness/scratch/push destination, retirement of the `≤1-compute` fail-fasts, per-compute-backend failure isolation, cost-tiered load-spread across a mixed arm64+x86 fleet. Requirements defined in REQUIREMENTS.md; phases continue from 71 (start at Phase 72). Separate remaining ship step (not this milestone): the `2026.7.1` release PR + tag — see [[project_release_procedure]].
 
 ### Out of Scope
 
@@ -351,4 +364,6 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-05 after the 2026.7.1 milestone — **Multi-Cloud Backends SHIPPED** (phases 67-71, 26 plans, PRs #201/#202/#203/#204/#206). Milestone audit PASSED: 21/21 requirements satisfied, 5/5 phases verified, 5/5 cross-phase flows wired (integration checker live-verified against real PG + app), Nyquist 5/5, Security 5/5. The single `cloud_target` selector is now a declarative `backends.toml` registry draining across local + N Kueue clusters + N cloud-compute agents simultaneously, cost-tiered by ranks + caps, with a no-redeploy force-local kill-switch and N-lane read-only UI. Archived to `milestones/2026.7.1-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`; REQUIREMENTS.md removed (fresh for next milestone). 4 non-blocking items deferred at close (see STATE.md Deferred Items). No active milestone — next scoped via `/gsd:new-milestone`. Remaining ship step: release PR bumping `pyproject`/`uv.lock` to `2026.7.1` + push the `2026.7.1` tag.*
+*Last updated: 2026-07-05 — **2026.7.2 Multi-Compute Agents milestone started** (`/gsd:new-milestone`). Parity milestone: extend the 2026.7.1 `Backend` registry to N cloud-compute agents (compute-side twin of Phase 70's N-Kueue work) — per-entry agent binding, per-agent liveness/scratch/push, retire the ≤1-compute fail-fasts, per-backend failure isolation, cost-tiered load-spread across a mixed arm64+x86 fleet. Parity only, no new routing semantics, no provisioning; zero new deps expected. Phases continue from 71 (start at 72). Requirements + roadmap being defined this cycle.*
+
+*Prior update: 2026-07-05 after the 2026.7.1 milestone — **Multi-Cloud Backends SHIPPED** (phases 67-71, 26 plans, PRs #201/#202/#203/#204/#206). Milestone audit PASSED: 21/21 requirements satisfied, 5/5 phases verified, 5/5 cross-phase flows wired (integration checker live-verified against real PG + app), Nyquist 5/5, Security 5/5. The single `cloud_target` selector is now a declarative `backends.toml` registry draining across local + N Kueue clusters + N cloud-compute agents simultaneously, cost-tiered by ranks + caps, with a no-redeploy force-local kill-switch and N-lane read-only UI. Archived to `milestones/2026.7.1-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`; REQUIREMENTS.md removed (fresh for next milestone). 4 non-blocking items deferred at close (see STATE.md Deferred Items). No active milestone — next scoped via `/gsd:new-milestone`. Remaining ship step: release PR bumping `pyproject`/`uv.lock` to `2026.7.1` + push the `2026.7.1` tag.*
