@@ -574,12 +574,13 @@ async def test_in_flight_equivalence(session: AsyncSession) -> None:
 # === resolved_non_local_kind: N-Kueue-safe (any-kueue) + compute-only fail-fast ===========
 
 
-def test_resolved_non_local_kind_raises_on_multiple_compute_only(backends_toml_env: Any) -> None:
-    """The compute-only ``>1`` fail-fast is RETAINED: two COMPUTE backends (no kueue) still raise.
+def test_resolved_non_local_kind_returns_compute_for_multiple_compute_only(backends_toml_env: Any) -> None:
+    """The compute-only ``>1`` fail-fast is RETIRED (D-03): two COMPUTE backends (no kueue) return "compute".
 
-    Phase 70 (MKUE-01) generalized ``resolved_non_local_kind`` to tolerate N Kueue backends, but the
-    genuinely-ambiguous compute-only ``>1`` case stays a loud ValueError naming the offending ids
-    (multi-compute agent_ref resolution lands in PROV-01; unreachable under D-05's ≤1-compute invariant).
+    Phase 70 (MKUE-01) generalized ``resolved_non_local_kind`` to tolerate N Kueue backends; Phase 72
+    (MCOMP-01, D-03) generalizes the compute-only branch the same way -- N compute backends resolve to
+    "compute" with NO raise (per-agent dispatch attribution lands in Phase 73). The discretion
+    confirmation that the compute-only branch still yields "compute" for N compute.
     """
     from phaze.config import ControlSettings
 
@@ -604,8 +605,8 @@ def test_resolved_non_local_kind_raises_on_multiple_compute_only(backends_toml_e
     )
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    with pytest.raises(ValueError, match=r"PROV-01"):
-        backends.resolved_non_local_kind(settings)
+    # D-03: the compute-only >1 fail-fast is retired; N compute resolves to "compute" without raising.
+    assert backends.resolved_non_local_kind(settings) == "compute"
 
 
 _LOCAL_2KUEUE_HEAD = """
