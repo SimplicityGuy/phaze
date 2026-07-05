@@ -33,7 +33,7 @@ no body for either callback).
 from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -48,6 +48,7 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file
+from phaze.services.backends import resolve_compute_backend
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
@@ -73,13 +74,16 @@ async def report_pushed(
 
     One committed transaction (mirrors ``put_analysis``'s state-update + ``clear_ledger_entry``
     idiom). ``expected_sha256`` is read CONTROL-SIDE from ``FileRecord.sha256_hash`` (D-11) -- the
-    untrusted agent never supplies it -- and ``scratch_path`` is built from
-    ``ControlSettings.active_compute_scratch_dir`` (the control-side mirror of the compute agent's
-    ``cloud_scratch_dir``). ``file_id`` is the PATH value only; ``agent`` comes from the token
+    untrusted agent never supplies it -- and the compute queue + ``scratch_path`` are resolved from the
+    file's RECORDED ``cloud_job.backend_id`` via ``resolve_compute_backend`` (D-06 record-don't-rederive),
+    NOT ``select_active_agent(kind="compute")`` / ``active_compute_scratch_dir`` (Pitfall 4): the
+    terminalization, scratch dir, and process_file routing all attribute to the agent this file was
+    dispatched to (MCOMP-06). ``file_id`` is the PATH value only; ``agent`` comes from the token
     dependency (AUTH-01).
 
-    No compute agent online -> a clean 200 hold (NOT a 500): nothing is enqueued and the file is
-    left ``PUSHING`` with its ledger row so the staging cron / recovery re-drives it later.
+    No attributed compute backend (no ``cloud_job``, or an operator-removed ``backend_id``) -> a clean
+    200 hold (NOT a 500): nothing is enqueued and the file is left ``PUSHING`` with its ledger row so the
+    staging cron / recovery re-drives it later.
     """
     settings = cast("ControlSettings", get_settings())
 
@@ -87,13 +91,26 @@ async def report_pushed(
     # the state flip is fine -- both fields are immutable here and untouched by the UPDATE below.
     file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
 
-    # Gate on an online compute agent BEFORE mutating anything: with none available this is a clean
-    # hold (D-02) -- no state change, no ledger clear, no enqueue, no 500.
-    try:
-        compute_agent = await select_active_agent(session, kind="compute")
-    except NoActiveAgentError:
-        logger.warning("report_pushed held: no compute agent online", file_id=str(file_id), agent_id=agent.id)
+    # D-06 (record-don't-rederive, Pitfall 4): resolve the file's OWN compute backend from the RECORDED
+    # cloud_job.backend_id -- NOT select_active_agent(kind="compute"). The scratch dir, the process_file
+    # target queue, AND the cloud_job terminalization must all attribute to the agent this file was
+    # dispatched to (MCOMP-06 no-cross-attribution), so route off the backend ComputeAgentBackend.dispatch
+    # stamped on this file's cloud_job, never "the active compute agent". The /pushed reporter is the
+    # FILESERVER agent (tasks/push.py runs report_pushed after rsync), so there is NO reporter==agent_ref
+    # gate here (that D-07 gate belongs on /mismatch, whose reporter IS the compute agent).
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    backend = resolve_compute_backend(settings, cloud_job.backend_id if cloud_job else None)
+    # No attributed compute backend (no cloud_job, or an operator-removed / unattributed backend_id ->
+    # resolve returns None): a clean 200 hold (NOT a 500) mirroring the old no-compute-agent hold -- no
+    # state change, no ledger clear, no enqueue. The file stays PUSHING with its ledger row so the staging
+    # cron / recovery re-drives it once the backend is resolvable.
+    if backend is None:
+        logger.warning("report_pushed held: no attributed compute backend", file_id=str(file_id), agent_id=agent.id)
         return PushedResponse(file_id=file_id)
+    # agent_ref / scratch_dir are Optional at the ComputeBackend type level but guaranteed non-empty at
+    # construction by _require_dispatch_fields, so narrow for mypy (same discipline as backends._destination).
+    agent_ref = cast("str", backend.agent_ref)
+    scratch_dir = cast("str", backend.scratch_dir)
 
     # One transaction: PUSHING -> PUSHED, clear the push ledger row, enqueue compute analysis.
     # WR-02: guard the transition on the CURRENT state being PUSHING so a duplicate/late callback
@@ -128,13 +145,15 @@ async def report_pushed(
     # guard above -- a duplicate/late callback (rowcount == 0) returned early and writes NOTHING here.
     await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
 
-    compute_queue = request.app.state.task_router.queue_for(compute_agent.id)
-    # TRANSITIONAL — Phase 68: registry-derived reduction accessor (removed with the Backend protocol).
-    scratch_path = f"{settings.active_compute_scratch_dir}/{file_id}.{file.file_type}"
+    # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
+    # transitional settings.active_compute_scratch_dir reduction accessor is now UNUSED here (its deletion
+    # is Plan 04); scratch resolution is per-agent off the recorded backend.
+    compute_queue = request.app.state.task_router.queue_for(agent_ref)
+    scratch_path = f"{scratch_dir}/{file_id}.{file.file_type}"
     await enqueue_process_file(
         compute_queue,
         file,
-        compute_agent.id,
+        agent_ref,
         settings.models_path,
         expected_sha256=file.sha256_hash,
         scratch_path=scratch_path,
@@ -145,7 +164,8 @@ async def report_pushed(
         "report_pushed: file -> PUSHED + process_file enqueued",
         file_id=str(file_id),
         agent_id=agent.id,
-        compute_agent_id=compute_agent.id,
+        backend_id=backend.id,
+        compute_agent_id=agent_ref,
     )
     return PushedResponse(file_id=file_id)
 
@@ -158,6 +178,13 @@ async def report_push_mismatch(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> PushMismatchResponse:
     """Record a post-transfer sha256 mismatch: attempt-capped re-drive, or terminal failure (D-12).
+
+    D-07 (T-73-07) reporter authorization runs FIRST: the /mismatch reporter IS the compute agent running
+    ``process_file``, so its ``agent.id`` must equal the file's RECORDED ``cloud_job.backend_id`` backend's
+    ``agent_ref`` (resolved via ``resolve_compute_backend``). A wrong/stale/duplicate compute agent is
+    rejected 403 with nothing terminalized (reject-don't-terminalize; never re-stamp ``backend_id`` from the
+    token). The under-cap re-drive then stamps that backend's destination onto the ``PushFilePayload``
+    (Landmine 1) -- never a destination-less push; an unattributed file (no backend) holds instead.
 
     The ``push_attempt`` counter lives in the ``push_file:<file_id>`` ledger payload JSONB
     (migration-free, Pitfall 4). Read it (default 0) and increment:
@@ -176,6 +203,24 @@ async def report_push_mismatch(
     """
     settings = cast("ControlSettings", get_settings())
     ledger_key = f"push_file:{file_id}"
+
+    # D-06 + D-07 (record-don't-rederive + reporter authorization, T-73-07): resolve the file's OWN compute
+    # backend from the RECORDED cloud_job.backend_id, then verify the REPORTING agent is that backend's
+    # dispatched agent. Unlike /pushed (reported by the FILESERVER), /mismatch is reported by the COMPUTE
+    # agent running process_file (tasks/functions.py), so agent.id MUST equal backend.agent_ref. A
+    # wrong/stale/duplicate compute agent is rejected 403 BEFORE any mutation -- the file is NOT
+    # terminalized/spilled/re-driven (reject-don't-terminalize). NEVER re-stamp backend_id from the token:
+    # that would invert record-don't-rederive and let a spoofing reporter mis-attribute another agent's file.
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    backend = resolve_compute_backend(settings, cloud_job.backend_id if cloud_job else None)
+    if backend is not None and agent.id != backend.agent_ref:
+        logger.warning(
+            "report_push_mismatch rejected: reporting agent is not the dispatched compute agent",
+            file_id=str(file_id),
+            reporter=agent.id,
+            expected=backend.agent_ref,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reporting agent is not the dispatched compute agent")
 
     # The push_attempt counter rides the ledger payload JSONB (Pitfall 4); default 0 when absent.
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key))).scalar_one_or_none()
@@ -214,6 +259,21 @@ async def report_push_mismatch(
         return PushMismatchResponse(file_id=file_id, cleared=True)
 
     # Under the cap: re-drive push_file on the FILESERVER queue, keeping the PUSHING slot (Open-Q1).
+    # Landmine 1: the re-drive MUST carry the recorded destination -- never a destination-less payload
+    # (the fileserver would rsync to a null remote spec). An unattributed file (no cloud_job / an
+    # operator-removed backend_id -> backend is None) has no destination to stamp, so it cannot be
+    # re-driven: hold it PUSHING for the staging cron / recovery (mirrors the no-fileserver hold below)
+    # rather than enqueue a destination-less push.
+    if backend is None:
+        logger.warning(
+            "report_push_mismatch held: no attributed compute backend to re-stamp the push destination",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            attempt=next_attempt,
+        )
+        await session.commit()
+        return PushMismatchResponse(file_id=file_id, cleared=False)
+
     file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     try:
         fileserver_agent = await select_active_agent(session, kind="fileserver")
@@ -229,11 +289,18 @@ async def report_push_mismatch(
         return PushMismatchResponse(file_id=file_id, cleared=False)
 
     fileserver_queue = request.app.state.task_router.queue_for(fileserver_agent.id)
+    # Landmine 1: stamp the RECORDED backend's destination onto the re-driven payload (backend is non-None
+    # here -- either the reporter passed the D-07 gate or no gate applied and the backend-None hold above
+    # already returned). The destination is the compute backend to push TO; agent_id is the FILESERVER
+    # that initiates the rsync (the push origin), unchanged.
     payload = PushFilePayload(
         file_id=file.id,
         original_path=file.original_path,
         file_type=file.file_type,
         agent_id=fileserver_agent.id,
+        dest_host=backend.push_host,
+        dest_scratch_dir=backend.scratch_dir,
+        dest_ssh_user=backend.ssh_user,
     )
     dumped = payload.model_dump(mode="json")
     await fileserver_queue.connect()
