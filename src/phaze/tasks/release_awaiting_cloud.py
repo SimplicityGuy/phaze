@@ -51,6 +51,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import get_cloud_staging_candidates
+from phaze.services.route_control import get_route_control
 
 
 if TYPE_CHECKING:
@@ -121,6 +122,13 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     backends = resolve_backends(cfg)
 
     async with ctx["async_session"]() as session:
+        # Phase 71 (BEUI-02, D-08): the force-local override. When engaged, this drain becomes a clean
+        # no-op BEFORE the advisory lock + snapshot -- exactly like the cloud_enabled=False early return
+        # above -- so it introduces NO new dispatch work and already-held AWAITING_CLOUD files stay held
+        # (runbook A4). get_route_control degrades to False (cloud-enabled) on any DB error, so a hiccup
+        # never crashes the cron (T-71-03).
+        if await get_route_control(session):
+            return {"staged": 0, "skipped": 0}
         # WR-04 / SCHED-02: one transaction-scoped advisory lock serializes overlapping ticks so no
         # backend's cap is overshot. The second tick blocks here until the first commits, then its
         # once-per-tick in_flight_count snapshot sees the committed dispatches. Auto-released at txn end.
