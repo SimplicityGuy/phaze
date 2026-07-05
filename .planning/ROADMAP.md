@@ -232,7 +232,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 3/5 | In Progress|  |
+| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete   | 2026-07-05 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -1122,8 +1122,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 71-03-PLAN.md — BEUI-01 N-lane grid UI: seed lanes in both context builders + OOB grid over N cards (depends 01, 02) [Wave 2]
-- [ ] 71-04-PLAN.md — BEUI-02 control surface: thin force-local endpoint + header status-strip pill + shell seed (depends 02) [Wave 2]
+- [x] 71-03-PLAN.md — BEUI-01 N-lane grid UI: seed lanes in both context builders + OOB grid over N cards (depends 01, 02) [Wave 2]
+- [x] 71-04-PLAN.md — BEUI-02 control surface: thin force-local endpoint + header status-strip pill + shell seed (depends 02) [Wave 2]
 
 **UI hint**: yes
 **PR**: own worktree branch — never a direct commit to `main`. Presentation/ops only.
