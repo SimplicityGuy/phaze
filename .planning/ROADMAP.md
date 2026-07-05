@@ -1021,7 +1021,22 @@ Plans:
   4. The existing single-compute and zero-compute (implicit all-local) deploys behave identically with no config edit and no behavior change — proven behavior-preserving. (MCOMP-01)
 
 **Notes**: **Research flag (plan-/discuss-phase):** how a `compute` entry references a specific `Agent` — by name or id — and whether the `/pushed` + `/api/internal/agent/*` reconcile callbacks already scope per-agent or need widening (the answer feeds Phase 73). Reuse the Phase-70 MKUE-01 pattern of a distinct per-backend binding recorded at construction, not re-derived. Zero new dependencies; each phase ships as its own PR on a worktree branch.
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+
+**Wave 1** *(golden safety net, test-only)*
+
+- [ ] 72-01-PLAN.md — D-06 golden byte-identical characterization of the ≤1-compute path + explicit zero-compute (all-local) regression, committed green against current behavior
+
+**Wave 2** *(blocked on Wave 1 — the D-06 net must be green first)*
+
+- [ ] 72-02-PLAN.md — Retire both `≤1-compute` `>1` fail-fasts (D-03) in `resolved_non_local_kind` + `active_compute_scratch_dir`, generalize for N compute (≤1 return byte-identical), flip the 3 raise-asserting tests
+
+**Wave 3** *(parallel — no file overlap; both blocked on Wave 2's config.py/backends.py edits)*
+
+- [ ] 72-03-PLAN.md — Per-entry compute binding (D-01/D-02/D-05): `select_agent_by_id` selector + `ComputeAgentBackend` binding accessor + `is_available` rewired to the bound `agent_ref`→`Agent.id`, degrade-to-hold when absent
+- [ ] 72-04-PLAN.md — Boot-time duplicate-`agent_ref` fail-fast (D-04) in `_validate_registry` (Counter, id-tagged, static/no-DB per D-05)
 
 ### Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation
 **Goal**: N cloud-compute agents dispatch, route, reconcile, and fail-isolate simultaneously — each long file pushed to and attributed to the specific agent that analyzes it, cost-tiered across a mixed arm64/x86 fleet by rank and per-agent `cap`, with one flaky agent isolated to 0 slots. The behavior core — the direct compute-side twin of Phase 70's multi-Kueue work.
