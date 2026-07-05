@@ -39,6 +39,7 @@ from phaze.routers import (
     preview,
     proposals,
     record,
+    routing,
     scan,
     search,
     shell,
@@ -206,6 +207,10 @@ def create_app() -> FastAPI:
     # {priority,pause,resume}). Distinct from `pipeline.router` (dashboard + triggers);
     # mutates the pipeline_stage_control intent row + the live saq_jobs backlog together.
     app.include_router(pipeline_stages.router)
+    # Phase 71 (71-04, BEUI-02): the force-local master routing override thin write endpoint
+    # (POST /pipeline/routing/force-local). Mirrors the pipeline_stages thin-endpoint pattern;
+    # flips the durable route_control 'global' row + returns the header pill (swapped in place).
+    app.include_router(routing.router)
     app.include_router(search.router)
     app.include_router(tags.router)
     app.include_router(cue.router)
