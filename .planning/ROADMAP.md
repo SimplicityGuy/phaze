@@ -1051,7 +1051,22 @@ Plans:
   5. Each compute backend's **in-flight count and terminalization** (the `/pushed` + `/api/internal/agent/*` reconcile path) are scoped to that backend/agent, so a file's result is attributed to the agent that analyzed it — no cross-agent mis-attribution. (MCOMP-06)
 
 **Notes**: **Research flag (plan-phase):** whether `cloud_job` stays one-row-per-file or needs per-(file,backend) — the same question MKUE raised for Kueue (MCOMP-06 resolves it). Reuse the Phase 70 patterns verbatim where they map: distinct per-backend binding, per-backend probe, per-backend failure isolation via snapshot try/except, record-don't-rederive. Zero new dependencies; ships as its own PR on a worktree branch.
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+
+**Wave 1** *(contracts + dispatch destination stamp — interface-first)*
+
+- [ ] 73-01-PLAN.md — ComputeBackend.push_host + PushFilePayload dest_* fields + resolve_compute_backend helper + dispatch stamps the per-file destination (record-don't-rederive)
+
+**Wave 2** *(parallel — disjoint files; both blocked on 73-01's contracts)*
+
+- [ ] 73-02-PLAN.md — Fileserver _build_rsync_argv reads payload.dest_* (dest_ssh_user→cfg fallback) + reduced _require_push_config keeping secret material (Landmine 2: keep cloud_scratch_dir field)
+- [ ] 73-03-PLAN.md — /pushed resolves scratch+queue from recorded backend_id (Pitfall 4) + /mismatch D-07 reporter validation (compute reporter) + destination re-stamp (Landmine 1)
+
+**Wave 3** *(blocked on 73-01..03 — golden needs the shipped seams)*
+
+- [ ] 73-04-PLAN.md — MCOMP-02/04/05 regressions (D-08 test-only) + delete active_compute_scratch_dir + ≤1-compute behavior-preservation golden + reenqueue.py:374 known-limitation note
 
 ### Phase 74: Docs, Runbook & N-Lane Compute UI Verification
 **Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. Closes the milestone.
