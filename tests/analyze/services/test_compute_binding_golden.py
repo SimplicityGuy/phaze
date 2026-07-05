@@ -58,6 +58,7 @@ _LOCAL_1COMPUTE_MATCHING_REF = """
     cap = 2
     agent_ref = "oci-a1"
     scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
 """
 
 

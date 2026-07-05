@@ -47,9 +47,10 @@ def test_local_backend_parses() -> None:
 
 def test_compute_backend_parses() -> None:
     """A compute entry carries agent_ref + scratch_dir (D-13)."""
-    be = ComputeBackend(kind="compute", id="compute-a1", rank=10, cap=2, agent_ref="a1-node", scratch_dir="/scratch")
+    be = ComputeBackend(kind="compute", id="compute-a1", rank=10, cap=2, agent_ref="a1-node", scratch_dir="/scratch", push_host="a1.push")
     assert be.agent_ref == "a1-node"
     assert be.scratch_dir == "/scratch"
+    assert be.push_host == "a1.push"
 
 
 def test_compute_backend_missing_agent_ref_fails_fast_with_id() -> None:
@@ -224,6 +225,7 @@ def test_duplicate_compute_agent_ref_fails_fast_with_id(backends_toml_env) -> No
         cap = 2
         agent_ref = "shared-node"
         scratch_dir = "/scratch/a"
+        push_host = "a.push"
 
         [[backends]]
         kind = "compute"
@@ -232,6 +234,7 @@ def test_duplicate_compute_agent_ref_fails_fast_with_id(backends_toml_env) -> No
         cap = 2
         agent_ref = "shared-node"
         scratch_dir = "/scratch/b"
+        push_host = "b.push"
         """
     )
     with pytest.raises(ValueError, match=r"shared-node") as excinfo:
@@ -252,6 +255,7 @@ def test_distinct_compute_agent_refs_boot_cleanly(backends_toml_env) -> None:  #
         cap = 2
         agent_ref = "agent-a"
         scratch_dir = "/scratch/a"
+        push_host = "a.push"
 
         [[backends]]
         kind = "compute"
@@ -260,6 +264,7 @@ def test_distinct_compute_agent_refs_boot_cleanly(backends_toml_env) -> None:  #
         cap = 2
         agent_ref = "agent-b"
         scratch_dir = "/scratch/b"
+        push_host = "b.push"
         """
     )
     settings = ControlSettings()  # no raise — distinct agent_refs are a first-class N-compute registry
@@ -284,6 +289,7 @@ def test_agent_ref_to_unregistered_agent_is_not_a_boot_error(backends_toml_env) 
         cap = 2
         agent_ref = "never-checked-in-agent"
         scratch_dir = "/scratch/a"
+        push_host = "nc.push"
         """
     )
     settings = ControlSettings()  # no raise, no DB access

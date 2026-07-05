@@ -91,6 +91,8 @@ def _compute(**kw: Any) -> Any:
             cap=cap,
             agent_ref=kw.get("agent_ref", bid),
             scratch_dir=kw.get("scratch_dir", "/srv/scratch"),
+            push_host=kw.get("push_host", f"{bid}.push.example"),
+            ssh_user=kw.get("ssh_user"),
         )
     return backends.ComputeAgentBackend(id=bid, rank=rank, cap=cap, config=config)
 
@@ -772,6 +774,7 @@ def test_resolved_non_local_kind_returns_compute_for_multiple_compute_only(backe
         cap = 2
         agent_ref = "agent-a"
         scratch_dir = "/scratch/a"
+        push_host = "a.push"
 
         [[backends]]
         kind = "compute"
@@ -780,6 +783,7 @@ def test_resolved_non_local_kind_returns_compute_for_multiple_compute_only(backe
         cap = 2
         agent_ref = "agent-b"
         scratch_dir = "/scratch/b"
+        push_host = "b.push"
         """
     )
     settings = ControlSettings()
@@ -857,6 +861,7 @@ def test_resolved_non_local_kind_returns_kueue_for_n_kueue(backends_toml_env: An
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
 """
     backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
     settings = ControlSettings()
@@ -885,6 +890,7 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
         cap = 2
         agent_ref = "agent-a"
         scratch_dir = "/scratch/a"
+        push_host = "a.push"
 
         [[backends]]
         kind = "compute"
@@ -893,6 +899,7 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
         cap = 3
         agent_ref = "agent-b"
         scratch_dir = "/scratch/b"
+        push_host = "b.push"
 
         [[backends]]
         kind = "local"
@@ -932,6 +939,7 @@ def test_active_compute_scratch_dir_resolves_under_local_2kueue_1compute(backend
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
 """
     backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
     settings = ControlSettings()

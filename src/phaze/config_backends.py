@@ -87,20 +87,32 @@ class ComputeBackend(BaseModel):
     # (Pitfall 3) instead of pydantic's index-tagged "Field required".
     agent_ref: str | None = None
     scratch_dir: str | None = None  # was ControlSettings.compute_scratch_dir (D-13)
+    # Phase 73 (D-01): the rsync/ssh push destination host. Optional at the type level (like agent_ref /
+    # scratch_dir) so ``_require_dispatch_fields`` raises the id-tagged message rather than pydantic's
+    # index-tagged "Field required". It later lands in the ssh remote spec (Plan 02), so it is required.
+    # Registry-scoped mirror of the agent-side ``push_ssh_host`` (RESEARCH Open-Q3).
+    push_host: str | None = None
+    # Optional ssh login user for the push (D-01: "an optional ssh_user"); NO fail-fast -- an omitting
+    # backend is valid and Plan 02 falls back to the fileserver's configured user.
+    ssh_user: str | None = None
 
     @model_validator(mode="after")
     def _require_dispatch_fields(self) -> "ComputeBackend":
-        """A compute backend needs both dispatch fields -- fail fast, id-tagged.
+        """A compute backend needs all three dispatch fields -- fail fast, id-tagged.
 
         ``agent_ref`` names the node to dispatch to (REG-02). ``scratch_dir`` is the rsync push target
         the push pipeline interpolates per file (WR-01): without it, ``agent_push`` would build a literal
         ``"None/<file_id>.<ext>"`` scratch path and silently corrupt every push — so a missing
-        ``scratch_dir`` fails construction here rather than at read time.
+        ``scratch_dir`` fails construction here rather than at read time. ``push_host`` (D-01) is the ssh
+        remote host the push targets; an absent value would build a ``"None:..."`` remote spec, so it
+        fails construction the same id-tagged way. ``ssh_user`` stays optional (no clause).
         """
         if not self.agent_ref:
             raise ValueError(f"backend {self.id!r} (kind=compute) requires an agent_ref")
         if not self.scratch_dir:
             raise ValueError(f"backend {self.id!r} (kind=compute) requires a scratch_dir")
+        if not self.push_host:
+            raise ValueError(f"backend {self.id!r} (kind=compute) requires a push_host")
         return self
 
 

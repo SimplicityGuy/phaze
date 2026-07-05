@@ -95,6 +95,7 @@ _COMPUTE_REGISTRY = """
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
 
     [[buckets]]
     id = "shared-bucket"

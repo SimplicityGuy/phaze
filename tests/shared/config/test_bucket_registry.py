@@ -64,6 +64,7 @@ def test_toml_file_parses_backends_and_buckets(backends_toml_env) -> None:  # ty
         cap = 2
         agent_ref = "compute-agent-01"
         scratch_dir = "/scratch"
+        push_host = "oci-a1.push.example"
 
         [[buckets]]
         id = "shared-bucket"
@@ -256,6 +257,7 @@ rank = 10
 cap = 3
 agent_ref = "compute-agent-01"
 scratch_dir = "/scratch/cloud"
+push_host = "oci-a1.push.example"
 """
 
 _ONE_KUEUE = """
@@ -332,6 +334,7 @@ def test_multiple_compute_backends_scratch_dir_no_longer_raises(backends_toml_en
         cap = 2
         agent_ref = "agent-a"
         scratch_dir = "/scratch/a"
+        push_host = "a.push.example"
 
         [[backends]]
         kind = "compute"
@@ -340,6 +343,7 @@ def test_multiple_compute_backends_scratch_dir_no_longer_raises(backends_toml_en
         cap = 2
         agent_ref = "agent-b"
         scratch_dir = "/scratch/b"
+        push_host = "b.push.example"
         """
     )
     settings = ControlSettings()
