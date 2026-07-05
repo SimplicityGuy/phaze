@@ -10,11 +10,11 @@
 ### Multi-Compute Agents (MCOMP)
 
 - [x] **MCOMP-01**: Operator can declare **N `compute` backends** in `backends.toml`, each bound to a specific registered compute Agent, and all N are accepted at boot — the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) are retired and generalized for a `local + N-Kueue + N-compute` registry.
-- [ ] **MCOMP-02**: Each compute backend probes **its own bound agent's** liveness; an offline agent makes only *that* backend unavailable (the file holds or spills to the next eligible backend — it never dispatches to a dead agent). Replaces `ComputeAgentBackend.is_available`'s `select_active_agent(kind="compute")` "the single active compute agent" assumption.
-- [ ] **MCOMP-03**: A file dispatched to a specific compute backend is pushed to **that agent's** host/scratch destination — the push pipeline (`_enqueue_push_file` → fileserver → rsync) and the `/pushed` callback (`routers/agent_push.py`) resolve the destination per-agent, not from a single global `active_compute_scratch_dir`.
-- [ ] **MCOMP-04**: The tiered drain scheduler spreads long files across N compute agents by **rank** (free arm64 preferred over paid/trial x86) and **per-agent `cap`**, spilling to the next-eligible backend when one is at cap or offline. Reuses the Phase-69 rank/cap `select_backend` policy — no capability-matching.
-- [ ] **MCOMP-05**: One flaky or offline compute agent is **isolated** — it degrades to 0 slots without failing the drain tick or blocking dispatch to healthy compute agents (per-backend snapshot try/except, mirroring the Phase 70 MKUE-03 pattern).
-- [ ] **MCOMP-06**: Each compute backend's **in-flight count and terminalization** (the `/pushed` + `/api/internal/agent/*` reconcile path) are scoped to that backend/agent, so a file's result is attributed to the agent that analyzed it — no cross-agent mis-attribution. Resolves the open question of whether `cloud_job` stays one-row-per-file or needs per-(file,backend).
+- [x] **MCOMP-02**: Each compute backend probes **its own bound agent's** liveness; an offline agent makes only *that* backend unavailable (the file holds or spills to the next eligible backend — it never dispatches to a dead agent). Replaces `ComputeAgentBackend.is_available`'s `select_active_agent(kind="compute")` "the single active compute agent" assumption.
+- [x] **MCOMP-03**: A file dispatched to a specific compute backend is pushed to **that agent's** host/scratch destination — the push pipeline (`_enqueue_push_file` → fileserver → rsync) and the `/pushed` callback (`routers/agent_push.py`) resolve the destination per-agent, not from a single global `active_compute_scratch_dir`.
+- [x] **MCOMP-04**: The tiered drain scheduler spreads long files across N compute agents by **rank** (free arm64 preferred over paid/trial x86) and **per-agent `cap`**, spilling to the next-eligible backend when one is at cap or offline. Reuses the Phase-69 rank/cap `select_backend` policy — no capability-matching.
+- [x] **MCOMP-05**: One flaky or offline compute agent is **isolated** — it degrades to 0 slots without failing the drain tick or blocking dispatch to healthy compute agents (per-backend snapshot try/except, mirroring the Phase 70 MKUE-03 pattern).
+- [x] **MCOMP-06**: Each compute backend's **in-flight count and terminalization** (the `/pushed` + `/api/internal/agent/*` reconcile path) are scoped to that backend/agent, so a file's result is attributed to the agent that analyzed it — no cross-agent mis-attribution. Resolves the open question of whether `cloud_job` stays one-row-per-file or needs per-(file,backend).
 - [ ] **MCOMP-07**: The operator runbook + config docs cover **adding a 2nd+ compute agent** and the mixed arm64/x86 rank/cap cost-tiering; each compute agent renders as its own lane in the N-lane UI (verify the Phase-71 BEUI generalization already covers compute lanes; fix if a gap surfaces).
 
 ## v2 Requirements
@@ -45,11 +45,11 @@ Which phases cover which requirements. Populated during roadmap creation (phases
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | MCOMP-01 | Phase 72 | Complete |
-| MCOMP-02 | Phase 73 | Pending |
-| MCOMP-03 | Phase 73 | Pending |
-| MCOMP-04 | Phase 73 | Pending |
-| MCOMP-05 | Phase 73 | Pending |
-| MCOMP-06 | Phase 73 | Pending |
+| MCOMP-02 | Phase 73 | Complete |
+| MCOMP-03 | Phase 73 | Complete |
+| MCOMP-04 | Phase 73 | Complete |
+| MCOMP-05 | Phase 73 | Complete |
+| MCOMP-06 | Phase 73 | Complete |
 | MCOMP-07 | Phase 74 | Pending |
 
 **Coverage:**

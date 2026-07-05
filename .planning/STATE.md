@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
-status: executing
-last_updated: "2026-07-05T20:33:11.676Z"
+status: ready_to_plan
+last_updated: 2026-07-05T22:20:25.766Z
 last_activity: 2026-07-05 -- Phase 73 execution started
 progress:
   total_phases: 36
-  completed_phases: 1
-  total_plans: 8
-  completed_plans: 4
-  percent: 3
+  completed_phases: 11
+  total_plans: 47
+  completed_plans: 34
+  percent: 31
+stopped_at: Phase 73 complete (4/4) — ready to discuss Phase 74
 ---
 
 # Project State
@@ -20,20 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 73 — per-agent-dispatch-liveness-scratch-failure-isolation
+**Current focus:** Phase 74 — docs, runbook & n lane compute ui verification
 
 ## Current Position
 
-Phase: 73 (per-agent-dispatch-liveness-scratch-failure-isolation) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 73
-Last activity: 2026-07-05 -- Phase 73 execution started
+Phase: 74
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-05
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 161
+- Total plans completed: 165
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
