@@ -15,6 +15,14 @@ compute host** — the execution unit is an ephemeral, quota-scheduled batch Job
 > deploy behaves **all-local** with zero cloud activity. Stand up the cluster objects in the
 > **Cluster-admin runbook** below first, then set the target and restart the control plane.
 
+> **Superseded in 2026.7.1 (Phase 67 / 70).** The single `PHAZE_CLOUD_TARGET=k8s` selector this
+> page describes was **removed** in favor of the declarative **[backend registry](configuration.md#backend-registry-backendstoml)**
+> (`backends.toml`): a Kueue cluster is now one `[[backends]] kind="kueue"` entry — and you can
+> declare **several** at once, each staging to its own `[[buckets]]` set (REG-05), which the
+> scheduler drains across by rank. This page remains the authoritative **cluster-admin object**
+> spec (Kueue / RBAC / Secret); for the config model and the trivial `cloud_target`→`backends`
+> mapping, see [configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67).
+
 **phaze does NOT create any cluster objects.** Kueue admission, RBAC, and the bearer-token
 Secret are **cluster-admin** responsibilities. phaze references a LocalQueue **by name**
 (`PHAZE_KUBE_LOCAL_QUEUE`) and submits Jobs into it; it never authors quota, RBAC, or Secret

@@ -25,6 +25,14 @@ not duplicate that table.
 > OCI A1 compute agent documented on this page, or `PHAZE_CLOUD_TARGET=k8s` for the Kubernetes
 > (Kueue) target — documented in its own runbook, [k8s-burst.md](k8s-burst.md).
 
+> **Superseded in 2026.7.1 (Phase 67).** The single `PHAZE_CLOUD_TARGET` selector this page
+> describes was **removed** in favor of the declarative **[backend registry](configuration.md#backend-registry-backendstoml)**
+> (`backends.toml`): a `compute` backend is now one `[[backends]] kind="compute"` entry among
+> N cost-ranked backends the scheduler drains across simultaneously. This page remains the A1
+> host-provisioning + rsync-transport reference; for the config model and the trivial
+> `cloud_target`→`backends` mapping, see
+> [configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67).
+
 ## Architecture at a glance
 
 ```mermaid
