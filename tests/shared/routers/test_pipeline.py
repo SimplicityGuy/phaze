@@ -1023,43 +1023,37 @@ async def test_backfill_local_redrives_nothing(client: AsyncClient, session: Asy
 
 
 @pytest.mark.asyncio
-async def test_dashboard_context_binds_cloud_lane_kind(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phase 67 (D-14 Class C): build_dashboard_context binds the NEUTRAL `cloud_lane_kind` key.
+async def test_dashboard_context_binds_lanes(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 71 (71-03, BEUI-01 / D-04): build_dashboard_context seeds the `lanes` snapshot; cloud_lane_kind retired.
 
-    The presentation value the Analyze lane cards read is a transitional legacy-shaped string under
-    the neutral `cloud_lane_kind` key: 'local' for an all-local registry, else the single non-local
-    backend's kind ('compute'/'kueue'). No `cloud_target` context key survives (Plan 06's package-wide
-    gate depends on this).
+    The Analyze grid reads the rank-ascending ``get_backend_lane_snapshot`` list under the neutral
+    ``lanes`` key (D-04). The transitional single-kind ``cloud_lane_kind`` key is GONE (the BEUI-01
+    N-lane redesign supersedes the one-label-for-the-whole-registry value), and no ``cloud_target``
+    context key survives (Plan 06's package-wide gate depends on this). ``pipeline_stats_partial``
+    seeds the SAME ``lanes`` key identically for the 5s OOB re-push (asserted at the render level in
+    the Analyze-workspace suite + the ``grep -c get_backend_lane_snapshot == 2`` code gate).
+
+    The snapshot is monkeypatched directly (it resolves the registry via ``get_settings()``, a distinct
+    singleton from the module-level ``settings``) so the seed is asserted independent of registry wiring.
     """
+    import phaze.routers.pipeline as pipeline_mod
     from phaze.routers.pipeline import build_dashboard_context
 
+    sentinel: list[dict[str, object]] = [
+        {"id": "a1", "kind": "compute", "rank": 10, "cap": 2, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0},
+        {"id": "local", "kind": "local", "rank": 99, "cap": 1, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0},
+    ]
+
+    async def _fake_snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return sentinel
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _fake_snapshot)
     app_state = client._transport.app.state  # type: ignore[union-attr]
 
-    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
-    ctx_local = await build_dashboard_context(app_state, session)
-    assert ctx_local["cloud_lane_kind"] == "local"
-    assert "cloud_target" not in ctx_local
-
-    monkeypatch.setattr(settings, "backends", [_COMPUTE_BACKEND])
-    ctx_compute = await build_dashboard_context(app_state, session)
-    assert ctx_compute["cloud_lane_kind"] == "compute"
-
-    monkeypatch.setattr(settings, "backends", [_KUEUE_BACKEND])
-    ctx_kueue = await build_dashboard_context(app_state, session)
-    assert ctx_kueue["cloud_lane_kind"] == "kueue"
-
-    # MKUE-01: N Kueue backends (the literal multi-cluster scenario) -> "kueue", NO >1-non-local raise.
-    # This is the /pipeline/stats poll's guard; before Phase 70 a 2nd Kueue backend 500'd it.
-    kueue_a = KueueBackend(kind="kueue", id="k8s-a", rank=10, cap=2, kube=KubeConfig())
-    kueue_b = KueueBackend(kind="kueue", id="k8s-b", rank=20, cap=2, kube=KubeConfig())
-    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND, kueue_a, kueue_b])
-    ctx_two_kueue = await build_dashboard_context(app_state, session)
-    assert ctx_two_kueue["cloud_lane_kind"] == "kueue"
-
-    # local + 2 Kueue + 1 compute still reports "kueue" (any-kueue wins), no raise.
-    monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND, kueue_a, kueue_b, _COMPUTE_BACKEND])
-    ctx_mixed = await build_dashboard_context(app_state, session)
-    assert ctx_mixed["cloud_lane_kind"] == "kueue"
+    ctx = await build_dashboard_context(app_state, session)
+    assert ctx["lanes"] == sentinel  # seeded rank-ascending from the snapshot (D-04)
+    assert "cloud_lane_kind" not in ctx  # transitional key retired (BEUI-01 N-lane redesign)
+    assert "cloud_target" not in ctx  # Plan 06 package-wide gate guard
 
 
 # ---------------------------------------------------------------------------
