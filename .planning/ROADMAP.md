@@ -236,7 +236,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
-| 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 1/4 | In Progress|  |
+| 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 2/4 | In Progress|  |
 | 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 0/— | Not started | - |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 0/— | Not started | - |
 
@@ -1031,7 +1031,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 — the D-06 net must be green first)*
 
-- [ ] 72-02-PLAN.md — Retire both `≤1-compute` `>1` fail-fasts (D-03) in `resolved_non_local_kind` + `active_compute_scratch_dir`, generalize for N compute (≤1 return byte-identical), flip the 3 raise-asserting tests
+- [x] 72-02-PLAN.md — Retire both `≤1-compute` `>1` fail-fasts (D-03) in `resolved_non_local_kind` + `active_compute_scratch_dir`, generalize for N compute (≤1 return byte-identical), flip the 3 raise-asserting tests
 
 **Wave 3** *(parallel — no file overlap; both blocked on Wave 2's config.py/backends.py edits)*
 
