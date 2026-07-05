@@ -20,6 +20,7 @@ Each item carries the per-proposal data the agent needs to perform a local
 file copy + verify + delete without DB access.
 """
 
+from typing import ClassVar
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -66,6 +67,16 @@ class PushFilePayload(BaseModel):
     file_type: str
     agent_id: str
 
+    # Phase 73 (D-01/D-02): the per-file rsync-push DESTINATION. dispatch (services/backends.py) stamps
+    # these off the resolved ComputeBackend (record-don't-rederive) so the fileserver reads the RECORDED
+    # target (Plan 02 rsync argv) rather than re-deriving it. Optional at the type level in this plan:
+    # the dispatch producer supplies them (Task 3) but the /mismatch re-drive producer is wired in Plan
+    # 03, so a four-field construction must still validate until then. They are NON-SECRET only (D-03):
+    # host/scratch/user, never key material -- SSH keys/known_hosts stay agent-side.
+    dest_host: str | None = None
+    dest_scratch_dir: str | None = None
+    dest_ssh_user: str | None = None
+
     # Phase 50 #sec argv-injection defense-in-depth: push_file hands original_path + file_type to
     # rsync as operands. A `--` terminator in the argv already blocks flag-smuggling, but reject
     # the dangerous shapes at the schema layer too (validated as strictly as an HTTP body).
@@ -81,6 +92,35 @@ class PushFilePayload(BaseModel):
     def _file_type_alnum(cls, v: str) -> str:
         if not v.isalnum():
             raise ValueError("file_type must be alphanumeric ([A-Za-z0-9]+)")
+        return v
+
+    @field_validator("dest_scratch_dir")
+    @classmethod
+    def _dest_scratch_absolute(cls, v: str | None) -> str | None:
+        # Same shape as _original_path_absolute: the scratch dir is interpolated into the rsync remote
+        # operand (`<dest_scratch_dir>/<file_id>.<ext>`), so a non-absolute value is rejected.
+        if v is not None and not v.startswith("/"):
+            raise ValueError("dest_scratch_dir must be an absolute path")
+        return v
+
+    # Chars that must never reach the ssh remote spec / rsync operand: whitespace + shell metacharacters.
+    # `--` terminators + list-argv (shell=False) already block flag-smuggling; this is defense-in-depth
+    # at the schema layer (T-73-01), mirroring the original_path guard's intent.
+    _DEST_HOST_FORBIDDEN: ClassVar[frozenset[str]] = frozenset(" \t\n\r;|&$`()<>")
+
+    @field_validator("dest_host")
+    @classmethod
+    def _dest_host_safe(cls, v: str | None) -> str | None:
+        if v is not None and any(ch in cls._DEST_HOST_FORBIDDEN for ch in v):
+            raise ValueError("dest_host must not contain whitespace or shell metacharacters")
+        return v
+
+    @field_validator("dest_ssh_user")
+    @classmethod
+    def _dest_ssh_user_safe(cls, v: str | None) -> str | None:
+        # Optional; when given it is a plain non-whitespace token (it also lands in the ssh remote spec).
+        if v is not None and any(ch in cls._DEST_HOST_FORBIDDEN for ch in v):
+            raise ValueError("dest_ssh_user must not contain whitespace or shell metacharacters")
         return v
 
 
