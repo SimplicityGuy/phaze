@@ -57,6 +57,10 @@ def _payload() -> PushFilePayload:
         original_path="/media/Coachella 2026 - Some Long Set.flac",
         file_type="flac",
         agent_id="fileserver-01",
+        # Phase 73 (D-04): the destination is payload-driven. These match the _fake_cfg globals so
+        # the argv-invariant tests stay byte-identical while exercising the per-file dest path.
+        dest_host="compute.tailnet.ts.net",
+        dest_scratch_dir="/srv/scratch",
     )
 
 
@@ -218,6 +222,62 @@ def test_rsync_argv_remote_dest_is_file_id_not_filename() -> None:
 
 
 # ----------------------------------------------------------------------
+# Phase 73 (Task 1): the remote_dest is payload-driven (per-file), D-04 retires the
+# fileserver's single-global remote-target env read.
+# ----------------------------------------------------------------------
+
+
+def test_rsync_argv_remote_dest_is_payload_driven_per_file() -> None:
+    # MCOMP-03: two payloads with distinct dest_host/dest_scratch_dir produce two DISTINCT
+    # remote_dest strings — the destination is resolved per file from the payload, not from a
+    # single fileserver global.
+    cfg = _fake_cfg()
+    p1 = _dest_payload(dest_host="oci-a1.push.example", dest_scratch_dir="/srv/scratch-a")
+    p2 = _dest_payload(dest_host="oci-a2.push.example", dest_scratch_dir="/srv/scratch-b")
+    argv1 = push._build_rsync_argv(cfg, p1, key_path="/k", known_hosts_path="/kh")
+    argv2 = push._build_rsync_argv(cfg, p2, key_path="/k", known_hosts_path="/kh")
+
+    assert argv1[-1] == f"bursty@oci-a1.push.example:/srv/scratch-a/{p1.file_id}.flac"
+    assert argv2[-1] == f"bursty@oci-a2.push.example:/srv/scratch-b/{p2.file_id}.flac"
+    assert argv1[-1] != argv2[-1]
+
+
+def test_rsync_argv_dest_ssh_user_none_falls_back_to_cfg_user() -> None:
+    # D-03/≤1-compute byte-identical: dest_ssh_user=None → the user segment is cfg.push_ssh_user.
+    cfg = _fake_cfg()
+    payload = _dest_payload()  # dest_ssh_user defaults None
+    argv = push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+    assert argv[-1].startswith("bursty@")
+
+
+def test_rsync_argv_dest_ssh_user_set_overrides_cfg_user() -> None:
+    # A non-None dest_ssh_user is used verbatim — cfg.push_ssh_user is never consulted.
+    cfg = _fake_cfg()
+    payload = _dest_payload(dest_ssh_user="oci-user")
+    argv = push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+    assert argv[-1].startswith("oci-user@")
+    assert "bursty@" not in argv[-1]
+
+
+def test_rsync_argv_does_not_leak_cfg_remote_target() -> None:
+    # D-04: the retired remote-target globals (cfg.push_ssh_host + cfg.cloud_scratch_dir) never
+    # appear in the produced argv when the payload carries a different destination.
+    cfg = _fake_cfg()
+    payload = _dest_payload(dest_host="oci-a1.push.example", dest_scratch_dir="/srv/other")
+    argv = push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+    joined = " ".join(argv)
+    assert cfg.push_ssh_host not in joined
+    assert cfg.cloud_scratch_dir not in joined
+    # The argv terminator + source ordering is preserved (argv-injection defense).
+    assert argv[-3] == "--"
+    assert argv[-2] == payload.original_path
+    assert argv[-1].endswith(f"/{payload.file_id}.flac")
+
+
+# ----------------------------------------------------------------------
 # exit-code handling — subprocess mocked
 # ----------------------------------------------------------------------
 
@@ -359,6 +419,21 @@ def test_require_push_config_rejects_exact_boundary() -> None:
     boundary = push.PUSH_FILE_SAQ_TIMEOUT_SEC - push._OUTER_TIMEOUT_BUFFER_SEC
     with pytest.raises(RuntimeError, match="timeout layering inverted"):
         push._require_push_config(_fake_cfg(push_timeout_sec=boundary))
+
+
+def test_require_push_config_no_longer_requires_retired_remote_target() -> None:
+    # D-04: push_ssh_host + cloud_scratch_dir are payload-carried now (the fileserver's remote-target
+    # env is retired), so their absence must NOT raise as long as the secrets + fallback user are set.
+    cfg = _fake_cfg(push_ssh_host=None, cloud_scratch_dir=None)
+    push._require_push_config(cfg)  # must NOT raise
+
+
+@pytest.mark.parametrize("missing_field", ["push_ssh_user", "push_ssh_key", "push_known_hosts"])
+def test_require_push_config_still_requires_secret_material_and_fallback_user(missing_field: str) -> None:
+    # D-03: the SSH secret material (push_ssh_key + push_known_hosts) AND the dest_ssh_user None-fallback
+    # source (push_ssh_user) stay required — dropping any of them still fails fast.
+    with pytest.raises(RuntimeError, match="missing required push config"):
+        push._require_push_config(_fake_cfg(**{missing_field: None}))
 
 
 # ----------------------------------------------------------------------
