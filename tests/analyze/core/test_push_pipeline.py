@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import Any
 import uuid
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 import pytest
 
 from phaze.schemas.agent_tasks import PushFilePayload
@@ -58,6 +58,76 @@ def _payload() -> PushFilePayload:
         file_type="flac",
         agent_id="fileserver-01",
     )
+
+
+# ----------------------------------------------------------------------
+# Phase 73 (Task 2): PushFilePayload per-file destination fields + validators
+# ----------------------------------------------------------------------
+_VALID_DEST = {"dest_host": "oci-a1.push.example", "dest_scratch_dir": "/srv/scratch"}
+
+
+def _dest_payload(**overrides: Any) -> PushFilePayload:
+    kwargs: dict[str, Any] = {
+        "file_id": uuid.uuid4(),
+        "original_path": "/media/set.flac",
+        "file_type": "flac",
+        "agent_id": "fileserver-01",
+        **_VALID_DEST,
+    }
+    kwargs.update(overrides)
+    return PushFilePayload(**kwargs)
+
+
+def test_push_payload_accepts_valid_dest_fields() -> None:
+    """A validated non-secret destination (host + absolute scratch + optional user) constructs cleanly."""
+    p = _dest_payload(dest_ssh_user="phaze")
+    assert p.dest_host == "oci-a1.push.example"
+    assert p.dest_scratch_dir == "/srv/scratch"
+    assert p.dest_ssh_user == "phaze"
+    # dest_ssh_user is optional -> defaults None when omitted.
+    assert _dest_payload().dest_ssh_user is None
+
+
+def test_push_payload_four_field_construction_still_valid() -> None:
+    """Interface-first: the legacy four-field construction still validates (dest_* are optional here).
+
+    The /mismatch re-drive producer (agent_push.py) is wired to supply dest_* in Plan 03; until then it
+    constructs the four-field payload, so dest_* must not be pydantic-required in this plan.
+    """
+    p = PushFilePayload(file_id=uuid.uuid4(), original_path="/media/set.flac", file_type="flac", agent_id="fs")
+    assert p.dest_host is None
+    assert p.dest_scratch_dir is None
+
+
+def test_push_payload_dest_scratch_dir_must_be_absolute() -> None:
+    """dest_scratch_dir not starting with '/' raises (same shape as _original_path_absolute)."""
+    with pytest.raises(ValidationError, match="absolute path"):
+        _dest_payload(dest_scratch_dir="relative/x")
+
+
+@pytest.mark.parametrize("bad", [" ", "\t", ";", "|", "&", "$", "`", "(", ")", "<", ">", "\n"])
+def test_push_payload_dest_host_rejects_whitespace_and_shell_metacharacters(bad: str) -> None:
+    """dest_host lands in the ssh remote spec, so any whitespace/shell metachar is rejected (T-73-01)."""
+    with pytest.raises(ValidationError):
+        _dest_payload(dest_host=f"host{bad}evil")
+
+
+def test_push_payload_dest_host_injection_shape_rejected() -> None:
+    """The acceptance-criteria injection shape (``host; rm -rf /``) is rejected."""
+    with pytest.raises(ValidationError):
+        _dest_payload(dest_host="host; rm -rf /", dest_scratch_dir="/srv/scratch")
+
+
+def test_push_payload_dest_ssh_user_rejects_whitespace() -> None:
+    """A non-None dest_ssh_user must be a plain non-whitespace token."""
+    with pytest.raises(ValidationError):
+        _dest_payload(dest_ssh_user="ph aze")
+
+
+def test_push_payload_preserves_extra_forbid_with_dest_fields() -> None:
+    """extra='forbid' is preserved: an unknown field still raises even alongside the new dest_* fields."""
+    with pytest.raises(ValidationError):
+        _dest_payload(unexpected="x")
 
 
 class _FakeProc:

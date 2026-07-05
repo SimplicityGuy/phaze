@@ -100,7 +100,20 @@ class _StubCfg:
             # Phase 72 (MCOMP-01/D-02): a compute backend's is_available resolves THIS entry's bound
             # ``agent_ref`` against Agent.id per-call, so the default compute stub binds the ``cloud-1``
             # compute agent every default-single-compute cell seeds online.
-            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap, agent_ref="cloud-1")]
+            self.backends = [
+                SimpleNamespace(
+                    kind=active_cloud_kind,
+                    id=f"{active_cloud_kind}-1",
+                    rank=10,
+                    cap=active_cap,
+                    agent_ref="cloud-1",
+                    # Phase 73 (D-02): ComputeAgentBackend.dispatch reads push_host/scratch_dir off the
+                    # bound config to stamp the push destination -- the duck-typed stub must carry them.
+                    push_host="cloud-1.push.example",
+                    scratch_dir="/srv/scratch",
+                    ssh_user=None,
+                )
+            ]
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_kind: str | None = "compute") -> None:
@@ -767,8 +780,12 @@ async def test_multi_backend_tick_dispatches_rank_first_and_spills(
     _patch_multi_backends(
         monkeypatch,
         [
-            SimpleNamespace(kind="compute", id="compute-a", rank=10, cap=1, agent_ref="cloud-a"),
-            SimpleNamespace(kind="compute", id="compute-b", rank=20, cap=2, agent_ref="cloud-b"),
+            SimpleNamespace(
+                kind="compute", id="compute-a", rank=10, cap=1, agent_ref="cloud-a", push_host="a.push", scratch_dir="/scratch/a", ssh_user=None
+            ),
+            SimpleNamespace(
+                kind="compute", id="compute-b", rank=20, cap=2, agent_ref="cloud-b", push_host="b.push", scratch_dir="/scratch/b", ssh_user=None
+            ),
         ],
     )
     await seed_active_agent(session, agent_id="cloud-a", kind="compute")
@@ -912,7 +929,9 @@ async def test_local_spill_not_redispatched_to_cloud(
     _patch_multi_backends(
         monkeypatch,
         [
-            SimpleNamespace(kind="compute", id="compute-1", rank=10, cap=2, agent_ref="cloud-1"),
+            SimpleNamespace(
+                kind="compute", id="compute-1", rank=10, cap=2, agent_ref="cloud-1", push_host="c1.push", scratch_dir="/srv/scratch", ssh_user=None
+            ),
             SimpleNamespace(kind="local", id="local", rank=99, cap=4),
         ],
     )

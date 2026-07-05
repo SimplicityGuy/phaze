@@ -73,6 +73,7 @@ _COMPUTE_REGISTRY = f"""
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "{_SCRATCH_DIR}"
+    push_host = "oci-a1.push.example"
 """
 
 
@@ -118,6 +119,7 @@ _LOCAL_2KUEUE_COMPUTE_REGISTRY = f"""
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "{_SCRATCH_DIR}"
+    push_host = "oci-a1.push.example"
 
     [[buckets]]
     id = "bkt-a"
