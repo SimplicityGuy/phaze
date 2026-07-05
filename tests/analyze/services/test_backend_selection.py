@@ -101,6 +101,31 @@ def test_spill_when_lowest_rank_full_picks_next_rank() -> None:
     assert picked is b5
 
 
+# --- MCOMP-04: N compute lanes filled lowest-rank-first, then spill to the next rank ------
+
+
+def test_mcomp04_compute_rank_cap_spread_prefers_free_arm64_then_spills_to_paid_x86() -> None:
+    """MCOMP-04 (tiered spread): N compute backends fill lowest-rank-first up to cap, then spill to the next rank.
+
+    Two compute lanes -- a cheaper free-arm64 lane (rank 10) preferred over a paid-x86 lane (rank 20).
+    While the free lane has a free slot it always wins (rank-first); once the free lane is full
+    (``remaining == 0``, i.e. its per-agent cap is spent this tick) the drain spills the next FIFO
+    candidate to the paid lane rather than holding. This is the per-agent-cap load-spread across N
+    compute backends the tiered drain performs (extends ``test_spill_when_lowest_rank_full_picks_next_rank``
+    to explicitly-labelled compute lanes).
+    """
+    free_arm64 = _compute(id="free-arm64", rank=10, cap=2)
+    paid_x86 = _compute(id="paid-x86", rank=20, cap=2)
+
+    # Both lanes have free slots -> the lower-rank (free) lane wins.
+    both_free = _snapshot(_slot(free_arm64, remaining=2), _slot(paid_x86, remaining=2))
+    assert select_backend(_file(updated_at=NOW), 0, both_free, NOW, _cfg()) is free_arm64
+
+    # Free lane at cap (remaining==0) -> spill the next candidate to the paid lane, not a hold.
+    free_full = _snapshot(_slot(free_arm64, remaining=0), _slot(paid_x86, remaining=2))
+    assert select_backend(_file(updated_at=NOW), 0, free_full, NOW, _cfg()) is paid_x86
+
+
 # --- D-03: offline -> local is immediate (NOT staleness-gated) ----------------------------
 
 

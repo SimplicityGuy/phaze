@@ -381,6 +381,27 @@ async def test_compute_is_available_fails_loud_when_no_agent_ref_bound(session: 
 
 
 @pytest.mark.asyncio
+async def test_mcomp02_two_compute_backends_only_the_online_bound_agent_is_available(session: AsyncSession) -> None:
+    """MCOMP-02 (per-agent liveness): N compute backends -> an offline bound agent makes ONLY that lane unavailable.
+
+    A local + 2-compute deploy where compute-a's bound agent (``cloud-a``) is ONLINE and compute-b's bound
+    agent (``cloud-b``) is OFFLINE (never registered). Per-entry gating (Phase 72 ``is_available`` resolves
+    ``self.config.agent_ref`` against ``Agent.id``, NOT a single-active pick) must report backend-a available
+    and backend-b UNAVAILABLE -- so the drain snapshot leaves the healthy compute lane eligible while the
+    offline one contributes 0 slots. This is the N-compute twin of the single-active liveness the retired
+    ``select_active_agent(kind="compute")`` pick could not express.
+    """
+    # Only compute-a's bound node is online; compute-b's is absent.
+    await seed_active_agent(session, agent_id="cloud-a", kind="compute")
+
+    backend_a = _compute(id="compute-a", agent_ref="cloud-a")
+    backend_b = _compute(id="compute-b", agent_ref="cloud-b")
+
+    assert await backend_a.is_available(session) is True
+    assert await backend_b.is_available(session) is False
+
+
+@pytest.mark.asyncio
 async def test_kueue_is_available_probes_kube_with_no_compute_dependency(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """KueueBackend.is_available probes the LocalQueue and has NO compute-agent dependency (D-01a)."""
     _stub_kube_available(monkeypatch)
