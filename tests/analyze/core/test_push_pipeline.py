@@ -218,6 +218,62 @@ def test_rsync_argv_remote_dest_is_file_id_not_filename() -> None:
 
 
 # ----------------------------------------------------------------------
+# Phase 73 (Task 1): the remote_dest is payload-driven (per-file), D-04 retires the
+# fileserver's single-global remote-target env read.
+# ----------------------------------------------------------------------
+
+
+def test_rsync_argv_remote_dest_is_payload_driven_per_file() -> None:
+    # MCOMP-03: two payloads with distinct dest_host/dest_scratch_dir produce two DISTINCT
+    # remote_dest strings — the destination is resolved per file from the payload, not from a
+    # single fileserver global.
+    cfg = _fake_cfg()
+    p1 = _dest_payload(dest_host="oci-a1.push.example", dest_scratch_dir="/srv/scratch-a")
+    p2 = _dest_payload(dest_host="oci-a2.push.example", dest_scratch_dir="/srv/scratch-b")
+    argv1 = push._build_rsync_argv(cfg, p1, key_path="/k", known_hosts_path="/kh")
+    argv2 = push._build_rsync_argv(cfg, p2, key_path="/k", known_hosts_path="/kh")
+
+    assert argv1[-1] == f"bursty@oci-a1.push.example:/srv/scratch-a/{p1.file_id}.flac"
+    assert argv2[-1] == f"bursty@oci-a2.push.example:/srv/scratch-b/{p2.file_id}.flac"
+    assert argv1[-1] != argv2[-1]
+
+
+def test_rsync_argv_dest_ssh_user_none_falls_back_to_cfg_user() -> None:
+    # D-03/≤1-compute byte-identical: dest_ssh_user=None → the user segment is cfg.push_ssh_user.
+    cfg = _fake_cfg()
+    payload = _dest_payload()  # dest_ssh_user defaults None
+    argv = push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+    assert argv[-1].startswith("bursty@")
+
+
+def test_rsync_argv_dest_ssh_user_set_overrides_cfg_user() -> None:
+    # A non-None dest_ssh_user is used verbatim — cfg.push_ssh_user is never consulted.
+    cfg = _fake_cfg()
+    payload = _dest_payload(dest_ssh_user="oci-user")
+    argv = push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+    assert argv[-1].startswith("oci-user@")
+    assert "bursty@" not in argv[-1]
+
+
+def test_rsync_argv_does_not_leak_cfg_remote_target() -> None:
+    # D-04: the retired remote-target globals (cfg.push_ssh_host + cfg.cloud_scratch_dir) never
+    # appear in the produced argv when the payload carries a different destination.
+    cfg = _fake_cfg()
+    payload = _dest_payload(dest_host="oci-a1.push.example", dest_scratch_dir="/srv/other")
+    argv = push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+    joined = " ".join(argv)
+    assert cfg.push_ssh_host not in joined
+    assert cfg.cloud_scratch_dir not in joined
+    # The argv terminator + source ordering is preserved (argv-injection defense).
+    assert argv[-3] == "--"
+    assert argv[-2] == payload.original_path
+    assert argv[-1].endswith(f"/{payload.file_id}.flac")
+
+
+# ----------------------------------------------------------------------
 # exit-code handling — subprocess mocked
 # ----------------------------------------------------------------------
 
