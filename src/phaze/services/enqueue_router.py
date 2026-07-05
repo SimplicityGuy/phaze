@@ -128,6 +128,38 @@ async def select_active_agent(session: AsyncSession, kind: str | None = None) ->
     return agent
 
 
+async def select_agent_by_id(session: AsyncSession, agent_id: str, *, kind: str | None = None) -> Agent:
+    """Return the specifically-bound agent whose ``Agent.id == agent_id`` iff it is live.
+
+    The per-entry-binding sibling of :func:`select_active_agent` (Phase 72, MCOMP-01 / D-01): it
+    reuses the SAME liveness filter (``revoked_at IS NULL`` AND ``last_seen_at IS NOT NULL``) and the
+    optional ``kind`` scope, but keys on ``Agent.id == agent_id`` instead of ordering by
+    ``last_seen_at`` — a compute backend resolves to ITS bound agent (``config.agent_ref``), not "the
+    single active compute agent" (the retired single-active pick).
+
+    Matches on ``Agent.id`` ONLY — the constrained slug PK / FK target — never on the free-form,
+    collidable ``Agent.name`` (D-01, no id-or-name fallback), so a spoof-shaped name can never be
+    selected. The query is parameterized, so ``agent_id`` cannot inject SQL.
+
+    Raises :class:`NoActiveAgentError` when no row matches — an absent / unregistered / revoked /
+    never-seen / wrong-kind bound agent — which the compute ``is_available`` gate consumes as the
+    degrade-to-hold signal (D-05): ``False``, never a raise out to the drain/cron.
+    """
+    stmt = select(Agent).where(
+        Agent.id == agent_id,
+        Agent.revoked_at.is_(None),
+        Agent.last_seen_at.is_not(None),
+    )
+    if kind is not None:
+        stmt = stmt.where(Agent.kind == kind)
+    result = await session.execute(stmt)
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        msg = f"no active agent {agent_id!r} available (absent, revoked, never checked in, or wrong kind)"
+        raise NoActiveAgentError(msg)
+    return agent
+
+
 async def resolve_queue_for_task(
     task_name: str,
     app_state: Any,

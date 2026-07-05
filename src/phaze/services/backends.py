@@ -53,7 +53,7 @@ from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
-from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent, select_agent_by_id
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
 from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
@@ -240,16 +240,39 @@ class ComputeAgentBackend(_BaseBackend):
     (Pitfall 1 / D-03) then re-homes the ``_enqueue_push_file`` leg. ``reconcile`` is a no-op --
     compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08).
     ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
+
+    Phase 72 (MCOMP-01/D-02): ``is_available`` resolves THIS backend's bound ``agent_ref``
+    (``self._agent_ref()``) against ``Agent.id`` per-call -- the record-don't-rederive twin of
+    ``KueueBackend._kube()`` -- replacing the retired ``select_active_agent(kind="compute")``
+    single-active-compute pick. Each compute entry gates on ITS bound agent, not "the single active
+    compute agent" (Phase 73 builds dispatch/push/reconcile on this per-agent binding).
     """
 
-    async def is_available(self, session: AsyncSession) -> bool:
-        """GATE-1 (D-01a): True iff a compute agent is online; False (never raises) when absent.
+    def _agent_ref(self) -> str:
+        """Return THIS backend's bound ``agent_ref`` (the Phase-67 compute entry's dispatch node, D-02).
 
-        Re-homes ``stage_cloud_window``'s compute-agent gate. An absent agent degrades to a hold
-        (NoActiveAgentError -> False), preserving the cron no-op discipline (T-68-05).
+        ``self.config`` is the ``ComputeBackend`` submodel bound in ``resolve_backends``; its
+        ``agent_ref`` is the ``Agent.id`` this backend dispatches to. Fail-loud (``ValueError`` naming
+        ``self.id``) if a compute backend somehow has no ``agent_ref`` bound -- the
+        ``_require_dispatch_fields`` validator already guarantees it non-empty at construction, so this
+        is defense-in-depth (mirrors ``KueueBackend._kube()``).
+        """
+        agent_ref = getattr(self.config, "agent_ref", None)
+        if not agent_ref:
+            raise ValueError(f"compute backend {self.id!r} has no agent_ref bound")
+        return cast("str", agent_ref)
+
+    async def is_available(self, session: AsyncSession) -> bool:
+        """D-02: True iff THIS backend's bound ``agent_ref`` names an ONLINE compute agent; False when absent.
+
+        Resolves the per-entry binding (``self._agent_ref()`` -> ``Agent.id``) via
+        :func:`select_agent_by_id`, reading ``self.config.agent_ref`` per-call (record-don't-rederive).
+        An absent / unregistered / offline bound agent degrades to a hold (``NoActiveAgentError`` ->
+        ``False``), preserving the cron no-op discipline (T-68-05, D-05). A backend with no ``agent_ref``
+        bound fails loud via ``_agent_ref()`` (defense-in-depth) rather than silently holding.
         """
         try:
-            await select_active_agent(session, kind="compute")
+            await select_agent_by_id(session, self._agent_ref(), kind="compute")
         except NoActiveAgentError:
             return False
         return True
