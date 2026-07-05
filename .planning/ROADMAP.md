@@ -232,7 +232,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
+| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 3/5 | In Progress|  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -1116,9 +1116,9 @@ Plans:
 **Plans**: 5 plans in 2 waves
 **Wave 1**
 
-- [ ] 71-01-PLAN.md — BEUI-01 read-only backend-lane snapshot service (bounded probes + per-backend admission) [Wave 1]
-- [ ] 71-02-PLAN.md — BEUI-02 force-local mechanism: route_control model + migration 031 + degrade-safe read + drain/router gates [Wave 1]
-- [ ] 71-05-PLAN.md — BEUI-03 operator runbook + configuration.md reconciliation (cloud_target removed → backends) [Wave 1]
+- [x] 71-01-PLAN.md — BEUI-01 read-only backend-lane snapshot service (bounded probes + per-backend admission) [Wave 1]
+- [x] 71-02-PLAN.md — BEUI-02 force-local mechanism: route_control model + migration 031 + degrade-safe read + drain/router gates [Wave 1]
+- [x] 71-05-PLAN.md — BEUI-03 operator runbook + configuration.md reconciliation (cloud_target removed → backends) [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
