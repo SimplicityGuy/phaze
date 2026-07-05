@@ -614,6 +614,12 @@ async def get_backend_lane_snapshot(session: AsyncSession) -> list[dict[str, Any
         backends = resolve_backends(cast("ControlSettings", get_settings()))
         admission = await _admission_by_backend_id(session)
         availability = await _probe_availability(session, backends)
+        # T-71-02 per-lane isolation: a compute ``is_available`` probe can fail at the DB layer
+        # (not just time out), poisoning the shared session. Clear it after the fan-out -- the
+        # snapshot does no writes, so a rollback here is safe -- so one bad lane degrades to
+        # ``available=False`` (via ``_probe_one``) instead of poisoning the subsequent
+        # ``in_flight_count`` reads and collapsing the WHOLE grid to the ``[]`` degrade panel.
+        await session.rollback()
         lanes: list[dict[str, Any]] = []
         for backend in backends:
             lanes.append(

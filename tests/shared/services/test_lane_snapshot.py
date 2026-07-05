@@ -337,6 +337,82 @@ async def test_snapshot_tie_break_by_id(session: AsyncSession, monkeypatch: pyte
     assert [lane["id"] for lane in lanes] == ["k8s-a", "k8s-b"]
 
 
+class _PoisonRecoverSession:
+    """A session stand-in modelling a compute-probe DB error: ``execute`` is aborted while poisoned; ``rollback`` clears it.
+
+    Deterministic and DB-free (real asyncpg poison-then-recover depends on prepared-statement/pool state and is
+    non-hermetic). ``poisoned`` flips True when the bad probe runs; a lane's ``in_flight_count`` raises while poisoned.
+    """
+
+    def __init__(self) -> None:
+        self.poisoned = False
+        self.rollbacks = 0
+
+    async def rollback(self) -> None:
+        self.poisoned = False
+        self.rollbacks += 1
+
+
+class _HealthyLane:
+    """A non-local backend that probes online and whose ``in_flight_count`` reads cleanly (unless the session is poisoned)."""
+
+    def __init__(self, backend_id: str, rank: int) -> None:
+        self.id = backend_id
+        self.rank = rank
+        self.cap = 1
+
+    async def is_available(self, session: Any) -> bool:  # noqa: ARG002 -- probe surrogate
+        return True
+
+    async def in_flight_count(self, session: _PoisonRecoverSession) -> int:
+        if session.poisoned:
+            raise RuntimeError("in_flight_count read on an aborted transaction")
+        return 0
+
+
+class _DbPoisoningLane:
+    """A compute backend whose ``is_available`` fails at the DB layer, poisoning the shared session (the WR-01 trigger)."""
+
+    def __init__(self, backend_id: str, rank: int) -> None:
+        self.id = backend_id
+        self.rank = rank
+        self.cap = 2
+
+    async def is_available(self, session: _PoisonRecoverSession) -> bool:
+        session.poisoned = True
+        raise RuntimeError("compute is_available probe failed at the DB layer")
+
+    async def in_flight_count(self, session: _PoisonRecoverSession) -> int:
+        if session.poisoned:
+            raise RuntimeError("in_flight_count read on an aborted transaction")
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_snapshot_db_poisoning_probe_isolated_not_grid_collapse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A compute probe that fails at the DB layer degrades ONLY its lane; the grid still renders (T-71-02, WR-01).
+
+    The probe poisons the shared session; the post-fan-out ``rollback`` clears it so the subsequent
+    ``in_flight_count`` reads succeed. Without that rollback the aborted transaction makes the next
+    read raise and the WHOLE snapshot collapses to ``[]`` (the entire grid vanishes for one bad lane).
+    """
+    healthy = _HealthyLane("local", 99)
+    poison = _DbPoisoningLane("a1", 10)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [healthy, poison])
+
+    async def _no_admission(_session: Any) -> dict[str, dict[str, int]]:
+        return {}
+
+    monkeypatch.setattr(backends_mod, "_admission_by_backend_id", _no_admission)
+
+    sess = _PoisonRecoverSession()
+    lanes = await get_backend_lane_snapshot(sess)  # type: ignore[arg-type]
+
+    assert [lane["id"] for lane in lanes] == ["a1", "local"]  # rank-ascending; grid did NOT collapse to []
+    assert {lane["id"]: lane["available"] for lane in lanes} == {"a1": False, "local": True}  # bad lane offline, healthy lane online
+    assert sess.rollbacks >= 1  # the post-probe rollback ran
+
+
 @pytest.mark.asyncio
 async def test_snapshot_degrades_to_empty_on_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Any top-level error -> [] (the snapshot never raises into the /pipeline/stats poll, T-71-03)."""
