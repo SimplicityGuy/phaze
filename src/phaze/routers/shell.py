@@ -48,6 +48,7 @@ from phaze.services.review import (
     get_pending_proposal_rows,
     get_tagwrite_review_rows,
 )
+from phaze.services.route_control import get_route_control
 
 from .pipeline import build_dashboard_context
 
@@ -162,6 +163,11 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         "stage": stage,
         "stage_partial": STAGE_PARTIALS[stage],
         "oob_counts": False,
+        # Phase 71 (71-04, BEUI-02): seed the header force-local pill's state on EVERY page from the
+        # durable route_control 'global' row (get_route_control is degrade-safe -> False on any DB
+        # error, never raises). Seeded HERE in the base shell context -- NOT the Analyze-only
+        # build_dashboard_context -- so the global incident control shows correct state everywhere.
+        "force_local": await get_route_control(session),
     }
     if stage == "analyze":
         context.update(await build_dashboard_context(request.app.state, session))
