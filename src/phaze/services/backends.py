@@ -584,3 +584,55 @@ async def _probe_availability(session: AsyncSession, backends: list[Backend]) ->
     """
     results = await asyncio.gather(*(_probe_one(session, backend) for backend in backends))
     return dict(results)
+
+
+def _kind_of(backend: Backend) -> str:
+    """Derive the lane ``kind`` ("local"/"compute"/"kueue") from the impl class (mirrors resolve_backends)."""
+    if isinstance(backend, LocalBackend):
+        return "local"
+    if isinstance(backend, ComputeAgentBackend):
+        return "compute"
+    if isinstance(backend, KueueBackend):
+        return "kueue"
+    return "unknown"
+
+
+async def get_backend_lane_snapshot(session: AsyncSession) -> list[dict[str, Any]]:
+    """Return one rank-ascending, secret-free lane dict per registry backend for the BEUI-01 grid.
+
+    Resolves the Phase-67 registry, then composes one lane per backend from three degrade-safe reads:
+    ``_admission_by_backend_id`` (per-``backend_id`` quota_wait/inadmissible, D-03), ``_probe_availability``
+    (live bounded is_available probes, D-02) and each backend's ``in_flight_count`` (the D-02 cloud_job
+    substrate). Lanes are sorted rank-ascending, tie-broken by ``id`` (D-06), so the Plan-03 template loops
+    them verbatim. A :class:`LocalBackend` lane always shows ``in_flight`` 0 and ``available`` True.
+
+    Every lane carries ONLY ``{id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}`` -- no
+    ``config``, no ``SecretStr``, no kube/S3 token (T-71-01). Any top-level exception degrades to ``[]``
+    with a guarded rollback so it can NEVER raise into the hot 5s ``/pipeline/stats`` poll (SP-1, T-71-03).
+    """
+    try:
+        backends = resolve_backends(cast("ControlSettings", get_settings()))
+        admission = await _admission_by_backend_id(session)
+        availability = await _probe_availability(session, backends)
+        lanes: list[dict[str, Any]] = []
+        for backend in backends:
+            lanes.append(
+                {
+                    "id": backend.id,
+                    "kind": _kind_of(backend),
+                    "rank": backend.rank,
+                    "cap": backend.cap,
+                    "in_flight": await backend.in_flight_count(session),
+                    "available": availability.get(backend.id, False),
+                    **admission.get(backend.id, _ZERO_ADMISSION),
+                }
+            )
+        lanes.sort(key=lambda lane: (lane["rank"], lane["id"]))
+    except Exception:
+        logger.warning("backend_lane_snapshot_degraded", exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("backend_lane_snapshot_rollback_failed", exc_info=True)
+        return []
+    return lanes

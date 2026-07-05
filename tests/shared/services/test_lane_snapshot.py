@@ -86,6 +86,16 @@ class _ExplodingSession:
         return None
 
 
+class _DoubleExplodingSession:
+    """An AsyncSession stand-in whose ``execute`` AND ``rollback`` both raise (guarded-rollback path)."""
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ARG002 -- AsyncSession signature stand-in
+        raise RuntimeError("execute boom")
+
+    async def rollback(self) -> None:
+        raise RuntimeError("rollback boom")
+
+
 class _SlowBackend:
     """Non-local backend whose ``is_available`` hangs past the probe timeout (DoS surrogate)."""
 
@@ -189,6 +199,12 @@ async def test_admission_degrades_to_empty_on_db_error() -> None:
     assert await _admission_by_backend_id(_ExplodingSession()) == {}  # type: ignore[arg-type]
 
 
+@pytest.mark.asyncio
+async def test_admission_degrades_when_rollback_also_fails() -> None:
+    """A failed guarded rollback is swallowed too -> still {} (the poll never sees the error)."""
+    assert await _admission_by_backend_id(_DoubleExplodingSession()) == {}  # type: ignore[arg-type]
+
+
 # --------------------------------------------------------------------------- Task 1: probes
 
 
@@ -238,6 +254,11 @@ def test_kind_of_dispatch() -> None:
     assert _kind_of(LocalBackend(id="local", rank=99, cap=1)) == "local"
     assert _kind_of(ComputeAgentBackend(id="a1", rank=10, cap=2)) == "compute"
     assert _kind_of(KueueBackend(id="k8s", rank=20, cap=2)) == "kueue"
+
+
+def test_kind_of_unknown_fallback() -> None:
+    """A structurally-conforming backend of no known impl class falls back to "unknown"."""
+    assert _kind_of(_FastBackend("mystery")) == "unknown"  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- Task 2: snapshot
@@ -325,3 +346,14 @@ async def test_snapshot_degrades_to_empty_on_error(session: AsyncSession, monkey
 
     monkeypatch.setattr(backends_mod, "resolve_backends", _boom)
     assert await get_backend_lane_snapshot(session) == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_degrades_when_rollback_also_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed guarded rollback after a top-level error is swallowed too -> still [] (T-71-03)."""
+
+    def _boom(_settings: Any) -> Any:
+        raise RuntimeError("registry resolution failed")
+
+    monkeypatch.setattr(backends_mod, "resolve_backends", _boom)
+    assert await get_backend_lane_snapshot(_DoubleExplodingSession()) == []  # type: ignore[arg-type]
