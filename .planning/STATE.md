@@ -2,34 +2,32 @@
 gsd_state_version: 1.0
 milestone: 2026.7.1
 milestone_name: Multi-Cloud Backends
-status: "Phase 71 shipped — PR #206"
-last_updated: "2026-07-05T04:31:10.689Z"
-last_activity: 2026-07-05
+status: Awaiting next milestone
+last_updated: "2026-07-05T05:23:29.114Z"
+last_activity: 2026-07-05 — Milestone 2026.7.1 completed and archived
 progress:
   total_phases: 38
-  completed_phases: 9
-  total_plans: 39
+  completed_phases: 5
+  total_plans: 26
   completed_plans: 26
-  percent: 24
+  percent: 13
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-03 — 2026.7.0 Engineering Improvements shipped)
+See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Milestone complete
+**Current focus:** Planning next milestone (`/gsd:new-milestone`). Remaining ship step for 2026.7.1: release PR bumping `pyproject`/`uv.lock` to `2026.7.1` + push the `2026.7.1` tag (fires GHCR publish — see [[project_release_procedure]]).
 
 ## Current Position
 
-Phase: 71
-Plan: Not started
-Status: Phase 71 shipped — PR #206
-Last activity: 2026-07-05
-
-Progress: [░░░░░░░░░░] 0%
+Phase: Milestone 2026.7.1 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-05 — Milestone 2026.7.1 completed and archived
 
 ## Performance Metrics
 
@@ -233,6 +231,19 @@ deployment-gated items above, all three are **already-completed work with stale 
 | quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | missing | Committed `5f43aa7` (v6.0 audit fix); quick-task tracking file was never marked complete |
 | quick_task | 260629-eev (ASCII→mermaid diagram conversion) | missing | Committed `267109b`; quick-task tracking file was never marked complete |
 
+Items acknowledged and deferred at the **2026.7.1** milestone close on 2026-07-05. None is a
+blocker — the milestone audit PASSED (21/21 reqs, 5/5 flows). One is deployment-gated live E2E;
+the rest are non-blocking tech-debt/test-coverage polish surfaced by the audit + integration check.
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 70-UAT test 7 | deployment-gated | Live 2nd real Kueue cluster + dual live S3 bucket endpoints unavailable in-session; tests 1-6 pass 6/6. Verify at rollout (v6.0 JOB-ENV-CONTRACT precedent) |
+| tech_debt | docker-compose `PHAZE_CLOUD_TARGET` comments (Phase 67) | open | Two stale env/comment lines silently dropped by `extra=ignore` (inert but misleading); delete in a quick fix |
+| tech_debt | >1-compute-backend fail-fast is lazy, not boot-time (Phase 68, W1) | open | `resolved_non_local_kind`/`active_compute_scratch_dir` raise at first invocation, not at `_validate_registry`; deliberate PROV-01-backlog descope, fails loud with id-tagged message |
+| test_coverage | force-local gate regression test (Phase 71, W2) | open | The 2 duration-router gate sites + backfill (`pipeline.py:396/718/793`) were live-verified in the audit but have no committed test; add `tests/shared/routers/test_pipeline.py` coverage |
+
+These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PROV-01 (multi-compute-agent routing) item is a Backlog candidate for a future milestone.
+
 ## Session Continuity
 
 Last session: 2026-07-05T01:07:14.138Z
@@ -241,6 +252,4 @@ Resume file: .planning/phases/71-deployment-config-docs-n-lane-ui/71-UI-SPEC.md
 
 ## Operator Next Steps
 
-- **Merge release PR `release/2026.7.0`** (milestone archive + PROJECT/ROADMAP/STATE/RETROSPECTIVE/MILESTONES updates), then **cut the annotated `2026.7.0` tag on the merge commit and push it** — the tag push fires the GHCR publish (see [[project_release_procedure]]; pyproject/uv.lock were already bumped to `2026.7.0` in Phase 65).
-- **`.planning/REQUIREMENTS.md` was intentionally kept** (not `git rm`'d) at this close: the Phase-66 docs-drift guard has no existence check and would fail the required CI check if the file were absent. `/gsd:new-milestone` regenerates/overwrites it. Guard hardening captured in ROADMAP Backlog.
-- Start the next milestone with `/gsd-new-milestone` (next named milestone = Multi-cloud backends, phases 67+; design already on `main` via PR #182).
+- Start the next milestone with /gsd-new-milestone

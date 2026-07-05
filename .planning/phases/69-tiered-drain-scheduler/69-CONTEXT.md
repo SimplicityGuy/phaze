@@ -93,10 +93,10 @@ Turn the single-backend drain (`stage_cloud_window`, today a per-file `backend.d
 - **Per-file "avoid last-failed backend" memory** — considered for D-06, deferred (stateless re-rank chosen); revisit if a single flaky backend proves to starve specific files in practice.
 - **Keep-a-global-master-ceiling** — considered for D-05, rejected in favor of purely per-backend caps; revisit only if operators need a cross-backend cost cap.
 
-## Open Questions for Research / Plan-time
-- **Staleness "waited-since" signal source (D-01/D-02):** does an existing timestamp on `FileRecord` / `cloud_job` / `SchedulingLedger` capture "entered AWAITING_CLOUD", or is a new timestamp needed? Pick the least-invasive source.
-- **Drain↔reconcile lock scope (SCHED-02):** exact `pg_advisory_xact_lock` scope so per-backend count-and-claim + reconcile never overshoot a cap — flagged in ROADMAP as a novel correctness mechanism (`/gsd:plan-phase 69 --research-phase`).
-- **Black-hole counters (D-04, SCHED-03):** exact interaction of per-backend attempt counters, the fall-to-local step, and the global total-attempt ceiling that yields `ANALYSIS_FAILED`; where the counter is persisted (ledger payload vs `cloud_job`).
+## Resolved Questions (answered at plan-time — see 69-RESEARCH.md, implemented + verified)
+- **Staleness "waited-since" signal source (D-01/D-02):** RESOLVED — use `FileRecord.updated_at` with **zero migration**; no writer touches a parked `AWAITING_CLOUD` row until the drain flips it to `PUSHING`, so `updated_at` equals the entry-to-`AWAITING_CLOUD` timestamp and re-stamps on each fail-back.
+- **Drain↔reconcile lock scope (SCHED-02):** RESOLVED — keep the single existing advisory-lock key `5_000_504`; the drain snapshots each backend's `in_flight_count()` once per tick under the lock and decrements locally as it claims. Reconcile only ever *decrements* in-flight (never claims a slot) and shares the same key per-row, so overlapping ticks provably never overshoot a cap. No per-backend lock keys needed.
+- **Black-hole counters (D-04, SCHED-03):** RESOLVED — reuse the persistent `cloud_job.attempts` counter as the anti-thrash bound; a file whose attempts reach the cap becomes cloud/Kueue-ineligible (filtered from the eligible set), deterministically routing it to local. `ANALYSIS_FAILED` only when local itself fails or the global total-attempt ceiling is hit. Preserves D-06 statelessness (exclusion derives from a counter, not remembered backend IDs).
 </deferred>
 
 ---

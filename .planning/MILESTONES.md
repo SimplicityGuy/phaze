@@ -1,5 +1,24 @@
 # Milestones
 
+## 2026.7.1 Multi-Cloud Backends (Shipped: 2026-07-05)
+
+**Phases completed:** 5 phases, 26 plans, 56 tasks
+
+**Shipped via:** PRs #201, #202, #203, #204, #206 · git range `a818d706..c0184295` · 2026-07-03 → 2026-07-04
+**Delivered:** Generalized the single `cloud_target` selector into a declarative, cost-tiered backend registry that drains long, locally-timing-out audio files across local + N Kueue clusters + N cloud-compute agents simultaneously — statically configured, no provisioning, zero new dependencies.
+
+**Key accomplishments:**
+
+- **Declarative backend registry (Phase 67, REG-01..05):** `backends.toml` (id/kind/rank/cap) loaded via a stdlib-`tomllib` before-validator keyed on `PHAZE_BACKENDS_CONFIG_FILE`, with a per-file S3 staging-bucket registry (public/shared vs cluster-specific), whole-registry fail-fast validation, a secret-free boot-log projection, and a zero-config implicit-local default — `cloud_target` and the flat `s3_*`/`kube_*`/`compute_*` fields removed with no back-compat shim.
+- **Single `Backend` protocol + 3 implementations (Phase 68, BACK-01..04):** Local/ComputeAgent/Kueue behind one `is_available`/`in_flight_count`/`dispatch`/`reconcile` seam; the `if/elif cloud_target` dispatch fork removed; additive `cloud_job.backend_id` migration (029); behavior-preservation proven by a byte-identical D-01 golden characterization snapshot.
+- **Tiered multi-backend drain scheduler (Phase 69, SCHED-01..05):** per-file rank-first eligible dispatch, per-backend `cap` count-and-claim under one advisory lock, staleness spill-to-local, black-hole/attempt guard, deterministic stateless tie-break, single recovery owner per kind, and `FileState.LOCAL_ANALYZING` closing the cross-backend double-dispatch race (CR-01) — the first behavior-changing phase.
+- **N-Kueue-cluster dispatch (Phase 70, MKUE-01..04):** distinct constructor-authed kr8s client per cluster (token-hack retired), deterministic restart-stable per-file `pick_bucket`, `cloud_job.staging_bucket` migration (030), per-cluster failure isolation, and concurrency-safe clean-before-flip cross-bucket cleanup under the held advisory lock (closing Pitfall 9).
+- **N-lane UI + no-redeploy force-local kill-switch (Phase 71, BEUI-01..03):** N registry-derived read-only backend lanes (rank / in-flight / cap / online-offline / per-lane Kueue admission) on the existing 5s poll, a persisted master force-local toggle that makes the drain + both duration-router triggers + the backfill trigger behave as all-local without a redeploy, plus an operator runbook and reconciled config docs.
+
+**Known deferred items at close:** 4 (see STATE.md Deferred Items) — stale docker-compose `PHAZE_CLOUD_TARGET` comments (67), lazy >1-compute fail-fast / PROV-01 backlog (68), no committed force-local-gate regression test (71/W2), and 70-UAT test 7 deployment-gated live-cluster E2E.
+
+---
+
 ## 2026.7.0 Engineering Improvements (Shipped: 2026-07-03)
 
 **Phases completed:** 4 phases (63–66), 13 plans, 19 tasks

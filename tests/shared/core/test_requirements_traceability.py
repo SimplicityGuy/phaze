@@ -32,6 +32,12 @@ Scope + degradation rule (D-04):
   unmarked (checkbox ``[ ]`` + Status ``Pending``) is NOT drift — it PASSES. Phase 66 itself
   is exactly this state while this guard is being built, so the guard must stay green.
 
+* **Between-milestones tolerance:** ``/gsd:complete-milestone`` deliberately removes
+  ``.planning/REQUIREMENTS.md`` at milestone close (a fresh one is created by the next
+  ``/gsd:new-milestone``). An absent active REQUIREMENTS.md is therefore a valid
+  no-active-milestone state, NOT drift — the active-milestone checks below skip while it is
+  gone. The archived-milestone consistency check + the hermetic parser unit tests still run.
+
 Status-vocabulary is normalized before comparing ({complete, done} -> COMPLETE;
 {deferred} -> DEFERRED; everything else -> PENDING) because the active milestone uses
 Complete/Pending while v7.0 uses Done/Deferred (Pitfall 1).
@@ -51,6 +57,12 @@ _REQUIREMENTS = _PLANNING / "REQUIREMENTS.md"
 _ROADMAP = _PLANNING / "ROADMAP.md"
 _MILESTONES = _PLANNING / "milestones"
 _PHASES = _PLANNING / "phases"
+
+# Between-milestones tolerance: complete-milestone removes REQUIREMENTS.md; new-milestone
+# recreates it. When it is absent there is no active milestone to gate, so the active-milestone
+# checks skip (the archived-consistency + hermetic parser tests still run).
+_NO_ACTIVE_MILESTONE = not _REQUIREMENTS.exists()
+_NO_ACTIVE_MILESTONE_REASON = "no active .planning/REQUIREMENTS.md — between milestones (removed at close, recreated by /gsd:new-milestone); active-milestone traceability checks are N/A"
 
 # Verbatim parser regexes (RESEARCH Deep-Dive 1). All line-anchored patterns use re.MULTILINE.
 _REQ_CHECKBOX = re.compile(r"^- \[([ x])\] \*\*([A-Z]+-\d+)\*\*", re.MULTILINE)
@@ -241,6 +253,7 @@ def _checkbox_table_offenders(text: str, label: str) -> list[str]:
 # --- Assertions (one per drift class) ---------------------------------------------------
 
 
+@pytest.mark.skipif(_NO_ACTIVE_MILESTONE, reason=_NO_ACTIVE_MILESTONE_REASON)
 def test_active_passed_phases_have_all_requirements_marked() -> None:
     """D-01/D-02: every passed active phase has all its mapped requirements marked Complete."""
     offenders = _passed_phase_completeness_offenders()
@@ -249,6 +262,7 @@ def test_active_passed_phases_have_all_requirements_marked() -> None:
     )
 
 
+@pytest.mark.skipif(_NO_ACTIVE_MILESTONE, reason=_NO_ACTIVE_MILESTONE_REASON)
 def test_active_marked_requirements_have_passed_phases() -> None:
     """D-02: no active requirement is marked Complete unless its mapped phase actually passed."""
     offenders = _marked_requirement_offenders()
@@ -258,6 +272,7 @@ def test_active_marked_requirements_have_passed_phases() -> None:
     )
 
 
+@pytest.mark.skipif(_NO_ACTIVE_MILESTONE, reason=_NO_ACTIVE_MILESTONE_REASON)
 def test_active_checkbox_and_table_status_agree() -> None:
     """D-03: each active requirement's checkbox and its Traceability Status column agree."""
     offenders = _checkbox_table_offenders(_read(_REQUIREMENTS), "REQUIREMENTS.md")
@@ -309,6 +324,7 @@ def test_unmarked_requirement_without_traceability_row_is_not_flagged() -> None:
     assert _marked_requirement_offenders_from({"ZZ-01": False}, {}, {}) == []
 
 
+@pytest.mark.skipif(_NO_ACTIVE_MILESTONE, reason=_NO_ACTIVE_MILESTONE_REASON)
 def test_inflight_phase_with_unmarked_requirements_passes() -> None:
     """D-05 regression: the current in-flight active milestone state is NOT drift.
 
