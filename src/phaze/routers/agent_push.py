@@ -33,7 +33,7 @@ no body for either callback).
 from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -179,6 +179,13 @@ async def report_push_mismatch(
 ) -> PushMismatchResponse:
     """Record a post-transfer sha256 mismatch: attempt-capped re-drive, or terminal failure (D-12).
 
+    D-07 (T-73-07) reporter authorization runs FIRST: the /mismatch reporter IS the compute agent running
+    ``process_file``, so its ``agent.id`` must equal the file's RECORDED ``cloud_job.backend_id`` backend's
+    ``agent_ref`` (resolved via ``resolve_compute_backend``). A wrong/stale/duplicate compute agent is
+    rejected 403 with nothing terminalized (reject-don't-terminalize; never re-stamp ``backend_id`` from the
+    token). The under-cap re-drive then stamps that backend's destination onto the ``PushFilePayload``
+    (Landmine 1) -- never a destination-less push; an unattributed file (no backend) holds instead.
+
     The ``push_attempt`` counter lives in the ``push_file:<file_id>`` ledger payload JSONB
     (migration-free, Pitfall 4). Read it (default 0) and increment:
 
@@ -196,6 +203,24 @@ async def report_push_mismatch(
     """
     settings = cast("ControlSettings", get_settings())
     ledger_key = f"push_file:{file_id}"
+
+    # D-06 + D-07 (record-don't-rederive + reporter authorization, T-73-07): resolve the file's OWN compute
+    # backend from the RECORDED cloud_job.backend_id, then verify the REPORTING agent is that backend's
+    # dispatched agent. Unlike /pushed (reported by the FILESERVER), /mismatch is reported by the COMPUTE
+    # agent running process_file (tasks/functions.py), so agent.id MUST equal backend.agent_ref. A
+    # wrong/stale/duplicate compute agent is rejected 403 BEFORE any mutation -- the file is NOT
+    # terminalized/spilled/re-driven (reject-don't-terminalize). NEVER re-stamp backend_id from the token:
+    # that would invert record-don't-rederive and let a spoofing reporter mis-attribute another agent's file.
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    backend = resolve_compute_backend(settings, cloud_job.backend_id if cloud_job else None)
+    if backend is not None and agent.id != backend.agent_ref:
+        logger.warning(
+            "report_push_mismatch rejected: reporting agent is not the dispatched compute agent",
+            file_id=str(file_id),
+            reporter=agent.id,
+            expected=backend.agent_ref,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reporting agent is not the dispatched compute agent")
 
     # The push_attempt counter rides the ledger payload JSONB (Pitfall 4); default 0 when absent.
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key))).scalar_one_or_none()
@@ -234,6 +259,21 @@ async def report_push_mismatch(
         return PushMismatchResponse(file_id=file_id, cleared=True)
 
     # Under the cap: re-drive push_file on the FILESERVER queue, keeping the PUSHING slot (Open-Q1).
+    # Landmine 1: the re-drive MUST carry the recorded destination -- never a destination-less payload
+    # (the fileserver would rsync to a null remote spec). An unattributed file (no cloud_job / an
+    # operator-removed backend_id -> backend is None) has no destination to stamp, so it cannot be
+    # re-driven: hold it PUSHING for the staging cron / recovery (mirrors the no-fileserver hold below)
+    # rather than enqueue a destination-less push.
+    if backend is None:
+        logger.warning(
+            "report_push_mismatch held: no attributed compute backend to re-stamp the push destination",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            attempt=next_attempt,
+        )
+        await session.commit()
+        return PushMismatchResponse(file_id=file_id, cleared=False)
+
     file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     try:
         fileserver_agent = await select_active_agent(session, kind="fileserver")
@@ -249,11 +289,18 @@ async def report_push_mismatch(
         return PushMismatchResponse(file_id=file_id, cleared=False)
 
     fileserver_queue = request.app.state.task_router.queue_for(fileserver_agent.id)
+    # Landmine 1: stamp the RECORDED backend's destination onto the re-driven payload (backend is non-None
+    # here -- either the reporter passed the D-07 gate or no gate applied and the backend-None hold above
+    # already returned). The destination is the compute backend to push TO; agent_id is the FILESERVER
+    # that initiates the rsync (the push origin), unchanged.
     payload = PushFilePayload(
         file_id=file.id,
         original_path=file.original_path,
         file_type=file.file_type,
         agent_id=fileserver_agent.id,
+        dest_host=backend.push_host,
+        dest_scratch_dir=backend.scratch_dir,
+        dest_ssh_user=backend.ssh_user,
     )
     dumped = payload.model_dump(mode="json")
     await fileserver_queue.connect()
