@@ -118,10 +118,17 @@ def _build_rsync_argv(
 
 
 def _require_push_config(cfg: AgentSettings) -> None:
-    """Fail fast (clear terminal error) if the operator-provisioned push config is incomplete."""
-    missing = [
-        name for name in ("push_ssh_host", "push_ssh_user", "cloud_scratch_dir", "push_ssh_key", "push_known_hosts") if getattr(cfg, name) is None
-    ]
+    """Fail fast (clear terminal error) if the operator-provisioned push config is incomplete.
+
+    D-04: the remote target (``push_ssh_host`` + ``cloud_scratch_dir``) is now carried per file on the
+    payload (``dest_host`` / ``dest_scratch_dir``), so it is NO LONGER part of the required set -- the
+    fileserver's single-global remote-target read is retired. What stays required is the SSH secret
+    material (``push_ssh_key`` + ``push_known_hosts``, D-03) plus ``push_ssh_user`` (the
+    ``dest_ssh_user=None`` fallback source). Note: ``cloud_scratch_dir`` is dropped only from THIS
+    (fileserver) required set -- the AgentSettings field itself survives because the compute agent's
+    OWN local janitor (agent_worker.py) still reads it (Landmine 2).
+    """
+    missing = [name for name in ("push_ssh_user", "push_ssh_key", "push_known_hosts") if getattr(cfg, name) is None]
     if missing:
         msg = f"push_file missing required push config: {', '.join(missing)} (operator-provisioned in Phase 51)"
         raise RuntimeError(msg)
