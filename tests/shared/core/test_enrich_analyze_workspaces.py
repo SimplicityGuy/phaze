@@ -235,6 +235,25 @@ async def test_workspaces_sink_cloud_card_oob_fragments(client: AsyncClient) -> 
             assert count == 1, f"{stage} fragment must have exactly one #{cid} target (found {count})"
 
 
+@pytest.mark.asyncio
+async def test_workspaces_sink_analyze_lanes_oob_grid(client: AsyncClient) -> None:
+    """BEUI-01 -- every workspace has exactly one target for the #analyze-lanes N-lane grid OOB swap.
+
+    The shared `/pipeline/stats` poll re-emits the BEUI-01 N-lane grid OOB every tick (stats_bar.html,
+    `oob=True`). Its REAL host lives only in analyze_workspace.html; Discover/Metadata/Fingerprint (and
+    the first-run empty state) must carry a hidden sink or htmx logs `htmx:oobErrorNoTarget` every 5s
+    (found in 71 live UAT -- the same class as the six cloud-state cards above). Analyze must have
+    EXACTLY ONE (the real grid) -- the sink is skipped there via `cloud_cards=true` so a duplicate id
+    can't steal the live swap. With no files seeded the analyze fragment is the empty-state guide, which
+    still carries the sink; either way the count is exactly one.
+    """
+    for stage in ("discover", "metadata", "fingerprint", "analyze"):
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200
+        count = frag.text.count('id="analyze-lanes"')
+        assert count == 1, f"{stage} fragment must have exactly one #analyze-lanes target (found {count})"
+
+
 # ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 58-VALIDATION.md Per-Task Verification Map)
