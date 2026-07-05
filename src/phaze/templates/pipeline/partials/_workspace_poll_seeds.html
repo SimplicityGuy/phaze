@@ -93,5 +93,12 @@
     <section id="awaiting-cloud-card"></section>
     <section id="analyzing-cloud-card"></section>
     <section id="staged-pushing-card"></section>
+    {# Phase 71 (71-03, BEUI-01): the shared /pipeline/stats poll ALSO re-emits the #analyze-lanes
+       N-lane grid OOB every tick (stats_bar.html). Its real host lives ONLY in analyze_workspace.html;
+       on every other stage (and the first-run empty state) the outerHTML OOB swap would land nowhere and
+       htmx would log htmx:oobErrorNoTarget every 5s. Sink it here under the SAME `not
+       workspace_has_cloud_cards` gate as the six cloud cards — Analyze passes cloud_cards=true so this
+       sink is skipped there and its real grid keeps the id (a duplicate would steal the live swap). #}
+    <div id="analyze-lanes"></div>
 </div>
 {% endif %}

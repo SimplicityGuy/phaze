@@ -32,7 +32,7 @@
   - [x] 69-04-PLAN.md — Single-recovery-owner ledger guard + compute/kueue callback spill to AWAITING_CLOUD (SCHED-03/05) [Wave 3]
   - [x] 69-05-PLAN.md — Gap closure (CR-01): `FileState.LOCAL_ANALYZING` + `LocalBackend.dispatch` flips out of AWAITING_CLOUD (stops cross-backend double-dispatch) + WR-01 honest return (SCHED-01/03) [Wave 1]
 - [x] **Phase 70: Multi-Kueue (N Clusters)** — N concurrently-dispatched Kueue clusters, each staging to its REG-05-assigned bucket set (DIST-01 preserved), per-cluster probe + `backend_id`-scoped reconcile with per-backend failure isolation, per-(backend,bucket) cleanup (MKUE-01..04) — **research flag** (completed 2026-07-04)
-- [ ] **Phase 71: Deployment, Config, Docs & N-Lane UI** — N registry-derived per-backend lanes (available/offline, in-flight/cap, rank) read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + operator runbook/config docs incl. the `cloud_target`→`backends` migration (BEUI-01..03)
+- [x] **Phase 71: Deployment, Config, Docs & N-Lane UI** — N registry-derived per-backend lanes (available/offline, in-flight/cap, rank) read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + operator runbook/config docs incl. the `cloud_target`→`backends` migration (BEUI-01..03) (completed 2026-07-05)
 
 <details>
 <summary>✅ 2026.7.0 Engineering Improvements (Phases 63-66) — SHIPPED 2026-07-03</summary>
@@ -232,7 +232,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 68. Backend Protocol + 3 Implementations | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
-| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 0/TBD | Not started | - |
+| 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -1113,7 +1113,18 @@ Plans:
   2. A master toggle reverts all routing to local for incident response (the `backends`-era equivalent of today's `cloud_target=local` no-op gate).
   3. The operator runbook and configuration docs cover the `backends:` schema, per-backend `_FILE` secrets, and the `cloud_target`→`backends` migration and deprecation path.
 
-**Plans**: TBD (decomposed at `/gsd:plan-phase 71`)
+**Plans**: 5 plans in 2 waves
+**Wave 1**
+
+- [x] 71-01-PLAN.md — BEUI-01 read-only backend-lane snapshot service (bounded probes + per-backend admission) [Wave 1]
+- [x] 71-02-PLAN.md — BEUI-02 force-local mechanism: route_control model + migration 031 + degrade-safe read + drain/router gates [Wave 1]
+- [x] 71-05-PLAN.md — BEUI-03 operator runbook + configuration.md reconciliation (cloud_target removed → backends) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 71-03-PLAN.md — BEUI-01 N-lane grid UI: seed lanes in both context builders + OOB grid over N cards (depends 01, 02) [Wave 2]
+- [x] 71-04-PLAN.md — BEUI-02 control surface: thin force-local endpoint + header status-strip pill + shell seed (depends 02) [Wave 2]
+
 **UI hint**: yes
 **PR**: own worktree branch — never a direct commit to `main`. Presentation/ops only.
 

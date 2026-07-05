@@ -21,7 +21,7 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
-from phaze.services.backends import resolved_non_local_kind
+from phaze.services.backends import get_backend_lane_snapshot, resolved_non_local_kind
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
@@ -56,6 +56,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
 )
 from phaze.services.pipeline_counters import read_counters
+from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import insert_ledger_if_absent
 from phaze.tasks.reenqueue import recover_orphaned_work
 
@@ -388,12 +389,17 @@ async def trigger_analysis(
     if not files_with_duration:
         return {"enqueued": 0, "message": "No files in DISCOVERED state"}
 
+    # Phase 71 (BEUI-02, D-08): fold the force-local override into the routing flag. The effective
+    # cloud_enabled is ``registry cloud_enabled AND NOT force_local`` -- when forced, nothing is "long"
+    # so every file routes local (byte-identical to an all-local registry), and no new row is held in
+    # AWAITING_CLOUD. select_backend stays pure (untouched); the flag is read only here at the caller.
+    effective_cloud_enabled = settings.cloud_enabled and not await get_route_control(session)
     counts = await _route_discovered_by_duration(
         request.app.state,
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_enabled,
+        effective_cloud_enabled,
         settings.models_path,
     )
 
@@ -547,6 +553,15 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # try/except here — same wiring idiom as get_queue_activity / dag_ctx above.
     recon = await get_global_reconciliation(session)
 
+    # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot -- one rank-ascending, secret-free dict
+    # per registry backend {id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}. Seeded
+    # IDENTICALLY in pipeline_stats_partial() below so the WHOLE #analyze-lanes grid OOB-swaps on the SAME
+    # existing 5s poll (no second loop, no new read endpoint -- Pitfall 2: N is dynamic, no per-lane store
+    # keys). The snapshot helper owns the never-500 degrade (-> [] on any error), so NO try/except here --
+    # same service-owns-degrade idiom as the cloud counts above. This SUPERSEDES the transitional single
+    # non-local lane-kind key (retired); resolved_non_local_kind stays for the :811 callers.
+    lanes = await get_backend_lane_snapshot(session)
+
     return {
         "stats": stats,
         "current_page": "pipeline",
@@ -566,14 +581,11 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
-        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03) + the registry-derived cloud
-        # lane kind (Phase 67 / D-14, REG-04) that drives the D-05 "not configured" lane labels. A
-        # transitional legacy-shaped value under the NEUTRAL `cloud_lane_kind` key: "local" when the
-        # registry is all-local, else the single non-local backend's kind ("compute"/"kueue"). The
-        # three Analyze partials compare against it (compute↔A1 lane, kueue↔k8s lane). Read-only; no
-        # backend behavior change. (# TRANSITIONAL — Phase 68/71: BEUI-01 owns the N-lane redesign.)
+        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03).
         "analyze_files": analyze_files,
-        "cloud_lane_kind": resolved_non_local_kind(settings),
+        # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored identically
+        # in pipeline_stats_partial). Retires the transitional single non-local lane-kind context key.
+        "lanes": lanes,
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -642,6 +654,11 @@ async def pipeline_stats_partial(
     # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
     # the inadmissible_count wiring.
     cloud_phase_counts = await get_cloud_phase_counts(session)
+    # Phase 71 (71-03, BEUI-01 / D-04): the SAME N-lane snapshot the dashboard seeds, re-pushed on every
+    # 5s poll so the WHOLE #analyze-lanes grid OOB-swaps as a unit (stats_bar.html includes _analyze_lanes
+    # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
+    # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
+    lanes = await get_backend_lane_snapshot(session)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -665,6 +682,7 @@ async def pipeline_stats_partial(
             "admitted_count": cloud_phase_counts["admitted"],
             "running_count": cloud_phase_counts["running"],
             "finished_count": cloud_phase_counts["finished"],
+            "lanes": lanes,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
@@ -695,12 +713,15 @@ async def trigger_analysis_ui(
             context={"request": request, "action": "analysis", "count": 0, "no_active_agent": False},
         )
 
+    # Phase 71 (BEUI-02, D-08): same force-local fold as the JSON trigger -- effective cloud_enabled is
+    # ``registry cloud_enabled AND NOT force_local``, so a forced registry routes every file local.
+    effective_cloud_enabled = settings.cloud_enabled and not await get_route_control(session)
     counts = await _route_discovered_by_duration(
         request.app.state,
         session,
         files_with_duration,
         settings.cloud_route_threshold_sec,
-        settings.cloud_enabled,
+        effective_cloud_enabled,
         settings.models_path,
     )
 
@@ -765,7 +786,11 @@ async def trigger_backfill_cloud(
     # ANALYSIS_FAILED long files to DISCOVERED and re-route them local to re-time-out. When the
     # registry is all-local (cloud_enabled False, Phase 67 / D-14) this is a clean no-op that mutates
     # ZERO file.state rows -- byte-identical to the former all-local selector guard.
-    if not settings.cloud_enabled:
+    # Phase 71 (BEUI-02, D-08, T-71-08): the force-local override is the THIRD gate site. Forced-local
+    # must behave EXACTLY like the all-local path here too -- otherwise backfill would reset the failed
+    # long files to DISCOVERED and HOLD them in AWAITING_CLOUD while the (forced) drain no-ops, stranding
+    # them. Folding force_local into this same early-return keeps backfill a clean ZERO-mutation no-op.
+    if not settings.cloud_enabled or await get_route_control(session):
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/backfill_response.html",

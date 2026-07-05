@@ -351,6 +351,35 @@ async def test_cloud_disabled_stages_nothing(async_engine: AsyncEngine, session:
 
 
 @pytest.mark.asyncio
+async def test_forced_local_drain_noop(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FORCED-LOCAL: with the route_control 'global' row force_local True the drain is a clean no-op (D-08).
+
+    Mirrors :func:`test_cloud_disabled_stages_nothing` but the registry still holds a compute backend
+    (cloud_enabled True) -- the force-local override alone flips the drain to the all-local path. Both
+    agents are online and the window is wide open (3 held, N=2), so the cron WOULD stage if not forced.
+    Forced-local returns {"staged": 0, "skipped": 0} BEFORE the advisory lock, stages no push_file, and
+    leaves every held file AWAITING_CLOUD (already-held files stay held while forced -- runbook A4).
+    """
+    from phaze.models.route_control import RouteControl
+
+    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")
+    session.add(RouteControl(id="global", force_local=True))
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(3)]
+    session.add_all(held)
+    await session.commit()
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result == {"staged": 0, "skipped": 0}
+    assert router.queues == {}
+    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+
+
+@pytest.mark.asyncio
 async def test_cloud_compute_stages_normally(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """ON: a single compute backend (active_cloud_kind='compute') stages as before (Phase 50 rsync-push regression)."""
     _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")

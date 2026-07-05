@@ -235,6 +235,25 @@ async def test_workspaces_sink_cloud_card_oob_fragments(client: AsyncClient) -> 
             assert count == 1, f"{stage} fragment must have exactly one #{cid} target (found {count})"
 
 
+@pytest.mark.asyncio
+async def test_workspaces_sink_analyze_lanes_oob_grid(client: AsyncClient) -> None:
+    """BEUI-01 -- every workspace has exactly one target for the #analyze-lanes N-lane grid OOB swap.
+
+    The shared `/pipeline/stats` poll re-emits the BEUI-01 N-lane grid OOB every tick (stats_bar.html,
+    `oob=True`). Its REAL host lives only in analyze_workspace.html; Discover/Metadata/Fingerprint (and
+    the first-run empty state) must carry a hidden sink or htmx logs `htmx:oobErrorNoTarget` every 5s
+    (found in 71 live UAT -- the same class as the six cloud-state cards above). Analyze must have
+    EXACTLY ONE (the real grid) -- the sink is skipped there via `cloud_cards=true` so a duplicate id
+    can't steal the live swap. With no files seeded the analyze fragment is the empty-state guide, which
+    still carries the sink; either way the count is exactly one.
+    """
+    for stage in ("discover", "metadata", "fingerprint", "analyze"):
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200
+        count = frag.text.count('id="analyze-lanes"')
+        assert count == 1, f"{stage} fragment must have exactly one #analyze-lanes target (found {count})"
+
+
 # ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 58-VALIDATION.md Per-Task Verification Map)
@@ -326,20 +345,32 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> None:
-    """WORK-03 / D-05 -- all 3 lane cards always render; not-configured vs offline; Inadmissible role=alert.
+async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BEUI-01 / D-04/D-05/D-06 -- N registry lane cards render rank-ascending; word-labelled states; global roll-up intact.
 
-    The Analyze workspace ALWAYS renders all three execution-lane cards (local / A1 / k8s). On the
-    default test deploy (the implicit-local registry -> ``cloud_lane_kind == "local"``, no online
-    agents) the local lane is configured but has no online agent (``offline``) while A1 + k8s are
-    ``not configured`` -- a down lane is never hidden, it is greyed + labelled (D-05). This is the
-    Phase-67 implicit-local render-safety case: the workspace renders with no template exception when
-    the registry is all-local. The load-bearing WORK-03 distinction: the Inadmissible
-    fault card carries ``role="alert"`` while the healthy admission-state card does NOT. B1: the A1
-    lane numeral has a pre-mounted ``dag-seed-computeOnline`` OOB target so it is not stuck at 0.
+    The Analyze workspace loops ``_lane_card.html`` over the seeded ``get_backend_lane_snapshot`` list
+    (D-04): one card per registry backend, rank-ascending (D-06), each showing ``RANK {n}`` + the
+    ``{in_flight}/{cap}`` numeral + the per-lane Kueue quota-wait-vs-Inadmissible caption (D-03). A down
+    lane (``available=False``) is NEVER hidden -- it greys with the explicit word ``offline`` (WCAG 1.4.1);
+    the Phase-58 ``not configured`` path is retired for the N-lane grid. The 6 global cloud-state cards stay
+    VERBATIM as a cross-lane roll-up below the grid (D-07) with the load-bearing WORK-03 distinction: the
+    Inadmissible FAULT card carries ``role="alert"`` while the healthy admission-state card does NOT.
     """
-    # Seed a k8s cloud_job flagged Inadmissible (status RUNNING so get_inadmissible_count counts it)
-    # so the fault banner renders, AND its cloud_phase makes the healthy admission-state card render.
+    import phaze.routers.pipeline as pipeline_mod
+
+    lanes = [
+        {"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 2, "available": True, "quota_wait": 0, "inadmissible": 0},
+        {"id": "k8s", "kind": "kueue", "rank": 20, "cap": 3, "in_flight": 1, "available": True, "quota_wait": 2, "inadmissible": 1},
+        {"id": "nox", "kind": "local", "rank": 99, "cap": 1, "in_flight": 0, "available": False, "quota_wait": 0, "inadmissible": 0},
+    ]
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return lanes
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+
+    # Seed a k8s cloud_job flagged Inadmissible (status RUNNING so get_inadmissible_count counts it) so the
+    # GLOBAL inadmissible fault card renders (role="alert"), AND its cloud_phase makes the admission card render.
     fault = await _seed_file(session, state=FileState.PUSHED, original_filename="fault.mp3")
     await _seed_cloud_job(
         session,
@@ -358,18 +389,26 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> 
     assert "<head" not in body
     assert body.count('tabindex="-1"') == 1
 
-    # D-05: ALL three lane cards always render (the lane grid host id is stable).
+    # D-05: the lane grid host id is stable; one card per seeded lane.
     assert 'id="analyze-lanes"' in body
-    # Lane identities (a word + glyph -- never hue-only).
-    assert "LOCAL" in body
-    assert "A1" in body
-    assert "K8S" in body
-
-    # Default test deploy: local configured-but-no-agent -> "offline"; A1 + k8s -> "not configured".
+    # Lane identities carry a word + glyph -- {KIND · id} (never hue-only).
+    assert "COMPUTE · a1" in body
+    assert "KUEUE · k8s" in body
+    assert "LOCAL · nox" in body
+    # D-06: rank-ascending render order (a1 rank10 -> k8s rank20 -> nox rank99).
+    assert body.index("COMPUTE · a1") < body.index("KUEUE · k8s") < body.index("LOCAL · nox")
+    # RANK micro-labels + {in_flight}/{cap} numerals.
+    assert "RANK 10" in body and "RANK 20" in body and "RANK 99" in body
+    assert "2/4" in body  # a1 in_flight/cap
+    assert "1/3" in body  # k8s in_flight/cap
+    # D-03 per-lane Kueue admission caption: quota-wait vs Inadmissible, word-labelled.
+    assert "2 waiting" in body
+    assert "1 inadmissible" in body
+    # local lane available=False -> explicit "offline" word (never hidden). "not configured" is retired.
     assert "offline" in body
-    assert "not configured" in body
+    assert "not configured" not in body
 
-    # WORK-03 load-bearing distinction: the Inadmissible FAULT carries role="alert"; the HEALTHY
+    # D-07 / WORK-03 load-bearing distinction: the Inadmissible FAULT carries role="alert"; the HEALTHY
     # admission-state card does NOT (the fault can never be collapsed into healthy progression).
     assert 'role="alert"' in body
     assert "K8s Jobs not admitting" in body  # inadmissible_card copy
@@ -378,8 +417,8 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> 
     admission_section = admission[: admission.index("</section>")]
     assert 'role="alert"' not in admission_section
 
-    # B1 regression guard: the A1 lane numeral has a live OOB seed target (not a permanent 0).
-    assert "dag-seed-computeOnline" in body
+    # No leaked legacy routing key.
+    assert "cloud_target" not in body
 
     # WORK-05 / R-2: no second poll loop in the workspace fragment.
     assert 'hx-trigger="every' not in body
@@ -387,35 +426,40 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession) -> 
 
 
 @pytest.mark.asyncio
-async def test_lane_cards_render_on_compute_registry(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phase 67 (D-14 Class C): with a single compute backend the A1 lane resolves off cloud_lane_kind.
+async def test_lane_grid_subcount_is_lane_count_agnostic(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BEUI-01 -- no operator-facing copy hardcodes a lane count; the subcount reflects the seeded lane count.
 
-    The router supplies the NEUTRAL ``cloud_lane_kind`` = "compute" for a single-compute registry, so
-    the A1 lane is NO LONGER "not configured" -- it renders configured (offline here, no compute agent
-    online). Proves the renamed context var + the compute↔A1 mapping is consistent across the router
-    and the three partials, with no `cloud_target` string and no template exception.
+    Phase 58 hardcoded ``across 3 lanes``. With N≠3 registry backends the Analyze sub-count must interpolate
+    the ACTUAL seeded lane count (server-side Jinja over ``lanes``) so a 2-backend deploy renders ``across 2
+    lanes`` and NEVER the stale ``3 lanes``. Also proves a compute lane renders configured off the snapshot
+    (no ``not configured``, no ``cloud_target`` leak, no template exception).
     """
-    from phaze.config import settings
-    from phaze.config_backends import ComputeBackend
+    import phaze.routers.pipeline as pipeline_mod
 
-    # A file must exist or the analyze node swaps to the first-run empty-state (shell.py:176) instead
-    # of the lane workspace.
+    lanes = [
+        {"id": "a1", "kind": "compute", "rank": 10, "cap": 2, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0},
+        {"id": "nox", "kind": "local", "rank": 99, "cap": 1, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0},
+    ]
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return lanes
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    # A file must exist or the analyze node swaps to the first-run empty-state (shell.py:176) instead of lanes.
     await _seed_file(session, state=FileState.PUSHED, original_filename="held.mp3")
-    monkeypatch.setattr(settings, "backends", [ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1", scratch_dir="/scratch")])
 
     resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     body = resp.text
 
-    # All three lanes still render (no template exception on the renamed var).
     assert 'id="analyze-lanes"' in body
-    # The A1 lane (compute↔A1) is now CONFIGURED: its card shows "offline" (no compute agent), never
-    # "not configured". Slice the A1 card region (between the A1 and K8S lane titles) to assert per-lane.
-    a1_card = body[body.index("A1 · arm64") : body.index("K8S · burst")]
-    assert "not configured" not in a1_card
-    assert "offline" in a1_card
-    # The k8s lane (kind != kueue) is still "not configured".
-    assert "not configured" in body
+    # BEUI-01: N=2 lanes -> the subcount reflects the actual count; the stale "3 lanes" never survives.
+    assert "3 lanes" not in body
+    assert "2 lanes" in body
+    # The compute lane renders configured + available off the snapshot; "not configured" is retired.
+    assert "COMPUTE · a1" in body
+    assert "not configured" not in body
+    assert "cloud_target" not in body
 
 
 @pytest.mark.asyncio

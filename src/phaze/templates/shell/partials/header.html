@@ -39,6 +39,11 @@
     {# D-05 status strip: agent dot + "Agents · {n}" link, bound to $store.pipeline.agentOnline,
        refreshed by the existing /pipeline/stats OOB poll — no second timer here. #}
     <div class="ml-auto flex items-center gap-2.5 text-xs text-gray-500 dark:text-gray-400" x-data>
+        {# Phase 71 (BEUI-02): the force-local master routing override pill — a global incident control,
+           so it rides the status-strip cluster immediately LEFT of the Agents pill. Its state is seeded
+           on every page from get_route_control (shell.py _render_stage base context); it hx-posts the
+           thin write endpoint and swaps itself in place from the authoritative server response. #}
+        {% include "shell/partials/_force_local_pill.html" %}
         <span class="flex items-center" aria-hidden="true">
             <span class="w-2 h-2 rounded-full"
                   :class="$store.pipeline.agentOnline > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
