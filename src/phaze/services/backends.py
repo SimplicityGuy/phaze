@@ -53,7 +53,7 @@ from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
-from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent, select_agent_by_id
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
 from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
@@ -240,16 +240,39 @@ class ComputeAgentBackend(_BaseBackend):
     (Pitfall 1 / D-03) then re-homes the ``_enqueue_push_file`` leg. ``reconcile`` is a no-op --
     compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08).
     ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
+
+    Phase 72 (MCOMP-01/D-02): ``is_available`` resolves THIS backend's bound ``agent_ref``
+    (``self._agent_ref()``) against ``Agent.id`` per-call -- the record-don't-rederive twin of
+    ``KueueBackend._kube()`` -- replacing the retired ``select_active_agent(kind="compute")``
+    single-active-compute pick. Each compute entry gates on ITS bound agent, not "the single active
+    compute agent" (Phase 73 builds dispatch/push/reconcile on this per-agent binding).
     """
 
-    async def is_available(self, session: AsyncSession) -> bool:
-        """GATE-1 (D-01a): True iff a compute agent is online; False (never raises) when absent.
+    def _agent_ref(self) -> str:
+        """Return THIS backend's bound ``agent_ref`` (the Phase-67 compute entry's dispatch node, D-02).
 
-        Re-homes ``stage_cloud_window``'s compute-agent gate. An absent agent degrades to a hold
-        (NoActiveAgentError -> False), preserving the cron no-op discipline (T-68-05).
+        ``self.config`` is the ``ComputeBackend`` submodel bound in ``resolve_backends``; its
+        ``agent_ref`` is the ``Agent.id`` this backend dispatches to. Fail-loud (``ValueError`` naming
+        ``self.id``) if a compute backend somehow has no ``agent_ref`` bound -- the
+        ``_require_dispatch_fields`` validator already guarantees it non-empty at construction, so this
+        is defense-in-depth (mirrors ``KueueBackend._kube()``).
+        """
+        agent_ref = getattr(self.config, "agent_ref", None)
+        if not agent_ref:
+            raise ValueError(f"compute backend {self.id!r} has no agent_ref bound")
+        return cast("str", agent_ref)
+
+    async def is_available(self, session: AsyncSession) -> bool:
+        """D-02: True iff THIS backend's bound ``agent_ref`` names an ONLINE compute agent; False when absent.
+
+        Resolves the per-entry binding (``self._agent_ref()`` -> ``Agent.id``) via
+        :func:`select_agent_by_id`, reading ``self.config.agent_ref`` per-call (record-don't-rederive).
+        An absent / unregistered / offline bound agent degrades to a hold (``NoActiveAgentError`` ->
+        ``False``), preserving the cron no-op discipline (T-68-05, D-05). A backend with no ``agent_ref``
+        bound fails loud via ``_agent_ref()`` (defense-in-depth) rather than silently holding.
         """
         try:
-            await select_active_agent(session, kind="compute")
+            await select_agent_by_id(session, self._agent_ref(), kind="compute")
         except NoActiveAgentError:
             return False
         return True
@@ -478,24 +501,18 @@ def resolved_non_local_kind(settings: ControlSettings) -> str:
     the moment a 2nd Kueue backend was declared, because the old ``>1``-non-local blanket raise fired on
     the literal MKUE-01 scenario. Generalize: when ANY non-local backend is ``"kueue"``, return
     ``"kueue"`` -- this tolerates N Kueue backends AND a local + N-Kueue + 1-compute registry (the
-    callers degrade gracefully by construction, no per-site try/except needed). The fail-fast is retained
-    ONLY for the genuinely-ambiguous compute-only ``>1`` case (PROV-01 territory, unreachable under
-    D-05's ≤1-compute invariant), mirroring ``active_compute_scratch_dir``'s single-compute reduction.
-    All-local -> ``"local"``, single-kueue -> ``"kueue"``, single-compute -> ``"compute"`` stay
-    byte-identical.
+    callers degrade gracefully by construction, no per-site try/except needed). Phase 72 (MCOMP-01,
+    D-03) retires the compute-only ``>1`` fail-fast too: the compute-only branch now returns ``"compute"``
+    for N compute backends (per-agent dispatch attribution lands in Phase 73). All-local -> ``"local"``,
+    single-kueue -> ``"kueue"``, single-compute -> ``"compute"`` stay byte-identical.
     """
     if not settings.cloud_enabled:
         return "local"
     non_local = [backend for backend in settings.backends if backend.kind != "local"]
     if any(backend.kind == "kueue" for backend in non_local):
         return "kueue"
-    # No kueue backend -> compute-only. Retain the fail-fast on the ambiguous >1-compute case (multi-
-    # compute agent_ref resolution lands in PROV-01; unreachable under D-05's ≤1-compute invariant).
-    if len(non_local) > 1:
-        raise ValueError(
-            f"multiple compute backends {[backend.id for backend in non_local]} are configured, but "
-            f"resolved_non_local_kind reduces a single compute lane (multi-compute lands in PROV-01)"
-        )
+    # No kueue backend -> compute-only. Phase 72 (D-03) retired the ambiguous >1-compute fail-fast; the
+    # compute-only branch returns "compute" for any N compute (per-agent attribution lands in Phase 73).
     return non_local[0].kind
 
 

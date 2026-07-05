@@ -97,7 +97,10 @@ class _StubCfg:
                 )
             ]
         else:
-            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
+            # Phase 72 (MCOMP-01/D-02): a compute backend's is_available resolves THIS entry's bound
+            # ``agent_ref`` against Agent.id per-call, so the default compute stub binds the ``cloud-1``
+            # compute agent every default-single-compute cell seeds online.
+            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap, agent_ref="cloud-1")]
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, cloud_kind: str | None = "compute") -> None:
@@ -753,20 +756,23 @@ async def test_multi_backend_tick_dispatches_rank_first_and_spills(
 ) -> None:
     """SCHED-01: one tick routes candidates rank-first across N backends; a full top rank spills to the next.
 
-    Registry: compute-a (rank 10, cap 1) + compute-b (rank 20, cap 2). Both are available (one compute
-    agent + one fileserver online). With 4 FIFO candidates the free-slot limit is 1+2=3, so 3 stage in
-    one tick: the OLDEST fills the single top-rank (compute-a) slot, then the next two spill to compute-b
-    (compute-a is now full within the tick -- the local ``remaining`` decrement drives the spill). The
-    4th candidate is beyond total capacity and stays AWAITING_CLOUD.
+    Registry: compute-a (rank 10, cap 1) + compute-b (rank 20, cap 2). Both are available. Phase 72
+    (MCOMP-01/D-02) binds each compute backend to a DISTINCT ``agent_ref`` (two compute backends may not
+    share one agent -- the D-04 boot guard forbids it), so each seeds its own online compute agent
+    (``cloud-a`` / ``cloud-b``) plus one fileserver. With 4 FIFO candidates the free-slot limit is
+    1+2=3, so 3 stage in one tick: the OLDEST fills the single top-rank (compute-a) slot, then the next
+    two spill to compute-b (compute-a is now full within the tick -- the local ``remaining`` decrement
+    drives the spill). The 4th candidate is beyond total capacity and stays AWAITING_CLOUD.
     """
     _patch_multi_backends(
         monkeypatch,
         [
-            SimpleNamespace(kind="compute", id="compute-a", rank=10, cap=1),
-            SimpleNamespace(kind="compute", id="compute-b", rank=20, cap=2),
+            SimpleNamespace(kind="compute", id="compute-a", rank=10, cap=1, agent_ref="cloud-a"),
+            SimpleNamespace(kind="compute", id="compute-b", rank=20, cap=2, agent_ref="cloud-b"),
         ],
     )
-    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    await seed_active_agent(session, agent_id="cloud-a", kind="compute")
+    await seed_active_agent(session, agent_id="cloud-b", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     base = datetime.now() - timedelta(hours=4)
     oldest = _make_file(created_at=base)
@@ -906,7 +912,7 @@ async def test_local_spill_not_redispatched_to_cloud(
     _patch_multi_backends(
         monkeypatch,
         [
-            SimpleNamespace(kind="compute", id="compute-1", rank=10, cap=2),
+            SimpleNamespace(kind="compute", id="compute-1", rank=10, cap=2, agent_ref="cloud-1"),
             SimpleNamespace(kind="local", id="local", rank=99, cap=4),
         ],
     )

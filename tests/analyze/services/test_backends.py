@@ -25,12 +25,14 @@ PUSHED}`` window count for the single-backend case, over constructed FileState /
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
+from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.services import kube_staging, s3_staging
@@ -66,8 +68,31 @@ def _local(**kw: Any) -> Any:
 
 
 def _compute(**kw: Any) -> Any:
-    """Construct a ComputeAgentBackend bound to a single registry entry."""
-    return backends.ComputeAgentBackend(id=kw.get("id", "compute-a1"), rank=kw.get("rank", 10), cap=kw.get("cap", 2))
+    """Construct a ComputeAgentBackend bound to a single registry entry.
+
+    Phase 72 (MCOMP-01/D-02): ``is_available`` resolves ``self.config.agent_ref`` against ``Agent.id``,
+    so the backend must carry a real ``ComputeBackend`` config. ``agent_ref`` defaults to the backend id
+    (the byte-identical single-compute deploy binds agent_ref == the online agent's id); pass
+    ``agent_ref=`` to bind a specific / mismatched node, or ``config=None`` to exercise the unbound
+    fail-loud accessor path.
+    """
+    from phaze.config_backends import ComputeBackend as ComputeEntry
+
+    bid = kw.get("id", "compute-a1")
+    rank = kw.get("rank", 10)
+    cap = kw.get("cap", 2)
+    if "config" in kw:
+        config = kw["config"]
+    else:
+        config = ComputeEntry(
+            kind="compute",
+            id=bid,
+            rank=rank,
+            cap=cap,
+            agent_ref=kw.get("agent_ref", bid),
+            scratch_dir=kw.get("scratch_dir", "/srv/scratch"),
+        )
+    return backends.ComputeAgentBackend(id=bid, rank=rank, cap=cap, config=config)
 
 
 def _kueue(**kw: Any) -> Any:
@@ -177,6 +202,126 @@ def _stub_kube_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kube_staging, "get_local_queue", AsyncMock(return_value=fake_local_queue()))
 
 
+async def _seed_agent_row(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    name: str | None = None,
+    kind: str = "compute",
+    online: bool = True,
+    revoked: bool = False,
+) -> Agent:
+    """Insert one Agent row with explicit id / name / liveness so binding-key edge cases are seedable.
+
+    ``seed_active_agent`` always sets ``name == agent_id`` and always-online, so it cannot express the
+    name-only-match / revoked / never-seen fixtures the D-01 selector must reject. This helper does.
+    """
+    now = datetime.now(UTC)
+    agent = Agent(
+        id=agent_id,
+        name=name if name is not None else agent_id,
+        token_hash=None,
+        kind=kind,
+        scan_roots=[],
+        last_seen_at=now if online else None,
+        revoked_at=(now - timedelta(hours=1)) if revoked else None,
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    return agent
+
+
+# === select_agent_by_id (per-entry binding, D-01) ========================================
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_returns_agent_matched_on_id(session: AsyncSession) -> None:
+    """D-01: select_agent_by_id resolves the online agent whose Agent.id equals the arg."""
+    from phaze.services.enqueue_router import select_agent_by_id
+
+    await _seed_agent_row(session, agent_id="oci-a1", kind="compute")
+    agent = await select_agent_by_id(session, "oci-a1", kind="compute")
+    assert agent.id == "oci-a1"
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_matches_id_only_never_name(session: AsyncSession) -> None:
+    """D-01 (no fallback): an agent whose NAME (not id) equals the arg does NOT match -> raises."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    # id="oci-real", name="oci-a1" -- the arg "oci-a1" collides with the free-form NAME only.
+    await _seed_agent_row(session, agent_id="oci-real", name="oci-a1", kind="compute")
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_revoked_agent_raises(session: AsyncSession) -> None:
+    """A matching-id agent that is revoked (revoked_at set) does NOT match -> raises (liveness filter)."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    await _seed_agent_row(session, agent_id="oci-a1", kind="compute", revoked=True)
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_never_seen_agent_raises(session: AsyncSession) -> None:
+    """A matching-id agent that never checked in (last_seen_at NULL) does NOT match -> raises."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    await _seed_agent_row(session, agent_id="oci-a1", kind="compute", online=False)
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_absent_agent_raises(session: AsyncSession) -> None:
+    """An id with NO matching agent raises NoActiveAgentError (the degrade-to-hold signal D-05 consumes)."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "nope", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_honors_kind_filter(session: AsyncSession) -> None:
+    """When kind is given, a same-id agent of a different kind does not cross-match -> raises."""
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    # A fileserver agent with the same id must NOT satisfy a kind="compute" lookup.
+    await _seed_agent_row(session, agent_id="oci-a1", kind="fileserver")
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, "oci-a1", kind="compute")
+
+
+@pytest.mark.asyncio
+async def test_select_agent_by_id_treats_sql_metacharacters_as_a_literal_value(session: AsyncSession) -> None:
+    """D-01: an ``agent_id`` shaped like a SQL-injection payload is bound as a literal, never executed.
+
+    The docstring's "parameterized query" claim has no dedicated adversarial cell elsewhere in this
+    suite -- every existing D-01 test passes an ordinary slug. This cell feeds a classic
+    tautology/statement-injection payload as the ``agent_id`` argument and proves TWO things a
+    string-interpolated (unparameterized) query would fail: (1) the lookup raises
+    ``NoActiveAgentError`` -- the payload matches no row rather than short-circuiting a tautology like
+    ``OR '1'='1'`` into matching every row -- and (2) a genuine, unrelated agent seeded in the SAME
+    session survives the call untouched (a `; DROP TABLE agents; --`-shaped value never reaches the
+    database as executable SQL).
+    """
+    from phaze.services.enqueue_router import NoActiveAgentError, select_agent_by_id
+
+    survivor = await _seed_agent_row(session, agent_id="oci-real", kind="compute")
+    payload = "oci-real' OR '1'='1'; DROP TABLE agents; --"
+
+    with pytest.raises(NoActiveAgentError):
+        await select_agent_by_id(session, payload, kind="compute")
+
+    # The unrelated legitimate agent must still resolve -- proof no injected statement executed.
+    resolved = await select_agent_by_id(session, survivor.id, kind="compute")
+    assert resolved.id == "oci-real"
+
+
 # === is_available (3 impls) ==============================================================
 
 
@@ -187,16 +332,50 @@ async def test_local_is_available_always_true(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compute_is_available_true_when_agent_online(session: AsyncSession) -> None:
-    """ComputeAgentBackend.is_available is True only when a compute agent is online (GATE-1)."""
+async def test_compute_is_available_true_when_bound_agent_online(session: AsyncSession) -> None:
+    """D-02: is_available is True when the bound ``agent_ref`` names an ONLINE compute agent (Agent.id)."""
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
-    assert await _compute().is_available(session) is True
+    # Bind the backend to THIS agent's id -- the per-entry reference, not "the single active compute agent".
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is True
 
 
 @pytest.mark.asyncio
-async def test_compute_is_available_false_when_agent_absent(session: AsyncSession) -> None:
-    """No compute agent -> is_available returns False, NEVER raises (cron no-op discipline)."""
-    assert await _compute().is_available(session) is False
+async def test_compute_is_available_false_when_bound_agent_absent(session: AsyncSession) -> None:
+    """D-05: bound agent absent / not-yet-registered -> is_available False, NEVER raises (degrade-to-hold)."""
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is False
+
+
+@pytest.mark.asyncio
+async def test_compute_is_available_false_when_online_agent_id_mismatches_ref(session: AsyncSession) -> None:
+    """D-02 behavior change: a compute agent is online but its id != agent_ref -> False (not the retired pick).
+
+    The intended change vs the retired ``select_active_agent(kind="compute")`` single-active pick: a
+    DIFFERENT online compute agent no longer satisfies THIS backend's binding. Only the specifically-bound
+    node counts.
+    """
+    await seed_active_agent(session, agent_id="some-other-compute", kind="compute")
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is False
+
+
+@pytest.mark.asyncio
+async def test_compute_is_available_reads_bound_ref_not_single_active_pick(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-02 record-don't-rederive: is_available resolves the bound ref and does NOT call select_active_agent."""
+    import phaze.services.backends as backends_mod
+
+    sentinel = AsyncMock(side_effect=AssertionError("is_available must not use the single-active pick"))
+    monkeypatch.setattr(backends_mod, "select_active_agent", sentinel)
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is True
+    sentinel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compute_is_available_fails_loud_when_no_agent_ref_bound(session: AsyncSession) -> None:
+    """A defensively-unbound compute backend (no agent_ref) fails loud via the accessor, mirroring _kube()."""
+    # config=None -> the accessor has nothing to resolve -> a clear raise (NOT a silent False).
+    backend = _compute(id="compute-a1", config=None)
+    with pytest.raises(ValueError, match="compute-a1"):
+        await backend.is_available(session)
 
 
 @pytest.mark.asyncio
@@ -574,12 +753,13 @@ async def test_in_flight_equivalence(session: AsyncSession) -> None:
 # === resolved_non_local_kind: N-Kueue-safe (any-kueue) + compute-only fail-fast ===========
 
 
-def test_resolved_non_local_kind_raises_on_multiple_compute_only(backends_toml_env: Any) -> None:
-    """The compute-only ``>1`` fail-fast is RETAINED: two COMPUTE backends (no kueue) still raise.
+def test_resolved_non_local_kind_returns_compute_for_multiple_compute_only(backends_toml_env: Any) -> None:
+    """The compute-only ``>1`` fail-fast is RETIRED (D-03): two COMPUTE backends (no kueue) return "compute".
 
-    Phase 70 (MKUE-01) generalized ``resolved_non_local_kind`` to tolerate N Kueue backends, but the
-    genuinely-ambiguous compute-only ``>1`` case stays a loud ValueError naming the offending ids
-    (multi-compute agent_ref resolution lands in PROV-01; unreachable under D-05's ≤1-compute invariant).
+    Phase 70 (MKUE-01) generalized ``resolved_non_local_kind`` to tolerate N Kueue backends; Phase 72
+    (MCOMP-01, D-03) generalizes the compute-only branch the same way -- N compute backends resolve to
+    "compute" with NO raise (per-agent dispatch attribution lands in Phase 73). The discretion
+    confirmation that the compute-only branch still yields "compute" for N compute.
     """
     from phaze.config import ControlSettings
 
@@ -604,8 +784,8 @@ def test_resolved_non_local_kind_raises_on_multiple_compute_only(backends_toml_e
     )
     settings = ControlSettings()
     assert settings.cloud_enabled is True
-    with pytest.raises(ValueError, match=r"PROV-01"):
-        backends.resolved_non_local_kind(settings)
+    # D-03: the compute-only >1 fail-fast is retired; N compute resolves to "compute" without raising.
+    assert backends.resolved_non_local_kind(settings) == "compute"
 
 
 _LOCAL_2KUEUE_HEAD = """

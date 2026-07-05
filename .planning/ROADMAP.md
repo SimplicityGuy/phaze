@@ -11,8 +11,18 @@
 - ✅ **v7.0 UI Redesign (DAG-Centric Hybrid Console)** — Phases 57-62 (shipped 2026-07-02)
 - ✅ **2026.7.0 Engineering Improvements** — Phases 63-66 (shipped 2026-07-03)
 - ✅ **2026.7.1 Multi-Cloud Backends** — Phases 67-71 (shipped 2026-07-05)
+- 🔵 **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-74 (active — roadmap created 2026-07-05)
 
 ## Phases
+
+### 🔵 2026.7.2 Multi-Compute Agents (Phases 72-74) — ACTIVE
+
+Finish the 2026.7.1 registry's deliberate compute-side descope: make **N cloud-compute agents** dispatch / route / reconcile / fail-isolate simultaneously, exactly as N Kueue clusters do today — the direct compute-side twin of Phase 70's multi-Kueue work. Retire the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) and generalize them for a `local + N-Kueue + N-compute` registry. **Parity only** — no new routing semantics, no provisioning, **zero new dependencies** (a pure application-code extension of the existing `Backend` protocol + push/rsync pipeline). Requirements mapped 1:1: MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74 (7 mapped, 0 orphans, 0 duplicates). Continues phase numbering from 71 → starts at **Phase 72**. Each phase = its own PR on a worktree branch (never direct to main). No milestone-level research phase (parity refactor over in-repo patterns); the two codebase-internal open questions — `agent_ref`→`Agent.id` resolution and `cloud_job` one-row-per-file vs per-(file,backend) — are noted as plan-/discuss-phase research flags on Phases 72 and 73.
+
+- [x] **Phase 72: Per-Entry Compute Binding & Fail-Fast Retirement** — declare N `compute` backends in `backends.toml`, each bound to a specific registered compute Agent, all accepted at boot; retire + generalize the `≤1-compute` fail-fasts (`active_compute_scratch_dir`, `resolved_non_local_kind`) for a `local + N-Kueue + N-compute` registry; behavior-preserving groundwork, existing single-/zero-compute deploys unchanged (MCOMP-01) (completed 2026-07-05)
+- [ ] **Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation** — per-agent liveness probe, per-agent push/scratch destination + `/pushed` callback, rank/cap load-spread across N compute agents (free arm64 preferred, spill to paid x86), per-backend failure isolation, per-backend in-flight/terminalization scoping; the behavior core, the compute-side twin of Phase 70 (MCOMP-02..06)
+- [ ] **Phase 74: Docs, Runbook & N-Lane Compute UI Verification** — operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces (MCOMP-07)
+
 
 <details>
 <summary>✅ 2026.7.1 Multi-Cloud Backends (Phases 67-71) — SHIPPED 2026-07-05</summary>
@@ -226,6 +236,9 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 69. Tiered Drain Scheduler | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 70. Multi-Kueue (N Clusters) | 2026.7.1 | 5/5 | Complete    | 2026-07-04 |
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
+| 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
+| 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 0/— | Not started | - |
+| 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 0/— | Not started | - |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -993,6 +1006,67 @@ Plans:
 **Wave 2** *(blocked on Wave 1 — shares justfile + benefits from a green tree per the D-12 guardrail)*
 
 - [x] 66-03-PLAN.md — CLEAN-02 vulture dead-code sweep: legitimacy checkpoint + `vulture>=2.16` dev dep + hand-audited whitelist + `just vulture` recipe + manual-verify confirmed-dead deletions
+
+## Phase Details (2026.7.2 Multi-Compute Agents)
+
+### Phase 72: Per-Entry Compute Binding & Fail-Fast Retirement
+**Goal**: An operator can declare N `compute` backends in `backends.toml`, each bound to a specific registered compute Agent, and all N are accepted at boot — with the `≤1-compute` fail-fasts retired and generalized, and the existing single-compute and zero-compute (all-local) deploys behaving identically. Behavior-preserving groundwork that unblocks the Phase 73 dispatch core.
+**Depends on**: Phase 71 (the 2026.7.1 `backends.toml` registry + `Backend` protocol are the substrate this extends)
+**Requirements**: MCOMP-01
+**Success Criteria** (what must be TRUE):
+
+  1. A `backends.toml` declaring 2+ `compute` backends, each referencing a distinct registered compute Agent, is accepted at boot — where before the `≤1-compute` fail-fast raised. (MCOMP-01)
+  2. Each `compute` entry resolves to its bound Agent (host / scratch / queue) through a recorded per-entry reference, not through `select_active_agent(kind="compute")`'s "the single active compute agent" assumption. (MCOMP-01)
+  3. `resolved_non_local_kind` (`services/backends.py` ~L469) and `active_compute_scratch_dir` (`config.py` ~L469) no longer reduce compute to ≤1 — they are generalized for a `local + N-Kueue + N-compute` registry and the compute-only `>1` raise is gone. (MCOMP-01)
+  4. The existing single-compute and zero-compute (implicit all-local) deploys behave identically with no config edit and no behavior change — proven behavior-preserving. (MCOMP-01)
+
+**Notes**: **Research flag (plan-/discuss-phase):** how a `compute` entry references a specific `Agent` — by name or id — and whether the `/pushed` + `/api/internal/agent/*` reconcile callbacks already scope per-agent or need widening (the answer feeds Phase 73). Reuse the Phase-70 MKUE-01 pattern of a distinct per-backend binding recorded at construction, not re-derived. Zero new dependencies; each phase ships as its own PR on a worktree branch.
+**Plans**: 4 plans
+
+Plans:
+
+**Wave 1** *(golden safety net, test-only)*
+
+- [x] 72-01-PLAN.md — D-06 golden byte-identical characterization of the ≤1-compute path + explicit zero-compute (all-local) regression, committed green against current behavior
+
+**Wave 2** *(blocked on Wave 1 — the D-06 net must be green first)*
+
+- [x] 72-02-PLAN.md — Retire both `≤1-compute` `>1` fail-fasts (D-03) in `resolved_non_local_kind` + `active_compute_scratch_dir`, generalize for N compute (≤1 return byte-identical), flip the 3 raise-asserting tests
+
+**Wave 3** *(parallel — no file overlap; both blocked on Wave 2's config.py/backends.py edits)*
+
+- [x] 72-03-PLAN.md — Per-entry compute binding (D-01/D-02/D-05): `select_agent_by_id` selector + `ComputeAgentBackend` binding accessor + `is_available` rewired to the bound `agent_ref`→`Agent.id`, degrade-to-hold when absent
+- [x] 72-04-PLAN.md — Boot-time duplicate-`agent_ref` fail-fast (D-04) in `_validate_registry` (Counter, id-tagged, static/no-DB per D-05)
+
+### Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation
+**Goal**: N cloud-compute agents dispatch, route, reconcile, and fail-isolate simultaneously — each long file pushed to and attributed to the specific agent that analyzes it, cost-tiered across a mixed arm64/x86 fleet by rank and per-agent `cap`, with one flaky agent isolated to 0 slots. The behavior core — the direct compute-side twin of Phase 70's multi-Kueue work.
+**Depends on**: Phase 72 (per-entry binding + retired fail-fasts are prerequisites; per-agent `cap`/liveness need the recorded binding)
+**Requirements**: MCOMP-02, MCOMP-03, MCOMP-04, MCOMP-05, MCOMP-06
+**Success Criteria** (what must be TRUE):
+
+  1. Each compute backend probes **its own bound agent's** liveness; an offline agent makes only *that* backend unavailable — the file holds or spills to the next-eligible backend and never dispatches to a dead agent (replacing `ComputeAgentBackend.is_available`'s single-active-compute assumption). (MCOMP-02)
+  2. A file dispatched to a specific compute backend is pushed to **that agent's** host/scratch destination — the push pipeline (`_enqueue_push_file` → fileserver → rsync) and the `/pushed` callback (`routers/agent_push.py`) resolve the destination per-agent, not from a single global `active_compute_scratch_dir`. (MCOMP-03)
+  3. The tiered drain scheduler spreads long files across N compute agents by **rank** (free arm64 preferred over paid/trial x86) and **per-agent `cap`**, spilling to the next-eligible backend when one is at cap or offline — reusing the Phase-69 rank/cap `select_backend` policy, with no capability-matching. (MCOMP-04)
+  4. One flaky or offline compute agent is **isolated** — it degrades to 0 slots without failing the drain tick or blocking dispatch to healthy compute agents (per-backend snapshot try/except, mirroring the Phase 70 MKUE-03 pattern). (MCOMP-05)
+  5. Each compute backend's **in-flight count and terminalization** (the `/pushed` + `/api/internal/agent/*` reconcile path) are scoped to that backend/agent, so a file's result is attributed to the agent that analyzed it — no cross-agent mis-attribution. (MCOMP-06)
+
+**Notes**: **Research flag (plan-phase):** whether `cloud_job` stays one-row-per-file or needs per-(file,backend) — the same question MKUE raised for Kueue (MCOMP-06 resolves it). Reuse the Phase 70 patterns verbatim where they map: distinct per-backend binding, per-backend probe, per-backend failure isolation via snapshot try/except, record-don't-rederive. Zero new dependencies; ships as its own PR on a worktree branch.
+**Plans**: TBD
+
+### Phase 74: Docs, Runbook & N-Lane Compute UI Verification
+**Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. Closes the milestone.
+**Depends on**: Phase 73 (docs the shipped N-compute behavior; UI verification needs the per-agent dispatch/liveness seam live)
+**Requirements**: MCOMP-07
+**Success Criteria** (what must be TRUE):
+
+  1. The operator runbook + config docs cover **adding a 2nd+ compute agent** to `backends.toml` — the Agent binding, scratch destination, `rank`, and `cap`. (MCOMP-07)
+  2. The docs explain **mixed arm64/x86 cost-tiering**: free arm64 preferred (better `rank`), spill to a paid/trial x86 box under load, per-agent `cap`. (MCOMP-07)
+  3. Each declared compute agent renders as **its own read-only lane** in the existing N-lane UI (rank / in-flight / cap / online-offline) — the Phase-71 BEUI generalization is verified to already cover compute lanes, with any surfaced gap fixed. (MCOMP-07)
+
+**Notes**: MCOMP-07 is docs + a verification-with-fix-if-needed of the Phase-71 BEUI N-lane generalization (expected to already cover compute lanes since lanes are registry-derived). Ships as its own PR on a worktree branch.
+**Plans**: TBD
+**UI hint**: yes
+
 
 ## Backlog (unscheduled — no phase number yet)
 

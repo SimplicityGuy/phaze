@@ -13,6 +13,7 @@ from __future__ import annotations
 from pydantic import SecretStr, TypeAdapter, ValidationError
 import pytest
 
+from phaze.config import ControlSettings
 from phaze.config_backends import (
     BackendConfig,
     BucketConfig,
@@ -194,3 +195,96 @@ def test_bucket_secret_fields_are_secretstr() -> None:
     )
     assert isinstance(bucket.access_key_id, SecretStr)
     assert isinstance(bucket.secret_access_key, SecretStr)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 72 (Plan 04): container-level duplicate-agent_ref boot guard (D-04/D-05)
+#
+# Plan 02 retired the ≤1-compute blanket fail-fast so N DISTINCT compute agents
+# can dispatch in parallel. Plan 04 replaces the retired blanket raise with a
+# precise cross-entry invariant in ``_validate_registry``: two compute backends
+# binding the SAME ``agent_ref`` fail fast (id-tagged, D-04), while N distinct
+# agent_refs — and an agent_ref naming a not-yet-checked-in agent — boot cleanly
+# (the guard is STATIC / no DB existence check, D-05). These construct
+# ``ControlSettings`` from a tmp backends.toml via the shared conftest fixture.
+# --------------------------------------------------------------------------- #
+def test_duplicate_compute_agent_ref_fails_fast_with_id(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Two compute backends binding the SAME agent_ref fail fast, naming the value + colliding ids (D-04).
+
+    After Plan 02 retired the ≤1-compute fail-fast, two compute entries pointing at one node would
+    otherwise silently double-bind. The container ``_validate_registry`` Counter guard surfaces the
+    genuine mis-config at boot, naming the offending ``agent_ref`` value AND both backend ids.
+    """
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "shared-node"
+        scratch_dir = "/scratch/a"
+
+        [[backends]]
+        kind = "compute"
+        id = "compute-b"
+        rank = 20
+        cap = 2
+        agent_ref = "shared-node"
+        scratch_dir = "/scratch/b"
+        """
+    )
+    with pytest.raises(ValueError, match=r"shared-node") as excinfo:
+        ControlSettings()
+    message = str(excinfo.value)
+    assert "compute-a" in message
+    assert "compute-b" in message
+
+
+def test_distinct_compute_agent_refs_boot_cleanly(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """N compute backends with DISTINCT agent_refs boot cleanly — the retired ≤1-compute guard is NOT reintroduced (D-04)."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+
+        [[backends]]
+        kind = "compute"
+        id = "compute-b"
+        rank = 20
+        cap = 2
+        agent_ref = "agent-b"
+        scratch_dir = "/scratch/b"
+        """
+    )
+    settings = ControlSettings()  # no raise — distinct agent_refs are a first-class N-compute registry
+    compute = [be for be in settings.backends if isinstance(be, ComputeBackend)]
+    assert [be.agent_ref for be in compute] == ["agent-a", "agent-b"]
+    assert settings.cloud_enabled is True
+
+
+def test_agent_ref_to_unregistered_agent_is_not_a_boot_error(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A compute agent_ref naming an agent absent from any DB constructs cleanly — the validator does NO DB check (D-05).
+
+    No DB fixture is used precisely because the guard is static (a Counter over config values); an
+    agent registers dynamically via check-in, so an agent_ref to a not-yet-checked-in agent is legal at
+    boot and degrades to a runtime hold (Plan 03), never a startup failure.
+    """
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "never-checked-in-agent"
+        scratch_dir = "/scratch/a"
+        """
+    )
+    settings = ControlSettings()  # no raise, no DB access
+    assert settings.cloud_enabled is True

@@ -434,6 +434,21 @@ class ControlSettings(BaseSettings):
         dupes = sorted(bid for bid, count in Counter(b.id for b in self.buckets).items() if count > 1)
         if dupes:
             raise ValueError(f"duplicate bucket ids in registry: {dupes} — each [[buckets]] id must be unique (REG-05)")
+        # D-04: fail fast on a duplicate compute agent_ref. Plan 02 retired the ≤1-compute blanket
+        # fail-fast so N distinct compute agents dispatch in parallel; without this guard two compute
+        # backends naming the SAME agent_ref would silently double-bind (a copy-paste id typo routing two
+        # entries at one node). STATIC check only — a Counter over config values, mirroring the bucket-id
+        # idiom above. Per D-05 an agent_ref naming a not-yet-checked-in agent is LEGAL at boot (agents
+        # register dynamically via check-in), so this opens NO DB session; that path degrades to a runtime
+        # hold (Plan 03). Skip ``agent_ref is None`` so the per-variant ``_require_dispatch_fields``
+        # "requires an agent_ref" message is never masked by this container-level guard.
+        compute_agent_refs = [be.agent_ref for be in self.backends if isinstance(be, ComputeBackend) and be.agent_ref is not None]
+        agent_dupes = sorted(ref for ref, count in Counter(compute_agent_refs).items() if count > 1)
+        if agent_dupes:
+            collisions = {ref: sorted(be.id for be in self.backends if isinstance(be, ComputeBackend) and be.agent_ref == ref) for ref in agent_dupes}
+            raise ValueError(
+                f"duplicate compute agent_ref(s) {agent_dupes} bound by backends {collisions} — each compute backend must bind a distinct agent_ref (D-04)"
+            )
         bucket_by_id = {b.id: b for b in self.buckets}
         cluster_specific_refs: dict[str, list[str]] = {}
         for be in self.backends:
@@ -474,17 +489,14 @@ class ControlSettings(BaseSettings):
         (local + N-Kueue + 1-compute) there are ≥2 non-local backends, so the old ``_single_non_local``
         reduction raised and 500'd the ``/pushed`` callback (agent_push reads this accessor). This is a
         scratch_dir-resolution change ONLY, distinct from the deferred D-05 compute agent_ref fix.
-        Fail-fast naming the ids if >1 compute backend exists (genuinely-ambiguous PROV-01 territory,
-        unreachable under D-05's ≤1-compute invariant), mirroring ``resolved_non_local_kind``.
+        Phase 72 (MCOMP-01, D-03) retires the ``>1``-compute fail-fast: for N compute backends this
+        returns the first compute entry's ``scratch_dir`` as a documented TRANSITIONAL reduction. The ≤1
+        return value stays byte-identical (D-07) and ``agent_push.py`` is unchanged in Phase 72; per-agent
+        scratch resolution replaces this global accessor in Phase 73 (MCOMP-03).
         """
         compute = [backend for backend in self.backends if backend.kind == "compute"]
         if not compute:
             return None
-        if len(compute) > 1:
-            raise ValueError(
-                f"multiple compute backends {[backend.id for backend in compute]} are configured, but "
-                f"active_compute_scratch_dir reduces a single compute backend (multi-compute lands in PROV-01)"
-            )
         backend = compute[0]
         return backend.scratch_dir if isinstance(backend, ComputeBackend) else None
 

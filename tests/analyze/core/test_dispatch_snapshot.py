@@ -13,14 +13,16 @@ changed nothing (that is the BACK-04 proof).
 
 D-01a asymmetry (a first-class assertion here): **compute requires a live compute agent** (GATE-1 in
 ``stage_cloud_window``) while **kueue deliberately skips that gate** (ephemeral Kueue pods, no
-persistent compute agent). The snapshot records exactly which ``select_active_agent`` kinds the drain
-requested per cell, so ``compute`` appears for the compute cell and is ABSENT for the kueue cell.
+persistent compute agent). The snapshot records exactly which agent-gate kinds the drain requested per
+cell (the compute GATE-1 via the per-entry ``select_agent_by_id`` since Phase 72, the fileserver GATE-2
+via ``select_active_agent``), so ``compute`` appears for the compute cell and is ABSENT for the kueue cell.
 
 Forward-compatible mocking (kept green across the refactor without adding a tracked side effect):
 ``services.kube_staging.get_local_queue`` is stubbed to resolve "available". It is UNCALLED on
 current code (harmless), but the post-refactor ``KueueBackend.is_available`` probes it during the
 drain; stubbing it now keeps the snapshot green after Wave 2 lands. The ONLY tracked gate observation
-is the ``select_active_agent`` call log, never the kube probe.
+is the agent-selector call log (compute GATE-1 ``select_agent_by_id`` + fileserver GATE-2
+``select_active_agent``), never the kube probe.
 
 The ONE tracked expected value that legitimately changes across the phase is the compute-cell
 ``cloud_job`` upsert: it is ABSENT on current code (``tasks/push.py`` writes no ``cloud_job`` row) and
@@ -97,7 +99,10 @@ class _StubCfg:
                 )
             ]
         else:
-            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap)]
+            # Phase 72 (MCOMP-01/D-02): a compute backend's is_available resolves THIS entry's bound
+            # ``agent_ref`` against Agent.id, so bind the compute stub to the ``cloud-1`` compute agent
+            # ``_run_cell`` seeds online when ``compute_up`` (the up/down axis).
+            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap, agent_ref="cloud-1")]
 
 
 def _make_file(*, file_type: str = "mp3") -> FileRecord:
@@ -140,23 +145,24 @@ def _spy_select_active_agent(calls: list[str]) -> Any:
 
 
 def _spy_backends_gate1(calls: list[str]) -> Any:
-    """Wrap the REAL ``select_active_agent`` on the ``backends`` module, recording ONLY the GATE-1 probe.
+    """Wrap the REAL ``select_agent_by_id`` on the ``backends`` module, recording the compute GATE-1 probe.
 
-    Post-Phase-68 the compute GATE-1 (``select_active_agent(kind="compute")``) lives inside
-    ``ComputeAgentBackend.is_available`` -- i.e. it now fires through ``services.backends``'s own module
-    reference, not the drain's. To keep the D-01a observation byte-identical across the seam move we spy
-    that reference too, but record ONLY the ``kind=="compute"`` GATE-1 probe: ``ComputeAgentBackend.dispatch``
-    ALSO looks the fileserver agent up through this same reference per file, and those are internal
-    dispatch lookups (not gate checks), exactly like ``cloud_staging``'s -- so they stay un-tracked
-    (mirrors the drain spy's contract). Kueue's ``is_available`` probes the cluster (kube), never this
-    selector, so ``compute`` correctly never appears for the kueue cell.
+    Phase 72 (MCOMP-01/D-02) moved the compute GATE-1 off the kind-ordered ``select_active_agent(
+    kind="compute")`` onto the per-entry ``select_agent_by_id(agent_ref, kind="compute")`` -- each
+    compute backend now resolves ITS bound agent by id, not "the freshest compute agent". The gate still
+    lives inside ``ComputeAgentBackend.is_available`` (the ``services.backends`` module reference), so we
+    spy that reference to keep the D-01a observation byte-identical across the seam move, recording every
+    ``kind=="compute"`` GATE-1 probe. ``select_agent_by_id`` is ONLY called by that gate (dispatch's
+    fileserver lookup still goes through ``select_active_agent``), so no internal dispatch lookup leaks
+    into the tally. Kueue's ``is_available`` probes the cluster (kube), never this selector, so
+    ``compute`` correctly never appears for the kueue cell.
     """
-    real = enqueue_router.select_active_agent
+    real = enqueue_router.select_agent_by_id
 
-    async def _wrapped(session: AsyncSession, kind: str | None = None) -> Any:
+    async def _wrapped(session: AsyncSession, agent_id: str, *, kind: str | None = None) -> Any:
         if kind == "compute":
             calls.append(kind)
-        return await real(session, kind=kind)
+        return await real(session, agent_id, kind=kind)
 
     return _wrapped
 
@@ -184,12 +190,13 @@ async def _run_cell(
     # pin it to the SAME stub so ``resolve_bucket_config`` finds the stub's ``buckets`` registry.
     monkeypatch.setattr(backends_mod, "get_settings", lambda: stub)
 
-    # D-01a spy: record the gate kinds. GATE-2 (fileserver) fires through the drain's own reference;
-    # GATE-1 (compute) now fires through ComputeAgentBackend.is_available (the backends module ref), so
-    # spy BOTH into one shared ordered list -- the backends spy records ONLY the compute GATE-1 probe.
+    # D-01a spy: record the gate kinds. GATE-2 (fileserver) fires through the drain's own reference
+    # (select_active_agent); GATE-1 (compute) now fires through ComputeAgentBackend.is_available via the
+    # per-entry select_agent_by_id (Phase 72). Spy BOTH into one shared ordered list -- the backends spy
+    # records ONLY the compute GATE-1 probe.
     gate_kinds: list[str] = []
     monkeypatch.setattr(release_awaiting_cloud, "select_active_agent", _spy_select_active_agent(gate_kinds))
-    monkeypatch.setattr(backends_mod, "select_active_agent", _spy_backends_gate1(gate_kinds))
+    monkeypatch.setattr(backends_mod, "select_agent_by_id", _spy_backends_gate1(gate_kinds))
 
     # Real staging bodies run (strongest golden capture): stub the S3 SDK the kueue core calls.
     monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))
