@@ -403,20 +403,22 @@ compute_queue = request.app.state.task_router.queue_for(backend.agent_ref)
 | A flaky compute agent's probe failure cascading to abort the whole drain tick (DoS on healthy lanes) | **Denial of service** | Per-backend snapshot `try/except` isolation (release_awaiting_cloud.py:151-156) — already live; MCOMP-05 regression proves it |
 | Wrong-agent `process_file` routing finds no scratch copy (functional break, potential retry storm) | **Tampering / DoS** | Route `process_file` to the recorded `backend_id → agent_ref` (Pitfall 4), not `select_active_agent` |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> All three resolved during planning and threaded into the plan set (73-01/02/04). Retained here for traceability.
 
 1. **Is `reenqueue.py:374` (`recover_orphaned_work` held-file re-drive to `select_active_agent(kind="compute")`) in scope?**
    - What we know: it is a single-active-compute reader; CONTEXT does NOT list `reenqueue.py` among the phase seams; the phase boundary is dispatch/push/reconcile.
    - What's unclear: whether leaving it single-active is acceptable for the milestone's target deploy (which may run only 1 compute agent live initially — Kueue is the N target).
-   - Recommendation: **treat as out of scope; document as a known limitation / PROV-01-backlog follow-up in the plan.** Widening recovery re-drive semantics risks the 44.5k over-enqueue incident class (STATE.md) and is not required by MCOMP-02..06. Do NOT silently change it.
+   - **RESOLVED: out of scope — documented as a known limitation / PROV-01-backlog follow-up in plan 73-04 (Task 3), NOT silently widened.** Widening recovery re-drive semantics risks the 44.5k over-enqueue incident class (STATE.md) and is not required by MCOMP-02..06.
 
 2. **`ssh_user` default source when a backend omits it (discretion).**
    - What we know: D-03 keeps secret material agent-side; the fileserver already has `push_ssh_user` configured (config.py:838).
    - What's unclear: whether to default `dest_ssh_user` to the fileserver's `cfg.push_ssh_user` at the agent (least payload surface) or require it per backend.
-   - Recommendation: make `dest_ssh_user` optional in the payload; when `None`, `_build_rsync_argv` falls back to `cfg.push_ssh_user` (the fileserver's configured user). Least surface, preserves ≤1-compute behavior byte-identical.
+   - **RESOLVED: `dest_ssh_user` is an optional payload field (73-01); when `None`, `_build_rsync_argv` falls back to the fileserver's configured `cfg.push_ssh_user` (73-02).** Least surface, preserves ≤1-compute behavior byte-identical (proven by the 73-04 golden).
 
 3. **Config field name for the push host (discretion).**
-   - Recommendation: `push_host` on `ComputeBackend` (mirrors the agent-side `push_ssh_host` naming while staying registry-scoped); add it to the id-tagged `_require_dispatch_fields` validator (config_backends.py:91-104) as a required field, matching the `scratch_dir` fail-fast style. Confirm with the planner against the closest Phase-67/68 idiom.
+   - **RESOLVED: `push_host` on `ComputeBackend` (73-01), added to the id-tagged `_require_dispatch_fields` validator (config_backends.py:91-104) as a required field, matching the `scratch_dir` fail-fast style.** Mirrors the agent-side `push_ssh_host` naming while staying registry-scoped; consistent with the Phase-67/68 config idiom.
 
 ## Environment Availability
 
