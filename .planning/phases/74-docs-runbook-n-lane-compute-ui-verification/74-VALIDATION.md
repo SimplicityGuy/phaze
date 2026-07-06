@@ -3,8 +3,9 @@ phase: 74
 slug: docs-runbook-n-lane-compute-ui-verification
 status: final
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-06
+validated: 2026-07-06
 ---
 
 # Phase 74 — Validation Strategy
@@ -38,14 +39,14 @@ created: 2026-07-06
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 74-01-01 | 01 | 1 | MCOMP-07 | T-74-01 | Doc example discloses no secrets/creds | doc-grep | `test "$(sed -n '1p' docs/multi-compute.md)" = '<!-- generated-by: gsd-doc-writer -->' && grep -q 'configuration.md#backend-registry-backendstoml' docs/multi-compute.md` | ✅ | ⬜ pending |
-| 74-01-02 | 01 | 1 | MCOMP-07 | — | N/A | doc-grep | `grep -q 'multi-compute.md' docs/README.md docs/runbook.md docs/configuration.md docs/cloud-burst.md` | ✅ | ⬜ pending |
-| 74-02-01 | 02 | 1 | MCOMP-07 | — | Compose parametrization adds no new exposed port/credential; arm64 default preserved | unit | `uv run python -c "import yaml; d=yaml.safe_load(open('docker-compose.cloud-agent.yml')); ..."` (arm64 default renders) | ✅ | ⬜ pending |
-| 74-02-02 | 02 | 1 | MCOMP-07 | — | Guard test still asserts arm64 default (substring, not blanket removal) | unit | `uv run pytest tests/agents/deployment/test_cloud_agent_compose.py -x -q` | ✅ | ⬜ pending |
-| 74-03-01 | 03 | 1 | MCOMP-07 | — | Each of N compute backends renders its own lane card (deterministic Variant A) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -k one_lane_per_compute -x -q` | ❌ W0 | ⬜ pending |
-| 74-03-02 | 03 | 1 | MCOMP-07 | T-74-06 | Real `_probe_availability` fan-out with 2 online compute agents (race arbiter) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -k compute_probe_real -x -q` | ❌ W0 | ⬜ pending |
-| 74-04-01 | 04 | 2 | MCOMP-07 | T-74-06 | Stale ≤1-compute docstring corrected; conditional compute-probe serialization (gated on 74-03-02) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -x -q && uv run mypy src/phaze/services/backends.py` | ✅ | ⬜ pending |
-| 74-04-02 | 04 | 2 | MCOMP-07 | — | MCOMP-07 traceability/ROADMAP closeout; docs-drift green | traceability | `just docs-drift` | ✅ | ⬜ pending |
+| 74-01-01 | 01 | 1 | MCOMP-07 | T-74-01 | Doc example discloses no secrets/creds | doc-grep | `test "$(sed -n '1p' docs/multi-compute.md)" = '<!-- generated-by: gsd-doc-writer -->' && grep -q 'configuration.md#backend-registry-backendstoml' docs/multi-compute.md` | ✅ | ✅ green |
+| 74-01-02 | 01 | 1 | MCOMP-07 | — | N/A | doc-grep | `grep -q 'multi-compute.md' docs/README.md docs/runbook.md docs/configuration.md docs/cloud-burst.md` | ✅ | ✅ green |
+| 74-02-01 | 02 | 1 | MCOMP-07 | — | Compose parametrization adds no new exposed port/credential; arm64 default preserved | unit | `grep -qE '\$\{PHAZE_CLOUD_AGENT_IMAGE:-.*-arm64\}' docker-compose.cloud-agent.yml && grep -qE '\$\{PHAZE_CLOUD_AGENT_CMD:-python3 -m saq' docker-compose.cloud-agent.yml` (arm64 image + system-python defaults render) | ✅ | ✅ green |
+| 74-02-02 | 02 | 1 | MCOMP-07 | — | Guard test still asserts arm64 default (substring, not blanket removal) | unit | `uv run pytest tests/agents/deployment/test_cloud_agent_compose.py -x -q` (9 passed) | ✅ | ✅ green |
+| 74-03-01 | 03 | 1 | MCOMP-07 | — | Each of N compute backends renders its own lane card (deterministic Variant A) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -k one_lane_per_compute -x -q` (within 17 passed) | ✅ | ✅ green |
+| 74-03-02 | 03 | 1 | MCOMP-07 | T-74-06 | Real `_probe_availability` fan-out with 2 online compute agents (race arbiter) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -k compute_probe_real -x -q` (1 passed — arbiter PASSED, race absent) | ✅ | ✅ green |
+| 74-04-01 | 04 | 2 | MCOMP-07 | T-74-06 | Stale ≤1-compute docstring corrected; conditional compute-probe serialization (gated on 74-03-02 — NOT added, Variant B passed) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -x -q && uv run mypy src/phaze/services/backends.py` (17 passed, mypy clean) | ✅ | ✅ green |
+| 74-04-02 | 04 | 2 | MCOMP-07 | — | MCOMP-07 traceability/ROADMAP closeout; docs-drift green | traceability | `just docs-drift` (10 passed) | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -55,7 +56,7 @@ created: 2026-07-06
 
 ## Wave 0 Requirements
 
-- [ ] `tests/shared/services/test_lane_snapshot.py` — new regression test asserting each of N compute backends renders its own lane (happy-path snapshot + real-session probe fan-out variant per RESEARCH R-2)
+- [x] `tests/shared/services/test_lane_snapshot.py` — new regression test asserting each of N compute backends renders its own lane (Variant A happy-path snapshot + Variant B real-session probe fan-out arbiter per RESEARCH R-2). Landed in 74-03 (commits `2b1fc277` Variant A, `d5d676fb` Variant B); 17 passed in-file.
 
 *Existing pytest infrastructure otherwise covers phase requirements; docs deliverables are validated by `just docs-drift` traceability, not unit tests.*
 
@@ -81,3 +82,18 @@ created: 2026-07-06
 - [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** approved 2026-07-06
+
+---
+
+## Validation Audit 2026-07-06
+
+State A post-execution audit: ran all 8 per-task automated commands against the live test DB (5433/6380). Every row COVERED and green — no gaps, no `gsd-nyquist-auditor` spawn needed (pure verification pass).
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 (none needed) |
+| Escalated | 0 |
+| Manual-only | 1 (docs prose/nav quality — unchanged) |
+
+Evidence: 74-01-01/02 doc-grep PASS; 74-02-01 arm64+system-python compose defaults PASS; 74-02-02 compose guard 9 passed; 74-03-01 Variant A + 74-04-01 lane suite 17 passed; 74-03-02 Variant B real-probe arbiter 1 passed (race absent → serialization correctly NOT added per D-04); `mypy src/phaze/services/backends.py` clean; 74-04-02 `just docs-drift` 10 passed. `nyquist_compliant: true` upheld; Wave 0 test file complete.
