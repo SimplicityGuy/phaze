@@ -1,10 +1,11 @@
 ---
 phase: 75
 slug: engineering-hygiene-guard-hardening-tech-debt-stale-tracking
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-07-06
+updated: 2026-07-06
 ---
 
 # Phase 75 — Validation Strategy
@@ -43,12 +44,18 @@ created: 2026-07-06
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| HYG-04 (analyze API) | HYG-04 | 1 | HYG-04 | — | N/A (internal operator toggle, Phase 71) | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local_analyze_api -x` | ❌ W0 | ⬜ pending |
-| HYG-04 (analyze UI) | HYG-04 | 1 | HYG-04 | — | N/A | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local_analyze_ui -x` | ❌ W0 | ⬜ pending |
-| HYG-04 (backfill no-op) | HYG-04 | 1 | HYG-04 | — | N/A | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local_backfill -x` | ❌ W0 | ⬜ pending |
-| HYG-04 (False control) | HYG-04 | 1 | HYG-04 | — | N/A | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local -x` | ❌ W0 | ⬜ pending |
+| HYG-04 (analyze API) | HYG-04 | 1 | HYG-04 | — | N/A (internal operator toggle, Phase 71) | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local_analyze_api -x` | ✅ `test_force_local_analyze_api_routes_local_no_hold` | ✅ green |
+| HYG-04 (analyze UI) | HYG-04 | 1 | HYG-04 | — | N/A | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local_analyze_ui -x` | ✅ `test_force_local_analyze_ui_routes_local_no_hold` | ✅ green |
+| HYG-04 (backfill no-op) | HYG-04 | 1 | HYG-04 | — | N/A | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local_backfill -x` | ✅ `test_force_local_backfill_zero_mutation_no_op` | ✅ green |
+| HYG-04 (False control) | HYG-04 | 1 | HYG-04 | — | N/A | route | `uv run pytest tests/shared/routers/test_pipeline.py -k force_local -x` | ✅ `test_force_local_analyze_api_false_control_still_holds` | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+> **Audit note (2026-07-06):** All 4 cases confirmed green vs the ephemeral test DB (5433). The
+> backfill case was strengthened post-code-review (WR-01, commit `049638af`) — it now seeds a
+> genuine ledger-scoped candidate (`with_ledger=True`) so the L793 gate is the ONLY thing holding
+> it back; **mutation-verified** (removing the `or await get_route_control(session)` clause makes the
+> case FAIL), so it is a real anti-cheat rather than a vacuous pass.
 
 ### Gate-site coverage (sampling adequacy)
 
@@ -73,7 +80,7 @@ A True case per trigger + a False control gives 2-sided evidence that the persis
 
 ## Wave 0 Requirements
 
-- [ ] New force-local test region in `tests/shared/routers/test_pipeline.py` (3–4 cases) — covers HYG-04 gate sites L396/L718/L793.
+- [x] New force-local test region in `tests/shared/routers/test_pipeline.py` (4 cases) — covers HYG-04 gate sites L396/L718/L793 + a False control. Landed in commits `a01a7bf8` (analyze L396+L718 + control) + `63589cd5` (backfill L793) + `049638af` (WR-01 anti-cheat fix).
 
 *No `conftest.py` changes required — the shared `session`/`client`/queue-fake harness already supports the persisted-`RouteControl`-row + real-route pattern. No framework install.*
 
@@ -98,11 +105,30 @@ the only thing forcing local. Reuse `_make_file`, `_persist_files_with_duration(
 
 ## Validation Sign-Off
 
-- [ ] HYG-04 has automated route-level verify (4 cases) with Wave 0 dependency
-- [ ] Sampling continuity: HYG-04 covered; reconciliation items validated by `just docs-drift`/`git grep`
-- [ ] Wave 0 covers the missing test region
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter (planner sets once tasks map cleanly)
+- [x] HYG-04 has automated route-level verify (4 cases) with Wave 0 dependency
+- [x] Sampling continuity: HYG-04 covered; reconciliation items validated by `just docs-drift`/`git grep`
+- [x] Wave 0 covers the missing test region
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** verified 2026-07-06
+
+---
+
+## Validation Audit 2026-07-06
+
+State-A audit of the plan-time strategy against the executed codebase. All HYG-04 cases exist and
+run green; the four reconciliation requirements are manual-only by design (docs-drift + `git grep`),
+correctly captured in the Manual-Only section. No MISSING/PARTIAL gaps → no `gsd-nyquist-auditor`
+spawn needed (pure verification pass).
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated (manual-only) | 4 (HYG-01/02/03/05 — reconciliation edits, validated by `just docs-drift` + `git grep`) |
+
+Commands re-run green (test DB 5433): `-k force_local` 4 passed; `-k force_local_analyze_api` 2
+passed; `-k force_local_analyze_ui` 1 passed; `-k force_local_backfill` 1 passed; docs-drift 10
+passed; `git grep PHAZE_CLOUD_TARGET|cloud_target|Phase 67 -- docker-compose.yml` clean.
