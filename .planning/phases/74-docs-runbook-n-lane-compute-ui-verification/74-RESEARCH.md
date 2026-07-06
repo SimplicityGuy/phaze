@@ -23,7 +23,7 @@ Both research questions resolved against live source. **R-2 is confirmed at the 
 - **D-02:** Document a **real x86 compute agent as a deployable tier** — not illustrative, not the Kueue path. The worked example declares **two `compute` backends**: free arm64 (A1) at a **low rank** (preferred) and paid x86 at a **higher rank** (spill target), each with its own `agent_ref`, `scratch_dir`, and `cap`. Show the resulting rank-tiered drain (free arm64 fills first, spills to paid x86, then local rank 99 as final catch).
 - **D-03:** Include a **worked `backends.toml`** for the mixed arm64/x86 registry plus a short **cost-tier rationale table**. Keep the canonical field reference in `configuration.md`; the new doc shows the *scenario*, not a re-stated field table.
 - **D-04:** **Verify + add a regression test.** Confirm `get_backend_lane_snapshot` already emits one lane per `compute` backend, then add a test asserting **each of N compute backends renders its own lane card** — parity with the Phase 70 MKUE test discipline and the ≥90% per-module coverage floor. Change UI/service code **only if verification surfaces an actual gap**.
-- **D-05:** **Parametrize the existing `docker-compose.cloud-agent.yml`** — document running it **once per compute agent** with distinct `AGENT_ID` / `PHAZE_AGENT_QUEUE` (`phaze-agent-<id>`) / scratch volume / SSH host / compose project-name per agent. **No new compose file.** The arm64 agent pulls the `-arm64` tag; a real x86 agent must pull the **standard x86 tag** — the parametrization must cover the tag swap, not just env (see R-1).
+- **D-05:** **Parametrize the existing `docker-compose.cloud-agent.yml`** — document running it **once per compute agent** with distinct `PHAZE_AGENT_ID` / `PHAZE_AGENT_QUEUE` (`phaze-agent-<id>`) / scratch volume / SSH host / compose project-name per agent. **No new compose file.** The arm64 agent pulls the `-arm64` tag; a real x86 agent must pull the **standard x86 tag** — the parametrization must cover the tag swap, not just env (see R-1).
 
 ### Claude's Discretion
 
@@ -180,9 +180,9 @@ The guard test parses the **raw** (un-interpolated) YAML, so it must be updated 
 **Confidence:** MEDIUM — the code path is verified; whether the race deterministically manifests depends on asyncpg/SQLAlchemy await interleaving. The real-session test is the arbiter. Report honestly to the planner as a *verify-then-fix*, not a certain bug.
 
 ### Pitfall 2: Parametrizing the compose breaks the guard test
-**What goes wrong:** Adding `${VAR:-default}` to `image:`/`command:` makes `tests/agents/deployment/test_cloud_agent_compose.py` fail. It parses the **raw** YAML (`yaml.safe_load`, no interpolation) and asserts `image.endswith("-arm64")` (line 118) and `command.split()[:3] == ["python3","-m","saq"]` (line 144).
-**Why it happens:** The raw parametrized string is `ghcr.io/…:${PHAZE_CLOUD_AGENT_TAG:-latest-arm64}` — it ends with `}`, not `-arm64`; and the raw command's first token is `${PHAZE_CLOUD_AGENT_CMD:-python3`, not `python3`.
-**How to avoid:** Update the two guard-test assertions to recognize the `${VAR:-default}` form and assert the **default** still renders arm64 (`…:-latest-arm64}` / `…:-python3 -m saq …`), i.e. the arm64 default is preserved while an x86 override is possible. This test edit is *in scope* — D-05 mandates the parametrization. `[VERIFIED: tests/agents/deployment/test_cloud_agent_compose.py:106-147]`
+**What goes wrong:** Adding `${VAR:-default}` to `image:`/`command:` makes `tests/agents/deployment/test_cloud_agent_compose.py` fail. It parses the **raw** YAML (`yaml.safe_load`, no interpolation) and asserts `image.startswith("ghcr.io/simplicityguy/phaze:")` (line 116), `image.endswith("-arm64")` (line 118) and `command.split()[:3] == ["python3","-m","saq"]` (line 144).
+**Why it happens:** The raw parametrized string is `${PHAZE_CLOUD_AGENT_IMAGE:-ghcr.io/…:${PHAZE_IMAGE_TAG:-latest}-arm64}` — it **starts** with `${PHAZE_CLOUD_AGENT_IMAGE:-` (not `ghcr.io/…`) and **ends** with `}` (not `-arm64`); and the raw command's first token is `${PHAZE_CLOUD_AGENT_CMD:-python3`, not `python3`.
+**How to avoid:** Update the guard-test assertions to recognize the `${VAR:-default}` form and assert the **default** still renders arm64: relax the `startswith` prefix check to a substring check (`"ghcr.io/simplicityguy/phaze:" in image`), relax `endswith("-arm64")` to a default-marker check (`"-arm64}" in image` / `"latest-arm64" in image`), and relax the command `tokens[:3]` check to recognize the `${PHAZE_CLOUD_AGENT_CMD:-python3 -m saq …}` default. This test edit is *in scope* — D-05 mandates the parametrization. `[VERIFIED: tests/agents/deployment/test_cloud_agent_compose.py:106-147]`
 **Warning signs:** `just test-bucket agents` (or the deployment test file) red after the compose edit.
 
 ### Pitfall 3: Two compute agents co-located collide on scratch volume + compose project
@@ -270,14 +270,14 @@ cap  = 1
 | A2 | Docker Compose `command: ${VAR:-default}` substitution works for the exec/shell command form as written. | Pattern 2 / R-1 | LOW: compose variable substitution in `command:` is standard; if the shell-form split matters, use the list form with substitution or verify with `docker compose config`. Plan should verify with `docker compose config` on the parametrized file. |
 | A3 | The standard x86 `ghcr.io/simplicityguy/phaze:<tag>` image (the api/agent image) is what an x86 compute agent runs — there is no separate x86 *compute* image to build. | R-1 | LOW: verified the x86 Dockerfile installs essentia+ffmpeg+fpcalc+libsndfile and agent_worker runs the same module for any kind. No new image build in scope. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does the N≥2-compute probe race actually manifest at runtime?**
+1. **Does the N≥2-compute probe race actually manifest at runtime?** — RESOLVED: settled at execution time by the 74-03 plan's Variant B (real-fan-out, two-online-compute-agents arbiter); the conditional serialize-the-compute-probes fix lands in 74-04 only if Variant B fails (74-04 `depends_on: 74-03`), exactly D-04's "fix if a gap surfaces."
    - What we know: the code path (concurrent `session.execute` over one `AsyncSession`) is verified; SQLAlchemy forbids concurrent session ops.
    - What's unclear: whether the `asyncio.gather` awaits interleave at the execute point often enough to trip it, and whether asyncpg surfaces it as a caught exception (lane offline) vs. something benign.
    - Recommendation: the D-04 regression test includes a **real-fan-out, two-online-compute-agents** variant. Treat a fix as conditional on that test failing (exactly D-04's "fix if a gap surfaces"). If it fails, serialize the compute probes; if it passes, the phase stays verification-only and only the stale docstring needs a comment fix.
 
-2. **Is there an existing test fixture that registers an online compute `Agent`?**
+2. **Is there an existing test fixture that registers an online compute `Agent`?** — RESOLVED: yes — `tests/analyze/services/test_backends.py:70` `_compute(...)` factory (binds a real `ComputeBackend` config whose `agent_ref` resolves against `Agent.id`) combined with `tests/_queue_fakes.py:331` `seed_active_agent(session, <id>, kind="compute")` (commits a non-revoked, fresh-`last_seen_at` compute agent). The real-fan-out variant seeds two such agents whose ids match the two backends' `agent_ref`s.
    - What we know: `test_lane_snapshot.py` uses a `session` fixture and seeds `CloudJob`/`FileRecord` directly; it does not currently seed `Agent` rows (it monkeypatches `_probe_availability` instead).
    - Recommendation: grep `tests/` (e.g. `tests/agents/` or a conftest) for a compute-`Agent` factory before hand-rolling one; `select_agent_by_id(session, id, kind="compute")` needs a non-revoked, fresh-`last_seen_at` agent row to return online.
 
