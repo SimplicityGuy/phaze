@@ -112,3 +112,8 @@ None.
 None — the change reduces the input surface at existing boundaries; no new endpoints, auth paths,
 file access, or schema changes were introduced. The threat register's AR-30-03 / Phase-30 REVIEW
 IN-01 mitigation (`mitigate` disposition) is now implemented at both boundaries.
+
+## Self-Check: PASSED
+
+- `76-03-SUMMARY.md` exists.
+- Commits `6c94b4bd` (test/RED), `140dc64b` (feat/GREEN), `60873123` (docs/SUMMARY) all present.
