@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
 status: executing
-last_updated: "2026-07-06T15:45:55.273Z"
-last_activity: 2026-07-06 -- Phase 75 planning complete
+last_updated: "2026-07-06T15:50:09.454Z"
+last_activity: 2026-07-06 -- Phase 75 execution started
 progress:
   total_phases: 37
   completed_phases: 3
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 75 — engineering hygiene — guard hardening, tech debt & stale tracking cleanup
+**Current focus:** Phase 75 — engineering-hygiene-guard-hardening-tech-debt-stale-tracking
 
 ## Current Position
 
-Phase: 75
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-06 -- Phase 75 planning complete
+Phase: 75 (engineering-hygiene-guard-hardening-tech-debt-stale-tracking) — EXECUTING
+Plan: 1 of 2
+Status: Executing Phase 75
+Last activity: 2026-07-06 -- Phase 75 execution started
 
 ## Performance Metrics
 
@@ -242,9 +242,11 @@ the rest are non-blocking tech-debt/test-coverage polish surfaced by the audit +
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
 | uat | 70-UAT test 7 | deployment-gated | Live 2nd real Kueue cluster + dual live S3 bucket endpoints unavailable in-session; tests 1-6 pass 6/6. Verify at rollout (v6.0 JOB-ENV-CONTRACT precedent) |
-| tech_debt | docker-compose `PHAZE_CLOUD_TARGET` comments (Phase 67) | open | Two stale env/comment lines silently dropped by `extra=ignore` (inert but misleading); delete in a quick fix |
-| tech_debt | >1-compute-backend fail-fast is lazy, not boot-time (Phase 68, W1) | open | `resolved_non_local_kind`/`active_compute_scratch_dir` raise at first invocation, not at `_validate_registry`; deliberate PROV-01-backlog descope, fails loud with id-tagged message |
-| test_coverage | force-local gate regression test (Phase 71, W2) | open | The 2 duration-router gate sites + backfill (`pipeline.py:396/718/793`) were live-verified in the audit but have no committed test; add `tests/shared/routers/test_pipeline.py` coverage |
+| tech_debt | docker-compose `cloud_target`/Phase-67 breadcrumb comments | resolved (Phase 75) | The two stale breadcrumb comment lines (`api` + `worker` services) DELETED in Phase 75 (plan 75-01, HYG-02); `git grep -E "cloud_target\|Phase 67" docker-compose.yml` is clean. Premise corrected: there was never a live `PHAZE_CLOUD_TARGET` env key — comments only (D-03/D-04). |
+| tech_debt | >1-compute-backend fail-fast is lazy, not boot-time (Phase 68, W1) | superseded (Phase 72 D-03) | The `>1`-compute fail-fast was DELETED by Phase 72 to enable N-compute (MCOMP-01) — the milestone deliverable; re-adding a boot reject would break Phases 72-74. The correct boot guard already exists: `config.py:_validate_registry` rejects a duplicate `agent_ref` while accepting N distinct compute backends. Recorded superseded in Phase 75 (HYG-03, no code change). |
+| test_coverage | force-local gate regression test (Phase 71, W2) | resolved (Phase 75) | The 3 duration-router gate sites + backfill (`pipeline.py:396/718/793`) now have committed coverage — regression test added in plan 75-02 (`tests/shared/routers/test_pipeline.py`, force-local True/False control) (HYG-04). |
+
+Separately still open (user decision D-08, NOT fixed in Phase 75): **WR-01** — `_probe_availability` fires N≥2 concurrent `session.execute` on one shared `AsyncSession` when ≥2 compute backends are online. Bounded: a raced probe flaps one lane's `available` flag for a single 5s poll and self-heals (`_probe_one` contains the fault); no data loss, does not touch boot/golden/≤1-compute paths. Tracked for a future quick task (fix = serialize `_probe_one` or give each probe its own session, then reword the docstring from empirical to structural). See `74-REVIEW.md` §WR-01.
 
 These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PROV-01 (multi-compute-agent routing) item is a Backlog candidate for a future milestone.
 
