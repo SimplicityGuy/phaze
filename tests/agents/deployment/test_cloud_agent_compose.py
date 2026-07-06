@@ -104,18 +104,28 @@ def test_worker_service_has_role_agent_and_kind_compute() -> None:
 
 
 def test_worker_image_is_arm64_ghcr_pinned() -> None:
-    """D-08 / T-51-05: the worker image is a GHCR image pinned via PHAZE_IMAGE_TAG and ending in -arm64.
+    """D-08 / T-51-05 / MCOMP-07: the worker image DEFAULT renders the arm64 GHCR tag pinned via PHAZE_IMAGE_TAG.
 
-    No multi-arch manifest exists for the agent image (Phase 47 publishes a
+    No multi-arch manifest exists for the arm64 agent image (Phase 47 publishes a
     dedicated ``-arm64``-suffixed tag); an x86-tagged image would not run on the
-    Ampere A1. yaml.safe_load does not interpolate, so the raw token is visible.
+    Ampere A1. The single compose file now also serves an x86 spill compute agent
+    via the ``${PHAZE_CLOUD_AGENT_IMAGE:-…}`` override (D-05), so the raw image is
+    wrapped as ``${PHAZE_CLOUD_AGENT_IMAGE:-ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64}``.
+    yaml.safe_load does not interpolate, so the raw token is visible: assert the
+    arm64 DEFAULT is preserved (prefix + PHAZE_IMAGE_TAG pin + arm64 suffix), while
+    tolerating the override wrapper.
     """
     data = _load_cloud_agent_compose()
     image = data["services"]["worker"].get("image")
     assert image, f"worker must declare an image: pulling from GHCR; got {data['services']['worker']!r}"
-    assert image.startswith("ghcr.io/simplicityguy/phaze:"), f"worker image must be ghcr.io/simplicityguy/phaze:<tag>; got {image!r}"
+    # Relaxed from startswith → substring: the raw image now begins with the
+    # ${PHAZE_CLOUD_AGENT_IMAGE:-…} override wrapper, but the arm64 DEFAULT still
+    # embeds the GHCR prefix (consistent with the PHAZE_IMAGE_TAG substring check below).
+    assert "ghcr.io/simplicityguy/phaze:" in image, f"worker image DEFAULT must embed ghcr.io/simplicityguy/phaze:<tag>; got {image!r}"
     assert "PHAZE_IMAGE_TAG" in image, f"worker image must pin the tag via ${{PHAZE_IMAGE_TAG...}}; got {image!r}"
-    assert image.endswith("-arm64"), f"worker image MUST end with -arm64 (D-08; no multi-arch manifest exists); got {image!r}"
+    # Relaxed from endswith("-arm64"): the raw string is now ${VAR:-…-arm64}-terminated
+    # by the wrapper's closing brace. Assert the DEFAULT still renders the arm64 tag.
+    assert "-arm64}" in image, f"worker image DEFAULT MUST render -arm64 (D-08; no multi-arch manifest exists); got {image!r}"
 
 
 def test_worker_command_invokes_system_python_not_uv() -> None:
@@ -129,6 +139,14 @@ def test_worker_command_invokes_system_python_not_uv() -> None:
     ``uv run saq …`` (3.14 + .venv image) — this test guards against that pattern
     being copied here. Either omit ``command:`` (inherit the Dockerfile CMD) or set
     it to the ``python3 -m saq …`` form; both are accepted, ``uv`` is not.
+
+    MCOMP-07: the command is now parametrized as
+    ``${PHAZE_CLOUD_AGENT_CMD:-python3 -m saq phaze.tasks.agent_worker.settings}`` so the single
+    compose file also serves an x86 spill agent (which sets PHAZE_CLOUD_AGENT_CMD=``uv run saq …``).
+    yaml.safe_load does not interpolate, so the raw first token is
+    ``${PHAZE_CLOUD_AGENT_CMD:-python3``. This test asserts the arm64 DEFAULT is preserved
+    (``python3 -m saq phaze.tasks.agent_worker.settings``) and that ``uv`` is NOT the default launcher,
+    while tolerating the ``${VAR:-default}`` override wrapper.
     """
     data = _load_cloud_agent_compose()
     worker = data["services"]["worker"]
@@ -136,15 +154,22 @@ def test_worker_command_invokes_system_python_not_uv() -> None:
     if command is None:
         # No override → the Dockerfile.agent-arm64 CMD (python3 -m saq …) applies. Fine.
         return
-    tokens = command.split() if isinstance(command, str) else [str(t) for t in command]
-    assert "uv" not in tokens, (
-        "cloud-agent worker command must NOT use the uv launcher on the arm64 (py3.13/--system) "
+    command_str = command if isinstance(command, str) else " ".join(str(t) for t in command)
+    # Strip the ${PHAZE_CLOUD_AGENT_CMD:-…} override wrapper to inspect the arm64 DEFAULT.
+    prefix = "${PHAZE_CLOUD_AGENT_CMD:-"
+    default_str = command_str[len(prefix) :].rstrip("}") if command_str.startswith(prefix) else command_str
+    default_tokens = default_str.split()
+    assert "uv" not in default_tokens, (
+        "cloud-agent worker command DEFAULT must NOT use the uv launcher on the arm64 (py3.13/--system) "
         f"image — uv re-validates requires-python >=3.14 and the container fails to boot; got {command!r}"
     )
-    assert tokens[:3] == ["python3", "-m", "saq"], (
-        f"cloud-agent worker command must invoke the system interpreter as 'python3 -m saq …' to match Dockerfile.agent-arm64 CMD; got {command!r}"
+    assert default_tokens[:3] == ["python3", "-m", "saq"], (
+        "cloud-agent worker command DEFAULT must invoke the system interpreter as "
+        f"'python3 -m saq …' to match Dockerfile.agent-arm64 CMD; got {command!r}"
     )
-    assert "phaze.tasks.agent_worker.settings" in tokens, f"cloud-agent worker command must run the agent_worker settings module; got {command!r}"
+    assert "phaze.tasks.agent_worker.settings" in default_tokens, (
+        f"cloud-agent worker command DEFAULT must run the agent_worker settings module; got {command!r}"
+    )
 
 
 def test_worker_uses_named_scratch_volume() -> None:
