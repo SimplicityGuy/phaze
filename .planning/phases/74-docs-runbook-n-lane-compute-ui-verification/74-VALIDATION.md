@@ -1,8 +1,8 @@
 ---
 phase: 74
 slug: docs-runbook-n-lane-compute-ui-verification
-status: draft
-nyquist_compliant: false
+status: final
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-06
 ---
@@ -38,11 +38,18 @@ created: 2026-07-06
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| {N}-XX-XX | XX | X | MCOMP-07 | — | N-lane render: N compute backends → N lane cards | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py` | ❌ W0 | ⬜ pending |
+| 74-01-01 | 01 | 1 | MCOMP-07 | T-74-01 | Doc example discloses no secrets/creds | doc-grep | `test "$(sed -n '1p' docs/multi-compute.md)" = '<!-- generated-by: gsd-doc-writer -->' && grep -q 'configuration.md#backend-registry-backendstoml' docs/multi-compute.md` | ✅ | ⬜ pending |
+| 74-01-02 | 01 | 1 | MCOMP-07 | — | N/A | doc-grep | `grep -q 'multi-compute.md' docs/README.md docs/runbook.md docs/configuration.md docs/cloud-burst.md` | ✅ | ⬜ pending |
+| 74-02-01 | 02 | 1 | MCOMP-07 | — | Compose parametrization adds no new exposed port/credential; arm64 default preserved | unit | `uv run python -c "import yaml; d=yaml.safe_load(open('docker-compose.cloud-agent.yml')); ..."` (arm64 default renders) | ✅ | ⬜ pending |
+| 74-02-02 | 02 | 1 | MCOMP-07 | — | Guard test still asserts arm64 default (substring, not blanket removal) | unit | `uv run pytest tests/agents/deployment/test_cloud_agent_compose.py -x -q` | ✅ | ⬜ pending |
+| 74-03-01 | 03 | 1 | MCOMP-07 | — | Each of N compute backends renders its own lane card (deterministic Variant A) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -k one_lane_per_compute -x -q` | ❌ W0 | ⬜ pending |
+| 74-03-02 | 03 | 1 | MCOMP-07 | T-74-06 | Real `_probe_availability` fan-out with 2 online compute agents (race arbiter) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -k compute_probe_real -x -q` | ❌ W0 | ⬜ pending |
+| 74-04-01 | 04 | 2 | MCOMP-07 | T-74-06 | Stale ≤1-compute docstring corrected; conditional compute-probe serialization (gated on 74-03-02) | unit | `uv run pytest tests/shared/services/test_lane_snapshot.py -x -q && uv run mypy src/phaze/services/backends.py` | ✅ | ⬜ pending |
+| 74-04-02 | 04 | 2 | MCOMP-07 | — | MCOMP-07 traceability/ROADMAP closeout; docs-drift green | traceability | `just docs-drift` | ✅ | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
-*Planner fills concrete task IDs. Anchor: the N≥2-compute lane regression test (real probe fan-out variant per RESEARCH R-2) is the arbiter of whether the `_probe_availability` fix is needed, plus the compose guard-test edit (R-1/D-05) and `just docs-drift` traceability green (MCOMP-07 checkbox).*
+*Anchor: the N≥2-compute lane regression test (74-03-02 real probe fan-out variant per RESEARCH R-2) is the arbiter of whether the `_probe_availability` fix (74-04-01) is needed; plus the compose guard-test edit (R-1/D-05, 74-02) and `just docs-drift` traceability green (MCOMP-07 checkbox, 74-04-02). Wave 2 (74-04) `depends_on: ["74-03"]` — verify-then-fix. `File Exists ❌ W0` = the new `test_lane_snapshot.py` cases are written in this phase (Wave 0 requirement below).*
 
 ---
 
@@ -66,11 +73,11 @@ created: 2026-07-06
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 5s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (74-03 test_lane_snapshot.py cases)
+- [x] No watch-mode flags
+- [x] Feedback latency < 5s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-07-06
