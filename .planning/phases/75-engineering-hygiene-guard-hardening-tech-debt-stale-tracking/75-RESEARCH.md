@@ -38,7 +38,7 @@
 | HYG-01 | Traceability guard no longer raises FileNotFoundError when REQUIREMENTS.md absent; regression covers the no-active-milestone case | VERIFIED already satisfied by PR #207 (`ec80a53a`). Reconcile-only — see Verification Finding 1. No code/test. |
 | HYG-02 | Remove the stale `PHAZE_CLOUD_TARGET` env + comment lines from docker-compose | VERIFIED no env line exists; two breadcrumb comments present. 2-line (functionally) comment deletion — see Verification Finding 2. |
 | HYG-03 | `>1`-compute fail-fast fires at boot rather than lazily | VERIFIED superseded — fail-fast was *deleted* by Phase 72; correct boot guard (duplicate-`agent_ref`) already exists. Reconcile-to-SUPERSEDED only — see Verification Finding 3. |
-| HYG-04 | Force-local duration-router gate covered by a committed regression test (3 gate sites) | VERIFIED all three gate sites + endpoints + toggle plumbing; NO existing coverage. The one genuine deliverable — see Verification Finding 4 + Validation Architecture. |
+| HYG-04 | Force-local duration-router gate covered by a committed regression test (3 gate sites) | VERIFIED all three gate sites + endpoints + toggle plumbing; gate L396 had PARTIAL prior coverage via `test_routing.py::test_route_forced_local_no_hold`, L718/L793 genuinely uncovered. The one genuine deliverable — see Verification Finding 4 + Validation Architecture. |
 | HYG-05 | Reconcile stale 2026.7.0 tracking (63-UAT, quick-tasks 260628-wzq/260629-eev) | VERIFIED both SUMMARY.md files exist, both commits present, 63-UAT partial with 0 pending. Bookkeeping only — see Verification Finding 5. |
 </phase_requirements>
 
@@ -57,7 +57,7 @@ Every file:line claim in CONTEXT.md was verified against the live worktree. **Al
 | 1 | HYG-01: `_NO_ACTIVE_MILESTONE` L64; skipif `:257/:266/:276` (D-01) / `L256/265/275` (refs) | `_NO_ACTIVE_MILESTONE` at **L64** ✓; skipif at **L256, L265, L275** (refs correct; D-01's 257/266/276 off-by-one). A **4th** skipif at **L327** (`test_inflight_phase_with_unmarked_requirements_passes`) not listed in CONTEXT. Skip evaluates *before* body runs, so `_read(_REQUIREMENTS)` never fires when absent → FileNotFoundError provably prevented. | Minor line drift; 1 extra skipif undocumented | **None** — D-01/D-02 hold. Already satisfied. |
 | 2 | HYG-02: comments at `docker-compose.yml:24` (api) + `:52` (worker); no `PHAZE_CLOUD_TARGET` env (D-04) | `git grep PHAZE_CLOUD_TARGET -- 'docker-compose*.yml'` → **CLEAN** ✓. api breadcrumb spans **L24-25** (two physical lines); worker breadcrumb is **L52** (one line). backends.toml explainer to KEEP: api L21-23, worker L49-51. | api comment is 2 physical lines, not 1 | **None** — D-03/D-04 hold. See Pitfall 1 for the L25 boundary nuance. |
 | 3 | HYG-03: `resolved_non_local_kind:573` returns "compute"; `_validate_registry:437` dup-`agent_ref` reject | `resolved_non_local_kind` def at **L550**, compute-branch `return non_local[0].kind` at **L574** (L573 is the comment) ✓. `_validate_registry` at **L415**, dup-`agent_ref` reject at **L437-450** ✓. `_probe_availability` at **L651** (refs said `:665`). Docstrings explicitly state Phase 72 D-03 retired the `>1`-compute raise. | `_probe_availability` line drift (651 vs 665); return one line below stated | **None** — D-05/D-06/D-07 hold. Re-adding a `>1` reject WOULD break shipped N-compute (confirmed). |
-| 4 | HYG-04: gate sites `pipeline.py:396/718/793`; `get_route_control`/`set_route_control` toggle; no existing coverage | Gate sites **exact**: L396 (`trigger_analysis`, `POST /api/v1/analyze`), L718 (`trigger_analysis_ui`, `POST /pipeline/analyze`), L793 (`trigger_backfill_cloud`, `POST /pipeline/backfill-cloud`) ✓. `get_route_control` exists (`services/route_control.py`). **`set_route_control` does NOT exist** — writer is `routers/routing.py::force_local` (POST) or a direct `RouteControl` row insert. `grep force_local/route_control` in `test_pipeline.py` → **no existing coverage** ✓. | `set_route_control` helper is fictional | **None** — D-09/D-10 hold; use a direct `RouteControl` row insert (see Validation Architecture). |
+| 4 | HYG-04: gate sites `pipeline.py:396/718/793`; `get_route_control`/`set_route_control` toggle; no existing coverage | Gate sites **exact**: L396 (`trigger_analysis`, `POST /api/v1/analyze`), L718 (`trigger_analysis_ui`, `POST /pipeline/analyze`), L793 (`trigger_backfill_cloud`, `POST /pipeline/backfill-cloud`) ✓. `get_route_control` exists (`services/route_control.py`). **`set_route_control` does NOT exist** — writer is `routers/routing.py::force_local` (POST) or a direct `RouteControl` row insert. `grep force_local/route_control` in `test_pipeline.py` → **no existing coverage there** ✓ — BUT `tests/shared/routers/test_routing.py::test_route_forced_local_no_hold` ALREADY drives `POST /api/v1/analyze` with a cloud-ON `[_COMPUTE_BACKEND]` registry + a seeded `force_local=True` row, asserting `awaiting_cloud == 0` — i.e. gate **L396 had PARTIAL prior coverage**. Gates **L718 and L793 were genuinely uncovered**. | `set_route_control` helper is fictional; CONTEXT's "no existing coverage" is imprecise — L396 had partial coverage in `test_routing.py` | **None** — D-09/D-10 hold; consolidate into `test_pipeline.py` (D-09) + extend to L718/L793; use a direct `RouteControl` row insert (see Validation Architecture). |
 | 5 | HYG-05: quick-task SUMMARY files exist + committed; 63-UAT 0 pending | Both `SUMMARY.md` files exist. Commits **present**: `5f43aa7` (260628-wzq), `267109b` (260629-eev). STATE.md L234 shows `63-UAT partial` with "0 pending scenarios". | None | **None** — D-11 holds. |
 
 ## Architectural Responsibility Map
@@ -213,17 +213,19 @@ Not applicable — no libraries, framework versions, or ecosystem patterns are b
 
 **All claims in this research were verified against the live worktree this session (grep/read/git-log) or cited to CONTEXT.md decisions.** No `[ASSUMED]` claims — no user confirmation needed beyond the already-locked D-01..D-11.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **HYG-02 L25 trailing sentence boundary**
    - What we know: the `api` breadcrumb (L24-25) ends with "…Mount a backends.toml to enable cloud backends."
    - What's unclear: whether that trailing operator-guidance sentence counts as "the stale breadcrumb" (delete) or "the explainer" (keep).
    - Recommendation: keep operator-useful guidance; delete only the "Replaces the removed cloud_target selector … (Phase 67 …)" reference. Executor discretion per D-03 ("keep the surrounding backends.toml mount explainer intact"). Low stakes — it's a comment.
+   - **Resolved:** Plan 75-01 Task 2 keeps the trailing operator-guidance sentence ("Mount a backends.toml to enable cloud backends.") and deletes ONLY the "Replaces the removed cloud_target selector … (Phase 67 …)" breadcrumb in both `api` + `worker`.
 
 2. **HYG-04 case count (3 vs 4)**
    - What we know: three gate sites; a False control strengthens the proof.
    - What's unclear: whether the planner wants one control case or a control per trigger.
    - Recommendation: 3 force-local-True cases (one per gate site) + at least 1 force-local-False control. Planner discretion per D-10.
+   - **Resolved:** Plan 75-02 uses 4 cases — 3 force-local-True (one per gate site L396/L718/L793) + 1 force-local-False control on `/api/v1/analyze`.
 
 ## Sources
 
