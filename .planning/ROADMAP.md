@@ -1128,7 +1128,10 @@ Plans:
   3. **HARD-03 (closes AR-30-03 / Phase-30 REVIEW IN-01):** the scan-status endpoint's `agent_id` query param (`routers/pipeline_scans.py`) is constrained at the HTTP boundary with `pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$"` + `max_length=128` (the agent-id shape used elsewhere), so a malformed `agent_id` returns **422**, not a silently-empty `200` poll. Regression: malformed `agent_id` → 422. (HARD-03)
 
 **Notes**: Three independent fixes; each references and closes its accepted-risk/threat in the phase threat model (HARD-01→WR-01/74-REVIEW; HARD-02→AR-73-02/T-73-13/WR-04; HARD-03→AR-30-03/Phase-30 IN-01). No new dependencies (pyproject/uv.lock untouched); `just docs-drift` stays green; coverage ≥ gate. DB-touching regression tests use `TEST_DATABASE_URL`/`MIGRATIONS_TEST_DATABASE_URL` on port 5433 (`just test-db`). Ships as its own PR on a worktree branch (never direct to main). Scope is locked to exactly these three fixes — the older posture-based accepted risks (AR-27-*/AR-37-*/AR-51-08) stay accepted, and AR-73-01 (N-compute per-agent orphan recovery) is folded into the v2 PROV-01 backlog, not this phase.
-**Plans**: TBD
+**Plans**: 3 plans (all wave 1, parallel — disjoint files)
+- [ ] 76-01-PLAN.md — HARD-01: serialize `_probe_availability` (no `asyncio.gather`) + structural docstring + deterministic N≥2-compute probe test
+- [ ] 76-02-PLAN.md — HARD-02: `.with_for_update()` on the `push_attempt` ledger RMW SELECT + concurrent no-lost-update test (real Postgres, port 5433)
+- [ ] 76-03-PLAN.md — HARD-03: `pattern`+`max_length=128` on both `agent_id` query params (`scan_status`, `agent_roots_swap`) + 422 regression tests
 **UI hint**: no
 
 ## Backlog (unscheduled — no phase number yet)
