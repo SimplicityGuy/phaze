@@ -21,11 +21,11 @@
 
 Appended cleanup sweep (Phase 75, added 2026-07-06) — a cross-milestone engineering-hygiene backlog that accumulated through 2026.7.0/.1/.2. No user-facing behavior change.
 
-- [ ] **HYG-01**: The Phase-66 traceability guard (`tests/shared/core/test_requirements_traceability.py`) no longer raises `FileNotFoundError` when `.planning/REQUIREMENTS.md` is absent — its active-milestone tests `pytest.skip`/fail-clean in the between-milestones state, and a regression test covers the archived/no-active-milestone case, so the standard milestone-close `git rm REQUIREMENTS.md` keeps the required code-quality check green. **Disposition: already-satisfied by PR #207 (`ec80a53a`, 2026-07-05, landed before Phase 75 was appended).** `_NO_ACTIVE_MILESTONE = not _REQUIREMENTS.exists()` (test L64) skipif-gates all active-milestone tests, and `test_archived_milestones_internally_consistent` covers the no-active-milestone case — the `git rm REQUIREMENTS.md` close path already stays green. No new code, no new test (Phase 75 D-01/D-02). Checkbox stays `[ ]` / Status `Pending` until the standard phase-completion flow flips it.
-- [ ] **HYG-02**: The two stale/inert `PHAZE_CLOUD_TARGET` env + comment lines (Phase 67, silently dropped by Pydantic `extra=ignore`) are removed from the docker-compose file(s).
-- [ ] **HYG-03**: The `>1`-compute-backend fail-fast fires at boot (`services/backends._validate_registry`) rather than lazily at first `resolved_non_local_kind` invocation — fail-loud with the existing id-tagged message; single-/zero-compute behavior unchanged. **Disposition: SUPERSEDED by Phase 72 (D-03).** The `>1`-compute fail-fast this asks to promote to boot-time was DELETED outright by Phase 72 to enable the N-compute capability that is the entire 2026.7.2 deliverable (MCOMP-01); re-adding it would break Phases 72-74's shipped-and-verified behavior. The correct boot guard already exists — `config.py:_validate_registry` boot-rejects a duplicate `agent_ref` while accepting N distinct compute backends, and `resolved_non_local_kind` returns `"compute"` for any N. No code change (Phase 75 D-05/D-06/D-07).
-- [ ] **HYG-04**: The force-local duration-router gate is covered by a committed regression test (`tests/shared/routers/test_pipeline.py`) exercising the 3 gate sites (`pipeline.py:396/718/793`). **Disposition: satisfied by Phase 75 plan 75-02** — a 4-case force-local region in `tests/shared/routers/test_pipeline.py` covers L396 (`POST /api/v1/analyze`), L718 (`POST /pipeline/analyze`), L793 (`POST /pipeline/backfill-cloud` zero-mutation no-op), plus a force-local-False control. Checkbox stays `[ ]` / Status `Pending` until the standard phase-completion flow flips it (the docs-drift guard keeps active-phase checkboxes unflipped until Phase 75 is a passed phase).
-- [ ] **HYG-05**: Stale 2026.7.0 tracking is reconciled — `63-UAT` flipped to complete (0 pending scenarios), quick-tasks `260628-wzq` + `260629-eev` marked complete (both already committed).
+- [x] **HYG-01**: The Phase-66 traceability guard (`tests/shared/core/test_requirements_traceability.py`) no longer raises `FileNotFoundError` when `.planning/REQUIREMENTS.md` is absent — its active-milestone tests `pytest.skip`/fail-clean in the between-milestones state, and a regression test covers the archived/no-active-milestone case, so the standard milestone-close `git rm REQUIREMENTS.md` keeps the required code-quality check green. **Disposition: already-satisfied by PR #207 (`ec80a53a`, 2026-07-05, landed before Phase 75 was appended).** `_NO_ACTIVE_MILESTONE = not _REQUIREMENTS.exists()` (test L64) skipif-gates all active-milestone tests, and `test_archived_milestones_internally_consistent` covers the no-active-milestone case — the `git rm REQUIREMENTS.md` close path already stays green. No new code, no new test (Phase 75 D-01/D-02). Checkbox stays `[ ]` / Status `Pending` until the standard phase-completion flow flips it.
+- [x] **HYG-02**: The two stale/inert `PHAZE_CLOUD_TARGET` env + comment lines (Phase 67, silently dropped by Pydantic `extra=ignore`) are removed from the docker-compose file(s).
+- [x] **HYG-03**: The `>1`-compute-backend fail-fast fires at boot (`services/backends._validate_registry`) rather than lazily at first `resolved_non_local_kind` invocation — fail-loud with the existing id-tagged message; single-/zero-compute behavior unchanged. **Disposition: SUPERSEDED by Phase 72 (D-03).** The `>1`-compute fail-fast this asks to promote to boot-time was DELETED outright by Phase 72 to enable the N-compute capability that is the entire 2026.7.2 deliverable (MCOMP-01); re-adding it would break Phases 72-74's shipped-and-verified behavior. The correct boot guard already exists — `config.py:_validate_registry` boot-rejects a duplicate `agent_ref` while accepting N distinct compute backends, and `resolved_non_local_kind` returns `"compute"` for any N. No code change (Phase 75 D-05/D-06/D-07).
+- [x] **HYG-04**: The force-local duration-router gate is covered by a committed regression test (`tests/shared/routers/test_pipeline.py`) exercising the 3 gate sites (`pipeline.py:396/718/793`). **Disposition: satisfied by Phase 75 plan 75-02** — a 4-case force-local region in `tests/shared/routers/test_pipeline.py` covers L396 (`POST /api/v1/analyze`), L718 (`POST /pipeline/analyze`), L793 (`POST /pipeline/backfill-cloud` zero-mutation no-op), plus a force-local-False control. Checkbox stays `[ ]` / Status `Pending` until the standard phase-completion flow flips it (the docs-drift guard keeps active-phase checkboxes unflipped until Phase 75 is a passed phase).
+- [x] **HYG-05**: Stale 2026.7.0 tracking is reconciled — `63-UAT` flipped to complete (0 pending scenarios), quick-tasks `260628-wzq` + `260629-eev` marked complete (both already committed).
 
 ## v2 Requirements
 
@@ -61,11 +61,11 @@ Which phases cover which requirements. Populated during roadmap creation (phases
 | MCOMP-05 | Phase 73 | Complete |
 | MCOMP-06 | Phase 73 | Complete |
 | MCOMP-07 | Phase 74 | Complete |
-| HYG-01 | Phase 75 | Pending |
-| HYG-02 | Phase 75 | Pending |
-| HYG-03 | Phase 75 | Pending |
-| HYG-04 | Phase 75 | Pending |
-| HYG-05 | Phase 75 | Pending |
+| HYG-01 | Phase 75 | Complete |
+| HYG-02 | Phase 75 | Complete |
+| HYG-03 | Phase 75 | Complete |
+| HYG-04 | Phase 75 | Complete |
+| HYG-05 | Phase 75 | Complete |
 
 **Coverage:**
 - v1 requirements: 12 total (7 MCOMP + 5 HYG)
