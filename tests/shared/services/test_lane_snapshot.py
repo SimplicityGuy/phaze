@@ -433,3 +433,41 @@ async def test_snapshot_degrades_when_rollback_also_fails(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(backends_mod, "resolve_backends", _boom)
     assert await get_backend_lane_snapshot(_DoubleExplodingSession()) == []  # type: ignore[arg-type]
+
+
+# ------------------------------------------- Plan 74-03: N-lane compute parity (MCOMP-07, D-04)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_renders_one_lane_per_compute_backend(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Variant A (deterministic): N≥2 compute backends each render their own lane -- no kind dedup (MCOMP-07, D-04, R-2).
+
+    A registry of two ``ComputeAgentBackend`` (``a1-arm64`` rank 10, ``x86-spill`` rank 20) plus one
+    ``LocalBackend`` (rank 99), with ``_probe_availability`` monkeypatched to an all-available shim, must
+    yield EXACTLY two ``kind=="compute"`` lanes -- ids ``["a1-arm64", "x86-spill"]`` in rank order -- proving
+    the BEUI-01 grid renders each compute agent as its own lane and never collapses on ``kind``. This is a
+    verification test over the existing ``get_backend_lane_snapshot``; the deterministic probe keeps it green
+    independent of the real-fan-out race question (Variant B / Plan 04).
+    """
+    arm64 = ComputeAgentBackend(id="a1-arm64", rank=10, cap=2)
+    x86 = ComputeAgentBackend(id="x86-spill", rank=20, cap=1)
+    local = LocalBackend(id="local", rank=99, cap=1)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [arm64, x86, local])
+
+    async def _all_available(_session: Any, _backends: Any) -> dict[str, bool]:
+        return {"a1-arm64": True, "x86-spill": True, "local": True}
+
+    monkeypatch.setattr(backends_mod, "_probe_availability", _all_available)
+
+    lanes = await get_backend_lane_snapshot(session)
+
+    compute_lanes = [lane for lane in lanes if lane["kind"] == "compute"]
+    assert [lane["id"] for lane in compute_lanes] == ["a1-arm64", "x86-spill"]  # rank order, no kind collapse
+    assert len(compute_lanes) == 2  # each compute backend gets its OWN lane (no dedup on kind)
+
+    by_id = {lane["id"]: lane for lane in lanes}
+    assert by_id["a1-arm64"]["rank"] == 10
+    assert by_id["x86-spill"]["rank"] == 20
+    assert by_id["local"]["kind"] == "local"  # the local lane is still present alongside the two compute lanes
+    assert by_id["local"]["rank"] == 99
+    assert [lane["id"] for lane in lanes] == ["a1-arm64", "x86-spill", "local"]  # sorted (rank, id)
