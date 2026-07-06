@@ -20,6 +20,7 @@ import uuid
 
 import pytest
 
+from phaze.config_backends import ComputeBackend as ComputeEntry
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 from phaze.services import backends as backends_mod
@@ -33,6 +34,7 @@ from phaze.services.backends import (
     _probe_one,
     get_backend_lane_snapshot,
 )
+from tests._queue_fakes import seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -433,3 +435,92 @@ async def test_snapshot_degrades_when_rollback_also_fails(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(backends_mod, "resolve_backends", _boom)
     assert await get_backend_lane_snapshot(_DoubleExplodingSession()) == []  # type: ignore[arg-type]
+
+
+# ------------------------------------------- Plan 74-03: N-lane compute parity (MCOMP-07, D-04)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_renders_one_lane_per_compute_backend(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Variant A (deterministic): N≥2 compute backends each render their own lane -- no kind dedup (MCOMP-07, D-04, R-2).
+
+    A registry of two ``ComputeAgentBackend`` (``a1-arm64`` rank 10, ``x86-spill`` rank 20) plus one
+    ``LocalBackend`` (rank 99), with ``_probe_availability`` monkeypatched to an all-available shim, must
+    yield EXACTLY two ``kind=="compute"`` lanes -- ids ``["a1-arm64", "x86-spill"]`` in rank order -- proving
+    the BEUI-01 grid renders each compute agent as its own lane and never collapses on ``kind``. This is a
+    verification test over the existing ``get_backend_lane_snapshot``; the deterministic probe keeps it green
+    independent of the real-fan-out race question (Variant B / Plan 04).
+    """
+    arm64 = ComputeAgentBackend(id="a1-arm64", rank=10, cap=2)
+    x86 = ComputeAgentBackend(id="x86-spill", rank=20, cap=1)
+    local = LocalBackend(id="local", rank=99, cap=1)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [arm64, x86, local])
+
+    async def _all_available(_session: Any, _backends: Any) -> dict[str, bool]:
+        return {"a1-arm64": True, "x86-spill": True, "local": True}
+
+    monkeypatch.setattr(backends_mod, "_probe_availability", _all_available)
+
+    lanes = await get_backend_lane_snapshot(session)
+
+    compute_lanes = [lane for lane in lanes if lane["kind"] == "compute"]
+    assert [lane["id"] for lane in compute_lanes] == ["a1-arm64", "x86-spill"]  # rank order, no kind collapse
+    assert len(compute_lanes) == 2  # each compute backend gets its OWN lane (no dedup on kind)
+
+    by_id = {lane["id"]: lane for lane in lanes}
+    assert by_id["a1-arm64"]["rank"] == 10
+    assert by_id["x86-spill"]["rank"] == 20
+    assert by_id["local"]["kind"] == "local"  # the local lane is still present alongside the two compute lanes
+    assert by_id["local"]["rank"] == 99
+    assert [lane["id"] for lane in lanes] == ["a1-arm64", "x86-spill", "local"]  # sorted (rank, id)
+
+
+def _bound_compute(bid: str, rank: int, cap: int) -> ComputeAgentBackend:
+    """Build a ComputeAgentBackend carrying a REAL bound ComputeBackend config (agent_ref == bid).
+
+    Mirrors the tests/analyze/services/test_backends.py ``_compute`` factory so ``is_available`` resolves
+    ``self.config.agent_ref`` against a seeded ``Agent.id`` via ``select_agent_by_id`` -- the real probe path
+    Variant B must exercise (no ``config`` would fail loud in ``_agent_ref``).
+    """
+    config = ComputeEntry(
+        kind="compute",
+        id=bid,
+        rank=rank,
+        cap=cap,
+        agent_ref=bid,
+        scratch_dir="/srv/scratch",
+        push_host=f"{bid}.push.example",
+        ssh_user=None,
+    )
+    return ComputeAgentBackend(id=bid, rank=rank, cap=cap, config=config)
+
+
+@pytest.mark.asyncio
+async def test_compute_probe_real_fanout_keeps_both_lanes_online(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Variant B (ARBITER): real ``_probe_availability`` fan-out with two ONLINE compute agents (MCOMP-07, D-04, Pitfall 1).
+
+    Two ``ComputeAgentBackend`` each bound to a real ``ComputeBackend`` config whose ``agent_ref`` matches a
+    seeded ONLINE ``kind="compute"`` agent, with NO monkeypatch of ``_probe_availability`` -- so the real
+    ``asyncio.gather`` fan-out runs ``ComputeAgentBackend.is_available`` -> ``select_agent_by_id`` ->
+    ``session.execute`` concurrently over the ONE shared ``AsyncSession``. A healthy N≥2-compute deployment
+    shows BOTH lanes online, so both compute lanes must come back ``available == True``.
+
+    This is the arbiter for the R-2 / Pitfall-1 shared-session race: if a lane returns ``available == False``
+    the concurrent ``session.execute`` calls raced (SQLAlchemy forbids concurrent ops on one session), which
+    Plan 04 must fix by serializing the compute probes. The Variant B outcome is recorded in 74-03-SUMMARY.
+    Fixing the probe is NOT in this plan's scope -- this test only settles whether the race manifests.
+    """
+    arm64 = _bound_compute("a1-arm64", rank=10, cap=2)
+    x86 = _bound_compute("x86-spill", rank=20, cap=1)
+    local = LocalBackend(id="local", rank=99, cap=1)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [arm64, x86, local])
+
+    # Seed TWO ONLINE compute agents whose ids MATCH the two backends' agent_ref (record-don't-rederive).
+    await seed_active_agent(session, "a1-arm64", kind="compute")
+    await seed_active_agent(session, "x86-spill", kind="compute")
+
+    # Do NOT monkeypatch _probe_availability -- exercise the REAL concurrent fan-out (Pitfall 1).
+    lanes = await get_backend_lane_snapshot(session)
+
+    availability = {lane["id"]: lane["available"] for lane in lanes if lane["kind"] == "compute"}
+    assert availability == {"a1-arm64": True, "x86-spill": True}  # both online -> both lanes available (arbiter)

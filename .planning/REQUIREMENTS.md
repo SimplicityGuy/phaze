@@ -15,7 +15,17 @@
 - [x] **MCOMP-04**: The tiered drain scheduler spreads long files across N compute agents by **rank** (free arm64 preferred over paid/trial x86) and **per-agent `cap`**, spilling to the next-eligible backend when one is at cap or offline. Reuses the Phase-69 rank/cap `select_backend` policy — no capability-matching.
 - [x] **MCOMP-05**: One flaky or offline compute agent is **isolated** — it degrades to 0 slots without failing the drain tick or blocking dispatch to healthy compute agents (per-backend snapshot try/except, mirroring the Phase 70 MKUE-03 pattern).
 - [x] **MCOMP-06**: Each compute backend's **in-flight count and terminalization** (the `/pushed` + `/api/internal/agent/*` reconcile path) are scoped to that backend/agent, so a file's result is attributed to the agent that analyzed it — no cross-agent mis-attribution. Resolves the open question of whether `cloud_job` stays one-row-per-file or needs per-(file,backend).
-- [ ] **MCOMP-07**: The operator runbook + config docs cover **adding a 2nd+ compute agent** and the mixed arm64/x86 rank/cap cost-tiering; each compute agent renders as its own lane in the N-lane UI (verify the Phase-71 BEUI generalization already covers compute lanes; fix if a gap surfaces).
+- [x] **MCOMP-07**: The operator runbook + config docs cover **adding a 2nd+ compute agent** and the mixed arm64/x86 rank/cap cost-tiering; each compute agent renders as its own lane in the N-lane UI (verify the Phase-71 BEUI generalization already covers compute lanes; fix if a gap surfaces).
+
+### Engineering Hygiene (HYG)
+
+Appended cleanup sweep (Phase 75, added 2026-07-06) — a cross-milestone engineering-hygiene backlog that accumulated through 2026.7.0/.1/.2. No user-facing behavior change.
+
+- [ ] **HYG-01**: The Phase-66 traceability guard (`tests/shared/core/test_requirements_traceability.py`) no longer raises `FileNotFoundError` when `.planning/REQUIREMENTS.md` is absent — its active-milestone tests `pytest.skip`/fail-clean in the between-milestones state, and a regression test covers the archived/no-active-milestone case, so the standard milestone-close `git rm REQUIREMENTS.md` keeps the required code-quality check green.
+- [ ] **HYG-02**: The two stale/inert `PHAZE_CLOUD_TARGET` env + comment lines (Phase 67, silently dropped by Pydantic `extra=ignore`) are removed from the docker-compose file(s).
+- [ ] **HYG-03**: The `>1`-compute-backend fail-fast fires at boot (`services/backends._validate_registry`) rather than lazily at first `resolved_non_local_kind` invocation — fail-loud with the existing id-tagged message; single-/zero-compute behavior unchanged.
+- [ ] **HYG-04**: The force-local duration-router gate is covered by a committed regression test (`tests/shared/routers/test_pipeline.py`) exercising the 3 gate sites (`pipeline.py:396/718/793`).
+- [ ] **HYG-05**: Stale 2026.7.0 tracking is reconciled — `63-UAT` flipped to complete (0 pending scenarios), quick-tasks `260628-wzq` + `260629-eev` marked complete (both already committed).
 
 ## v2 Requirements
 
@@ -50,12 +60,18 @@ Which phases cover which requirements. Populated during roadmap creation (phases
 | MCOMP-04 | Phase 73 | Complete |
 | MCOMP-05 | Phase 73 | Complete |
 | MCOMP-06 | Phase 73 | Complete |
-| MCOMP-07 | Phase 74 | Pending |
+| MCOMP-07 | Phase 74 | Complete |
+| HYG-01 | Phase 75 | Pending |
+| HYG-02 | Phase 75 | Pending |
+| HYG-03 | Phase 75 | Pending |
+| HYG-04 | Phase 75 | Pending |
+| HYG-05 | Phase 75 | Pending |
 
 **Coverage:**
-- v1 requirements: 7 total
-- Mapped to phases: 7 ✓ (MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74)
+- v1 requirements: 12 total (7 MCOMP + 5 HYG)
+- Mapped to phases: 12 ✓ (MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74 · HYG-01..05→75)
 - Unmapped: 0 ✓ (no orphans, no duplicates)
+- Note: HYG-01..05 are the appended Phase-75 engineering-hygiene sweep (added 2026-07-06); all Pending until Phase 75 executes.
 
 ---
 *Requirements defined: 2026-07-05*

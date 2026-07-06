@@ -18,7 +18,8 @@ For the **config model** behind all of this — the `backends.toml` registry, th
 [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) and
 [configuration.md → Cloud target](configuration.md#cloud-target-removed-in-phase-67). For standing
 up a cloud target, see [cloud-burst.md](cloud-burst.md) (OCI A1 compute agent) and
-[k8s-burst.md](k8s-burst.md) (Kueue cluster).
+[k8s-burst.md](k8s-burst.md) (Kueue cluster). For adding a **2nd+ compute agent**, cost-tiered
+across mixed arm64/x86 hosts, see [multi-compute.md](multi-compute.md).
 
 ## Force-local incident revert
 

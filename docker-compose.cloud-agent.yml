@@ -39,16 +39,30 @@
 # Secrets (D-06): no plaintext secrets are inlined here. The worker reads the
 # existing `*_FILE` machinery (PHAZE_QUEUE_URL_FILE, PHAZE_AGENT_TOKEN_FILE,
 # PHAZE_PUSH_*_FILE) via env_file: .env — see docs/cloud-burst.md.
+#
+# Per-compute-agent overrides (D-05/MCOMP-07): this SINGLE compose file serves
+# both the arm64 A1 agent (default) and a real x86 spill compute agent (override)
+# — no separate compose file. The two arm64-specific lines are parametrized:
+#   - PHAZE_CLOUD_AGENT_IMAGE — the x86 operator sets the STANDARD tag (e.g.
+#     ghcr.io/simplicityguy/phaze:2026.7.2), with NO `-arm64` suffix, because the
+#     x86 image is a normal multi-arch/standard build. Leave unset on arm64 A1.
+#   - PHAZE_CLOUD_AGENT_CMD — the x86 operator sets
+#     `uv run saq phaze.tasks.agent_worker.settings` because the x86 image is
+#     Python 3.14 with a .venv (uv run is correct there). Leave unset on arm64,
+#     whose default `python3 -m saq …` matches the py3.13/--system image.
+# With NEITHER override set the compose resolves to the arm64 image tag and the
+# python3 -m saq command exactly as before (the guard test asserts this default).
 
 services:
   worker:
-    image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64
-    # Invoke the system interpreter directly — NEVER `uv run`. This arm64 image is built on
-    # Python 3.13 with --system installs (no .venv); `uv run` re-validates requires-python
-    # >=3.14 and would fail to boot. Mirrors the Dockerfile.agent-arm64 CMD exactly. The x86
-    # docker-compose.agent.yml uses `uv run saq …` because that image is 3.14 with a .venv —
-    # do NOT copy that command here (D-47-PY).
-    command: python3 -m saq phaze.tasks.agent_worker.settings
+    image: ${PHAZE_CLOUD_AGENT_IMAGE:-ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}-arm64}
+    # Invoke the system interpreter directly — NEVER `uv run` on arm64. This arm64 image is
+    # built on Python 3.13 with --system installs (no .venv); `uv run` re-validates
+    # requires-python >=3.14 and would fail to boot. The DEFAULT below mirrors the
+    # Dockerfile.agent-arm64 CMD exactly. The x86 docker-compose.agent.yml uses
+    # `uv run saq …` because that image is 3.14 with a .venv — an x86 compute-agent operator
+    # sets PHAZE_CLOUD_AGENT_CMD to that form; do NOT hardcode uv here (D-47-PY).
+    command: ${PHAZE_CLOUD_AGENT_CMD:-python3 -m saq phaze.tasks.agent_worker.settings}
     network_mode: host
     env_file: .env
     environment:

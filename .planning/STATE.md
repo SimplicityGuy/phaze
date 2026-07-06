@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
-status: "Phase 73 shipped — PR #210"
-last_updated: "2026-07-06T03:31:12.068Z"
-last_activity: "2026-07-05 -- Phase 73 shipped (PR #210)"
+status: "Phase 74 shipped — PR #211"
+last_updated: "2026-07-06T07:34:31.124Z"
+last_activity: 2026-07-06
 progress:
   total_phases: 36
-  completed_phases: 11
-  total_plans: 47
-  completed_plans: 34
-  percent: 31
+  completed_phases: 12
+  total_plans: 51
+  completed_plans: 38
+  percent: 33
 ---
 
 # Project State
@@ -20,20 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 74 — docs, runbook & n lane compute ui verification
+**Current focus:** Phase 75 — engineering hygiene — guard hardening, tech debt & stale tracking cleanup
 
 ## Current Position
 
-Phase: 74
+Phase: 75
 Plan: Not started
-Status: Phase 73 shipped — PR #210
-Last activity: 2026-07-05 -- Phase 73 shipped (PR #210)
+Status: Phase 74 shipped — PR #211
+Last activity: 2026-07-06
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 165
+- Total plans completed: 169
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -117,6 +117,8 @@ Last activity: 2026-07-05 -- Phase 73 shipped (PR #210)
 - [Phase 63]: 63-03: tests.yml runs a setup->bucket-matrix->combine topology; all 9 buckets serial (each has DB-fixture tests), matrix fan-out alone gives CI-02; single combine job yields one coverage.xml + one Codecov upload at --fail-under=85 (CI-03), CODECOV_TOKEN scoped to combine only
 - [Phase 63]: 63-04: broadened doc-only CI skip to *.md + .planning/** + LICENSE + docs/** + *.txt; conservative keep-only-non-doc classifier keeps code-changed=true for any non-doc path (security T-63-04-01); classifier extracted to shellcheck-clean scripts/classify-changed-files.sh invoked via `just detect-code-changes` (D-10) + unit-tested by tests/shared/test_change_gate.py; ci.yml SHA edge-case block + aggregate-results skip-with-success contract left byte-for-byte unchanged (no paths-ignore)
 - [Phase 66]: 66-03: vulture dead-code sweep was a deliberate NO-OP — `just vulture` (min-confidence 80 + whitelist + --ignore-decorators) exits 0 with zero confirmed-dead symbols in src/phaze; the v7.0 CUT-02 cutover + PR #191 already removed the vestigial dead code (as RESEARCH Deep-Dive 3 anticipated). Durable CLEAN-02 artifact = hand-audited vulture_whitelist.py suppressing 20 grep-verified framework/dynamic false-positives (FastAPI/watchdog callbacks, Pydantic schemas, string-annotation casts, has_prev/has_next, deferred-feature scaffolding, heartbeat_tick shim). vulture stays NON-blocking (just recipe only, never CI/pre-commit — T-66-09). DO-NOT-DELETE trio (build_dashboard_context/get_stage_progress/get_queue_activity) never flagged, kept out of the whitelist. Both blocking checkpoints (package-legitimacy + deletion-review) human-approved.
+- [Phase ?]: 74-04: Variant B PASSED (74-03 arbiter) -> Plan 04 docstring-only; NO _probe_availability compute-probe serialization added (D-04 verification-only).
+- [Phase ?]: 74-04: _probe_availability docstring corrected unconditionally (Pitfall 1) — retired the '≤1 compute / at most ONE probe' claim; now states N compute backends legal per Phase-72 MCOMP-01, race-free per 74-03 Variant B.
 
 ### Pending Todos
 
@@ -183,6 +185,7 @@ None.
 | Phase 63 P02 | 40min | 3 tasks | 265 files |
 | Phase 63 P03 | ~15min | 2 tasks | 1 files |
 | Phase 63 P04 | ~20min | 2 tasks | 4 files |
+| Phase 74 P04 | ~10 min | 2 tasks | 3 files |
 
 ## Deferred Items
 
@@ -247,9 +250,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-05T19:34:33.642Z
-Stopped at: Phase 73 context gathered
-Resume file: .planning/phases/73-per-agent-dispatch-liveness-scratch-failure-isolation/73-CONTEXT.md
+Last session: 2026-07-06T05:28:40.732Z
+Stopped at: Phase 74 context gathered
+Resume file: None
 
 ## Operator Next Steps
 
