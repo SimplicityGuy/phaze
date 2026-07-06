@@ -789,6 +789,37 @@ async def test_agent_roots_swap_unknown_agent_yields_empty_state(
 
 
 # ---------------------------------------------------------------------------
+# HARD-03 (AR-30-03 / Phase-30 REVIEW IN-01): agent_id HTTP-boundary validation
+# A malformed agent_id must 422 at the boundary instead of silently returning
+# an empty picker 200. Pattern + max_length mirror the Agent.id DB CHECK
+# (models/agent.py:36) and the CLI AGENT_ID_RE (cli/__init__.py:44).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_roots_swap_malformed_agent_id_returns_422(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """HARD-03: a malformed agent_id -> 422 (was a silent empty picker 200)."""
+    ac, _ = smoke
+
+    response = await ac.get("/pipeline/scans/agent-roots", params={"agent_id": "Bad_ID!"})
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_agent_roots_swap_well_formed_agent_id_passes_validation(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """HARD-03: a well-formed agent_id still reaches the handler (not a 422)."""
+    ac, _ = smoke
+
+    response = await ac.get("/pipeline/scans/agent-roots", params={"agent_id": "test-agent"})
+    assert response.status_code != 422
+    assert response.status_code == 200, response.text
+
+
+# ---------------------------------------------------------------------------
 # Task 2 (template / UI-SPEC) tests
 # ---------------------------------------------------------------------------
 
