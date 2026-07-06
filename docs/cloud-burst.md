@@ -356,8 +356,10 @@ N** the registry resolves simultaneously (`resolve_backends`), not a single glob
   the operator declares a non-local backend and completes Steps 1–6.
 - **`kind="compute"` = OCI A1 compute agent (this page).** Long files route to the A1 via
   rsync-over-SSH. Requires the backend's `agent_ref` and `scratch_dir` (the latter matched to the
-  A1's `cloud_scratch_dir`). Held ≤1 (deferred PROV-01 invariant), but still **one rank-tiered lane
-  among N**.
+  A1's `cloud_scratch_dir`). This is **one rank-tiered lane among N** — you may declare **more than
+  one** `kind="compute"` backend (e.g. a free arm64 A1 plus a paid x86 spill box), each bound to its
+  own `agent_ref` / `push_host` / `scratch_dir`. For that mixed arm64/x86 cost-tiered recipe see
+  [multi-compute.md](multi-compute.md); this page stays the single-A1 provisioning walkthrough.
 - **`kind="kueue"` = Kubernetes (Kueue).** Long files stage to S3 and the control plane submits a
   suspended Kueue Job. Requires the backend's `[backends.kube]` submodel and a `[[buckets]]` staging
   entry. Documented in its own runbook — [k8s-burst.md](k8s-burst.md). N Kueue clusters may be
