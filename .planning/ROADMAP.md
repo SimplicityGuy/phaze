@@ -11,18 +11,19 @@
 - ✅ **v7.0 UI Redesign (DAG-Centric Hybrid Console)** — Phases 57-62 (shipped 2026-07-02)
 - ✅ **2026.7.0 Engineering Improvements** — Phases 63-66 (shipped 2026-07-03)
 - ✅ **2026.7.1 Multi-Cloud Backends** — Phases 67-71 (shipped 2026-07-05)
-- 🔵 **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-74 (active — roadmap created 2026-07-05)
+- 🔵 **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-76 (active — roadmap created 2026-07-05)
 
 ## Phases
 
-### 🔵 2026.7.2 Multi-Compute Agents (Phases 72-75) — ACTIVE
+### 🔵 2026.7.2 Multi-Compute Agents (Phases 72-76) — ACTIVE
 
-Finish the 2026.7.1 registry's deliberate compute-side descope: make **N cloud-compute agents** dispatch / route / reconcile / fail-isolate simultaneously, exactly as N Kueue clusters do today — the direct compute-side twin of Phase 70's multi-Kueue work. Retire the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) and generalize them for a `local + N-Kueue + N-compute` registry. **Parity only** — no new routing semantics, no provisioning, **zero new dependencies** (a pure application-code extension of the existing `Backend` protocol + push/rsync pipeline). Requirements mapped 1:1: MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74 (7 mapped, 0 orphans, 0 duplicates). **Phase 75 (HYG-01..05)** is an appended engineering-hygiene sweep added 2026-07-06 — cross-milestone guard-hardening, tech-debt, and stale-tracking cleanup surfaced during the milestone's execution — and now closes the milestone. Continues phase numbering from 71 → starts at **Phase 72**. Each phase = its own PR on a worktree branch (never direct to main). No milestone-level research phase (parity refactor over in-repo patterns); the two codebase-internal open questions — `agent_ref`→`Agent.id` resolution and `cloud_job` one-row-per-file vs per-(file,backend) — are noted as plan-/discuss-phase research flags on Phases 72 and 73.
+Finish the 2026.7.1 registry's deliberate compute-side descope: make **N cloud-compute agents** dispatch / route / reconcile / fail-isolate simultaneously, exactly as N Kueue clusters do today — the direct compute-side twin of Phase 70's multi-Kueue work. Retire the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) and generalize them for a `local + N-Kueue + N-compute` registry. **Parity only** — no new routing semantics, no provisioning, **zero new dependencies** (a pure application-code extension of the existing `Backend` protocol + push/rsync pipeline). Requirements mapped 1:1: MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74 (7 mapped, 0 orphans, 0 duplicates). **Phase 75 (HYG-01..05)** is an appended engineering-hygiene sweep added 2026-07-06 — cross-milestone guard-hardening, tech-debt, and stale-tracking cleanup surfaced during the milestone's execution. **Phase 76 (HARD-01..03)** is a further appended compute/push-hardening sweep added 2026-07-06 — three self-contained correctness fixes (concurrent-session probe safety, ledger RMW atomicity, agent-id boundary validation) that close accepted-risk / review items surfaced during Phases 72-74 — and now closes the milestone. Continues phase numbering from 71 → starts at **Phase 72**. Each phase = its own PR on a worktree branch (never direct to main). No milestone-level research phase (parity refactor over in-repo patterns); the two codebase-internal open questions — `agent_ref`→`Agent.id` resolution and `cloud_job` one-row-per-file vs per-(file,backend) — are noted as plan-/discuss-phase research flags on Phases 72 and 73.
 
 - [x] **Phase 72: Per-Entry Compute Binding & Fail-Fast Retirement** — declare N `compute` backends in `backends.toml`, each bound to a specific registered compute Agent, all accepted at boot; retire + generalize the `≤1-compute` fail-fasts (`active_compute_scratch_dir`, `resolved_non_local_kind`) for a `local + N-Kueue + N-compute` registry; behavior-preserving groundwork, existing single-/zero-compute deploys unchanged (MCOMP-01) (completed 2026-07-05)
 - [x] **Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation** — per-agent liveness probe, per-agent push/scratch destination + `/pushed` callback, rank/cap load-spread across N compute agents (free arm64 preferred, spill to paid x86), per-backend failure isolation, per-backend in-flight/terminalization scoping; the behavior core, the compute-side twin of Phase 70 (MCOMP-02..06) (completed 2026-07-05)
 - [x] **Phase 74: Docs, Runbook & N-Lane Compute UI Verification** — operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces (MCOMP-07) (completed 2026-07-06)
 - [x] **Phase 75: Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup** — record the docs-drift guard hardening as already-satisfied by PR #207 (HYG-01); drop the stale docker-compose `cloud_target`/Phase-67 comments (HYG-02); record the `>1`-compute fail-fast as SUPERSEDED by Phase 72 D-03 (HYG-03, no code change — it was deleted to ship N-compute); add the missing force-local duration-router gate test (HYG-04, the one genuine deliverable); close stale 2026.7.0 tracking (63-UAT + two quick-tasks) (HYG-05) (completed 2026-07-06)
+- [ ] **Phase 76: Compute/Push Hardening** — three self-contained correctness fixes, each closing an accepted-risk / review item from Phases 72-74 and each getting a regression test: serialize the N-compute liveness probes so N≥2 concurrent `session.execute` no longer share one `AsyncSession` (HARD-01, closes WR-01/74-REVIEW); add `with_for_update()` to the `push_attempt` ledger RMW so concurrent `/mismatch` can't lose an increment (HARD-02, closes AR-73-02/T-73-13/WR-04); add `pattern`/`max_length` validation to the scan-status `agent_id` query param so a malformed id 422s instead of silently returning an empty poll (HARD-03, closes AR-30-03/Phase-30 IN-01). Closes the milestone. No new dependencies
 
 <details>
 <summary>✅ 2026.7.1 Multi-Cloud Backends (Phases 67-71) — SHIPPED 2026-07-05</summary>
@@ -240,6 +241,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete    | 2026-07-06 |
 | 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 2/2 | Complete    | 2026-07-06 |
+| 76. Compute/Push Hardening | 2026.7.2 | — | Not Started | — |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -1081,7 +1083,7 @@ Plans:
 
 ### Phase 74: Docs, Runbook & N-Lane Compute UI Verification
 
-**Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. (Phase 75, the appended engineering-hygiene sweep, now closes the milestone.)
+**Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. (Phases 75-76, the appended engineering-hygiene and compute/push-hardening sweeps, now close the milestone.)
 **Depends on**: Phase 73 (docs the shipped N-compute behavior; UI verification needs the per-agent dispatch/liveness seam live)
 **Requirements**: MCOMP-07
 **Success Criteria** (what must be TRUE):
@@ -1096,7 +1098,7 @@ Plans:
 
 ### Phase 75: Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup
 
-**Goal**: Clear the cross-milestone engineering-hygiene backlog that accumulated through 2026.7.0/.1/.2 — make the docs-drift traceability guard survive the between-milestones state, retire two pieces of inert tech-debt, add the one missing regression test, and reconcile stale tracking status. Small, self-contained, no user-facing behavior change. Closes the milestone.
+**Goal**: Clear the cross-milestone engineering-hygiene backlog that accumulated through 2026.7.0/.1/.2 — make the docs-drift traceability guard survive the between-milestones state, retire two pieces of inert tech-debt, add the one missing regression test, and reconcile stale tracking status. Small, self-contained, no user-facing behavior change. (Phase 76, the appended compute/push-hardening sweep, now closes the milestone.)
 **Depends on**: Phase 74 (milestone's feature work complete; this is the appended cleanup sweep)
 **Requirements**: HYG-01, HYG-02, HYG-03, HYG-04, HYG-05
 **Success Criteria** (what must be TRUE):
@@ -1112,6 +1114,21 @@ Plans:
 - [x] 75-01-PLAN.md — Reconcile HYG-01 (satisfied by PR #207) + HYG-03 (superseded by Phase 72 D-03), delete stale docker-compose cloud_target comments (HYG-02), reconcile 2026.7.0 tracking (HYG-05)
 - [x] 75-02-PLAN.md — Force-local duration-router gate regression test at all 3 gate sites (HYG-04)
 
+**UI hint**: no
+
+### Phase 76: Compute/Push Hardening
+
+**Goal**: Land three self-contained correctness fixes in the N-compute dispatch/push path — each closing an accepted-risk or code-review item surfaced during Phases 72-74, each with its own regression test, no new dependencies, coverage staying ≥ gate. Category HARD. Closes the milestone.
+**Depends on**: Phase 74 (hardens the shipped N-compute dispatch/push/probe seams from Phases 72-73; docs verified in 74)
+**Requirements**: HARD-01, HARD-02, HARD-03
+**Success Criteria** (what must be TRUE):
+
+  1. **HARD-01 (closes WR-01 / 74-REVIEW):** `services/backends._probe_availability` no longer fans `_probe_one` over N backends through a single shared `AsyncSession` — the probes are serialized (or each gets its own session from the sessionmaker), so N≥2 concurrent compute backends yield correct, **deterministic** per-backend `available` with no SQLAlchemy concurrent-use hazard. The bounded `_PROBE_TIMEOUT_SEC=1.5` `wait_for` is preserved, and the docstring/comment is reworded from an empirical ("Pitfall 1 / empirically race-free") to a structural guarantee. Regression: N≥2 online compute backends → correct per-backend availability, deterministic (not the empirical arbiter Phase 74 used). (HARD-01)
+  2. **HARD-02 (closes AR-73-02 / T-73-13 / WR-04):** the `push_attempt` read-modify-write on the `push_file:<file_id>` ledger row in `routers/agent_push.py` `/mismatch` selects the row `with_for_update()`, making the increment atomic so two concurrent `/mismatch` for one file increment `push_attempt` **exactly twice** (no lost update) and the bounded `push_max_attempts` cap still trips correctly. Regression: two concurrent `/mismatch` for one file → `push_attempt == 2`; cap trip verified. (HARD-02)
+  3. **HARD-03 (closes AR-30-03 / Phase-30 REVIEW IN-01):** the scan-status endpoint's `agent_id` query param (`routers/pipeline_scans.py`) is constrained at the HTTP boundary with `pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$"` + `max_length=128` (the agent-id shape used elsewhere), so a malformed `agent_id` returns **422**, not a silently-empty `200` poll. Regression: malformed `agent_id` → 422. (HARD-03)
+
+**Notes**: Three independent fixes; each references and closes its accepted-risk/threat in the phase threat model (HARD-01→WR-01/74-REVIEW; HARD-02→AR-73-02/T-73-13/WR-04; HARD-03→AR-30-03/Phase-30 IN-01). No new dependencies (pyproject/uv.lock untouched); `just docs-drift` stays green; coverage ≥ gate. DB-touching regression tests use `TEST_DATABASE_URL`/`MIGRATIONS_TEST_DATABASE_URL` on port 5433 (`just test-db`). Ships as its own PR on a worktree branch (never direct to main). Scope is locked to exactly these three fixes — the older posture-based accepted risks (AR-27-*/AR-37-*/AR-51-08) stay accepted, and AR-73-01 (N-compute per-agent orphan recovery) is folded into the v2 PROV-01 backlog, not this phase.
+**Plans**: TBD
 **UI hint**: no
 
 ## Backlog (unscheduled — no phase number yet)
