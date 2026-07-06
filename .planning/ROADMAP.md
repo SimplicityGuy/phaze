@@ -24,7 +24,6 @@ Finish the 2026.7.1 registry's deliberate compute-side descope: make **N cloud-c
 - [x] **Phase 74: Docs, Runbook & N-Lane Compute UI Verification** — operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces (MCOMP-07) (completed 2026-07-06)
 - [ ] **Phase 75: Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup** — harden the docs-drift traceability guard against a missing REQUIREMENTS.md; drop the stale docker-compose `PHAZE_CLOUD_TARGET` comments; promote the `>1`-compute fail-fast from lazy to boot-time; add the missing force-local duration-router gate test; close stale 2026.7.0 tracking (63-UAT + two quick-tasks) (HYG-01..05)
 
-
 <details>
 <summary>✅ 2026.7.1 Multi-Cloud Backends (Phases 67-71) — SHIPPED 2026-07-05</summary>
 
@@ -879,10 +878,12 @@ Plans:
 **Plans**: 4 plans in 2 waves
 
 Plans:
+
 - [x] 74-01-PLAN.md — Write docs/multi-compute.md (cost-tiered N-compute guide) + cross-links + generalize cloud-burst.md single-agent framing (D-01/02/03) [Wave 1]
 - [x] 74-02-PLAN.md — Parametrize docker-compose.cloud-agent.yml image+command (arm64 default, x86 override) + relax the 2 compose guard-test assertions (D-05/R-1) [Wave 1]
 - [x] 74-03-PLAN.md — N-lane compute regression tests: Variant A deterministic + Variant B real-fan-out arbiter (D-04/R-2) [Wave 1]
 - [x] 74-04-PLAN.md — Correct stale ≤1-compute _probe_availability docstring (always) + conditional compute-probe serialization (gated on 74-03 Variant B) + closeout MCOMP-07 traceability/ROADMAP + docs-drift green [Wave 2, depends 74-03]
+
 **UI hint**: yes
 
 ### Phase 62: Polish & cutover
@@ -1018,6 +1019,7 @@ Plans:
 ## Phase Details (2026.7.2 Multi-Compute Agents)
 
 ### Phase 72: Per-Entry Compute Binding & Fail-Fast Retirement
+
 **Goal**: An operator can declare N `compute` backends in `backends.toml`, each bound to a specific registered compute Agent, and all N are accepted at boot — with the `≤1-compute` fail-fasts retired and generalized, and the existing single-compute and zero-compute (all-local) deploys behaving identically. Behavior-preserving groundwork that unblocks the Phase 73 dispatch core.
 **Depends on**: Phase 71 (the 2026.7.1 `backends.toml` registry + `Backend` protocol are the substrate this extends)
 **Requirements**: MCOMP-01
@@ -1047,6 +1049,7 @@ Plans:
 - [x] 72-04-PLAN.md — Boot-time duplicate-`agent_ref` fail-fast (D-04) in `_validate_registry` (Counter, id-tagged, static/no-DB per D-05)
 
 ### Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation
+
 **Goal**: N cloud-compute agents dispatch, route, reconcile, and fail-isolate simultaneously — each long file pushed to and attributed to the specific agent that analyzes it, cost-tiered across a mixed arm64/x86 fleet by rank and per-agent `cap`, with one flaky agent isolated to 0 slots. The behavior core — the direct compute-side twin of Phase 70's multi-Kueue work.
 **Depends on**: Phase 72 (per-entry binding + retired fail-fasts are prerequisites; per-agent `cap`/liveness need the recorded binding)
 **Requirements**: MCOMP-02, MCOMP-03, MCOMP-04, MCOMP-05, MCOMP-06
@@ -1077,6 +1080,7 @@ Plans:
 - [x] 73-04-PLAN.md — MCOMP-02/04/05 regressions (D-08 test-only) + delete active_compute_scratch_dir + ≤1-compute behavior-preservation golden + reenqueue.py:374 known-limitation note
 
 ### Phase 74: Docs, Runbook & N-Lane Compute UI Verification
+
 **Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. (Phase 75, the appended engineering-hygiene sweep, now closes the milestone.)
 **Depends on**: Phase 73 (docs the shipped N-compute behavior; UI verification needs the per-agent dispatch/liveness seam live)
 **Requirements**: MCOMP-07
@@ -1090,8 +1094,8 @@ Plans:
 **Plans**: TBD
 **UI hint**: yes
 
-
 ### Phase 75: Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup
+
 **Goal**: Clear the cross-milestone engineering-hygiene backlog that accumulated through 2026.7.0/.1/.2 — make the docs-drift traceability guard survive the between-milestones state, retire two pieces of inert tech-debt, add the one missing regression test, and reconcile stale tracking status. Small, self-contained, no user-facing behavior change. Closes the milestone.
 **Depends on**: Phase 74 (milestone's feature work complete; this is the appended cleanup sweep)
 **Requirements**: HYG-01, HYG-02, HYG-03, HYG-04, HYG-05
@@ -1103,12 +1107,12 @@ Plans:
   4. The force-local duration-router gate is covered by a committed regression test (`tests/shared/routers/test_pipeline.py`) exercising the 3 gate sites (`pipeline.py:396/718/793`). (HYG-04)
   5. Stale 2026.7.0 tracking is reconciled: `63-UAT` flipped to complete (0 pending scenarios), and quick-tasks `260628-wzq` + `260629-eev` marked complete (both already committed). (HYG-05)
 
-**Notes**: Cross-cutting cleanup — HYG-02/03 touch 2026.7.1 code (Phases 67/68), HYG-04 covers a Phase-71 gate, HYG-01 is a general backlog item, HYG-05 is pure bookkeeping. WR-01 from `74-REVIEW.md` (serialize compute probes to remove theoretical CI-flake exposure) is a natural companion to HYG-03 and may be folded in at plan time. Ships as its own PR on a worktree branch.
-**Plans**: 2 plans
+**Notes**: Cross-cutting cleanup — HYG-02/03 touch 2026.7.1 code (Phases 67/68), HYG-04 covers a Phase-71 gate, HYG-01 is a general backlog item, HYG-05 is pure bookkeeping. WR-01 from `74-REVIEW.md` (serialize compute probes to remove theoretical CI-flake exposure) is a natural companion to HYG-03 and may be folded in at plan time. Ships as its own PR on a worktree branch.**Plans**: 2 plans
+
 - [ ] 75-01-PLAN.md — Reconcile HYG-01 (satisfied by PR #207) + HYG-03 (superseded by Phase 72 D-03), delete stale docker-compose cloud_target comments (HYG-02), reconcile 2026.7.0 tracking (HYG-05)
 - [ ] 75-02-PLAN.md — Force-local duration-router gate regression test at all 3 gate sites (HYG-04)
-**UI hint**: no
 
+**UI hint**: no
 
 ## Backlog (unscheduled — no phase number yet)
 
