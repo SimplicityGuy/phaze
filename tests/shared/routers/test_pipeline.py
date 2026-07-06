@@ -2412,3 +2412,40 @@ async def test_force_local_analyze_api_false_control_still_holds(client: AsyncCl
     assert len(held) == 1
     await session.refresh(long_file)
     assert long_file.state == FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, session: AsyncSession) -> None:
+    """Gate L793 (POST /pipeline/backfill-cloud): force-local True is a ZERO-mutation no-op.
+
+    Byte-identical outcome to ``test_backfill_disabled_when_cloud_local`` (the all-local-registry no-op),
+    but here the autouse cloud-ON ``[_COMPUTE_BACKEND]`` registry stays pinned and a persisted
+    ``RouteControl(id="global", force_local=True)`` row drives the early-return via the
+    ``or await get_route_control(session)`` clause. A forced backfill must NOT reset the ANALYSIS_FAILED
+    long files to DISCOVERED and hold them in AWAITING_CLOUD while the (forced) drain no-ops -- that would
+    strand them (T-71-08, ``pipeline.py:789-793``). Asserts all THREE zero-mutation signals: nothing
+    enqueued, the candidate row stays ANALYSIS_FAILED, and NO SchedulingLedger row is seeded.
+
+    Anti-cheat: the case fails if the ``or await get_route_control(session)`` clause were removed from the
+    L793 early-return (the candidate would then be reset + held + ledger-seeded).
+    """
+    session.add(RouteControl(id="global", force_local=True))
+    await session.commit()
+    # with_ledger=False models a never-scheduled failed long file: the no-op must seed NO ledger row.
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    await _drain_background()
+    # Signal 1: nothing enqueued anywhere -- the forced-local path never routes.
+    assert capture == []
+    # Signal 2: the ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out / hold).
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.ANALYSIS_FAILED
+    # Signal 3: no scheduling-ledger row is seeded on the forced-local no-op path.
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert rows == []
