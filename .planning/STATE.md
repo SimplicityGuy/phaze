@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
-status: "Phase 74 shipped — PR #211"
-last_updated: "2026-07-06T07:34:31.124Z"
+status: "Phase 75 shipped — PR #213"
+last_updated: "2026-07-06T17:04:00.506Z"
 last_activity: 2026-07-06
 progress:
-  total_phases: 36
-  completed_phases: 12
-  total_plans: 51
-  completed_plans: 38
-  percent: 33
+  total_phases: 37
+  completed_phases: 13
+  total_plans: 53
+  completed_plans: 40
+  percent: 35
 ---
 
 # Project State
@@ -20,20 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 75 — engineering hygiene — guard hardening, tech debt & stale tracking cleanup
+**Current focus:** Milestone complete
 
 ## Current Position
 
 Phase: 75
 Plan: Not started
-Status: Phase 74 shipped — PR #211
+Status: Phase 75 shipped — PR #213
 Last activity: 2026-07-06
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 169
+- Total plans completed: 171
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -119,6 +119,10 @@ Last activity: 2026-07-06
 - [Phase 66]: 66-03: vulture dead-code sweep was a deliberate NO-OP — `just vulture` (min-confidence 80 + whitelist + --ignore-decorators) exits 0 with zero confirmed-dead symbols in src/phaze; the v7.0 CUT-02 cutover + PR #191 already removed the vestigial dead code (as RESEARCH Deep-Dive 3 anticipated). Durable CLEAN-02 artifact = hand-audited vulture_whitelist.py suppressing 20 grep-verified framework/dynamic false-positives (FastAPI/watchdog callbacks, Pydantic schemas, string-annotation casts, has_prev/has_next, deferred-feature scaffolding, heartbeat_tick shim). vulture stays NON-blocking (just recipe only, never CI/pre-commit — T-66-09). DO-NOT-DELETE trio (build_dashboard_context/get_stage_progress/get_queue_activity) never flagged, kept out of the whitelist. Both blocking checkpoints (package-legitimacy + deletion-review) human-approved.
 - [Phase ?]: 74-04: Variant B PASSED (74-03 arbiter) -> Plan 04 docstring-only; NO _probe_availability compute-probe serialization added (D-04 verification-only).
 - [Phase ?]: 74-04: _probe_availability docstring corrected unconditionally (Pitfall 1) — retired the '≤1 compute / at most ONE probe' claim; now states N compute backends legal per Phase-72 MCOMP-01, race-free per 74-03 Variant B.
+- [Phase 75]: 75-01: HYG-01 recorded already-satisfied by PR #207 (ec80a53a) and HYG-03 SUPERSEDED by Phase 72 D-03 — both no-code; HYG Traceability rows kept Pending so the docs-drift guard stays green (verifier flips checkboxes later)
+- [Phase 75]: 75-01: docker-compose cloud_target/Phase-67 breadcrumb comments deleted (HYG-02) — no live PHAZE_CLOUD_TARGET env ever existed; comment-only diff, zero src change across the whole plan
+- [Phase 75]: 75-01: cleared all three open 2026.7.1 STATE deferred rows (HYG-02 resolved, HYG-03 superseded, HYG-04 via 75-02); WR-01 probe-concurrency gap kept as tracked deferred (user decision D-08); 70-UAT row untouched
+- [Phase ?]: 75-02: HYG-04 force-local gate regression added (4 cases) at real-route altitude via a persisted RouteControl(id='global', force_local=True) row; kept the autouse cloud-ON registry so the toggle is the only variable; assert AWAITING_CLOUD row ABSENCE (anti-cheat); backfill no-op uses with_ledger=False; zero src diff (a01a7bf8 + 63589cd5)
 
 ### Pending Todos
 
@@ -186,6 +190,8 @@ None.
 | Phase 63 P03 | ~15min | 2 tasks | 1 files |
 | Phase 63 P04 | ~20min | 2 tasks | 4 files |
 | Phase 74 P04 | ~10 min | 2 tasks | 3 files |
+| Phase 75 P01 | ~12 min | 3 tasks | 4 files |
+| Phase 75 P02 | ~15min | 2 tasks | 1 files |
 
 ## Deferred Items
 
@@ -231,9 +237,9 @@ deployment-gated items above, all three are **already-completed work with stale 
 
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
-| uat | 63-UAT | partial | Phase 63 UAT has **0 pending scenarios** — status simply never flipped to complete; the parallel-CI work shipped in PR #193 |
-| quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | missing | Committed `5f43aa7` (v6.0 audit fix); quick-task tracking file was never marked complete |
-| quick_task | 260629-eev (ASCII→mermaid diagram conversion) | missing | Committed `267109b`; quick-task tracking file was never marked complete |
+| uat | 63-UAT | complete (Phase 75) | Phase 63 UAT had **0 pending scenarios** — status simply never flipped; the parallel-CI work shipped in PR #193. Reconciled complete in Phase 75 (HYG-05). |
+| quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | complete (Phase 75) | Committed `5f43aa7` (v6.0 audit fix); SUMMARY.md frontmatter already `status: complete`. Deferred-row status reconciled complete in Phase 75 (HYG-05). |
+| quick_task | 260629-eev (ASCII→mermaid diagram conversion) | complete (Phase 75) | Committed `267109b`; SUMMARY.md frontmatter already `status: complete`. Deferred-row status reconciled complete in Phase 75 (HYG-05). |
 
 Items acknowledged and deferred at the **2026.7.1** milestone close on 2026-07-05. None is a
 blocker — the milestone audit PASSED (21/21 reqs, 5/5 flows). One is deployment-gated live E2E;
@@ -242,16 +248,18 @@ the rest are non-blocking tech-debt/test-coverage polish surfaced by the audit +
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
 | uat | 70-UAT test 7 | deployment-gated | Live 2nd real Kueue cluster + dual live S3 bucket endpoints unavailable in-session; tests 1-6 pass 6/6. Verify at rollout (v6.0 JOB-ENV-CONTRACT precedent) |
-| tech_debt | docker-compose `PHAZE_CLOUD_TARGET` comments (Phase 67) | open | Two stale env/comment lines silently dropped by `extra=ignore` (inert but misleading); delete in a quick fix |
-| tech_debt | >1-compute-backend fail-fast is lazy, not boot-time (Phase 68, W1) | open | `resolved_non_local_kind`/`active_compute_scratch_dir` raise at first invocation, not at `_validate_registry`; deliberate PROV-01-backlog descope, fails loud with id-tagged message |
-| test_coverage | force-local gate regression test (Phase 71, W2) | open | The 2 duration-router gate sites + backfill (`pipeline.py:396/718/793`) were live-verified in the audit but have no committed test; add `tests/shared/routers/test_pipeline.py` coverage |
+| tech_debt | docker-compose `cloud_target`/Phase-67 breadcrumb comments | resolved (Phase 75) | The two stale breadcrumb comment lines (`api` + `worker` services) DELETED in Phase 75 (plan 75-01, HYG-02); `git grep -E "cloud_target\|Phase 67" docker-compose.yml` is clean. Premise corrected: there was never a live `PHAZE_CLOUD_TARGET` env key — comments only (D-03/D-04). |
+| tech_debt | >1-compute-backend fail-fast is lazy, not boot-time (Phase 68, W1) | superseded (Phase 72 D-03) | The `>1`-compute fail-fast was DELETED by Phase 72 to enable N-compute (MCOMP-01) — the milestone deliverable; re-adding a boot reject would break Phases 72-74. The correct boot guard already exists: `config.py:_validate_registry` rejects a duplicate `agent_ref` while accepting N distinct compute backends. Recorded superseded in Phase 75 (HYG-03, no code change). |
+| test_coverage | force-local gate regression test (Phase 71, W2) | resolved (Phase 75) | The 3 duration-router gate sites + backfill (`pipeline.py:396/718/793`) now have committed coverage — regression test added in plan 75-02 (`tests/shared/routers/test_pipeline.py`, force-local True/False control) (HYG-04). |
+
+Separately still open (user decision D-08, NOT fixed in Phase 75): **WR-01** — `_probe_availability` fires N≥2 concurrent `session.execute` on one shared `AsyncSession` when ≥2 compute backends are online. Bounded: a raced probe flaps one lane's `available` flag for a single 5s poll and self-heals (`_probe_one` contains the fault); no data loss, does not touch boot/golden/≤1-compute paths. Tracked for a future quick task (fix = serialize `_probe_one` or give each probe its own session, then reword the docstring from empirical to structural). See `74-REVIEW.md` §WR-01.
 
 These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PROV-01 (multi-compute-agent routing) item is a Backlog candidate for a future milestone.
 
 ## Session Continuity
 
-Last session: 2026-07-06T05:28:40.732Z
-Stopped at: Phase 74 context gathered
+Last session: 2026-07-06T16:06:00.248Z
+Stopped at: Phase 75 context gathered
 Resume file: None
 
 ## Operator Next Steps
