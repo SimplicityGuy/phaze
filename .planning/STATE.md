@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
-status: executing
-last_updated: "2026-07-06T15:56:35.127Z"
+status: verifying
+last_updated: "2026-07-06T16:06:06.164Z"
 last_activity: 2026-07-06
 progress:
   total_phases: 37
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 14
-  completed_plans: 13
-  percent: 8
+  completed_plans: 14
+  percent: 11
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends 
 
 Phase: 75 (engineering-hygiene-guard-hardening-tech-debt-stale-tracking) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-06
 
 ## Performance Metrics
@@ -122,6 +122,7 @@ Last activity: 2026-07-06
 - [Phase 75]: 75-01: HYG-01 recorded already-satisfied by PR #207 (ec80a53a) and HYG-03 SUPERSEDED by Phase 72 D-03 — both no-code; HYG Traceability rows kept Pending so the docs-drift guard stays green (verifier flips checkboxes later)
 - [Phase 75]: 75-01: docker-compose cloud_target/Phase-67 breadcrumb comments deleted (HYG-02) — no live PHAZE_CLOUD_TARGET env ever existed; comment-only diff, zero src change across the whole plan
 - [Phase 75]: 75-01: cleared all three open 2026.7.1 STATE deferred rows (HYG-02 resolved, HYG-03 superseded, HYG-04 via 75-02); WR-01 probe-concurrency gap kept as tracked deferred (user decision D-08); 70-UAT row untouched
+- [Phase ?]: 75-02: HYG-04 force-local gate regression added (4 cases) at real-route altitude via a persisted RouteControl(id='global', force_local=True) row; kept the autouse cloud-ON registry so the toggle is the only variable; assert AWAITING_CLOUD row ABSENCE (anti-cheat); backfill no-op uses with_ledger=False; zero src diff (a01a7bf8 + 63589cd5)
 
 ### Pending Todos
 
@@ -190,6 +191,7 @@ None.
 | Phase 63 P04 | ~20min | 2 tasks | 4 files |
 | Phase 74 P04 | ~10 min | 2 tasks | 3 files |
 | Phase 75 P01 | ~12 min | 3 tasks | 4 files |
+| Phase 75 P02 | ~15min | 2 tasks | 1 files |
 
 ## Deferred Items
 
@@ -256,7 +258,7 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-06T15:56:35.121Z
+Last session: 2026-07-06T16:06:00.248Z
 Stopped at: Phase 75 context gathered
 Resume file: None
 
