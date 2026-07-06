@@ -239,7 +239,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
 | 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete    | 2026-07-06 |
-| 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 0/0 | Not Started | — |
+| 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 1/2 | In Progress|  |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -1109,7 +1109,7 @@ Plans:
 
 **Notes**: Cross-cutting cleanup — HYG-02/03 touch 2026.7.1 code (Phases 67/68), HYG-04 covers a Phase-71 gate, HYG-01 is a general backlog item, HYG-05 is pure bookkeeping. **Reconciliation (2026-07-06): three of the five HYG premises were overtaken by shipped code — HYG-01 is already-satisfied by PR #207 (`ec80a53a`) and HYG-03 is SUPERSEDED by Phase 72 (D-03, the `>1`-compute fail-fast was deleted to ship N-compute); both are no-code dispositions. Only HYG-04 (force-local gate test) is genuine net-new work.** WR-01 from `74-REVIEW.md` (serialize compute probes to remove theoretical CI-flake exposure) is the one genuinely-open robustness gap adjacent to HYG-03; per user decision (D-08) it is NOT fixed in Phase 75 and stays a tracked deferred item. Ships as its own PR on a worktree branch.**Plans**: 2 plans
 
-- [ ] 75-01-PLAN.md — Reconcile HYG-01 (satisfied by PR #207) + HYG-03 (superseded by Phase 72 D-03), delete stale docker-compose cloud_target comments (HYG-02), reconcile 2026.7.0 tracking (HYG-05)
+- [x] 75-01-PLAN.md — Reconcile HYG-01 (satisfied by PR #207) + HYG-03 (superseded by Phase 72 D-03), delete stale docker-compose cloud_target comments (HYG-02), reconcile 2026.7.0 tracking (HYG-05)
 - [ ] 75-02-PLAN.md — Force-local duration-router gate regression test at all 3 gate sites (HYG-04)
 
 **UI hint**: no
