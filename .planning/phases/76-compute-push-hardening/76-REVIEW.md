@@ -17,7 +17,11 @@ findings:
   warning: 1
   info: 1
   total: 3
-status: issues_found
+resolved:
+  critical: 1
+  warning: 1
+status: resolved
+resolution_note: "CR-01 fixed via pg_advisory_xact_lock (operator-approved, supersedes D-05 .with_for_update); WR-01 docstring corrected to N x timeout bound. Both re-verified green; IN-01 (Info, docstring-dup nit) left as-is."
 ---
 
 # Phase 76: Code Review Report
@@ -25,7 +29,13 @@ status: issues_found
 **Reviewed:** 2026-07-06
 **Depth:** standard
 **Files Reviewed:** 8 (4 source + 4 test)
-**Status:** issues_found
+**Status:** resolved (was issues_found)
+
+## Resolution (post-review, same execution)
+
+- **CR-01 (Critical) — FIXED.** The `.with_for_update()` ledger row lock self-deadlocked against the `apply_deterministic_key` before_enqueue hook (nested upsert on the same `push_file:<id>` row in its own session while the request held the lock). Operator chose the advisory-lock remediation: replaced the row lock with `pg_advisory_xact_lock(hashtext(key))` — same RMW serialization, different lock space, no deadlock. Added `test_mismatch_real_enqueue_hook_does_not_deadlock` (drives the REAL hook; RED-verified: times out on the row lock, passes on the advisory lock). Commit `fix(76-02): use advisory xact lock, not row lock, for push_attempt RMW (CR-01)`.
+- **WR-01 (Warning) — FIXED.** `_probe_availability` docstring corrected to state the true `N x _PROBE_TIMEOUT_SEC` aggregate bound (deliberate D-01 trade-off) instead of implying the old ~1x `asyncio.gather` bound. Commit `docs(76-01): correct _probe_availability latency bound to N x timeout (WR-01)`.
+- **IN-01 (Info) — left as-is** (minor docstring-duplication nit between `_probe_one`/`_probe_availability`; no functional impact).
 
 ## Summary
 

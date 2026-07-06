@@ -2,28 +2,30 @@
 phase: 76-compute-push-hardening
 plan: 02
 subsystem: control-plane/agent-push
-tags: [HARD-02, concurrency, row-lock, push, ledger]
+tags: [HARD-02, concurrency, advisory-lock, push, ledger]
 requires:
   - "routers/agent_push.py::report_push_mismatch (Phase 50/69/73 push callback)"
   - "SchedulingLedger model (key + payload JSONB)"
   - "config.push_max_attempts (gt=0, lt=20)"
 provides:
-  - "Row-locked push_attempt RMW: concurrent /mismatch cannot lose an increment"
+  - "Advisory-locked push_attempt RMW: concurrent /mismatch cannot lose an increment, without deadlocking the before_enqueue hook"
 affects:
   - "src/phaze/routers/agent_push.py"
   - "tests/agents/routers/test_agent_push.py"
 tech-stack:
   added: []
   patterns:
-    - "SELECT ... .with_for_update() to serialize a JSONB counter read-modify-write at the row level"
+    - "pg_advisory_xact_lock(hashtext(key)) to serialize a JSONB counter RMW without a row lock (avoids deadlocking a nested before_enqueue upsert on the same row)"
     - "Real-Postgres concurrent-transaction regression test via two AsyncSessions + a parking FakeQueue"
+    - "Regression test that drives the REAL apply_deterministic_key before_enqueue hook to prove no deadlock (RED-verified: hangs on a row lock, passes on the advisory lock)"
 key-files:
   created: []
   modified:
     - "src/phaze/routers/agent_push.py"
     - "tests/agents/routers/test_agent_push.py"
 decisions:
-  - "D-05: fix is the single `.with_for_update()` addition on the ledger SELECT; auth gate + CR-01 CAS guard byte-unchanged"
+  - "D-05 (as-shipped, superseded): initial fix was `.with_for_update()` on the ledger SELECT — self-deadlocked against the before_enqueue hook (see CR-01 correction below); auth gate + CR-01 CAS guard byte-unchanged throughout"
+  - "CR-01 correction (operator-approved 2026-07-06): replaced the row lock with pg_advisory_xact_lock(hashtext(key)); same serialize-the-RMW intent, different lock space so the hook's row upsert never deadlocks"
   - "D-06: concurrent no-lost-update test uses genuine row contention (parking queue holds the lock while a second request blocks)"
 metrics:
   duration: "~9 min"
@@ -59,6 +61,14 @@ Row-locked the `push_attempt` read-modify-write in `report_push_mismatch` with `
 
 ## Deviations from Plan
 None — plan executed exactly as written. The only adjustment was internal to the new tests: the fixture `agent` object is expired by the `_ledger_row`/`_file_row` helpers' `session.expire_all()`, so `agent.id` is captured into a local before those helpers run (the same early-capture pattern the existing tests use for `fileserver_id`). This is test-only and introduced no production change.
+
+## Post-Review Correction — CR-01 (commit after code review)
+
+The standard code-review gate (`76-REVIEW.md`) found that the as-shipped `.with_for_update()` on the ledger SELECT (`agent_push.py:231`) **self-deadlocks on the common under-cap re-drive path**: `report_push_mismatch` re-enqueues `push_file` while its transaction is still open, and `push_file` is a registered `_KEY_BUILDERS` entry, so the `apply_deterministic_key` before_enqueue WRITE hook opens its own session on the same pool (`ledger_sessionmaker=async_session`) and upserts the **same** `push_file:<id>` ledger row. That nested upsert blocks on the row lock the uncommitted request holds, and the request can't commit to release it until `enqueue()` returns — a hang with no `statement_timeout`/`lock_timeout` anywhere and no Postgres deadlock cycle to detect. The original `FakeQueue`-based tests missed it because they never run the real hook.
+
+**Fix (operator chose "advisory xact lock"):** replaced the row lock with a transaction-scoped `pg_advisory_xact_lock(func.hashtext(ledger_key))` acquired before a plain SELECT. It still serializes concurrent `/mismatch` for the same key (no lost increment; cap still trips) but lives in a different lock space than the hook's row upsert, so the hook proceeds and there is no deadlock. Added `test_mismatch_real_enqueue_hook_does_not_deadlock`, which drives the **real** `apply_deterministic_key` hook and is RED-verified (`TimeoutError` at 15s on the row-lock version, passes on the advisory-lock version). This supersedes D-05's specific `.with_for_update()` mechanism while preserving its intent.
+
+Final module state: **18 passed** against the port-5433 test DB; ruff/format/mypy/docs-drift green; `pyproject.toml`/`uv.lock` unchanged.
 
 ## Self-Check: PASSED
 - Modified files present:
