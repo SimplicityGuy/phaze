@@ -1104,7 +1104,9 @@ Plans:
   5. Stale 2026.7.0 tracking is reconciled: `63-UAT` flipped to complete (0 pending scenarios), and quick-tasks `260628-wzq` + `260629-eev` marked complete (both already committed). (HYG-05)
 
 **Notes**: Cross-cutting cleanup — HYG-02/03 touch 2026.7.1 code (Phases 67/68), HYG-04 covers a Phase-71 gate, HYG-01 is a general backlog item, HYG-05 is pure bookkeeping. WR-01 from `74-REVIEW.md` (serialize compute probes to remove theoretical CI-flake exposure) is a natural companion to HYG-03 and may be folded in at plan time. Ships as its own PR on a worktree branch.
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 75-01-PLAN.md — Reconcile HYG-01 (satisfied by PR #207) + HYG-03 (superseded by Phase 72 D-03), delete stale docker-compose cloud_target comments (HYG-02), reconcile 2026.7.0 tracking (HYG-05)
+- [ ] 75-02-PLAN.md — Force-local duration-router gate regression test at all 3 gate sites (HYG-04)
 **UI hint**: no
 
 
