@@ -223,7 +223,12 @@ async def report_push_mismatch(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reporting agent is not the dispatched compute agent")
 
     # The push_attempt counter rides the ledger payload JSONB (Pitfall 4); default 0 when absent.
-    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key))).scalar_one_or_none()
+    # D-05 (AR-73-02 / T-73-13 / WR-04): row-lock the SELECT so the read->+1->write-back at L337 is
+    # serialized at the row level in Postgres. Two concurrent /mismatch for one file (SAQ retries, N
+    # compute reporters) would otherwise both read the same counter and lose an increment, silently
+    # letting the file exceed its bounded push budget. `.with_for_update()` blocks the second RMW until
+    # the first commits, so each increment is applied exactly once and the cap still trips at the boundary.
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key).with_for_update())).scalar_one_or_none()
     current_attempt = 0
     if row is not None and isinstance(row.payload, dict):
         current_attempt = int(row.payload.get("push_attempt", 0) or 0)

@@ -28,6 +28,7 @@ and the Phase-67 registry accessor is exercised end-to-end (REG-04).
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -35,6 +36,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -43,11 +45,11 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_push import router as agent_push_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
-from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
     from phaze.models.agent import Agent
 
@@ -798,3 +800,172 @@ async def test_mismatch_missing_auth_returns_401(
         r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
 
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /mismatch — HARD-02 (D-05/D-06): push_attempt RMW atomicity under concurrency
+#
+# The counter read->+1->write-back in report_push_mismatch must be serialized at
+# the row level (`.with_for_update()`) so two concurrent /mismatch for one file
+# cannot lose an increment (AR-73-02 / T-73-13 / WR-04). These tests need REAL
+# Postgres row locking, so each request runs in its OWN AsyncSession/transaction
+# against the shared test-DB engine (port 5433) — the single shared `session`
+# fixture the other tests use cannot express two concurrent transactions.
+# ---------------------------------------------------------------------------
+
+
+class _GatedQueue(FakeQueue):
+    """A ``FakeQueue`` whose ``connect()`` parks the request mid-transaction.
+
+    The under-cap re-drive path calls ``fileserver_queue.connect()`` AFTER it has
+    taken the row-locked ledger SELECT but BEFORE the counter write-back + commit.
+    Parking here holds the first request's row lock open while a second concurrent
+    ``/mismatch`` is launched, so the test drives genuine row contention (not a
+    lucky interleaving): the second request must block on the lock until the first
+    commits, then read the committed value and add the second increment.
+    """
+
+    def __init__(self, name: str, capture: Any = None, *, reached: asyncio.Event, proceed: asyncio.Event) -> None:
+        super().__init__(name, capture)
+        self._reached = reached
+        self._proceed = proceed
+
+    async def connect(self) -> None:
+        # Signal we are parked (row lock held) and wait for the test to release us.
+        self._reached.set()
+        await self._proceed.wait()
+
+
+class _GatedTaskRouter(FakeTaskRouter):
+    """A ``FakeTaskRouter`` whose per-agent queues are :class:`_GatedQueue` instances."""
+
+    def __init__(self, *, reached: asyncio.Event, proceed: asyncio.Event) -> None:
+        super().__init__()
+        self._reached = reached
+        self._proceed = proceed
+
+    def queue_for(self, agent_id: str) -> FakeQueue:  # type: ignore[override]
+        self.queue_for_calls.append(agent_id)
+        if agent_id not in self.queues:
+            self.queues[agent_id] = _GatedQueue(f"phaze-agent-{agent_id}", self.captures, reached=self._reached, proceed=self._proceed)
+        return self.queues[agent_id]
+
+
+@pytest.mark.asyncio
+async def test_mismatch_concurrent_no_lost_update(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    async_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """D-05 (AR-73-02 / T-73-13 / WR-04): two concurrent /mismatch increment push_attempt to EXACTLY 2.
+
+    Both requests take the under-cap re-drive path (push_attempt starts at 0, cap is 3), each in its own
+    DB transaction against the real port-5433 engine. The row-locked ledger SELECT serializes the
+    read->+1->write-back: request A holds the lock across its transaction while request B blocks on it,
+    so B reads A's committed value and adds the second increment. Without ``.with_for_update()`` both
+    would read 0 and write 1 (a lost update -> final 1); with it the persisted counter is exactly 2.
+    """
+    agent, raw_token = seed_test_agent
+    # Reporter registry: the compute backend's agent_ref == the reporting agent id so D-07 passes for both.
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id, push_attempt=0)
+    await _seed_cloud_job(session, file_id)  # backend_id="oci-a1", agent_ref="test-agent-01"
+    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    # End the seeding session's snapshot so the final read sees the concurrent commits.
+    await session.rollback()
+
+    ledger_key = f"push_file:{file_id}"
+    reached = asyncio.Event()  # set once request A is parked mid-transaction (row lock held)
+    proceed = asyncio.Event()  # released by the test to let request A finish + drop the lock
+
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with factory() as session_a, factory() as session_b:
+        # Request A parks at connect() while holding the row-locked ledger SELECT.
+        router_a = _GatedTaskRouter(reached=reached, proceed=proceed)
+        client_a = _make_client(session_a, router_a, raw_token)
+        # Request B uses a plain (non-parking) router so it runs straight through once it holds the lock.
+        router_b = FakeTaskRouter()
+        client_b = _make_client(session_b, router_b, raw_token)
+
+        async with client_a, client_b:
+            task_a = asyncio.create_task(client_a.post(f"/api/internal/agent/push/{file_id}/mismatch"))
+            # Wait until A is parked at connect() with the ledger row locked in its open transaction.
+            await asyncio.wait_for(reached.wait(), timeout=10.0)
+
+            # Launch B: it must block on A's row lock at the ledger SELECT (fixed code). Give it time to
+            # reach and queue on the lock (or, on unfixed code, to read the stale 0 and race ahead).
+            task_b = asyncio.create_task(client_b.post(f"/api/internal/agent/push/{file_id}/mismatch"))
+            await asyncio.sleep(0.25)
+
+            # Release A: it writes push_attempt=1 and commits, dropping the lock so B can read 1 -> write 2.
+            proceed.set()
+            resp_a, resp_b = await asyncio.gather(task_a, task_b)
+
+    assert resp_a.status_code == 200, resp_a.text
+    assert resp_b.status_code == 200, resp_b.text
+    assert resp_a.json()["cleared"] is False
+    assert resp_b.json()["cleared"] is False
+
+    # The row-locked RMW applied each increment exactly once: no lost update.
+    row = await _ledger_row(session, ledger_key)
+    assert row is not None
+    assert row.payload.get("push_attempt") == 2, "two concurrent /mismatch must increment push_attempt to exactly 2"
+    # Both requests kept the file PUSHING (under-cap re-drive retains the slot).
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.PUSHING
+
+
+@pytest.mark.asyncio
+async def test_mismatch_cap_trips_exactly_at_boundary(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """D-06: the push_max_attempts cap trips at the exact boundary -- the row-lock change does not shift it.
+
+    With ``push_max_attempts=3`` the cap is ``next_attempt > 3``: at ``push_attempt=2`` the next attempt
+    (3) is still UNDER the cap so /mismatch re-drives (cleared=False, file stays PUSHING); at
+    ``push_attempt=3`` the next attempt (4) EXCEEDS the cap so /mismatch spills to AWAITING_CLOUD
+    (cleared=True). Both sides are asserted to pin the boundary exactly where it was before D-05.
+    """
+    agent, raw_token = seed_test_agent
+    agent_id = agent.id  # capture before any expire_all() (helpers below expire the fixture agent)
+    # Reporter registry so the under-cap re-drive side passes the D-07 gate.
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
+
+    # Just UNDER the cap (push_attempt=2 -> next 3, not > 3): re-drive, file stays PUSHING.
+    under_id = await _seed_file(session, agent_id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, under_id, push_attempt=2)
+    await _seed_cloud_job(session, under_id)  # backend_id="oci-a1", agent_ref="test-agent-01"
+    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r_under = await ac.post(f"/api/internal/agent/push/{under_id}/mismatch")
+
+    assert r_under.status_code == 200, r_under.text
+    assert r_under.json()["cleared"] is False, "push_attempt=2 -> next 3 is still under the cap: re-drive, not spill"
+    under_row = await _file_row(session, under_id)
+    assert under_row.state == FileState.PUSHING
+    under_ledger = await _ledger_row(session, f"push_file:{under_id}")
+    assert under_ledger is not None
+    assert under_ledger.payload.get("push_attempt") == 3, "under-cap re-drive increments the counter to 3"
+
+    # At the cap boundary (push_attempt=3 -> next 4 > 3): spill to AWAITING_CLOUD, ledger cleared.
+    over_id = await _seed_file(session, agent_id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, over_id, push_attempt=3)
+    await _seed_cloud_job(session, over_id)  # backend_id="oci-a1", agent_ref="test-agent-01"
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r_over = await ac.post(f"/api/internal/agent/push/{over_id}/mismatch")
+
+    assert r_over.status_code == 200, r_over.text
+    assert r_over.json()["cleared"] is True, "push_attempt=3 -> next 4 exceeds the cap: spill to AWAITING_CLOUD"
+    over_row = await _file_row(session, over_id)
+    assert over_row.state == FileState.AWAITING_CLOUD
+    assert await _ledger_row(session, f"push_file:{over_id}") is None, "the ledger row is cleared on the cap spill"
