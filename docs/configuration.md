@@ -132,6 +132,8 @@ flowchart TD
 | `[backends.kube]` | `kueue` | Nested Kueue cluster config: API URL, namespace, per-cluster kubeconfig `context`, local-queue, Job image/resources, workload apiVersion, CA/ConfigMap/Secret names, and inline `kubeconfig_file` / `sa_token_file` secret pointers. |
 | `buckets` | `kueue` | List of `[[buckets]]` `id`s this Kueue backend stages through. |
 
+> **Worked multi-compute scenario.** For a worked mixed arm64/x86 cost-tiered example — two `kind="compute"` backends (free arm64 preferred, paid x86 spill) plus the local catch, with the per-agent compose recipe and the rank-tiered drain — see [multi-compute.md](multi-compute.md). This section stays the canonical field reference.
+
 `[backends.kube]` keys of note: `api_url`, `namespace`, `local_queue` (all **required** on a `kind="kueue"` backend), plus `context` — the **per-cluster kubeconfig context** name (MKUE-01) that selects among N clusters; when omitted the client uses the kubeconfig's current-context. `context` is a plain kubeconfig context name, **not** a secret.
 
 **`[[buckets]]` — the S3 staging-bucket registry (REG-05).** An array-of-tables of the S3-compatible staging buckets Kueue backends reference:
