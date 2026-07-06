@@ -649,21 +649,24 @@ async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool
 
 
 async def _probe_availability(session: AsyncSession, backends: list[Backend]) -> dict[str, bool]:
-    """Fan :func:`_probe_one` out over all backends concurrently -> ``{backend_id: available}`` (D-02).
+    """Probe every backend SEQUENTIALLY on the one shared session -> ``{backend_id: available}`` (D-02).
 
-    ``asyncio.gather`` runs the per-backend probes concurrently, so the WHOLE fan-out is bounded to
-    ~one ``_PROBE_TIMEOUT_SEC`` even when a lane hangs. Session-safety (Pitfall 1): since Phase 72
-    (MCOMP-01) retired the single-active-compute assumption, N compute backends are legal and each
-    compute probe touches the shared ``session`` via ``select_agent_by_id`` (``session.execute``), so
-    with N≥2 online compute lanes multiple probes may use the session concurrently under this gather.
-    That concurrent shared-session fan-out was proven race-free in practice by the Plan 74-03 Variant B
-    arbiter test (two online compute lanes, real probe fan-out, deterministically both ``available=True``
-    across repeated runs); the post-fan-out ``session.rollback`` in :func:`get_backend_lane_snapshot`
-    clears any single-probe DB poison before the ``in_flight_count`` reads. Kueue probes ignore the
-    session (kr8s I/O) and local is short-circuited (no I/O).
+    The probes run one at a time in a plain ``for`` loop: each ``_probe_one`` is fully awaited before the
+    next begins, so there is NEVER concurrent use of the shared ``AsyncSession`` -- Session-safety
+    (Pitfall 1) holds by CONSTRUCTION, guaranteed by the serial control flow. Since Phase 72 (MCOMP-01) retired the
+    single-active-compute assumption, N≥2 compute backends are legal and each compute probe touches the
+    shared ``session`` via ``select_agent_by_id`` (``session.execute``); serializing the fan-out guarantees
+    those ``session.execute`` calls can never overlap (SQLAlchemy forbids concurrent operations on one
+    session). The fan-out stays bounded because each ``_probe_one`` is itself capped by
+    ``asyncio.wait_for(..., _PROBE_TIMEOUT_SEC)``, and the post-fan-out ``session.rollback`` in
+    :func:`get_backend_lane_snapshot` clears any single-probe DB poison before the ``in_flight_count``
+    reads. Kueue probes ignore the session (kr8s I/O) and local is short-circuited (no I/O).
     """
-    results = await asyncio.gather(*(_probe_one(session, backend) for backend in backends))
-    return dict(results)
+    results: dict[str, bool] = {}
+    for backend in backends:
+        backend_id, available = await _probe_one(session, backend)
+        results[backend_id] = available
+    return results
 
 
 def _kind_of(backend: Backend) -> str:

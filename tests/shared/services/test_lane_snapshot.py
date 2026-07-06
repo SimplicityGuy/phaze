@@ -496,31 +496,26 @@ def _bound_compute(bid: str, rank: int, cap: int) -> ComputeAgentBackend:
 
 
 @pytest.mark.asyncio
-async def test_compute_probe_real_fanout_keeps_both_lanes_online(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Variant B (ARBITER): real ``_probe_availability`` fan-out with two ONLINE compute agents (MCOMP-07, D-04, Pitfall 1).
+async def test_compute_probe_real_fanout_keeps_both_lanes_online(session: AsyncSession) -> None:
+    """HARD-01 (structural): serial ``_probe_availability`` over N≥2 ONLINE compute agents on ONE session (D-01, D-04).
 
     Two ``ComputeAgentBackend`` each bound to a real ``ComputeBackend`` config whose ``agent_ref`` matches a
-    seeded ONLINE ``kind="compute"`` agent, with NO monkeypatch of ``_probe_availability`` -- so the real
-    ``asyncio.gather`` fan-out runs ``ComputeAgentBackend.is_available`` -> ``select_agent_by_id`` ->
-    ``session.execute`` concurrently over the ONE shared ``AsyncSession``. A healthy N≥2-compute deployment
-    shows BOTH lanes online, so both compute lanes must come back ``available == True``.
-
-    This is the arbiter for the R-2 / Pitfall-1 shared-session race: if a lane returns ``available == False``
-    the concurrent ``session.execute`` calls raced (SQLAlchemy forbids concurrent ops on one session), which
-    Plan 04 must fix by serializing the compute probes. The Variant B outcome is recorded in 74-03-SUMMARY.
-    Fixing the probe is NOT in this plan's scope -- this test only settles whether the race manifests.
+    seeded ONLINE ``kind="compute"`` agent, probed by the REAL ``_probe_availability`` (no monkeypatch). Each
+    ``ComputeAgentBackend.is_available`` runs ``select_agent_by_id`` -> ``session.execute`` on the ONE shared
+    ``AsyncSession``. Because ``_probe_availability`` now awaits each ``_probe_one`` SEQUENTIALLY, those
+    ``session.execute`` calls can never overlap -- the shared-session hazard (Pitfall 1 / WR-01) is closed by
+    construction, not by the empirical Plan-74-03 arbiter. A healthy N≥2-compute deployment shows BOTH lanes
+    online, so the probe yields a DETERMINISTIC ``{backend_id: available}`` dict with both ``True`` (asserted
+    ONCE -- no repeated-runs arbiter needed now that execution is structurally serial).
     """
     arm64 = _bound_compute("a1-arm64", rank=10, cap=2)
     x86 = _bound_compute("x86-spill", rank=20, cap=1)
-    local = LocalBackend(id="local", rank=99, cap=1)
-    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [arm64, x86, local])
 
     # Seed TWO ONLINE compute agents whose ids MATCH the two backends' agent_ref (record-don't-rederive).
     await seed_active_agent(session, "a1-arm64", kind="compute")
     await seed_active_agent(session, "x86-spill", kind="compute")
 
-    # Do NOT monkeypatch _probe_availability -- exercise the REAL concurrent fan-out (Pitfall 1).
-    lanes = await get_backend_lane_snapshot(session)
+    # Real serial fan-out over the shared session -- deterministic, no concurrent session.execute.
+    availability = await _probe_availability(session, [arm64, x86])
 
-    availability = {lane["id"]: lane["available"] for lane in lanes if lane["kind"] == "compute"}
-    assert availability == {"a1-arm64": True, "x86-spill": True}  # both online -> both lanes available (arbiter)
+    assert availability == {"a1-arm64": True, "x86-spill": True}  # both online -> both lanes available (deterministic)
