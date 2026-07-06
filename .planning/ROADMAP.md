@@ -874,7 +874,13 @@ Plans:
   4. When no files exist, a first-run empty state guides the operator to point phaze at a directory and shows live scan progress.
 
 **Notes**: Introduce `@alpinejs/focus@3.15.12` here (the one new dep) — load the plugin `<script defer>` before Alpine core, version exactly matching Alpine core; use `x-trap.inert.noscroll` for the ⌘K palette and the slide-in panel focus-trap. The pane/record must ride the existing single poll — add no new loop. Verify the ⌘K "artists" facet maps to existing search fields at plan time (no backend change either way). No phase research needed.
-**Plans**: TBD
+**Plans**: 4 plans in 2 waves
+
+Plans:
+- [ ] 74-01-PLAN.md — Write docs/multi-compute.md (cost-tiered N-compute guide) + cross-links + generalize cloud-burst.md single-agent framing (D-01/02/03) [Wave 1]
+- [ ] 74-02-PLAN.md — Parametrize docker-compose.cloud-agent.yml image+command (arm64 default, x86 override) + relax the 2 compose guard-test assertions (D-05/R-1) [Wave 1]
+- [ ] 74-03-PLAN.md — N-lane compute regression tests: Variant A deterministic + Variant B real-fan-out arbiter (D-04/R-2) [Wave 1]
+- [ ] 74-04-PLAN.md — Correct stale ≤1-compute _probe_availability docstring (always) + conditional compute-probe serialization (gated on 74-03 Variant B) + closeout MCOMP-07 traceability/ROADMAP + docs-drift green [Wave 2, depends 74-03]
 **UI hint**: yes
 
 ### Phase 62: Polish & cutover
