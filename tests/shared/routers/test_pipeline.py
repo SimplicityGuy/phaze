@@ -2427,12 +2427,20 @@ async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, ses
     enqueued, the candidate row stays ANALYSIS_FAILED, and NO SchedulingLedger row is seeded.
 
     Anti-cheat: the case fails if the ``or await get_route_control(session)`` clause were removed from the
-    L793 early-return (the candidate would then be reset + held + ledger-seeded).
+    L793 early-return. ``with_ledger=True`` is LOAD-BEARING -- the backfill candidate query
+    (:func:`_backfill_candidates_stmt`) requires an ``EXISTS(scheduling_ledger 'process_file:<id>')``
+    predicate, so a genuine (previously-scheduled) candidate is needed for the gate to be the ONLY thing
+    holding it back. Without the ledger row the candidate is filtered out regardless of the gate and the
+    test would pass even with the L793 clause deleted (a false pass). With the clause removed and the
+    cloud-ON registry pinned, the candidate would be reset to DISCOVERED and routed to the online compute
+    agent -- flipping ``capture`` non-empty and the state off ANALYSIS_FAILED. The pre-existing
+    scheduled-work ledger row stays a single row through the no-op (no duplicate seed, no reset).
     """
     session.add(RouteControl(id="global", force_local=True))
     await session.commit()
-    # with_ledger=False models a never-scheduled failed long file: the no-op must seed NO ledger row.
-    (long_failed,) = await _persist_failed_with_duration(session, [_LONG], with_ledger=False)
+    # with_ledger=True makes this a GENUINE backfill candidate (the ledger-scoped candidate query only
+    # sees previously-scheduled work). The gate must be the sole reason it is NOT reset/routed here.
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "cloud", kind="compute")
     await seed_active_agent(session, "nox", kind="fileserver")
     capture = wire_fakes(client)
@@ -2446,6 +2454,7 @@ async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, ses
     # Signal 2: the ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out / hold).
     await session.refresh(long_failed)
     assert long_failed.state == FileState.ANALYSIS_FAILED
-    # Signal 3: no scheduling-ledger row is seeded on the forced-local no-op path.
+    # Signal 3: the forced-local no-op neither seeds a duplicate nor drops the pre-existing scheduled-work
+    # ledger row -- it stays exactly one process_file:<id> row (the with_ledger=True seed), untouched.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
-    assert rows == []
+    assert len(rows) == 1
