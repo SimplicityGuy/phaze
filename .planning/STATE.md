@@ -231,9 +231,9 @@ deployment-gated items above, all three are **already-completed work with stale 
 
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
-| uat | 63-UAT | partial | Phase 63 UAT has **0 pending scenarios** — status simply never flipped to complete; the parallel-CI work shipped in PR #193 |
-| quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | missing | Committed `5f43aa7` (v6.0 audit fix); quick-task tracking file was never marked complete |
-| quick_task | 260629-eev (ASCII→mermaid diagram conversion) | missing | Committed `267109b`; quick-task tracking file was never marked complete |
+| uat | 63-UAT | complete (Phase 75) | Phase 63 UAT had **0 pending scenarios** — status simply never flipped; the parallel-CI work shipped in PR #193. Reconciled complete in Phase 75 (HYG-05). |
+| quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | complete (Phase 75) | Committed `5f43aa7` (v6.0 audit fix); SUMMARY.md frontmatter already `status: complete`. Deferred-row status reconciled complete in Phase 75 (HYG-05). |
+| quick_task | 260629-eev (ASCII→mermaid diagram conversion) | complete (Phase 75) | Committed `267109b`; SUMMARY.md frontmatter already `status: complete`. Deferred-row status reconciled complete in Phase 75 (HYG-05). |
 
 Items acknowledged and deferred at the **2026.7.1** milestone close on 2026-07-05. None is a
 blocker — the milestone audit PASSED (21/21 reqs, 5/5 flows). One is deployment-gated live E2E;
