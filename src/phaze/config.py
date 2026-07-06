@@ -480,25 +480,12 @@ class ControlSettings(BaseSettings):
         """
         return any(backend.kind != "local" for backend in self.backends)
 
-    @property
-    def active_compute_scratch_dir(self) -> str | None:
-        """The single compute backend's scratch_dir, else None.
-
-        Phase 70 (MKUE-01, Pitfall 1): reduces over the ≤1 COMPUTE backend (``kind == "compute"``, still
-        ≤1 until PROV-01), NOT the retired ≤1-non-local reduction. With the milestone's target deploy
-        (local + N-Kueue + 1-compute) there are ≥2 non-local backends, so the old ``_single_non_local``
-        reduction raised and 500'd the ``/pushed`` callback (agent_push reads this accessor). This is a
-        scratch_dir-resolution change ONLY, distinct from the deferred D-05 compute agent_ref fix.
-        Phase 72 (MCOMP-01, D-03) retires the ``>1``-compute fail-fast: for N compute backends this
-        returns the first compute entry's ``scratch_dir`` as a documented TRANSITIONAL reduction. The ≤1
-        return value stays byte-identical (D-07) and ``agent_push.py`` is unchanged in Phase 72; per-agent
-        scratch resolution replaces this global accessor in Phase 73 (MCOMP-03).
-        """
-        compute = [backend for backend in self.backends if backend.kind == "compute"]
-        if not compute:
-            return None
-        backend = compute[0]
-        return backend.scratch_dir if isinstance(backend, ComputeBackend) else None
+    # Phase 73 (MCOMP-03): ``active_compute_scratch_dir`` is RETIRED. Its last runtime reader (the
+    # ``/pushed`` callback, agent_push.py) was rewired in Plan 03 to resolve scratch PER FILE from the
+    # recorded ``cloud_job.backend_id`` via ``services.backends.resolve_compute_backend(cfg, backend_id)``
+    # -- so an N-compute deploy attributes each file's scratch dir to the agent it was dispatched to,
+    # replacing the transitional single-compute global reduction (mirrors the Phase-70 active_kube /
+    # active_bucket retirements below).
 
     # Phase 70 (MKUE-01): ``active_kube`` is RETIRED. Each Kueue backend's ``KubeConfig`` is threaded
     # per-call from ``KueueBackend.config.kube`` into every ``kube_staging`` verb (D-04) -- one control
@@ -607,9 +594,9 @@ class ControlSettings(BaseSettings):
     # Phase 67 (REG-04, D-12): the flat compute scratch-dir field and the flat S3
     # connection/credential surface (endpoint / bucket / region / addressing-style / access-key /
     # secret-key) were REMOVED with no shim. Compute scratch dir now comes from the compute
-    # backend's `scratch_dir` (`active_compute_scratch_dir`, retained through Phase 70 / MKUE-01);
-    # bucket identity/creds come from the `[[buckets]]` registry (`active_bucket`, retained through
-    # Phase 70 / MKUE-01). The D-15 GLOBAL S3
+    # backend's `scratch_dir`, resolved PER FILE via `resolve_compute_backend` (the transitional
+    # `active_compute_scratch_dir` global was retired in Phase 73 / MCOMP-03); bucket identity/creds
+    # come from the `[[buckets]]` registry (`active_bucket`, retired in Phase 70 / MKUE-02). The D-15 GLOBAL S3
     # tuning knobs below (presign TTLs / lifecycle / part-size) are NOT per-backend and REMAIN on
     # ControlSettings.
 
@@ -824,8 +811,8 @@ class AgentSettings(BaseSettings):
     # the compute agent's scratch dir). The SSH host/user identify the static push target;
     # cloud_scratch_dir is the remote landing directory whose path MUST match the control-plane's
     # compute-backend scratch dir (Phase 67: the compute backend's `scratch_dir` in backends.toml,
-    # read control-side via the `active_compute_scratch_dir` accessor, retained through Phase 70
-    # / MKUE-01). The two
+    # resolved control-side PER FILE via `resolve_compute_backend`; the transitional
+    # `active_compute_scratch_dir` accessor was retired in Phase 73 / MCOMP-03). The two
     # timeouts bracket the transport: push_timeout_sec
     # is the rsync I/O-stall timeout (must stay below the SAQ push_file job net), and
     # push_connect_timeout_sec caps the SSH connect handshake. Operator-provisioned in Phase 51;

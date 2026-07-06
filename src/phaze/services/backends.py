@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
-    from phaze.config_backends import BackendConfig, KubeConfig
+    from phaze.config_backends import BackendConfig, ComputeBackend, KubeConfig
     from phaze.models.file import FileRecord
     from phaze.services.agent_task_router import AgentTaskRouter
 
@@ -81,22 +81,35 @@ IN_FLIGHT: tuple[CloudJobStatus, ...] = (
 )
 
 
-async def _enqueue_push_file(queue: Any, file: FileRecord, agent_id: str) -> Any:
+async def _enqueue_push_file(
+    queue: Any,
+    file: FileRecord,
+    agent_id: str,
+    *,
+    dest_host: str,
+    dest_scratch_dir: str,
+    dest_ssh_user: str | None,
+) -> Any:
     """Enqueue ONE ``push_file`` job with the deterministic key + the complete PushFilePayload.
 
     Relocated from ``release_awaiting_cloud`` in Wave 3 (68-04): this control-side enqueue leg is the
     ``ComputeAgentBackend.dispatch`` body, so it now lives with the backend that owns it (the drain no
-    longer references it). Builds the four required ``PushFilePayload`` fields (the FileRecord's ``id``
-    / ``original_path`` / ``file_type`` plus the resolved fileserver ``agent_id``) and serializes via
-    ``model_dump(mode="json")`` so the UUID round-trips as a string under ``extra="forbid"``. Returns
-    whatever ``queue.enqueue`` returns -- a ``saq.Job`` normally, or ``None`` when SAQ deduped the
-    deterministic key (the file is already being pushed) so the caller counts a ``None`` as skipped.
+    longer references it). Builds the four push-initiation ``PushFilePayload`` fields (the FileRecord's
+    ``id`` / ``original_path`` / ``file_type`` plus the resolved fileserver ``agent_id``) AND stamps the
+    Phase-73 per-file destination (``dest_host`` / ``dest_scratch_dir`` / ``dest_ssh_user``, D-02: the
+    dispatch-side record-don't-rederive stamp), then serializes via ``model_dump(mode="json")`` so the
+    UUID round-trips as a string under ``extra="forbid"``. Returns whatever ``queue.enqueue`` returns --
+    a ``saq.Job`` normally, or ``None`` when SAQ deduped the deterministic key (the file is already being
+    pushed) so the caller counts a ``None`` as skipped.
     """
     payload = PushFilePayload(
         file_id=file.id,
         original_path=file.original_path,
         file_type=file.file_type,
         agent_id=agent_id,
+        dest_host=dest_host,
+        dest_scratch_dir=dest_scratch_dir,
+        dest_ssh_user=dest_ssh_user,
     )
     # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
     await queue.connect()
@@ -262,6 +275,23 @@ class ComputeAgentBackend(_BaseBackend):
             raise ValueError(f"compute backend {self.id!r} has no agent_ref bound")
         return cast("str", agent_ref)
 
+    def _destination(self) -> tuple[str, str, str | None]:
+        """Return THIS backend's push destination ``(push_host, scratch_dir, ssh_user)`` (D-02).
+
+        ``self.config`` is typed ``BackendConfig | None`` (the discriminated union), so DIRECT attribute
+        access fails mypy on the union -- read via the union-safe ``getattr`` idiom (mirrors
+        ``_agent_ref()`` / ``KueueBackend._kube()``). ``push_host`` and ``scratch_dir`` are guaranteed
+        non-empty at construction by ``ComputeBackend._require_dispatch_fields``, so a missing value here
+        is a bound-config invariant break -- fail loud (``ValueError`` naming ``self.id``) rather than
+        silently stamping a ``"None:..."`` remote spec. ``ssh_user`` stays optional (``None`` allowed).
+        """
+        push_host = getattr(self.config, "push_host", None)
+        scratch_dir = getattr(self.config, "scratch_dir", None)
+        if not push_host or not scratch_dir:
+            raise ValueError(f"compute backend {self.id!r} has no push_host/scratch_dir bound")
+        ssh_user = getattr(self.config, "ssh_user", None)
+        return cast("str", push_host), cast("str", scratch_dir), cast("str | None", ssh_user)
+
     async def is_available(self, session: AsyncSession) -> bool:
         """D-02: True iff THIS backend's bound ``agent_ref`` names an ONLINE compute agent; False when absent.
 
@@ -308,9 +338,19 @@ class ComputeAgentBackend(_BaseBackend):
         )
         await session.execute(stmt)
 
-        # Re-home the compute enqueue leg (_enqueue_push_file, now local to this module), verbatim.
+        # Re-home the compute enqueue leg (_enqueue_push_file, now local to this module) + D-02: stamp
+        # THIS backend's destination onto the push payload (record-don't-rederive originates at dispatch;
+        # NO re-lookup via resolve_compute_backend here -- the bound self.config already holds it).
+        push_host, scratch_dir, ssh_user = self._destination()
         push_queue = task_router.queue_for(fileserver_agent.id)
-        job = await _enqueue_push_file(push_queue, file, fileserver_agent.id)
+        job = await _enqueue_push_file(
+            push_queue,
+            file,
+            fileserver_agent.id,
+            dest_host=push_host,
+            dest_scratch_dir=scratch_dir,
+            dest_ssh_user=ssh_user,
+        )
         # A deterministic-key dedup returns None (the file is already being pushed) -> the drain counts
         # it as skipped, not staged (T-50-double-enqueue); a genuine enqueue returns a saq.Job -> staged.
         return job is not None
@@ -487,6 +527,24 @@ def resolve_backends(settings: ControlSettings) -> list[Backend]:
             resolved.append(KueueBackend(id=entry.id, rank=entry.rank, cap=entry.cap, config=entry))
 
     return resolved
+
+
+def resolve_compute_backend(cfg: ControlSettings, backend_id: str | None) -> ComputeBackend | None:
+    """Resolve a recorded ``cloud_job.backend_id`` to its ``ComputeBackend`` registry entry (D-06).
+
+    The single AUTHORITATIVE inverse of ``ComputeAgentBackend.dispatch``'s ``backend_id`` stamp: every
+    downstream scratch / terminalization reader (the Plan-02 rsync destination, the Plan-03 ``/pushed`` +
+    ``/mismatch`` callbacks) resolves the value RECORDED on ``cloud_job.backend_id`` through here rather
+    than re-deriving it. Mirrors ``s3_staging.resolve_bucket_config`` exactly: pure + ORM-free, reads only
+    ``cfg.backends``.
+
+    Returns ``None`` when ``backend_id`` is ``None`` (an all-local / unstamped row), or when the id names
+    no ``kind == "compute"`` entry (a kueue/local id, or an operator-removed backend) so the caller can
+    skip the compute op cleanly.
+    """
+    if backend_id is None:
+        return None
+    return {backend.id: backend for backend in cfg.backends if backend.kind == "compute"}.get(backend_id)
 
 
 def resolved_non_local_kind(settings: ControlSettings) -> str:

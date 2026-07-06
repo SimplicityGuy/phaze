@@ -102,7 +102,19 @@ class _StubCfg:
             # Phase 72 (MCOMP-01/D-02): a compute backend's is_available resolves THIS entry's bound
             # ``agent_ref`` against Agent.id, so bind the compute stub to the ``cloud-1`` compute agent
             # ``_run_cell`` seeds online when ``compute_up`` (the up/down axis).
-            self.backends = [SimpleNamespace(kind=active_cloud_kind, id=f"{active_cloud_kind}-1", rank=10, cap=active_cap, agent_ref="cloud-1")]
+            self.backends = [
+                SimpleNamespace(
+                    kind=active_cloud_kind,
+                    id=f"{active_cloud_kind}-1",
+                    rank=10,
+                    cap=active_cap,
+                    agent_ref="cloud-1",
+                    # Phase 73 (D-02): compute dispatch stamps push_host/scratch_dir off the bound config.
+                    push_host="cloud-1.push.example",
+                    scratch_dir="/srv/scratch",
+                    ssh_user=None,
+                )
+            ]
 
 
 def _make_file(*, file_type: str = "mp3") -> FileRecord:

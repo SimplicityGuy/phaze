@@ -170,9 +170,17 @@ def test_push_file_payload_minimal_valid() -> None:
 
 
 def test_push_file_payload_field_set() -> None:
-    """Exactly four fields — file_id, original_path, file_type, agent_id."""
+    """Four push-initiation fields + the Phase-73 per-file destination (dest_host/scratch/ssh_user)."""
     fields = PushFilePayload.model_fields
-    assert set(fields.keys()) == {"file_id", "original_path", "file_type", "agent_id"}
+    assert set(fields.keys()) == {
+        "file_id",
+        "original_path",
+        "file_type",
+        "agent_id",
+        "dest_host",
+        "dest_scratch_dir",
+        "dest_ssh_user",
+    }
 
 
 def test_push_file_payload_requires_file_id() -> None:

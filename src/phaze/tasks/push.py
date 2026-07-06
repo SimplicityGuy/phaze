@@ -90,13 +90,27 @@ def _build_rsync_argv(
     shell). The remote destination is ``<scratch_dir>/<file_id>.<file_type>`` -- the server-generated
     UUID, never the untrusted original filename (eliminates path-traversal / shell-metachar risk and
     makes the cleanup/janitor target deterministically computable from file_id).
+
+    D-04 (MCOMP-03): the host + scratch dir + user come from the payload (``dest_host`` /
+    ``dest_scratch_dir`` / ``dest_ssh_user``) so N compute agents each receive files at their OWN
+    destination, resolved per file. The fileserver's single-global remote-target env
+    (``cfg.push_ssh_host`` + ``cfg.cloud_scratch_dir``) is retired here -- it is no longer read.
+    ``dest_ssh_user=None`` falls back to ``cfg.push_ssh_user`` (preserves ≤1-compute behavior
+    byte-identical).
     """
     ssh_cmd = (
         f"ssh -i {key_path} -o StrictHostKeyChecking=yes "
         f"-o UserKnownHostsFile={known_hosts_path} -o BatchMode=yes "
         f"-o ConnectTimeout={cfg.push_connect_timeout_sec}"
     )
-    remote_dest = f"{cfg.push_ssh_user}@{cfg.push_ssh_host}:{cfg.cloud_scratch_dir}/{payload.file_id}.{payload.file_type}"
+    ssh_user = payload.dest_ssh_user or cfg.push_ssh_user
+    # WR-02: fail fast on a destination-less payload rather than building a broken `...@None:None/...`
+    # remote spec. A push_file payload MUST carry its dest_host/dest_scratch_dir (stamped by
+    # ComputeAgentBackend.dispatch or the /mismatch re-drive); a None here is a producer bug and matches
+    # the phase's "never a destination-less payload" must-have (Landmine 1).
+    if payload.dest_host is None or payload.dest_scratch_dir is None:
+        raise ValueError(f"push payload for {payload.file_id} is missing dest_host/dest_scratch_dir (destination-less push)")
+    remote_dest = f"{ssh_user}@{payload.dest_host}:{payload.dest_scratch_dir}/{payload.file_id}.{payload.file_type}"
     return [
         "rsync",
         "--partial-dir=.rsync-partial",  # resumable partial kept OUT of the final-name space
@@ -110,10 +124,17 @@ def _build_rsync_argv(
 
 
 def _require_push_config(cfg: AgentSettings) -> None:
-    """Fail fast (clear terminal error) if the operator-provisioned push config is incomplete."""
-    missing = [
-        name for name in ("push_ssh_host", "push_ssh_user", "cloud_scratch_dir", "push_ssh_key", "push_known_hosts") if getattr(cfg, name) is None
-    ]
+    """Fail fast (clear terminal error) if the operator-provisioned push config is incomplete.
+
+    D-04: the remote target (``push_ssh_host`` + ``cloud_scratch_dir``) is now carried per file on the
+    payload (``dest_host`` / ``dest_scratch_dir``), so it is NO LONGER part of the required set -- the
+    fileserver's single-global remote-target read is retired. What stays required is the SSH secret
+    material (``push_ssh_key`` + ``push_known_hosts``, D-03) plus ``push_ssh_user`` (the
+    ``dest_ssh_user=None`` fallback source). Note: ``cloud_scratch_dir`` is dropped only from THIS
+    (fileserver) required set -- the AgentSettings field itself survives because the compute agent's
+    OWN local janitor (agent_worker.py) still reads it (Landmine 2).
+    """
+    missing = [name for name in ("push_ssh_user", "push_ssh_key", "push_known_hosts") if getattr(cfg, name) is None]
     if missing:
         msg = f"push_file missing required push config: {', '.join(missing)} (operator-provisioned in Phase 51)"
         raise RuntimeError(msg)

@@ -91,6 +91,8 @@ def _compute(**kw: Any) -> Any:
             cap=cap,
             agent_ref=kw.get("agent_ref", bid),
             scratch_dir=kw.get("scratch_dir", "/srv/scratch"),
+            push_host=kw.get("push_host", f"{bid}.push.example"),
+            ssh_user=kw.get("ssh_user"),
         )
     return backends.ComputeAgentBackend(id=bid, rank=rank, cap=cap, config=config)
 
@@ -379,6 +381,27 @@ async def test_compute_is_available_fails_loud_when_no_agent_ref_bound(session: 
 
 
 @pytest.mark.asyncio
+async def test_mcomp02_two_compute_backends_only_the_online_bound_agent_is_available(session: AsyncSession) -> None:
+    """MCOMP-02 (per-agent liveness): N compute backends -> an offline bound agent makes ONLY that lane unavailable.
+
+    A local + 2-compute deploy where compute-a's bound agent (``cloud-a``) is ONLINE and compute-b's bound
+    agent (``cloud-b``) is OFFLINE (never registered). Per-entry gating (Phase 72 ``is_available`` resolves
+    ``self.config.agent_ref`` against ``Agent.id``, NOT a single-active pick) must report backend-a available
+    and backend-b UNAVAILABLE -- so the drain snapshot leaves the healthy compute lane eligible while the
+    offline one contributes 0 slots. This is the N-compute twin of the single-active liveness the retired
+    ``select_active_agent(kind="compute")`` pick could not express.
+    """
+    # Only compute-a's bound node is online; compute-b's is absent.
+    await seed_active_agent(session, agent_id="cloud-a", kind="compute")
+
+    backend_a = _compute(id="compute-a", agent_ref="cloud-a")
+    backend_b = _compute(id="compute-b", agent_ref="cloud-b")
+
+    assert await backend_a.is_available(session) is True
+    assert await backend_b.is_available(session) is False
+
+
+@pytest.mark.asyncio
 async def test_kueue_is_available_probes_kube_with_no_compute_dependency(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """KueueBackend.is_available probes the LocalQueue and has NO compute-agent dependency (D-01a)."""
     _stub_kube_available(monkeypatch)
@@ -451,6 +474,50 @@ async def test_compute_dispatch_flips_pushing_and_writes_cloud_job_in_txn(sessio
     assert job is not None
     assert job.backend_id == "compute-a1"
     assert job.status not in {s.value for s in TERMINAL_STATUSES}
+
+
+@pytest.mark.asyncio
+async def test_compute_dispatch_stamps_destination_on_push_payload(session: AsyncSession) -> None:
+    """D-02: dispatch stamps dest_host/dest_scratch_dir/dest_ssh_user off self.config onto the push_file payload.
+
+    Record-don't-rederive originates here: the enqueued push carries THIS backend's own push_host /
+    scratch_dir / ssh_user (read off the bound ComputeBackend), so every downstream reader (the Plan-02
+    rsync argv) uses the RECORDED destination rather than re-deriving it.
+    """
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    backend = _compute(id="compute-a1", scratch_dir="/srv/scratch", push_host="a1.push.example", ssh_user="phaze")
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    await backend.dispatch(file, session, router)
+
+    pushes = [(task, payload) for task, payload in router.queues["nox"].captured if task == "push_file"]
+    assert len(pushes) == 1
+    _task, payload = pushes[0]
+    assert payload["dest_host"] == "a1.push.example"
+    assert payload["dest_scratch_dir"] == "/srv/scratch"
+    assert payload["dest_ssh_user"] == "phaze"
+
+
+@pytest.mark.asyncio
+async def test_compute_dispatch_stamps_none_ssh_user_when_unset(session: AsyncSession) -> None:
+    """dest_ssh_user is None on the push payload when the backend omits ssh_user (D-01 optional)."""
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    backend = _compute(id="compute-a1", scratch_dir="/srv/scratch", push_host="a1.push.example")
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    await backend.dispatch(file, session, router)
+
+    _task, payload = next((t, p) for t, p in router.queues["nox"].captured if t == "push_file")
+    assert payload["dest_host"] == "a1.push.example"
+    assert payload["dest_ssh_user"] is None
 
 
 @pytest.mark.asyncio
@@ -772,6 +839,7 @@ def test_resolved_non_local_kind_returns_compute_for_multiple_compute_only(backe
         cap = 2
         agent_ref = "agent-a"
         scratch_dir = "/scratch/a"
+        push_host = "a.push"
 
         [[backends]]
         kind = "compute"
@@ -780,6 +848,7 @@ def test_resolved_non_local_kind_returns_compute_for_multiple_compute_only(backe
         cap = 2
         agent_ref = "agent-b"
         scratch_dir = "/scratch/b"
+        push_host = "b.push"
         """
     )
     settings = ControlSettings()
@@ -857,6 +926,7 @@ def test_resolved_non_local_kind_returns_kueue_for_n_kueue(backends_toml_env: An
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
 """
     backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
     settings = ControlSettings()
@@ -885,6 +955,7 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
         cap = 2
         agent_ref = "agent-a"
         scratch_dir = "/scratch/a"
+        push_host = "a.push"
 
         [[backends]]
         kind = "compute"
@@ -893,6 +964,7 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
         cap = 3
         agent_ref = "agent-b"
         scratch_dir = "/scratch/b"
+        push_host = "b.push"
 
         [[backends]]
         kind = "local"
@@ -911,16 +983,15 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
     assert {b.id for b in non_local} == {"compute-a", "compute-b"}
 
 
-# === Pitfall 1: active_compute_scratch_dir on a single-compute reduction ==================
+# === D-06: resolve_compute_backend inverse-lookup (backend_id -> ComputeBackend) ==========
 
 
-def test_active_compute_scratch_dir_resolves_under_local_2kueue_1compute(backends_toml_env: Any) -> None:
-    """Pitfall 1: local + 2 Kueue + 1 compute resolves the compute scratch_dir -- no >1-non-local raise.
+def test_resolve_compute_backend(backends_toml_env: Any) -> None:
+    """D-06: the authoritative inverse-lookup returns the compute entry by id; None for miss/non-compute.
 
-    Before Phase 70 ``active_compute_scratch_dir`` reduced through ``_single_non_local`` which raised
-    the moment ≥2 non-local backends coexisted, 500ing the ``/pushed`` callback. Re-based on a
-    single-COMPUTE reduction, the milestone's target deploy resolves cleanly to the sole compute
-    backend's scratch_dir.
+    resolve_compute_backend(cfg, None) -> None; an unknown id -> None; a real compute id -> that
+    ComputeBackend; a kueue/local id -> None (only kind==compute entries are considered). Every
+    downstream scratch/terminalization reader resolves a recorded cloud_job.backend_id through this.
     """
     from phaze.config import ControlSettings
 
@@ -932,7 +1003,51 @@ def test_active_compute_scratch_dir_resolves_under_local_2kueue_1compute(backend
     cap = 2
     agent_ref = "compute-agent-01"
     scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
 """
     backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
     settings = ControlSettings()
-    assert settings.active_compute_scratch_dir == "/srv/scratch"
+
+    assert backends.resolve_compute_backend(settings, None) is None
+    assert backends.resolve_compute_backend(settings, "does-not-exist") is None
+    hit = backends.resolve_compute_backend(settings, "oci-a1")
+    assert hit is not None
+    assert hit.id == "oci-a1"
+    assert hit.kind == "compute"
+    assert hit.push_host == "oci-a1.push.example"
+    # A kueue id and the local id are NOT compute entries -> None (kind-filtered).
+    assert backends.resolve_compute_backend(settings, "kueue-a") is None
+    assert backends.resolve_compute_backend(settings, "local") is None
+
+
+# === MCOMP-03: per-file compute scratch resolution under local + 2 Kueue + 1 compute ======
+
+
+def test_resolve_compute_backend_scratch_under_local_2kueue_1compute(backends_toml_env: Any) -> None:
+    """MCOMP-03: local + 2 Kueue + 1 compute resolves the compute scratch_dir per file -- no global accessor.
+
+    The transitional ``active_compute_scratch_dir`` global was RETIRED in Phase 73: scratch is now
+    resolved PER FILE from the recorded ``cloud_job.backend_id`` via ``resolve_compute_backend`` (the
+    ``/pushed`` reader was rewired in Plan 03). This pins the milestone's target deploy (≥2 non-local
+    backends) resolving cleanly to the sole compute backend's ``scratch_dir`` through the per-file path;
+    a kueue id resolves to None (only ``kind == "compute"`` entries are considered).
+    """
+    from phaze.config import ControlSettings
+
+    compute_block = """
+    [[backends]]
+    kind = "compute"
+    id = "oci-a1"
+    rank = 30
+    cap = 2
+    agent_ref = "compute-agent-01"
+    scratch_dir = "/srv/scratch"
+    push_host = "oci-a1.push.example"
+"""
+    backends_toml_env(_LOCAL_2KUEUE_HEAD + compute_block + _TWO_BUCKETS)
+    settings = ControlSettings()
+    backend = backends.resolve_compute_backend(settings, "oci-a1")
+    assert backend is not None
+    assert backend.scratch_dir == "/srv/scratch"
+    # A kueue id is not a compute entry -> None (per-file resolution never mis-attributes to a cluster).
+    assert backends.resolve_compute_backend(settings, "kueue-a") is None

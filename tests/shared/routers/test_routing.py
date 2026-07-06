@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 # A single compute backend -> cloud_enabled True + active_cloud_kind 'compute'; force-local then
 # overrides it to the all-local path. Mirrors test_pipeline's _COMPUTE_BACKEND registry fixture.
-_COMPUTE_BACKEND = ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1", scratch_dir="/scratch")
+_COMPUTE_BACKEND = ComputeBackend(kind="compute", id="a1", rank=10, cap=2, agent_ref="cloud-1", scratch_dir="/scratch", push_host="a1.push")
 
 _LONG = 6000.0  # >= cloud_route_threshold_sec default (5400)
 
