@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
 status: executing
-last_updated: "2026-07-06T05:10:42.722Z"
-last_activity: 2026-07-06 -- Phase 74 execution started
+last_updated: "2026-07-06T05:31:28.866Z"
+last_activity: 2026-07-06
 progress:
   total_phases: 36
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 12
-  completed_plans: 8
-  percent: 6
+  completed_plans: 12
+  percent: 8
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends 
 ## Current Position
 
 Phase: 74 (docs-runbook-n-lane-compute-ui-verification) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 74
-Last activity: 2026-07-06 -- Phase 74 execution started
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-07-06
 
 ## Performance Metrics
 
@@ -117,6 +117,8 @@ Last activity: 2026-07-06 -- Phase 74 execution started
 - [Phase 63]: 63-03: tests.yml runs a setup->bucket-matrix->combine topology; all 9 buckets serial (each has DB-fixture tests), matrix fan-out alone gives CI-02; single combine job yields one coverage.xml + one Codecov upload at --fail-under=85 (CI-03), CODECOV_TOKEN scoped to combine only
 - [Phase 63]: 63-04: broadened doc-only CI skip to *.md + .planning/** + LICENSE + docs/** + *.txt; conservative keep-only-non-doc classifier keeps code-changed=true for any non-doc path (security T-63-04-01); classifier extracted to shellcheck-clean scripts/classify-changed-files.sh invoked via `just detect-code-changes` (D-10) + unit-tested by tests/shared/test_change_gate.py; ci.yml SHA edge-case block + aggregate-results skip-with-success contract left byte-for-byte unchanged (no paths-ignore)
 - [Phase 66]: 66-03: vulture dead-code sweep was a deliberate NO-OP — `just vulture` (min-confidence 80 + whitelist + --ignore-decorators) exits 0 with zero confirmed-dead symbols in src/phaze; the v7.0 CUT-02 cutover + PR #191 already removed the vestigial dead code (as RESEARCH Deep-Dive 3 anticipated). Durable CLEAN-02 artifact = hand-audited vulture_whitelist.py suppressing 20 grep-verified framework/dynamic false-positives (FastAPI/watchdog callbacks, Pydantic schemas, string-annotation casts, has_prev/has_next, deferred-feature scaffolding, heartbeat_tick shim). vulture stays NON-blocking (just recipe only, never CI/pre-commit — T-66-09). DO-NOT-DELETE trio (build_dashboard_context/get_stage_progress/get_queue_activity) never flagged, kept out of the whitelist. Both blocking checkpoints (package-legitimacy + deletion-review) human-approved.
+- [Phase ?]: 74-04: Variant B PASSED (74-03 arbiter) -> Plan 04 docstring-only; NO _probe_availability compute-probe serialization added (D-04 verification-only).
+- [Phase ?]: 74-04: _probe_availability docstring corrected unconditionally (Pitfall 1) — retired the '≤1 compute / at most ONE probe' claim; now states N compute backends legal per Phase-72 MCOMP-01, race-free per 74-03 Variant B.
 
 ### Pending Todos
 
@@ -183,6 +185,7 @@ None.
 | Phase 63 P02 | 40min | 3 tasks | 265 files |
 | Phase 63 P03 | ~15min | 2 tasks | 1 files |
 | Phase 63 P04 | ~20min | 2 tasks | 4 files |
+| Phase 74 P04 | ~10 min | 2 tasks | 3 files |
 
 ## Deferred Items
 
@@ -247,9 +250,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-06T03:55:28.845Z
+Last session: 2026-07-06T05:28:40.732Z
 Stopped at: Phase 74 context gathered
-Resume file: .planning/phases/74-docs-runbook-n-lane-compute-ui-verification/74-CONTEXT.md
+Resume file: None
 
 ## Operator Next Steps
 

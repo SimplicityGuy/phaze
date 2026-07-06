@@ -238,7 +238,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 71. Deployment, Config, Docs & N-Lane UI | 2026.7.1 | 5/5 | Complete    | 2026-07-05 |
 | 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
 | 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
-| 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 3/4 | In Progress|  |
+| 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete   | 2026-07-06 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -880,7 +880,7 @@ Plans:
 - [x] 74-01-PLAN.md — Write docs/multi-compute.md (cost-tiered N-compute guide) + cross-links + generalize cloud-burst.md single-agent framing (D-01/02/03) [Wave 1]
 - [x] 74-02-PLAN.md — Parametrize docker-compose.cloud-agent.yml image+command (arm64 default, x86 override) + relax the 2 compose guard-test assertions (D-05/R-1) [Wave 1]
 - [x] 74-03-PLAN.md — N-lane compute regression tests: Variant A deterministic + Variant B real-fan-out arbiter (D-04/R-2) [Wave 1]
-- [ ] 74-04-PLAN.md — Correct stale ≤1-compute _probe_availability docstring (always) + conditional compute-probe serialization (gated on 74-03 Variant B) + closeout MCOMP-07 traceability/ROADMAP + docs-drift green [Wave 2, depends 74-03]
+- [x] 74-04-PLAN.md — Correct stale ≤1-compute _probe_availability docstring (always) + conditional compute-probe serialization (gated on 74-03 Variant B) + closeout MCOMP-07 traceability/ROADMAP + docs-drift green [Wave 2, depends 74-03]
 **UI hint**: yes
 
 ### Phase 62: Polish & cutover
