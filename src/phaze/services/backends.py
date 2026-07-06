@@ -657,8 +657,11 @@ async def _probe_availability(session: AsyncSession, backends: list[Backend]) ->
     single-active-compute assumption, N≥2 compute backends are legal and each compute probe touches the
     shared ``session`` via ``select_agent_by_id`` (``session.execute``); serializing the fan-out guarantees
     those ``session.execute`` calls can never overlap (SQLAlchemy forbids concurrent operations on one
-    session). The fan-out stays bounded because each ``_probe_one`` is itself capped by
-    ``asyncio.wait_for(..., _PROBE_TIMEOUT_SEC)``, and the post-fan-out ``session.rollback`` in
+    session). Each ``_probe_one`` is individually capped by ``asyncio.wait_for(..., _PROBE_TIMEOUT_SEC)``;
+    because the probes now run one at a time the worst-case aggregate wait is ``N x _PROBE_TIMEOUT_SEC``
+    (not the old ``asyncio.gather`` ~1x bound) -- a deliberate D-01 trade-off, acceptable because N is small
+    (registry-declared local + N-Kueue + N-compute) and session-safety takes priority over probe latency on
+    the 5s ``/pipeline/stats`` poll. The post-fan-out ``session.rollback`` in
     :func:`get_backend_lane_snapshot` clears any single-probe DB poison before the ``in_flight_count``
     reads. Kueue probes ignore the session (kr8s I/O) and local is short-circuited (no I/O).
     """
