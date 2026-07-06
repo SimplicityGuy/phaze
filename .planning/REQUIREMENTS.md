@@ -15,7 +15,7 @@
 - [x] **MCOMP-04**: The tiered drain scheduler spreads long files across N compute agents by **rank** (free arm64 preferred over paid/trial x86) and **per-agent `cap`**, spilling to the next-eligible backend when one is at cap or offline. Reuses the Phase-69 rank/cap `select_backend` policy — no capability-matching.
 - [x] **MCOMP-05**: One flaky or offline compute agent is **isolated** — it degrades to 0 slots without failing the drain tick or blocking dispatch to healthy compute agents (per-backend snapshot try/except, mirroring the Phase 70 MKUE-03 pattern).
 - [x] **MCOMP-06**: Each compute backend's **in-flight count and terminalization** (the `/pushed` + `/api/internal/agent/*` reconcile path) are scoped to that backend/agent, so a file's result is attributed to the agent that analyzed it — no cross-agent mis-attribution. Resolves the open question of whether `cloud_job` stays one-row-per-file or needs per-(file,backend).
-- [ ] **MCOMP-07**: The operator runbook + config docs cover **adding a 2nd+ compute agent** and the mixed arm64/x86 rank/cap cost-tiering; each compute agent renders as its own lane in the N-lane UI (verify the Phase-71 BEUI generalization already covers compute lanes; fix if a gap surfaces).
+- [x] **MCOMP-07**: The operator runbook + config docs cover **adding a 2nd+ compute agent** and the mixed arm64/x86 rank/cap cost-tiering; each compute agent renders as its own lane in the N-lane UI (verify the Phase-71 BEUI generalization already covers compute lanes; fix if a gap surfaces).
 
 ## v2 Requirements
 
@@ -50,7 +50,7 @@ Which phases cover which requirements. Populated during roadmap creation (phases
 | MCOMP-04 | Phase 73 | Complete |
 | MCOMP-05 | Phase 73 | Complete |
 | MCOMP-06 | Phase 73 | Complete |
-| MCOMP-07 | Phase 74 | Pending |
+| MCOMP-07 | Phase 74 | Complete |
 
 **Coverage:**
 - v1 requirements: 7 total

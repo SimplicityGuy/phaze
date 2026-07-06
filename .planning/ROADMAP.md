@@ -21,7 +21,7 @@ Finish the 2026.7.1 registry's deliberate compute-side descope: make **N cloud-c
 
 - [x] **Phase 72: Per-Entry Compute Binding & Fail-Fast Retirement** — declare N `compute` backends in `backends.toml`, each bound to a specific registered compute Agent, all accepted at boot; retire + generalize the `≤1-compute` fail-fasts (`active_compute_scratch_dir`, `resolved_non_local_kind`) for a `local + N-Kueue + N-compute` registry; behavior-preserving groundwork, existing single-/zero-compute deploys unchanged (MCOMP-01) (completed 2026-07-05)
 - [x] **Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation** — per-agent liveness probe, per-agent push/scratch destination + `/pushed` callback, rank/cap load-spread across N compute agents (free arm64 preferred, spill to paid x86), per-backend failure isolation, per-backend in-flight/terminalization scoping; the behavior core, the compute-side twin of Phase 70 (MCOMP-02..06) (completed 2026-07-05)
-- [ ] **Phase 74: Docs, Runbook & N-Lane Compute UI Verification** — operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces (MCOMP-07)
+- [x] **Phase 74: Docs, Runbook & N-Lane Compute UI Verification** — operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces (MCOMP-07) (completed 2026-07-06)
 
 
 <details>
