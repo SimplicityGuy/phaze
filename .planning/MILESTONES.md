@@ -1,5 +1,25 @@
 # Milestones
 
+## 2026.7.2 Multi-Compute Agents (Shipped: 2026-07-07)
+
+**Delivered:** N cloud-compute agents now dispatch, route, reconcile, and fail-isolate simultaneously — the compute-side twin of the existing multi-Kueue support — with the `≤1-compute` fail-fasts retired and **zero new dependencies**.
+
+**Phases completed:** 5 phases (72–76), 17 plans. Merged as PRs #209/#210/#211/#213/#214. Timeline 2026-07-05 → 2026-07-06.
+
+**Key accomplishments:**
+
+- **Per-entry compute binding (Phase 72, MCOMP-01):** N `compute` backends declarable in `backends.toml`, each bound to a specific registered Agent by `agent_ref`→`Agent.id`, all accepted at boot; retired the `≤1-compute` fail-fasts (`active_compute_scratch_dir`, `resolved_non_local_kind`) and generalized them for a `local + N-Kueue + N-compute` registry, replaced with a boot-time duplicate-`agent_ref` guard.
+- **Per-agent dispatch, liveness, scratch & failure isolation (Phase 73, MCOMP-02..06):** per-agent liveness probe; destination stamped at dispatch from the bound backend and read record-don't-rederive through rsync → `/pushed` (per-agent, no global scratch); Phase-69 rank/cap load-spread across N agents (free arm64 preferred, spill to paid x86); per-backend snapshot try/except isolation; `backend_id`-scoped terminalization with no cross-agent mis-attribution.
+- **Docs, runbook & N-lane compute UI (Phase 74, MCOMP-07):** operator runbook (`docs/multi-compute.md`) for adding a 2nd+ compute agent + mixed arm64/x86 cost-tiering; parametrized cloud-agent compose; verified the Phase-71 BEUI N-lane UI already renders each compute agent as its own lane (real-fan-out regression tests).
+- **Engineering hygiene (Phase 75, HYG-01..05):** hardened the docs-drift traceability guard for the between-milestones state, dropped stale compose comments, added the force-local duration-router gate regression test (anti-cheat mutation-verified), reconciled stale 2026.7.0 tracking.
+- **Compute/push hardening (Phase 76, HARD-01..03):** serialized the N-compute liveness probe fan-out (structural session-safety, closing WR-01); made the `/mismatch` `push_attempt` ledger RMW atomic via `pg_advisory_xact_lock`; added `agent_id` pattern/max-length validation at the scan-status + agent-roots HTTP boundary.
+
+**Audit:** ✅ passed — 15/15 requirements, 5/5 phases verified & Nyquist-compliant, 6/6 cross-phase integration seams wired, E2E N-compute flow complete (`milestones/2026.7.2-MILESTONE-AUDIT.md`). Four low-severity/cosmetic review items closed at close-out by quick task `260706-odc`.
+
+**Deferred to v2:** GAP-01 — N-compute-aware orphan recovery in `recover_orphaned_work` (`reenqueue.py`) tracked as v2 PROV-01 (a feature with Phase-45-class over-enqueue risk, not a fix), alongside PROV-02 (capability-aware routing) and PROV-03 (on-demand provisioning).
+
+---
+
 ## 2026.7.1 Multi-Cloud Backends (Shipped: 2026-07-05)
 
 **Phases completed:** 5 phases, 26 plans, 56 tasks
