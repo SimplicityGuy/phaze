@@ -28,6 +28,24 @@
             <p class="text-2xl font-bold text-red-700 dark:text-red-400">{{ analysis_failed_count }}</p>
             <p class="text-sm text-red-600 dark:text-red-400">Analysis failed</p>
             <p class="text-xs text-red-500 dark:text-red-500 mt-1">gave up (terminal)</p>
+            {# quick-260707-d79: operator-gated BULK retry -- rendered ONLY when there is
+               something to retry. hx-confirm gates the bulk action (up to hundreds of files);
+               the ack swaps into the sibling #retry-failed-result span (NOT the OOB wrapper),
+               and the red count drops on the next 5s stats poll. #}
+            {% if analysis_failed_count > 0 %}
+            <button type="button"
+                    hx-post="/pipeline/analysis-failed/retry"
+                    hx-target="#retry-failed-result"
+                    hx-swap="innerHTML"
+                    hx-confirm="Re-queue {{ analysis_failed_count }} failed file(s) for analysis?"
+                    class="mt-3 inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md
+                           bg-red-600 hover:bg-red-700 text-white
+                           focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2
+                           dark:focus:ring-offset-red-950">
+                Retry failed
+            </button>
+            <span id="retry-failed-result" class="block mt-2"></span>
+            {% endif %}
         </div>
     </div>
 </section>

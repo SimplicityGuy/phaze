@@ -175,7 +175,15 @@ _PUSH_DONE = "push_done"
 
 
 def _select_done_analyze_ids() -> Any:
-    """Build the SELECT for file ids whose analyze stage is terminal (ANALYZED / ANALYSIS_FAILED)."""
+    """Build the SELECT for file ids whose analyze stage is terminal (ANALYZED / ANALYSIS_FAILED).
+
+    quick-260707-d79: ANALYSIS_FAILED is DELIBERATELY treated as analyze-DONE here so a genuinely
+    un-analyzable file is NEVER auto-looped by ``recover_orphaned_work``. The operator-gated
+    ``POST /pipeline/analysis-failed/retry`` (routers/pipeline.py ``retry_analysis_failed``) is the
+    manual counterpart that re-drives failed files -- it flips them out of ANALYSIS_FAILED (->
+    FINGERPRINTED) BEFORE re-enqueuing, so a re-driven file is no longer in this terminal set.
+    Do NOT add ANALYSIS_FAILED to a "pending" query here; that would re-introduce the auto-loop.
+    """
     return select(FileRecord.id).where(FileRecord.state.in_([FileState.ANALYZED, FileState.ANALYSIS_FAILED]))
 
 

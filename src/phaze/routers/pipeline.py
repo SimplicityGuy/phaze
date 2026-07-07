@@ -29,6 +29,7 @@ from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
     get_analysis_failed_count,
+    get_analysis_failed_files,
     get_analyze_stage_files,
     get_awaiting_cloud_count,
     get_backfill_candidates,
@@ -873,6 +874,75 @@ async def trigger_backfill_cloud(
             "cloud": counts["cloud"],
             "awaiting": counts["awaiting"],
         },
+    )
+
+
+@router.post("/pipeline/analysis-failed/retry", response_class=HTMLResponse)
+async def retry_analysis_failed(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: operator-gated BULK retry of every ANALYSIS_FAILED file (quick-260707-d79).
+
+    ANALYSIS_FAILED is a terminal state that ``recover_orphaned_work`` deliberately treats as
+    analyze-DONE (:func:`phaze.tasks.reenqueue._select_done_analyze_ids`), so a genuinely
+    un-analyzable file is never auto-looped. This endpoint is that invariant's deliberate,
+    operator-gated counterpart: it re-drives EVERY ANALYSIS_FAILED file through the SAME guarded
+    funnel :func:`deepen_analysis` uses -- per-agent routing -> ``NoActiveAgentError`` guard ->
+    :func:`enqueue_process_file` (COMPLETE ``ProcessFilePayload`` + deterministic
+    ``process_file:<id>`` key) -- but with NORMAL caps: a retry is a fresh re-analysis, NOT a
+    deepen, so ``fine_cap`` / ``coarse_cap`` are left at their None default (the standard 60/30
+    window budget), not the deepen sentinel 0.
+
+    Ordering follows the Phase-30 / RESEARCH-Pitfall-3 guards:
+    - Resolve the per-agent queue ONCE. ``process_file`` is an AGENT_TASK; if no agent is online
+      ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT flipping any
+      state or enqueuing -- it never falls through to the consumer-less default queue.
+    - Flip every failed file ANALYSIS_FAILED -> FINGERPRINTED (the canonical pre-analysis state)
+      and ``commit`` BEFORE any enqueue (get_session does NOT auto-commit): the files leave the
+      red bucket immediately; ``put_analysis`` re-flips each -> ANALYZED on success, or
+      ``report_analysis_failed`` -> ANALYSIS_FAILED only if it fails AGAIN.
+    - The deterministic key dedups any file with a live in-flight job to a no-op, so re-enqueuing
+      the WHOLE failed set is safe (dedup-safe; no silent cap).
+    """
+    files = await get_analysis_failed_files(session)
+    if not files:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False},
+        )
+
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        # Do NOT flip state, do NOT enqueue, do NOT fall through to the default queue (Phase-30).
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": True},
+        )
+
+    # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id;
+    # cast narrows str | None -> str for ProcessFilePayload.agent_id.
+    agent_id = cast("str", routed.agent_id)
+
+    # RESEARCH Pitfall 3: flip out of the terminal bucket and COMMIT before any enqueue so the
+    # red count drops on the next 5s poll regardless of the enqueue outcome.
+    for f in files:
+        f.state = FileState.FINGERPRINTED
+    await session.commit()
+
+    for f in files:
+        # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a
+        # deepen. The single funnel guarantees the full payload + deterministic dedup key.
+        await enqueue_process_file(routed.queue, f, agent_id, settings.models_path)
+
+    logger.info("retry_analysis_failed re-queued files", count=len(files))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/retry_failed_response.html",
+        context={"request": request, "count": len(files), "no_active_agent": False},
     )
 
 
