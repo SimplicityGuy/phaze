@@ -46,7 +46,7 @@ def _make_file(*, state: str = FileState.METADATA_EXTRACTED) -> FileRecord:
 
 @pytest.mark.asyncio
 async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /api/v1/fingerprint enqueues fingerprint_file onto phaze-agent-nox (not default)."""
+    """POST /api/v1/fingerprint enqueues fingerprint_file onto phaze-agent-nox-fingerprint (not default)."""
     session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(3)])
     await session.commit()
     await seed_active_agent(session)
@@ -59,7 +59,7 @@ async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, sessio
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "fingerprint_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-fingerprint", "fingerprint_file")}
     assert all(q != "default" for q, _, _ in capture)
 
 
@@ -87,7 +87,7 @@ async def test_trigger_fingerprint_enqueues_complete_payload(client: AsyncClient
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox", "fingerprint_file")
+    assert (queue_name, task_name) == ("phaze-agent-nox-fingerprint", "fingerprint_file")
 
     # All three required fields present -- not just file_id (the CR-02 bug).
     assert set(kwargs) == {"file_id", "original_path", "agent_id"}
