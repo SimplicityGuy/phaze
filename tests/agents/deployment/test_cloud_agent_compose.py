@@ -120,6 +120,24 @@ def test_worker_consumes_single_analyze_lane() -> None:
     assert "PHAZE_AGENT_HEARTBEAT=false" not in worker_env, "the compute agent's only worker must keep its heartbeat (do not set =false)"
 
 
+def test_worker_caps_analyze_lane_concurrency_to_one() -> None:
+    """quick-260707-g84: the compute worker pins the analyze lane to 1 concurrent job.
+
+    In lane mode the per-lane knob (PHAZE_LANE_ANALYZE_CONCURRENCY) is what ACTUALLY governs a
+    lane worker's concurrency -- WORKER_MAX_JOBS is only a ceiling (concurrency = min(lane knob,
+    worker_max_jobs)). On the OCI Ampere A1 (12 GB) compute agent a single process_file peaks
+    ~8 GB, so the analyze lane must run one job at a time; relying on WORKER_MAX_JOBS=1 alone is
+    inert in lane mode. Assert the explicit PHAZE_LANE_ANALYZE_CONCURRENCY=1 (<= WORKER_MAX_JOBS)
+    is present on the worker.
+    """
+    data = _load_cloud_agent_compose()
+    worker_env = _env_to_strs(data["services"]["worker"].get("environment", []))
+    assert any(e == "PHAZE_LANE_ANALYZE_CONCURRENCY=1" for e in worker_env), (
+        f"compute worker must cap the analyze lane via PHAZE_LANE_ANALYZE_CONCURRENCY=1 "
+        f"(WORKER_MAX_JOBS is only a ceiling in lane mode); got {worker_env!r}"
+    )
+
+
 def test_worker_image_is_arm64_ghcr_pinned() -> None:
     """D-08 / T-51-05 / MCOMP-07: the worker image DEFAULT renders the arm64 GHCR tag pinned via PHAZE_IMAGE_TAG.
 
