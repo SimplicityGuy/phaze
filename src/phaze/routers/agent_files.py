@@ -37,6 +37,21 @@ if TYPE_CHECKING:
     from phaze.config import ControlSettings
 
 
+# Bug 260706-vqz (first live k8s cloud-burst E2E, 2026-07-07, image 2026.7.3): the staged object
+# lives in the bucket from UPLOADED through RUNNING until post-success cleanup, so all three are
+# downloadable. submit_cloud_job.py:117 stamps SUBMITTED at Kueue Job creation, BEFORE the analyze
+# pod runs and calls presign-download, so a live pod NEVER observes UPLOADED -- an UPLOADED-only
+# guard was unreachable for the pod and cloud analysis could never complete. UPLOADING is not yet
+# fully staged, and terminal SUCCEEDED/FAILED may already be cleaned up -- all three 409. This is
+# deliberately NOT the services/backends.py IN_FLIGHT tuple (that includes UPLOADING).
+_PRESIGN_DOWNLOADABLE_STATUSES: frozenset[str] = frozenset(
+    {
+        CloudJobStatus.UPLOADED.value,
+        CloudJobStatus.SUBMITTED.value,
+        CloudJobStatus.RUNNING.value,
+    }
+)
+
 router = APIRouter(prefix="/api/internal/agent/files", tags=["agent-internal"])
 
 
@@ -170,12 +185,13 @@ async def presign_download(
     # Readiness guard (WR-03): the presign is purely computational and always succeeds, so without
     # this check we could hand back a well-formed but DEAD URL for an object that was never staged or
     # was already evicted (inline cleanup / Phase 54 eviction / lifecycle TTL). Require the cloud_job
-    # to be UPLOADED; otherwise 409 so the pod (or Phase 54 reconcile) sees "not ready" at the control
-    # plane instead of taking an opaque 403/404 from S3 mid-download. Single-user system: NO per-agent
+    # to be in a downloadable/staged status (_PRESIGN_DOWNLOADABLE_STATUSES = {UPLOADED, SUBMITTED,
+    # RUNNING}); otherwise 409 so the pod (or Phase 54 reconcile) sees "not ready" at the control plane
+    # instead of taking an opaque 403/404 from S3 mid-download. Single-user system: NO per-agent
     # ownership predicate -- cross-agent access is by design (file_id is path-only, AUTH-01), not an IDOR.
     cloud_job_row = (await session.execute(select(CloudJob.status, CloudJob.staging_bucket).where(CloudJob.file_id == file_id))).first()
     cloud_job_status = cloud_job_row.status if cloud_job_row is not None else None
-    if cloud_job_row is None or cloud_job_status != CloudJobStatus.UPLOADED.value:
+    if cloud_job_row is None or cloud_job_status not in _PRESIGN_DOWNLOADABLE_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"staged object not ready (cloud_job status={cloud_job_status!r})",
