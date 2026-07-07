@@ -494,7 +494,7 @@ async def test_compute_dispatch_stamps_destination_on_push_payload(session: Asyn
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
 
-    pushes = [(task, payload) for task, payload in router.queues["nox"].captured if task == "push_file"]
+    pushes = [(task, payload) for task, payload in router.queues["nox-io"].captured if task == "push_file"]
     assert len(pushes) == 1
     _task, payload = pushes[0]
     assert payload["dest_host"] == "a1.push.example"
@@ -515,7 +515,7 @@ async def test_compute_dispatch_stamps_none_ssh_user_when_unset(session: AsyncSe
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
 
-    _task, payload = next((t, p) for t, p in router.queues["nox"].captured if t == "push_file")
+    _task, payload = next((t, p) for t, p in router.queues["nox-io"].captured if t == "push_file")
     assert payload["dest_host"] == "a1.push.example"
     assert payload["dest_ssh_user"] is None
 
@@ -538,7 +538,7 @@ async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSess
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADING.value
-    assert [t for t, _ in router.queues["nox"].captured] == ["s3_upload"]
+    assert [t for t, _ in router.queues["nox-io"].captured] == ["s3_upload"]
 
 
 @pytest.mark.asyncio
@@ -733,7 +733,7 @@ async def test_local_dispatch_returns_false_on_dedup_noop(session: AsyncSession)
 
     router = DedupFakeTaskRouter()
     # Pre-enqueue the deterministic key on the fileserver's queue so dispatch's enqueue dedups to None.
-    live_queue = router.queue_for("nox")
+    live_queue = router.queue_for("nox", "analyze")
     await live_queue.enqueue("process_file", key=process_file_job_key(file.id))
     router.queue_for_calls.clear()
 

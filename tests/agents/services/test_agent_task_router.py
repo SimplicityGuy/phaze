@@ -66,20 +66,21 @@ async def test_enqueue_for_two_agents_isolated(router) -> None:  # type: ignore[
     await router.enqueue_for_agent(agent_id="agent-b", task_name="extract_file_metadata", payload=payload_b)
 
     # Both queues should be in the cache with the canonical name format.
-    assert "agent-a" in router._queues
-    assert "agent-b" in router._queues
-    queue_a = router._queues["agent-a"]
-    queue_b = router._queues["agent-b"]
+    # extract_file_metadata routes to the meta lane; cache keyed by (agent_id, lane).
+    assert ("agent-a", "meta") in router._queues
+    assert ("agent-b", "meta") in router._queues
+    queue_a = router._queues[("agent-a", "meta")]
+    queue_b = router._queues[("agent-b", "meta")]
     # SAQ Queue stores its name in .name attribute
-    assert queue_a.name == "phaze-agent-agent-a"
-    assert queue_b.name == "phaze-agent-agent-b"
+    assert queue_a.name == "phaze-agent-agent-a-meta"
+    assert queue_b.name == "phaze-agent-agent-b-meta"
 
 
 @pytest.mark.integration
 async def test_lazy_queue_cache_reuses_instance(router) -> None:  # type: ignore[no-untyped-def]
     """Second call to _queue_for for the same agent_id returns the SAME Queue instance."""
-    q1 = router._queue_for("agent-cache-test")
-    q2 = router._queue_for("agent-cache-test")
+    q1 = router._queue_for("agent-cache-test", "meta")
+    q2 = router._queue_for("agent-cache-test", "meta")
     assert q1 is q2, "queue cache must return identity on repeated calls"
 
 
@@ -95,15 +96,15 @@ async def test_queue_registers_job_defaults_hook(router) -> None:  # type: ignor
     agent_worker.py do. SAQ stores before_enqueue callbacks in the
     `_before_enqueues` dict keyed by id(callback) (verified against saq 0.26.3).
     """
-    queue = router._queue_for("agent-timeout-test")
+    queue = router._queue_for("agent-timeout-test", "meta")
     assert apply_project_job_defaults in queue._before_enqueues.values()
 
 
 @pytest.mark.integration
 async def test_close_empties_cache(router) -> None:  # type: ignore[no-untyped-def]
     """After close(), the internal cache dict is empty."""
-    router._queue_for("agent-d")
-    router._queue_for("agent-e")
+    router._queue_for("agent-d", "meta")
+    router._queue_for("agent-e", "meta")
     assert len(router._queues) == 2
     await router.close()
     assert len(router._queues) == 0
@@ -167,5 +168,5 @@ async def test_enqueue_for_file_derives_agent_id(router) -> None:  # type: ignor
     fake_file = SimpleNamespace(agent_id="agent-c")
     payload = _make_payload("agent-c")
     await router.enqueue_for_file(file_record=fake_file, task_name="extract_file_metadata", payload=payload)
-    assert "agent-c" in router._queues
-    assert router._queues["agent-c"].name == "phaze-agent-agent-c"
+    assert ("agent-c", "meta") in router._queues
+    assert router._queues[("agent-c", "meta")].name == "phaze-agent-agent-c-meta"
