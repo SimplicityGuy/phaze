@@ -45,15 +45,13 @@ class BpmSpark(NamedTuple):
     ``lo``/``hi`` are numeric ``float``s taken straight from ``w.bpm`` (never
     essentia strings) and are used ONLY as HTML label text -- they are deliberately
     NOT written into any SVG geometry attribute, preserving the coordinate-numeric-only
-    XSS hardening invariant above. ``count`` is the number of bpm-bearing windows.
+    XSS hardening invariant above. ``window_count`` is the number of bpm-bearing windows.
     """
 
     points: str
     lo: float | None
     hi: float | None
-    # ``count`` shadows ``tuple.count``; mypy flags the field-vs-method type clash but the
-    # NamedTuple field wins at runtime (the field is what callers read). Deliberate name.
-    count: int  # type: ignore[assignment]
+    window_count: int
 
 
 def _bpm_spark(windows: Sequence[AnalysisWindow], total_sec: float, width: float, height: float) -> BpmSpark:

@@ -566,7 +566,7 @@ def test_bpm_spark_normal_range() -> None:
     assert "," in result.points
     assert result.lo == 120.0
     assert result.hi == 128.0
-    assert result.count == 2
+    assert result.window_count == 2
 
 
 def test_bpm_spark_flat_line() -> None:
@@ -579,7 +579,7 @@ def test_bpm_spark_flat_line() -> None:
     # span <= 0 => every y coordinate is height/2 (unchanged flat-line behavior).
     y_values = {pair.split(",")[1] for pair in result.points.split(" ")}
     assert y_values == {f"{height / 2.0:.2f}"}
-    assert result.count == 2
+    assert result.window_count == 2
 
 
 def test_bpm_spark_empty() -> None:
@@ -588,4 +588,4 @@ def test_bpm_spark_empty() -> None:
     assert result.points == ""
     assert result.lo is None
     assert result.hi is None
-    assert result.count == 0
+    assert result.window_count == 0
