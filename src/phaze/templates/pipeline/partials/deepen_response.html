@@ -7,7 +7,15 @@
     No active agent available — start an agent worker and retry. Nothing re-enqueued.
 </span>
 {% else %}
-<span class="text-sm text-green-600 dark:text-green-400 font-medium">
-    Re-analysis queued at full window budget (deepen).
+{# quick-260707-cvz success branch: bootstrap poller. Fires the first fetch on load and
+   then hands off to deepen_progress.html, which owns the single poll loop (on the first
+   outerHTML swap this span is REPLACED, so there is no double-poll). Requires file_id +
+   since in the deepen POST context. #}
+<span class="text-sm text-amber-600 dark:text-amber-400 font-medium"
+      aria-live="polite"
+      hx-get="/pipeline/files/{{ file_id }}/deepen-progress?since={{ since }}"
+      hx-trigger="load, every 2s"
+      hx-swap="outerHTML">
+    Queued — starting deepen…
 </span>
 {% endif %}

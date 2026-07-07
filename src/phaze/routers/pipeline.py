@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
@@ -16,6 +17,7 @@ import structlog
 from phaze.config import settings
 from phaze.database import async_session, get_session
 from phaze.models.agent import Agent
+from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
@@ -904,6 +906,11 @@ async def deepen_analysis(
     The typed ``uuid.UUID`` path param yields a 422 on a malformed id; an unknown (well-formed)
     id resolves to ``None`` and returns a not-found fragment -- never a raw 500 (T-44-10).
     """
+    # quick-260707-cvz: capture the click epoch BEFORE the enqueue so the poll's completion
+    # predicate (analysis_completed_at > requested_at) only trips on a re-run stamped AFTER
+    # this click -- a stale pre-click sampled result never shows as "complete".
+    since = datetime.now(UTC).timestamp()
+
     result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
     file = result.scalar_one_or_none()
 
@@ -927,7 +934,86 @@ async def deepen_analysis(
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/deepen_response.html",
-        context={"request": request, "not_found": not_found, "no_active_agent": no_active_agent},
+        context={
+            "request": request,
+            "not_found": not_found,
+            "no_active_agent": no_active_agent,
+            # Consumed ONLY by the success branch's bootstrap poller (guards/branches above
+            # are unchanged). since is a numeric float threaded into the poll URL.
+            "file_id": file_id,
+            "since": since,
+        },
+    )
+
+
+@router.get("/pipeline/files/{file_id}/deepen-progress", response_class=HTMLResponse)
+async def deepen_progress(
+    request: Request,
+    file_id: uuid.UUID,
+    since: float,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX poll target for the "Deepen analysis" progress surface (quick-260707-cvz).
+
+    ``since`` is the deepen-click epoch (seconds, float) threaded through the poll URL. It is a
+    typed query param -- FastAPI 422s a non-numeric value (T-cvz-01) and it is used ONLY in a
+    datetime compare, never rendered raw. The rendered counts are numeric ints (None-guarded to
+    0), never essentia strings (T-cvz-02). An unknown file_id returns a benign "gone" fragment,
+    never a 500 (T-cvz-04).
+
+    COMPLETION PREDICATE (timestamp-gated): a re-run is complete only when ``put_analysis`` has
+    stamped ``analysis_completed_at`` AFTER this click (``> requested_at``). A stale pre-click
+    sampled result has ``completed_at <= requested_at`` and is NOT complete -- killing the
+    misleading-complete edge. ``post_analysis_progress`` is counter-only and never touches
+    ``analysis_completed_at``, so a re-deepen of an already-ANALYZED file keeps its OLD
+    completed_at until the fresh ``put_analysis`` lands.
+
+    State machine (evaluated in order): missing file -> gone (terminal); complete predicate ->
+    complete (terminal); fine_total truthy AND fine_done < fine_total -> running (poll);
+    otherwise -> queued/starting (poll).
+    """
+    file_result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
+    file = file_result.scalar_one_or_none()
+
+    if file is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/deepen_progress.html",
+            context={
+                "request": request,
+                "gone": True,
+                "complete": False,
+                "running": False,
+                "fine_done": 0,
+                "fine_total": 0,
+                "file_id": file_id,
+                "since": since,
+            },
+        )
+
+    analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
+    analysis = analysis_result.scalar_one_or_none()
+
+    requested_at = datetime.fromtimestamp(since, tz=UTC)
+    complete = analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
+
+    fine_done = (analysis.fine_windows_analyzed or 0) if analysis is not None else 0
+    fine_total = (analysis.fine_windows_total or 0) if analysis is not None else 0
+    running = (not complete) and fine_total > 0 and fine_done < fine_total
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/deepen_progress.html",
+        context={
+            "request": request,
+            "gone": False,
+            "complete": complete,
+            "running": running,
+            "fine_done": fine_done,
+            "fine_total": fine_total,
+            "file_id": file_id,
+            "since": since,
+        },
     )
 
 
