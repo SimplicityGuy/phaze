@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
-status: "Phase 74 shipped — PR #211"
-last_updated: "2026-07-06T07:34:31.124Z"
+status: milestone_complete
+last_updated: 2026-07-06T19:15:29.499Z
 last_activity: 2026-07-06
 progress:
-  total_phases: 36
-  completed_phases: 12
-  total_plans: 51
-  completed_plans: 38
-  percent: 33
+  total_phases: 37
+  completed_phases: 14
+  total_plans: 56
+  completed_plans: 43
+  percent: 38
+stopped_at: Milestone complete (Phase 76 was final phase)
 ---
 
 # Project State
@@ -20,20 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 75 — engineering hygiene — guard hardening, tech debt & stale tracking cleanup
+**Current focus:** Milestone complete
 
 ## Current Position
 
-Phase: 75
+Phase: 76
 Plan: Not started
-Status: Phase 74 shipped — PR #211
+Status: Milestone complete — Phase 76 shipped (PR #214)
 Last activity: 2026-07-06
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 169
+- Total plans completed: 174
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -64,6 +65,7 @@ Last activity: 2026-07-06
 
 ### Roadmap Evolution
 
+- Phase 76 added (2026-07-06): Compute/Push Hardening (HARD-01..03) — appended as the milestone's LAST phase (2026.7.2 milestone header extended 72-75 → 72-76). Three self-contained correctness fixes in the N-compute dispatch/push path, each closing an accepted-risk/review item from Phases 72-74, each with a regression test, **no new dependencies**. **HARD-01** (closes WR-01/74-REVIEW): serialize `services/backends._probe_availability`'s `_probe_one` fan-out so N≥2 compute backends stop sharing one `AsyncSession` (SQLAlchemy concurrent-use hazard) — serialize the awaits (N is tiny) OR give each `_probe_one` its own sessionmaker session; keep the bounded `_PROBE_TIMEOUT_SEC=1.5` `wait_for`; reword the docstring from empirical to structural. **HARD-02** (closes AR-73-02/T-73-13/WR-04): `with_for_update()` on the `push_file:<file_id>` ledger SELECT in `routers/agent_push.py` `/mismatch` so the `push_attempt` RMW is atomic (no lost increment under concurrent `/mismatch`; cap still trips). **HARD-03** (closes AR-30-03/Phase-30 IN-01): `Query(..., pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=128)` on the scan-status `agent_id` param in `routers/pipeline_scans.py` so a malformed id 422s instead of silently returning an empty poll. Locked scope = exactly these 3 fixes. Locked dispositions (2026-07-06): older posture-based AR-27-*/AR-37-*/AR-51-08 stay ACCEPTED (deployment posture unchanged); AR-73-01 folded into new v2 **PROV-01** (N-compute per-agent orphan recovery — a feature with Phase-45-class over-enqueue risk, not a fix); PROV-01/02/03 tracked as v2 backlog, no milestone. Ships as own PR (worktree branch `SimplicityGuy/phase-76`, never direct to main); then `/gsd:complete-milestone 2026.7.2` + push the 2026.7.2 tag.
 - 2026.7.2 Multi-Compute Agents roadmap created (2026-07-05): 3 phases (72-74), continuing from 2026.7.1's last phase (71) — **NOT reset to 1**. Parity milestone — the compute-side twin of Phase 70's multi-Kueue work — extending the 2026.7.1 `Backend` registry + push/rsync pipeline to **N cloud-compute agents** with **zero new deps**. 7/7 MCOMP requirements mapped, 0 orphans, 0 duplicates, dependency-strict build order 72 → 73 → 74. **72** Per-Entry Compute Binding & Fail-Fast Retirement (each `compute` entry binds to a specific registered Agent recorded at construction, retiring `select_active_agent(kind="compute")`'s single-active-compute assumption; retire + generalize the `≤1-compute` fail-fasts `config.active_compute_scratch_dir` ~L469 + `services/backends.resolved_non_local_kind` ~L469 for a `local + N-Kueue + N-compute` registry; behavior-preserving groundwork, existing single-/zero-compute deploys unchanged; **research flag** = `agent_ref`→`Agent.id` resolution + whether `/pushed`+`/api/internal/agent/*` reconcile already scope per-agent; MCOMP-01). **73** Per-Agent Dispatch, Liveness, Scratch & Failure Isolation (the behavior core; per-agent liveness probe on the bound agent, per-agent push/scratch destination through `_enqueue_push_file`→fileserver→rsync + `/pushed` callback `routers/agent_push.py`, Phase-69 rank/cap load-spread across N compute agents — free arm64 preferred, spill to paid/trial x86 — per-backend failure isolation via snapshot try/except mirroring MKUE-03, per-backend `backend_id`-scoped in-flight + terminalization; **depends on 72**; **research flag** = `cloud_job` one-row-per-file vs per-(file,backend); MCOMP-02..06). **74** Docs, Runbook & N-Lane Compute UI Verification (operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI registry-derived N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces; UI-hinted; **depends on 73**; MCOMP-07). Build order 72→73→74, strictly sequential (each hard-depends on the prior). No milestone-level research phase (parity refactor over in-repo patterns; the two open questions are plan-/discuss-phase flags on 72/73). Version provisional CalVer, finalized at release. Each phase = own PR (worktree branch, never direct to main). v2 deferred: PROV-02 (capability-aware routing) + PROV-03 (on-demand provisioning).
 - 2026.7.1 Multi-Cloud Backends roadmap created (2026-07-03): 5 phases (67–71), continuing from 2026.7.0's last phase (66) — **NOT reset to 1**. Requirements-driven, dependency-strict, 1:1 category→phase per REQUIREMENTS.md + research SUMMARY: REG→67 · BACK→68 · SCHED→69 · MKUE→70 · BEUI→71. 21/21 mapped, 0 orphans, 0 duplicates. Generalizes the single `cloud_target` selector into a declarative cost-tiered `backends:` registry draining long files across local + 1+ Kueue + 1+ cloud-compute simultaneously (rank + cap, static routing, no provisioning); **zero new deps**, a pure application-code refactor over v6.0. **67** Backend Registry & Config Model (`backends:` list + per-kind discriminated-union validators + `cloud_target` back-compat shim + REG-05 S3 bucket registry public/shared-vs-cluster-specific; config-model-only, behavior-preserving; REG-01..05). **68** Backend Protocol + 3 impls (`Backend` `is_available`/`in_flight_count`/`dispatch`/`reconcile` re-homing existing bodies + `cloud_job.backend_id` additive migration + uniform per-backend in-flight accounting; behavior-preserving, acceptance-gated by a byte-identical characterization test incl. the GATE-1 compute-vs-Kueue asymmetry; **depends on 67**; BACK-01..04). **69** Tiered Drain Scheduler (rank-first per-file eligible dispatch, per-backend `cap`, spill-when-full, offline→next-eligible re-dispatch + black-hole/cooldown guard, stateless equal-rank tie-break, single-recovery-owner per kind; **first behavior-changing phase; depends on 68** — cap needs 68's per-backend count; **research flag** = drain↔reconcile lock-ordering + attempt-budget/cooldown split; SCHED-01..05). **70** Multi-Kueue N clusters (N concurrent Kueue backends each staging to its REG-05-assigned bucket set with DIST-01 preserved, per-cluster probe + `backend_id`-scoped reconcile + per-backend failure isolation, per-(backend,bucket) cleanup; **depends on 69**; **research flag** = `cloud_job` one-row-per-file-vs-per-(file,backend) + `agent_ref`→`Agent.id` resolution + live multi-cluster kr8s auth/multi-bucket staging; MKUE-01..04). **71** Deployment/Config/Docs & N-Lane UI (N registry-derived per-backend lanes read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + runbook/config docs incl. `cloud_target`→`backends` migration; UI-hinted; **depends on 70**; BEUI-01..03). Build order 67→68→69→70→71, strictly sequential (each hard-depends on the prior). Design spine locked (`docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md`, PR #182); REG-05 + revised MKUE-02/04 supersede its one-shared-bucket decision per operator direction. Version provisional CalVer `2026.7.1`, finalized at release. Each phase = own PR (worktree branch, never direct to main); 67–68 behavior-preserving refactors that de-risk 69.
 - 2026.7.0 Engineering Improvements roadmap created (2026-07-02): 4 phases (63-66), continuing from v7.0's last integer phase (62; 57.1 was a decimal insert). Cleanup / engineering-debt paydown — **no product-behavior change, no backend behavior change**; the "user" is the maintainer/operator. 13/13 requirements mapped, 0 orphans, 0 duplicates. **63** Parallel CI & Code-Change Gating (partition the ~1,750-test suite into workflow-step buckets + fan out across parallel jobs + combine per-shard `.coverage` → one Codecov upload + doc-only skip-with-success; the tightly-coupled CI-01/02/03 land together and CI-04 rides the same CI-workflow PR; CI-01..04). **64** Per-Module Coverage Uplift & Gate Raise (raise worst-offender/v7.0-touched modules — agent_liveness/shell/pipeline/tracklists/routers.pipeline/main + the 71–78% tail — to a per-module floor with behavior-asserting tests, then lift the enforced gate above 90.38% wired into CI; **depends on 63** because the combined-across-shards coverage number must be trustworthy before a higher gate enforces on it; COV-01/02). **65** CalVer Adoption (replace `vN.M` with `YYYY.MM.REVISION`, no leading-zero month, first tag `2026.7.0`, across release procedure + badges + image tags + milestone↔version mapping, historical record intact; independent parallel-friendly phase; VER-01..04). **66** Docs-Drift Gate & Dead-Code Sweep (CI gate cross-checking REQUIREMENTS.md traceability vs passed phases + `/saq` re-link in the shell Agents/Compute page + vestigial dead-code removal incl. the dead-template guard's own blind spot; **depends on 63** for the CI-gate slot, CLEAN otherwise independent; UI-hinted; DOCS-01, CLEAN-01/02). Build order 63 → 64, with 65 and 66 parallel-friendly (66's DOCS-01 sequenced after 63). This milestone *adopts* CalVer — the last `vN.M` planning cycle; its release is the first CalVer tag. Candidates sourced from the ROADMAP Backlog + v7.0 RETROSPECTIVE. Each phase = own PR (worktree branch, never direct to main).
@@ -119,6 +121,10 @@ Last activity: 2026-07-06
 - [Phase 66]: 66-03: vulture dead-code sweep was a deliberate NO-OP — `just vulture` (min-confidence 80 + whitelist + --ignore-decorators) exits 0 with zero confirmed-dead symbols in src/phaze; the v7.0 CUT-02 cutover + PR #191 already removed the vestigial dead code (as RESEARCH Deep-Dive 3 anticipated). Durable CLEAN-02 artifact = hand-audited vulture_whitelist.py suppressing 20 grep-verified framework/dynamic false-positives (FastAPI/watchdog callbacks, Pydantic schemas, string-annotation casts, has_prev/has_next, deferred-feature scaffolding, heartbeat_tick shim). vulture stays NON-blocking (just recipe only, never CI/pre-commit — T-66-09). DO-NOT-DELETE trio (build_dashboard_context/get_stage_progress/get_queue_activity) never flagged, kept out of the whitelist. Both blocking checkpoints (package-legitimacy + deletion-review) human-approved.
 - [Phase ?]: 74-04: Variant B PASSED (74-03 arbiter) -> Plan 04 docstring-only; NO _probe_availability compute-probe serialization added (D-04 verification-only).
 - [Phase ?]: 74-04: _probe_availability docstring corrected unconditionally (Pitfall 1) — retired the '≤1 compute / at most ONE probe' claim; now states N compute backends legal per Phase-72 MCOMP-01, race-free per 74-03 Variant B.
+- [Phase 75]: 75-01: HYG-01 recorded already-satisfied by PR #207 (ec80a53a) and HYG-03 SUPERSEDED by Phase 72 D-03 — both no-code; HYG Traceability rows kept Pending so the docs-drift guard stays green (verifier flips checkboxes later)
+- [Phase 75]: 75-01: docker-compose cloud_target/Phase-67 breadcrumb comments deleted (HYG-02) — no live PHAZE_CLOUD_TARGET env ever existed; comment-only diff, zero src change across the whole plan
+- [Phase 75]: 75-01: cleared all three open 2026.7.1 STATE deferred rows (HYG-02 resolved, HYG-03 superseded, HYG-04 via 75-02); WR-01 probe-concurrency gap kept as tracked deferred (user decision D-08); 70-UAT row untouched
+- [Phase ?]: 75-02: HYG-04 force-local gate regression added (4 cases) at real-route altitude via a persisted RouteControl(id='global', force_local=True) row; kept the autouse cloud-ON registry so the toggle is the only variable; assert AWAITING_CLOUD row ABSENCE (anti-cheat); backfill no-op uses with_ledger=False; zero src diff (a01a7bf8 + 63589cd5)
 
 ### Pending Todos
 
@@ -186,6 +192,8 @@ None.
 | Phase 63 P03 | ~15min | 2 tasks | 1 files |
 | Phase 63 P04 | ~20min | 2 tasks | 4 files |
 | Phase 74 P04 | ~10 min | 2 tasks | 3 files |
+| Phase 75 P01 | ~12 min | 3 tasks | 4 files |
+| Phase 75 P02 | ~15min | 2 tasks | 1 files |
 
 ## Deferred Items
 
@@ -231,9 +239,9 @@ deployment-gated items above, all three are **already-completed work with stale 
 
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
-| uat | 63-UAT | partial | Phase 63 UAT has **0 pending scenarios** — status simply never flipped to complete; the parallel-CI work shipped in PR #193 |
-| quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | missing | Committed `5f43aa7` (v6.0 audit fix); quick-task tracking file was never marked complete |
-| quick_task | 260629-eev (ASCII→mermaid diagram conversion) | missing | Committed `267109b`; quick-task tracking file was never marked complete |
+| uat | 63-UAT | complete (Phase 75) | Phase 63 UAT had **0 pending scenarios** — status simply never flipped; the parallel-CI work shipped in PR #193. Reconciled complete in Phase 75 (HYG-05). |
+| quick_task | 260628-wzq (JOB-ENV-CONTRACT fix) | complete (Phase 75) | Committed `5f43aa7` (v6.0 audit fix); SUMMARY.md frontmatter already `status: complete`. Deferred-row status reconciled complete in Phase 75 (HYG-05). |
+| quick_task | 260629-eev (ASCII→mermaid diagram conversion) | complete (Phase 75) | Committed `267109b`; SUMMARY.md frontmatter already `status: complete`. Deferred-row status reconciled complete in Phase 75 (HYG-05). |
 
 Items acknowledged and deferred at the **2026.7.1** milestone close on 2026-07-05. None is a
 blocker — the milestone audit PASSED (21/21 reqs, 5/5 flows). One is deployment-gated live E2E;
@@ -242,16 +250,18 @@ the rest are non-blocking tech-debt/test-coverage polish surfaced by the audit +
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
 | uat | 70-UAT test 7 | deployment-gated | Live 2nd real Kueue cluster + dual live S3 bucket endpoints unavailable in-session; tests 1-6 pass 6/6. Verify at rollout (v6.0 JOB-ENV-CONTRACT precedent) |
-| tech_debt | docker-compose `PHAZE_CLOUD_TARGET` comments (Phase 67) | open | Two stale env/comment lines silently dropped by `extra=ignore` (inert but misleading); delete in a quick fix |
-| tech_debt | >1-compute-backend fail-fast is lazy, not boot-time (Phase 68, W1) | open | `resolved_non_local_kind`/`active_compute_scratch_dir` raise at first invocation, not at `_validate_registry`; deliberate PROV-01-backlog descope, fails loud with id-tagged message |
-| test_coverage | force-local gate regression test (Phase 71, W2) | open | The 2 duration-router gate sites + backfill (`pipeline.py:396/718/793`) were live-verified in the audit but have no committed test; add `tests/shared/routers/test_pipeline.py` coverage |
+| tech_debt | docker-compose `cloud_target`/Phase-67 breadcrumb comments | resolved (Phase 75) | The two stale breadcrumb comment lines (`api` + `worker` services) DELETED in Phase 75 (plan 75-01, HYG-02); `git grep -E "cloud_target\|Phase 67" docker-compose.yml` is clean. Premise corrected: there was never a live `PHAZE_CLOUD_TARGET` env key — comments only (D-03/D-04). |
+| tech_debt | >1-compute-backend fail-fast is lazy, not boot-time (Phase 68, W1) | superseded (Phase 72 D-03) | The `>1`-compute fail-fast was DELETED by Phase 72 to enable N-compute (MCOMP-01) — the milestone deliverable; re-adding a boot reject would break Phases 72-74. The correct boot guard already exists: `config.py:_validate_registry` rejects a duplicate `agent_ref` while accepting N distinct compute backends. Recorded superseded in Phase 75 (HYG-03, no code change). |
+| test_coverage | force-local gate regression test (Phase 71, W2) | resolved (Phase 75) | The 3 duration-router gate sites + backfill (`pipeline.py:396/718/793`) now have committed coverage — regression test added in plan 75-02 (`tests/shared/routers/test_pipeline.py`, force-local True/False control) (HYG-04). |
+
+Separately still open (user decision D-08, NOT fixed in Phase 75): **WR-01** — `_probe_availability` fires N≥2 concurrent `session.execute` on one shared `AsyncSession` when ≥2 compute backends are online. Bounded: a raced probe flaps one lane's `available` flag for a single 5s poll and self-heals (`_probe_one` contains the fault); no data loss, does not touch boot/golden/≤1-compute paths. Tracked for a future quick task (fix = serialize `_probe_one` or give each probe its own session, then reword the docstring from empirical to structural). See `74-REVIEW.md` §WR-01.
 
 These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PROV-01 (multi-compute-agent routing) item is a Backlog candidate for a future milestone.
 
 ## Session Continuity
 
-Last session: 2026-07-06T05:28:40.732Z
-Stopped at: Phase 74 context gathered
+Last session: 2026-07-06T16:06:00.248Z
+Stopped at: Phase 75 context gathered
 Resume file: None
 
 ## Operator Next Steps

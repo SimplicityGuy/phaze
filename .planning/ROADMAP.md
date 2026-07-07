@@ -11,19 +11,19 @@
 - ✅ **v7.0 UI Redesign (DAG-Centric Hybrid Console)** — Phases 57-62 (shipped 2026-07-02)
 - ✅ **2026.7.0 Engineering Improvements** — Phases 63-66 (shipped 2026-07-03)
 - ✅ **2026.7.1 Multi-Cloud Backends** — Phases 67-71 (shipped 2026-07-05)
-- 🔵 **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-74 (active — roadmap created 2026-07-05)
+- 🔵 **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-76 (active — roadmap created 2026-07-05)
 
 ## Phases
 
-### 🔵 2026.7.2 Multi-Compute Agents (Phases 72-75) — ACTIVE
+### 🔵 2026.7.2 Multi-Compute Agents (Phases 72-76) — ACTIVE
 
-Finish the 2026.7.1 registry's deliberate compute-side descope: make **N cloud-compute agents** dispatch / route / reconcile / fail-isolate simultaneously, exactly as N Kueue clusters do today — the direct compute-side twin of Phase 70's multi-Kueue work. Retire the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) and generalize them for a `local + N-Kueue + N-compute` registry. **Parity only** — no new routing semantics, no provisioning, **zero new dependencies** (a pure application-code extension of the existing `Backend` protocol + push/rsync pipeline). Requirements mapped 1:1: MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74 (7 mapped, 0 orphans, 0 duplicates). **Phase 75 (HYG-01..05)** is an appended engineering-hygiene sweep added 2026-07-06 — cross-milestone guard-hardening, tech-debt, and stale-tracking cleanup surfaced during the milestone's execution — and now closes the milestone. Continues phase numbering from 71 → starts at **Phase 72**. Each phase = its own PR on a worktree branch (never direct to main). No milestone-level research phase (parity refactor over in-repo patterns); the two codebase-internal open questions — `agent_ref`→`Agent.id` resolution and `cloud_job` one-row-per-file vs per-(file,backend) — are noted as plan-/discuss-phase research flags on Phases 72 and 73.
+Finish the 2026.7.1 registry's deliberate compute-side descope: make **N cloud-compute agents** dispatch / route / reconcile / fail-isolate simultaneously, exactly as N Kueue clusters do today — the direct compute-side twin of Phase 70's multi-Kueue work. Retire the `≤1-compute` fail-fasts (`config.active_compute_scratch_dir`, `services/backends.resolved_non_local_kind`) and generalize them for a `local + N-Kueue + N-compute` registry. **Parity only** — no new routing semantics, no provisioning, **zero new dependencies** (a pure application-code extension of the existing `Backend` protocol + push/rsync pipeline). Requirements mapped 1:1: MCOMP-01→72 · MCOMP-02..06→73 · MCOMP-07→74 (7 mapped, 0 orphans, 0 duplicates). **Phase 75 (HYG-01..05)** is an appended engineering-hygiene sweep added 2026-07-06 — cross-milestone guard-hardening, tech-debt, and stale-tracking cleanup surfaced during the milestone's execution. **Phase 76 (HARD-01..03)** is a further appended compute/push-hardening sweep added 2026-07-06 — three self-contained correctness fixes (concurrent-session probe safety, ledger RMW atomicity, agent-id boundary validation) that close accepted-risk / review items surfaced during Phases 72-74 — and now closes the milestone. Continues phase numbering from 71 → starts at **Phase 72**. Each phase = its own PR on a worktree branch (never direct to main). No milestone-level research phase (parity refactor over in-repo patterns); the two codebase-internal open questions — `agent_ref`→`Agent.id` resolution and `cloud_job` one-row-per-file vs per-(file,backend) — are noted as plan-/discuss-phase research flags on Phases 72 and 73.
 
 - [x] **Phase 72: Per-Entry Compute Binding & Fail-Fast Retirement** — declare N `compute` backends in `backends.toml`, each bound to a specific registered compute Agent, all accepted at boot; retire + generalize the `≤1-compute` fail-fasts (`active_compute_scratch_dir`, `resolved_non_local_kind`) for a `local + N-Kueue + N-compute` registry; behavior-preserving groundwork, existing single-/zero-compute deploys unchanged (MCOMP-01) (completed 2026-07-05)
 - [x] **Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation** — per-agent liveness probe, per-agent push/scratch destination + `/pushed` callback, rank/cap load-spread across N compute agents (free arm64 preferred, spill to paid x86), per-backend failure isolation, per-backend in-flight/terminalization scoping; the behavior core, the compute-side twin of Phase 70 (MCOMP-02..06) (completed 2026-07-05)
 - [x] **Phase 74: Docs, Runbook & N-Lane Compute UI Verification** — operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces (MCOMP-07) (completed 2026-07-06)
-- [ ] **Phase 75: Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup** — harden the docs-drift traceability guard against a missing REQUIREMENTS.md; drop the stale docker-compose `PHAZE_CLOUD_TARGET` comments; promote the `>1`-compute fail-fast from lazy to boot-time; add the missing force-local duration-router gate test; close stale 2026.7.0 tracking (63-UAT + two quick-tasks) (HYG-01..05)
-
+- [x] **Phase 75: Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup** — record the docs-drift guard hardening as already-satisfied by PR #207 (HYG-01); drop the stale docker-compose `cloud_target`/Phase-67 comments (HYG-02); record the `>1`-compute fail-fast as SUPERSEDED by Phase 72 D-03 (HYG-03, no code change — it was deleted to ship N-compute); add the missing force-local duration-router gate test (HYG-04, the one genuine deliverable); close stale 2026.7.0 tracking (63-UAT + two quick-tasks) (HYG-05) (completed 2026-07-06)
+- [x] **Phase 76: Compute/Push Hardening** — three self-contained correctness fixes, each closing an accepted-risk / review item from Phases 72-74 and each getting a regression test: serialize the N-compute liveness probes so N≥2 concurrent `session.execute` no longer share one `AsyncSession` (HARD-01, closes WR-01/74-REVIEW); add `with_for_update()` to the `push_attempt` ledger RMW so concurrent `/mismatch` can't lose an increment (HARD-02, closes AR-73-02/T-73-13/WR-04); add `pattern`/`max_length` validation to the scan-status `agent_id` query param so a malformed id 422s instead of silently returning an empty poll (HARD-03, closes AR-30-03/Phase-30 IN-01). Closes the milestone. No new dependencies (completed 2026-07-06)
 
 <details>
 <summary>✅ 2026.7.1 Multi-Cloud Backends (Phases 67-71) — SHIPPED 2026-07-05</summary>
@@ -240,7 +240,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 72. Per-Entry Compute Binding & Fail-Fast Retirement | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
 | 73. Per-Agent Dispatch, Liveness, Scratch & Failure Isolation | 2026.7.2 | 4/4 | Complete    | 2026-07-05 |
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete    | 2026-07-06 |
-| 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 0/0 | Not Started | — |
+| 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 2/2 | Complete    | 2026-07-06 |
+| 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -879,10 +880,12 @@ Plans:
 **Plans**: 4 plans in 2 waves
 
 Plans:
+
 - [x] 74-01-PLAN.md — Write docs/multi-compute.md (cost-tiered N-compute guide) + cross-links + generalize cloud-burst.md single-agent framing (D-01/02/03) [Wave 1]
 - [x] 74-02-PLAN.md — Parametrize docker-compose.cloud-agent.yml image+command (arm64 default, x86 override) + relax the 2 compose guard-test assertions (D-05/R-1) [Wave 1]
 - [x] 74-03-PLAN.md — N-lane compute regression tests: Variant A deterministic + Variant B real-fan-out arbiter (D-04/R-2) [Wave 1]
 - [x] 74-04-PLAN.md — Correct stale ≤1-compute _probe_availability docstring (always) + conditional compute-probe serialization (gated on 74-03 Variant B) + closeout MCOMP-07 traceability/ROADMAP + docs-drift green [Wave 2, depends 74-03]
+
 **UI hint**: yes
 
 ### Phase 62: Polish & cutover
@@ -1018,6 +1021,7 @@ Plans:
 ## Phase Details (2026.7.2 Multi-Compute Agents)
 
 ### Phase 72: Per-Entry Compute Binding & Fail-Fast Retirement
+
 **Goal**: An operator can declare N `compute` backends in `backends.toml`, each bound to a specific registered compute Agent, and all N are accepted at boot — with the `≤1-compute` fail-fasts retired and generalized, and the existing single-compute and zero-compute (all-local) deploys behaving identically. Behavior-preserving groundwork that unblocks the Phase 73 dispatch core.
 **Depends on**: Phase 71 (the 2026.7.1 `backends.toml` registry + `Backend` protocol are the substrate this extends)
 **Requirements**: MCOMP-01
@@ -1047,6 +1051,7 @@ Plans:
 - [x] 72-04-PLAN.md — Boot-time duplicate-`agent_ref` fail-fast (D-04) in `_validate_registry` (Counter, id-tagged, static/no-DB per D-05)
 
 ### Phase 73: Per-Agent Dispatch, Liveness, Scratch & Failure Isolation
+
 **Goal**: N cloud-compute agents dispatch, route, reconcile, and fail-isolate simultaneously — each long file pushed to and attributed to the specific agent that analyzes it, cost-tiered across a mixed arm64/x86 fleet by rank and per-agent `cap`, with one flaky agent isolated to 0 slots. The behavior core — the direct compute-side twin of Phase 70's multi-Kueue work.
 **Depends on**: Phase 72 (per-entry binding + retired fail-fasts are prerequisites; per-agent `cap`/liveness need the recorded binding)
 **Requirements**: MCOMP-02, MCOMP-03, MCOMP-04, MCOMP-05, MCOMP-06
@@ -1077,7 +1082,8 @@ Plans:
 - [x] 73-04-PLAN.md — MCOMP-02/04/05 regressions (D-08 test-only) + delete active_compute_scratch_dir + ≤1-compute behavior-preservation golden + reenqueue.py:374 known-limitation note
 
 ### Phase 74: Docs, Runbook & N-Lane Compute UI Verification
-**Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. (Phase 75, the appended engineering-hygiene sweep, now closes the milestone.)
+
+**Goal**: An operator can follow the runbook to add a 2nd (and Nth) compute agent and understand mixed arm64/x86 rank/cap cost-tiering, and each declared compute agent renders as its own lane in the existing N-lane UI. (Phases 75-76, the appended engineering-hygiene and compute/push-hardening sweeps, now close the milestone.)
 **Depends on**: Phase 73 (docs the shipped N-compute behavior; UI verification needs the per-agent dispatch/liveness seam live)
 **Requirements**: MCOMP-07
 **Success Criteria** (what must be TRUE):
@@ -1090,23 +1096,43 @@ Plans:
 **Plans**: TBD
 **UI hint**: yes
 
-
 ### Phase 75: Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup
-**Goal**: Clear the cross-milestone engineering-hygiene backlog that accumulated through 2026.7.0/.1/.2 — make the docs-drift traceability guard survive the between-milestones state, retire two pieces of inert tech-debt, add the one missing regression test, and reconcile stale tracking status. Small, self-contained, no user-facing behavior change. Closes the milestone.
+
+**Goal**: Clear the cross-milestone engineering-hygiene backlog that accumulated through 2026.7.0/.1/.2 — make the docs-drift traceability guard survive the between-milestones state, retire two pieces of inert tech-debt, add the one missing regression test, and reconcile stale tracking status. Small, self-contained, no user-facing behavior change. (Phase 76, the appended compute/push-hardening sweep, now closes the milestone.)
 **Depends on**: Phase 74 (milestone's feature work complete; this is the appended cleanup sweep)
 **Requirements**: HYG-01, HYG-02, HYG-03, HYG-04, HYG-05
 **Success Criteria** (what must be TRUE):
 
-  1. The Phase-66 traceability guard (`tests/shared/core/test_requirements_traceability.py`) no longer raises `FileNotFoundError` when `.planning/REQUIREMENTS.md` is absent — its active-milestone tests `pytest.skip`/fail-clean between milestones, and a regression test covers the archived/no-active-milestone state, so the standard milestone-close `git rm REQUIREMENTS.md` keeps the required CI check green. (HYG-01)
+  1. The Phase-66 traceability guard (`tests/shared/core/test_requirements_traceability.py`) no longer raises `FileNotFoundError` when `.planning/REQUIREMENTS.md` is absent — its active-milestone tests `pytest.skip`/fail-clean between milestones, and a regression test covers the archived/no-active-milestone state, so the standard milestone-close `git rm REQUIREMENTS.md` keeps the required CI check green. (HYG-01) — **satisfied by PR #207 (`ec80a53a`, 2026-07-05): `_NO_ACTIVE_MILESTONE` skipif + `test_archived_milestones_internally_consistent` already land this; Phase 75 records it as already-satisfied, no new code/test (D-01/D-02).**
   2. The two stale/inert `PHAZE_CLOUD_TARGET` env + comment lines (Phase 67, silently dropped by `extra=ignore`) are removed from the docker-compose file(s). (HYG-02)
-  3. The `>1`-compute-backend fail-fast fires at boot (`_validate_registry`) rather than lazily at first `resolved_non_local_kind` invocation — fail-loud with the existing id-tagged message, preserving current single-/zero-compute behavior. (HYG-03)
+  3. The `>1`-compute-backend fail-fast fires at boot (`_validate_registry`) rather than lazily at first `resolved_non_local_kind` invocation — fail-loud with the existing id-tagged message, preserving current single-/zero-compute behavior. (HYG-03) — **SUPERSEDED by Phase 72 (D-03): the `>1`-compute fail-fast was deleted to enable N-compute (MCOMP-01); re-adding it would break Phases 72-74. The correct boot guard already exists (`_validate_registry` rejects a duplicate `agent_ref`). Phase 75 records this superseded, no code change (D-05/D-06/D-07).**
   4. The force-local duration-router gate is covered by a committed regression test (`tests/shared/routers/test_pipeline.py`) exercising the 3 gate sites (`pipeline.py:396/718/793`). (HYG-04)
   5. Stale 2026.7.0 tracking is reconciled: `63-UAT` flipped to complete (0 pending scenarios), and quick-tasks `260628-wzq` + `260629-eev` marked complete (both already committed). (HYG-05)
 
-**Notes**: Cross-cutting cleanup — HYG-02/03 touch 2026.7.1 code (Phases 67/68), HYG-04 covers a Phase-71 gate, HYG-01 is a general backlog item, HYG-05 is pure bookkeeping. WR-01 from `74-REVIEW.md` (serialize compute probes to remove theoretical CI-flake exposure) is a natural companion to HYG-03 and may be folded in at plan time. Ships as its own PR on a worktree branch.
-**Plans**: TBD
+**Notes**: Cross-cutting cleanup — HYG-02/03 touch 2026.7.1 code (Phases 67/68), HYG-04 covers a Phase-71 gate, HYG-01 is a general backlog item, HYG-05 is pure bookkeeping. **Reconciliation (2026-07-06): three of the five HYG premises were overtaken by shipped code — HYG-01 is already-satisfied by PR #207 (`ec80a53a`) and HYG-03 is SUPERSEDED by Phase 72 (D-03, the `>1`-compute fail-fast was deleted to ship N-compute); both are no-code dispositions. Only HYG-04 (force-local gate test) is genuine net-new work.** WR-01 from `74-REVIEW.md` (serialize compute probes to remove theoretical CI-flake exposure) is the one genuinely-open robustness gap adjacent to HYG-03; per user decision (D-08) it is NOT fixed in Phase 75 and stays a tracked deferred item. Ships as its own PR on a worktree branch.**Plans**: 2 plans
+
+- [x] 75-01-PLAN.md — Reconcile HYG-01 (satisfied by PR #207) + HYG-03 (superseded by Phase 72 D-03), delete stale docker-compose cloud_target comments (HYG-02), reconcile 2026.7.0 tracking (HYG-05)
+- [x] 75-02-PLAN.md — Force-local duration-router gate regression test at all 3 gate sites (HYG-04)
+
 **UI hint**: no
 
+### Phase 76: Compute/Push Hardening
+
+**Goal**: Land three self-contained correctness fixes in the N-compute dispatch/push path — each closing an accepted-risk or code-review item surfaced during Phases 72-74, each with its own regression test, no new dependencies, coverage staying ≥ gate. Category HARD. Closes the milestone.
+**Depends on**: Phase 74 (hardens the shipped N-compute dispatch/push/probe seams from Phases 72-73; docs verified in 74)
+**Requirements**: HARD-01, HARD-02, HARD-03
+**Success Criteria** (what must be TRUE):
+
+  1. **HARD-01 (closes WR-01 / 74-REVIEW):** `services/backends._probe_availability` no longer fans `_probe_one` over N backends through a single shared `AsyncSession` — the probes are serialized (or each gets its own session from the sessionmaker), so N≥2 concurrent compute backends yield correct, **deterministic** per-backend `available` with no SQLAlchemy concurrent-use hazard. The bounded `_PROBE_TIMEOUT_SEC=1.5` `wait_for` is preserved, and the docstring/comment is reworded from an empirical ("Pitfall 1 / empirically race-free") to a structural guarantee. Regression: N≥2 online compute backends → correct per-backend availability, deterministic (not the empirical arbiter Phase 74 used). (HARD-01)
+  2. **HARD-02 (closes AR-73-02 / T-73-13 / WR-04):** the `push_attempt` read-modify-write on the `push_file:<file_id>` ledger row in `routers/agent_push.py` `/mismatch` selects the row `with_for_update()`, making the increment atomic so two concurrent `/mismatch` for one file increment `push_attempt` **exactly twice** (no lost update) and the bounded `push_max_attempts` cap still trips correctly. Regression: two concurrent `/mismatch` for one file → `push_attempt == 2`; cap trip verified. (HARD-02)
+  3. **HARD-03 (closes AR-30-03 / Phase-30 REVIEW IN-01):** the scan-status endpoint's `agent_id` query param (`routers/pipeline_scans.py`) is constrained at the HTTP boundary with `pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$"` + `max_length=128` (the agent-id shape used elsewhere), so a malformed `agent_id` returns **422**, not a silently-empty `200` poll. Regression: malformed `agent_id` → 422. (HARD-03)
+
+**Notes**: Three independent fixes; each references and closes its accepted-risk/threat in the phase threat model (HARD-01→WR-01/74-REVIEW; HARD-02→AR-73-02/T-73-13/WR-04; HARD-03→AR-30-03/Phase-30 IN-01). No new dependencies (pyproject/uv.lock untouched); `just docs-drift` stays green; coverage ≥ gate. DB-touching regression tests use `TEST_DATABASE_URL`/`MIGRATIONS_TEST_DATABASE_URL` on port 5433 (`just test-db`). Ships as its own PR on a worktree branch (never direct to main). Scope is locked to exactly these three fixes — the older posture-based accepted risks (AR-27-*/AR-37-*/AR-51-08) stay accepted, and AR-73-01 (N-compute per-agent orphan recovery) is folded into the v2 PROV-01 backlog, not this phase.
+**Plans**: 3 plans (all wave 1, parallel — disjoint files)
+- [x] 76-01-PLAN.md — HARD-01: serialize `_probe_availability` (no `asyncio.gather`) + structural docstring + deterministic N≥2-compute probe test
+- [x] 76-02-PLAN.md — HARD-02: `.with_for_update()` on the `push_attempt` ledger RMW SELECT + concurrent no-lost-update test (real Postgres, port 5433)
+- [x] 76-03-PLAN.md — HARD-03: `pattern`+`max_length=128` on both `agent_id` query params (`scan_status`, `agent_roots_swap`) + 422 regression tests
+**UI hint**: no
 
 ## Backlog (unscheduled — no phase number yet)
 
@@ -1115,4 +1141,4 @@ Plans:
 - **Adopt CalVer ([calver.org](https://calver.org/)) for release versioning.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 65 (VER-01..04). See Phase Details (2026.7.0).]_ Replace the current milestone-aligned `vN.M` scheme (now at v7.0) with a calendar-based version. Decide the exact scheme at planning (e.g. `YYYY.MM.MICRO` or `YY.MM.MICRO`) and how it coexists with the milestone narrative (milestones become named, versions become dated). Update: the release procedure (pyproject `version` + `uv.lock` bump → annotated tag PUSH → GHCR publish — see memory `project-release-procedure`), README/version badges (one-line badge style), the milestone↔version mapping in ROADMAP/MILESTONES, and any image tags / compose references. Note the prior cadence shipped many `v4.0.x` patch releases — pick a MICRO convention that supports same-month patches.
 - **CI builds only when code changes.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 63 (CI-04). See Phase Details (2026.7.0).]_ Stop running the full build/test/security CI on docs- and planning-only changes (e.g. `.planning/**`, `*.md`) so commits like these backlog/requirements edits don't trigger the whole pipeline. Decide the mechanism at planning: workflow `paths`/`paths-ignore` filters vs a changed-files detection job that gates downstream jobs (the latter avoids the "required check never runs → PR can't merge" branch-protection trap that bare `paths-ignore` causes). Must keep the required status checks satisfiable on doc-only PRs (skip-with-success, not skip-absent). Pairs with the "partition test suite for parallel CI" item.
 - **Re-add an in-UI link to the `/saq` SAQ monitor.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 66 (CLEAN-01). See Phase Details (2026.7.0).]_ _[Surfaced by the v7.0 milestone audit (`v7.0-MILESTONE-AUDIT.md`) — target the next cleanup / "engineering basics" milestone.]_ The SAQ task-queue dashboard is still mounted at `/saq` (`main.py`) and reachable by direct URL, but the v7.0 cutover (Phase 62/CUT-02) deleted the only in-UI link when it removed `dashboard.html`. Nothing is broken — the monitor works, it's just unlinked. Add a discreet link back into the shell; the natural home is the Agents / Compute page (RECORD-03 already surfaces agent state) rather than the DAG rail. Presentation-only; no backend change.
-- **Harden the docs-drift guard for the between-milestones state.** _[SCHEDULED as 2026.7.2 Multi-Compute Agents, Phase 75 (HYG-01). See Phase Details (2026.7.2).]_ _[Surfaced at the 2026.7.0 milestone close, 2026-07-03.]_ The Phase-66 traceability guard (`tests/shared/core/test_requirements_traceability.py`) reads `.planning/REQUIREMENTS.md` with no existence check in its 4 active-milestone tests, so the standard milestone-close `git rm REQUIREMENTS.md` would raise `FileNotFoundError` and fail the required code-quality check. For the 2026.7.0 close we kept REQUIREMENTS.md in place (guard verified green, all 13 reqs `[x]`→passed phases) instead of deleting it. Follow-up: make the active-milestone tests `pytest.skip` (or fail-clean) when REQUIREMENTS.md is absent, add a regression test for the archived/no-active-milestone state, then the close can `git rm` the file again. Small, self-contained; a natural quick task or a Phase-66-style guard-robustness follow-up.
+- **Harden the docs-drift guard for the between-milestones state.** _[SATISFIED by PR #207 (`ec80a53a`, 2026-07-05); Phase 75 (HYG-01) records it as already-satisfied — no new code/test. See Phase Details (2026.7.2).]_ _[Surfaced at the 2026.7.0 milestone close, 2026-07-03.]_ The Phase-66 traceability guard (`tests/shared/core/test_requirements_traceability.py`) reads `.planning/REQUIREMENTS.md` with no existence check in its 4 active-milestone tests, so the standard milestone-close `git rm REQUIREMENTS.md` would raise `FileNotFoundError` and fail the required code-quality check. For the 2026.7.0 close we kept REQUIREMENTS.md in place (guard verified green, all 13 reqs `[x]`→passed phases) instead of deleting it. Follow-up: make the active-milestone tests `pytest.skip` (or fail-clean) when REQUIREMENTS.md is absent, add a regression test for the archived/no-active-milestone state, then the close can `git rm` the file again. Small, self-contained; a natural quick task or a Phase-66-style guard-robustness follow-up.

@@ -279,7 +279,7 @@ async def trigger_scan(
 async def scan_status(
     request: Request,
     job_ids: str = Query(..., min_length=1),
-    agent_id: str = Query(...),
+    agent_id: str = Query(..., pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=128),
 ) -> HTMLResponse:
     """Poll scan progress by checking SAQ job results on the per-agent queue.
 

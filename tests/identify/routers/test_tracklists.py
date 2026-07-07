@@ -632,6 +632,36 @@ async def test_scan_status_job_pending(session: AsyncSession, client: AsyncClien
     assert "agent_id=nox" in response.text
 
 
+# --- HARD-03 (AR-30-03 / Phase-30 REVIEW IN-01): agent_id boundary validation ---
+# A malformed agent_id must 422 at the HTTP boundary instead of a silently-empty
+# 200 poll. Pattern + max_length mirror the Agent.id DB CHECK (models/agent.py:36)
+# and the CLI AGENT_ID_RE (cli/__init__.py:44).
+
+
+@pytest.mark.asyncio
+async def test_scan_status_malformed_agent_id_returns_422(session: AsyncSession, client: AsyncClient) -> None:
+    """HARD-03: a malformed agent_id -> 422 (was a silent empty 200 poll)."""
+    response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=Bad_ID!")
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_status_well_formed_agent_id_passes_validation(session: AsyncSession, client: AsyncClient) -> None:
+    """HARD-03: a well-formed agent_id still reaches the handler (not a 422)."""
+    from saq import Status
+
+    mock_job = MagicMock()
+    mock_job.status = Status.COMPLETE
+    mock_job.result = {"status": "scanned", "filename": "test.mp3"}
+
+    _controller, task_router = install_fake_queues(client)
+    task_router.queue_for("test-agent-01").job = AsyncMock(return_value=mock_job)
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=test-agent-01")
+    assert response.status_code != 422
+    assert response.status_code == 200, response.text
+
+
 # --- Link / rescrape / search endpoints ---
 
 

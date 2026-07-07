@@ -18,6 +18,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
+from phaze.models.route_control import RouteControl
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist
@@ -2297,3 +2298,163 @@ async def test_stats_poll_repushes_admission_card_oob(client: AsyncClient, sessi
     assert "Running" in card_html
     assert "pod analyzing" in card_html
     assert "bg-violet-50" in card_html
+
+
+# ---------------------------------------------------------------------------
+# Phase 75 Plan 02 (HYG-04): force-local duration-router gate regression region.
+#
+# Guards the T-71-08 regression class at all THREE live gate sites of the
+# ``effective_cloud_enabled = settings.cloud_enabled and not await get_route_control(session)``
+# fold:
+#   - pipeline.py L396  trigger_analysis        (POST /api/v1/analyze)
+#   - pipeline.py L718  trigger_analysis_ui     (POST /pipeline/analyze)
+#   - pipeline.py L793  trigger_backfill_cloud  (POST /pipeline/backfill-cloud, zero-mutation no-op)
+#
+# Each True case KEEPS the autouse ``_cloud_compute_registry`` (a single compute backend =>
+# cloud_enabled True) so the ONLY thing forcing local is a persisted
+# ``RouteControl(id="global", force_local=True)`` row on the shared session. The False control
+# (no route_control row) proves the toggle -- not some other condition -- drives the local routing.
+#
+# Anti-cheat: the True cases assert the ABSENCE of AWAITING_CLOUD rows (a
+# ``select(FileRecord).where(state == AWAITING_CLOUD)`` scalars check), NOT a bare enqueue/routing
+# count, so each case would FAIL if the ``and not await get_route_control(session)`` clause were
+# removed from its gate (a long file would then be held for the cloud drain).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_force_local_analyze_api_routes_local_no_hold(client: AsyncClient, session: AsyncSession) -> None:
+    """Gate L396 (POST /api/v1/analyze): force-local True routes a _LONG file LOCAL, ZERO AWAITING_CLOUD held.
+
+    Consolidates + supersedes ``tests/shared/routers/test_routing.py::test_route_forced_local_no_hold``
+    (the prior PARTIAL coverage of this gate): the autouse cloud-ON ``[_COMPUTE_BACKEND]`` registry would
+    normally HOLD a >=threshold DISCOVERED file in AWAITING_CLOUD, but a persisted
+    ``RouteControl(id="global", force_local=True)`` row makes the effective fold
+    ``cloud_enabled AND NOT force_local`` False, so the long file routes to the fileserver queue exactly
+    like an all-local registry and is NEVER parked in AWAITING_CLOUD (D-09/D-10, T-71-08).
+    """
+    session.add(RouteControl(id="global", force_local=True))
+    await session.commit()
+    (long_file,) = await _persist_files_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    # Force-local => the long file routes LOCAL (fileserver), nothing held for the cloud drain.
+    assert data["local"] == 1
+    assert data["awaiting_cloud"] == 0
+
+    await _drain_background()
+    # Anti-cheat: ZERO AWAITING_CLOUD rows (not a bare enqueue count) -- fails if the
+    # `and not await get_route_control(session)` clause were dropped from gate L396.
+    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
+    assert held == []
+    await session.refresh(long_file)
+    assert long_file.state != FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_force_local_analyze_ui_routes_local_no_hold(client: AsyncClient, session: AsyncSession) -> None:
+    """Gate L718 (POST /pipeline/analyze): force-local True routes a _LONG file LOCAL, ZERO AWAITING_CLOUD held.
+
+    The HTMX duration trigger shares the same ``effective_cloud_enabled`` fold as the API route but is a
+    physically separate gate line, so it is exercised separately (D-09). Same setup, same zero-hold
+    outcome: the persisted force-local row routes the long file local through the real endpoint.
+    """
+    session.add(RouteControl(id="global", force_local=True))
+    await session.commit()
+    (long_file,) = await _persist_files_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/analyze")
+    assert response.status_code == 200
+    text = response.text
+    # Force-local => the long file surfaces under "local", never "awaiting cloud".
+    assert "1 local" in text
+    assert "0 awaiting cloud" in text
+
+    await _drain_background()
+    # Anti-cheat: ZERO AWAITING_CLOUD rows -- fails if the force-local clause were dropped from gate L718.
+    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
+    assert held == []
+    await session.refresh(long_file)
+    assert long_file.state != FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_force_local_analyze_api_false_control_still_holds(client: AsyncClient, session: AsyncSession) -> None:
+    """Control (force-local OFF): with NO route_control row the SAME _LONG file IS held AWAITING_CLOUD.
+
+    Proves the persisted ``RouteControl(force_local=True)`` toggle -- not some other condition -- is the
+    only variable driving the local routing above. With the autouse cloud-ON registry and no override, a
+    compute agent online still HOLDS the long file in AWAITING_CLOUD (the registry is honored, D-10).
+    """
+    # No RouteControl row seeded => get_route_control returns False => cloud honored.
+    (long_file,) = await _persist_files_with_duration(session, [_LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["local"] == 0
+    assert data["cloud"] == 0
+    assert data["awaiting_cloud"] == 1
+
+    await _drain_background()
+    # The long file IS held (nothing enqueued from here -- the staging cron is the sole compute entry).
+    assert capture == []
+    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
+    assert len(held) == 1
+    await session.refresh(long_file)
+    assert long_file.state == FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, session: AsyncSession) -> None:
+    """Gate L793 (POST /pipeline/backfill-cloud): force-local True is a ZERO-mutation no-op.
+
+    Byte-identical outcome to ``test_backfill_disabled_when_cloud_local`` (the all-local-registry no-op),
+    but here the autouse cloud-ON ``[_COMPUTE_BACKEND]`` registry stays pinned and a persisted
+    ``RouteControl(id="global", force_local=True)`` row drives the early-return via the
+    ``or await get_route_control(session)`` clause. A forced backfill must NOT reset the ANALYSIS_FAILED
+    long files to DISCOVERED and hold them in AWAITING_CLOUD while the (forced) drain no-ops -- that would
+    strand them (T-71-08, ``pipeline.py:789-793``). Asserts all THREE zero-mutation signals: nothing
+    enqueued, the candidate row stays ANALYSIS_FAILED, and NO SchedulingLedger row is seeded.
+
+    Anti-cheat: the case fails if the ``or await get_route_control(session)`` clause were removed from the
+    L793 early-return. ``with_ledger=True`` is LOAD-BEARING -- the backfill candidate query
+    (:func:`_backfill_candidates_stmt`) requires an ``EXISTS(scheduling_ledger 'process_file:<id>')``
+    predicate, so a genuine (previously-scheduled) candidate is needed for the gate to be the ONLY thing
+    holding it back. Without the ledger row the candidate is filtered out regardless of the gate and the
+    test would pass even with the L793 clause deleted (a false pass). With the clause removed and the
+    cloud-ON registry pinned, the candidate would be reset to DISCOVERED and routed to the online compute
+    agent -- flipping ``capture`` non-empty and the state off ANALYSIS_FAILED. The pre-existing
+    scheduled-work ledger row stays a single row through the no-op (no duplicate seed, no reset).
+    """
+    session.add(RouteControl(id="global", force_local=True))
+    await session.commit()
+    # with_ledger=True makes this a GENUINE backfill candidate (the ledger-scoped candidate query only
+    # sees previously-scheduled work). The gate must be the sole reason it is NOT reset/routed here.
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    await seed_active_agent(session, "nox", kind="fileserver")
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    await _drain_background()
+    # Signal 1: nothing enqueued anywhere -- the forced-local path never routes.
+    assert capture == []
+    # Signal 2: the ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out / hold).
+    await session.refresh(long_failed)
+    assert long_failed.state == FileState.ANALYSIS_FAILED
+    # Signal 3: the forced-local no-op neither seeds a duplicate nor drops the pre-existing scheduled-work
+    # ledger row -- it stays exactly one process_file:<id> row (the with_ledger=True seed), untouched.
+    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert len(rows) == 1
