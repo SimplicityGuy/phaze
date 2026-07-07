@@ -14,7 +14,12 @@
 # bake — and a public image must never carry an operator's private CA. Mounting
 # also makes CA rotation a Secret update + re-submit, no image rebuild.
 # Essentia ML weights are NOT baked here either — they are provisioned
-# externally at runtime (Phase 54, D-05); this image never downloads them.
+# externally (Phase 54, D-05); this image never downloads them and none are
+# committed to the repo. The analyze pod's /models (PHAZE_MODELS_DIR) is supplied
+# by an operator-provisioned, ReadOnlyMany PVC that build_job_manifest mounts
+# read-only at /models when the backend's [backends.kube].models_pvc_name is set
+# (or, alternatively, by a pre-baked weights image the operator builds and pins
+# as the Job image) — see docs/k8s-burst.md "Models provisioning".
 #
 # Build ordering: BASE_IMAGE is the resolved freshly-pushed x86 api tag passed
 # by CI (the exact release tag, never a stale shared moving tag — Tampering

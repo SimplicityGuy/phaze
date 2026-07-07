@@ -183,6 +183,13 @@ class KubeConfig(BaseModel):
     ca_secret_name: str = Field(default="phaze-internal-ca")
     env_configmap_name: str = "phaze-agent-env"
     env_secret_name: str = Field(default="phaze-agent-token")
+    # Optional operator-provisioned models PVC. A plain Kubernetes object name (a PersistentVolumeClaim,
+    # like the ca/env object names above) -- NOT a secret, so NO SecretStr and NO `*_file` pointer. When
+    # set, build_job_manifest mounts this claim read-only at the models dir (/models == PHAZE_MODELS_DIR)
+    # so the analyze pod reads its essentia weights from operator-provisioned storage; phaze creates no
+    # PV/PVC and references the claim by name only. Unset (None) -> no models volume/mount is emitted
+    # (byte-identical manifest, current behavior). The PVC carries ONLY model weights -- never secrets/certs.
+    models_pvc_name: str | None = None
     kubeconfig: SecretStr | None = None
     sa_token: SecretStr | None = None
 

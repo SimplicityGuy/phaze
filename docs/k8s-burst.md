@@ -503,6 +503,77 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
 > `[backends.kube].ca_secret_name` note in §7). These are per-backend, so different clusters may
 > use different object names.
 
+### 6.5 — Models provisioning (optional ReadOnlyMany PVC)
+
+The analyze container reads its essentia weights from `PHAZE_MODELS_DIR` (`/models`, §6), but the
+Job image ships **no weights** and the pod **never downloads** them at runtime (`Dockerfile.job` is
+weights-free; `job_runner` never calls the model bootstrap — only the file-server agent worker does).
+So an unmodified analyze pod finds an empty `/models` and analysis fails. Provision the weights on a
+**pre-populated, `ReadOnlyMany` PersistentVolume**, then point the backend at its claim — no fat image,
+no runtime download.
+
+phaze **authors no PV or PVC** — exactly like the LocalQueue, RBAC, Secret, and ConfigMap objects
+above, the operator creates the storage and phaze references the **claim by name only** via the
+backend's `[backends.kube].models_pvc_name`. When set, `build_job_manifest` mounts that claim
+**read-only** at `/models`, a **second volume entirely separate** from the `/certs` CA Secret mount
+(§7). The PVC carries **only** model weights — never secrets, never certs.
+
+**One-time populate Job.** Create the PVC and fill it once with a short RW Job that runs the same
+downloader the agent uses, then leave the volume read-only forever after:
+
+```yaml
+# PVC the weights live on. Size for the essentia model set; the StorageClass must support
+# ReadOnlyMany reads by the analyze pods (e.g. an NFS / CephFS / cloud-filestore class).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: phaze-essentia-models
+  namespace: phaze
+spec:
+  accessModes: ["ReadWriteOnce"]   # RWO is enough for the one-time populate below
+  resources:
+    requests:
+      storage: 2Gi
+---
+# One-time populate Job: mount the SAME claim read-WRITE and run the downloader into /models.
+# Delete this Job once it completes; the analyze pods mount the claim read-only thereafter.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: phaze-models-populate
+  namespace: phaze
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: populate
+          image: <the same phaze api/job image>            # already carries the downloader
+          command: ["uv", "run", "python", "-m", "phaze.scripts.download_models", "/models"]
+          volumeMounts:
+            - { name: models, mountPath: /models }          # read-write for the populate only
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: phaze-essentia-models
+```
+
+Then set the backend to reference the claim (a plain object name, **not** a secret):
+
+```toml
+[backends.kube]
+# ... api_url / namespace / local_queue / job_image / requests as usual ...
+models_pvc_name = "phaze-essentia-models"   # mounted read-only at /models on every analyze pod
+```
+
+> **Invariant:** the `/models` mount path is fixed in `build_job_manifest` and **must** equal the
+> §6 ConfigMap's `PHAZE_MODELS_DIR`. If you relocate the models dir, change **both** together.
+>
+> Leave `models_pvc_name` unset and no models volume/mount is emitted (the Job manifest is
+> byte-identical to the CA-only form) — use that only if you instead pin a **pre-baked weights image**
+> as the `job_image` (the operator builds it; weights are never committed to the phaze repo).
+
 ### 7 — Internal-CA Secret (the control-plane TLS trust anchor)
 
 The one-shot pod calls back to the control plane over HTTPS and verifies its TLS chain against the

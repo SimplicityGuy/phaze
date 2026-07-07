@@ -1051,3 +1051,42 @@ def test_resolve_compute_backend_scratch_under_local_2kueue_1compute(backends_to
     assert backend.scratch_dir == "/srv/scratch"
     # A kueue id is not a compute entry -> None (per-file resolution never mis-attributes to a cluster).
     assert backends.resolve_compute_backend(settings, "kueue-a") is None
+
+
+# === models_pvc_name: optional per-Kueue-backend PVC mount knob (round-trip through TOML) ====
+
+
+def test_kube_models_pvc_name_round_trips_from_backends_toml(backends_toml_env: Any) -> None:
+    """An optional ``models_pvc_name`` in ``[backends.kube]`` parses and round-trips onto the resolved
+    backend's KubeConfig (a plain PVC object name -- build_job_manifest mounts it read-only at /models)."""
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    # Baseline: the helper omits models_pvc_name, so the default is None (byte-identical-manifest path).
+    assert backend.config.kube.models_pvc_name is None
+
+    from phaze.config import ControlSettings
+
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-x64"
+        rank = 20
+        cap = 5
+        buckets = ["staging-a"]
+
+        [backends.kube]
+        api_url = "https://kube.example.com"
+        namespace = "phaze"
+        local_queue = "phaze-lq"
+        models_pvc_name = "phaze-essentia-models"
+
+        [[buckets]]
+        id = "staging-a"
+        scope = "shared"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-staging-a"
+        """
+    )
+    settings = ControlSettings()
+    [with_pvc] = [b for b in backends.resolve_backends(settings) if b.id == "kueue-x64"]
+    assert with_pvc.config.kube.models_pvc_name == "phaze-essentia-models"
