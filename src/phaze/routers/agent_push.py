@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -223,6 +223,21 @@ async def report_push_mismatch(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reporting agent is not the dispatched compute agent")
 
     # The push_attempt counter rides the ledger payload JSONB (Pitfall 4); default 0 when absent.
+    # D-05 (AR-73-02 / T-73-13 / WR-04): serialize the read->+1->write-back so two concurrent /mismatch
+    # for one file (SAQ retries, N compute reporters) can't both read the same counter and lose an
+    # increment, silently letting the file exceed its bounded push budget.
+    #
+    # We take a transaction-scoped ADVISORY lock keyed by the ledger key -- NOT `.with_for_update()` on
+    # this row. A row lock here would self-deadlock: the under-cap path re-enqueues `push_file` at the
+    # `fileserver_queue.enqueue(...)` call BELOW while this transaction is still open, and `push_file` is a
+    # registered before_enqueue key-builder, so the `apply_deterministic_key` WRITE hook opens its OWN
+    # session on the same pool and upserts THIS SAME ledger row (ON CONFLICT DO UPDATE). That nested write
+    # would block on a row lock we hold, and we can't commit to release it until the enqueue returns --
+    # a hang with no statement_timeout to break it and no Postgres deadlock cycle to detect. The advisory
+    # lock lives in a different lock space than the hook's row lock, so the hook's upsert never blocks on
+    # it; a second concurrent /mismatch for the same key waits on the advisory lock until we commit, so the
+    # RMW is still serialized and each increment is applied exactly once (cap still trips at the boundary).
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(ledger_key))))
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key))).scalar_one_or_none()
     current_attempt = 0
     if row is not None and isinstance(row.payload, dict):

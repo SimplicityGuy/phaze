@@ -29,7 +29,7 @@ from typing import Annotated
 import unicodedata
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -150,7 +150,7 @@ def is_scan_stalled(batch: ScanBatch) -> bool:
 @router.get("/agent-roots", response_class=HTMLResponse)
 async def agent_roots_swap(
     request: Request,
-    agent_id: str,
+    agent_id: Annotated[str, Query(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=128)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> HTMLResponse:
     """HTMX swap target: render `scan_path_picker.html` for the chosen agent.

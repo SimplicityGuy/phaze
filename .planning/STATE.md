@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
-status: "Phase 75 shipped — PR #213"
-last_updated: "2026-07-06T17:04:00.506Z"
+status: milestone_complete
+last_updated: 2026-07-06T19:15:29.499Z
 last_activity: 2026-07-06
 progress:
   total_phases: 37
-  completed_phases: 13
-  total_plans: 53
-  completed_plans: 40
-  percent: 35
+  completed_phases: 14
+  total_plans: 56
+  completed_plans: 43
+  percent: 38
+stopped_at: Milestone complete (Phase 76 was final phase)
 ---
 
 # Project State
@@ -24,16 +25,16 @@ See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends 
 
 ## Current Position
 
-Phase: 75
+Phase: 76
 Plan: Not started
-Status: Phase 75 shipped — PR #213
+Status: Milestone complete — Phase 76 shipped (PR #214)
 Last activity: 2026-07-06
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 171
+- Total plans completed: 174
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -64,6 +65,7 @@ Last activity: 2026-07-06
 
 ### Roadmap Evolution
 
+- Phase 76 added (2026-07-06): Compute/Push Hardening (HARD-01..03) — appended as the milestone's LAST phase (2026.7.2 milestone header extended 72-75 → 72-76). Three self-contained correctness fixes in the N-compute dispatch/push path, each closing an accepted-risk/review item from Phases 72-74, each with a regression test, **no new dependencies**. **HARD-01** (closes WR-01/74-REVIEW): serialize `services/backends._probe_availability`'s `_probe_one` fan-out so N≥2 compute backends stop sharing one `AsyncSession` (SQLAlchemy concurrent-use hazard) — serialize the awaits (N is tiny) OR give each `_probe_one` its own sessionmaker session; keep the bounded `_PROBE_TIMEOUT_SEC=1.5` `wait_for`; reword the docstring from empirical to structural. **HARD-02** (closes AR-73-02/T-73-13/WR-04): `with_for_update()` on the `push_file:<file_id>` ledger SELECT in `routers/agent_push.py` `/mismatch` so the `push_attempt` RMW is atomic (no lost increment under concurrent `/mismatch`; cap still trips). **HARD-03** (closes AR-30-03/Phase-30 IN-01): `Query(..., pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=128)` on the scan-status `agent_id` param in `routers/pipeline_scans.py` so a malformed id 422s instead of silently returning an empty poll. Locked scope = exactly these 3 fixes. Locked dispositions (2026-07-06): older posture-based AR-27-*/AR-37-*/AR-51-08 stay ACCEPTED (deployment posture unchanged); AR-73-01 folded into new v2 **PROV-01** (N-compute per-agent orphan recovery — a feature with Phase-45-class over-enqueue risk, not a fix); PROV-01/02/03 tracked as v2 backlog, no milestone. Ships as own PR (worktree branch `SimplicityGuy/phase-76`, never direct to main); then `/gsd:complete-milestone 2026.7.2` + push the 2026.7.2 tag.
 - 2026.7.2 Multi-Compute Agents roadmap created (2026-07-05): 3 phases (72-74), continuing from 2026.7.1's last phase (71) — **NOT reset to 1**. Parity milestone — the compute-side twin of Phase 70's multi-Kueue work — extending the 2026.7.1 `Backend` registry + push/rsync pipeline to **N cloud-compute agents** with **zero new deps**. 7/7 MCOMP requirements mapped, 0 orphans, 0 duplicates, dependency-strict build order 72 → 73 → 74. **72** Per-Entry Compute Binding & Fail-Fast Retirement (each `compute` entry binds to a specific registered Agent recorded at construction, retiring `select_active_agent(kind="compute")`'s single-active-compute assumption; retire + generalize the `≤1-compute` fail-fasts `config.active_compute_scratch_dir` ~L469 + `services/backends.resolved_non_local_kind` ~L469 for a `local + N-Kueue + N-compute` registry; behavior-preserving groundwork, existing single-/zero-compute deploys unchanged; **research flag** = `agent_ref`→`Agent.id` resolution + whether `/pushed`+`/api/internal/agent/*` reconcile already scope per-agent; MCOMP-01). **73** Per-Agent Dispatch, Liveness, Scratch & Failure Isolation (the behavior core; per-agent liveness probe on the bound agent, per-agent push/scratch destination through `_enqueue_push_file`→fileserver→rsync + `/pushed` callback `routers/agent_push.py`, Phase-69 rank/cap load-spread across N compute agents — free arm64 preferred, spill to paid/trial x86 — per-backend failure isolation via snapshot try/except mirroring MKUE-03, per-backend `backend_id`-scoped in-flight + terminalization; **depends on 72**; **research flag** = `cloud_job` one-row-per-file vs per-(file,backend); MCOMP-02..06). **74** Docs, Runbook & N-Lane Compute UI Verification (operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI registry-derived N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces; UI-hinted; **depends on 73**; MCOMP-07). Build order 72→73→74, strictly sequential (each hard-depends on the prior). No milestone-level research phase (parity refactor over in-repo patterns; the two open questions are plan-/discuss-phase flags on 72/73). Version provisional CalVer, finalized at release. Each phase = own PR (worktree branch, never direct to main). v2 deferred: PROV-02 (capability-aware routing) + PROV-03 (on-demand provisioning).
 - 2026.7.1 Multi-Cloud Backends roadmap created (2026-07-03): 5 phases (67–71), continuing from 2026.7.0's last phase (66) — **NOT reset to 1**. Requirements-driven, dependency-strict, 1:1 category→phase per REQUIREMENTS.md + research SUMMARY: REG→67 · BACK→68 · SCHED→69 · MKUE→70 · BEUI→71. 21/21 mapped, 0 orphans, 0 duplicates. Generalizes the single `cloud_target` selector into a declarative cost-tiered `backends:` registry draining long files across local + 1+ Kueue + 1+ cloud-compute simultaneously (rank + cap, static routing, no provisioning); **zero new deps**, a pure application-code refactor over v6.0. **67** Backend Registry & Config Model (`backends:` list + per-kind discriminated-union validators + `cloud_target` back-compat shim + REG-05 S3 bucket registry public/shared-vs-cluster-specific; config-model-only, behavior-preserving; REG-01..05). **68** Backend Protocol + 3 impls (`Backend` `is_available`/`in_flight_count`/`dispatch`/`reconcile` re-homing existing bodies + `cloud_job.backend_id` additive migration + uniform per-backend in-flight accounting; behavior-preserving, acceptance-gated by a byte-identical characterization test incl. the GATE-1 compute-vs-Kueue asymmetry; **depends on 67**; BACK-01..04). **69** Tiered Drain Scheduler (rank-first per-file eligible dispatch, per-backend `cap`, spill-when-full, offline→next-eligible re-dispatch + black-hole/cooldown guard, stateless equal-rank tie-break, single-recovery-owner per kind; **first behavior-changing phase; depends on 68** — cap needs 68's per-backend count; **research flag** = drain↔reconcile lock-ordering + attempt-budget/cooldown split; SCHED-01..05). **70** Multi-Kueue N clusters (N concurrent Kueue backends each staging to its REG-05-assigned bucket set with DIST-01 preserved, per-cluster probe + `backend_id`-scoped reconcile + per-backend failure isolation, per-(backend,bucket) cleanup; **depends on 69**; **research flag** = `cloud_job` one-row-per-file-vs-per-(file,backend) + `agent_ref`→`Agent.id` resolution + live multi-cluster kr8s auth/multi-bucket staging; MKUE-01..04). **71** Deployment/Config/Docs & N-Lane UI (N registry-derived per-backend lanes read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + runbook/config docs incl. `cloud_target`→`backends` migration; UI-hinted; **depends on 70**; BEUI-01..03). Build order 67→68→69→70→71, strictly sequential (each hard-depends on the prior). Design spine locked (`docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md`, PR #182); REG-05 + revised MKUE-02/04 supersede its one-shared-bucket decision per operator direction. Version provisional CalVer `2026.7.1`, finalized at release. Each phase = own PR (worktree branch, never direct to main); 67–68 behavior-preserving refactors that de-risk 69.
 - 2026.7.0 Engineering Improvements roadmap created (2026-07-02): 4 phases (63-66), continuing from v7.0's last integer phase (62; 57.1 was a decimal insert). Cleanup / engineering-debt paydown — **no product-behavior change, no backend behavior change**; the "user" is the maintainer/operator. 13/13 requirements mapped, 0 orphans, 0 duplicates. **63** Parallel CI & Code-Change Gating (partition the ~1,750-test suite into workflow-step buckets + fan out across parallel jobs + combine per-shard `.coverage` → one Codecov upload + doc-only skip-with-success; the tightly-coupled CI-01/02/03 land together and CI-04 rides the same CI-workflow PR; CI-01..04). **64** Per-Module Coverage Uplift & Gate Raise (raise worst-offender/v7.0-touched modules — agent_liveness/shell/pipeline/tracklists/routers.pipeline/main + the 71–78% tail — to a per-module floor with behavior-asserting tests, then lift the enforced gate above 90.38% wired into CI; **depends on 63** because the combined-across-shards coverage number must be trustworthy before a higher gate enforces on it; COV-01/02). **65** CalVer Adoption (replace `vN.M` with `YYYY.MM.REVISION`, no leading-zero month, first tag `2026.7.0`, across release procedure + badges + image tags + milestone↔version mapping, historical record intact; independent parallel-friendly phase; VER-01..04). **66** Docs-Drift Gate & Dead-Code Sweep (CI gate cross-checking REQUIREMENTS.md traceability vs passed phases + `/saq` re-link in the shell Agents/Compute page + vestigial dead-code removal incl. the dead-template guard's own blind spot; **depends on 63** for the CI-gate slot, CLEAN otherwise independent; UI-hinted; DOCS-01, CLEAN-01/02). Build order 63 → 64, with 65 and 66 parallel-friendly (66's DOCS-01 sequenced after 63). This milestone *adopts* CalVer — the last `vN.M` planning cycle; its release is the first CalVer tag. Candidates sourced from the ROADMAP Backlog + v7.0 RETROSPECTIVE. Each phase = own PR (worktree branch, never direct to main).
