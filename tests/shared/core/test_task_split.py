@@ -108,6 +108,83 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
     assert result.returncode == 0, f"agent_worker import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
+def _registered_names_under_lane(lane: str | None) -> set[str]:
+    """Import agent_worker in a SUBPROCESS under PHAZE_AGENT_LANE=<lane> and return its SAQ names.
+
+    Subprocess-isolated (like the import-boundary cases) so the one-shot module-level lane
+    resolution can be exercised per lane without sys.modules caching poisoning the others.
+    A plain function registers under __name__; s3_upload is a (name, func) tuple -> name.
+    """
+    lane_line = "os.environ.pop('PHAZE_AGENT_LANE', None)" if lane is None else f"os.environ['PHAZE_AGENT_LANE'] = {lane!r}"
+    script = textwrap.dedent(f"""
+        import json
+        import os
+        import sys
+        os.environ.setdefault("PHAZE_ROLE", "agent")
+        os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
+        os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+        os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-nox")
+        os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")
+        os.environ.setdefault("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")
+        os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+        {lane_line}
+        import phaze.tasks.agent_worker as aw
+
+        names = []
+        for entry in aw.settings["functions"]:
+            names.append(entry[0] if isinstance(entry, tuple) else entry.__name__)
+        # Prefix with a sentinel so the test extracts this line past any structlog/log noise on stdout.
+        sys.stdout.write("PHAZE_LANE_JSON:" + json.dumps({{"names": names, "queue": aw.settings["queue"].name}}) + "\\n")
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"agent_worker import failed under lane={lane!r}:\nstdout={result.stdout}\nstderr={result.stderr}"
+    import json
+
+    marker = "PHAZE_LANE_JSON:"
+    json_line = next((ln[len(marker) :] for ln in result.stdout.splitlines() if ln.startswith(marker)), None)
+    assert json_line is not None, f"no sentinel JSON on stdout under lane={lane!r}:\nstdout={result.stdout}"
+    payload = json.loads(json_line)
+    expected_queue = "phaze-agent-nox" if lane is None else f"phaze-agent-nox-{lane}"
+    assert payload["queue"] == expected_queue, f"lane={lane!r} queue {payload['queue']!r} != {expected_queue!r}"
+    return set(payload["names"])
+
+
+def test_lane_worker_functions_mirror_lane_tasks() -> None:
+    """quick-260707-dh1: for EACH lane, agent_worker registers EXACTLY LANE_TASKS[lane]'s SAQ names.
+
+    The lane-scoped extension of the AGENT_TASKS<->functions "MUST mirror" contract: the producer
+    (LANE_TASKS in enqueue_router) and the consumer (the per-lane agent worker settings) cannot drift.
+    """
+    from phaze.services.enqueue_router import LANE_TASKS
+
+    for lane, tasks in LANE_TASKS.items():
+        assert _registered_names_under_lane(lane) == set(tasks), lane
+
+
+def test_lane_worker_functions_union_equals_agent_tasks() -> None:
+    """quick-260707-dh1: the union of the four lanes' registered SAQ names == AGENT_TASKS."""
+    from phaze.services.enqueue_router import AGENT_TASKS, LANES
+
+    union: set[str] = set()
+    for lane in LANES:
+        union |= _registered_names_under_lane(lane)
+    assert union == set(AGENT_TASKS)
+
+
+def test_all_mode_worker_registers_every_agent_task() -> None:
+    """quick-260707-dh1: with PHAZE_AGENT_LANE unset, the base queue worker registers all 8 tasks."""
+    from phaze.services.enqueue_router import AGENT_TASKS
+
+    assert _registered_names_under_lane(None) == set(AGENT_TASKS)
+
+
 def test_push_task_stays_postgres_free() -> None:
     """Phase 50 (50-03) extension of D-25: phaze.tasks.push is Postgres-free.
 
