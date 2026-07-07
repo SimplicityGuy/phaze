@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends 
 
 Phase: 76
 Plan: Not started
-Status: Milestone complete
+Status: Milestone complete — Phase 76 shipped (PR #214)
 Last activity: 2026-07-06
 
 ## Performance Metrics
