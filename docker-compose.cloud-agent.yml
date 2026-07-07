@@ -74,6 +74,12 @@ services:
       # compute host, and the head-of-line / I/O-starvation problems the lane split solves are
       # file-server-only. Single lane = single heartbeat (PHAZE_AGENT_HEARTBEAT left unset/true).
       - PHAZE_AGENT_LANE=analyze
+      # quick-260707-g84: in lane mode the per-lane knob is what ACTUALLY governs a lane
+      # worker's concurrency -- WORKER_MAX_JOBS is only a ceiling (concurrency = min(lane
+      # knob, worker_max_jobs)). Pin the analyze lane to 1 so the OCI Ampere A1 (12 GB)
+      # compute agent runs a SINGLE process_file at a time (each peaks ~8 GB); relying on
+      # WORKER_MAX_JOBS=1 alone is inert in lane mode.
+      - PHAZE_LANE_ANALYZE_CONCURRENCY=1
     volumes:
       - "cloud_scratch:${PHAZE_CLOUD_SCRATCH_DIR:?PHAZE_CLOUD_SCRATCH_DIR required}:rw"
       - "${MODELS_PATH:-./models}:/models:rw"
