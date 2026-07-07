@@ -383,6 +383,11 @@ async def test_timeline_with_windows(client: AsyncClient, session: AsyncSession)
     response = await client.get(f"/proposals/{proposal.id}/timeline")
     assert response.status_code == 200
     assert "<polyline" in response.text
+    # quick 260707-c9o: max (top) + min (bottom) BPM labels render as HTML gutter text.
+    # Seeded fine windows carry bpm 120.0 / 128.0 (add_analysis_windows).
+    assert "128" in response.text
+    assert "120" in response.text
+    assert 'aria-label="BPM range 120 to 128"' in response.text
     # Escaped ribbon labels rendered via Jinja2 autoescaping.
     assert "techno" in response.text
     assert "happy" in response.text

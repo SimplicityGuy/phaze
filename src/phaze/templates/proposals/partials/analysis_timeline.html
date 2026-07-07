@@ -23,10 +23,27 @@
         <div>
             <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-1">BPM (fine windows)</h4>
             {% if bpm_points %}
-            <svg viewBox="0 0 {{ timeline_w }} {{ timeline_h }}" preserveAspectRatio="none"
-                 class="w-full h-16 text-blue-500" role="img" aria-label="BPM over time">
-                <polyline points="{{ bpm_points }}" fill="none" stroke="currentColor" stroke-width="2" />
-            </svg>
+            {# Labels live OUTSIDE the preserveAspectRatio="none" SVG (text inside it would stretch).
+               bpm_lo/bpm_hi are numeric floats (never essentia strings) rendered as autoescaped HTML
+               only -- they are NOT written into any SVG geometry attribute (XSS hardening invariant). #}
+            <div class="flex items-stretch gap-2">
+                {% if bpm_lo is not none and bpm_hi is not none and bpm_lo != bpm_hi %}
+                <div class="flex flex-col justify-between h-16 text-right text-xs text-gray-400 dark:text-gray-500 tabular-nums"
+                     aria-label="BPM range {{ bpm_lo | round | int }} to {{ bpm_hi | round | int }}">
+                    <span>{{ bpm_hi | round | int }}</span>
+                    <span>{{ bpm_lo | round | int }}</span>
+                </div>
+                {% elif bpm_hi is not none %}
+                <div class="flex flex-col justify-center h-16 text-right text-xs text-gray-400 dark:text-gray-500 tabular-nums"
+                     aria-label="BPM {{ bpm_hi | round | int }}">
+                    <span>{{ bpm_hi | round | int }}</span>
+                </div>
+                {% endif %}
+                <svg viewBox="0 0 {{ timeline_w }} {{ timeline_h }}" preserveAspectRatio="none"
+                     class="flex-1 h-16 text-blue-500" role="img" aria-label="BPM over time">
+                    <polyline points="{{ bpm_points }}" fill="none" stroke="currentColor" stroke-width="2" />
+                </svg>
+            </div>
             {% else %}
             <p class="text-xs text-gray-400 dark:text-gray-500">No BPM data.</p>
             {% endif %}
