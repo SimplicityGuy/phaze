@@ -121,3 +121,29 @@ def test_invalid_lane_raises_at_import(monkeypatch: pytest.MonkeyPatch) -> None:
     """A typo'd PHAZE_AGENT_LANE fails loud at module import (container boots non-zero)."""
     with pytest.raises(RuntimeError, match="invalid PHAZE_AGENT_LANE"):
         _reload_worker(monkeypatch, lane="analyzeXX")
+
+
+def test_lane_concurrency_clamped_by_worker_max_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """quick-260707-g84: an explicit WORKER_MAX_JOBS=1 ceiling clamps the analyze lane to 1.
+
+    The OCI Ampere A1 (12 GB) compute agent runs the analyze lane, where a single
+    `process_file` job peaks ~8 GB. Before the fix the lane knob (default 4) governed
+    concurrency and WORKER_MAX_JOBS was inert in lane mode -> 4 concurrent jobs OOM-killed
+    the host. The resolution is now `min(lane knob, worker_max_jobs)`, so the explicit
+    WORKER_MAX_JOBS=1 cap is authoritative.
+    """
+    monkeypatch.setenv("WORKER_MAX_JOBS", "1")
+    mod = _reload_worker(monkeypatch, lane="analyze")
+
+    assert mod.settings["concurrency"] == 1
+
+
+def test_lane_concurrency_default_unclamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """quick-260707-g84: with no WORKER_MAX_JOBS override the analyze lane keeps its knob (4).
+
+    The file-server default case (lane 4, worker_max_jobs default 8) is unchanged:
+    min(4, 8) == 4. Only an explicit, lower WORKER_MAX_JOBS ceiling clamps a lane.
+    """
+    mod = _reload_worker(monkeypatch, lane="analyze")
+
+    assert mod.settings["concurrency"] == 4
