@@ -10,6 +10,7 @@ import pytest
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord, FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.proposals import BpmSpark, _bpm_spark
 
 
 if TYPE_CHECKING:
@@ -538,3 +539,48 @@ async def test_timeline_no_badge_when_no_analysis_row(client: AsyncClient, sessi
     assert response.status_code == 200
     assert "Sampled — more data available" not in response.text
     assert "Deepen analysis" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# _bpm_spark helper (quick 260707-c9o): surface min/max BPM alongside the points.
+# Pure sync function -- no DB needed. Windows are constructed in-memory.
+# ---------------------------------------------------------------------------
+
+
+def _fine_window(index: int, start: float, end: float, bpm: float | None) -> AnalysisWindow:
+    """Build a detached fine-tier AnalysisWindow carrying just the fields the helper reads."""
+    return AnalysisWindow(file_id=uuid.uuid4(), tier="fine", window_index=index, start_sec=start, end_sec=end, bpm=bpm)
+
+
+def test_bpm_spark_normal_range() -> None:
+    """A range of distinct BPMs yields a non-empty points string plus lo/hi/count."""
+    windows = [_fine_window(0, 0.0, 30.0, 120.0), _fine_window(1, 30.0, 60.0, 128.0)]
+    result = _bpm_spark(windows, 60.0, 1000.0, 120.0)
+    assert isinstance(result, BpmSpark)
+    assert result.points
+    assert "," in result.points
+    assert result.lo == 120.0
+    assert result.hi == 128.0
+    assert result.count == 2
+
+
+def test_bpm_spark_flat_line() -> None:
+    """All-equal BPMs surface the single value (lo == hi) and land the line at height/2."""
+    windows = [_fine_window(0, 0.0, 30.0, 120.0), _fine_window(1, 30.0, 60.0, 120.0)]
+    height = 120.0
+    result = _bpm_spark(windows, 60.0, 1000.0, height)
+    assert result.lo == result.hi == 120.0
+    assert result.points
+    # span <= 0 => every y coordinate is height/2 (unchanged flat-line behavior).
+    y_values = {pair.split(",")[1] for pair in result.points.split(" ")}
+    assert y_values == {f"{height / 2.0:.2f}"}
+    assert result.count == 2
+
+
+def test_bpm_spark_empty() -> None:
+    """No bpm-bearing windows (or total_sec <= 0) yields empty points and None lo/hi."""
+    result = _bpm_spark([_fine_window(0, 0.0, 30.0, None)], 60.0, 1000.0, 120.0)
+    assert result.points == ""
+    assert result.lo is None
+    assert result.hi is None
+    assert result.count == 0

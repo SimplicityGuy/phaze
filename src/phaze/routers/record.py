@@ -30,7 +30,7 @@ from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
-from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_polyline_points, _ribbons
+from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_spark, _ribbons
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -108,6 +108,7 @@ async def file_record(
         reverse=True,
     )
 
+    spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     context: dict[str, Any] = {
         "request": request,
         "file": file,
@@ -117,7 +118,9 @@ async def file_record(
         "total_sec": total_sec,
         "timeline_w": TIMELINE_W,
         "timeline_h": TIMELINE_H,
-        "bpm_points": _bpm_polyline_points(fine, total_sec, TIMELINE_W, TIMELINE_H),
+        "bpm_points": spark.points,
+        "bpm_lo": spark.lo,
+        "bpm_hi": spark.hi,
         "key_ribbons": _ribbons(fine, "musical_key", total_sec),
         "mood_ribbons": _ribbons(coarse, "mood", total_sec),
         "style_ribbons": _ribbons(coarse, "style", total_sec),
