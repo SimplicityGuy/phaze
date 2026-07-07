@@ -60,12 +60,77 @@ def _env_to_strs(env: Any) -> list[str]:
     return []
 
 
+# quick-260707-dh1: the single `worker` is split into four lane workers + a transitional drain.
+_LANE_WORKERS = {"worker-analyze", "worker-fingerprint", "worker-meta", "worker-io"}
+_ALL_WORKERS = _LANE_WORKERS | {"worker-drain"}
+
+
 def test_agent_compose_service_list() -> None:
-    """D-15: agent compose declares exactly worker, watcher, audfprint, panako."""
+    """D-15 + quick-260707-dh1: 4 lane workers + drain + watcher + audfprint + panako."""
     data = _load_agent_compose()
-    assert set(data["services"].keys()) == {"worker", "watcher", "audfprint", "panako"}, (
-        f"agent compose services must be exactly {{worker, watcher, audfprint, panako}}; got {sorted(data['services'].keys())!r}"
+    assert set(data["services"].keys()) == _ALL_WORKERS | {"watcher", "audfprint", "panako"}, (
+        f"agent compose services must be the 4 lane workers + worker-drain + {{watcher, audfprint, panako}}; got {sorted(data['services'].keys())!r}"
     )
+
+
+def test_lane_workers_carry_their_lane_and_concurrency() -> None:
+    """quick-260707-dh1: each lane worker sets PHAZE_AGENT_LANE=<lane> + its concurrency knob."""
+    data = _load_agent_compose()
+    expected = {
+        "worker-analyze": ("analyze", "PHAZE_LANE_ANALYZE_CONCURRENCY"),
+        "worker-fingerprint": ("fingerprint", "PHAZE_LANE_FINGERPRINT_CONCURRENCY"),
+        "worker-meta": ("meta", "PHAZE_LANE_META_CONCURRENCY"),
+        "worker-io": ("io", "PHAZE_LANE_IO_CONCURRENCY"),
+    }
+    for svc_name, (lane, knob) in expected.items():
+        env = _env_to_strs(data["services"][svc_name].get("environment", []))
+        assert any(e == f"PHAZE_AGENT_LANE={lane}" for e in env), f"{svc_name} must set PHAZE_AGENT_LANE={lane}; got {env!r}"
+        assert any(e.startswith(f"{knob}=") for e in env), f"{svc_name} must set {knob}; got {env!r}"
+
+
+def test_lane_workers_share_one_image_and_command() -> None:
+    """quick-260707-dh1: all 4 lane workers + drain run the SAME image + command (env-only difference)."""
+    data = _load_agent_compose()
+    commands = {str(data["services"][svc].get("command")) for svc in _ALL_WORKERS}
+    image_vals = {data["services"][svc].get("image") for svc in _ALL_WORKERS}
+    assert len(commands) == 1, f"all lane workers must share ONE command; got {commands!r}"
+    assert len(image_vals) == 1, f"all lane workers must share ONE image; got {image_vals!r}"
+    assert "phaze.tasks.agent_worker.settings" in next(iter(commands))
+
+
+def test_cpu_lanes_pin_threads_single_threaded() -> None:
+    """quick-260707-dh1: the CPU lanes (analyze+fingerprint) pin essentia/TF to one thread."""
+    data = _load_agent_compose()
+    for svc_name in ("worker-analyze", "worker-fingerprint", "worker-drain"):
+        env = _env_to_strs(data["services"][svc_name].get("environment", []))
+        for pin in ("OMP_NUM_THREADS=1", "TF_NUM_INTRAOP_THREADS=1", "TF_NUM_INTEROP_THREADS=1"):
+            assert pin in env, f"{svc_name} must pin {pin} (honest core budget); got {env!r}"
+
+
+def test_exactly_one_heartbeat_enabled() -> None:
+    """quick-260707-dh1: PHAZE_AGENT_HEARTBEAT=true on EXACTLY ONE lane worker (analyze)."""
+    data = _load_agent_compose()
+    true_workers = []
+    for svc_name in _ALL_WORKERS:
+        env = _env_to_strs(data["services"][svc_name].get("environment", []))
+        if any(e == "PHAZE_AGENT_HEARTBEAT=true" for e in env):
+            true_workers.append(svc_name)
+    assert true_workers == ["worker-analyze"], f"exactly ONE heartbeat=true (worker-analyze); got {true_workers!r}"
+    # The other three lanes explicitly disable it.
+    for svc_name in _LANE_WORKERS - {"worker-analyze"}:
+        env = _env_to_strs(data["services"][svc_name].get("environment", []))
+        assert "PHAZE_AGENT_HEARTBEAT=false" in env, f"{svc_name} must set PHAZE_AGENT_HEARTBEAT=false; got {env!r}"
+
+
+def test_drain_service_is_off_by_default_and_all_mode() -> None:
+    """quick-260707-dh1: worker-drain is profile-gated (off by default), all-mode, heartbeat off."""
+    data = _load_agent_compose()
+    drain = data["services"]["worker-drain"]
+    assert "drain" in (drain.get("profiles") or []), "worker-drain must be gated behind the 'drain' profile (off by default)"
+    env = _env_to_strs(drain.get("environment", []))
+    # All-mode: PHAZE_AGENT_LANE must NOT be set (so it consumes the legacy base queue with all functions).
+    assert not any(e.startswith("PHAZE_AGENT_LANE=") for e in env), f"worker-drain must NOT set PHAZE_AGENT_LANE (all-mode); got {env!r}"
+    assert "PHAZE_AGENT_HEARTBEAT=false" in env, f"worker-drain must set PHAZE_AGENT_HEARTBEAT=false; got {env!r}"
 
 
 def test_agent_compose_has_no_postgres_env() -> None:
@@ -87,10 +152,11 @@ def test_agent_compose_has_no_postgres_env() -> None:
 
 
 def test_worker_service_has_phaze_role_agent() -> None:
-    """D-17: the worker service runs under PHAZE_ROLE=agent."""
+    """D-17: every worker service (all 4 lanes + drain) runs under PHAZE_ROLE=agent."""
     data = _load_agent_compose()
-    worker_env = _env_to_strs(data["services"]["worker"].get("environment", []))
-    assert any("PHAZE_ROLE=agent" in e for e in worker_env), f"worker service must have PHAZE_ROLE=agent in environment; got {worker_env!r}"
+    for svc_name in _ALL_WORKERS:
+        env = _env_to_strs(data["services"][svc_name].get("environment", []))
+        assert any("PHAZE_ROLE=agent" in e for e in env), f"{svc_name} must have PHAZE_ROLE=agent in environment; got {env!r}"
 
 
 def test_all_scan_path_mounts_use_failfast_syntax() -> None:
@@ -126,7 +192,11 @@ def test_all_agent_services_pull_from_ghcr() -> None:
     """
     data = _load_agent_compose()
     expected_image_paths = {
-        "worker": "ghcr.io/simplicityguy/phaze",
+        "worker-analyze": "ghcr.io/simplicityguy/phaze",
+        "worker-fingerprint": "ghcr.io/simplicityguy/phaze",
+        "worker-meta": "ghcr.io/simplicityguy/phaze",
+        "worker-io": "ghcr.io/simplicityguy/phaze",
+        "worker-drain": "ghcr.io/simplicityguy/phaze",
         "watcher": "ghcr.io/simplicityguy/phaze",
         "audfprint": "ghcr.io/simplicityguy/phaze/audfprint",
         "panako": "ghcr.io/simplicityguy/phaze/panako",

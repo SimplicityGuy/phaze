@@ -103,6 +103,23 @@ def test_worker_service_has_role_agent_and_kind_compute() -> None:
     assert any("PHAZE_AGENT_KIND=compute" in e for e in worker_env), f"worker must have PHAZE_AGENT_KIND=compute in environment; got {worker_env!r}"
 
 
+def test_worker_consumes_single_analyze_lane() -> None:
+    """quick-260707-dh1: the compute agent adopts PHAZE_AGENT_LANE=analyze (single lane, not a 4-split).
+
+    Media-less + analysis-only (its ONLY task is process_file), so it consumes the analyze lane
+    queue. The other 3 lanes would be permanently empty on a compute host. Single lane = single
+    heartbeat, so PHAZE_AGENT_HEARTBEAT is left unset (defaults True) -- there must be no
+    heartbeat=false override that would silence the agent's only liveness signal.
+    """
+    data = _load_cloud_agent_compose()
+    worker_env = _env_to_strs(data["services"]["worker"].get("environment", []))
+    assert any(e == "PHAZE_AGENT_LANE=analyze" for e in worker_env), f"compute worker must set PHAZE_AGENT_LANE=analyze; got {worker_env!r}"
+    # No other lane, and no 4-service split (only the one worker service -- guarded elsewhere).
+    assert not any(e.startswith("PHAZE_AGENT_LANE=") and e != "PHAZE_AGENT_LANE=analyze" for e in worker_env)
+    # Single lane -> single heartbeat: never explicitly disabled on the sole worker.
+    assert "PHAZE_AGENT_HEARTBEAT=false" not in worker_env, "the compute agent's only worker must keep its heartbeat (do not set =false)"
+
+
 def test_worker_image_is_arm64_ghcr_pinned() -> None:
     """D-08 / T-51-05 / MCOMP-07: the worker image DEFAULT renders the arm64 GHCR tag pinned via PHAZE_IMAGE_TAG.
 
