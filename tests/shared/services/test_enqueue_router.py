@@ -31,8 +31,11 @@ from phaze.models.agent import Agent
 from phaze.services.enqueue_router import (
     AGENT_TASKS,
     CONTROLLER_TASKS,
+    LANE_TASKS,
+    LANES,
     NoActiveAgentError,
     RoutedQueue,
+    lane_for_task,
     resolve_queue_for_task,
     select_active_agent,
 )
@@ -85,6 +88,64 @@ def test_task_sets_are_disjoint_frozensets() -> None:
     assert "refresh_tracklists" in CONTROLLER_TASKS
     assert "process_file" in AGENT_TASKS
     assert "scan_directory" in AGENT_TASKS
+
+
+# ---------------------------------------------------------------------------
+# LANE_TASKS / lane_for_task / LANES (quick-260707-dh1)
+# ---------------------------------------------------------------------------
+
+
+def test_lanes_order_is_analyze_fingerprint_meta_io() -> None:
+    """LANES is the canonical lane ordering (insertion order of LANE_TASKS)."""
+    assert LANES == ("analyze", "fingerprint", "meta", "io")
+
+
+def test_lane_tasks_totality_union_equals_agent_tasks() -> None:
+    """The union of the four lane frozensets EXACTLY equals AGENT_TASKS (no orphan)."""
+    union = frozenset().union(*LANE_TASKS.values())
+    assert union == AGENT_TASKS
+    assert len(AGENT_TASKS) == 8  # the eight file-touching agent tasks
+
+
+def test_lane_tasks_no_task_in_two_lanes() -> None:
+    """Every agent task belongs to EXACTLY one lane (no duplicate across lanes)."""
+    seen: set[str] = set()
+    for tasks in LANE_TASKS.values():
+        overlap = seen & tasks
+        assert not overlap, f"task(s) in more than one lane: {overlap}"
+        seen |= tasks
+    # The per-lane counts sum to the whole (a duplicate would make the sum exceed 8).
+    assert sum(len(t) for t in LANE_TASKS.values()) == len(AGENT_TASKS)
+
+
+def test_lane_for_task_maps_each_task_to_its_lane() -> None:
+    """lane_for_task returns the design's task->lane assignment for every agent task."""
+    assert lane_for_task("process_file") == "analyze"
+    assert lane_for_task("fingerprint_file") == "fingerprint"
+    assert lane_for_task("extract_file_metadata") == "meta"
+    assert lane_for_task("scan_directory") == "meta"
+    assert lane_for_task("scan_live_set") == "meta"
+    assert lane_for_task("execute_approved_batch") == "meta"
+    assert lane_for_task("s3_upload") == "io"
+    assert lane_for_task("push_file") == "io"
+
+
+def test_lane_for_task_covers_every_agent_task() -> None:
+    """No AGENT_TASKS member is unmapped -- lane_for_task resolves the whole set."""
+    for task in AGENT_TASKS:
+        assert lane_for_task(task) in LANES
+
+
+def test_lane_for_task_raises_on_controller_task() -> None:
+    """A controller task is not an agent lane -> fail loud (never a silent default)."""
+    with pytest.raises(ValueError, match="no agent lane"):
+        lane_for_task("generate_proposals")
+
+
+def test_lane_for_task_raises_on_unknown_task() -> None:
+    """A nonsense name fails loud, mirroring resolve_queue_for_task's unroutable branch."""
+    with pytest.raises(ValueError, match="no agent lane"):
+        lane_for_task("nonsense")
 
 
 # ---------------------------------------------------------------------------
