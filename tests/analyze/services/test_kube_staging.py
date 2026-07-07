@@ -176,6 +176,38 @@ def test_build_job_manifest_mounts_ca_secret() -> None:
     assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
 
 
+def test_build_job_manifest_mounts_models_pvc_when_set() -> None:
+    """When ``models_pvc_name`` is set, the pod gains a SECOND, separate ``models`` volume: an
+    operator-provisioned PVC (claimName + readOnly) mounted read-only at /models (== PHAZE_MODELS_DIR),
+    so the analyze container reads essentia weights from provisioned storage (no fat image, no download).
+    The existing /certs CA Secret mount is untouched (the PVC carries ONLY weights, never certs)."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(models_pvc_name="phaze-essentia-models"))
+    pod_spec = manifest["spec"]["template"]["spec"]
+
+    models_volume = next(v for v in pod_spec["volumes"] if v["name"] == "models")
+    assert models_volume["persistentVolumeClaim"] == {"claimName": "phaze-essentia-models", "readOnly": True}
+    assert "secret" not in models_volume  # a PVC, never a Secret -- weights only, never certs
+
+    container = pod_spec["containers"][0]
+    models_mount = next(m for m in container["volumeMounts"] if m["name"] == "models")
+    assert models_mount["mountPath"] == "/models"  # INVARIANT: == the ConfigMap's PHAZE_MODELS_DIR
+    assert models_mount["readOnly"] is True
+
+    # The CA mount is entirely separate and unchanged (KDEPLOY-06 preserved).
+    ca_volume = next(v for v in pod_spec["volumes"] if v["name"] == "phaze-ca")
+    assert ca_volume["secret"]["secretName"] == "phaze-internal-ca"
+
+
+def test_build_job_manifest_omits_models_volume_when_unset() -> None:
+    """Regression guard: with ``models_pvc_name`` unset (default None), the pod has ONLY the ``phaze-ca``
+    volume + /certs mount -- NO ``models`` volume/mount is emitted, so existing deploys are byte-identical."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube())
+    pod_spec = manifest["spec"]["template"]["spec"]
+
+    assert [v["name"] for v in pod_spec["volumes"]] == ["phaze-ca"]
+    assert [m["name"] for m in pod_spec["containers"][0]["volumeMounts"]] == ["phaze-ca"]
+
+
 def test_build_job_manifest_injects_env_contract() -> None:
     """JOB-ENV-CONTRACT: the analyze container carries the per-Job PHAZE_JOB_FILE_ID (== str(file_id))
     PLUS an envFrom that sources the static agent env from the operator-created ConfigMap + Secret.

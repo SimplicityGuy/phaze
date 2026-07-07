@@ -153,6 +153,18 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     the container sets ``PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`` so the one-shot callback verifies
     the control-plane TLS chain (never ``verify=False``). CA rotation = Secret update + re-submit.
 
+    Optional models PVC (backward-compatible): when ``kube.models_pvc_name`` is set, the pod gains a
+    SECOND, entirely separate volume -- a ``models`` ``persistentVolumeClaim`` (``readOnly``) mounted
+    read-only at ``/models`` -- so the analyze container reads its essentia weights from an
+    operator-provisioned, ReadOnlyMany PVC instead of a fat image or a runtime download (the image
+    ships weights-free; ``job_runner`` never downloads them). **INVARIANT:** the ``/models`` mountPath
+    MUST equal the agent-env ConfigMap's ``PHAZE_MODELS_DIR`` (default ``/models``) -- the container
+    reads weights from ``PHAZE_MODELS_DIR``, so a drift would mount the PVC where nothing looks for it.
+    phaze creates no PV/PVC and references the claim by name only (same posture as the LocalQueue /
+    Secret / ConfigMap it references by name). When ``models_pvc_name`` is None, NO models volume/mount
+    is emitted -- the manifest is byte-identical to the CA-only form (regression-guarded). The PVC
+    carries ONLY model weights, never secrets/certs (the CA stays on its own ``/certs`` Secret mount).
+
     Fail-loud on an unset ``job_image`` / ``cpu_request`` / ``memory_request`` (all ``Optional`` on
     ``KubeConfig``): a half-configured manifest would otherwise carry ``None`` values and surface as
     an opaque non-409 ``KubeStagingError`` from the kube API, instead of naming the missing operator
@@ -171,7 +183,7 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
         raise KubeStagingError(
             f"Kube Job submission requires {', '.join(missing)} to be configured in the active backend's [kube] config (backends.toml)"
         )
-    return {
+    manifest: dict[str, Any] = {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
@@ -241,6 +253,20 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
             },
         },
     }
+    # Optional models PVC (additive, entirely separate from the phaze-ca Secret mount above). When set,
+    # mount the operator-provisioned claim read-only at /models (== PHAZE_MODELS_DIR) so the analyze
+    # container reads essentia weights from provisioned storage. Unset -> no models volume/mount is
+    # emitted, so the manifest stays byte-identical to the CA-only form (regression-guarded).
+    if kube.models_pvc_name:
+        pod_spec = manifest["spec"]["template"]["spec"]
+        pod_spec["volumes"].append(
+            {
+                "name": "models",
+                "persistentVolumeClaim": {"claimName": kube.models_pvc_name, "readOnly": True},
+            }
+        )
+        pod_spec["containers"][0]["volumeMounts"].append({"name": "models", "mountPath": "/models", "readOnly": True})
+    return manifest
 
 
 async def submit_job(file_id: uuid.UUID, kube: KubeConfig) -> tuple[str, str]:
