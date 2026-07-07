@@ -13,12 +13,12 @@ dependencies = [
     # PUT + just-in-time GET URLs and to delete/abort staged objects. The control plane never
     # reads file bytes (DIST-01); it only orchestrates presigned URLs the agent/pod transfer over.
     "aioboto3>=15.5.0",
-    "alembic>=1.18.4",
+    "alembic>=1.18.5",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
     "cryptography>=49.0.0",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.138.0",
+    "fastapi>=0.138.2",
     "httpx>=0.28.1",
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
     # via the kube API, watches them to completion, and reconciles their status. Lives on the
@@ -30,8 +30,8 @@ dependencies = [
     # pinning. The cap confines uv to the vetted 1.85.x line; raise it deliberately.
     "litellm>=1.85.6,<1.86.0",
     "lxml>=6.1.1",
-    "mutagen>=1.47.0",
-    "numpy>=2.4.6",
+    "mutagen>=1.48.1",
+    "numpy>=2.5.0",
     # v4.1.1 hotfix: saq[postgres] pulls bare `psycopg` (pure-Python), which needs a
     # libpq backend at import. The v4.1.0 slim image had none (no C ext, no binary
     # wheel, no system libpq) -> `ImportError: no pq wrapper available` crash-looped
@@ -55,7 +55,7 @@ dependencies = [
     # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
     # but `redis.asyncio` is imported directly across the codebase (cache_redis handle,
     # pipeline counters). Declared explicitly so the import is not a transitive accident.
-    "redis>=8.0.0,<9.0",
+    "redis>=8.0.1,<9.0",
     # Phase 36: postgres extra pulls psycopg[pool]>=3.2.0 for the PostgresQueue broker.
     "saq[postgres]>=0.26.4",
     "sqlalchemy>=2.0.51",
