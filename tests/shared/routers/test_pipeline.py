@@ -1223,6 +1223,115 @@ async def test_deepen_malformed_file_id_returns_422(client: AsyncClient) -> None
 
 
 # ---------------------------------------------------------------------------
+# quick-260707-d79: operator-gated BULK retry of ANALYSIS_FAILED files.
+#
+# POST /pipeline/analysis-failed/retry re-drives EVERY ANALYSIS_FAILED file through the SAME
+# guarded funnel deepen uses (per-agent routing -> NoActiveAgentError guard -> enqueue_process_file
+# full payload + deterministic key), but with NORMAL caps (fine_cap/coarse_cap None, NOT the deepen
+# sentinel 0). Each file flips ANALYSIS_FAILED -> FINGERPRINTED (committed before enqueue) so it
+# leaves the red bucket immediately. recover_orphaned_work / _select_done_analyze_ids stay unchanged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, session: AsyncSession) -> None:
+    """POST retry re-enqueues process_file for every ANALYSIS_FAILED file on the per-agent queue with NORMAL caps.
+
+    All N failed files land on ``phaze-agent-nox`` (never the default queue) carrying the COMPLETE
+    ProcessFilePayload with NO cap override (fine_cap/coarse_cap None -- the retry-vs-deepen guard),
+    and every file is now FINGERPRINTED (0 remain ANALYSIS_FAILED). The ack reports N.
+    """
+    failed = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(3)]
+    session.add_all(failed)
+    await session.commit()
+    failed_ids = {str(f.id) for f in failed}
+    await seed_active_agent(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post("/pipeline/analysis-failed/retry")
+    assert response.status_code == 200
+    assert "re-queued 3 failed file(s)" in response.text.lower()
+
+    queue = task_router.queues["nox"]
+    assert len(queue.captured) == 3
+    assert queue.name == "phaze-agent-nox"
+    assert queue.name != "default"
+    captured_ids = set()
+    for task_name, payload in queue.captured:
+        assert task_name == "process_file"
+        # NORMAL caps: no deepen sentinel -- a retry is a fresh re-analysis (fine/coarse None).
+        assert payload["fine_cap"] is None
+        assert payload["coarse_cap"] is None
+        # Complete payload (v4.0.8 guard): validates against ProcessFilePayload.
+        ProcessFilePayload.model_validate(payload)
+        captured_ids.add(payload["file_id"])
+    assert captured_ids == failed_ids
+
+    # Every failed file left the terminal bucket -> FINGERPRINTED (committed before enqueue).
+    remaining = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
+    assert remaining == []
+    fingerprinted = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.FINGERPRINTED))).scalars().all()
+    assert {str(f.id) for f in fingerprinted} == failed_ids
+
+
+@pytest.mark.asyncio
+async def test_retry_no_active_agent_enqueues_nothing_and_keeps_state(client: AsyncClient, session: AsyncSession) -> None:
+    """No active agent -> zero enqueues, files STAY ANALYSIS_FAILED, ack surfaces "no active agent" (Phase-30 guard)."""
+    failed = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(2)]
+    session.add_all(failed)
+    await session.commit()
+    failed_ids = {str(f.id) for f in failed}
+    capture = wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/pipeline/analysis-failed/retry")
+    assert response.status_code == 200
+    assert "no active agent" in response.text.lower()
+
+    await _drain_background()
+    # Nothing enqueued anywhere -- never the default queue.
+    assert capture == []
+    # State UNCHANGED: the flip is gated behind a successful queue resolve.
+    still_failed = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
+    assert {str(f.id) for f in still_failed} == failed_ids
+
+
+@pytest.mark.asyncio
+async def test_retry_zero_failed_is_noop(client: AsyncClient, session: AsyncSession) -> None:
+    """No ANALYSIS_FAILED files -> 200, zero enqueues, ack count 0."""
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/analysis-failed/retry")
+    assert response.status_code == 200
+    assert "no failed files to retry" in response.text.lower()
+
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_retry_button_renders_only_when_count_positive(client: AsyncClient, session: AsyncSession) -> None:
+    """The "Retry failed" button appears in the Analysis Health card ONLY when analysis_failed_count > 0.
+
+    Rendered via the existing 5s /pipeline/stats poll (which seeds analysis_failed_count into the
+    straggler_failed_card). With no ANALYSIS_FAILED files the button + endpoint reference are absent;
+    with >0 the hx-post + hx-confirm are present.
+    """
+    # count == 0: no button, no endpoint reference.
+    zero = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
+    assert zero.status_code == 200
+    assert "analysis-failed/retry" not in zero.text
+
+    # count > 0: button with the confirm gate appears.
+    session.add_all([_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(2)])
+    await session.commit()
+    positive = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
+    assert positive.status_code == 200
+    assert "analysis-failed/retry" in positive.text
+    assert "hx-confirm" in positive.text
+
+
+# ---------------------------------------------------------------------------
 # quick-260707-cvz: GET /pipeline/files/{file_id}/deepen-progress poll endpoint +
 # the deepen POST success-path bootstrap poller. Four poll-state fragments
 # (queued / running / complete / gone) driven by the timestamp-gated completion
