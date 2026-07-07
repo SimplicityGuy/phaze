@@ -29,6 +29,8 @@ Plan: —
 Status: Awaiting next milestone
 Last activity: 2026-07-07 — Milestone 2026.7.2 completed and archived
 
+**Release ship step (pending):** Milestone-completion PR **#215** open (archival + close-out fixes + `2026.7.1`→`2026.7.2` version bump). **After #215 merges to main:** create the annotated `2026.7.2` tag on the merged main commit and `git push origin 2026.7.2` (triggers the GHCR release publish, per [[project_release_procedure]]) — same procedure as `2026.7.0`/`2026.7.1`. (The prior "pending 2026.7.1 tag push" is resolved — `2026.7.1` is on origin, dereferencing to `ec80a53a`.)
+
 ## Performance Metrics
 
 **v1.0 Velocity:**
