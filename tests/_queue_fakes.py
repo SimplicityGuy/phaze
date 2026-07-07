@@ -118,36 +118,61 @@ class FakeQueue:
         # When True, ``count`` raises instead of returning — exercises the
         # ``get_queue_activity`` degrade-to-0 path (Plan 01) for a Redis outage.
         self._count_raises = False
+        # Models the real ``PostgresQueue`` whose pool is built ``open=False``:
+        # ``count`` raises until ``connect()`` opens it. Off by default (the six
+        # existing consumers never connect), opt in via :meth:`require_connect` to
+        # drive the queue-activity connect-before-count path for a runtime-registered
+        # agent (one not pre-connected at startup by ``main.py``'s lifespan).
+        self._connected = False
+        self._needs_connect = False
 
     async def connect(self) -> None:
-        """No-op stand-in for ``saq.Queue.connect`` (Phase 36).
+        """Stand-in for ``saq.Queue.connect`` (Phase 36); idempotent, marks connected.
 
         Producer paths now call ``await queue.connect()`` to open the PostgresQueue's
         psycopg pool before enqueueing (the real pool is built ``open=False``). The fake
-        holds no real connection, so connecting is a no-op -- present only so the producer
-        chokepoints (enqueue_router / enqueue_process_file / enqueue_for_agent) run cleanly
-        against the double.
+        holds no real connection, so connecting only flips ``_connected`` -- enough for a
+        test to assert a reader connected before counting (and a no-op on repeat calls,
+        mirroring the real ``if self._connected: return`` guard).
         """
+        self._connected = True
+
+    def require_connect(self) -> FakeQueue:
+        """Make :meth:`count` raise until :meth:`connect` is called; returns self to chain.
+
+        Models a ``PostgresQueue`` whose pool was never opened -- the state of a per-agent
+        queue for an agent registered *after* startup (``main.py`` only pre-connects the
+        agents present at boot). Lets a test assert ``get_queue_activity`` connects the
+        queue before counting instead of degrading the whole agent source to 0.
+        """
+        self._needs_connect = True
+        return self
 
     async def count(self, kind: str) -> int:
         """Return the seeded depth for ``kind`` (async, mirroring ``saq.Queue.count``).
 
-        Raises ``RuntimeError`` when :meth:`fail_count` has been called, so a test can
-        drive the queue-activity service's failure-isolation branch.
+        Raises ``RuntimeError`` when :meth:`fail_count` has been called (Redis outage) or
+        when :meth:`require_connect` is armed and :meth:`connect` has not run (an unopened
+        psycopg pool), so a test can drive the queue-activity service's failure-isolation
+        and connect-before-count branches.
         """
+        if self._needs_connect and not self._connected:
+            raise RuntimeError("the pool 'fake' is not open yet")
         if self._count_raises:
             raise RuntimeError("fake redis down")
         return self._counts.get(kind, 0)
 
-    def set_counts(self, *, queued: int = 0, active: int = 0, incomplete: int = 0) -> None:
-        """Seed the per-kind depths this queue's :meth:`count` reads back."""
+    def set_counts(self, *, queued: int = 0, active: int = 0, incomplete: int = 0) -> FakeQueue:
+        """Seed the per-kind depths this queue's :meth:`count` reads back; returns self to chain."""
         self._counts["queued"] = queued
         self._counts["active"] = active
         self._counts["incomplete"] = incomplete
+        return self
 
-    def fail_count(self) -> None:
-        """Make subsequent :meth:`count` calls raise, simulating a Redis outage."""
+    def fail_count(self) -> FakeQueue:
+        """Make subsequent :meth:`count` calls raise, simulating a Redis outage; returns self."""
         self._count_raises = True
+        return self
 
     async def enqueue(self, task_name: str, **kwargs: Any) -> MagicMock:
         # Mirror saq.Queue.enqueue: keys that are saq.Job dataclass fields are

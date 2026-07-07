@@ -209,11 +209,14 @@ async def get_queue_activity(app_state: Any, session: AsyncSession) -> dict[str,
     ``refresh_tracklists``) never inflate the counts. The scheduled-inclusive kind is never
     read.
 
-    Failure isolation is split per-source and the function never raises: a Redis hiccup or
-    a missing ``app.state`` attribute (the test ``client`` skips the lifespan, so the queue
-    handles are absent) must degrade that source to 0, never 500 the 5s dashboard poll. The
-    agent and controller reads use independent ``try`` blocks so one dead source does not
-    zero the other.
+    Failure isolation is split per-source AND per-agent, and the function never raises: a
+    Redis hiccup or a missing ``app.state`` attribute (the test ``client`` skips the
+    lifespan, so the queue handles are absent) must degrade only the affected reader to 0,
+    never 500 the 5s dashboard poll. The agent and controller reads use independent ``try``
+    blocks so one dead source does not zero the other; within the agent source each agent
+    is read in its own ``try`` (and its queue ``connect()``-ed first, idempotently, so an
+    agent registered after startup does not raise ``PoolClosed`` on an unopened pool) so
+    one dead agent queue does not zero the rest.
 
     Returns a dict with keys ``agent_queued``, ``agent_active``, ``controller_queued``,
     ``controller_active``, ``agent_busy`` (= queued + active), ``controller_busy``.
@@ -223,15 +226,29 @@ async def get_queue_activity(app_state: Any, session: AsyncSession) -> dict[str,
     try:
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None))
         agents = (await session.execute(agents_stmt)).scalars().all()
-        for agent in agents:
+    except Exception:
+        # The agents query itself failing (missing app.state/session in the test
+        # lifespan-skip, or a DB hiccup) degrades the whole agent source to 0 — never
+        # 500 the 5s dashboard poll.
+        agents = []
+        logger.warning("queue_activity_degraded", source="agent", exc_info=True)
+
+    for agent in agents:
+        # Per-agent isolation + connect-before-count. main.py's lifespan opens the
+        # PostgresQueue psycopg pool only for agents present at boot; an agent registered
+        # at runtime (``phaze agents add`` -- e.g. a compute burst agent) otherwise raises
+        # PoolClosed on count() until the api restarts, and a single such raise used to
+        # zero EVERY agent's live depth. connect() is idempotent (SAQ guards on
+        # ``self._connected`` -- a no-op once open), mirroring the producer path
+        # (enqueue_for_agent). Wrapping each agent independently means one dead or
+        # unconnectable queue degrades only itself, not the rest.
+        try:
             q = app_state.task_router.queue_for(agent.id)
+            await q.connect()
             agent_queued += await q.count("queued")
             agent_active += await q.count("active")
-    except Exception:
-        # Broad by design: a missing app.state attr (test lifespan-skip) or any Redis
-        # hiccup must degrade this source to 0, never 500 the 5s dashboard poll.
-        agent_queued = agent_active = 0
-        logger.warning("queue_activity_degraded", source="agent", exc_info=True)
+        except Exception:
+            logger.warning("queue_activity_degraded", source="agent", agent_id=agent.id, exc_info=True)
 
     try:
         controller_queued = await app_state.controller_queue.count("queued")
