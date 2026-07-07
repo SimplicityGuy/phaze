@@ -1222,6 +1222,159 @@ async def test_deepen_malformed_file_id_returns_422(client: AsyncClient) -> None
     assert response.status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# quick-260707-cvz: GET /pipeline/files/{file_id}/deepen-progress poll endpoint +
+# the deepen POST success-path bootstrap poller. Four poll-state fragments
+# (queued / running / complete / gone) driven by the timestamp-gated completion
+# predicate (analysis_completed_at > since), plus the success branch now emitting
+# the self-polling bootstrap span instead of the old static line.
+# ---------------------------------------------------------------------------
+
+# A fixed click epoch; seeded completed_at values are set relative to it so the
+# (> vs <=) boundary is deterministic and tz-aware.
+_CVZ_SINCE = 1_700_000_000.0
+_CVZ_REQUESTED_AT = datetime.fromtimestamp(_CVZ_SINCE, tz=UTC)
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_queued_state_polls(client: AsyncClient, session: AsyncSession) -> None:
+    """A stale pre-click result with equal counts renders the queued fragment and keeps polling."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=20,
+            fine_windows_total=20,
+            # Pre-click completion (<= since) -> NOT complete -> queued (job not re-started yet).
+            analysis_completed_at=datetime.fromtimestamp(_CVZ_SINCE - 100, tz=UTC),
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Queued" in response.text
+    # Non-terminal -> still polling.
+    assert "hx-trigger" in response.text
+    assert "deepen-progress" in response.text
+    assert "Deepen complete" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_running_state_shows_counts_and_polls(client: AsyncClient, session: AsyncSession) -> None:
+    """fine_done < fine_total renders the live 'N/M windows' running fragment and keeps polling."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=34,
+            fine_windows_total=62,
+            analysis_completed_at=None,
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "34/62 windows" in response.text
+    # Running is non-terminal -> poll active.
+    assert "hx-trigger" in response.text
+    assert "deepen-progress" in response.text
+    assert "Deepen complete" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_complete_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
+    """A completed_at strictly AFTER since renders the terminal complete fragment with NO poll trigger."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=62,
+            fine_windows_total=62,
+            # Fresh put_analysis stamp AFTER the click -> complete.
+            analysis_completed_at=datetime.fromtimestamp(_CVZ_SINCE + 100, tz=UTC),
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Deepen complete" in response.text
+    # Terminal -> polling halted (outerHTML swap removed the trigger).
+    assert "hx-trigger" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_gone_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
+    """An unknown (well-formed) file_id returns the terminal 'gone' fragment with no poll trigger, never a 500."""
+    missing_id = uuid.uuid4()
+    response = await client.get(f"/pipeline/files/{missing_id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "no longer available" in response.text.lower()
+    assert "hx-trigger" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_stale_sampled_result_not_complete(client: AsyncClient, session: AsyncSession) -> None:
+    """A stale sampled result completed at exactly `since` is NOT shown as complete (> boundary, not >=)."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=40,
+            fine_windows_total=40,
+            sampled=True,
+            # completed_at == requested_at -> predicate is strict `>` -> NOT complete.
+            analysis_completed_at=_CVZ_REQUESTED_AT,
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Deepen complete" not in response.text
+    assert "hx-trigger" in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_non_numeric_since_is_422(client: AsyncClient, session: AsyncSession) -> None:
+    """A non-numeric `since` query param is rejected by the typed float param (T-cvz-01), never rendered raw."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since=not-a-number")
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_deepen_success_path_returns_bootstrap_poller(client: AsyncClient, session: AsyncSession) -> None:
+    """The deepen POST success branch now emits the self-polling bootstrap span, not the old static line."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+    await seed_active_agent(session)
+    install_fake_queues(client)
+
+    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert response.status_code == 200
+    # The bootstrap poller: hx-get at the poll endpoint + load-then-interval trigger.
+    assert "deepen-progress" in response.text
+    assert 'hx-trigger="load, every 2s"' in response.text
+    assert 'hx-swap="outerHTML"' in response.text
+    # The old static success line is gone.
+    assert "Re-analysis queued at full window budget" not in response.text
+
+
 @pytest.mark.asyncio
 async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/proposals/generate enqueues generate_proposals onto the controller queue."""
