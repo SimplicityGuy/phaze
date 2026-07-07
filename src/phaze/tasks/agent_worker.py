@@ -117,6 +117,18 @@ async def startup(ctx: dict[str, Any]) -> None:
     # logger.info, so worker logs render through the same JSON/console pipeline.
     configure_logging(level=cfg.log_level, json_logs=cfg.log_json)
 
+    # quick-260707-g84: record the EFFECTIVE dispatch concurrency (post-clamp), the lane, and
+    # whether the worker_max_jobs ceiling bit. In lane mode WORKER_MAX_JOBS is a ceiling on the
+    # per-lane knob (concurrency = min(lane knob, worker_max_jobs)); logging it here (AFTER
+    # configure_logging, never at import time) makes the OCI A1 single-job cap auditable at boot.
+    logger.info(
+        "phaze.tasks.agent_worker concurrency effective=%s lane=%s worker_max_jobs_ceiling=%s clamped=%s",
+        _concurrency,
+        _lane or "<all-mode>",
+        cfg.worker_max_jobs,
+        _concurrency_clamped,
+    )
+
     # D-13 invariant: NEVER log the full bearer; preview is first-12-chars + "..." only.
     # The variable name keeps `token_preview` for grepability of the D-13 invariant
     # in the codebase; the format-string key is "auth_id_prefix" (no secret keywords)
@@ -314,14 +326,24 @@ if _lane is not None and _lane not in LANES:
     raise RuntimeError(msg)
 
 _settings_obj = get_settings()
+# quick-260707-g84 memory-safety ceiling: in lane mode WORKER_MAX_JOBS is a CEILING, not
+# inert. PR #218 resolved lane concurrency SOLELY from the per-lane knob, so a compose that
+# relied on WORKER_MAX_JOBS=1 (e.g. the OCI Ampere A1 12 GB compute agent, where process_file
+# peaks ~8 GB) silently ran 4 concurrent analyze jobs and OOM-killed. Clamp the lane knob by
+# worker_max_jobs -> concurrency = min(lane knob, worker_max_jobs), so an explicit lower cap
+# is authoritative. All-mode is unchanged (concurrency == worker_max_jobs).
+_lane_raw_concurrency: int | None = None
 if _lane is not None:
     _queue_name = f"{_base}-{_lane}"
     _function_names: tuple[str, ...] = tuple(name for name in _ALL_FUNCTION_NAMES if name in LANE_TASKS[_lane])
-    _concurrency: int = getattr(_settings_obj, _LANE_CONCURRENCY_ATTR[_lane])
+    _lane_raw_concurrency = getattr(_settings_obj, _LANE_CONCURRENCY_ATTR[_lane])
+    _concurrency: int = min(_lane_raw_concurrency, _settings_obj.worker_max_jobs)
 else:
     _queue_name = _base
     _function_names = _ALL_FUNCTION_NAMES
     _concurrency = _settings_obj.worker_max_jobs
+# True only when the worker_max_jobs ceiling actually clamped the lane knob (lane mode only).
+_concurrency_clamped = _lane_raw_concurrency is not None and _concurrency < _lane_raw_concurrency
 
 # Phase 36: built via the single `build_pipeline_queue` seam -- a PostgresQueue (broker =
 # queue_url) with BOTH before_enqueue hooks already registered and a decoupled `cache_redis`
