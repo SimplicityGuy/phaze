@@ -228,6 +228,50 @@ async def test_presign_download_no_cloud_job_returns_409(
     assert resp.status_code == 409, resp.text
 
 
+@pytest.mark.parametrize("cloud_status", [CloudJobStatus.SUBMITTED, CloudJobStatus.RUNNING])
+async def test_presign_download_staged_non_terminal_returns_url(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    cloud_status: CloudJobStatus,
+) -> None:
+    """A running analyze pod (cloud_job SUBMITTED or RUNNING) can still fetch a presigned URL (200).
+
+    Bug 260706-vqz: submit_cloud_job stamps SUBMITTED at Kueue Job creation, BEFORE the pod runs,
+    so the pod always observes SUBMITTED/RUNNING -- an UPLOADED-only guard was unreachable for it.
+    """
+    agent, _token = seed_test_agent
+    file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=cloud_status)
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert str(file.id) in body["download_url"]  # file_id-scoped key in the URL
+    assert body["expected_sha256"] == _SHA  # server-sourced, from FileRecord.sha256_hash
+
+
+@pytest.mark.parametrize("cloud_status", [CloudJobStatus.SUCCEEDED, CloudJobStatus.FAILED])
+async def test_presign_download_terminal_status_returns_409(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    cloud_status: CloudJobStatus,
+) -> None:
+    """A terminal cloud_job (SUCCEEDED/FAILED) 409s -- the staged object may already be cleaned up (WR-03)."""
+    agent, _token = seed_test_agent
+    file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=cloud_status)
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 409, resp.text
+    assert "not ready" in resp.json()["detail"]
+
+
 async def test_presign_download_unresolvable_bucket_returns_409(
     s3_env: str,
     authenticated_client: AsyncClient,
