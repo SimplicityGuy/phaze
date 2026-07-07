@@ -65,6 +65,29 @@ def test_compute_backend_missing_scratch_dir_fails_fast_with_id() -> None:
         ComputeBackend(kind="compute", id="compute-y", rank=10, cap=2, agent_ref="y-node")
 
 
+def test_compute_backend_unsafe_push_host_fails_fast_with_id() -> None:
+    """WR-03: a push_host with whitespace/shell metachars fails id-tagged at config-load, not deep in dispatch."""
+    with pytest.raises(ValidationError, match=r"backend 'compute-h'.*push_host must not contain"):
+        ComputeBackend(kind="compute", id="compute-h", rank=10, cap=2, agent_ref="h-node", scratch_dir="/scratch", push_host="a1 push")
+
+
+def test_compute_backend_unsafe_ssh_user_fails_fast_with_id() -> None:
+    """WR-03: an ssh_user carrying a shell metachar fails id-tagged at config-load (ssh_user stays optional otherwise)."""
+    with pytest.raises(ValidationError, match=r"backend 'compute-u'.*ssh_user must not contain"):
+        ComputeBackend(
+            kind="compute", id="compute-u", rank=10, cap=2, agent_ref="u-node", scratch_dir="/scratch", push_host="u.push", ssh_user="root;whoami"
+        )
+
+
+def test_compute_backend_clean_dispatch_fields_construct() -> None:
+    """WR-03 must not regress the happy path: a clean compute entry (with and without ssh_user) still constructs."""
+    ComputeBackend(kind="compute", id="compute-ok", rank=10, cap=2, agent_ref="ok-node", scratch_dir="/scratch", push_host="ok.push")
+    be = ComputeBackend(
+        kind="compute", id="compute-ok2", rank=10, cap=2, agent_ref="ok2-node", scratch_dir="/scratch", push_host="ok2.push", ssh_user="bursty"
+    )
+    assert be.ssh_user == "bursty"
+
+
 def test_kueue_backend_parses() -> None:
     """A kueue entry carries a nested kube config + explicit bucket id-list (D-08/D-13)."""
     be = KueueBackend(kind="kueue", id="kueue-1", rank=5, cap=4, kube=KubeConfig(api_url="https://kube.example.com"), buckets=["b1"])

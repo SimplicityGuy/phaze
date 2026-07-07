@@ -25,6 +25,12 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
+# Chars that must never reach the ssh remote spec / rsync operand (whitespace + shell metacharacters).
+# Keep in sync with ``PushFilePayload._DEST_HOST_FORBIDDEN`` in ``schemas/agent_tasks.py`` — both guard
+# the same ssh-remote-spec surface: this one at config-load time (WR-03), that one at HTTP-payload time.
+_PUSH_DEST_FORBIDDEN: frozenset[str] = frozenset(" \t\n\r;|&$`()<>")
+
+
 def _read_secret_file(path: str, *, preserve_whitespace: bool) -> str:
     """Read an inline ``*_file`` secret path eagerly, applying the shared strip-vs-verbatim rule.
 
@@ -113,6 +119,15 @@ class ComputeBackend(BaseModel):
             raise ValueError(f"backend {self.id!r} (kind=compute) requires a scratch_dir")
         if not self.push_host:
             raise ValueError(f"backend {self.id!r} (kind=compute) requires a push_host")
+        # WR-03 (73-REVIEW): push_host (required) and ssh_user (optional) land verbatim in the ssh
+        # remote spec push.py builds (`{ssh_user}@{push_host}:{scratch_dir}/...`). Reject whitespace /
+        # shell metacharacters here, id-tagged at config-load, instead of letting a malformed
+        # backends.toml surface as a pydantic.ValidationError deep inside the first push_file dispatch
+        # (mirrors PushFilePayload._dest_host_safe / _dest_ssh_user_safe). ssh_user stays optional.
+        if any(ch in _PUSH_DEST_FORBIDDEN for ch in self.push_host):
+            raise ValueError(f"backend {self.id!r} (kind=compute) push_host must not contain whitespace or shell metacharacters")
+        if self.ssh_user and any(ch in _PUSH_DEST_FORBIDDEN for ch in self.ssh_user):
+            raise ValueError(f"backend {self.id!r} (kind=compute) ssh_user must not contain whitespace or shell metacharacters")
         return self
 
 
