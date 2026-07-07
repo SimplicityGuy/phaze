@@ -39,6 +39,14 @@ consumer (the lane worker settings) derive from it.
 `meta` lane, sidecar overhead, and the OS. The `io` lane is network-bound and runs **off** the
 CPU budget. All concurrencies are env-overridable.
 
+**`WORKER_MAX_JOBS` is a ceiling in lane mode (quick-260707-g84).** In lane mode the per-lane
+concurrency knob (`PHAZE_LANE_<LANE>_CONCURRENCY`) **governs** the worker's concurrency, and
+`WORKER_MAX_JOBS` acts only as an upper bound: `concurrency = min(lane knob, worker_max_jobs)`.
+So an explicit, lower `WORKER_MAX_JOBS` is authoritative and clamps every lane, but setting
+`WORKER_MAX_JOBS` alone does **not** raise a lane above its knob. On the file-server defaults
+(lane ≤ 4, `worker_max_jobs` 8) the ceiling never bites and behavior is unchanged. The effective
+concurrency, the lane, and whether the ceiling clamped it are logged once at worker startup.
+
 ### Thread pinning
 
 essentia/TensorFlow are pinned single-threaded on the CPU lanes (`analyze`, `fingerprint`) so one
@@ -67,6 +75,13 @@ target lane-suffixed queue names uniformly, the compute agent consumes the **sin
 `fingerprint` / `meta` / `io` lanes would be permanently empty on a compute host, and the I/O-starvation /
 head-of-line problems the lane split solves are file-server-only. Single lane ⇒ single heartbeat (its
 `PHAZE_AGENT_HEARTBEAT` is left unset → default true). k8s burst pods are untouched.
+
+**Memory-safety cap (quick-260707-g84).** The OCI Ampere A1 compute host has only 12 GB RAM and a
+single `process_file` job peaks ~8 GB, so the `analyze` lane is pinned to **1** concurrent job via
+`PHAZE_LANE_ANALYZE_CONCURRENCY=1` in `docker-compose.cloud-agent.yml`. This is the knob that
+actually governs a lane worker; setting only `WORKER_MAX_JOBS=1` is **inert in lane mode** (it is a
+ceiling — `concurrency = min(lane knob, worker_max_jobs)` — so it can never lift the analyze lane's
+default 4). Without this pin the compute agent silently ran 4 concurrent ~8 GB jobs and OOM-killed.
 
 ## Migration / drain runbook
 
