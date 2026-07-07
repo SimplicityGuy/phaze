@@ -14,8 +14,8 @@ no headless browser) while still locking the contract the way a browser would ho
   the hard CUT-04 ↔ CUT-01 join: the collapsed strip must stay screen-reader-navigable
   (glyphs are ``aria-hidden``, so the sr-only label is the node's accessible name, D-08);
 * numeric **count** spans (``x-text=...``) carry ``max-lg:hidden`` (visual-only data);
-* at least 15 inline ``<svg aria-hidden="true">`` glyphs exist (one per navigable node —
-  12 stage buttons + the 2 below-line links + the "+ Scan" CTA);
+* at least 14 inline ``<svg aria-hidden="true">`` glyphs exist (one per navigable node —
+  12 stage buttons + the 2 below-line links);
 * every navigable node carries a native ``title`` tooltip; and
 * the active / focus affordances (``aria-current="page"`` idiom + a ``focus-visible:``
   class) survive the CUT-04 edit — a regression guard against the additive rewrite.
@@ -46,8 +46,8 @@ def _rail_source() -> str:
 
 
 def _navigable_node_tags() -> list[str]:
-    """Opening tags of every navigable rail node: the /s/ stage buttons + the "+ Scan"
-    CTA (both carry ``hx-get=``) and the two below-the-line links (``href=``)."""
+    """Opening tags of every navigable rail node: the /s/ stage buttons (which carry
+    ``hx-get=``) and the two below-the-line links (``href=``)."""
     tags: list[str] = []
     for m in _OPEN_TAG.finditer(_rail_source()):
         attrs = m.group("attrs")
@@ -59,10 +59,10 @@ def _navigable_node_tags() -> list[str]:
 def _label_span_attrs() -> list[str]:
     """Class attributes of the node *label* spans.
 
-    Two shapes exist: stage/top-level labels carry ``flex-1 text-sm``; the "+ Scan" CTA
-    and the two below-line links use a bare ``<span class="max-lg:sr-only">`` label. Both
-    are labels (they hold the node's visible text). Count spans (``x-text``) and eyebrows
-    are excluded — they are handled by their own assertions.
+    Two shapes exist: stage/top-level labels carry ``flex-1 text-sm``; the two below-line
+    links use a bare ``<span class="max-lg:sr-only">`` label. Both are labels (they hold the
+    node's visible text). Count spans (``x-text``) and eyebrows are excluded — they are
+    handled by their own assertions.
     """
     spans: list[str] = []
     for m in _SPAN_TAG.finditer(_rail_source()):
@@ -113,10 +113,10 @@ def test_counts_hidden() -> None:
 
 
 def test_glyphs_present() -> None:
-    """At least 15 inline-SVG glyphs, each aria-hidden (one per navigable node)."""
+    """At least 14 inline-SVG glyphs, each aria-hidden (one per navigable node)."""
     html = _rail_source()
     glyphs = re.findall(r"<svg\b[^>]*aria-hidden=\"true\"[^>]*>", html, re.DOTALL)
-    assert len(glyphs) >= 15, f"expected >=15 aria-hidden inline-SVG glyphs, found {len(glyphs)}"
+    assert len(glyphs) >= 14, f"expected >=14 aria-hidden inline-SVG glyphs, found {len(glyphs)}"
     # Every glyph follows the wrapper contract (24x24 viewBox, currentColor, w-5 h-5).
     for glyph in glyphs:
         assert 'viewBox="0 0 24 24"' in glyph, f"glyph not using 24x24 viewBox: {glyph}"
@@ -128,7 +128,7 @@ def test_titles_present() -> None:
     """Every navigable node carries a native title tooltip (collapsed-state name for
     sighted pointer/keyboard users)."""
     tags = _navigable_node_tags()
-    assert len(tags) >= 15, f"expected >=15 navigable nodes, found {len(tags)}"
+    assert len(tags) >= 14, f"expected >=14 navigable nodes, found {len(tags)}"
     for attrs in tags:
         assert "title=" in attrs, f"navigable node missing title tooltip: <...{attrs}>"
 
