@@ -136,7 +136,7 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "process_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-analyze", "process_file")}
     assert all(q != "default" for q, _, _ in capture)
 
 
@@ -168,7 +168,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox", "process_file")
+    assert (queue_name, task_name) == ("phaze-agent-nox-analyze", "process_file")
 
     # All five required fields present -- not just file_id (the pre-fix bug). Phase 44-01
     # added the optional fine_cap/coarse_cap overrides; Phase 50 added expected_sha256/scratch_path
@@ -226,7 +226,7 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox", "extract_file_metadata")
+    assert (queue_name, task_name) == ("phaze-agent-nox-meta", "extract_file_metadata")
 
     # All four required fields present -- not just file_id (the CR-01 bug).
     assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id"}
@@ -263,7 +263,7 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     assert response.json()["enqueued"] == 1
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
     assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
@@ -307,7 +307,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
     assert response.json()["enqueued"] == 3
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured_policy) == 3
     # Every enqueue carries a key, and it matches that same enqueue's payload file_id.
     for (task_name, payload), policy in zip(queue.captured, queue.captured_policy, strict=True):
@@ -330,7 +330,7 @@ async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClie
     assert response.status_code == 200
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
     assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
@@ -528,7 +528,7 @@ async def test_analyze_short_and_null_route_to_fileserver_with_key(client: Async
     assert data["cloud"] == 0
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 2
     assert {p["key"] for p in queue.captured_policy} == {f"process_file:{short_file.id}", f"process_file:{null_file.id}"}
 
@@ -1085,10 +1085,10 @@ async def test_deepen_enqueues_elevated_cap_on_per_agent_queue(client: AsyncClie
     response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert response.status_code == 200
 
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 1
     task_name, payload = queue.captured[0]
-    assert (queue.name, task_name) == ("phaze-agent-nox", "process_file")
+    assert (queue.name, task_name) == ("phaze-agent-nox-analyze", "process_file")
     assert queue.name != "default"
     # The unbounded-deepen sentinel reached the producer and was serialized.
     assert payload["fine_cap"] == 0
@@ -1116,7 +1116,7 @@ async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient
     response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert response.status_code == 200
 
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 1
     _, payload = queue.captured[0]
     # All five required fields present (not just file_id) plus the cap overrides.
@@ -1167,7 +1167,7 @@ async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncC
     # First deepen: enqueues + registers the key.
     r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert r1.status_code == 200
-    queue = router.queues["nox"]
+    queue = router.queues["nox-analyze"]
     assert len(queue.captured) == 1
     assert queue.captured_policy[0]["key"] == expected_key
 
@@ -1252,9 +1252,9 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
     assert response.status_code == 200
     assert "re-queued 3 failed file(s)" in response.text.lower()
 
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 3
-    assert queue.name == "phaze-agent-nox"
+    assert queue.name == "phaze-agent-nox-analyze"
     assert queue.name != "default"
     captured_ids = set()
     for task_name, payload in queue.captured:
@@ -1619,7 +1619,7 @@ async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(cl
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "scan_live_set")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "scan_live_set")}
     assert all(q != "default" for q, _, _ in capture)
     assert all(q != "controller" for q, _, _ in capture)
     # Every enqueue carries the COMPLETE payload — model_validate (extra="forbid") must accept it.
@@ -1952,7 +1952,7 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "process_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-analyze", "process_file")}
     # UI path enqueues a complete payload too (every job carries all five fields).
     for _q, _t, kwargs in capture:
         ProcessFilePayload.model_validate(kwargs)
@@ -2030,7 +2030,7 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert queue_name == "phaze-agent-nox"
+    assert queue_name == "phaze-agent-nox-analyze"
     assert task_name == "process_file"
     # Complete payload -- all five ProcessFilePayload fields, not just file_id. Phase 44-01
     # added the optional fine_cap/coarse_cap overrides (None on the bulk path).
@@ -2088,7 +2088,7 @@ async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSess
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "extract_file_metadata")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "extract_file_metadata")}
 
 
 @pytest.mark.asyncio
@@ -2132,7 +2132,7 @@ async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: As
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "extract_file_metadata")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "extract_file_metadata")}
 
 
 @pytest.mark.asyncio
@@ -2173,7 +2173,7 @@ async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: A
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "fingerprint_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-fingerprint", "fingerprint_file")}
 
 
 @pytest.mark.asyncio
@@ -2199,7 +2199,7 @@ async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncCl
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, payload = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox", "fingerprint_file")
+    assert (queue_name, task_name) == ("phaze-agent-nox-fingerprint", "fingerprint_file")
     assert payload["file_id"] == str(failed.id)
 
 

@@ -7,10 +7,11 @@ are cached per-agent so the Redis connection pool is reused across enqueues.
 Lifecycle: instantiated once in ``main.py``'s lifespan as ``app.state.task_router``;
 shutdown calls ``close()`` to disconnect every cached queue.
 
-Phase 26 D-18: queue name format is exactly ``phaze-agent-<agent_id>`` where
-``agent_id`` is the kebab-case slug from Phase 24 D-01 (regex
-``^[a-z0-9]+(-[a-z0-9]+)*$``). The slug guarantees Redis-safe key chars; no
-escaping needed.
+Phase 26 D-18 + quick-260707-dh1: queue name format is
+``phaze-agent-<agent_id>-<lane>`` where ``agent_id`` is the kebab-case slug from
+Phase 24 D-01 (regex ``^[a-z0-9]+(-[a-z0-9]+)*$``) and ``<lane>`` is one of
+``analyze`` / ``fingerprint`` / ``meta`` / ``io`` (``enqueue_router.LANES``). The
+slug + lowercase lane guarantee Redis-safe key chars; no escaping needed.
 
 This module is opted into mypy strict checking via the
 ``[[tool.mypy.overrides]] module = "phaze.services.agent_task_router"`` block in
@@ -23,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from phaze.services.enqueue_router import LANES, lane_for_task
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 
 
@@ -71,43 +73,75 @@ class AgentTaskRouter:
         # (the API lifespan + the controller worker) pass it; nothing else does, so the agent
         # boundary is untouched.
         self._ledger_sessionmaker = ledger_sessionmaker
-        self._queues: dict[str, Queue] = {}
+        self._queues: dict[tuple[str, str], Queue] = {}
 
-    def queue_for(self, agent_id: str) -> Queue:
-        """Public accessor for the cached per-agent Queue (Phase 30).
+    def queue_for(self, agent_id: str, lane: str) -> Queue:
+        """Public accessor for the cached per-agent, per-LANE Queue (quick-260707-dh1).
 
-        Returns the same ``phaze-agent-<agent_id>`` Queue as :meth:`_queue_for`
-        (with the ``apply_project_job_defaults`` before_enqueue hook already
-        applied), so the shared ``enqueue_router.resolve_queue_for_task`` and the
-        tracklists scan-status poll can fetch it without reaching into the private
-        method. Construction/caching semantics are unchanged.
+        Returns the ``phaze-agent-<agent_id>-<lane>`` Queue (with the full
+        before_enqueue hook chain already applied) so the shared
+        ``enqueue_router.resolve_queue_for_task``, the depth readers, and every
+        producer can fetch it without reaching into the private method.
+
+        ``lane`` is REQUIRED -- there is NO silent default. A default would strand
+        io tasks (s3_upload / push_file) on the analyze queue, whose worker registers
+        only ``{process_file}`` (the Phase-30 / v4.0.8 stranding this design fixes),
+        and would break the legacy-queue drain invariant. Producers resolve the lane
+        via ``enqueue_router.lane_for_task(task_name)`` (fail-loud on an unmapped name).
         """
-        return self._queue_for(agent_id)
+        return self._queue_for(agent_id, lane)
 
-    def _queue_for(self, agent_id: str) -> Queue:
-        """Return the cached Queue for ``agent_id``, constructing on first access.
+    def all_lane_queues(self, agent_id: str) -> list[Queue]:
+        """Return the agent's four lane queues in ``enqueue_router.LANES`` order.
 
-        Queue name format is ``phaze-agent-<agent_id>`` per Phase 26 D-18.
+        The depth-reader helper (get_queue_activity, the /saq mount): a caller that
+        needs the WHOLE agent's in-flight figure sums across every lane. Distinct from
+        the producer path, which targets exactly one lane per task.
         """
-        if agent_id not in self._queues:
+        return [self._queue_for(agent_id, lane) for lane in LANES]
+
+    def legacy_base_queue(self, agent_id: str) -> Queue:
+        """Return the un-suffixed ``phaze-agent-<agent_id>`` queue -- READ-ONLY drain visibility.
+
+        quick-260707-dh1: during the migration a transitional all-mode worker drains the legacy
+        base queue. Depth readers (get_queue_activity, the /saq mount) include this queue so the
+        drain window stays visible until it reports empty. This is the ONLY place a base
+        (un-suffixed) queue is constructed, and it is NEVER a producer target -- lane routing is
+        enforced everywhere jobs are enqueued (the no-default-queue regression asserts this).
+        Cached under a sentinel lane key so it never collides with a real lane.
+        """
+        return self._queue_for(agent_id, "")
+
+    def _queue_for(self, agent_id: str, lane: str) -> Queue:
+        """Return the cached Queue for ``(agent_id, lane)``, constructing on first access.
+
+        Queue name format is ``phaze-agent-<agent_id>-<lane>`` (quick-260707-dh1;
+        base per Phase 26 D-18 + the lane suffix). Cached under ``(agent_id, lane)``.
+        """
+        cache_key = (agent_id, lane)
+        # quick-260707-dh1: the sentinel empty lane is the READ-ONLY legacy base queue
+        # (phaze-agent-<id>, no suffix) used only for drain visibility; every real lane suffixes.
+        queue_name = f"phaze-agent-{agent_id}" if lane == "" else f"phaze-agent-{agent_id}-{lane}"
+        if cache_key not in self._queues:
             # Phase 36: built via the single `build_pipeline_queue` seam -- a PostgresQueue
             # (broker = queue_url) with BOTH before_enqueue hooks (apply_project_job_defaults +
             # apply_deterministic_key) already registered and a decoupled `cache_redis` handle.
             # The factory owns the hook chain, so the per-agent dispatch path no longer registers
             # them inline (quick-260609-f96: this path once missed the defaults hook, giving
             # agent-dispatched scan_directory jobs SAQ's 10s default -- the factory now guarantees
-            # both hooks on every queue). Conservative pool sizing (1/4) per agent keeps the
-            # per-queue psycopg3 budget under Postgres max_connections (RESEARCH Pitfall 4).
+            # both hooks on every queue). The hook chain + deterministic-key dedup are therefore
+            # per-lane and identical. Conservative pool sizing (1/4) per lane keeps the per-queue
+            # psycopg3 budget under Postgres max_connections (RESEARCH Pitfall 4).
             queue = build_pipeline_queue(
-                f"phaze-agent-{agent_id}",
+                queue_name,
                 self._queue_url,
                 cache_redis_url=self._cache_redis_url,
                 min_size=1,
                 max_size=4,
                 ledger_sessionmaker=self._ledger_sessionmaker,
             )
-            self._queues[agent_id] = queue
-        return self._queues[agent_id]
+            self._queues[cache_key] = queue
+        return self._queues[cache_key]
 
     async def enqueue_for_agent(
         self,
@@ -135,7 +169,11 @@ class AgentTaskRouter:
         ScanDirectoryPayload fields (scan_path/batch_id/agent_id) never collide
         with Job fields; the explicit overrides are merged last so they win.
         """
-        queue = self._queue_for(agent_id)
+        # quick-260707-dh1: derive the lane from task_name (fail-loud on an unmapped name) so
+        # existing callers (execution.py / pipeline_scans.py) stay untouched -- they pass
+        # task_name and the lane is resolved here.
+        lane = lane_for_task(task_name)
+        queue = self._queue_for(agent_id, lane)
         # Phase 36: open the PostgresQueue broker pool (built open=False) before enqueueing.
         # connect() is idempotent (guarded by self._connected) -- a no-op after the first call.
         await queue.connect()
@@ -149,7 +187,7 @@ class AgentTaskRouter:
         # batch_id are bound when the payload carries them (None otherwise). No secrets.
         logger.info(
             "task enqueued",
-            queue=f"phaze-agent-{agent_id}",
+            queue=f"phaze-agent-{agent_id}-{lane}",
             function=task_name,
             agent=agent_id,
             file_id=dumped.get("file_id"),

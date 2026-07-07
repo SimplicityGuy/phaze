@@ -327,7 +327,9 @@ async def _route_discovered_by_duration(
     except enqueue_router.NoActiveAgentError:
         fileserver_agent = None
 
-    fileserver_q = app_state.task_router.queue_for(fileserver_agent.id) if fileserver_agent is not None else None
+    fileserver_q = (
+        app_state.task_router.queue_for(fileserver_agent.id, enqueue_router.lane_for_task("process_file")) if fileserver_agent is not None else None
+    )
 
     local_files: list[FileRecord] = []
     skipped = 0

@@ -49,7 +49,7 @@ from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.backends import resolve_compute_backend
-from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 
@@ -148,7 +148,7 @@ async def report_pushed(
     # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
     # transitional settings.active_compute_scratch_dir reduction accessor was DELETED in Phase 73
     # (MCOMP-03); scratch resolution is per-agent off the recorded backend.
-    compute_queue = request.app.state.task_router.queue_for(agent_ref)
+    compute_queue = request.app.state.task_router.queue_for(agent_ref, lane_for_task("process_file"))
     scratch_path = f"{scratch_dir}/{file_id}.{file.file_type}"
     await enqueue_process_file(
         compute_queue,
@@ -322,7 +322,7 @@ async def report_push_mismatch(
         await session.commit()
         return PushMismatchResponse(file_id=file_id, cleared=False)
 
-    fileserver_queue = request.app.state.task_router.queue_for(fileserver_agent.id)
+    fileserver_queue = request.app.state.task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
     # Landmine 1: stamp the RECORDED backend's destination onto the re-driven payload (backend is non-None
     # here -- either the reporter passed the D-07 gate or no gate applied and the backend-None hold above
     # already returned). The destination is the compute backend to push TO; agent_id is the FILESERVER

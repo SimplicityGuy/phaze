@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock
 from saq import Job
 
 from phaze.models.agent import Agent
+from phaze.services.enqueue_router import LANES
 
 
 if TYPE_CHECKING:
@@ -185,12 +186,31 @@ class FakeQueue:
         }
 
 
-class FakeTaskRouter:
-    """An ``AgentTaskRouter`` stand-in: ``queue_for`` yields a ``phaze-agent-<id>`` queue.
+def _lane_key(agent_id: str, lane: str | None) -> str:
+    """Cache key for a per-agent, per-lane fake queue.
 
-    Queues are cached per ``agent_id`` (so a test can retrieve the same instance the
-    handler used via ``router.queues[agent_id]``), and every ``queue_for`` argument is
-    recorded on ``queue_for_calls``. All queues share the router's ``captures`` list.
+    ``lane=None`` / ``""`` (the legacy base) maps to the bare ``agent_id`` key so a test
+    can still read the base queue via ``router.queues[agent_id]``; a real lane appends
+    ``-<lane>`` (e.g. ``"nox-analyze"``), mirroring the ``phaze-agent-<id>-<lane>`` naming.
+    """
+    return agent_id if lane in (None, "") else f"{agent_id}-{lane}"
+
+
+def _lane_name(agent_id: str, lane: str | None) -> str:
+    """Queue name for a per-agent, per-lane fake queue (base when lane is None/"")."""
+    return f"phaze-agent-{agent_id}" if lane in (None, "") else f"phaze-agent-{agent_id}-{lane}"
+
+
+class FakeTaskRouter:
+    """An ``AgentTaskRouter`` stand-in: ``queue_for`` yields a ``phaze-agent-<id>-<lane>`` queue.
+
+    quick-260707-dh1: ``queue_for(agent_id, lane)`` is lane-aware. Queues are cached under
+    ``_lane_key`` (``"nox-analyze"`` for a lane, bare ``"nox"`` for the legacy base) so a test
+    retrieves the same instance the handler used via ``router.queues["nox-analyze"]``. ``lane``
+    is optional on the fake (defaults to the base) purely for test ergonomics; the REAL router
+    requires it. Every ``queue_for`` records the ``agent_id`` on ``queue_for_calls``. All queues
+    share the router's ``captures`` list. ``all_lane_queues`` / ``legacy_base_queue`` mirror the
+    depth-reader helpers.
     """
 
     def __init__(self, capture: Capture | None = None) -> None:
@@ -198,20 +218,28 @@ class FakeTaskRouter:
         self.queues: dict[str, FakeQueue] = {}
         self.queue_for_calls: list[str] = []
 
-    def queue_for(self, agent_id: str) -> FakeQueue:
+    def queue_for(self, agent_id: str, lane: str | None = None) -> FakeQueue:
         self.queue_for_calls.append(agent_id)
-        if agent_id not in self.queues:
-            self.queues[agent_id] = FakeQueue(f"phaze-agent-{agent_id}", self.captures)
-        return self.queues[agent_id]
+        key = _lane_key(agent_id, lane)
+        if key not in self.queues:
+            self.queues[key] = FakeQueue(_lane_name(agent_id, lane), self.captures)
+        return self.queues[key]
 
-    def set_counts(self, agent_id: str, *, queued: int = 0, active: int = 0) -> None:
-        """Pre-seed a per-agent queue's depth before the service enumerates it.
+    def all_lane_queues(self, agent_id: str) -> list[FakeQueue]:
+        return [self.queue_for(agent_id, lane) for lane in LANES]
 
-        Forces lazy creation/caching of the ``phaze-agent-<id>`` fake via
+    def legacy_base_queue(self, agent_id: str) -> FakeQueue:
+        return self.queue_for(agent_id, "")
+
+    def set_counts(self, agent_id: str, *, lane: str | None = None, queued: int = 0, active: int = 0) -> None:
+        """Pre-seed a per-agent (per-lane, or base) queue's depth before the service enumerates it.
+
+        Forces lazy creation/caching of the ``phaze-agent-<id>[-<lane>]`` fake via
         :meth:`queue_for`, then seeds its ``count`` depths — so a test can assert the
-        summed agent depth a later ``queue_for`` read returns.
+        summed agent depth a later read returns. ``lane=None`` seeds the legacy base queue,
+        which ``get_queue_activity`` includes for drain visibility.
         """
-        self.queue_for(agent_id).set_counts(queued=queued, active=active)
+        self.queue_for(agent_id, lane).set_counts(queued=queued, active=active)
 
 
 class DedupFakeQueue(FakeQueue):
@@ -273,11 +301,12 @@ class DedupFakeTaskRouter(FakeTaskRouter):
         super().__init__(capture)
         self.queues: dict[str, DedupFakeQueue] = {}  # type: ignore[assignment]
 
-    def queue_for(self, agent_id: str) -> DedupFakeQueue:  # type: ignore[override]
+    def queue_for(self, agent_id: str, lane: str | None = None) -> DedupFakeQueue:  # type: ignore[override]
         self.queue_for_calls.append(agent_id)
-        if agent_id not in self.queues:
-            self.queues[agent_id] = DedupFakeQueue(f"phaze-agent-{agent_id}", self.captures)
-        return self.queues[agent_id]
+        key = _lane_key(agent_id, lane)
+        if key not in self.queues:
+            self.queues[key] = DedupFakeQueue(_lane_name(agent_id, lane), self.captures)
+        return self.queues[key]
 
 
 def install_fake_queues(client: AsyncClient) -> tuple[FakeQueue, FakeTaskRouter]:
@@ -322,8 +351,14 @@ def stub_app_state() -> SimpleNamespace:
     controller_queue = SimpleNamespace(name="controller", connect=AsyncMock())
 
     class _StubRouter:
-        def queue_for(self, agent_id: str) -> SimpleNamespace:
-            return SimpleNamespace(name=f"phaze-agent-{agent_id}", connect=AsyncMock())
+        def queue_for(self, agent_id: str, lane: str | None = None) -> SimpleNamespace:
+            return SimpleNamespace(name=_lane_name(agent_id, lane), connect=AsyncMock())
+
+        def all_lane_queues(self, agent_id: str) -> list[SimpleNamespace]:
+            return [self.queue_for(agent_id, lane) for lane in LANES]
+
+        def legacy_base_queue(self, agent_id: str) -> SimpleNamespace:
+            return self.queue_for(agent_id, "")
 
     return SimpleNamespace(controller_queue=controller_queue, task_router=_StubRouter())
 

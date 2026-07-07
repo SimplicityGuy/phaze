@@ -141,7 +141,8 @@ async def test_cloud_disabled_routes_long_file_local(session: AsyncSession) -> N
     assert long_file.state == FileState.DISCOVERED
     # It was enqueued onto the fileserver queue (the local path), not held.
     assert router.queue_for_calls == ["nox"]
-    assert [t for t, _ in router.queues["nox"].captured] == ["process_file"]
+    # quick-260707-dh1: process_file routes to the analyze lane queue.
+    assert [t for t, _ in router.queues["nox-analyze"].captured] == ["process_file"]
 
 
 @pytest.mark.asyncio

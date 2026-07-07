@@ -224,9 +224,13 @@ async def get_queue_activity(app_state: Any, session: AsyncSession) -> dict[str,
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None))
         agents = (await session.execute(agents_stmt)).scalars().all()
         for agent in agents:
-            q = app_state.task_router.queue_for(agent.id)
-            agent_queued += await q.count("queued")
-            agent_active += await q.count("active")
+            # quick-260707-dh1: sum queued+active across ALL FOUR lane queues (the authoritative
+            # all-lane agent depth -- the heartbeat's queue_depth is analyze-lane-only by design)
+            # PLUS the legacy base queue so the migration drain window stays visible. A 0/absent
+            # base degrades cleanly through the same try/except.
+            for q in (*app_state.task_router.all_lane_queues(agent.id), app_state.task_router.legacy_base_queue(agent.id)):
+                agent_queued += await q.count("queued")
+                agent_active += await q.count("active")
     except Exception:
         # Broad by design: a missing app.state attr (test lifespan-skip) or any Redis
         # hiccup must degrade this source to 0, never 500 the 5s dashboard poll.

@@ -19,7 +19,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
-from phaze.services.enqueue_router import NoActiveAgentError, resolve_queue_for_task
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
 from phaze.services.tracklist_matcher import compute_match_confidence
 from phaze.services.tracklist_scraper import TracklistScraper
@@ -283,12 +283,13 @@ async def scan_status(
 ) -> HTMLResponse:
     """Poll scan progress by checking SAQ job results on the per-agent queue.
 
-    ``scan_live_set`` jobs are enqueued onto the selected agent's
-    ``phaze-agent-<id>`` queue, and ``queue.job(job_key)`` lookups are
-    queue-scoped, so the poll must target the SAME per-agent queue. The
-    ``agent_id`` is echoed from ``trigger_scan`` through the progress partial.
+    ``scan_live_set`` jobs are enqueued onto the selected agent's meta lane
+    (``phaze-agent-<id>-meta``), and ``queue.job(job_key)`` lookups are
+    queue-scoped, so the poll must target the SAME lane queue the job was enqueued
+    on (quick-260707-dh1). The ``agent_id`` is echoed from ``trigger_scan`` through
+    the progress partial.
     """
-    queue = request.app.state.task_router.queue_for(agent_id)
+    queue = request.app.state.task_router.queue_for(agent_id, lane_for_task("scan_live_set"))
     ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
 
     completed = 0

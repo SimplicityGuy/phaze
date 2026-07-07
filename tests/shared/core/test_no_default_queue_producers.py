@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -33,6 +34,8 @@ import pytest
 from phaze.services.enqueue_router import (
     AGENT_TASKS,
     CONTROLLER_TASKS,
+    LANES,
+    lane_for_task,
     resolve_queue_for_task,
 )
 from tests._queue_fakes import seed_active_agent, stub_app_state
@@ -181,15 +184,52 @@ async def test_every_controller_task_routes_to_controller_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_every_agent_task_routes_to_per_agent_queue(session: AsyncSession) -> None:
-    """Every AGENT_TASKS name resolves to the active agent's phaze-agent-<id> queue."""
+async def test_every_agent_task_routes_to_its_lane_queue(session: AsyncSession) -> None:
+    """quick-260707-dh1: every AGENT_TASKS name resolves to its LANE queue, never the bare base.
+
+    The regression that locks the design: each producer path resolves through lane_for_task, so
+    the routed queue name is ``phaze-agent-<id>-<lane>`` for the correct lane -- an un-suffixed
+    ``phaze-agent-<id>`` (the analyze-lane-strands-io Phase-30 class) can never be produced.
+    """
     agent = await seed_active_agent(session)
     app_state = stub_app_state()
+    lane_re = re.compile(rf"^phaze-agent-{re.escape(agent.id)}-(analyze|fingerprint|meta|io)$")
 
     for task_name in sorted(AGENT_TASKS):
         routed = await resolve_queue_for_task(task_name, app_state, session)
         assert routed.agent_id == agent.id, task_name
-        assert routed.queue.name == f"phaze-agent-{agent.id}", task_name
+        expected_lane = lane_for_task(task_name)
+        assert routed.queue.name == f"phaze-agent-{agent.id}-{expected_lane}", task_name
+        # NEVER the un-suffixed base -- the no-default-queue invariant.
+        assert routed.queue.name != f"phaze-agent-{agent.id}", task_name
+        assert lane_re.match(routed.queue.name), task_name
+
+
+@pytest.mark.asyncio
+async def test_agent_tasks_route_to_expected_lanes(session: AsyncSession) -> None:
+    """Explicit task->lane routing spot-check across all four lanes (design table)."""
+    agent = await seed_active_agent(session)
+    app_state = stub_app_state()
+
+    expected = {
+        "process_file": "analyze",
+        "fingerprint_file": "fingerprint",
+        "extract_file_metadata": "meta",
+        "scan_directory": "meta",
+        "scan_live_set": "meta",
+        "execute_approved_batch": "meta",
+        "s3_upload": "io",
+        "push_file": "io",
+    }
+    for task_name, lane in expected.items():
+        routed = await resolve_queue_for_task(task_name, app_state, session)
+        assert routed.queue.name == f"phaze-agent-{agent.id}-{lane}", task_name
+
+
+def test_lane_for_task_covers_every_agent_producer_task() -> None:
+    """Every AGENT_TASKS name (the producer universe) maps to a valid lane -- no unmapped producer."""
+    for task_name in AGENT_TASKS:
+        assert lane_for_task(task_name) in LANES
 
 
 @pytest.mark.asyncio

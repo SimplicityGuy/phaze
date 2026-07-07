@@ -212,11 +212,22 @@ def _patch_saq_lifespan(
     controller_queue.cache_redis = AsyncMock()
     monkeypatch.setattr(main_module, "build_pipeline_queue", MagicMock(return_value=controller_queue))
 
-    # task_router.queue_for -> the cached per-agent Queue (here a Wave 0 FakeQueue with .info
-    # + a no-op async connect the lifespan opens before mounting /saq).
+    # quick-260707-dh1: the /saq mount now enumerates all_lane_queues(agent) + legacy_base_queue(agent)
+    # (4 lane queues + the drain-visibility base). Each is a Wave 0 FakeQueue with .info + a no-op
+    # async connect the lifespan opens before mounting /saq. Cached by name so the same instances
+    # are reused across the two reader calls.
     fake_router = MagicMock()
     fake_router.close = AsyncMock()
-    fake_router.queue_for = MagicMock(return_value=FakeQueue("phaze-agent-nox"))
+    _lane_q_cache: dict[str, FakeQueue] = {}
+
+    def _lane_q(agent_id: str, lane: str) -> FakeQueue:
+        name = f"phaze-agent-{agent_id}" if lane == "" else f"phaze-agent-{agent_id}-{lane}"
+        if name not in _lane_q_cache:
+            _lane_q_cache[name] = FakeQueue(name)
+        return _lane_q_cache[name]
+
+    fake_router.all_lane_queues = MagicMock(side_effect=lambda aid: [_lane_q(aid, lane) for lane in ("analyze", "fingerprint", "meta", "io")])
+    fake_router.legacy_base_queue = MagicMock(side_effect=lambda aid: _lane_q(aid, ""))
     monkeypatch.setattr(main_module, "AgentTaskRouter", lambda **_kw: fake_router)
 
     fake_redis = AsyncMock()
@@ -271,12 +282,21 @@ async def test_saq_queues_assembled_and_reused(monkeypatch: pytest.MonkeyPatch) 
     app = main_module.create_app()
     with TestClient(app):
         # saq_web stores the assembled queues in its module-global registry, keyed by name.
-        assert set(saq_starlette.QUEUES.keys()) == {"controller", "phaze-agent-nox"}
+        # quick-260707-dh1: controller + the agent's 4 lane queues + the drain-visibility base.
+        assert set(saq_starlette.QUEUES.keys()) == {
+            "controller",
+            "phaze-agent-nox-analyze",
+            "phaze-agent-nox-fingerprint",
+            "phaze-agent-nox-meta",
+            "phaze-agent-nox-io",
+            "phaze-agent-nox",
+        }
         # No second pool: the registry holds the SAME controller instance wired on app.state.
         assert saq_starlette.QUEUES["controller"] is app.state.controller_queue
         assert saq_starlette.QUEUES["controller"] is controller_queue
-    # The per-agent queue came from task_router.queue_for("nox") (the cached enqueue-path instance).
-    assert task_router.queue_for.call_args_list == [(("nox",), {})]
+    # The per-agent lane queues came from all_lane_queues("nox") + legacy_base_queue("nox").
+    assert task_router.all_lane_queues.call_args_list == [(("nox",), {})]
+    assert task_router.legacy_base_queue.call_args_list == [(("nox",), {})]
 
 
 @pytest.mark.asyncio

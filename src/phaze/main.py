@@ -162,7 +162,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         async with async_session() as session:
             agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
             agents = (await session.execute(agents_stmt)).scalars().all()
-        agent_queues = [_app.state.task_router.queue_for(agent.id) for agent in agents]
+        # quick-260707-dh1: mount ALL FOUR lane queues per agent (analyze/fingerprint/meta/io)
+        # PLUS the legacy base queue so the migration drain window is visible in the dashboard.
+        agent_queues = [
+            q for agent in agents for q in (*_app.state.task_router.all_lane_queues(agent.id), _app.state.task_router.legacy_base_queue(agent.id))
+        ]
         # Phase 36: the dashboard reads each queue's `.info()`, which needs an open psycopg pool.
         # The PostgresQueue pools are built open=False, so open them here (idempotent connect()).
         for q in agent_queues:

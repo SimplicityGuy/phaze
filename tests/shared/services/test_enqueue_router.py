@@ -277,7 +277,8 @@ async def test_resolve_agent_task_returns_per_agent_queue(session: AsyncSession)
     routed = await resolve_queue_for_task("process_file", app_state, session)
 
     assert routed.agent_id == "fileserver-01"
-    assert routed.queue.name == "phaze-agent-fileserver-01"
+    # quick-260707-dh1: process_file routes to the analyze lane queue.
+    assert routed.queue.name == "phaze-agent-fileserver-01-analyze"
 
 
 @pytest.mark.asyncio

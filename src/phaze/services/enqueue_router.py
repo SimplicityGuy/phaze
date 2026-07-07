@@ -245,7 +245,11 @@ async def resolve_queue_for_task(
             msg = f"resolving per-agent task {task_name!r} requires a database session"
             raise ValueError(msg)
         agent = await select_active_agent(session)
-        queue = app_state.task_router.queue_for(agent.id)
+        # quick-260707-dh1: route to the task's LANE queue (phaze-agent-<id>-<lane>), never the
+        # bare base. lane_for_task raises for an unmapped name -- but task_name is in AGENT_TASKS
+        # here, so it always resolves.
+        lane = lane_for_task(task_name)
+        queue = app_state.task_router.queue_for(agent.id, lane)
         await queue.connect()
         return RoutedQueue(queue, agent.id)
     msg = f"unroutable task: {task_name}"

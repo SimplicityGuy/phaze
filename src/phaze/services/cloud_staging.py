@@ -34,7 +34,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.services import s3_staging
-from phaze.services.enqueue_router import select_active_agent
+from phaze.services.enqueue_router import lane_for_task, select_active_agent
 from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC
 
 
@@ -139,7 +139,7 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         part_size_bytes=cfg.s3_multipart_part_size_bytes,
         agent_id=agent.id,
     )
-    queue = task_router.queue_for(agent.id)
+    queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
     await queue.connect()
     await queue.enqueue(
         "s3_upload",
