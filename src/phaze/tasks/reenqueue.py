@@ -73,7 +73,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord, FileState
 from phaze.services.backends import IN_FLIGHT
-from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.pipeline import (
     count_inflight_jobs,
     get_fingerprint_pending_files,
@@ -175,7 +175,15 @@ _PUSH_DONE = "push_done"
 
 
 def _select_done_analyze_ids() -> Any:
-    """Build the SELECT for file ids whose analyze stage is terminal (ANALYZED / ANALYSIS_FAILED)."""
+    """Build the SELECT for file ids whose analyze stage is terminal (ANALYZED / ANALYSIS_FAILED).
+
+    quick-260707-d79: ANALYSIS_FAILED is DELIBERATELY treated as analyze-DONE here so a genuinely
+    un-analyzable file is NEVER auto-looped by ``recover_orphaned_work``. The operator-gated
+    ``POST /pipeline/analysis-failed/retry`` (routers/pipeline.py ``retry_analysis_failed``) is the
+    manual counterpart that re-drives failed files -- it flips them out of ANALYSIS_FAILED (->
+    FINGERPRINTED) BEFORE re-enqueuing, so a re-driven file is no longer in this terminal set.
+    Do NOT add ANALYSIS_FAILED to a "pending" query here; that would re-introduce the auto-loop.
+    """
     return select(FileRecord.id).where(FileRecord.state.in_([FileState.ANALYZED, FileState.ANALYSIS_FAILED]))
 
 
@@ -378,7 +386,8 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
                     held_agent_rows=len(held_agent_rows),
                 )
             else:
-                compute_queue = ctx["task_router"].queue_for(compute_agent.id)
+                # quick-260707-dh1: held rows are all process_file -> the analyze lane.
+                compute_queue = ctx["task_router"].queue_for(compute_agent.id, lane_for_task("process_file"))
                 for row in held_agent_rows:
                     await _replay_row(compute_queue, row, stages[row.function])
 
@@ -394,7 +403,8 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
                     push_rows=len(push_rows),
                 )
             else:
-                fileserver_queue = ctx["task_router"].queue_for(fileserver_agent.id)
+                # quick-260707-dh1: push_rows are all push_file -> the io lane.
+                fileserver_queue = ctx["task_router"].queue_for(fileserver_agent.id, lane_for_task("push_file"))
                 for row in push_rows:
                     await _replay_row(fileserver_queue, row, stages[row.function])
 
@@ -408,8 +418,11 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
                     agent_rows=len(other_agent_rows),
                 )
             else:
-                agent_queue = ctx["task_router"].queue_for(agent.id)
+                # quick-260707-dh1: other_agent_rows are MIXED functions (process_file /
+                # extract_file_metadata / fingerprint_file) -> derive the lane PER ROW via
+                # lane_for_task(row.function). An unmapped function raises loudly (never a bad queue).
                 for row in other_agent_rows:
+                    agent_queue = ctx["task_router"].queue_for(agent.id, lane_for_task(row.function))
                     await _replay_row(agent_queue, row, stages[row.function])
 
     logger.info("recover_orphaned_work complete", detected_loss=detected_loss, forced=force, stages=stages)

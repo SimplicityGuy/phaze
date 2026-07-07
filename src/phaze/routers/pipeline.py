@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
@@ -16,6 +17,7 @@ import structlog
 from phaze.config import settings
 from phaze.database import async_session, get_session
 from phaze.models.agent import Agent
+from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
@@ -27,6 +29,7 @@ from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
     get_analysis_failed_count,
+    get_analysis_failed_files,
     get_analyze_stage_files,
     get_awaiting_cloud_count,
     get_backfill_candidates,
@@ -324,7 +327,9 @@ async def _route_discovered_by_duration(
     except enqueue_router.NoActiveAgentError:
         fileserver_agent = None
 
-    fileserver_q = app_state.task_router.queue_for(fileserver_agent.id) if fileserver_agent is not None else None
+    fileserver_q = (
+        app_state.task_router.queue_for(fileserver_agent.id, enqueue_router.lane_for_task("process_file")) if fileserver_agent is not None else None
+    )
 
     local_files: list[FileRecord] = []
     skipped = 0
@@ -874,6 +879,75 @@ async def trigger_backfill_cloud(
     )
 
 
+@router.post("/pipeline/analysis-failed/retry", response_class=HTMLResponse)
+async def retry_analysis_failed(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: operator-gated BULK retry of every ANALYSIS_FAILED file (quick-260707-d79).
+
+    ANALYSIS_FAILED is a terminal state that ``recover_orphaned_work`` deliberately treats as
+    analyze-DONE (:func:`phaze.tasks.reenqueue._select_done_analyze_ids`), so a genuinely
+    un-analyzable file is never auto-looped. This endpoint is that invariant's deliberate,
+    operator-gated counterpart: it re-drives EVERY ANALYSIS_FAILED file through the SAME guarded
+    funnel :func:`deepen_analysis` uses -- per-agent routing -> ``NoActiveAgentError`` guard ->
+    :func:`enqueue_process_file` (COMPLETE ``ProcessFilePayload`` + deterministic
+    ``process_file:<id>`` key) -- but with NORMAL caps: a retry is a fresh re-analysis, NOT a
+    deepen, so ``fine_cap`` / ``coarse_cap`` are left at their None default (the standard 60/30
+    window budget), not the deepen sentinel 0.
+
+    Ordering follows the Phase-30 / RESEARCH-Pitfall-3 guards:
+    - Resolve the per-agent queue ONCE. ``process_file`` is an AGENT_TASK; if no agent is online
+      ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT flipping any
+      state or enqueuing -- it never falls through to the consumer-less default queue.
+    - Flip every failed file ANALYSIS_FAILED -> FINGERPRINTED (the canonical pre-analysis state)
+      and ``commit`` BEFORE any enqueue (get_session does NOT auto-commit): the files leave the
+      red bucket immediately; ``put_analysis`` re-flips each -> ANALYZED on success, or
+      ``report_analysis_failed`` -> ANALYSIS_FAILED only if it fails AGAIN.
+    - The deterministic key dedups any file with a live in-flight job to a no-op, so re-enqueuing
+      the WHOLE failed set is safe (dedup-safe; no silent cap).
+    """
+    files = await get_analysis_failed_files(session)
+    if not files:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False},
+        )
+
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        # Do NOT flip state, do NOT enqueue, do NOT fall through to the default queue (Phase-30).
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": True},
+        )
+
+    # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id;
+    # cast narrows str | None -> str for ProcessFilePayload.agent_id.
+    agent_id = cast("str", routed.agent_id)
+
+    # RESEARCH Pitfall 3: flip out of the terminal bucket and COMMIT before any enqueue so the
+    # red count drops on the next 5s poll regardless of the enqueue outcome.
+    for f in files:
+        f.state = FileState.FINGERPRINTED
+    await session.commit()
+
+    for f in files:
+        # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a
+        # deepen. The single funnel guarantees the full payload + deterministic dedup key.
+        await enqueue_process_file(routed.queue, f, agent_id, settings.models_path)
+
+    logger.info("retry_analysis_failed re-queued files", count=len(files))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/retry_failed_response.html",
+        context={"request": request, "count": len(files), "no_active_agent": False},
+    )
+
+
 @router.post("/pipeline/files/{file_id}/deepen", response_class=HTMLResponse)
 async def deepen_analysis(
     request: Request,
@@ -904,6 +978,11 @@ async def deepen_analysis(
     The typed ``uuid.UUID`` path param yields a 422 on a malformed id; an unknown (well-formed)
     id resolves to ``None`` and returns a not-found fragment -- never a raw 500 (T-44-10).
     """
+    # quick-260707-cvz: capture the click epoch BEFORE the enqueue so the poll's completion
+    # predicate (analysis_completed_at > requested_at) only trips on a re-run stamped AFTER
+    # this click -- a stale pre-click sampled result never shows as "complete".
+    since = datetime.now(UTC).timestamp()
+
     result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
     file = result.scalar_one_or_none()
 
@@ -927,7 +1006,86 @@ async def deepen_analysis(
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/deepen_response.html",
-        context={"request": request, "not_found": not_found, "no_active_agent": no_active_agent},
+        context={
+            "request": request,
+            "not_found": not_found,
+            "no_active_agent": no_active_agent,
+            # Consumed ONLY by the success branch's bootstrap poller (guards/branches above
+            # are unchanged). since is a numeric float threaded into the poll URL.
+            "file_id": file_id,
+            "since": since,
+        },
+    )
+
+
+@router.get("/pipeline/files/{file_id}/deepen-progress", response_class=HTMLResponse)
+async def deepen_progress(
+    request: Request,
+    file_id: uuid.UUID,
+    since: float,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX poll target for the "Deepen analysis" progress surface (quick-260707-cvz).
+
+    ``since`` is the deepen-click epoch (seconds, float) threaded through the poll URL. It is a
+    typed query param -- FastAPI 422s a non-numeric value (T-cvz-01) and it is used ONLY in a
+    datetime compare, never rendered raw. The rendered counts are numeric ints (None-guarded to
+    0), never essentia strings (T-cvz-02). An unknown file_id returns a benign "gone" fragment,
+    never a 500 (T-cvz-04).
+
+    COMPLETION PREDICATE (timestamp-gated): a re-run is complete only when ``put_analysis`` has
+    stamped ``analysis_completed_at`` AFTER this click (``> requested_at``). A stale pre-click
+    sampled result has ``completed_at <= requested_at`` and is NOT complete -- killing the
+    misleading-complete edge. ``post_analysis_progress`` is counter-only and never touches
+    ``analysis_completed_at``, so a re-deepen of an already-ANALYZED file keeps its OLD
+    completed_at until the fresh ``put_analysis`` lands.
+
+    State machine (evaluated in order): missing file -> gone (terminal); complete predicate ->
+    complete (terminal); fine_total truthy AND fine_done < fine_total -> running (poll);
+    otherwise -> queued/starting (poll).
+    """
+    file_result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
+    file = file_result.scalar_one_or_none()
+
+    if file is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/deepen_progress.html",
+            context={
+                "request": request,
+                "gone": True,
+                "complete": False,
+                "running": False,
+                "fine_done": 0,
+                "fine_total": 0,
+                "file_id": file_id,
+                "since": since,
+            },
+        )
+
+    analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
+    analysis = analysis_result.scalar_one_or_none()
+
+    requested_at = datetime.fromtimestamp(since, tz=UTC)
+    complete = analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
+
+    fine_done = (analysis.fine_windows_analyzed or 0) if analysis is not None else 0
+    fine_total = (analysis.fine_windows_total or 0) if analysis is not None else 0
+    running = (not complete) and fine_total > 0 and fine_done < fine_total
+
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/deepen_progress.html",
+        context={
+            "request": request,
+            "gone": False,
+            "complete": complete,
+            "running": running,
+            "fine_done": fine_done,
+            "fine_total": fine_total,
+            "file_id": file_id,
+            "since": since,
+        },
     )
 
 

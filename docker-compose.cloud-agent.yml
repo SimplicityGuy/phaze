@@ -68,6 +68,12 @@ services:
     environment:
       - PHAZE_ROLE=agent
       - PHAZE_AGENT_KIND=compute
+      # quick-260707-dh1: the compute agent is media-less and analysis-only -- its ONLY task is
+      # process_file, so it consumes the SINGLE analyze lane (phaze-agent-<id>-analyze). It is
+      # NOT a 4-service split: the fingerprint/meta/io lanes would be permanently empty on a
+      # compute host, and the head-of-line / I/O-starvation problems the lane split solves are
+      # file-server-only. Single lane = single heartbeat (PHAZE_AGENT_HEARTBEAT left unset/true).
+      - PHAZE_AGENT_LANE=analyze
     volumes:
       - "cloud_scratch:${PHAZE_CLOUD_SCRATCH_DIR:?PHAZE_CLOUD_SCRATCH_DIR required}:rw"
       - "${MODELS_PATH:-./models}:/models:rw"

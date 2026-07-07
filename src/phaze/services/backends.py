@@ -53,7 +53,7 @@ from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
-from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent, select_agent_by_id
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
 from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
@@ -232,7 +232,7 @@ class LocalBackend(_BaseBackend):
             return False
         # CR-01: leave the AWAITING_CLOUD candidate set in the SAME session, before the enqueue, no commit.
         file.state = FileState.LOCAL_ANALYZING
-        queue = task_router.queue_for(agent.id)
+        queue = task_router.queue_for(agent.id, lane_for_task("process_file"))
         job = await enqueue_process_file(queue, file, agent.id, cfg.models_path)
         # WR-01: a deterministic-key ``process_file:<id>`` dedup returns None (the file is already being
         # analyzed locally) -> report NOT-newly-staged so the drain's staged tally is honest; a genuine
@@ -342,7 +342,7 @@ class ComputeAgentBackend(_BaseBackend):
         # THIS backend's destination onto the push payload (record-don't-rederive originates at dispatch;
         # NO re-lookup via resolve_compute_backend here -- the bound self.config already holds it).
         push_host, scratch_dir, ssh_user = self._destination()
-        push_queue = task_router.queue_for(fileserver_agent.id)
+        push_queue = task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
         job = await _enqueue_push_file(
             push_queue,
             file,

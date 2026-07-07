@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -38,15 +39,31 @@ SPARK_W = 80.0
 SPARK_H = 24.0
 
 
-def _bpm_polyline_points(windows: Sequence[AnalysisWindow], total_sec: float, width: float, height: float) -> str:
+class BpmSpark(NamedTuple):
+    """A rendered BPM spark: the numeric SVG ``points`` plus the min/max it spans.
+
+    ``lo``/``hi`` are numeric ``float``s taken straight from ``w.bpm`` (never
+    essentia strings) and are used ONLY as HTML label text -- they are deliberately
+    NOT written into any SVG geometry attribute, preserving the coordinate-numeric-only
+    XSS hardening invariant above. ``window_count`` is the number of bpm-bearing windows.
+    """
+
+    points: str
+    lo: float | None
+    hi: float | None
+    window_count: int
+
+
+def _bpm_spark(windows: Sequence[AnalysisWindow], total_sec: float, width: float, height: float) -> BpmSpark:
     """Map fine-window BPM values onto a numeric ``x,y`` polyline path string.
 
     Windows lacking a ``bpm`` are skipped. Coordinates are rounded floats only,
-    so the rendered ``points`` attribute can never carry injected markup.
+    so the rendered ``points`` attribute can never carry injected markup. The
+    surfaced ``lo``/``hi`` (the min/max BPM) feed HTML gutter labels only.
     """
     pairs = [(w.start_sec, w.end_sec, b) for w in windows if (b := w.bpm) is not None]
     if not pairs or total_sec <= 0:
-        return ""
+        return BpmSpark("", None, None, 0)
     bpms = [b for _, _, b in pairs]
     lo, hi = min(bpms), max(bpms)
     span = hi - lo
@@ -57,7 +74,7 @@ def _bpm_polyline_points(windows: Sequence[AnalysisWindow], total_sec: float, wi
         # Higher BPM sits higher on the chart (smaller y in SVG's top-left origin).
         y = height / 2.0 if span <= 0 else height - ((bpm - lo) / span) * height
         coords.append(f"{x:.2f},{y:.2f}")
-    return " ".join(coords)
+    return BpmSpark(" ".join(coords), lo, hi, len(pairs))
 
 
 def _hue_for(label: str) -> int:
@@ -109,7 +126,7 @@ async def _build_sparklines(session: AsyncSession, file_ids: list[uuid.UUID]) ->
     sparklines: dict[str, str] = {}
     for fid, windows in by_file.items():
         total_sec = max((w.end_sec for w in windows), default=0.0)
-        sparklines[str(fid)] = _bpm_polyline_points(windows, total_sec, SPARK_W, SPARK_H)
+        sparklines[str(fid)] = _bpm_spark(windows, total_sec, SPARK_W, SPARK_H).points
     return sparklines
 
 
@@ -287,6 +304,7 @@ async def proposal_timeline(
     analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
     analysis = analysis_result.scalar_one_or_none()
 
+    spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     return templates.TemplateResponse(
         request=request,
         name="proposals/partials/analysis_timeline.html",
@@ -298,7 +316,9 @@ async def proposal_timeline(
             "has_windows": bool(windows),
             "timeline_w": TIMELINE_W,
             "timeline_h": TIMELINE_H,
-            "bpm_points": _bpm_polyline_points(fine, total_sec, TIMELINE_W, TIMELINE_H),
+            "bpm_points": spark.points,
+            "bpm_lo": spark.lo,
+            "bpm_hi": spark.hi,
             "key_ribbons": _ribbons(fine, "musical_key", total_sec),
             "mood_ribbons": _ribbons(coarse, "mood", total_sec),
             "style_ribbons": _ribbons(coarse, "style", total_sec),

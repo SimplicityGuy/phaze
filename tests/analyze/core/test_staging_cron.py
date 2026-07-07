@@ -228,7 +228,7 @@ async def test_one_free_slot_stages_one(async_engine: AsyncEngine, session: Asyn
 
     assert result == {"staged": 1, "skipped": 0}
     # Exactly one push_file enqueued onto the FILESERVER agent's per-agent queue.
-    push_queue = router.queues["nox"]
+    push_queue = router.queues["nox-io"]
     assert [t for t, _ in push_queue.captured] == ["push_file"]
     # WR-03: the push_file job carries an explicit SAQ job-net timeout (above the asyncio outer
     # guard), NOT the inherited 600s role default that equalled push_timeout_sec.
@@ -455,7 +455,7 @@ async def test_k8s_branch_skips_compute_gate_and_stages_to_s3(
 
     assert result == {"staged": 2, "skipped": 0}
     # The k8s branch enqueues s3_upload (NOT push_file) onto the fileserver's per-agent queue.
-    upload_queue = router.queues["nox"]
+    upload_queue = router.queues["nox-io"]
     assert [t for t, _ in upload_queue.captured] == ["s3_upload", "s3_upload"]
     # Exactly two held files flipped to PUSHING; the third stays AWAITING_CLOUD.
     states = await _states_for(session, ids)
@@ -619,7 +619,7 @@ async def test_double_tick_dedups_via_deterministic_key(async_engine: AsyncEngin
 
     router = DedupFakeTaskRouter()
     # Pre-enqueue the deterministic key on the fileserver queue so the cron's enqueue dedups to None.
-    live_queue = router.queue_for(fileserver.id)
+    live_queue = router.queue_for(fileserver.id, "io")
     await live_queue.enqueue("push_file", key=push_file_job_key(fid))
     router.queue_for_calls.clear()
 
@@ -686,7 +686,7 @@ async def test_stage_file_to_s3_core_does_not_commit(
     # (a) The core defers the commit -- the caller (the cron loop / the public wrapper) owns it.
     commit_spy.assert_not_awaited()
     # (b) Exactly one s3_upload enqueued onto the fileserver's per-agent queue.
-    upload_queue = router.queues["nox"]
+    upload_queue = router.queues["nox-io"]
     assert [t for t, _ in upload_queue.captured] == ["s3_upload"]
     # (c) The cloud_job row was upserted (visible via autoflush within this uncommitted transaction).
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()

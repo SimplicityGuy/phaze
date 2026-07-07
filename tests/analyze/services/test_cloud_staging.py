@@ -147,7 +147,7 @@ async def test_stage_file_to_s3_creates_cloud_job_presigns_and_enqueues(
     assert job.staging_bucket == bucket.id  # MKUE-02: the passed bucket is recorded on the row
 
     # Exactly one s3_upload job enqueued on the fileserver agent's queue.
-    queue = task_router.queues[fileserver_id]
+    queue = task_router.queues[f"{fileserver_id}-io"]
     assert len(queue.captured) == 1
     task_name, payload = queue.captured[0]
     assert task_name == "s3_upload"
@@ -173,7 +173,7 @@ async def test_stage_file_to_s3_uses_deterministic_key_and_explicit_timeout(
     task_router = FakeTaskRouter()
     await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
 
-    policy = task_router.queues[fileserver_id].captured_policy[0]
+    policy = task_router.queues[f"{fileserver_id}-io"].captured_policy[0]
     assert policy["key"] == f"s3_upload:{file_id}"
     assert policy["timeout"] == UPLOAD_FILE_SAQ_TIMEOUT_SEC
 
@@ -240,7 +240,7 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
     assert job.upload_id != first_upload_id  # a fresh multipart was initiated
     assert job.staging_bucket == bucket.id  # re-staged onto the same recorded bucket
     # Two enqueues total (original + re-drive); only one cloud_job row (idempotent FK).
-    assert len(task_router.queues[fileserver_id].captured) == 2
+    assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 2
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()
     assert len(rows) == 1
 

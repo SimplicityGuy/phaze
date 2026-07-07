@@ -132,9 +132,9 @@ async def test_pushing_orphan_redrives_to_fileserver(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["stages"]["push_file"] == {"reenqueued": 1, "skipped": 0}
-    assert "nox" in router.queues
-    assert [t for t, _ in router.queues["nox"].captured] == ["push_file"]
-    assert [str(f.id)] == [payload["file_id"] for _name, payload in router.queues["nox"].captured]
+    assert "nox-io" in router.queues
+    assert [t for t, _ in router.queues["nox-io"].captured] == ["push_file"]
+    assert [str(f.id)] == [payload["file_id"] for _name, payload in router.queues["nox-io"].captured]
 
 
 @pytest.mark.asyncio
@@ -158,8 +158,8 @@ async def test_pushing_redrive_routes_to_fileserver_not_compute(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert "nox" in router.queues  # the fileserver got the push
-    assert "cloud" not in router.queues  # never the compute agent
+    assert "nox-io" in router.queues  # the fileserver got the push (io lane)
+    assert not any(k.startswith("cloud") for k in router.queues)  # never the compute agent
     assert result["stages"]["push_file"]["reenqueued"] == 1
 
 

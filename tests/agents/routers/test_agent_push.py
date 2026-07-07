@@ -47,7 +47,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_push import router as agent_push_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import apply_deterministic_key
-from tests._queue_fakes import _JOB_CONTROL_FIELDS, FakeQueue, FakeTaskRouter, seed_active_agent
+from tests._queue_fakes import _JOB_CONTROL_FIELDS, FakeQueue, FakeTaskRouter, _lane_key, _lane_name, seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -318,7 +318,7 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     assert cloud_job.status == CloudJobStatus.SUCCEEDED.value
 
     # Exactly one process_file enqueued on the RECORDED backend's agent_ref queue with the pinned payload.
-    compute_queue = task_router.queues["compute-agent-01"]
+    compute_queue = task_router.queues["compute-agent-01-analyze"]
     assert len(compute_queue.captured) == 1
     task_name, payload = compute_queue.captured[0]
     assert task_name == "process_file"
@@ -351,7 +351,7 @@ async def test_pushed_scratch_path_resolves_under_local_2kueue_1compute(
 
     assert r.status_code == 200, r.text  # NOT a 500 despite ≥2 non-local backends
     # scratch_path resolved off the RECORDED compute backend's scratch_dir; routed to its agent_ref queue.
-    compute_queue = task_router.queues["compute-agent-01"]
+    compute_queue = task_router.queues["compute-agent-01-analyze"]
     assert len(compute_queue.captured) == 1
     _task_name, payload = compute_queue.captured[0]
     assert payload["scratch_path"] == f"{_SCRATCH_DIR}/{file_id}.flac"
@@ -385,8 +385,8 @@ async def test_pushed_routes_to_recorded_backend_not_active_agent(
 
     assert r.status_code == 200, r.text
     # Routed to backend A's agent_ref queue with A's scratch_dir -- never B's.
-    assert "compute-agent-b" not in task_router.queues, "must not route to the active compute agent"
-    compute_queue = task_router.queues["compute-agent-a"]
+    assert not any(k.startswith("compute-agent-b") for k in task_router.queues), "must not route to the active compute agent"
+    compute_queue = task_router.queues["compute-agent-a-analyze"]
     assert len(compute_queue.captured) == 1
     _task_name, payload = compute_queue.captured[0]
     assert payload["scratch_path"] == f"/srv/scratch-a/{file_id}.flac"
@@ -557,7 +557,7 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
     assert row.payload.get("push_attempt") == 1
 
     # push_file re-enqueued on the FILESERVER queue with the deterministic key + the RE-STAMPED destination.
-    fileserver_queue = task_router.queues[fileserver_id]
+    fileserver_queue = task_router.queues[f"{fileserver_id}-io"]
     assert len(fileserver_queue.captured) == 1
     task_name, payload = fileserver_queue.captured[0]
     assert task_name == "push_file"
@@ -853,11 +853,12 @@ class _GatedTaskRouter(FakeTaskRouter):
         self._reached = reached
         self._proceed = proceed
 
-    def queue_for(self, agent_id: str) -> FakeQueue:  # type: ignore[override]
+    def queue_for(self, agent_id: str, lane: str | None = None) -> FakeQueue:  # type: ignore[override]
         self.queue_for_calls.append(agent_id)
-        if agent_id not in self.queues:
-            self.queues[agent_id] = _GatedQueue(f"phaze-agent-{agent_id}", self.captures, reached=self._reached, proceed=self._proceed)
-        return self.queues[agent_id]
+        key = _lane_key(agent_id, lane)
+        if key not in self.queues:
+            self.queues[key] = _GatedQueue(_lane_name(agent_id, lane), self.captures, reached=self._reached, proceed=self._proceed)
+        return self.queues[key]
 
 
 @pytest.mark.asyncio
@@ -970,11 +971,12 @@ class _RealHookTaskRouter(FakeTaskRouter):
         super().__init__()
         self._sm = ledger_sessionmaker
 
-    def queue_for(self, agent_id: str) -> FakeQueue:  # type: ignore[override]
+    def queue_for(self, agent_id: str, lane: str | None = None) -> FakeQueue:  # type: ignore[override]
         self.queue_for_calls.append(agent_id)
-        if agent_id not in self.queues:
-            self.queues[agent_id] = _RealHookQueue(f"phaze-agent-{agent_id}", self.captures, ledger_sessionmaker=self._sm)
-        return self.queues[agent_id]
+        key = _lane_key(agent_id, lane)
+        if key not in self.queues:
+            self.queues[key] = _RealHookQueue(_lane_name(agent_id, lane), self.captures, ledger_sessionmaker=self._sm)
+        return self.queues[key]
 
 
 @pytest.mark.asyncio

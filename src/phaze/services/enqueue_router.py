@@ -19,6 +19,18 @@ respectively. A task missing from both sets is unroutable and
 :func:`resolve_queue_for_task` raises ``ValueError`` (fail loud, never silently
 default).
 
+Per-lane routing (quick-260707-dh1): agent tasks are further partitioned into four
+lanes (``analyze`` / ``fingerprint`` / ``meta`` / ``io``) by :data:`LANE_TASKS`,
+the SINGLE source of truth for task->lane membership. ``AGENT_TASKS`` is the derived
+union of every lane's frozenset, so existing membership checks are unchanged.
+:func:`lane_for_task` is the reverse lookup every agent-queue producer MUST call to
+resolve its lane (it raises ``ValueError`` for any non-agent / unmapped name -- the
+fail-loud guard that keeps a producer from ever building an un-suffixed / bad queue
+name and re-stranding jobs, Phase-30 class). Both the producer (this module) and the
+consumer (``phaze.tasks.agent_worker`` lane worker settings) derive from
+``LANE_TASKS``, mirroring the "MUST mirror" contract between ``AGENT_TASKS`` and the
+agent worker's registered ``functions``.
+
 Active-agent selection policy: :func:`select_active_agent` returns the
 most-recently-seen non-revoked agent (``revoked_at IS NULL`` AND
 ``last_seen_at IS NOT NULL``, ORDER BY ``last_seen_at DESC`` LIMIT 1). This is the
@@ -58,24 +70,70 @@ MUST mirror ``phaze.tasks.controller.settings["functions"]`` (+ the
 operator-enqueued) so it is intentionally omitted from the routable set.
 """
 
-AGENT_TASKS: frozenset[str] = frozenset(
-    {
-        "process_file",
-        "extract_file_metadata",
-        "fingerprint_file",
-        "scan_live_set",
-        "scan_directory",
-        "execute_approved_batch",
-        "push_file",
-        "s3_upload",  # Phase 53: agent httpx multipart-PUT upload to presigned S3 URLs (KSTAGE-02)
-    }
-)
-"""File-touching tasks a file-server agent worker consumes.
+LANE_TASKS: dict[str, frozenset[str]] = {
+    # CPU-bound in-process essentia analysis (host CPU budget).
+    "analyze": frozenset({"process_file"}),
+    # CPU-bound via the panako/audfprint sidecars (same finite core budget).
+    "fingerprint": frozenset({"fingerprint_file"}),
+    # Light / fast control-and-metadata tasks.
+    "meta": frozenset(
+        {
+            "extract_file_metadata",
+            "scan_directory",
+            "scan_live_set",
+            "execute_approved_batch",
+        }
+    ),
+    # Network-bound offload (off the CPU budget).
+    "io": frozenset(
+        {
+            "s3_upload",  # Phase 53: agent httpx multipart-PUT upload to presigned S3 URLs (KSTAGE-02)
+            "push_file",  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
+        }
+    ),
+}
+"""Canonical task->lane partition (quick-260707-dh1). The ONE place task->lane
+membership lives; the producer (:func:`lane_for_task` / :func:`resolve_queue_for_task`)
+and the consumer (``phaze.tasks.agent_worker`` lane worker settings) both derive from
+it. Every agent task appears in EXACTLY one lane (totality asserted in tests).
+
+Add a lane -> add its frozenset here; add a task -> put it in exactly one lane.
+"""
+
+LANES: tuple[str, ...] = tuple(LANE_TASKS)
+"""Ordered lane names (``analyze``, ``fingerprint``, ``meta``, ``io``) -- the insertion
+order of :data:`LANE_TASKS`. ``all_lane_queues`` iterates this so depth readers and the
+compose split enumerate lanes deterministically."""
+
+AGENT_TASKS: frozenset[str] = frozenset().union(*LANE_TASKS.values())
+"""File-touching tasks a file-server agent worker consumes -- the DERIVED union of every
+:data:`LANE_TASKS` lane (single source of truth). Kept as a flat frozenset so existing
+membership checks are unchanged.
 
 MUST mirror ``phaze.tasks.agent_worker.settings["functions"]`` (excluding the
 ``heartbeat_tick`` cron, which agents schedule for themselves and operators never
 dispatch).
 """
+
+# Reverse index built once at import: task name -> its lane. LANE_TASKS totality
+# guarantees each agent task maps to exactly one lane.
+_TASK_TO_LANE: dict[str, str] = {task: lane for lane, tasks in LANE_TASKS.items() for task in tasks}
+
+
+def lane_for_task(task_name: str) -> str:
+    """Return the lane an agent task routes to, or raise ``ValueError`` (fail loud).
+
+    The guard every agent-queue producer MUST call before building a queue: a name that
+    is not in exactly one :data:`LANE_TASKS` lane (a controller task, a cron-only name, a
+    typo) raises rather than silently defaulting -- the same fail-loud posture as
+    :func:`resolve_queue_for_task`'s unroutable branch, and the invariant that keeps a
+    producer from ever stranding a job on an un-consumed / bad-suffixed queue (Phase-30).
+    """
+    lane = _TASK_TO_LANE.get(task_name)
+    if lane is None:
+        msg = f"no agent lane for task: {task_name} (not an agent task, or unmapped in LANE_TASKS)"
+        raise ValueError(msg)
+    return lane
 
 
 class NoActiveAgentError(RuntimeError):
@@ -187,7 +245,11 @@ async def resolve_queue_for_task(
             msg = f"resolving per-agent task {task_name!r} requires a database session"
             raise ValueError(msg)
         agent = await select_active_agent(session)
-        queue = app_state.task_router.queue_for(agent.id)
+        # quick-260707-dh1: route to the task's LANE queue (phaze-agent-<id>-<lane>), never the
+        # bare base. lane_for_task raises for an unmapped name -- but task_name is in AGENT_TASKS
+        # here, so it always resolves.
+        lane = lane_for_task(task_name)
+        queue = app_state.task_router.queue_for(agent.id, lane)
         await queue.connect()
         return RoutedQueue(queue, agent.id)
     msg = f"unroutable task: {task_name}"

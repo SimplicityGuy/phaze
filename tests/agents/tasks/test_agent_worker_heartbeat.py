@@ -88,6 +88,43 @@ async def test_startup_launches_heartbeat_background_task(monkeypatch: pytest.Mo
                 await task
 
 
+async def test_startup_skips_heartbeat_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """quick-260707-dh1: PHAZE_AGENT_HEARTBEAT=false -> startup launches NO heartbeat task.
+
+    Compose sets this false on 3 of the 4 lane workers so exactly one lane (analyze) runs the
+    heartbeat -- an agent reports one authoritative last_seen, not N duplicates.
+    """
+    _set_agent_env(monkeypatch)
+    monkeypatch.setenv("PHAZE_AGENT_HEARTBEAT", "false")
+    from phaze.config import AgentSettings
+    import phaze.tasks.agent_worker as aw
+
+    fake_cfg = AgentSettings()
+    assert fake_cfg.agent_heartbeat_enabled is False
+    monkeypatch.setattr(aw, "get_settings", lambda: fake_cfg)
+
+    fake_identity = MagicMock(agent_id="test-id")
+    fake_client = AsyncMock()
+    fake_client.whoami = AsyncMock(return_value=fake_identity)
+    monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
+    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_k: MagicMock())
+    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_k: MagicMock())
+    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_k: MagicMock(engines=[]))
+    monkeypatch.setattr(aw, "ensure_models_present", lambda _p: None)
+
+    ctx: dict[str, Any] = {}
+    try:
+        await aw.startup(ctx)
+        assert "heartbeat_task" not in ctx
+    finally:
+        task = ctx.get("heartbeat_task")
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
 async def test_shutdown_cancels_heartbeat_task() -> None:
     """shutdown() cancels + awaits ctx['heartbeat_task'] cleanly (CancelledError suppressed)."""
     import phaze.tasks.agent_worker as aw

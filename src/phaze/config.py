@@ -250,6 +250,39 @@ class BaseSettings(PydanticBaseSettings):
 
     # Worker / task queue
     worker_max_jobs: int = 8
+    # Per-lane agent-worker concurrency knobs (quick-260707-dh1). Only the agent lane
+    # worker reads these (via PHAZE_AGENT_LANE); they live on BaseSettings so both roles
+    # parse cleanly. CPU-bound lanes (analyze 4 + fingerprint 2) sum to 6 of nox's 8 cores,
+    # leaving headroom for the fast meta lane + sidecars + OS; io is network-bound (off CPU).
+    lane_analyze_concurrency: int = Field(
+        default=4,
+        validation_alias=AliasChoices("PHAZE_LANE_ANALYZE_CONCURRENCY", "lane_analyze_concurrency"),
+        description="Concurrency of the analyze lane worker (process_file; in-process essentia, CPU-bound).",
+    )
+    lane_fingerprint_concurrency: int = Field(
+        default=2,
+        validation_alias=AliasChoices("PHAZE_LANE_FINGERPRINT_CONCURRENCY", "lane_fingerprint_concurrency"),
+        description="Concurrency of the fingerprint lane worker (fingerprint_file; via panako/audfprint, CPU-bound).",
+    )
+    lane_meta_concurrency: int = Field(
+        default=2,
+        validation_alias=AliasChoices("PHAZE_LANE_META_CONCURRENCY", "lane_meta_concurrency"),
+        description="Concurrency of the meta lane worker (extract/scan/execute; light/fast).",
+    )
+    lane_io_concurrency: int = Field(
+        default=4,
+        validation_alias=AliasChoices("PHAZE_LANE_IO_CONCURRENCY", "lane_io_concurrency"),
+        description="Concurrency of the io lane worker (s3_upload/push_file; network-bound, off CPU budget).",
+    )
+    # quick-260707-dh1: the liveness heartbeat is agent-level, not lane-level. Compose sets
+    # this true on EXACTLY ONE lane worker (analyze) and false on the other three so an agent
+    # reports one authoritative last_seen, never N duplicate heartbeats. All-mode (no lane)
+    # defaults to True (today's single-worker behavior).
+    agent_heartbeat_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PHAZE_AGENT_HEARTBEAT", "agent_heartbeat_enabled"),
+        description="Whether this agent worker launches the liveness heartbeat background task (exactly one lane per agent).",
+    )
     worker_job_timeout: int = 600
     worker_max_retries: int = 4
     worker_process_pool_size: int = 4

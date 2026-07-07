@@ -223,7 +223,7 @@ async def test_orphaned_agent_row_replays_through_keyed_producer(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0}
-    agent_queue = router.queues["nox"]
+    agent_queue = router.queues["nox-analyze"]
     assert [t for t, _ in agent_queue.captured] == ["process_file"]
     # The deterministic key matches the ledger key (re-stamped, so dedup works in production).
     assert agent_queue.captured_policy[0]["key"] == key
@@ -254,7 +254,7 @@ async def test_replay_preserves_stored_timeout_and_retries(
     controller_queue = DedupFakeQueue("controller")
     await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    policy = router.queues["nox"].captured_policy[0]
+    policy = router.queues["nox-analyze"].captured_policy[0]
     assert policy["timeout"] == 7200
     assert policy["retries"] == 2
 
@@ -281,7 +281,7 @@ async def test_replay_omits_policy_when_ledger_has_none(
     controller_queue = DedupFakeQueue("controller")
     await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    policy = router.queues["nox"].captured_policy[0]
+    policy = router.queues["nox-analyze"].captured_policy[0]
     assert "timeout" not in policy
     assert "retries" not in policy
 
@@ -632,7 +632,7 @@ async def test_held_process_file_row_skips_when_only_fileserver_online(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     # The held long file must NOT land on the fileserver queue -- it is left for the release cron.
-    assert "nox" not in router.queues
+    assert not any(k.startswith("nox") for k in router.queues)
     assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
 
 
@@ -662,9 +662,9 @@ async def test_held_process_file_row_routes_to_compute_when_online(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     # Routed to the compute agent's queue; the fileserver queue never saw the held file.
-    assert "cloud" in router.queues
-    assert [str(held.id)] == [payload["file_id"] for _name, payload in router.queues["cloud"].captured]
-    assert "nox" not in router.queues
+    assert "cloud-analyze" in router.queues
+    assert [str(held.id)] == [payload["file_id"] for _name, payload in router.queues["cloud-analyze"].captured]
+    assert not any(k.startswith("nox") for k in router.queues)
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
@@ -693,8 +693,8 @@ async def test_non_held_process_file_row_still_routes_to_any_agent(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     # The short file recovers normally onto the only online agent (the fileserver).
-    assert "nox" in router.queues
-    assert [str(normal.id)] == [payload["file_id"] for _name, payload in router.queues["nox"].captured]
+    assert "nox-analyze" in router.queues
+    assert [str(normal.id)] == [payload["file_id"] for _name, payload in router.queues["nox-analyze"].captured]
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
@@ -759,7 +759,7 @@ async def test_dedup_skip_backstop_for_a_slipped_live_item(
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     # Pre-enqueue the deterministic key on the agent queue (it is actually still live).
-    live_queue = router.queue_for(agent.id)
+    live_queue = router.queue_for(agent.id, "analyze")
     await live_queue.enqueue("process_file", key=key)
     router.queue_for_calls.clear()  # reset so the recovery call's bookkeeping is clean
 
@@ -867,7 +867,7 @@ async def test_count_inflight_jobs_reads_real_saq_jobs() -> None:
         await probe.close()
 
     router = AgentTaskRouter(queue_url=raw_dsn, cache_redis_url=redis_url)
-    queue = router.queue_for("recovery-itest")
+    queue = router.queue_for("recovery-itest", "analyze")
     await queue.connect()  # opens the psycopg pool + init_db() (creates saq_jobs)
     engine = create_async_engine(sa_dsn)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -1111,7 +1111,7 @@ async def test_single_owner_terminal_cloud_job_does_not_block_recovery(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     # Terminal cloud_job -> no backend owner -> the held file recovers via the compute-only held path.
-    assert "cloud" in router.queues
+    assert "cloud-analyze" in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
@@ -1140,7 +1140,7 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert "cloud" in router.queues
+    assert "cloud-analyze" in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 

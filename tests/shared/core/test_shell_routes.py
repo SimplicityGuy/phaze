@@ -109,7 +109,7 @@ async def test_rail_nodes_wired(client: AsyncClient) -> None:
     assert 'hx-target="#stage-workspace"' in body
     assert 'hx-swap="innerHTML"' in body
     assert 'hx-push-url="true"' in body
-    # At least one swap-target attr per navigable node (12) -- the +Scan CTA adds one more.
+    # Exactly one swap-target attr per navigable stage node (the 12 /s/ stages).
     assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES)
 
     # The analyze node (the / default) is the active rail node: aria-current="page" sits on

@@ -136,7 +136,7 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "process_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-analyze", "process_file")}
     assert all(q != "default" for q, _, _ in capture)
 
 
@@ -168,7 +168,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox", "process_file")
+    assert (queue_name, task_name) == ("phaze-agent-nox-analyze", "process_file")
 
     # All five required fields present -- not just file_id (the pre-fix bug). Phase 44-01
     # added the optional fine_cap/coarse_cap overrides; Phase 50 added expected_sha256/scratch_path
@@ -226,7 +226,7 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox", "extract_file_metadata")
+    assert (queue_name, task_name) == ("phaze-agent-nox-meta", "extract_file_metadata")
 
     # All four required fields present -- not just file_id (the CR-01 bug).
     assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id"}
@@ -263,7 +263,7 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     assert response.json()["enqueued"] == 1
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
     assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
@@ -307,7 +307,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
     assert response.json()["enqueued"] == 3
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured_policy) == 3
     # Every enqueue carries a key, and it matches that same enqueue's payload file_id.
     for (task_name, payload), policy in zip(queue.captured, queue.captured_policy, strict=True):
@@ -330,7 +330,7 @@ async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClie
     assert response.status_code == 200
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
     assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
@@ -528,7 +528,7 @@ async def test_analyze_short_and_null_route_to_fileserver_with_key(client: Async
     assert data["cloud"] == 0
 
     await _drain_background()
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 2
     assert {p["key"] for p in queue.captured_policy} == {f"process_file:{short_file.id}", f"process_file:{null_file.id}"}
 
@@ -1085,10 +1085,10 @@ async def test_deepen_enqueues_elevated_cap_on_per_agent_queue(client: AsyncClie
     response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert response.status_code == 200
 
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 1
     task_name, payload = queue.captured[0]
-    assert (queue.name, task_name) == ("phaze-agent-nox", "process_file")
+    assert (queue.name, task_name) == ("phaze-agent-nox-analyze", "process_file")
     assert queue.name != "default"
     # The unbounded-deepen sentinel reached the producer and was serialized.
     assert payload["fine_cap"] == 0
@@ -1116,7 +1116,7 @@ async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient
     response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert response.status_code == 200
 
-    queue = task_router.queues["nox"]
+    queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 1
     _, payload = queue.captured[0]
     # All five required fields present (not just file_id) plus the cap overrides.
@@ -1167,7 +1167,7 @@ async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncC
     # First deepen: enqueues + registers the key.
     r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert r1.status_code == 200
-    queue = router.queues["nox"]
+    queue = router.queues["nox-analyze"]
     assert len(queue.captured) == 1
     assert queue.captured_policy[0]["key"] == expected_key
 
@@ -1220,6 +1220,268 @@ async def test_deepen_malformed_file_id_returns_422(client: AsyncClient) -> None
     """A malformed (non-uuid) file_id is rejected by the typed path param with 422 (T-44-10)."""
     response = await client.post("/pipeline/files/not-a-uuid/deepen")
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# quick-260707-d79: operator-gated BULK retry of ANALYSIS_FAILED files.
+#
+# POST /pipeline/analysis-failed/retry re-drives EVERY ANALYSIS_FAILED file through the SAME
+# guarded funnel deepen uses (per-agent routing -> NoActiveAgentError guard -> enqueue_process_file
+# full payload + deterministic key), but with NORMAL caps (fine_cap/coarse_cap None, NOT the deepen
+# sentinel 0). Each file flips ANALYSIS_FAILED -> FINGERPRINTED (committed before enqueue) so it
+# leaves the red bucket immediately. recover_orphaned_work / _select_done_analyze_ids stay unchanged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, session: AsyncSession) -> None:
+    """POST retry re-enqueues process_file for every ANALYSIS_FAILED file on the per-agent queue with NORMAL caps.
+
+    All N failed files land on ``phaze-agent-nox`` (never the default queue) carrying the COMPLETE
+    ProcessFilePayload with NO cap override (fine_cap/coarse_cap None -- the retry-vs-deepen guard),
+    and every file is now FINGERPRINTED (0 remain ANALYSIS_FAILED). The ack reports N.
+    """
+    failed = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(3)]
+    session.add_all(failed)
+    await session.commit()
+    failed_ids = {str(f.id) for f in failed}
+    await seed_active_agent(session)
+    _, task_router = install_fake_queues(client)
+
+    response = await client.post("/pipeline/analysis-failed/retry")
+    assert response.status_code == 200
+    assert "re-queued 3 failed file(s)" in response.text.lower()
+
+    queue = task_router.queues["nox-analyze"]
+    assert len(queue.captured) == 3
+    assert queue.name == "phaze-agent-nox-analyze"
+    assert queue.name != "default"
+    captured_ids = set()
+    for task_name, payload in queue.captured:
+        assert task_name == "process_file"
+        # NORMAL caps: no deepen sentinel -- a retry is a fresh re-analysis (fine/coarse None).
+        assert payload["fine_cap"] is None
+        assert payload["coarse_cap"] is None
+        # Complete payload (v4.0.8 guard): validates against ProcessFilePayload.
+        ProcessFilePayload.model_validate(payload)
+        captured_ids.add(payload["file_id"])
+    assert captured_ids == failed_ids
+
+    # Every failed file left the terminal bucket -> FINGERPRINTED (committed before enqueue).
+    remaining = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
+    assert remaining == []
+    fingerprinted = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.FINGERPRINTED))).scalars().all()
+    assert {str(f.id) for f in fingerprinted} == failed_ids
+
+
+@pytest.mark.asyncio
+async def test_retry_no_active_agent_enqueues_nothing_and_keeps_state(client: AsyncClient, session: AsyncSession) -> None:
+    """No active agent -> zero enqueues, files STAY ANALYSIS_FAILED, ack surfaces "no active agent" (Phase-30 guard)."""
+    failed = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(2)]
+    session.add_all(failed)
+    await session.commit()
+    failed_ids = {str(f.id) for f in failed}
+    capture = wire_fakes(client)  # no active agent seeded
+
+    response = await client.post("/pipeline/analysis-failed/retry")
+    assert response.status_code == 200
+    assert "no active agent" in response.text.lower()
+
+    await _drain_background()
+    # Nothing enqueued anywhere -- never the default queue.
+    assert capture == []
+    # State UNCHANGED: the flip is gated behind a successful queue resolve.
+    still_failed = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
+    assert {str(f.id) for f in still_failed} == failed_ids
+
+
+@pytest.mark.asyncio
+async def test_retry_zero_failed_is_noop(client: AsyncClient, session: AsyncSession) -> None:
+    """No ANALYSIS_FAILED files -> 200, zero enqueues, ack count 0."""
+    await seed_active_agent(session)
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/analysis-failed/retry")
+    assert response.status_code == 200
+    assert "no failed files to retry" in response.text.lower()
+
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_retry_button_renders_only_when_count_positive(client: AsyncClient, session: AsyncSession) -> None:
+    """The "Retry failed" button appears in the Analysis Health card ONLY when analysis_failed_count > 0.
+
+    Rendered via the existing 5s /pipeline/stats poll (which seeds analysis_failed_count into the
+    straggler_failed_card). With no ANALYSIS_FAILED files the button + endpoint reference are absent;
+    with >0 the hx-post + hx-confirm are present.
+    """
+    # count == 0: no button, no endpoint reference.
+    zero = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
+    assert zero.status_code == 200
+    assert "analysis-failed/retry" not in zero.text
+
+    # count > 0: button with the confirm gate appears.
+    session.add_all([_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(2)])
+    await session.commit()
+    positive = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
+    assert positive.status_code == 200
+    assert "analysis-failed/retry" in positive.text
+    assert "hx-confirm" in positive.text
+
+
+# ---------------------------------------------------------------------------
+# quick-260707-cvz: GET /pipeline/files/{file_id}/deepen-progress poll endpoint +
+# the deepen POST success-path bootstrap poller. Four poll-state fragments
+# (queued / running / complete / gone) driven by the timestamp-gated completion
+# predicate (analysis_completed_at > since), plus the success branch now emitting
+# the self-polling bootstrap span instead of the old static line.
+# ---------------------------------------------------------------------------
+
+# A fixed click epoch; seeded completed_at values are set relative to it so the
+# (> vs <=) boundary is deterministic and tz-aware.
+_CVZ_SINCE = 1_700_000_000.0
+_CVZ_REQUESTED_AT = datetime.fromtimestamp(_CVZ_SINCE, tz=UTC)
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_queued_state_polls(client: AsyncClient, session: AsyncSession) -> None:
+    """A stale pre-click result with equal counts renders the queued fragment and keeps polling."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=20,
+            fine_windows_total=20,
+            # Pre-click completion (<= since) -> NOT complete -> queued (job not re-started yet).
+            analysis_completed_at=datetime.fromtimestamp(_CVZ_SINCE - 100, tz=UTC),
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Queued" in response.text
+    # Non-terminal -> still polling.
+    assert "hx-trigger" in response.text
+    assert "deepen-progress" in response.text
+    assert "Deepen complete" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_running_state_shows_counts_and_polls(client: AsyncClient, session: AsyncSession) -> None:
+    """fine_done < fine_total renders the live 'N/M windows' running fragment and keeps polling."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=34,
+            fine_windows_total=62,
+            analysis_completed_at=None,
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "34/62 windows" in response.text
+    # Running is non-terminal -> poll active.
+    assert "hx-trigger" in response.text
+    assert "deepen-progress" in response.text
+    assert "Deepen complete" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_complete_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
+    """A completed_at strictly AFTER since renders the terminal complete fragment with NO poll trigger."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=62,
+            fine_windows_total=62,
+            # Fresh put_analysis stamp AFTER the click -> complete.
+            analysis_completed_at=datetime.fromtimestamp(_CVZ_SINCE + 100, tz=UTC),
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Deepen complete" in response.text
+    # Terminal -> polling halted (outerHTML swap removed the trigger).
+    assert "hx-trigger" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_gone_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
+    """An unknown (well-formed) file_id returns the terminal 'gone' fragment with no poll trigger, never a 500."""
+    missing_id = uuid.uuid4()
+    response = await client.get(f"/pipeline/files/{missing_id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "no longer available" in response.text.lower()
+    assert "hx-trigger" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_stale_sampled_result_not_complete(client: AsyncClient, session: AsyncSession) -> None:
+    """A stale sampled result completed at exactly `since` is NOT shown as complete (> boundary, not >=)."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=40,
+            fine_windows_total=40,
+            sampled=True,
+            # completed_at == requested_at -> predicate is strict `>` -> NOT complete.
+            analysis_completed_at=_CVZ_REQUESTED_AT,
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Deepen complete" not in response.text
+    assert "hx-trigger" in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_non_numeric_since_is_422(client: AsyncClient, session: AsyncSession) -> None:
+    """A non-numeric `since` query param is rejected by the typed float param (T-cvz-01), never rendered raw."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since=not-a-number")
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_deepen_success_path_returns_bootstrap_poller(client: AsyncClient, session: AsyncSession) -> None:
+    """The deepen POST success branch now emits the self-polling bootstrap span, not the old static line."""
+    file_rec = _make_file(state=FileState.ANALYZED)
+    session.add(file_rec)
+    await session.commit()
+    await seed_active_agent(session)
+    install_fake_queues(client)
+
+    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert response.status_code == 200
+    # The bootstrap poller: hx-get at the poll endpoint + load-then-interval trigger.
+    assert "deepen-progress" in response.text
+    assert 'hx-trigger="load, every 2s"' in response.text
+    assert 'hx-swap="outerHTML"' in response.text
+    # The old static success line is gone.
+    assert "Re-analysis queued at full window budget" not in response.text
 
 
 @pytest.mark.asyncio
@@ -1357,7 +1619,7 @@ async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(cl
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "scan_live_set")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "scan_live_set")}
     assert all(q != "default" for q, _, _ in capture)
     assert all(q != "controller" for q, _, _ in capture)
     # Every enqueue carries the COMPLETE payload — model_validate (extra="forbid") must accept it.
@@ -1690,7 +1952,7 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "process_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-analyze", "process_file")}
     # UI path enqueues a complete payload too (every job carries all five fields).
     for _q, _t, kwargs in capture:
         ProcessFilePayload.model_validate(kwargs)
@@ -1768,7 +2030,7 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert queue_name == "phaze-agent-nox"
+    assert queue_name == "phaze-agent-nox-analyze"
     assert task_name == "process_file"
     # Complete payload -- all five ProcessFilePayload fields, not just file_id. Phase 44-01
     # added the optional fine_cap/coarse_cap overrides (None on the bulk path).
@@ -1826,7 +2088,7 @@ async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSess
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "extract_file_metadata")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "extract_file_metadata")}
 
 
 @pytest.mark.asyncio
@@ -1870,7 +2132,7 @@ async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: As
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "extract_file_metadata")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "extract_file_metadata")}
 
 
 @pytest.mark.asyncio
@@ -1911,7 +2173,7 @@ async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: A
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox", "fingerprint_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-fingerprint", "fingerprint_file")}
 
 
 @pytest.mark.asyncio
@@ -1937,7 +2199,7 @@ async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncCl
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, payload = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox", "fingerprint_file")
+    assert (queue_name, task_name) == ("phaze-agent-nox-fingerprint", "fingerprint_file")
     assert payload["file_id"] == str(failed.id)
 
 

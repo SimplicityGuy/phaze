@@ -280,8 +280,8 @@ async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
     assert "Scanning..." in response.text
 
     # scan_live_set captured on the per-agent queue, never the controller.
-    agent_queue = task_router.queues["nox"]
-    assert agent_queue.name == "phaze-agent-nox"
+    agent_queue = task_router.queues["nox-meta"]
+    assert agent_queue.name == "phaze-agent-nox-meta"
     assert len(agent_queue.captured) == 1
     task_name, payload = agent_queue.captured[0]
     assert task_name == "scan_live_set"
@@ -308,7 +308,7 @@ async def test_trigger_scan_skips_file_id_without_record(session: AsyncSession, 
     assert response.status_code == 200
 
     # No FileRecord for the submitted id -> nothing enqueued for it.
-    assert task_router.queues["nox"].captured == []
+    assert task_router.queues["nox-meta"].captured == []
 
 
 @pytest.mark.asyncio
@@ -321,7 +321,7 @@ async def test_trigger_scan_skips_malformed_file_id(session: AsyncSession, clien
     assert response.status_code == 200
 
     # A malformed id is dropped before the DB query, never enqueued, never a 500.
-    assert task_router.queues["nox"].captured == []
+    assert task_router.queues["nox-meta"].captured == []
 
 
 @pytest.mark.asyncio
@@ -578,7 +578,7 @@ async def test_scan_status_all_complete(session: AsyncSession, client: AsyncClie
     mock_job.result = {"status": "scanned", "filename": "test.mp3"}
 
     _controller, task_router = install_fake_queues(client)
-    task_router.queue_for("nox").job = AsyncMock(return_value=mock_job)
+    task_router.queue_for("nox", "meta").job = AsyncMock(return_value=mock_job)
 
     response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=nox")
     assert response.status_code == 200
@@ -597,7 +597,7 @@ async def test_scan_status_with_error(session: AsyncSession, client: AsyncClient
     mock_job.result = {"status": "error", "filename": "bad.mp3"}
 
     _controller, task_router = install_fake_queues(client)
-    task_router.queue_for("nox").job = AsyncMock(return_value=mock_job)
+    task_router.queue_for("nox", "meta").job = AsyncMock(return_value=mock_job)
 
     response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=nox")
     assert response.status_code == 200
@@ -608,7 +608,7 @@ async def test_scan_status_with_error(session: AsyncSession, client: AsyncClient
 async def test_scan_status_job_not_found(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/scan/status handles a missing job gracefully (counts complete)."""
     _controller, task_router = install_fake_queues(client)
-    task_router.queue_for("nox").job = AsyncMock(return_value=None)
+    task_router.queue_for("nox", "meta").job = AsyncMock(return_value=None)
 
     response = await client.get("/tracklists/scan/status?job_ids=missing-job&agent_id=nox")
     assert response.status_code == 200
@@ -624,7 +624,7 @@ async def test_scan_status_job_pending(session: AsyncSession, client: AsyncClien
     mock_job.result = None
 
     _controller, task_router = install_fake_queues(client)
-    task_router.queue_for("nox").job = AsyncMock(return_value=mock_job)
+    task_router.queue_for("nox", "meta").job = AsyncMock(return_value=mock_job)
 
     response = await client.get("/tracklists/scan/status?job_ids=pending-job&agent_id=nox")
     assert response.status_code == 200
@@ -655,7 +655,7 @@ async def test_scan_status_well_formed_agent_id_passes_validation(session: Async
     mock_job.result = {"status": "scanned", "filename": "test.mp3"}
 
     _controller, task_router = install_fake_queues(client)
-    task_router.queue_for("test-agent-01").job = AsyncMock(return_value=mock_job)
+    task_router.queue_for("test-agent-01", "meta").job = AsyncMock(return_value=mock_job)
 
     response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=test-agent-01")
     assert response.status_code != 422
