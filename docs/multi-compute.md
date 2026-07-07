@@ -173,7 +173,7 @@ the same words on purpose.
 - [cloud-burst.md](cloud-burst.md) — provisioning a **single** OCI A1 compute agent end-to-end (the
   walkthrough this page builds on).
 - [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) — the
-  canonical `[[backends]]` field reference (do not restated here).
+  canonical `[[backends]]` field reference (not restated here).
 - [runbook.md](runbook.md) — force-local revert, reading the N lanes, and spillover behavior.
 - [k8s-burst.md](k8s-burst.md) — the Kubernetes (Kueue) lane, if you also declare `kind="kueue"`
   backends alongside your compute agents.

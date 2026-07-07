@@ -134,7 +134,11 @@ def _require_push_config(cfg: AgentSettings) -> None:
     (fileserver) required set -- the AgentSettings field itself survives because the compute agent's
     OWN local janitor (agent_worker.py) still reads it (Landmine 2).
     """
-    missing = [name for name in ("push_ssh_user", "push_ssh_key", "push_known_hosts") if getattr(cfg, name) is None]
+    # IN-01 (73-REVIEW): `not` (not `is None`) so an operator-set empty string (e.g.
+    # PHAZE_PUSH_SSH_USER="") fails fast the same as a missing value -- an empty push_ssh_user would
+    # otherwise fall through as the `dest_ssh_user or cfg.push_ssh_user` source and build a broken
+    # "@host:..." remote spec.
+    missing = [name for name in ("push_ssh_user", "push_ssh_key", "push_known_hosts") if not getattr(cfg, name)]
     if missing:
         msg = f"push_file missing required push config: {', '.join(missing)} (operator-provisioned in Phase 51)"
         raise RuntimeError(msg)

@@ -436,6 +436,14 @@ def test_require_push_config_still_requires_secret_material_and_fallback_user(mi
         push._require_push_config(_fake_cfg(**{missing_field: None}))
 
 
+def test_require_push_config_rejects_empty_string_ssh_user() -> None:
+    # IN-01: an operator-set empty string (PHAZE_PUSH_SSH_USER="") must fail fast the same as None —
+    # otherwise it falls through as the `dest_ssh_user or cfg.push_ssh_user` source and builds a
+    # broken "@host:..." remote spec.
+    with pytest.raises(RuntimeError, match="missing required push config"):
+        push._require_push_config(_fake_cfg(push_ssh_user=""))
+
+
 # ----------------------------------------------------------------------
 # compute-only startup janitor (Task 2 — converted from the Wave 0 stub there)
 # ----------------------------------------------------------------------

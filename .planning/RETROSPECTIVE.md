@@ -297,6 +297,42 @@ Generalized the single `cloud_target` selector into a declarative, cost-tiered `
 
 ---
 
+## Milestone: 2026.7.2 — Multi-Compute Agents (N Cloud-Compute Backends)
+
+**Shipped:** 2026-07-06
+**Phases:** 5 (72-76) | **Plans:** 17
+
+### What Was Built
+Finished the 2026.7.1 registry's deliberate compute-side descope: **N cloud-compute agents** now dispatch / route / reconcile / fail-isolate simultaneously — the direct compute-side twin of Phase 70's multi-Kueue work — with the `≤1-compute` fail-fasts retired and **zero new dependencies**. Shipped as a dependency-strict chain: per-entry `agent_ref`→`Agent.id` compute binding + fail-fast retirement, golden-gated for the ≤1-compute path (72); the behavior core — per-agent liveness, record-don't-rederive push/scratch destination through rsync → `/pushed`, Phase-69 rank/cap load-spread across N agents, per-backend snapshot isolation, `backend_id`-scoped terminalization (73); operator runbook + N-lane compute UI verification (74); then two appended sweeps — engineering hygiene (75, HYG-01..05) and compute/push hardening (76, HARD-01..03) closing carried review items each with a regression test. Milestone audit PASSED 15/15 reqs, 5/5 phases, 6/6 integration seams, E2E flow complete.
+
+### What Worked
+- **Parity-by-reuse.** MCOMP-04 (rank/cap load-spread) and MCOMP-05 (one-flaky isolation) added *no new scheduler policy* — they reused the Phase-69 `select_backend` and the Phase-70 per-backend snapshot try/except, adding only N-compute-labelled regressions. The registry/protocol groundwork from 2026.7.1 made the compute-side twin a thin extension.
+- **Record-don't-rederive extended cleanly to compute dispatch.** Destination (host/scratch/ssh_user) stamped on `PushFilePayload` at dispatch and read verbatim by rsync + `/pushed` (`resolve_compute_backend(backend_id)`) — the same pattern that made 2026.7.1's bucket routing concurrency-safe resolved the "cloud_job one-row-per-file vs per-(file,backend)" question in favor of one row keyed by `backend_id`, no migration.
+- **Appended hardening/hygiene phases (75, 76) as a milestone-close mechanism** turned a pile of accepted-risk / review items into shipped, regression-tested fixes before close — Phase 76 alone closed the three biggest carried items from 72–74 (WR-01 probe-session race → HARD-01 structural fix; WR-04 ledger RMW race → HARD-02; AR-30-03 agent_id validation → HARD-03).
+- **The milestone audit's integration checker caught a cross-phase gap per-phase verification missed** (GAP-01: an N-compute-unaware orphan-recovery path in `reenqueue.py` untouched by 72–76) — exactly the class of finding a milestone-level audit exists to surface.
+
+### What Was Inefficient
+- **Scope grew twice after the "last phase."** Phase 74 was planned as the milestone's final phase; Phases 75 (hygiene) and 76 (hardening) were both appended mid-milestone (2026-07-06). Legitimate close-out work, but it meant the ROADMAP milestone header was re-extended twice (72-74 → 72-75 → 72-76).
+- **A plan-specified lock primitive self-deadlocked.** HARD-02's plan specified `with_for_update()`; code review (76-REVIEW CR-01) found it self-deadlocks against the `push_file` before_enqueue hook (`apply_deterministic_key` upserts the same ledger row from a nested session). Required an operator-approved supersession to `pg_advisory_xact_lock` — caught in review, but the plan should have checked the primitive against nested-session hooks.
+- **SUMMARY `requirements_completed` frontmatter was mostly empty**, so the milestone audit's 3-source cross-reference fell back to manual verification against each phase's VERIFICATION coverage table + the traceability table. A documentation-lag, not a coverage gap, but it weakened one of the audit's three independent sources.
+- **Four low-severity/cosmetic review items (73-WR-03/IN-01, 74-IN-01/IN-02) reached milestone close still open** — closed at close-out via quick `260706-odc` rather than in-phase.
+
+### Patterns Established
+- **Appended close-out sweep phases** (hygiene + hardening) as a deliberate mechanism to convert accepted-risk/review debt into shipped, regression-tested fixes before archiving a milestone.
+- **Advisory lock over row lock when a nested-session enqueue hook shares the row**: `pg_advisory_xact_lock(hashtext(key))` serializes an RMW in a different lock space than the hook's `INSERT...ON CONFLICT`, avoiding self-deadlock where `with_for_update()` would block.
+- **Structural-over-empirical for concurrency guarantees**: HARD-01 replaced Phase 74's "empirically race-free" shared-session probe fan-out with a sequential loop that is race-free *by construction* — and reworded the docstring to match.
+
+### Key Lessons
+1. A milestone-level audit with an integration checker earns its keep — it caught GAP-01 (a cross-phase, N-compute-unaware recovery path) that five green per-phase verifications did not.
+2. When a plan names a lock primitive (`with_for_update()`), verify it against every nested session that touches the same row before execution — the deadlock was structural, not a race.
+3. Close carried review items in-phase, or budget an explicit close-out sweep — deferring four to milestone close meant a quick task in the completion flow.
+4. Prefer structural guarantees over "empirically observed" ones for concurrency: an arbiter test that passes 6× is weaker than a loop that cannot race by construction.
+
+### Cost Observations
+- 5 phases / 17 plans over 2 days (2026-07-05 → 2026-07-06); 5 squash-merged PRs (#209/#210/#211/#213/#214) + a close-out quick task (`260706-odc`, 116 tests green). Two phases (75, 76) appended mid-milestone. Code review caught real issues in every behavior phase (73 CR-01 PUSHING-CAS guard; 76 CR-01 with_for_update self-deadlock). GAP-01 deferred to v2 PROV-01.
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -309,6 +345,7 @@ Generalized the single `cloud_target` selector into a declarative, cost-tiered `
 | v4.0 | 6 | 47 | Two-host distributed architecture (HTTP-only agent boundary, per-agent SAQ queues, internal CA, settings split via `get_settings()` factory); subprocess import-boundary tests enforce invariants; 4× plan count from contract-heavy API surface |
 | 2026.7.0 | 4 | 13 | First CalVer milestone (names decoupled from versions); parallel-CI bucket partition + combined coverage; docs-drift lesson finally automated as a hermetic CI gate; engineering-debt paydown, zero behavior change |
 | 2026.7.1 | 5 | 26 | Pluggable multi-backend registry (local + N Kueue + N compute simultaneously); refactor-first with a byte-identical golden characterization gate isolating the one behavior-changing phase; integration checker live-verified cross-phase flows; per-module coverage floor raised to 90 |
+| 2026.7.2 | 5 | 17 | Parity-by-reuse (N-compute twin of N-Kueue reused Phase-69/70 scheduler + isolation, no new policy); two appended close-out sweep phases (hygiene + hardening) converting accepted-risk/review debt into regression-tested fixes; milestone audit's integration checker caught a cross-phase gap (GAP-01) five green per-phase verifications missed; zero new dependencies |
 
 ### Cumulative Quality
 
@@ -322,6 +359,7 @@ Generalized the single `cloud_target` selector into a declarative, cost-tiered `
 | v6.0 | 2,474 passing | ~8,452 lines added across 61 files since v5.0 tag | 5 |
 | 2026.7.0 | 2,566 passing (9 buckets) | net −9,314 (test-bucket reorg + dead-code confirmation) | 4 |
 | 2026.7.1 | 2,637+ passing (all modules ≥90%) | net +15,821 across range (protocol re-home + N-backend registry) | 5 |
+| 2026.7.2 | (full suite passing; 321 targeted green in audit) | ~28,401 Python src LOC; net +13,433 / −15,685 across range (incl. planning churn) | 5 |
 
 ### Top Lessons (Verified Across Milestones)
 

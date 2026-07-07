@@ -2,33 +2,34 @@
 gsd_state_version: 1.0
 milestone: 2026.7.2
 milestone_name: Multi-Compute Agents
-status: milestone_complete
-last_updated: 2026-07-06T19:15:29.499Z
-last_activity: 2026-07-06
+status: Awaiting next milestone
+last_updated: "2026-07-07T00:47:38.554Z"
+last_activity: 2026-07-07 — Milestone 2026.7.2 completed and archived
 progress:
-  total_phases: 37
-  completed_phases: 14
-  total_plans: 56
-  completed_plans: 43
-  percent: 38
-stopped_at: Milestone complete (Phase 76 was final phase)
+  total_phases: 38
+  completed_phases: 5
+  total_plans: 17
+  completed_plans: 17
+  percent: 13
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-05 — 2026.7.1 Multi-Cloud Backends shipped)
+See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
 **Current focus:** Milestone complete
 
 ## Current Position
 
-Phase: 76
-Plan: Not started
-Status: Milestone complete — Phase 76 shipped (PR #214)
-Last activity: 2026-07-06
+Phase: Milestone 2026.7.2 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-07 — Milestone 2026.7.2 completed and archived
+
+**Release ship step (pending):** Milestone-completion PR **#215** open (archival + close-out fixes + `2026.7.1`→`2026.7.2` version bump). **After #215 merges to main:** create the annotated `2026.7.2` tag on the merged main commit and `git push origin 2026.7.2` (triggers the GHCR release publish, per [[project_release_procedure]]) — same procedure as `2026.7.0`/`2026.7.1`. (The prior "pending 2026.7.1 tag push" is resolved — `2026.7.1` is on origin, dereferencing to `ec80a53a`.)
 
 ## Performance Metrics
 
@@ -164,6 +165,7 @@ None.
 | 260627-ktb | Uniform supply-chain cooldown via the canonical relative `[tool.uv] exclude-newer = "7 days"` across root + both service pyproject.toml (satisfies semgrep uv-missing-dependency-cooldown). A relative window only resolves when every floor is ≥7d old, so: reverted yesterday's `chore: update deps` (c8574dc) 7 fresh floors to prior ≥7d-old values (alembic 1.18.4, fastapi 0.138.0, litellm 1.85.6, mutagen 1.47.0, numpy 2.4.6, greenlet 3.5.2, ruff 0.15.18), and relaxed redis `>=8.0.1`→`>=8.0.0` (8.0.1 was a <7d Dependabot bump #160, not a security pin; still redis 8, auto-lifts post-cooldown). Resilience: `.github/dependabot.yml` cooldown.default-days=7 on all ecosystems; update-project.sh `ensure_cooldown_window()` re-asserts the relative window uniformly. Also reorganized root pyproject headings+settings. Why the 4 --major packages stay put: constraint-blocked (litellm <1.86 cap; importlib-metadata <9 via litellm; typer <0.26 via huggingface-hub; pydantic-core 2.47.0 alpha-only). ruff 0.15.18 + mypy green. | 2026-06-27 | a8edbf8 | [260627-ktb-upgrade-litellm-and-transitive-deps-fix-](./quick/260627-ktb-upgrade-litellm-and-transitive-deps-fix-/) |
 | 260628-wzq | Fix JOB-ENV-CONTRACT (v6.0 milestone-audit critical blocker): the Kueue Job manifest built by `build_job_manifest` injected only `PHAZE_AGENT_CA_FILE`, so every admitted pod exited `EXIT_CONFIG=20` before analysis (`job_runner` requires `PHAZE_JOB_FILE_ID` + agent env). Inject `{"name":"PHAZE_JOB_FILE_ID","value":str(file_id)}` into the container env + an `envFrom` (configMapRef `kube_env_configmap_name` default `phaze-agent-env`; secretRef `kube_env_secret_name` default `phaze-agent-token`, reusing the existing bearer-token Secret), two new defaulted `ControlSettings` knobs mirroring `kube_ca_secret_name` (no change to `_enforce_kube_config_when_k8s`), the agent-env ConfigMap + envFrom documented in `docs/k8s-burst.md` §6, and `test_build_job_manifest_injects_env_contract` (the regression test that would have caught it). 26 + 127 tests pass, mypy clean. | 2026-06-29 | 5f43aa7 | [260628-wzq-fix-job-env-contract-inject-pod-runtime-](./quick/260628-wzq-fix-job-env-contract-inject-pod-runtime-/) |
 | 260629-eev | Convert the two ASCII "Architecture at a glance" diagrams (docs/cloud-burst.md, docs/k8s-burst.md) to `mermaid flowchart LR` — lossless (every host/service/object/port/edge label preserved verbatim), `PHAZE_CLOUD_TARGET=local` caption relocated to an italic line below each block. Scope-locked to the two fenced blocks; trees/tables/CLI/architecture.md/superpowers untouched. | 2026-06-29 | 267109b | [260629-eev-convert-the-two-ascii-architecture-at-a](./quick/260629-eev-convert-the-two-ascii-architecture-at-a/) |
+| 260706-odc | Close the four carried review items from the 2026.7.2 milestone audit before completion: 73-WR-03 (id-tagged whitespace/shell-metachar guard on compute `push_host`/`ssh_user` at config-load, mirroring `PushFilePayload._dest_host_safe`), 73-IN-01 (`_require_push_config` empty-string `push_ssh_user` now fails fast like None), 74-IN-01/IN-02 (grammar nit + moved test-path comment). GAP-01 left deferred as v2 PROV-01. 116 targeted tests green, ruff/mypy clean. | 2026-07-06 | 4ccdc4c4 | [260706-odc-close-audit-review-items](./quick/260706-odc-close-audit-review-items/) |
 | Phase 34 P01 | 12 min | 2 tasks | 2 files |
 | Phase 34 P02 | ~10 min | 3 tasks | 4 files |
 | Phase 34 P03 | ~8 min | 2 tasks | 4 files |
@@ -266,5 +268,4 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Plan the first phase: `/gsd:plan-phase 72` (or `/gsd:discuss-phase 72`)
-- Separate ship step (not milestone scope): 2026.7.1 release PR + tag push
+- Start the next milestone with /gsd-new-milestone

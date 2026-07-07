@@ -19,7 +19,7 @@
 # through the host-installed tailscaled + MagicDNS. There is no bridge network
 # and no published port — the agent is a pure outbound consumer over the tailnet.
 #
-# Invariants (asserted by tests/test_deployment/test_cloud_agent_compose.py):
+# Invariants (asserted by tests/agents/deployment/test_cloud_agent_compose.py):
 #   - Exactly one service: worker (no watcher/audfprint/panako).
 #   - No DATABASE_URL / POSTGRES_* on any service and no postgres/redis service
 #     (DIST-04: the compute agent reaches Postgres ONLY via PHAZE_QUEUE_URL for
