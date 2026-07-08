@@ -428,16 +428,18 @@ async def test_sql_equals_python(db_session, stage, seed_fn, expected):
 | A3 | The `done(review)`/`done(apply)` semantics (review = proposal exists; apply = approved proposal / completed execution_log) match ELIG-02's wording and the Phase-85/86 intent. | Per-Stage table | If review "done" should mean "a decision was made" (approved OR rejected) rather than "a proposal exists," the review predicate shifts. ELIG-02 says "a proposal exists"; carried as-is. Confirm with planner. |
 | A4 | `MUSIC_VIDEO_TYPES` file-type gating (the metadata/tracklist pending sets) is the correct population filter to mirror in the derived eligibility, i.e. non-music files are simply never eligible for enrich stages. | Eligibility table | If a companion/non-media file should surface, the filter differs. Matches `get_metadata_pending_files` exactly `[VERIFIED]`. Low risk. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **`in_flight(propose)` from a batch set-hash key.**
+_OQ1 is **RESOLVED — SCOPED OUT** (deferred to the reader-cutover phase, as documented). OQ2 is **RESOLVED** below._
+
+1. **`in_flight(propose)` from a batch set-hash key. (RESOLVED — SCOPED OUT — deferred to the reader-cutover phase)**
    - What we know: enrich stages + `search_tracklist` + `push` are file-keyed and derive cleanly; `generate_proposals` is keyed on `sha256(sorted file_ids)` `[VERIFIED]`.
    - What's unclear: whether Phase 78 must expose a per-file `in_flight(propose)` at all.
    - Recommendation: **No.** ELIG-02 defines propose eligibility as `done(metadata) AND done(analyze)`; scope `in_flight` derivation to file-keyed stages and document the limitation. The reader-cutover phase can decide whether propose needs an in-flight guard (likely via `saq_jobs` batch-membership at that point).
 
-2. **`done(review)` — "proposal exists" vs "decision made".**
+2. **`done(review)` — "proposal exists" vs "decision made". (RESOLVED)**
    - What we know: ELIG-02 says review-eligible = "a proposal exists"; a separate "done(review)" is not explicitly required by DERIV-03 (review is not an output-table stage the way metadata/analyze are).
-   - Recommendation: model `review` eligibility as `exists(proposal)` and treat `apply` as the terminal output stage (`execution_log` through `proposals`). Confirm the exact review/apply status semantics with the planner; they harden in Phases 85/86.
+   - **Resolution:** `done(review) = exists(a proposal)` for REVIEW's OWN status/eligibility. BUT apply-eligibility (ELIG-02) requires an **APPROVED** proposal (`proposals.status = 'approved'`) — so `apply` is gated on approval, NOT on bare review-done. This is encoded in `eligible()` via the `has_approved_proposal` scalar (Python twin, plan 78-01) and a `proposals.status = 'approved'` filter on the later-phase apply pending `.where()` (SQL twin, plan 78-02). `done(apply)` (execution_log completed, joined through proposals) and `eligible(apply)` (an approved proposal exists) are deliberately distinct predicates; the review/apply status semantics harden in Phases 85/86.
 
 ## Environment Availability
 

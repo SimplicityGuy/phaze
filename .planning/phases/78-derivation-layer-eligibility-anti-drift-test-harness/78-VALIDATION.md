@@ -42,12 +42,10 @@ created: 2026-07-08
 
 | Task group | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |------------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| Stage/Status enums + DAG topology + Python per-row resolver (DB-free) | 1 | DERIV-01/02/03/05 | — | Agent-safe: no SQLAlchemy/DB import in `enums/stage.py` | unit | `uv run pytest tests/<bucket>/test_stage_resolver.py -x` | ❌ W0 | ⬜ pending |
-| SQLAlchemy `ColumnElement[bool]` `.where()` builders (SQL twin) | 1 | DERIV-01/03 | — | Predicates spelled `= ANY (ARRAY[...])` / `IS NOT NULL` / `~exists(...)` anti-join | unit/integration | (equivalence test below) | ❌ W0 | ⬜ pending |
-| Parametrized SQL-vs-Python equivalence (drift-lock) | 1 | DERIV-04, DERIV-05 | — | SQL-derived == Python-derived over full fixture matrix incl. 1-success/1-failed fingerprint | integration | `uv run pytest tests/services/test_stage_status_equivalence.py -x` | ❌ W0 | ⬜ pending |
-| `eligible(f, stage)` pure predicate (enrich no-upstream; downstream conjuncts) | 2 | ELIG-01, ELIG-02 | — | Every `discovered` file eligible for all 3 enrich in any order | unit/integration | `uv run pytest tests/<bucket>/test_eligibility.py -x` | ❌ W0 | ⬜ pending |
-| Failed-analyze terminal / failed-fingerprint eligible | 2 | ELIG-03, ELIG-04 | T-78 | Failed analyze absent from analyze pending/eligible set (44.5K-guard); failed fingerprint stays eligible | integration | `uv run pytest tests/<bucket>/test_eligibility.py::test_failed_analyze_terminal -x` | ❌ W0 | ⬜ pending |
-| `in_flight` from ledger (authoritative) + saq_jobs SAVEPOINT degrade | 2 | INFLIGHT-01/02/03 | T-78 | saq_jobs read in `begin_nested()`, degrades to ledger-only; never falsely `not_started` | integration | `uv run pytest tests/<bucket>/test_in_flight_degrade.py -x` | ❌ W0 | ⬜ pending |
+| Stage/Status enums + DAG topology + Python per-row resolver (DB-free) | 1 | DERIV-01/02/03/05 | — | Agent-safe: no SQLAlchemy/DB import in `enums/stage.py` | unit | `uv run pytest tests/shared/test_stage_resolver.py -x` | ❌ W0 | ⬜ pending |
+| `eligible()` pure predicate — enrich per-stage rule + downstream conjuncts (ELIG-01/02) incl. ELIG-03 terminal-analyze + ELIG-04 failed-fp-eligible + apply-approved | 1 | ELIG-01, ELIG-02, ELIG-03, ELIG-04 | T-78 | Failed analyze NOT eligible (44.5K-guard); failed fingerprint stays eligible; apply gated on an approved proposal | unit | `uv run pytest tests/shared/test_stage_eligibility_dag.py -x` | ❌ W0 | ⬜ pending |
+| SQLAlchemy `ColumnElement[bool]` `.where()` builders (SQL twin) | 2 | DERIV-01/03 | — | Predicates spelled `= ANY (ARRAY[...])` / `IS NOT NULL` / `~exists(...)` anti-join | integration | (equivalence test below) | ❌ W0 | ⬜ pending |
+| Parametrized SQL-vs-Python equivalence drift-lock + `in_flight` ledger/SAVEPOINT-degrade | 2 | DERIV-04, DERIV-05, INFLIGHT-01, INFLIGHT-02, INFLIGHT-03 | T-78 | SQL-derived == Python-derived over full fixture matrix incl. 1-success/1-failed fingerprint; saq_jobs read in `begin_nested()`, degrades to ledger-only; never falsely `not_started` | integration | `uv run pytest tests/integration/test_stage_status_equivalence.py -x` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -55,13 +53,12 @@ created: 2026-07-08
 
 ## Wave 0 Requirements
 
-- [ ] `tests/services/test_stage_status_equivalence.py` — the DERIV-04 parametrized SQL-vs-Python drift-lock over the full fixture matrix (all stages × statuses; DERIV-05 one-success/one-failed fingerprint → `done`).
-- [ ] `tests/<bucket>/test_eligibility.py` — ELIG-01..04 including the **ELIG-03 terminal-failed-analyze regression** (a failed analyze is absent from the analyze pending/eligible set) and ELIG-04 failed-fingerprint-stays-eligible.
-- [ ] `tests/<bucket>/test_in_flight_degrade.py` — INFLIGHT-02 SAVEPOINT-degrade: a poisoned/failed `saq_jobs` read degrades to ledger-only without raising; a crashed-mid-run (ledger row present, saq_jobs gone) reads `in_flight`, never `not_started`.
-- [ ] `tests/<bucket>/test_stage_resolver.py` — the DB-free Python per-row resolver over plain scalars (agent-safe path).
+- [ ] `tests/shared/test_stage_resolver.py` (`shared` bucket, DB-free) — the pure-Python per-row resolver over plain scalars (DERIV-02/03/05, agent-safe path).
+- [ ] `tests/shared/test_stage_eligibility_dag.py` (`shared` bucket, DB-free) — ELIG-01..04: the enrich per-stage rule, the **ELIG-03 terminal-failed-analyze regression** (a failed analyze is NOT eligible), ELIG-04 failed-fingerprint-stays-eligible (non-vacuous `engine_statuses=["failed"]` → `Status.FAILED` → still eligible), and the apply-approved-proposal gate (ELIG-02).
+- [ ] `tests/integration/test_stage_status_equivalence.py` (`integration` bucket, real PG) — the DERIV-04 parametrized SQL-vs-Python drift-lock over the full fixture matrix (all stages × statuses; DERIV-05 one-success/one-failed fingerprint → `done`) **plus** the INFLIGHT-02 SAVEPOINT-degrade cases (poisoned `saq_jobs` read degrades to ledger-only without raising; crashed-mid-run — ledger row present, saq_jobs gone — reads `in_flight`, never `not_started`).
 - [ ] Framework install: **none** — pytest/pytest-asyncio already present.
 
-*Bucket names to be finalized by the planner against `tests/buckets.json` (one bucket per file, partition-guard enforced).*
+*Buckets verified against `tests/buckets.json`: DB-free resolver/eligibility → `shared`; real-PG equivalence + degrade → `integration`. One bucket per file (partition-guard enforced).*
 
 ---
 
