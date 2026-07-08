@@ -9,7 +9,7 @@ progress:
   total_phases: 52
   completed_phases: 0
   total_plans: 3
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -25,8 +25,8 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 ## Current Position
 
 Phase: 77 (Additive Schema & Rescan-Wipe Fix (migration `032`)) — EXECUTING
-Plan: 3 of 3
-Status: Ready to execute
+Plan: 3 of 3 (all plans executed)
+Status: Phase 77 plans complete — verification/PR pending
 Last activity: 2026-07-08
 
 ## Performance Metrics
@@ -130,6 +130,9 @@ Last activity: 2026-07-08
 - [Phase 77]: 77-02: failure markers are nullable failed_at + error_message columns on the 1:1 analysis/metadata tables (D-01); both tables gained a first-ever __table_args__ carrying only additive IS-NOT-NULL partial indexes
 - [Phase 77]: 77-02: ix_fprint_success authored as = ANY (ARRAY['success','completed']) not bare IN, matching Postgres normalized serialization to keep migration-032 autogenerate diff empty (PERF-01/Pitfall 1)
 - [Phase 77]: 77-02: DedupResolution 1:1 sidecar (unique file_id FK, NULLABLE best-effort canonical_file_id) registered in models/__init__.py so Base.metadata/autogenerate sees it (D-07); no extra index (unique file_id implicit index serves marker-EXISTS lookup)
+- [Phase 77]: 77-03: migration 032 lands the additive DDL mirroring 77-02 byte-for-byte + set-based read-only backfill from files.state; analyze-failed marker is an INSERT..ON CONFLICT (file_id) DO UPDATE UPSERT (report_analysis_failed writes no analysis row); dedup canonical derived deterministically (ORDER BY c.id LIMIT 1, nullable); cloud awaiting/uploading/uploaded gap-filled; metadata NOT backfilled (D-03); LOCAL_ANALYZING no row (D-05); files.state never written; saq_jobs never referenced
+- [Phase 77]: 77-03: empty-autogenerate-diff (PERF-01 SC#2) AUTOMATED via compare_metadata(compare_type=True) over run_sync, scoped to the 032 object set to ignore pre-existing unrelated ORM↔DB drift (naive DateTime TimestampMixin vs timestamptz on legacy tables; dropped search_vector/trgm indexes); ix_fprint_success KEPT (= ANY(ARRAY[...]) round-trips clean) — drop-and-defer contingency NOT triggered
+- [Phase 77]: 77-03: integration test deletes ALL cloud_job rows before downgrade (029 precedent) — backfilled NULL-s3_key uploading/uploaded rows trip migration 029's s3_key NOT NULL re-imposition on the teardown walk to base; the migrations-test DB can be left poisoned by a mid-downgrade abort (reset schema to recover)
 
 ### Pending Todos
 

@@ -265,7 +265,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete    | 2026-07-06 |
 | 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 2/2 | Complete    | 2026-07-06 |
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
-| 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 2/3 | In Progress|  |
+| 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | In Progress|  |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 0/0 | Not started | - |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 0/0 | Not started | - |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -301,7 +301,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 77-03-PLAN.md — Migration `032` (additive DDL + set-based backfill + minimal downgrade) + per-migration integration test with empty-autogenerate-diff gate (MIG-01, PERF-01) [wave 2]
+- [x] 77-03-PLAN.md — Migration `032` (additive DDL + set-based backfill + minimal downgrade) + per-migration integration test with empty-autogenerate-diff gate (MIG-01, PERF-01) [wave 2]
 
 ### Phase 78: Derivation Layer, Eligibility & Anti-Drift Test Harness
 
