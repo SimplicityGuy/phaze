@@ -332,7 +332,11 @@ Plans:
   2. The check asserts **implication, not equality**, with `FINGERPRINTED` documented as the one expected divergence; any other divergence is a hard fail.
   3. The gate passes on a restore of the live corpus after the `032` backfill, and its output is recorded in the phase VERIFICATION.
 
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 79-01-PLAN.md — Shared assertion core (`services/shadow_compare.py`): INVARIANTS registry (one implication per FileState value, §6.1/D-04; {FINGERPRINTED, LOCAL_ANALYZING} soft allowlist D-06) + `run_shadow_compare` count+capped-sample Report (D-05) reusing done/failed_clause (D-03), + hermetic fixture-corpus CI gate in the `integration` bucket (Wave 1)
+- [ ] 79-02-PLAN.md — Thin `python -m phaze.cli.shadow_compare` runner over the SAME core (D-01) + `[group('db')] shadow-compare` justfile recipe, nonzero-exit-on-hard-divergence contract (D-05); live 200K restore run DEFERRED to homelab (D-02) (Wave 2, depends 79-01)
 
 ### Phase 80: Recovery / Re-enqueue Cutover
 
