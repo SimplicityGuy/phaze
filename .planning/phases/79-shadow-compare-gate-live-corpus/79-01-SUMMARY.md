@@ -90,6 +90,13 @@ None - plan executed exactly as written.
 - The standing gate is live and green in the `integration` bucket. Phase 80 (recovery/reenqueue) and Phase 82 (counts/pending cutover) can now cut readers over behind this gate; Phase 90's destructive `033` is gated on `hard_fail_total == 0` on the live corpus (D-02 records the live-corpus run in VERIFICATION).
 - No blockers.
 
+## Self-Check: PASSED
+
+- FOUND: src/phaze/services/shadow_compare.py
+- FOUND: tests/integration/test_shadow_compare.py
+- FOUND: .planning/phases/79-shadow-compare-gate-live-corpus/79-01-SUMMARY.md
+- FOUND commits: fd4d3a14 (Task 1), 302c2d76 (Task 2), e9fb07b2 (metadata)
+
 ---
 *Phase: 79-shadow-compare-gate-live-corpus*
 *Completed: 2026-07-08*
