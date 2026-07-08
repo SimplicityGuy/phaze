@@ -266,7 +266,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 2/2 | Complete    | 2026-07-06 |
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
 | 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
-| 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 0/0 | Not started | - |
+| 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 1/2 | In Progress|  |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 0/0 | Not started | - |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 0/0 | Not started | - |
@@ -317,7 +317,7 @@ Plans:
   5. Every `saq_jobs` read for `in_flight` is static SQL wrapped in a `begin_nested()` SAVEPOINT that degrades to a safe default; a **written D-01 decision record** fixes the authoritative `in_flight` source so a crashed-mid-run / callback-lost file is never falsely re-enqueued as `not_started`.
 
 **Plans**: 2 plans
-- [ ] 78-01-PLAN.md — DB-free resolver + eligibility DAG (`enums/stage.py`): Stage/Status enums, ELIGIBILITY_DAG, resolve_status() precedence ladder, eligible() incl. ELIG-03 terminal-failed regression (Wave 1)
+- [x] 78-01-PLAN.md — DB-free resolver + eligibility DAG (`enums/stage.py`): Stage/Status enums, ELIGIBILITY_DAG, resolve_status() precedence ladder, eligible() incl. ELIG-03 terminal-failed regression (Wave 1)
 - [ ] 78-02-PLAN.md — SQL `ColumnElement[bool]` builders (`services/stage_status.py`) + ledger in_flight + saq_detail SAVEPOINT + D-01 decision record, locked by the DERIV-04 equivalence test (Wave 2)
 **Note**: INFLIGHT-03 / D-01 RESOLVED (78-CONTEXT.md): `in_flight` = `scheduling_ledger` AUTHORITATIVE, `saq_jobs` corroborating-only (rejected the naked union). Written decision record persisted in `services/stage_status.py` module docstring. Original open-decision framing — a written decision record is REQUIRED at plan-time (Architecture rejects the naked union; design/Stack lean union). The roadmap deliberately does not resolve it.
 
