@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
 status: executing
-last_updated: "2026-07-08T07:58:13.443Z"
+last_updated: "2026-07-08T08:09:42.717Z"
 last_activity: 2026-07-08
 progress:
   total_phases: 52
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 ## Current Position
 
 Phase: 77 (Additive Schema & Rescan-Wipe Fix (migration `032`)) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-07-08
 
@@ -127,6 +127,9 @@ Last activity: 2026-07-08
 - [Phase ?]: 75-02: HYG-04 force-local gate regression added (4 cases) at real-route altitude via a persisted RouteControl(id='global', force_local=True) row; kept the autouse cloud-ON registry so the toggle is the only variable; assert AWAITING_CLOUD row ABSENCE (anti-cheat); backfill no-op uses with_ledger=False; zero src diff (a01a7bf8 + 63589cd5)
 - [Phase ?]: 77-01: rescan-wipe fix (MIG-03/D-08) removed the state key from the ON CONFLICT set_ dict at both mirror upsert sites; new files still INSERT DISCOVERED, existing files keep state; AUTH-01 preserved
 - [Phase ?]: 77-01: agent-endpoint rescan regression uses a self-contained smoke app mounting only agent_files.router (no main.py dependency); one bucket per file (discovery + agents), verified in isolation via just test-bucket
+- [Phase 77]: 77-02: failure markers are nullable failed_at + error_message columns on the 1:1 analysis/metadata tables (D-01); both tables gained a first-ever __table_args__ carrying only additive IS-NOT-NULL partial indexes
+- [Phase 77]: 77-02: ix_fprint_success authored as = ANY (ARRAY['success','completed']) not bare IN, matching Postgres normalized serialization to keep migration-032 autogenerate diff empty (PERF-01/Pitfall 1)
+- [Phase 77]: 77-02: DedupResolution 1:1 sidecar (unique file_id FK, NULLABLE best-effort canonical_file_id) registered in models/__init__.py so Base.metadata/autogenerate sees it (D-07); no extra index (unique file_id implicit index serves marker-EXISTS lookup)
 
 ### Pending Todos
 
@@ -211,6 +214,7 @@ None.
 | Phase 75 P01 | ~12 min | 3 tasks | 4 files |
 | Phase 75 P02 | ~15min | 2 tasks | 1 files |
 | Phase 77 P01 | 20 | 2 tasks | 4 files |
+| Phase 77 P02 | ~20min | 2 tasks | 7 files |
 
 ## Deferred Items
 
@@ -277,7 +281,7 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-08T07:58:00.169Z
+Last session: 2026-07-08T08:06:58.099Z
 Stopped at: Phase 77 context gathered
 Resume file: None
 

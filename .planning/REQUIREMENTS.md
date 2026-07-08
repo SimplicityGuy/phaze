@@ -65,7 +65,7 @@
 
 ### Performance (PERF)
 
-- [ ] **PERF-01**: Partial indexes sized to the exact `done`/`failed` predicates keep the `NOT EXISTS` pending anti-joins and the per-stage counts fast at 200K-file scale; each index is mirrored into the ORM `__table_args__` so `autogenerate` stays in sync.
+- [x] **PERF-01**: Partial indexes sized to the exact `done`/`failed` predicates keep the `NOT EXISTS` pending anti-joins and the per-stage counts fast at 200K-file scale; each index is mirrored into the ORM `__table_args__` so `autogenerate` stays in sync.
 - [ ] **PERF-02**: The `/pipeline/stats` poll latency at 200K-file corpus scale is measured and recorded in the phase VERIFICATION; no denormalized status column is added unless that measurement shows the derived query is too slow (YAGNI is the default).
 
 ### Legacy Sentinel Retirement (LEGACY)
@@ -92,7 +92,7 @@
 
 ### Migration & Verification (MIG)
 
-- [ ] **MIG-01**: Migration `032` is additive-only — it creates the failure markers, the dedup marker, and the cloud sidecar representation, adds the partial indexes, and backfills them from `FileRecord.state`, **without touching `files.state`**.
+- [x] **MIG-01**: Migration `032` is additive-only — it creates the failure markers, the dedup marker, and the cloud sidecar representation, adds the partial indexes, and backfills them from `FileRecord.state`, **without touching `files.state`**.
 - [ ] **MIG-02**: A committed, re-runnable shadow-compare check asserts per-file *implication* invariants (e.g. `state=ANALYZED ⇒ analysis_completed_at IS NOT NULL`; `state=DUPLICATE_RESOLVED ⇒ dedup marker`) across the live corpus, with `FINGERPRINTED` documented as the one expected divergence; it must pass before any reader cutover and before the destructive migration.
 - [x] **MIG-03**: Rescanning a file no longer resets pipeline progress — with `FileRecord.state` gone, the `ON CONFLICT DO UPDATE SET state = excluded.state` progress-wipe is structurally impossible (fixes the rescan-wipe bug).
 - [ ] **MIG-04**: Migration `033` is destructive and lands last — after the shadow-compare passes on the live corpus and cloud-push lanes are drained/quiesced, it drops `ix_files_state`, drops `files.state`, and deletes the `FileState` enum; its `downgrade()` documents the enum reconstruction from derived sources (and its lossiness).
@@ -154,9 +154,9 @@
 | UI-03 | Phase 87 | Pending |
 | UI-04 | Phase 87 | Pending |
 | UI-05 | Phase 87 | Pending |
-| PERF-01 | Phase 77 | Pending |
+| PERF-01 | Phase 77 | Complete |
 | PERF-02 | Phase 82 | Pending |
-| MIG-01 | Phase 77 | Pending |
+| MIG-01 | Phase 77 | Complete |
 | MIG-02 | Phase 79 | Pending |
 | MIG-03 | Phase 77 | Complete |
 | MIG-04 | Phase 90 | Pending |
