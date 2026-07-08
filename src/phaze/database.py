@@ -21,11 +21,25 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+# quick-260707-ryn: every pool kwarg is sourced from config (the module-level `settings`
+# singleton is ControlSettings, which inherits the BaseSettings db_* knobs) so an operator
+# can re-tune without a code change. max_overflow drops from a hardcoded 10 to the config
+# default 5, and the three hygiene kwargs (pool_timeout / pool_recycle / pool_pre_ping) are
+# NEW. INCIDENT: phaze reaches Postgres through PgBouncer in SESSION mode, where every client
+# connection pins one upstream server connection for its whole lifetime; the shared
+# (phaze,phaze) session pool (cap ~55) deadlocked under normal multi-worker load and /health
+# hung behind the exhausted pool. pool_pre_ping drops dead server conns before checkout,
+# pool_recycle=1800 frees an idle server slot after 30 min instead of pinning it, and
+# pool_timeout=10 bounds the acquire wait so a saturated pool fails fast. Homelab raises the
+# pooler cap to ~80 in parallel, so these app-side reductions are HEADROOM, not a hard fit.
 engine = create_async_engine(
     str(settings.database_url),
     echo=settings.debug,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout,
+    pool_recycle=settings.db_pool_recycle,
+    pool_pre_ping=settings.db_pool_pre_ping,
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
