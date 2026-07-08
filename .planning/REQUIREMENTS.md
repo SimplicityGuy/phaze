@@ -15,24 +15,24 @@
 
 ### Derived Status Layer (DERIV)
 
-- [ ] **DERIV-01**: A single predicate module is the one source of truth for every stage's `done` and `failed` predicate, expressed as reusable `ColumnElement[bool]` builders that compose into both SQL `.where(...)` and a Python per-row resolver — no stage predicate is written twice.
-- [ ] **DERIV-02**: A pure function `stage_status(file, stage) -> {not_started | in_flight | done | failed}` returns the derived status for any file/stage, with precedence `in_flight ≻ done ≻ failed ≻ not_started`.
-- [ ] **DERIV-03**: `done` is derived from the stage's output row using the *correct* completion predicate per stage: `metadata` row present (and not failure-only); `fingerprint_results.status IN ('success','completed')` (any engine); `analysis.analysis_completed_at IS NOT NULL` (not bare row existence); `tracklists`/`proposals`/`execution_log` presence for downstream stages.
-- [ ] **DERIV-04**: A parametrized equivalence test proves the SQL-derived status and the Python-derived status agree for every stage across a representative fixture matrix (locks the two definitions against drift).
-- [ ] **DERIV-05**: `stage_status` correctly aggregates multi-row output tables — a file with one `success` and one `failed` fingerprint engine derives `done`, not `failed`.
+- [x] **DERIV-01**: A single predicate module is the one source of truth for every stage's `done` and `failed` predicate, expressed as reusable `ColumnElement[bool]` builders that compose into both SQL `.where(...)` and a Python per-row resolver — no stage predicate is written twice.
+- [x] **DERIV-02**: A pure function `stage_status(file, stage) -> {not_started | in_flight | done | failed}` returns the derived status for any file/stage, with precedence `in_flight ≻ done ≻ failed ≻ not_started`.
+- [x] **DERIV-03**: `done` is derived from the stage's output row using the *correct* completion predicate per stage: `metadata` row present (and not failure-only); `fingerprint_results.status IN ('success','completed')` (any engine); `analysis.analysis_completed_at IS NOT NULL` (not bare row existence); `tracklists`/`proposals`/`execution_log` presence for downstream stages.
+- [x] **DERIV-04**: A parametrized equivalence test proves the SQL-derived status and the Python-derived status agree for every stage across a representative fixture matrix (locks the two definitions against drift).
+- [x] **DERIV-05**: `stage_status` correctly aggregates multi-row output tables — a file with one `success` and one `failed` fingerprint engine derives `done`, not `failed`.
 
 ### Eligibility (ELIG)
 
-- [ ] **ELIG-01**: The three enrich stages (metadata, fingerprint, analyze) are eligible iff `NOT done AND NOT in_flight`, each **independent of every other stage** — every `discovered` file is simultaneously eligible for all three, workable in any order.
-- [ ] **ELIG-02**: Downstream eligibility is a pure predicate over `stage_status`: tracklist = fingerprint-done & not-tracklisted; propose = metadata-done AND analyze-done; review = a proposal exists; apply = an approved proposal exists.
-- [ ] **ELIG-03**: A failed **analyze** is terminal — it is NOT auto-eligible and never re-enqueued by any automatic path (retry is manual-only), with a regression test asserting a failed analyze is absent from the analyze pending set (guards against the 44.5K-job over-enqueue class).
-- [ ] **ELIG-04**: A failed **fingerprint** remains eligible (auto-retry preserved), consistent with today's D-16 behavior.
+- [x] **ELIG-01**: The three enrich stages (metadata, fingerprint, analyze) are eligible iff `NOT done AND NOT in_flight`, each **independent of every other stage** — every `discovered` file is simultaneously eligible for all three, workable in any order.
+- [x] **ELIG-02**: Downstream eligibility is a pure predicate over `stage_status`: tracklist = fingerprint-done & not-tracklisted; propose = metadata-done AND analyze-done; review = a proposal exists; apply = an approved proposal exists.
+- [x] **ELIG-03**: A failed **analyze** is terminal — it is NOT auto-eligible and never re-enqueued by any automatic path (retry is manual-only), with a regression test asserting a failed analyze is absent from the analyze pending set (guards against the 44.5K-job over-enqueue class).
+- [x] **ELIG-04**: A failed **fingerprint** remains eligible (auto-retry preserved), consistent with today's D-16 behavior.
 
 ### In-Flight Detection (INFLIGHT)
 
-- [ ] **INFLIGHT-01**: `in_flight(file, stage)` is true when an active/queued unit of work exists for that `(file, stage-function)`, and it is a first-class input to both eligibility and the DAG busy pills.
-- [ ] **INFLIGHT-02**: Every read of the SAQ `saq_jobs` table is static SQL wrapped in a `begin_nested()` SAVEPOINT and degrades to a safe default on any error — the 5s `/pipeline/stats` poll never 500s; Alembic never references `saq_jobs`.
-- [ ] **INFLIGHT-03**: *(Open decision D-01 — resolve during Phase 78 planning with a written decision record.)* `in_flight`'s authoritative source is chosen between `scheduling_ledger` alone (Architecture's position) and `saq_jobs ∪ scheduling_ledger` (design/Stack position); whichever is chosen, a crashed-mid-run or callback-lost file is not falsely re-enqueued as `not_started`.
+- [x] **INFLIGHT-01**: `in_flight(file, stage)` is true when an active/queued unit of work exists for that `(file, stage-function)`, and it is a first-class input to both eligibility and the DAG busy pills.
+- [x] **INFLIGHT-02**: Every read of the SAQ `saq_jobs` table is static SQL wrapped in a `begin_nested()` SAVEPOINT and degrades to a safe default on any error — the 5s `/pipeline/stats` poll never 500s; Alembic never references `saq_jobs`.
+- [x] **INFLIGHT-03**: *(Open decision D-01 — resolve during Phase 78 planning with a written decision record.)* `in_flight`'s authoritative source is chosen between `scheduling_ledger` alone (Architecture's position) and `saq_jobs ∪ scheduling_ledger` (design/Stack position); whichever is chosen, a crashed-mid-run or callback-lost file is not falsely re-enqueued as `not_started`.
 
 ### Per-Stage Failure (FAIL)
 
@@ -125,18 +125,18 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DERIV-01 | Phase 78 | Pending |
-| DERIV-02 | Phase 78 | Pending |
-| DERIV-03 | Phase 78 | Pending |
-| DERIV-04 | Phase 78 | Pending |
-| DERIV-05 | Phase 78 | Pending |
-| ELIG-01 | Phase 78 | Pending |
-| ELIG-02 | Phase 78 | Pending |
-| ELIG-03 | Phase 78 | Pending |
-| ELIG-04 | Phase 78 | Pending |
-| INFLIGHT-01 | Phase 78 | Pending |
-| INFLIGHT-02 | Phase 78 | Pending |
-| INFLIGHT-03 | Phase 78 | Pending |
+| DERIV-01 | Phase 78 | Complete |
+| DERIV-02 | Phase 78 | Complete |
+| DERIV-03 | Phase 78 | Complete |
+| DERIV-04 | Phase 78 | Complete |
+| DERIV-05 | Phase 78 | Complete |
+| ELIG-01 | Phase 78 | Complete |
+| ELIG-02 | Phase 78 | Complete |
+| ELIG-03 | Phase 78 | Complete |
+| ELIG-04 | Phase 78 | Complete |
+| INFLIGHT-01 | Phase 78 | Complete |
+| INFLIGHT-02 | Phase 78 | Complete |
+| INFLIGHT-03 | Phase 78 | Complete |
 | FAIL-01 | Phase 81 | Pending |
 | FAIL-02 | Phase 81 | Pending |
 | FAIL-03 | Phase 81 | Pending |
