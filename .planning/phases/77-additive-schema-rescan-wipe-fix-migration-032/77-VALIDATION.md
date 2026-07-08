@@ -1,9 +1,9 @@
 ---
 phase: 77
 slug: additive-schema-rescan-wipe-fix-migration-032
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-07-08
 ---
 
@@ -42,12 +42,12 @@ created: 2026-07-08
 
 | Task group | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |------------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| Rescan-wipe fix (both upsert sites) | 1 | MIG-03 | — | Rescan cannot regress an authenticated agent's file state; `agent_id` from auth dep, never body | unit/integration | `uv run pytest tests/<discovery|agents>/test_rescan_preserves_state.py -x` | ❌ W0 | ⬜ pending |
-| `032` upgrade: columns + `dedup_resolution` + CHECK-widen + partial indexes | 2 | MIG-01, PERF-01 | T-77-01 | Static-literal SQL only (no injection surface, S608) | integration | `uv run pytest tests/integration/test_migrations/test_migration_032_additive_schema.py -x` | ❌ W0 | ⬜ pending |
-| `032` backfill: analyze failed-marker (upsert), dedup, cloud awaiting/pushing/pushed | 2 | MIG-01 | T-77-01 | Backfill row counts == legacy `files.state` counts | integration | (same file — data asserts) | ❌ W0 | ⬜ pending |
-| `files.state` byte-unchanged + `saq_jobs` never referenced | 2 | MIG-01 | T-77-02 | Migration honors the SAQ-owned banner | integration + unit | (same file) + `test_migration_never_references_saq_jobs` | ❌ W0 | ⬜ pending |
-| Empty `--autogenerate` diff (ORM `__table_args__` mirror parity) | 2 | PERF-01 | — | Index predicates spelled `= ANY(ARRAY[...])`/`IS NOT NULL`, never bare `IN` | integration | new empty-diff assertion (see Manual/Wave 0) | ❌ W0 | ⬜ pending |
-| `032.downgrade()` reverses additive DDL | 2 | D-09 (min) | — | Best-effort DDL reversal (relaxed per CONTEXT D-09) | integration | (same file — downgrade body) | ❌ W0 | ⬜ pending |
+| Rescan-wipe fix (both upsert sites) | 1 | MIG-03 | — | Rescan cannot regress an authenticated agent's file state; `agent_id` from auth dep, never body | unit/integration | `uv run pytest tests/discovery/test_rescan_preserves_state.py tests/agents/test_rescan_preserves_state.py` | ✅ | ✅ green |
+| `032` upgrade: columns + `dedup_resolution` + CHECK-widen + partial indexes | 2 | MIG-01, PERF-01 | T-77-01 | Static-literal SQL only (no injection surface, S608) | integration | `uv run pytest tests/integration/test_migrations/test_migration_032_additive_schema.py` | ✅ | ✅ green |
+| `032` backfill: analyze failed-marker (upsert), dedup, cloud awaiting/pushing/pushed | 2 | MIG-01 | T-77-01 | Backfill row counts == legacy `files.state` counts | integration | (same file — data asserts) | ✅ | ✅ green |
+| `files.state` byte-unchanged + `saq_jobs` never referenced | 2 | MIG-01 | T-77-02 | Migration honors the SAQ-owned banner | integration + unit | (same file) + `test_migration_never_references_saq_jobs` | ✅ | ✅ green |
+| Empty `--autogenerate` diff (ORM `__table_args__` mirror parity) | 2 | PERF-01 | — | Index predicates spelled `= ANY(ARRAY[...])`/`IS NOT NULL`, never bare `IN` | integration | automated `compare_metadata` assert in migration test (scoped to 032 objects) | ✅ | ✅ green |
+| `032.downgrade()` reverses additive DDL | 2 | D-09 (min) | — | Best-effort DDL reversal (relaxed per CONTEXT D-09) | integration | (same file — downgrade body) | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -55,10 +55,10 @@ created: 2026-07-08
 
 ## Wave 0 Requirements
 
-- [ ] `tests/integration/test_migrations/test_migration_032_additive_schema.py` — covers MIG-01, PERF-01, D-09 (mirror `test_migration_031_route_control.py`; seed a small corpus with rows in each legacy `files.state`, run `upgrade 031→032`, assert schema + backfill counts + `files.state` unchanged + `pg_indexes` shapes; a downgrade smoke assert).
-- [ ] `tests/<discovery|agents>/test_rescan_preserves_state.py` — covers MIG-03 for BOTH upsert sites (`services/ingestion.py` `bulk_upsert_files` + `routers/agent_files.py`): advance a file to `ANALYZED` + `analysis` row, re-upsert same `(agent_id, original_path)`, assert `state='ANALYZED'` and the `analysis` row survives.
-- [ ] Empty-`--autogenerate`-diff assertion — **new capability, no in-tree precedent.** Either a scripted `alembic revision --autogenerate --sql` diff check (asserts no `op.add_column`/`op.create_index`/`op.*`), or a documented manual step recorded in VERIFICATION. Load-bearing for PERF-01 SC#2.
-- [ ] Framework install: **none** — pytest/pytest-asyncio already present.
+- [x] `tests/integration/test_migrations/test_migration_032_additive_schema.py` — covers MIG-01, PERF-01, D-09 (mirrors `test_migration_031_route_control.py`; seeds a corpus with rows in each legacy `files.state`, runs `upgrade 031→032`, asserts schema + backfill counts + `files.state` unchanged + `pg_indexes` shapes + a downgrade smoke assert). **3 tests green.**
+- [x] `tests/discovery/test_rescan_preserves_state.py` + `tests/agents/test_rescan_preserves_state.py` — cover MIG-03 for BOTH upsert sites (`services/ingestion.py` `bulk_upsert_files` + `routers/agent_files.py`): advance a file to `ANALYZED` + `analysis` row, re-upsert same `(agent_id, original_path)`, assert `state='ANALYZED'` and the `analysis` row survives. **2 tests green.**
+- [x] Empty-`--autogenerate`-diff assertion — **AUTOMATED** in the migration test via `alembic.autogenerate.compare_metadata` (run through `conn.run_sync`, `compare_type=True`), scoped to the 032 objects. Passed with `ix_fprint_success` present (`= ANY (ARRAY['success','completed'])` spelling round-trips) — the plan's drop-and-defer-to-Phase-82 contingency was **NOT triggered.** Load-bearing PERF-01 SC#2 satisfied.
+- [x] Framework install: **none** — pytest/pytest-asyncio already present.
 
 ---
 
@@ -66,20 +66,38 @@ created: 2026-07-08
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Empty autogenerate diff (if not automated in Wave 0) | PERF-01 | No in-tree automated precedent; `alembic revision --autogenerate` may need a live DB at head | With `032` at head on the ephemeral DB: `uv run alembic revision --autogenerate -m _probe` → assert the generated file body contains only `pass` (no `op.*`); delete the probe file. Record the result in VERIFICATION. |
+| ~~Empty autogenerate diff~~ (RESOLVED → automated) | PERF-01 | ~~No in-tree automated precedent~~ | **Superseded** — now automated in `test_migration_032_additive_schema.py` (`compare_metadata` scoped to 032 objects). The manual `alembic revision --autogenerate -m _probe` fallback is no longer needed. |
 | `/pipeline/stats` poll latency at ~200K scale (PERF-02 context — informational only this phase) | — | Requires a production-scale corpus not available in CI | Deferred: PERF-02 measurement belongs to the reader phase; note here only that the indexes exist. |
 
-*Note: the primary path is to AUTOMATE the empty-diff check in Wave 0; the manual row is the documented fallback.*
+*Note: the empty-diff check was AUTOMATED in Wave 0 as planned; the manual fallback row above is retained only as historical context.*
 
 ---
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references (migration test, rescan test, empty-diff check)
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 90s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (migration test, rescan test, empty-diff check)
+- [x] No watch-mode flags
+- [x] Feedback latency < 90s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-07-08
+
+---
+
+## Validation Audit 2026-07-08
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 4 (MIG-03, MIG-01, PERF-01, D-09) |
+| Gaps found | 0 |
+| Resolved | 0 (all Wave-0 tests already present + green) |
+| Escalated | 0 |
+
+**Result:** NYQUIST-COMPLIANT. All 6 per-task-map rows are ✅ green, verified by re-running the Wave-0 suite against the ephemeral test DB (`:5433` / `phaze_migrations_test`):
+
+- `tests/discovery/test_rescan_preserves_state.py` + `tests/agents/test_rescan_preserves_state.py` → **2 passed** (MIG-03, both upsert sites).
+- `tests/integration/test_migrations/test_migration_032_additive_schema.py` → **3 passed** (MIG-01 upgrade/backfill/`files.state`-unchanged/`saq_jobs` guard, PERF-01 empty-autogenerate-diff, D-09 downgrade).
+
+No gap-fill (auditor spawn) was required — coverage was already complete at merge. The empty-autogenerate-diff was automated in Wave 0; the `ix_fprint_success` drop-and-defer contingency was not triggered.
