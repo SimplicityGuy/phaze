@@ -317,8 +317,10 @@ Plans:
   5. Every `saq_jobs` read for `in_flight` is static SQL wrapped in a `begin_nested()` SAVEPOINT that degrades to a safe default; a **written D-01 decision record** fixes the authoritative `in_flight` source so a crashed-mid-run / callback-lost file is never falsely re-enqueued as `not_started`.
 
 **Plans**: 2 plans
+
 - [x] 78-01-PLAN.md — DB-free resolver + eligibility DAG (`enums/stage.py`): Stage/Status enums, ELIGIBILITY_DAG, resolve_status() precedence ladder, eligible() incl. ELIG-03 terminal-failed regression (Wave 1)
 - [x] 78-02-PLAN.md — SQL `ColumnElement[bool]` builders (`services/stage_status.py`) + ledger in_flight + saq_detail SAVEPOINT + D-01 decision record, locked by the DERIV-04 equivalence test (Wave 2)
+
 **Note**: INFLIGHT-03 / D-01 RESOLVED (78-CONTEXT.md): `in_flight` = `scheduling_ledger` AUTHORITATIVE, `saq_jobs` corroborating-only (rejected the naked union). Written decision record persisted in `services/stage_status.py` module docstring. Original open-decision framing — a written decision record is REQUIRED at plan-time (Architecture rejects the naked union; design/Stack lean union). The roadmap deliberately does not resolve it.
 
 ### Phase 79: Shadow-Compare Gate (live corpus)
@@ -333,9 +335,13 @@ Plans:
   3. The gate passes on a restore of the live corpus after the `032` backfill, and its output is recorded in the phase VERIFICATION.
 
 **Plans**: 2 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 79-01-PLAN.md — Shared assertion core (`services/shadow_compare.py`): INVARIANTS registry (one implication per FileState value, §6.1/D-04; {FINGERPRINTED, LOCAL_ANALYZING} soft allowlist D-06) + `run_shadow_compare` count+capped-sample Report (D-05) reusing done/failed_clause (D-03), + hermetic fixture-corpus CI gate in the `integration` bucket (Wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 79-02-PLAN.md — Thin `python -m phaze.cli.shadow_compare` runner over the SAME core (D-01) + `[group('db')] shadow-compare` justfile recipe, nonzero-exit-on-hard-divergence contract (D-05); live 200K restore run DEFERRED to homelab (D-02) (Wave 2, depends 79-01)
 
 ### Phase 80: Recovery / Re-enqueue Cutover
