@@ -1,16 +1,18 @@
 """GET /admin/agents (full page) + GET /admin/agents/_table (HTMX partial) — Phase 29 D-11..D-14.
 
-Operator-facing read-only admin page that lists every registered file-server
-agent with a 5-state status pill (alive/stale/dead/revoked/never). The page
-polls ``/admin/agents/_table`` every 5 seconds via an HTMX self-replacing
+Operator-facing read-only admin page that lists every non-revoked registered
+file-server agent with a status pill (alive/stale/dead/never). Revoked agents
+are filtered out entirely (see ``_load_agents``). The page polls
+``/admin/agents/_table`` every 5 seconds via an HTMX self-replacing
 ``<section>`` (UI-SPEC §Polling LOCKED — never halts).
 
-Server-side classification: ``_load_agents`` queries Agent rows, computes
-``classify(a, now)`` for each, injects the result on a transient
-``agent._status`` attribute (mirrors Phase 27's ``_agent_name`` /
-``_elapsed_seconds`` pattern), and sorts via ``sort_key`` so revoked agents
-land last and non-revoked agents sort alive→stale→dead→never with
-last_seen DESC tiebreakers.
+Server-side classification: ``_load_agents`` queries non-revoked Agent rows
+(``revoked_at IS NULL``), computes ``classify(a, now)`` for each, injects the
+result on a transient ``agent._status`` attribute (mirrors Phase 27's
+``_agent_name`` / ``_elapsed_seconds`` pattern), and sorts via ``sort_key`` so
+agents sort alive→stale→dead→never with last_seen DESC tiebreakers. (``classify``
+/ ``sort_key`` retain their revoked tier for callers elsewhere, but revoked
+agents never reach this panel.)
 
 Auth posture: NO ``get_authenticated_agent`` dependency — operator pages are
 open on the private LAN (consistent with pipeline.py / pipeline_scans.py
@@ -58,14 +60,21 @@ def _is_htmx(request: Request) -> bool:
 
 
 async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
-    """Load every Agent, attach transient ``_status``, sort per UI-SPEC LOCKED.
+    """Load non-revoked Agents, attach transient ``_status``, sort per UI-SPEC LOCKED.
+
+    Revoked agents (``revoked_at IS NOT NULL``) are excluded via the shared
+    ``Agent.revoked_at.is_(None)`` convention used across the codebase
+    (main.py / shell.py / pipeline.py) — this suppresses the permanently-revoked
+    ``legacy-application-server`` FK-placeholder row (and any other revoked
+    agent) from the operator panel. The row still exists in the DB; only its
+    display here is filtered.
 
     Returns ``(agents, now)``. The ``now`` value is captured ONCE so the
     classify/sort step AND the template's ``refreshed_at_iso`` reflect the
     same instant — eliminates a few-microsecond skew that would otherwise
     show up if the template re-evaluated ``datetime.now(UTC)`` separately.
     """
-    result = await session.execute(select(Agent))
+    result = await session.execute(select(Agent).where(Agent.revoked_at.is_(None)))
     rows = list(result.scalars().all())
     now = datetime.now(UTC)
     for a in rows:
