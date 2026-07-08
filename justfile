@@ -479,6 +479,11 @@ db-downgrade:
 db-history:
     uv run alembic history
 
+[doc('Run the state↔derived shadow-compare gate against the target DB (MIG-02). Exit nonzero on hard divergence.')]
+[group('db')]
+shadow-compare *ARGS:
+    uv run python -m phaze.cli.shadow_compare {{ ARGS }}
+
 [doc('Download essentia ML models for audio analysis')]
 [group('models')]
 download-models:
