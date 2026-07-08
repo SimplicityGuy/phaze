@@ -265,7 +265,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete    | 2026-07-06 |
 | 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 2/2 | Complete    | 2026-07-06 |
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
-| 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 0/0 | Not started | - |
+| 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 0/3 | Planned | - |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 0/0 | Not started | - |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 0/0 | Not started | - |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -288,8 +288,13 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
   1. `alembic upgrade head` applies `032` on a copy of the live corpus — creating the analyze/metadata failure-marker columns, the dedup-marker table, and the cloud-routing sidecar rows, all backfilled from `files.state` — with `files.state` byte-unchanged and `saq_jobs` never referenced.
   2. Each new partial index is `IS NOT NULL`-shaped (never `status IN (...)`), exists in the DB, and is mirrored into the ORM `__table_args__` — `alembic revision --autogenerate` produces an empty diff.
   3. Re-scanning an already-advanced file no longer resets its progress: the `ON CONFLICT DO UPDATE SET state = excluded.state` progress-wipe is removed from both upsert sites, proven by a test that rescans an `ANALYZED` file and asserts its output rows survive.
-  4. `032.downgrade()` cleanly reverses every additive object on the same corpus copy (per-migration integration test green).
-**Plans**: TBD
+  4. `032.downgrade()` cleanly reverses every additive object on the same corpus copy (per-migration integration test green). *(Relaxed to best-effort DDL reversal per CONTEXT D-09 — forward upgrade path is the focus.)*
+**Plans**: 3 plans
+
+Plans:
+- [ ] 77-01-PLAN.md — Rescan-wipe fix: remove the ON CONFLICT state overwrite from both upsert sites + regression tests (MIG-03, D-08) [wave 1]
+- [ ] 77-02-PLAN.md — ORM schema: failure-marker columns + partial-index `__table_args__` mirrors, `CloudJobStatus.AWAITING` + CHECK, new `DedupResolution` model (MIG-01, PERF-01) [wave 1]
+- [ ] 77-03-PLAN.md — Migration `032` (additive DDL + set-based backfill + minimal downgrade) + per-migration integration test with empty-autogenerate-diff gate (MIG-01, PERF-01) [wave 2]
 
 ### Phase 78: Derivation Layer, Eligibility & Anti-Drift Test Harness
 **Goal**: Ship the single-source-of-truth predicate module — `enums/stage.py` (DB-free, agent-safe) + `services/stage_status.py` — so every caller derives per-file, per-stage `{not_started | in_flight | done | failed}` and eligibility from the output tables + `saq_jobs`, with the SQL and Python definitions locked together against drift. Purely additive: no reader/writer cuts over yet.
