@@ -267,7 +267,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
 | 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
-| 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 0/0 | Not started | - |
+| 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 1/2 | In Progress|  |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 0/0 | Not started | - |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -338,7 +338,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 79-01-PLAN.md — Shared assertion core (`services/shadow_compare.py`): INVARIANTS registry (one implication per FileState value, §6.1/D-04; {FINGERPRINTED, LOCAL_ANALYZING} soft allowlist D-06) + `run_shadow_compare` count+capped-sample Report (D-05) reusing done/failed_clause (D-03), + hermetic fixture-corpus CI gate in the `integration` bucket (Wave 1)
+- [x] 79-01-PLAN.md — Shared assertion core (`services/shadow_compare.py`): INVARIANTS registry (one implication per FileState value, §6.1/D-04; {FINGERPRINTED, LOCAL_ANALYZING} soft allowlist D-06) + `run_shadow_compare` count+capped-sample Report (D-05) reusing done/failed_clause (D-03), + hermetic fixture-corpus CI gate in the `integration` bucket (Wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
