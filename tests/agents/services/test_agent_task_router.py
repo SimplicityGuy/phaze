@@ -170,3 +170,23 @@ async def test_enqueue_for_file_derives_agent_id(router) -> None:  # type: ignor
     await router.enqueue_for_file(file_record=fake_file, task_name="extract_file_metadata", payload=payload)
     assert ("agent-c", "meta") in router._queues
     assert router._queues[("agent-c", "meta")].name == "phaze-agent-agent-c-meta"
+
+
+def test_queue_for_sizes_dispatch_pool_from_config() -> None:
+    """quick-260707-ryn: each per-(agent,lane) dispatch queue builds min_size=0/max_size=2 from config.
+
+    NON-integration: construction is ``open=False`` (no socket), so this needs no live broker.
+    Leans phaze's PgBouncer session-mode server-connection footprint (the ~55-cap deadlock) --
+    dispatch queues are control-side PRODUCER pools, so min_size=0 pins zero idle server conns
+    and max_size=2 caps the enqueue burst (was a hardcoded 1/4).
+
+    The configured sizing is read off the SAQ ``queue.min_size`` / ``queue.max_size`` attributes:
+    SAQ stores the sizing there at construction and only pushes it onto the underlying psycopg
+    ``queue.pool`` via ``pool.resize()`` inside ``connect()``, so an unopened queue's
+    ``pool.min_size`` still reports psycopg's default (4). Asserting the queue-level attributes
+    keeps the check socket-free while still proving the config values flowed through.
+    """
+    router = AgentTaskRouter(queue_url="postgresql://u:p@h:5432/d", cache_redis_url="redis://c:6379/0")
+    queue = router._queue_for("a", "meta")
+    assert queue.min_size == 0
+    assert queue.max_size == 2

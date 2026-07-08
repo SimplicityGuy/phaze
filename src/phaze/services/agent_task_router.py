@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from phaze.config import get_settings
 from phaze.services.enqueue_router import LANES, lane_for_task
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 
@@ -130,14 +131,28 @@ class AgentTaskRouter:
             # them inline (quick-260609-f96: this path once missed the defaults hook, giving
             # agent-dispatched scan_directory jobs SAQ's 10s default -- the factory now guarantees
             # both hooks on every queue). The hook chain + deterministic-key dedup are therefore
-            # per-lane and identical. Conservative pool sizing (1/4) per lane keeps the per-queue
-            # psycopg3 budget under Postgres max_connections (RESEARCH Pitfall 4).
+            # per-lane and identical.
+            #
+            # quick-260707-ryn: pool sizing now comes from config (dispatch_queue_min_size=0,
+            # dispatch_queue_max_size=2) instead of the old hardcoded 1/4. These dispatch queues
+            # are control-side PRODUCER pools that only ENQUEUE (no long-lived consumer drains
+            # them here), so min_size=0 keeps ZERO idle server connections pinned and max_size=2
+            # caps the enqueue burst. INCIDENT: phaze reaches Postgres through PgBouncer in
+            # SESSION mode, where every client connection pins one upstream server connection for
+            # its whole lifetime; the shared (phaze,phaze) session pool (cap ~55) deadlocked and
+            # /health hung behind the exhausted pool. Trimming every per-(agent,lane) producer
+            # pool is part of that footprint reduction -- homelab raises the pooler cap to ~80 in
+            # parallel, so this is HEADROOM, not a hard fit. get_settings() is lru_cached, so this
+            # is a dict lookup per call; reading it inside _queue_for keeps it lazy and covers all
+            # callers (queue_for, all_lane_queues, legacy_base_queue). The values still keep the
+            # per-queue psycopg3 budget under Postgres max_connections (RESEARCH Pitfall 4).
+            cfg = get_settings()
             queue = build_pipeline_queue(
                 queue_name,
                 self._queue_url,
                 cache_redis_url=self._cache_redis_url,
-                min_size=1,
-                max_size=4,
+                min_size=cfg.dispatch_queue_min_size,
+                max_size=cfg.dispatch_queue_max_size,
                 ledger_sessionmaker=self._ledger_sessionmaker,
             )
             self._queues[cache_key] = queue
