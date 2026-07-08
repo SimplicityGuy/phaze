@@ -111,7 +111,10 @@ async def bulk_upsert_files(
             set_={
                 "sha256_hash": stmt.excluded.sha256_hash,
                 "file_size": stmt.excluded.file_size,
-                "state": stmt.excluded.state,
+                # Phase 77 (MIG-03 / D-08): NEVER overwrite `state` on conflict. A rescan of an
+                # already-advanced file must not regress its pipeline progress to DISCOVERED.
+                # New-file INSERT still stamps state=DISCOVERED via the VALUES dict (see
+                # discover_and_hash_files); only the ON CONFLICT overwrite is removed.
                 "batch_id": stmt.excluded.batch_id,
                 "file_type": stmt.excluded.file_type,
             },
