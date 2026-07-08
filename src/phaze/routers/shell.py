@@ -181,7 +181,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # edited — the swap is purely via stage_partial).
         if await _analyze_file_count(session) == 0:
             context["stage_partial"] = _EMPTY_STATE_PARTIAL
-            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+            # SER-01: only kind="fileserver" agents host media and can be scan targets;
+            # exclude kind="compute" (media-less burst backends) from the picker.
+            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
             context["agents"] = (await session.execute(agents_stmt)).scalars().all()
     elif stage == "discover":
         # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
@@ -190,7 +192,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # at the service/ORM layer (no router try/except). oob_counts stays False on the stage
         # render (Pitfall 3); the live sub-count refreshes via the single chrome poll's OOB seeds.
         context["recent_scans"] = await build_recent_scans(session)
-        agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+        # SER-01: only kind="fileserver" agents host media and can be scan targets;
+        # exclude kind="compute" (media-less burst backends) from the picker.
+        agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
         context["agents"] = (await session.execute(agents_stmt)).scalars().all()
     elif stage == "metadata":
         # Phase 58 (58-03, WORK-02): the Metadata workspace renders the metadata-pending queue --

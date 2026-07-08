@@ -1057,6 +1057,32 @@ async def test_dashboard_context_binds_lanes(client: AsyncClient, session: Async
     assert "cloud_target" not in ctx  # Plan 06 package-wide gate guard
 
 
+@pytest.mark.asyncio
+async def test_dashboard_context_excludes_compute_agents_from_scan_picker(client: AsyncClient, session: AsyncSession) -> None:
+    """SER-01: build_dashboard_context lists ONLY kind='fileserver' agents in the Trigger Scan dropdown.
+
+    A kind='compute' agent (Kueue/burst backend like k8s-vox) is media-less and cannot be a scan
+    target, so it must never appear in ``ctx['agents']``. Seed one fileserver + one compute agent and
+    assert on the agent ids (not just count) so the compute-exclusion is provable.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    from phaze.routers.pipeline import build_dashboard_context
+
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await seed_active_agent(session, agent_id="k8s-vox", kind="compute")
+
+    app_state = client._transport.app.state  # type: ignore[union-attr]
+    ctx = await build_dashboard_context(app_state, session)
+
+    # build_dashboard_context runs degrade-safe reads that roll back the session when the SAQ
+    # ``saq_jobs`` broker table is absent (as in this fixture DB), which expires the returned ORM
+    # rows; read each agent's PK from the identity map (IO-free) rather than a lazy ``.id`` load.
+    agent_ids = {sa_inspect(agent).identity[0] for agent in ctx["agents"]}
+    assert "nox" in agent_ids  # fileserver agent still offered as a scan target
+    assert "k8s-vox" not in agent_ids  # compute agent excluded (media-less, not a scan target)
+
+
 # ---------------------------------------------------------------------------
 # Phase 44 Plan 03: POST /pipeline/files/{file_id}/deepen — re-analyze ONE
 # sampled file at the full window budget (fine_cap=0 / coarse_cap=0 -> the
