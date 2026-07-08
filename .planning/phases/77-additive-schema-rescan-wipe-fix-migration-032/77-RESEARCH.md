@@ -332,15 +332,17 @@ target_metadata = Base.metadata        # line 33 — Base.metadata carries the n
 | A2 | `MIN(id)` / shortest-path is an acceptable deterministic canonical tiebreak for dedup backfill (original keeper not recoverable). | Pitfall 4 | If operator wants the "best-quality" canonical (bitrate/tags per `score_group`), backfill needs a metadata join. Flag for discuss-phase; recommend simple deterministic + nullable column. |
 | A3 | Plain (non-CONCURRENT) index builds are acceptable on `analysis`/`metadata`/`dedup_resolution`/`cloud_job` at corpus scale (these tables are smaller than `files`). | Pitfall 3 | If any of these tables is unexpectedly large/hot, a plain build could stall writers. House style is plain builds; measurement deferred to Phase 82 per YAGNI. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Include `ix_fprint_success` in `032` or defer to Phase 82?**
    - What we know: CONTEXT lists it in the "at minimum" set, but its `IN`-predicate is an autogenerate hazard (Pitfall 1) and nothing in `032` reads it.
    - What's unclear: whether the empty-diff round-trips with `= ANY(ARRAY[...])` spelling on this Postgres.
    - Recommendation: include it with the `= ANY(ARRAY[...])` spelling AND an explicit empty-diff verification; if the diff is non-empty, defer it to Phase 82 (the reader that queries it) rather than fighting normalization.
+   - **RESOLVED:** include it now with `= ANY(ARRAY[...])` spelling per CONTEXT.md "Claude's Discretion"; 77-03 Task 2 carries the empty-diff gate + a contingency to drop it (from both migration and `models/fingerprint.py`) and defer to Phase 82 if it is the sole residual autogenerate churn.
 
 2. **Does the operator want quality-ranked dedup canonical, or is deterministic-stable sufficient?**
    - Recommendation: deterministic-stable + nullable column now (Pitfall 4); a quality re-rank can be a later enrichment. Surface at plan/discuss time.
+   - **RESOLVED:** deterministic-stable nullable `canonical_file_id` with an `ORDER BY c.id LIMIT 1` tiebreak (77-02/77-03); quality re-rank deferred as a later enrichment.
 
 ## Environment Availability
 
