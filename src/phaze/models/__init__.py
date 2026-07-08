@@ -3,6 +3,7 @@
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord, FileState
@@ -24,6 +25,7 @@ __all__ = [
     "AnalysisWindow",
     "CloudJob",
     "CloudJobStatus",
+    "DedupResolution",
     "DiscogsLink",
     "ExecutionLog",
     "ExecutionStatus",

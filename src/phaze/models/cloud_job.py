@@ -20,7 +20,7 @@ new members need no enum migration, only the CHECK-constraint membership list. `
 import enum
 import uuid
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +44,10 @@ class CloudJobStatus(enum.StrEnum):
     SUBMITTED = "submitted"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
+    # Phase 77 (D-04): AWAITING_CLOUD sidecar representation. An awaiting file carries a cloud_job row
+    # status='awaiting' (s3_key/upload_id NULL). String-backed -- only the CHECK membership list widens,
+    # no Postgres enum-type migration. 'awaiting' is 8 chars, fits status String(16).
+    AWAITING = "awaiting"
 
 
 class CloudPhase(enum.StrEnum):
@@ -105,11 +109,15 @@ class CloudJob(TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('uploading', 'uploaded', 'submitted', 'running', 'succeeded', 'failed')",
+            # Phase 77 (D-04): 'awaiting' added (7 -> incl awaiting members). Bare name "status_enum" --
+            # the ck_%(table_name)s_%(constraint_name)s convention re-prefixes to ck_cloud_job_status_enum.
+            "status IN ('uploading', 'uploaded', 'submitted', 'running', 'succeeded', 'failed', 'awaiting')",
             name="status_enum",
         ),
         CheckConstraint(
             "cloud_phase IN ('queued_behind_quota', 'admitted', 'running', 'finished')",
             name="cloud_phase_enum",
         ),
+        # Phase 77 (PERF-01, migration 032): awaiting-lookup partial index mirroring migration 032.
+        Index("ix_cloud_job_awaiting", "file_id", postgresql_where=text("status = 'awaiting'")),
     )
