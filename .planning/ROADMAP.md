@@ -267,7 +267,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
 | 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
-| 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 1/2 | In Progress|  |
+| 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete   | 2026-07-08 |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 0/0 | Not started | - |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -342,7 +342,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 79-02-PLAN.md — Thin `python -m phaze.cli.shadow_compare` runner over the SAME core (D-01) + `[group('db')] shadow-compare` justfile recipe, nonzero-exit-on-hard-divergence contract (D-05); live 200K restore run DEFERRED to homelab (D-02) (Wave 2, depends 79-01)
+- [x] 79-02-PLAN.md — Thin `python -m phaze.cli.shadow_compare` runner over the SAME core (D-01) + `[group('db')] shadow-compare` justfile recipe, nonzero-exit-on-hard-divergence contract (D-05); live 200K restore run DEFERRED to homelab (D-02) (Wave 2, depends 79-01)
 
 ### Phase 80: Recovery / Re-enqueue Cutover
 
