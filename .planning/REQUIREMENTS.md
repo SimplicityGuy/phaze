@@ -68,6 +68,28 @@
 - [ ] **PERF-01**: Partial indexes sized to the exact `done`/`failed` predicates keep the `NOT EXISTS` pending anti-joins and the per-stage counts fast at 200K-file scale; each index is mirrored into the ORM `__table_args__` so `autogenerate` stays in sync.
 - [ ] **PERF-02**: The `/pipeline/stats` poll latency at 200K-file corpus scale is measured and recorded in the phase VERIFICATION; no denormalized status column is added unless that measurement shows the derived query is too slow (YAGNI is the default).
 
+### Legacy Sentinel Retirement (LEGACY)
+
+*Folded in from the #222 post-deploy backlog. Data-model-migration twin of this milestone; part (a) directly removes two `FileState` writers. See memory `project_legacy_sentinel_retirement`.*
+
+- [ ] **LEGACY-01**: The orphaned legacy scan path is deleted — `POST /api/v1/scan` (`routers/scan.py`), `run_scan`, and `discover_and_hash_files` (`services/ingestion.py`) are removed, so no new `files`/`scan_batches` row is ever attributed to `legacy-application-server` (and two `FileState`-writing upsert sites disappear from the migration surface). The FK ownership model (`agent_id` = owning fileserver) is preserved.
+- [ ] **LEGACY-02**: A data-migration reattributes all historical `legacy-application-server`-owned `files` and `scan_batches` to a designated real `kind='fileserver'` agent (e.g. nox), with a backfill-verification check.
+- [ ] **LEGACY-03**: After reattribution, the `agent_id` column `default=` is dropped and the `legacy-application-server` sentinel `Agent` row is deleted (the `ondelete=RESTRICT` FK is satisfiable only because LEGACY-02 reattributed first).
+
+### Priority UI Control (PRIO)
+
+*Folded in from the #222 post-deploy backlog. Backend is live end-to-end; only the v7.0-deleted UI control is missing.*
+
+- [ ] **PRIO-01**: The operator can change a per-stage job priority from the shell (a stepper wired to the existing `POST /pipeline/stages/{stage}/priority` endpoint — ▲ raises priority / lowers the number), re-connecting the orphaned setter; pause/resume controls are surfaced too if that endpoint is likewise orphaned.
+
+### Lane / Agent Drill-In (DRILL)
+
+*Folded in from the #222 post-deploy backlog. The agent-activity view consumes the new `stage_status`.*
+
+- [ ] **DRILL-01**: Clicking a backend-lane card opens a lane-detail view (new `GET /pipeline/lanes/{backend_id}`) showing that lane's queues / in-flight / waiting / quota / recent completions.
+- [ ] **DRILL-02**: Clicking an agent row opens an agent-detail view (new `GET /admin/agents/{agent_id}/_activity`) showing owned files grouped by derived `stage_status`, recent scan batches, per-lane queue depths, and liveness.
+- [ ] **DRILL-03**: The drill-in survives the 5s poll swap (selection carried via URL param / rendered outside the polled `outerHTML` region so it is not clobbered) and is keyboard-accessible (`role=button`, Enter/Space, focus ring).
+
 ### Migration & Verification (MIG)
 
 - [ ] **MIG-01**: Migration `032` is additive-only — it creates the failure markers, the dedup marker, and the cloud sidecar representation, adds the partial indexes, and backfills them from `FileRecord.state`, **without touching `files.state`**.
@@ -138,11 +160,18 @@
 | MIG-02 | TBD | Pending |
 | MIG-03 | TBD | Pending |
 | MIG-04 | TBD | Pending |
+| LEGACY-01 | TBD | Pending |
+| LEGACY-02 | TBD | Pending |
+| LEGACY-03 | TBD | Pending |
+| PRIO-01 | TBD | Pending |
+| DRILL-01 | TBD | Pending |
+| DRILL-02 | TBD | Pending |
+| DRILL-03 | TBD | Pending |
 
 **Coverage:**
-- v1 requirements: 34 total
+- v1 requirements: 41 total
 - Mapped to phases: 0 (roadmapper populates)
-- Unmapped: 34 ⚠️ (until roadmap created)
+- Unmapped: 41 ⚠️ (until roadmap created)
 
 ---
 *Requirements defined: 2026-07-08*
