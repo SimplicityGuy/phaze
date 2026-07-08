@@ -33,10 +33,12 @@ in this phase; no schema change. Cutover begins Phase 80.
   **`just shadow-compare`** CLI/module that runs the *same core* against any DB it is pointed at
   (a live-corpus restore). No assertion logic is duplicated between the two. (Rejected pytest-only —
   no first-class live-DB path; and CLI-only — needs extra fixture-DB plumbing for CI.)
-- **D-02:** The **live 200K-corpus restore run is deferred** to the next homelab rollout and recorded
-  in the phase VERIFICATION when performed (consistent with this project's other deployment-gated UAT
-  items). This phase ships the check + hermetic fixture tests **green**. The gate remains a hard
-  precondition for `033` (phase 90) regardless of when the live run happens.
+- **D-02 [deferred]:** The **live 200K-corpus restore run is deferred** to the next homelab rollout
+  and recorded in the phase VERIFICATION when performed (consistent with this project's other
+  deployment-gated UAT items). This phase ships the check + hermetic fixture tests **green**. The gate
+  remains a hard precondition for `033` (phase 90) regardless of when the live run happens.
+  *(Tagged `[deferred]`: a deferral/scoping note — deliberately NOT a buildable plan task; tracked
+  instead as the sole Manual-Only verification in `79-VALIDATION.md`, and referenced in `79-02-PLAN.md`.)*
 
 ### Derived-side source (D-03)
 - **D-03:** The "derived representation" side of the comparison is built by **reusing Phase 78's
