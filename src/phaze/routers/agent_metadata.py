@@ -4,11 +4,13 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_metadata import MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
@@ -48,6 +50,16 @@ async def put_metadata(
     invoked without `exclude_unset=True`, so every Optional field with
     default `None` was written to the SET clause, NULLing prior column
     values on partial replays. Verified end-to-end in 25-VERIFICATION.md.
+
+    State advance (260707-rc4): after the upsert, in the SAME transaction,
+    guardedly advance the file DISCOVERED -> METADATA_EXTRACTED so a metadata
+    callback actually unblocks the pipeline (get_files_by_state gates the
+    fingerprint stage on METADATA_EXTRACTED; the UI renders f.state directly).
+    The guard `state == FileState.DISCOVERED` mirrors agent_push.py:126 (WR-02):
+    a parallel/late fingerprint or analyze callback that already advanced the
+    file must NEVER be downgraded back to METADATA_EXTRACTED. The advance is
+    NOT gated on `dumped` -- an empty-body success PUT still means extraction
+    ran, so it must unblock the file too.
     """
     # CR-01 fix: only fields the client explicitly set participate in the UPDATE.
     dumped = body.model_dump(exclude_unset=True)
@@ -68,6 +80,14 @@ async def put_metadata(
         # Avoids Postgres "SET clause empty" syntax error.
         stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
     await session.execute(stmt)
+    # 260707-rc4: guardedly advance DISCOVERED -> METADATA_EXTRACTED in the SAME transaction
+    # as the upsert so a metadata callback unblocks the fingerprint stage + UI. Guarded on
+    # state == DISCOVERED (mirrors agent_push.py:126 WR-02): a parallel/late fingerprint or
+    # analyze callback that already advanced the file must not be downgraded. Fires on every
+    # success PUT (NOT gated on `dumped`) -- an empty-body success still means extraction ran.
+    await session.execute(
+        update(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.DISCOVERED).values(state=FileState.METADATA_EXTRACTED)
+    )
     # Phase 45 (L-02): clear the extract_file_metadata:<file_id> ledger row in the SAME
     # transaction as the metadata upsert. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
     await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")

@@ -83,11 +83,24 @@ async def startup(ctx: dict[str, Any]) -> None:
     cfg.log_effective_registry()  # type: ignore[attr-defined]
 
     # Shared async engine pool for all fileless task functions (INFRA-01 from v1.0).
+    # quick-260707-ryn: source every pool kwarg from config (cfg == get_settings(), which
+    # inherits the BaseSettings db_* knobs). pool_size drops from a hardcoded 10 to the config
+    # default 5 and the three hygiene kwargs (pool_timeout / pool_recycle / pool_pre_ping) are
+    # NEW. INCIDENT: phaze reaches Postgres through PgBouncer in SESSION mode, where every
+    # client connection pins one upstream server connection for its whole lifetime; the shared
+    # (phaze,phaze) session pool (cap ~55) deadlocked under normal multi-worker load and /health
+    # hung behind the exhausted pool. pool_pre_ping drops dead server conns before checkout,
+    # pool_recycle=1800 frees an idle server slot after 30 min instead of pinning it, and
+    # pool_timeout=10 bounds the acquire wait so a saturated pool fails fast. Homelab raises the
+    # pooler cap to ~80 in parallel, so these app-side reductions are HEADROOM, not a hard fit.
     task_engine = create_async_engine(
         str(cfg.database_url),
         echo=cfg.debug,
-        pool_size=10,
-        max_overflow=5,
+        pool_size=cfg.db_pool_size,
+        max_overflow=cfg.db_max_overflow,
+        pool_timeout=cfg.db_pool_timeout,
+        pool_recycle=cfg.db_pool_recycle,
+        pool_pre_ping=cfg.db_pool_pre_ping,
     )
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
