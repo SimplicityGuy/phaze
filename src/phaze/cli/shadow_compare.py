@@ -135,5 +135,5 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if report.hard_fail_total else 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - module-run guard, exercised via `python -m`, not under pytest
     raise SystemExit(main())
