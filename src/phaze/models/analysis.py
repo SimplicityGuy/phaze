@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,6 +36,20 @@ class AnalysisResult(TimestampMixin, Base):
     # put_analysis completion branch that flips FileState.ANALYZED. The proposal convergence
     # gate requires this IS NOT NULL so a partial row can never leak in with NULL aggregates.
     analysis_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Phase 77 (D-01, migration 032): nullable analyze-stage failure markers on the 1:1 output table
+    # (NOT a generic stage_failure table -- preserves the <=1-row-per-file invariant). Stamped by the
+    # go-forward writer + backfilled from FileState.ANALYSIS_FAILED; analysis_completed_at stays NULL
+    # for a failed row so the future done-over-failed precedence holds.
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Phase 77 (PERF-01, migration 032): partial indexes mirroring what migration 032 creates, with
+    # byte-identical names + normalized IS-NOT-NULL predicate text -- the ORM half of the
+    # empty-autogenerate-diff contract. AnalysisResult had no __table_args__ before this phase.
+    __table_args__ = (
+        Index("ix_analysis_completed", "file_id", postgresql_where=text("analysis_completed_at IS NOT NULL")),
+        Index("ix_analysis_failed", "file_id", postgresql_where=text("failed_at IS NOT NULL")),
+    )
 
 
 class AnalysisWindow(TimestampMixin, Base):
