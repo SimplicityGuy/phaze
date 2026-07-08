@@ -32,7 +32,7 @@
 
 - [ ] **INFLIGHT-01**: `in_flight(file, stage)` is true when an active/queued unit of work exists for that `(file, stage-function)`, and it is a first-class input to both eligibility and the DAG busy pills.
 - [ ] **INFLIGHT-02**: Every read of the SAQ `saq_jobs` table is static SQL wrapped in a `begin_nested()` SAVEPOINT and degrades to a safe default on any error — the 5s `/pipeline/stats` poll never 500s; Alembic never references `saq_jobs`.
-- [ ] **INFLIGHT-03**: *(Open decision D-01 — resolve during Phase 2 planning with a written decision record.)* `in_flight`'s authoritative source is chosen between `scheduling_ledger` alone (Architecture's position) and `saq_jobs ∪ scheduling_ledger` (design/Stack position); whichever is chosen, a crashed-mid-run or callback-lost file is not falsely re-enqueued as `not_started`.
+- [ ] **INFLIGHT-03**: *(Open decision D-01 — resolve during Phase 78 planning with a written decision record.)* `in_flight`'s authoritative source is chosen between `scheduling_ledger` alone (Architecture's position) and `saq_jobs ∪ scheduling_ledger` (design/Stack position); whichever is chosen, a crashed-mid-run or callback-lost file is not falsely re-enqueued as `not_started`.
 
 ### Per-Stage Failure (FAIL)
 
@@ -125,54 +125,54 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DERIV-01 | TBD | Pending |
-| DERIV-02 | TBD | Pending |
-| DERIV-03 | TBD | Pending |
-| DERIV-04 | TBD | Pending |
-| DERIV-05 | TBD | Pending |
-| ELIG-01 | TBD | Pending |
-| ELIG-02 | TBD | Pending |
-| ELIG-03 | TBD | Pending |
-| ELIG-04 | TBD | Pending |
-| INFLIGHT-01 | TBD | Pending |
-| INFLIGHT-02 | TBD | Pending |
-| INFLIGHT-03 | TBD | Pending |
-| FAIL-01 | TBD | Pending |
-| FAIL-02 | TBD | Pending |
-| FAIL-03 | TBD | Pending |
-| FAIL-04 | TBD | Pending |
-| READ-01 | TBD | Pending |
-| READ-02 | TBD | Pending |
-| READ-03 | TBD | Pending |
-| READ-04 | TBD | Pending |
-| READ-05 | TBD | Pending |
-| SIDECAR-01 | TBD | Pending |
-| SIDECAR-02 | TBD | Pending |
-| SIDECAR-03 | TBD | Pending |
-| UI-01 | TBD | Pending |
-| UI-02 | TBD | Pending |
-| UI-03 | TBD | Pending |
-| UI-04 | TBD | Pending |
-| UI-05 | TBD | Pending |
-| PERF-01 | TBD | Pending |
-| PERF-02 | TBD | Pending |
-| MIG-01 | TBD | Pending |
-| MIG-02 | TBD | Pending |
-| MIG-03 | TBD | Pending |
-| MIG-04 | TBD | Pending |
-| LEGACY-01 | TBD | Pending |
-| LEGACY-02 | TBD | Pending |
-| LEGACY-03 | TBD | Pending |
-| PRIO-01 | TBD | Pending |
-| DRILL-01 | TBD | Pending |
-| DRILL-02 | TBD | Pending |
-| DRILL-03 | TBD | Pending |
+| DERIV-01 | Phase 78 | Pending |
+| DERIV-02 | Phase 78 | Pending |
+| DERIV-03 | Phase 78 | Pending |
+| DERIV-04 | Phase 78 | Pending |
+| DERIV-05 | Phase 78 | Pending |
+| ELIG-01 | Phase 78 | Pending |
+| ELIG-02 | Phase 78 | Pending |
+| ELIG-03 | Phase 78 | Pending |
+| ELIG-04 | Phase 78 | Pending |
+| INFLIGHT-01 | Phase 78 | Pending |
+| INFLIGHT-02 | Phase 78 | Pending |
+| INFLIGHT-03 | Phase 78 | Pending |
+| FAIL-01 | Phase 81 | Pending |
+| FAIL-02 | Phase 81 | Pending |
+| FAIL-03 | Phase 81 | Pending |
+| FAIL-04 | Phase 81 | Pending |
+| READ-01 | Phase 82 | Pending |
+| READ-02 | Phase 82 | Pending |
+| READ-03 | Phase 80 | Pending |
+| READ-04 | Phase 84 | Pending |
+| READ-05 | Phase 85 | Pending |
+| SIDECAR-01 | Phase 83 | Pending |
+| SIDECAR-02 | Phase 84 | Pending |
+| SIDECAR-03 | Phase 86 | Pending |
+| UI-01 | Phase 87 | Pending |
+| UI-02 | Phase 87 | Pending |
+| UI-03 | Phase 87 | Pending |
+| UI-04 | Phase 87 | Pending |
+| UI-05 | Phase 87 | Pending |
+| PERF-01 | Phase 77 | Pending |
+| PERF-02 | Phase 82 | Pending |
+| MIG-01 | Phase 77 | Pending |
+| MIG-02 | Phase 79 | Pending |
+| MIG-03 | Phase 77 | Pending |
+| MIG-04 | Phase 90 | Pending |
+| LEGACY-01 | Phase 89 | Pending |
+| LEGACY-02 | Phase 89 | Pending |
+| LEGACY-03 | Phase 89 | Pending |
+| PRIO-01 | Phase 87 | Pending |
+| DRILL-01 | Phase 88 | Pending |
+| DRILL-02 | Phase 88 | Pending |
+| DRILL-03 | Phase 88 | Pending |
 
 **Coverage:**
-- v1 requirements: 41 total
-- Mapped to phases: 0 (roadmapper populates)
-- Unmapped: 41 ⚠️ (until roadmap created)
+- v1 requirements: 42 total *(the initial "41 total" was an off-by-one; the traceability table has always listed 42 distinct IDs)*
+- Mapped to phases: 42 (100%)
+- Unmapped: 0 ✓ — every v1 requirement maps to exactly one phase, no orphans, no duplicates
 
 ---
 *Requirements defined: 2026-07-08*
-*Last updated: 2026-07-08 after initial definition for milestone 2026.7.5*
+*Last updated: 2026-07-08 — traceability populated by roadmapper (Phases 77–90, milestone 2026.7.5)*
