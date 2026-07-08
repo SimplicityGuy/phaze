@@ -289,6 +289,57 @@ class BaseSettings(PydanticBaseSettings):
     worker_health_check_interval: int = 60
     worker_keep_result: int = 3600
 
+    # DB connection footprint / pool hygiene (quick-260707-ryn). These live on BaseSettings
+    # so BOTH the api engine (via the module-level `settings` singleton, database.py) AND the
+    # control worker task_engine (via get_settings(), tasks/controller.py) source their pool
+    # kwargs from one operator-tunable place; the two dispatch knobs size the control-side
+    # per-(agent,lane) dispatch queues in services/agent_task_router.py.
+    #
+    # INCIDENT: phaze reaches Postgres through PgBouncer in SESSION mode, where every
+    # app->pooler client connection PINS one upstream server connection for its whole lifetime.
+    # The shared (phaze,phaze) session pool (cap ~55) deadlocked under normal multi-worker load
+    # and /health hung behind the exhausted pool. These reduced + hygienic defaults cut phaze's
+    # server-connection footprint; homelab raises the pooler cap to ~80 in PARALLEL, so this is
+    # HEADROOM, not a hard fit. db_pool_pre_ping validates a connection before checkout (drops
+    # dead server conns instead of handing one out), db_pool_recycle=1800 recycles a conn after
+    # 30 min so an idle server slot is freed rather than pinned indefinitely, and db_pool_timeout
+    # bounds the acquire wait so a saturated pool fails fast instead of hanging a request.
+    db_pool_size: int = Field(
+        default=5,
+        validation_alias=AliasChoices("PHAZE_DB_POOL_SIZE", "db_pool_size"),
+        description="SQLAlchemy engine pool_size for the api + control-worker engines (quick-260707-ryn). Default 5.",
+    )
+    db_max_overflow: int = Field(
+        default=5,
+        validation_alias=AliasChoices("PHAZE_DB_MAX_OVERFLOW", "db_max_overflow"),
+        description="SQLAlchemy engine max_overflow for the api + control-worker engines (quick-260707-ryn). Default 5.",
+    )
+    db_pool_timeout: int = Field(
+        default=10,
+        validation_alias=AliasChoices("PHAZE_DB_POOL_TIMEOUT", "db_pool_timeout"),
+        description="Seconds to wait for a pooled connection before failing fast (quick-260707-ryn). Default 10.",
+    )
+    db_pool_recycle: int = Field(
+        default=1800,
+        validation_alias=AliasChoices("PHAZE_DB_POOL_RECYCLE", "db_pool_recycle"),
+        description="Recycle a pooled connection after this many seconds so idle server slots are freed (quick-260707-ryn). Default 1800 (30 min).",
+    )
+    db_pool_pre_ping: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PHAZE_DB_POOL_PRE_PING", "db_pool_pre_ping"),
+        description="Validate a pooled connection before checkout, dropping dead server conns (quick-260707-ryn). Default True.",
+    )
+    dispatch_queue_min_size: int = Field(
+        default=0,
+        validation_alias=AliasChoices("PHAZE_DISPATCH_QUEUE_MIN_SIZE", "dispatch_queue_min_size"),
+        description="psycopg3 min_size for each control-side per-(agent,lane) dispatch queue (quick-260707-ryn). Default 0 keeps zero idle server conns pinned.",
+    )
+    dispatch_queue_max_size: int = Field(
+        default=2,
+        validation_alias=AliasChoices("PHAZE_DISPATCH_QUEUE_MAX_SIZE", "dispatch_queue_max_size"),
+        description="psycopg3 max_size for each control-side per-(agent,lane) dispatch queue (quick-260707-ryn). Default 2 caps the enqueue burst.",
+    )
+
     # Fingerprint service URLs (Docker service names)
     audfprint_url: str = "http://audfprint:8001"
     panako_url: str = "http://panako:8002"

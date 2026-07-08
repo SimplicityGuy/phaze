@@ -74,3 +74,20 @@ async def test_run_migrations_skips_when_auto_migrate_false(monkeypatch: pytest.
     await db.run_migrations()
 
     fake_upgrade.assert_not_called()
+
+
+def test_engine_pool_hygiene_sourced_from_config() -> None:
+    """quick-260707-ryn: the module-level api engine builds its pool from the config knobs.
+
+    Leans phaze's PgBouncer session-mode server-connection footprint (the ~55-cap deadlock):
+    reduced pool_size/max_overflow + pre_ping (drop dead server conns) + recycle (free idle
+    server slots) + a bounded acquire timeout (fail fast rather than hang /health). The live
+    AsyncAdaptedQueuePool exposes size()/_max_overflow/_timeout/_recycle/_pre_ping; assert on
+    them directly (no module reload -- create_async_engine is lazy, so this opens no socket).
+    """
+    pool = db.engine.pool
+    assert pool.size() == 5
+    assert pool._max_overflow == 5
+    assert pool._timeout == 10
+    assert pool._recycle == 1800
+    assert pool._pre_ping is True

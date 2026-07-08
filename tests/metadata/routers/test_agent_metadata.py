@@ -13,7 +13,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord, FileState
@@ -234,6 +234,60 @@ async def test_metadata_empty_put_is_noop_for_existing_row(
     row = result.scalar_one()
     assert row.artist == "Aphex Twin"
     assert row.title == "Xtal"
+
+
+# ---------------------------------------------------------------------------
+# 260707-rc4: guarded DISCOVERED -> METADATA_EXTRACTED state advance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_advances_discovered_to_extracted(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """A metadata PUT for a DISCOVERED file advances its state to METADATA_EXTRACTED (unblocks fingerprint)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)  # seeded in FileState.DISCOVERED
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "A"})
+
+    assert r.status_code == 200, r.text
+
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.METADATA_EXTRACTED, "metadata PUT must advance DISCOVERED -> METADATA_EXTRACTED"
+    meta_row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert meta_row.artist == "A"
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_does_not_downgrade_later_state(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """A metadata PUT for a file already ANALYZED must NOT downgrade its state; the metadata row is still upserted."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    # Advance the file past DISCOVERED before the PUT (mirrors a parallel fingerprint/analyze callback).
+    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYZED))
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "A"})
+
+    assert r.status_code == 200, r.text
+
+    session.expire_all()
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.ANALYZED, "guard failed: later state was downgraded by the metadata PUT"
+    meta_row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert meta_row.artist == "A", "metadata row must still be upserted regardless of the file's current state"
 
 
 # ---------------------------------------------------------------------------
