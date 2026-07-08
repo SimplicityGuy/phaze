@@ -1,8 +1,8 @@
 ---
 phase: 79
 slug: shadow-compare-gate-live-corpus
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-08
 ---
@@ -70,11 +70,13 @@ created: 2026-07-08
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references (the new test file + fixture builder)
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 90s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify (2 tasks/wave)
+- [x] Wave 0 covers all MISSING references (new test file + fixture builder covered by 79-01-PLAN.md Task 2)
+- [x] No watch-mode flags
+- [x] Feedback latency < 90s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+*Note: `wave_0_complete` stays `false` until execution actually writes `tests/integration/test_shadow_compare.py` + the fixture builder; the sign-off boxes reflect plan-time compliance (a plan covers every Wave-0 reference), flipped post-planning by convention.*
+
+**Approval:** approved 2026-07-08 (plan-time)
