@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
 status: executing
-last_updated: "2026-07-08T07:48:16.979Z"
-last_activity: 2026-07-08 -- Phase 77 execution started
+last_updated: "2026-07-08T07:58:13.443Z"
+last_activity: 2026-07-08
 progress:
   total_phases: 52
   completed_phases: 0
   total_plans: 3
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 ## Current Position
 
 Phase: 77 (Additive Schema & Rescan-Wipe Fix (migration `032`)) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 77
-Last activity: 2026-07-08 -- Phase 77 execution started
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-07-08
 
 ## Performance Metrics
 
@@ -125,6 +125,8 @@ Last activity: 2026-07-08 -- Phase 77 execution started
 - [Phase 75]: 75-01: docker-compose cloud_target/Phase-67 breadcrumb comments deleted (HYG-02) — no live PHAZE_CLOUD_TARGET env ever existed; comment-only diff, zero src change across the whole plan
 - [Phase 75]: 75-01: cleared all three open 2026.7.1 STATE deferred rows (HYG-02 resolved, HYG-03 superseded, HYG-04 via 75-02); WR-01 probe-concurrency gap kept as tracked deferred (user decision D-08); 70-UAT row untouched
 - [Phase ?]: 75-02: HYG-04 force-local gate regression added (4 cases) at real-route altitude via a persisted RouteControl(id='global', force_local=True) row; kept the autouse cloud-ON registry so the toggle is the only variable; assert AWAITING_CLOUD row ABSENCE (anti-cheat); backfill no-op uses with_ledger=False; zero src diff (a01a7bf8 + 63589cd5)
+- [Phase ?]: 77-01: rescan-wipe fix (MIG-03/D-08) removed the state key from the ON CONFLICT set_ dict at both mirror upsert sites; new files still INSERT DISCOVERED, existing files keep state; AUTH-01 preserved
+- [Phase ?]: 77-01: agent-endpoint rescan regression uses a self-contained smoke app mounting only agent_files.router (no main.py dependency); one bucket per file (discovery + agents), verified in isolation via just test-bucket
 
 ### Pending Todos
 
@@ -208,6 +210,7 @@ None.
 | Phase 74 P04 | ~10 min | 2 tasks | 3 files |
 | Phase 75 P01 | ~12 min | 3 tasks | 4 files |
 | Phase 75 P02 | ~15min | 2 tasks | 1 files |
+| Phase 77 P01 | 20 | 2 tasks | 4 files |
 
 ## Deferred Items
 
@@ -274,9 +277,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-08T07:01:24.287Z
+Last session: 2026-07-08T07:58:00.169Z
 Stopped at: Phase 77 context gathered
-Resume file: .planning/phases/77-additive-schema-rescan-wipe-fix-migration-032/77-CONTEXT.md
+Resume file: None
 
 ## Operator Next Steps
 

@@ -265,7 +265,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete    | 2026-07-06 |
 | 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 2/2 | Complete    | 2026-07-06 |
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
-| 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 0/3 | Planned | - |
+| 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 1/3 | In Progress|  |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 0/0 | Not started | - |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 0/0 | Not started | - |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -296,7 +296,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 Plans:
 **Wave 1**
 
-- [ ] 77-01-PLAN.md — Rescan-wipe fix: remove the ON CONFLICT state overwrite from both upsert sites + regression tests (MIG-03, D-08) [wave 1]
+- [x] 77-01-PLAN.md — Rescan-wipe fix: remove the ON CONFLICT state overwrite from both upsert sites + regression tests (MIG-03, D-08) [wave 1]
 - [ ] 77-02-PLAN.md — ORM schema: failure-marker columns + partial-index `__table_args__` mirrors, `CloudJobStatus.AWAITING` + CHECK, new `DedupResolution` model (MIG-01, PERF-01) [wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
