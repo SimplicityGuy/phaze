@@ -147,3 +147,19 @@ def test_lane_concurrency_default_unclamped(monkeypatch: pytest.MonkeyPatch) -> 
     mod = _reload_worker(monkeypatch, lane="analyze")
 
     assert mod.settings["concurrency"] == 4
+
+
+def test_agent_worker_queue_pool_stays_one_four(monkeypatch: pytest.MonkeyPatch) -> None:
+    """quick-260707-ryn REGRESSION: the agent's OWN lane queue pool stays min_size=1/max_size=4.
+
+    The ryn dispatch-footprint reduction trimmed the CONTROL-side per-(agent,lane) dispatch
+    queues to 0/2, but the agent worker's own consumer queue (agent_worker.py:354) is a
+    long-lived DRAIN pool that must keep a warm connection -- it MUST NOT be swept into that
+    reduction. Read off the SAQ ``queue.min_size`` / ``queue.max_size`` attributes: SAQ carries
+    the configured sizing there at construction and only resizes the underlying psycopg pool at
+    ``connect()``, so the unopened queue's ``pool.min_size`` would still report psycopg's default.
+    """
+    mod = _reload_worker(monkeypatch, lane="analyze")
+
+    assert mod.queue.min_size == 1
+    assert mod.queue.max_size == 4
