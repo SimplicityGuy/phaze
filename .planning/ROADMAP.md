@@ -12,8 +12,28 @@
 - ✅ **2026.7.0 Engineering Improvements** — Phases 63-66 (shipped 2026-07-03)
 - ✅ **2026.7.1 Multi-Cloud Backends** — Phases 67-71 (shipped 2026-07-05)
 - ✅ **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-76 (shipped 2026-07-06)
+- 🔵 **2026.7.5 Parallel Enrich DAG (Retire Linear FileState)** — Phases 77-90 (active, started 2026-07-08)
 
 ## Phases
+
+### 🔵 Active — 2026.7.5 Parallel Enrich DAG (Retire Linear `FileState`) (Phases 77-90)
+
+Retire the linear `FileState` enum and derive per-file, per-stage status (`not_started` / `in_flight` / `done` / `failed`) from the output tables that already exist, so metadata / fingerprint / analyze become genuinely per-file parallel (every `discovered` file lights up in all three enrich tabs, workable in any order). This is a **live-corpus data-model migration** touching ~23 source files: additive `032` → a standing shadow-compare gate → readers-before-writers cutover, seam by seam → destructive `033`. **Small blast-radius per phase (one shippable PR per seam)** is a hard requirement. Phase numbering **continues from 76**. 42 requirements mapped 1:1, 0 orphans, 0 duplicates. Zero new dependencies. Design contract: `.planning/milestones/PARALLEL-ENRICH-DAG-DESIGN.md`; research: `.planning/research/SUMMARY.md`.
+
+- [x] **Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)** — additive-only `032` creates the failure markers, dedup marker, cloud-routing sidecar rows, and partial indexes (mirrored into the ORM), backfilled from `files.state` **without touching `files.state`**; plus the independently-shippable rescan progress-wipe fix (MIG-01, MIG-03, PERF-01) (completed 2026-07-08)
+- [ ] **Phase 78: Derivation Layer, Eligibility & Anti-Drift Test Harness** — the single-source predicate module (`enums/stage.py` DB-free + `services/stage_status.py`), `stage_status()` / `eligible()`, SAVEPOINT-wrapped in-flight detection, and the SQL⇔Python equivalence test; carries the **D-01 open decision** (written decision record required at plan-time) (DERIV-01..05, ELIG-01..04, INFLIGHT-01..03)
+- [ ] **Phase 79: Shadow-Compare Gate (live corpus)** — a committed, re-runnable implication check between legacy `files.state` and the derived representation; must pass before any reader cutover and before `033` (MIG-02)
+- [ ] **Phase 80: Recovery / Re-enqueue Cutover** — `reenqueue.py` + `reconcile_cloud_jobs.py` derive done/in-flight from `stage_status`/sidecars with no `FileRecord.state` read; deliberately **before** the pending-set/counts readers (double-negation dependency) (READ-03)
+- [ ] **Phase 81: Per-Stage Failure Persistence & Retry Paths** — durable failure markers for analyze + metadata (`report_metadata_failed` records instead of nothing) + reused fingerprint failure; a metadata retry path so a failure is never a permanent dead-end (FAIL-01..04)
+- [ ] **Phase 82: Counts & Pending-Set Cutover** — the three enrich pending sets + `get_pipeline_stats` derived from `stage_status`; the cross-stage deadlock dissolves; four-bucket per-stage counts; the 200K-scale poll latency measured (READ-01, READ-02, PERF-02)
+- [ ] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01)
+- [ ] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02)
+- [ ] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05)
+- [ ] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03)
+- [ ] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01)
+- [ ] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03)
+- [ ] **Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution** — delete the orphaned legacy scan path (removes two `FileState` writers), reattribute historical `legacy-application-server`-owned rows to a real fileserver agent, then drop the `agent_id` default + delete the sentinel row (RESTRICT-FK-ordered) (LEGACY-01..03)
+- [ ] **Phase 90: Destructive Migration `033` & Writer Removal** — gated last (shadow-compare green + cloud-push lanes drained): drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, remove the remaining `.state=` writers (MIG-04)
 
 <details>
 <summary>✅ 2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends) (Phases 72-76) — SHIPPED 2026-07-06</summary>
@@ -245,6 +265,221 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 74. Docs, Runbook & N-Lane Compute UI Verification | 2026.7.2 | 4/4 | Complete    | 2026-07-06 |
 | 75. Engineering Hygiene — Guard Hardening, Tech-Debt & Stale-Tracking Cleanup | 2026.7.2 | 2/2 | Complete    | 2026-07-06 |
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
+| 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
+| 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 0/0 | Not started | - |
+| 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 0/0 | Not started | - |
+| 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 0/0 | Not started | - |
+| 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
+| 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
+| 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
+| 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
+| 90. Destructive Migration 033 & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
+
+### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
+
+**Goal**: Land the additive `032` migration so the derived model's schema exists — analyze/metadata failure markers, the dedup marker, and the cloud-routing sidecar representation — backfilled from `files.state`, with partial indexes sized to the exact predicates, **without touching `files.state`**; plus the independently-shippable rescan progress-wipe fix.
+**Depends on**: Nothing (first phase of the milestone; branch off `main` @ `ce0c6434`)
+**Requirements**: MIG-01, MIG-03, PERF-01
+**Success Criteria** (what must be TRUE):
+
+  1. `alembic upgrade head` applies `032` on a copy of the live corpus — creating the analyze/metadata failure-marker columns, the dedup-marker table, and the cloud-routing sidecar rows, all backfilled from `files.state` — with `files.state` byte-unchanged and `saq_jobs` never referenced.
+  2. Each new partial index is `IS NOT NULL`-shaped (never `status IN (...)`), exists in the DB, and is mirrored into the ORM `__table_args__` — `alembic revision --autogenerate` produces an empty diff.
+  3. Re-scanning an already-advanced file no longer resets its progress: the `ON CONFLICT DO UPDATE SET state = excluded.state` progress-wipe is removed from both upsert sites, proven by a test that rescans an `ANALYZED` file and asserts its output rows survive.
+  4. `032.downgrade()` cleanly reverses every additive object on the same corpus copy (per-migration integration test green). *(Relaxed to best-effort DDL reversal per CONTEXT D-09 — forward upgrade path is the focus.)*
+
+**Plans**: 3 plans
+Plans:
+**Wave 1**
+
+- [x] 77-01-PLAN.md — Rescan-wipe fix: remove the ON CONFLICT state overwrite from both upsert sites + regression tests (MIG-03, D-08) [wave 1]
+- [x] 77-02-PLAN.md — ORM schema: failure-marker columns + partial-index `__table_args__` mirrors, `CloudJobStatus.AWAITING` + CHECK, new `DedupResolution` model (MIG-01, PERF-01) [wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 77-03-PLAN.md — Migration `032` (additive DDL + set-based backfill + minimal downgrade) + per-migration integration test with empty-autogenerate-diff gate (MIG-01, PERF-01) [wave 2]
+
+### Phase 78: Derivation Layer, Eligibility & Anti-Drift Test Harness
+
+**Goal**: Ship the single-source-of-truth predicate module — `enums/stage.py` (DB-free, agent-safe) + `services/stage_status.py` — so every caller derives per-file, per-stage `{not_started | in_flight | done | failed}` and eligibility from the output tables + `saq_jobs`, with the SQL and Python definitions locked together against drift. Purely additive: no reader/writer cuts over yet.
+**Depends on**: Phase 77
+**Requirements**: DERIV-01, DERIV-02, DERIV-03, DERIV-04, DERIV-05, ELIG-01, ELIG-02, ELIG-03, ELIG-04, INFLIGHT-01, INFLIGHT-02, INFLIGHT-03
+**Success Criteria** (what must be TRUE):
+
+  1. `stage_status(file, stage)` returns the derived status for every stage using the *correct* per-stage `done` predicate (metadata row present & not failure-only; any fingerprint engine `success`/`completed`; `analysis.analysis_completed_at IS NOT NULL`), with precedence `in_flight ≻ done ≻ failed ≻ not_started`, and correctly reads a one-success/one-failed fingerprint file as `done`.
+  2. A parametrized equivalence test proves the SQL-derived and Python-derived status agree for every stage across the full fixture matrix; each stage's predicate is authored exactly once as a reusable `ColumnElement[bool]` builder.
+  3. `eligible(f, stage)` is a pure predicate over `stage_status` — the three enrich stages have **no upstream** (every `discovered` file eligible for all three, in any order); downstream stages gate on their upstream conjuncts.
+  4. A failed **analyze** is encoded terminal at the *shared* predicate — a regression test asserts a failed analyze is absent from the analyze pending/eligible set and is never produced by any automatic path (guards the 44.5K-job over-enqueue class); a failed **fingerprint** stays eligible.
+  5. Every `saq_jobs` read for `in_flight` is static SQL wrapped in a `begin_nested()` SAVEPOINT that degrades to a safe default; a **written D-01 decision record** fixes the authoritative `in_flight` source so a crashed-mid-run / callback-lost file is never falsely re-enqueued as `not_started`.
+
+**Plans**: TBD
+**Note**: INFLIGHT-03 / D-01 (`in_flight` = `scheduling_ledger` alone vs `saq_jobs ∪ scheduling_ledger`) is an **OPEN DECISION** — a written decision record is REQUIRED at plan-time (Architecture rejects the naked union; design/Stack lean union). The roadmap deliberately does not resolve it.
+
+### Phase 79: Shadow-Compare Gate (live corpus)
+
+**Goal**: A committed, re-runnable shadow-compare check asserting per-file *implication* invariants between the legacy `files.state` and the derived representation across the live corpus — the standing gate that must pass before any reader cutover AND before the destructive migration.
+**Depends on**: Phase 78, Phase 77
+**Requirements**: MIG-02
+**Success Criteria** (what must be TRUE):
+
+  1. A committed, re-runnable check asserts per-file implications (e.g. `state=ANALYZED ⇒ analysis_completed_at IS NOT NULL`; `state=DUPLICATE_RESOLVED ⇒ dedup marker`; `state IN (PUSHING,PUSHED) ⇒ cloud_job row`) over the whole corpus and reports every divergence.
+  2. The check asserts **implication, not equality**, with `FINGERPRINTED` documented as the one expected divergence; any other divergence is a hard fail.
+  3. The gate passes on a restore of the live corpus after the `032` backfill, and its output is recorded in the phase VERIFICATION.
+
+**Plans**: TBD
+
+### Phase 80: Recovery / Re-enqueue Cutover
+
+**Goal**: Cut `reenqueue.py` and `reconcile_cloud_jobs.py` over to derive their done/in-flight sets from `stage_status`/sidecars with **no `FileRecord.state` read** — deliberately BEFORE the pending-set/counts readers, so recovery's "absent from pending" definition of done is not silently redefined under it through the new `in_flight` term (double-negation dependency).
+**Depends on**: Phase 78, Phase 79
+**Requirements**: READ-03
+**Success Criteria** (what must be TRUE):
+
+  1. `recover_orphaned_work` and `reconcile_cloud_jobs` derive their done/in-flight sets entirely from the Phase-78 registry + sidecars, with zero `FileRecord.state` reads.
+  2. The scheduling-ledger recovery contract and the "only previously-scheduled work recovers" guarantee are preserved — a regression test asserts a never-scheduled `discovered` file is not recovered (guards the over-enqueue class).
+  3. The shadow-compare gate (Phase 79) stays green after the cutover.
+
+**Plans**: TBD
+
+### Phase 81: Per-Stage Failure Persistence & Retry Paths
+
+**Goal**: Make all three enrich stages persist a durable failure marker and gain a retry path — closing the latent bug where a failed metadata extraction records *nothing* and becomes invisible-and-permanently-ineligible.
+**Depends on**: Phase 77, Phase 78
+**Requirements**: FAIL-01, FAIL-02, FAIL-03, FAIL-04
+**Success Criteria** (what must be TRUE):
+
+  1. An `analyze` failure persists a durable failure marker with an error reason (replacing reliance on the `ANALYSIS_FAILED` enum value), backfilled from existing `ANALYSIS_FAILED` rows.
+  2. `report_metadata_failed` persists a durable metadata failure marker instead of nothing, so a terminally-failed metadata file is visible in derivation and counts.
+  3. A terminally-failed metadata file has an operator retry path (backend endpoint), so a metadata failure is never a permanent dead-end blocking the file from ever reaching `propose`.
+  4. `fingerprint` failure continues to persist via `fingerprint_results.status='failed'` (reused, not re-invented) and stays auto-retryable.
+
+**Plans**: TBD
+
+### Phase 82: Counts & Pending-Set Cutover
+
+**Goal**: Rewrite the three enrich pending sets and `get_pipeline_stats` off `stage_status`, so metadata/fingerprint/analyze each surface every not-done, not-in-flight file independent of the others — the cross-stage deadlock dissolves — and measure the 5s poll at 200K-file scale. This is the milestone's thesis made executable.
+**Depends on**: Phase 80, Phase 81, Phase 79
+**Requirements**: READ-01, READ-02, PERF-02
+**Success Criteria** (what must be TRUE):
+
+  1. A single file can complete all three enrich stages in **any order** — each enrich pending set is derived from `stage_status` with no upstream and no `FileRecord.state` read, proven by a test running the three stages in every ordering.
+  2. `get_pipeline_stats` reports per-stage counts from output tables (the linear `GROUP BY state` is removed) and the DAG shows four-bucket per-stage counts (`not_started` / `in_flight` / `done` / `failed`) that sum to total, including a visible failed count per enrich stage.
+  3. The `/pipeline/stats` poll latency at 200K-file scale is measured and recorded in the phase VERIFICATION; no denormalized status column is added unless that measurement proves the derived query too slow (YAGNI is the default).
+
+**Plans**: TBD
+
+### Phase 83: Cloud-Routing Sidecar Cutover
+
+**Goal**: Represent cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar (and/or derived `in_flight(analyze)`) as **one atomic consistency domain** — the drain-candidate query, the dispatch route flips, and the CAS-guard collapse — closing the missing-CAS-guard bug.
+**Depends on**: Phase 82
+**Requirements**: SIDECAR-01
+**Success Criteria** (what must be TRUE):
+
+  1. The drain-candidate query, the Local/ComputeAgent/Kueue dispatch route flips, and the `/pushed`, `/mismatch`, `/upload-failed` guards all read/write the `cloud_job` sidecar (or derived `in_flight`), with no `FileRecord.state` routing read.
+  2. `report_upload_failed` gains a CAS guard so a late/duplicate reporter can no longer clobber an already-advanced file (closes the `agent_s3.py:195` bug), proven by a regression test.
+  3. The shadow-compare gate stays green and no double-dispatch / re-pick window is introduced (integration test).
+
+**Plans**: TBD
+**Note**: Flagged for phase-level research at plan-time — the `AWAITING_CLOUD`/`PUSHED` drain-re-pick hazard is the sharpest new-regression risk in the milestone (recommend a live/integration test before committing the drain-candidate query).
+
+### Phase 84: Dedup & Fingerprint-Progress Cutover
+
+**Goal**: Cut `services/dedup.py` and `get_fingerprint_progress` over to the dedup marker / output tables, so dedup resolve/undo and the fingerprint progress bar derive from data rather than `FileRecord.state`.
+**Depends on**: Phase 82
+**Requirements**: READ-04, SIDECAR-02
+**Success Criteria** (what must be TRUE):
+
+  1. Dedup's exclusion filters and resolve/undo read/write the durable dedup marker (undo becomes a plain `DELETE`), with resolve/undo preserved and backfilled rows honored — no `FileRecord.state` read.
+  2. `get_fingerprint_progress` derives from the per-engine coverage predicate / output tables, not `FileRecord.state`.
+  3. The shadow-compare gate stays green after the cutover.
+
+**Plans**: TBD
+
+### Phase 85: EXECUTED-Gate Revival
+
+**Goal**: Revive the permanently-dead `state == EXECUTED` gates against the real apply-outcome source so tag writing, review, and tags/cue/tracklists guards fire for *actually-applied* files — turning on tag/CUE writing across the corpus for the first time. The one **behavior-reviving**, filesystem-mutating change in the milestone.
+**Depends on**: Phase 78
+**Requirements**: READ-05
+**Success Criteria** (what must be TRUE):
+
+  1. An `applied(f)` predicate (joining `execution_log` through `proposals`, since `execution_log` has no `file_id`) replaces every dead `state == EXECUTED` gate in `tag_writer.py`, `review.py`, `tags.py`, `cue.py`, `tracklists.py`.
+  2. A test asserts the behavior change explicitly — an actually-applied file now passes the tag/CUE guards that previously always failed.
+
+**Plans**: TBD
+**Note**: Isolated on its own PR — **must not be bundled** with any other phase; live-UAT-worthy because it changes filesystem behavior, not just status representation.
+
+### Phase 86: Proposals Cutover
+
+**Goal**: Make `proposals.status` the sole authority for review decisions and apply outcomes, deleting the redundant, drift-prone `FileRecord.state` cascade (where the `store_proposals` MOVED-regression bug lives).
+**Depends on**: Phase 78
+**Requirements**: SIDECAR-03
+**Success Criteria** (what must be TRUE):
+
+  1. Review decisions (approve/reject) and apply outcomes are read from `proposals.status` + `execution_log`; the `_TERMINAL_FILE_STATES` file-state cascade in `proposal.py` / `proposal_queries.py` / `agent_proposals.py` is deleted.
+  2. The `store_proposals` MOVED/UNCHANGED-omission regression evaporates rather than being patched — proven by a test that a `MOVED` file is not re-proposed.
+
+**Plans**: TBD
+
+### Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority
+
+**Goal**: Replace the raw-enum "State" column with a derived per-file stage matrix and give the operator failure visibility + retry, a "why not eligible?" trace, a force-done/skip affordance, an orphaned-work count, and the restored per-stage priority control.
+**Depends on**: Phase 82, Phase 78
+**Requirements**: UI-01, UI-02, UI-03, UI-04, UI-05, PRIO-01
+**Success Criteria** (what must be TRUE):
+
+  1. The file-row "State" display is a derived per-stage matrix (paginated, **never** a whole-corpus scan per poll), replacing the raw-enum string column.
+  2. The operator can see failed files per enrich stage and trigger a retry from the console (fingerprint/metadata retry + the existing manual analyze retry).
+  3. For any file not in a stage's pending set, the operator sees **why it is not eligible** — an eligibility trace over the pure `eligible()` conjuncts (done? in-flight? upstream unmet? terminally failed?).
+  4. The operator can force a stage to done / skip it for a specific file (so the `failed` bucket can converge), and an orphaned/stuck-work count is surfaced.
+  5. The per-stage job-priority stepper (▲ raises priority / lowers the number; pause/resume too if likewise orphaned) is re-wired to the existing `POST /pipeline/stages/{stage}/priority` endpoint.
+
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 88: Lane / Agent Drill-In
+
+**Goal**: Add clickable lane-detail and agent-detail drill-in views — the agent-activity view grouping owned files by derived `stage_status` — that survive the 5s poll swap and are keyboard-accessible.
+**Depends on**: Phase 87, Phase 78
+**Requirements**: DRILL-01, DRILL-02, DRILL-03
+**Success Criteria** (what must be TRUE):
+
+  1. Clicking a backend-lane card opens `GET /pipeline/lanes/{backend_id}` showing that lane's queues / in-flight / waiting / quota / recent completions.
+  2. Clicking an agent row opens `GET /admin/agents/{agent_id}/_activity` showing owned files grouped by derived `stage_status`, recent scan batches, per-lane queue depths, and liveness.
+  3. The drill-in survives the 5s poll swap (selection carried via URL param / rendered outside the polled `outerHTML` region) and is keyboard-accessible (`role=button`, Enter/Space, focus ring).
+
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution
+
+**Goal**: Retire the `legacy-application-server` sentinel — delete the orphaned legacy scan path (removing two `FileState` writers), reattribute historical legacy-owned rows to a real fileserver agent, then drop the `agent_id` default and delete the sentinel row. A data-model-migration twin of the enum removal, grouped near the migration work.
+**Depends on**: Phase 82
+**Requirements**: LEGACY-01, LEGACY-02, LEGACY-03
+**Success Criteria** (what must be TRUE):
+
+  1. `POST /api/v1/scan`, `run_scan`, and `discover_and_hash_files` are deleted, so no new `files`/`scan_batches` row is attributed to `legacy-application-server` and two `FileState`-writing upsert sites disappear from the migration surface (the `agent_id` = owning fileserver FK model preserved).
+  2. A data-migration reattributes all historical `legacy-application-server`-owned `files` and `scan_batches` to a designated real `kind='fileserver'` agent, with a backfill-verification check.
+  3. After reattribution, the `agent_id` column `default=` is dropped and the sentinel `Agent` row is deleted — the `ondelete=RESTRICT` FK is satisfiable only because reattribution ran first (ordering enforced within the migration).
+
+**Plans**: TBD
+
+### Phase 90: Destructive Migration `033` & Writer Removal
+
+**Goal**: The gated, last, highest-risk step — after the shadow-compare is green on the live corpus and the cloud-push lanes are drained/quiesced, drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, and remove the remaining `.state=` writers (readers before writers, always).
+**Depends on**: Phase 89, Phase 82, Phase 83, Phase 84, Phase 85, Phase 86, Phase 79
+**Requirements**: MIG-04
+**Success Criteria** (what must be TRUE):
+
+  1. Migration `033` (in one transaction, with a `lock_timeout` guard so the `ACCESS EXCLUSIVE` lock aborts-and-retries rather than queuing behind the 5s poll) archives `files.state`, applies a delta backfill for anything changed since `032`, drops `ix_files_state`, drops `files.state`, and deletes the `FileState` enum.
+  2. The remaining `FileState` writers are removed in the same phase, and the codebase no longer imports `FileState` (grep-guarded).
+  3. `033.downgrade()` documents the enum reconstruction from derived sources and its lossiness; a migration rehearsal against a restore of the real corpus passes.
+
+**Gate**: shadow-compare (Phase 79) green on the live corpus + cloud-push lanes drained (`--profile drain`).
+**Plans**: TBD
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
@@ -1132,9 +1367,11 @@ Plans:
 
 **Notes**: Three independent fixes; each references and closes its accepted-risk/threat in the phase threat model (HARD-01→WR-01/74-REVIEW; HARD-02→AR-73-02/T-73-13/WR-04; HARD-03→AR-30-03/Phase-30 IN-01). No new dependencies (pyproject/uv.lock untouched); `just docs-drift` stays green; coverage ≥ gate. DB-touching regression tests use `TEST_DATABASE_URL`/`MIGRATIONS_TEST_DATABASE_URL` on port 5433 (`just test-db`). Ships as its own PR on a worktree branch (never direct to main). Scope is locked to exactly these three fixes — the older posture-based accepted risks (AR-27-*/AR-37-*/AR-51-08) stay accepted, and AR-73-01 (N-compute per-agent orphan recovery) is folded into the v2 PROV-01 backlog, not this phase.
 **Plans**: 3 plans (all wave 1, parallel — disjoint files)
+
 - [x] 76-01-PLAN.md — HARD-01: serialize `_probe_availability` (no `asyncio.gather`) + structural docstring + deterministic N≥2-compute probe test
 - [x] 76-02-PLAN.md — HARD-02: `.with_for_update()` on the `push_attempt` ledger RMW SELECT + concurrent no-lost-update test (real Postgres, port 5433)
 - [x] 76-03-PLAN.md — HARD-03: `pattern`+`max_length=128` on both `agent_id` query params (`scan_status`, `agent_roots_swap`) + 422 regression tests
+
 **UI hint**: no
 
 ## Backlog (unscheduled — no phase number yet)

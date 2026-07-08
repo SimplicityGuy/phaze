@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: 2026.7.2
-milestone_name: Multi-Compute Agents
-status: Awaiting next milestone
-last_updated: "2026-07-07T00:47:38.554Z"
-last_activity: 2026-07-07 — Milestone 2026.7.2 completed and archived
+milestone: 2026.7.5
+milestone_name: Parallel Enrich DAG
+status: "Phase 77 shipped — PR #223"
+last_updated: "2026-07-08T15:25:34.959Z"
+last_activity: 2026-07-08
 progress:
-  total_phases: 38
-  completed_phases: 5
-  total_plans: 17
-  completed_plans: 17
-  percent: 13
+  total_phases: 52
+  completed_phases: 15
+  total_plans: 59
+  completed_plans: 3
+  percent: 29
 ---
 
 # Project State
@@ -20,22 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Milestone complete
+**Current focus:** Phase 78 — derivation layer, eligibility & anti drift test harness
 
 ## Current Position
 
-Phase: Milestone 2026.7.2 complete
-Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-08 — Merged origin/main (#221 post-deploy fixes); completed quick tasks 260707-s44/ser/sq3 (hide revoked agents, exclude compute agents from scan picker, placeholder Summary landing)
-
-**Release ship step (pending):** Milestone-completion PR **#215** open (archival + close-out fixes + `2026.7.1`→`2026.7.2` version bump). **After #215 merges to main:** create the annotated `2026.7.2` tag on the merged main commit and `git push origin 2026.7.2` (triggers the GHCR release publish, per [[project_release_procedure]]) — same procedure as `2026.7.0`/`2026.7.1`. (The prior "pending 2026.7.1 tag push" is resolved — `2026.7.1` is on origin, dereferencing to `ec80a53a`.)
+Phase: 78
+Plan: Not started
+Status: Phase 77 shipped — PR #223
+Last activity: 2026-07-08
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 174
+- Total plans completed: 177
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -66,6 +64,7 @@ Last activity: 2026-07-08 — Merged origin/main (#221 post-deploy fixes); compl
 
 ### Roadmap Evolution
 
+- 2026.7.5 Parallel Enrich DAG roadmap created (2026-07-08): **14 phases (77-90), continuing from 2026.7.2's last phase (76) — NOT reset to 1.** Granularity **fine** (per config) — small blast-radius per seam is a hard requirement for this live-corpus data-model migration (~23 source files). 42/42 requirements mapped 1:1 (0 orphans, 0 duplicates; the REQUIREMENTS.md "41 total" header was an off-by-one — the traceability table has always listed 42 IDs). Dependency-strict, encoding the non-negotiable sequencing: additive `032` before any reader references the new schema (**77**); the single-source predicate module + `stage_status()`/`eligible()` + in-flight before the readers that consume it (**78**, carrying the **D-01 open decision** as a plan-time written-decision-record requirement); the standing shadow-compare gate (**79**) that must pass before any reader cutover AND before `033`; **recovery/reenqueue (80) cuts over BEFORE the pending-set/counts readers (82)** per the double-negation dependency; per-stage failure persistence (**81**); the counts+pending cutover where the deadlock dissolves + the required 200K poll measurement (**82**, PERF-02); cloud-routing sidecar as one atomic domain (**83**, phase-research-flagged for the drain-re-pick hazard); dedup+fingerprint-progress (**84**); the isolated behavior-reviving EXECUTED-gate revival (**85**, own PR / live-UAT, not bundled); proposals cutover (**86**); operator UI stage-matrix/failure-retry/eligibility-trace/priority (**87**); lane/agent drill-in consuming `stage_status` after the UI phase (**88**); legacy-sentinel retirement grouped near migration work (**89**, RESTRICT-FK-ordered reattribution-before-deletion); and the gated, LAST destructive `033` + writer removal (**90**, gated on shadow-compare green + cloud-push lanes drained). ELIG-03 (failed analyze stays terminal, guarding the 44.5K-job over-enqueue incident) is an explicit success criterion of the eligibility-owning Phase 78. Zero new dependencies. Each phase = own PR (worktree branch, never direct to main). Design contract: `.planning/milestones/PARALLEL-ENRICH-DAG-DESIGN.md`; research build order: `.planning/research/SUMMARY.md`.
 - Phase 76 added (2026-07-06): Compute/Push Hardening (HARD-01..03) — appended as the milestone's LAST phase (2026.7.2 milestone header extended 72-75 → 72-76). Three self-contained correctness fixes in the N-compute dispatch/push path, each closing an accepted-risk/review item from Phases 72-74, each with a regression test, **no new dependencies**. **HARD-01** (closes WR-01/74-REVIEW): serialize `services/backends._probe_availability`'s `_probe_one` fan-out so N≥2 compute backends stop sharing one `AsyncSession` (SQLAlchemy concurrent-use hazard) — serialize the awaits (N is tiny) OR give each `_probe_one` its own sessionmaker session; keep the bounded `_PROBE_TIMEOUT_SEC=1.5` `wait_for`; reword the docstring from empirical to structural. **HARD-02** (closes AR-73-02/T-73-13/WR-04): `with_for_update()` on the `push_file:<file_id>` ledger SELECT in `routers/agent_push.py` `/mismatch` so the `push_attempt` RMW is atomic (no lost increment under concurrent `/mismatch`; cap still trips). **HARD-03** (closes AR-30-03/Phase-30 IN-01): `Query(..., pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=128)` on the scan-status `agent_id` param in `routers/pipeline_scans.py` so a malformed id 422s instead of silently returning an empty poll. Locked scope = exactly these 3 fixes. Locked dispositions (2026-07-06): older posture-based AR-27-*/AR-37-*/AR-51-08 stay ACCEPTED (deployment posture unchanged); AR-73-01 folded into new v2 **PROV-01** (N-compute per-agent orphan recovery — a feature with Phase-45-class over-enqueue risk, not a fix); PROV-01/02/03 tracked as v2 backlog, no milestone. Ships as own PR (worktree branch `SimplicityGuy/phase-76`, never direct to main); then `/gsd:complete-milestone 2026.7.2` + push the 2026.7.2 tag.
 - 2026.7.2 Multi-Compute Agents roadmap created (2026-07-05): 3 phases (72-74), continuing from 2026.7.1's last phase (71) — **NOT reset to 1**. Parity milestone — the compute-side twin of Phase 70's multi-Kueue work — extending the 2026.7.1 `Backend` registry + push/rsync pipeline to **N cloud-compute agents** with **zero new deps**. 7/7 MCOMP requirements mapped, 0 orphans, 0 duplicates, dependency-strict build order 72 → 73 → 74. **72** Per-Entry Compute Binding & Fail-Fast Retirement (each `compute` entry binds to a specific registered Agent recorded at construction, retiring `select_active_agent(kind="compute")`'s single-active-compute assumption; retire + generalize the `≤1-compute` fail-fasts `config.active_compute_scratch_dir` ~L469 + `services/backends.resolved_non_local_kind` ~L469 for a `local + N-Kueue + N-compute` registry; behavior-preserving groundwork, existing single-/zero-compute deploys unchanged; **research flag** = `agent_ref`→`Agent.id` resolution + whether `/pushed`+`/api/internal/agent/*` reconcile already scope per-agent; MCOMP-01). **73** Per-Agent Dispatch, Liveness, Scratch & Failure Isolation (the behavior core; per-agent liveness probe on the bound agent, per-agent push/scratch destination through `_enqueue_push_file`→fileserver→rsync + `/pushed` callback `routers/agent_push.py`, Phase-69 rank/cap load-spread across N compute agents — free arm64 preferred, spill to paid/trial x86 — per-backend failure isolation via snapshot try/except mirroring MKUE-03, per-backend `backend_id`-scoped in-flight + terminalization; **depends on 72**; **research flag** = `cloud_job` one-row-per-file vs per-(file,backend); MCOMP-02..06). **74** Docs, Runbook & N-Lane Compute UI Verification (operator runbook for adding a 2nd+ compute agent + mixed arm64/x86 rank/cap cost-tiering; verify the Phase-71 BEUI registry-derived N-lane UI already renders each compute agent as its own lane, fix if a gap surfaces; UI-hinted; **depends on 73**; MCOMP-07). Build order 72→73→74, strictly sequential (each hard-depends on the prior). No milestone-level research phase (parity refactor over in-repo patterns; the two open questions are plan-/discuss-phase flags on 72/73). Version provisional CalVer, finalized at release. Each phase = own PR (worktree branch, never direct to main). v2 deferred: PROV-02 (capability-aware routing) + PROV-03 (on-demand provisioning).
 - 2026.7.1 Multi-Cloud Backends roadmap created (2026-07-03): 5 phases (67–71), continuing from 2026.7.0's last phase (66) — **NOT reset to 1**. Requirements-driven, dependency-strict, 1:1 category→phase per REQUIREMENTS.md + research SUMMARY: REG→67 · BACK→68 · SCHED→69 · MKUE→70 · BEUI→71. 21/21 mapped, 0 orphans, 0 duplicates. Generalizes the single `cloud_target` selector into a declarative cost-tiered `backends:` registry draining long files across local + 1+ Kueue + 1+ cloud-compute simultaneously (rank + cap, static routing, no provisioning); **zero new deps**, a pure application-code refactor over v6.0. **67** Backend Registry & Config Model (`backends:` list + per-kind discriminated-union validators + `cloud_target` back-compat shim + REG-05 S3 bucket registry public/shared-vs-cluster-specific; config-model-only, behavior-preserving; REG-01..05). **68** Backend Protocol + 3 impls (`Backend` `is_available`/`in_flight_count`/`dispatch`/`reconcile` re-homing existing bodies + `cloud_job.backend_id` additive migration + uniform per-backend in-flight accounting; behavior-preserving, acceptance-gated by a byte-identical characterization test incl. the GATE-1 compute-vs-Kueue asymmetry; **depends on 67**; BACK-01..04). **69** Tiered Drain Scheduler (rank-first per-file eligible dispatch, per-backend `cap`, spill-when-full, offline→next-eligible re-dispatch + black-hole/cooldown guard, stateless equal-rank tie-break, single-recovery-owner per kind; **first behavior-changing phase; depends on 68** — cap needs 68's per-backend count; **research flag** = drain↔reconcile lock-ordering + attempt-budget/cooldown split; SCHED-01..05). **70** Multi-Kueue N clusters (N concurrent Kueue backends each staging to its REG-05-assigned bucket set with DIST-01 preserved, per-cluster probe + `backend_id`-scoped reconcile + per-backend failure isolation, per-(backend,bucket) cleanup; **depends on 69**; **research flag** = `cloud_job` one-row-per-file-vs-per-(file,backend) + `agent_ref`→`Agent.id` resolution + live multi-cluster kr8s auth/multi-bucket staging; MKUE-01..04). **71** Deployment/Config/Docs & N-Lane UI (N registry-derived per-backend lanes read-only on the existing `/pipeline/stats` poll + master revert-to-all-local toggle + runbook/config docs incl. `cloud_target`→`backends` migration; UI-hinted; **depends on 70**; BEUI-01..03). Build order 67→68→69→70→71, strictly sequential (each hard-depends on the prior). Design spine locked (`docs/superpowers/specs/2026-06-29-multi-cloud-backends-design.md`, PR #182); REG-05 + revised MKUE-02/04 supersede its one-shared-bucket decision per operator direction. Version provisional CalVer `2026.7.1`, finalized at release. Each phase = own PR (worktree branch, never direct to main); 67–68 behavior-preserving refactors that de-risk 69.
@@ -126,6 +125,14 @@ Last activity: 2026-07-08 — Merged origin/main (#221 post-deploy fixes); compl
 - [Phase 75]: 75-01: docker-compose cloud_target/Phase-67 breadcrumb comments deleted (HYG-02) — no live PHAZE_CLOUD_TARGET env ever existed; comment-only diff, zero src change across the whole plan
 - [Phase 75]: 75-01: cleared all three open 2026.7.1 STATE deferred rows (HYG-02 resolved, HYG-03 superseded, HYG-04 via 75-02); WR-01 probe-concurrency gap kept as tracked deferred (user decision D-08); 70-UAT row untouched
 - [Phase ?]: 75-02: HYG-04 force-local gate regression added (4 cases) at real-route altitude via a persisted RouteControl(id='global', force_local=True) row; kept the autouse cloud-ON registry so the toggle is the only variable; assert AWAITING_CLOUD row ABSENCE (anti-cheat); backfill no-op uses with_ledger=False; zero src diff (a01a7bf8 + 63589cd5)
+- [Phase ?]: 77-01: rescan-wipe fix (MIG-03/D-08) removed the state key from the ON CONFLICT set_ dict at both mirror upsert sites; new files still INSERT DISCOVERED, existing files keep state; AUTH-01 preserved
+- [Phase ?]: 77-01: agent-endpoint rescan regression uses a self-contained smoke app mounting only agent_files.router (no main.py dependency); one bucket per file (discovery + agents), verified in isolation via just test-bucket
+- [Phase 77]: 77-02: failure markers are nullable failed_at + error_message columns on the 1:1 analysis/metadata tables (D-01); both tables gained a first-ever __table_args__ carrying only additive IS-NOT-NULL partial indexes
+- [Phase 77]: 77-02: ix_fprint_success authored as = ANY (ARRAY['success','completed']) not bare IN, matching Postgres normalized serialization to keep migration-032 autogenerate diff empty (PERF-01/Pitfall 1)
+- [Phase 77]: 77-02: DedupResolution 1:1 sidecar (unique file_id FK, NULLABLE best-effort canonical_file_id) registered in models/__init__.py so Base.metadata/autogenerate sees it (D-07); no extra index (unique file_id implicit index serves marker-EXISTS lookup)
+- [Phase 77]: 77-03: migration 032 lands the additive DDL mirroring 77-02 byte-for-byte + set-based read-only backfill from files.state; analyze-failed marker is an INSERT..ON CONFLICT (file_id) DO UPDATE UPSERT (report_analysis_failed writes no analysis row); dedup canonical derived deterministically (ORDER BY c.id LIMIT 1, nullable); cloud awaiting/uploading/uploaded gap-filled; metadata NOT backfilled (D-03); LOCAL_ANALYZING no row (D-05); files.state never written; saq_jobs never referenced
+- [Phase 77]: 77-03: empty-autogenerate-diff (PERF-01 SC#2) AUTOMATED via compare_metadata(compare_type=True) over run_sync, scoped to the 032 object set to ignore pre-existing unrelated ORM↔DB drift (naive DateTime TimestampMixin vs timestamptz on legacy tables; dropped search_vector/trgm indexes); ix_fprint_success KEPT (= ANY(ARRAY[...]) round-trips clean) — drop-and-defer contingency NOT triggered
+- [Phase 77]: 77-03: integration test deletes ALL cloud_job rows before downgrade (029 precedent) — backfilled NULL-s3_key uploading/uploaded rows trip migration 029's s3_key NOT NULL re-imposition on the teardown walk to base; the migrations-test DB can be left poisoned by a mid-downgrade abort (reset schema to recover)
 
 ### Pending Todos
 
@@ -209,6 +216,8 @@ None.
 | Phase 74 P04 | ~10 min | 2 tasks | 3 files |
 | Phase 75 P01 | ~12 min | 3 tasks | 4 files |
 | Phase 75 P02 | ~15min | 2 tasks | 1 files |
+| Phase 77 P01 | 20 | 2 tasks | 4 files |
+| Phase 77 P02 | ~20min | 2 tasks | 7 files |
 
 ## Deferred Items
 
@@ -275,8 +284,8 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-06T16:06:00.248Z
-Stopped at: Phase 75 context gathered
+Last session: 2026-07-08T08:06:58.099Z
+Stopped at: Phase 77 context gathered
 Resume file: None
 
 ## Operator Next Steps

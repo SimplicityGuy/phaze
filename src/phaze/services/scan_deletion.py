@@ -15,7 +15,8 @@ Design choices:
   identity map. ``synchronize_session=False`` is required for bulk deletes that
   bypass the identity map.
 - Child -> parent ordering so every subquery references only tables not yet
-  deleted at that step (verified order in the PR plan's 13-step block).
+  deleted at that step (verified order in the PR plan's 15-step block; extended
+  from 13 to add the ``dedup_resolution`` and ``cloud_job`` file sidecars).
 - The caller owns the transaction: this function does NOT commit. That keeps it
   composable and lets the endpoint commit the whole cascade atomically.
 """
@@ -28,6 +29,8 @@ from sqlalchemy import CursorResult, delete, select
 import structlog
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob
+from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -53,10 +56,12 @@ logger = structlog.get_logger(__name__)
 async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
     """Delete ``batch_id`` and every descendant row, scoped strictly to its files.
 
-    Executes 13 ordered set-based deletes (child -> parent). Every statement is
+    Executes 15 ordered set-based deletes (child -> parent). Every statement is
     scoped to the files of THIS batch via nested ``SELECT`` subqueries, so no
-    other batch's data is ever touched. Does NOT commit -- the caller owns the
-    transaction.
+    other batch's data is ever touched. The ``dedup_resolution`` step is scoped by
+    BOTH of its FK columns (``file_id`` OR ``canonical_file_id``), so a canonical
+    file living in another batch never leaves a dangling pointer into this one.
+    Does NOT commit -- the caller owns the transaction.
 
     Args:
         session: Active async session whose transaction the caller will commit.
@@ -94,6 +99,15 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
             FileCompanion.__tablename__,
             delete(FileCompanion).where(FileCompanion.media_id.in_(files_of_batch) | FileCompanion.companion_id.in_(files_of_batch)),
         ),
+        # DedupResolution has TWO FKs to files.id (file_id + canonical_file_id). A
+        # canonical_file_id can point at a file in a DIFFERENT batch, so scope by
+        # BOTH directions (FileCompanion two-column precedent above): a row is
+        # removed if either side lands in this batch's files.
+        (
+            DedupResolution.__tablename__,
+            delete(DedupResolution).where(DedupResolution.file_id.in_(files_of_batch) | DedupResolution.canonical_file_id.in_(files_of_batch)),
+        ),
+        (CloudJob.__tablename__, delete(CloudJob).where(CloudJob.file_id.in_(files_of_batch))),
         (FileRecord.__tablename__, delete(FileRecord).where(FileRecord.batch_id == batch_id)),
         (ScanBatch.__tablename__, delete(ScanBatch).where(ScanBatch.id == batch_id)),
     ]
