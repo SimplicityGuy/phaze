@@ -1,0 +1,43 @@
+{# Quick 260707-sq3 (SQ3-01): the Summary landing placeholder — the content of `GET /`.
+
+   PLACEHOLDER BY DESIGN. This stage reserves the landing slot for a future at-a-glance
+   overview of the collection + pipeline; its real content is specced in a future release.
+   Deliberately inert: NO widgets, NO metrics, NO counts, NO $store.pipeline bindings, NO
+   hx-get/hx-trigger/setInterval (a second poll loop would violate the single-poll
+   discipline, WORK-05 / R-2), and NO DB reads — `shell._render_stage` intentionally has no
+   `summary` branch, so this renders off the base shell context alone.
+
+   Content-only fragment swapped into #stage-workspace: NEVER carries <html>/<head> — the
+   shell chrome persists across swaps.
+
+   It composes the shared _workspace_scaffold.html rather than hand-rolling markup. That is
+   load-bearing, not cosmetic: the scaffold includes _workspace_poll_seeds.html, the hidden
+   OOB seed-target host. The shell's ONE persistent /pipeline/stats poll (shell.html chrome)
+   runs on EVERY stage — including this one, the landing page — and each 5s tick re-emits
+   hx-swap-oob fragments that land ONLY on ids already in the DOM. Without the seed host,
+   htmx would log htmx:oobErrorNoTarget every 5 seconds on `/`. `cloud_cards` stays at its
+   `false` default so the hidden cloud-card sinks (and the #analyze-lanes sink) ride in too.
+
+   The scaffold emits the single <h1 tabindex="-1">SUMMARY</h1> focus target the shell's
+   post-swap focus handler lands on — the body below must NOT add another <h1>.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% call ws.workspace(title="SUMMARY") %}
+    <div data-summary-placeholder class="grid place-items-center p-6">
+        <div class="w-[560px] flex flex-col items-center text-center gap-6">
+            {# Wave logo (64×64, brand blue) — the brand mark. Static inline SVG, no external fetch. #}
+            <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="text-blue-500">
+                <path d="M4 32c6-16 12-16 18 0s12 16 18 0 12-16 18 0" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            </svg>
+
+            {# Body copy (Inter 14px, muted) — mirrors empty_state.html's spacing + colour tokens. #}
+            <p class="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                An at-a-glance overview of your collection and the pipeline is coming in a future
+                release. This page is a placeholder — nothing is measured here yet.
+            </p>
+            <p class="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                Pick a stage from the rail to jump straight into the pipeline.
+            </p>
+        </div>
+    </div>
+{% endcall %}

@@ -8,8 +8,13 @@ Plan 57-02 (Task 3) fills the SHELL-01/SHELL-02-fragment/SHELL-04 behaviors belo
 ``test_tabbar_removed_header_present``) once the rail + header partials land. The two
 Plan-03 functions stay body-less here -- they are REPLACED (not redeclared) by Plan 03.
 
+Quick 260707-sq3 repointed ``GET /`` from the Analyze dashboard to the static Summary
+landing placeholder (SQ3-01..03); Analyze stays reachable at ``/s/analyze``.
+
 Function -> requirement map (see 57-VALIDATION.md "Per-Task Verification Map"):
-    test_root_renders_shell_analyze_default  -> SHELL-01   (Plan 02)
+    test_root_renders_shell_summary_default  -> SHELL-01 / SQ3-02 (Plan 02, quick 260707-sq3)
+    test_analyze_still_reachable_at_s_analyze -> SQ3-03  (quick 260707-sq3)
+    test_summary_stage_route_and_fragment    -> SQ3-01   (quick 260707-sq3)
     test_stage_fragment_is_bare              -> SHELL-02   (Plan 02)
     test_unknown_stage_404                   -> SHELL-02 (negative, Plan 02)
     test_rail_nodes_wired                    -> SHELL-02   (Plan 03)
@@ -29,8 +34,10 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
 
 
-# The 12 navigable rail-node ids (VERBATIM prototype RAIL order), each wired to /s/<id>.
+# The 13 navigable rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
+# Summary landing node prepended), each wired to /s/<id>.
 _RAIL_STAGES = [
+    "summary",
     "discover",
     "metadata",
     "fingerprint",
@@ -47,23 +54,72 @@ _RAIL_STAGES = [
 
 
 @pytest.mark.asyncio
-async def test_root_renders_shell_analyze_default(client: AsyncClient, make_file) -> None:  # type: ignore[no-untyped-def]
-    """SHELL-01 -- GET / renders the shell with Analyze as the default active stage (no redirect)."""
-    # Phase 61 (61-05, RECORD-04): with 0 files GET / renders the first-run empty state; seed a
-    # file so this test exercises its actual intent -- the Analyze dashboard as the default stage.
-    await make_file()
+async def test_root_renders_shell_summary_default(client: AsyncClient) -> None:
+    """SHELL-01 / SQ3-02 -- GET / renders the shell with the Summary placeholder as the default stage.
+
+    Quick 260707-sq3 repointed the landing slot from Analyze to the static Summary placeholder.
+    No file seed is needed: the first-run empty-state swap is confined to the analyze branch of
+    ``_render_stage``, and Summary performs zero DB reads.
+    """
     response = await client.get("/")
     # A plain GET / is the shell root itself -- it must render, NOT redirect anywhere.
     assert response.status_code == 200
     body = response.text
     # The single stable swap target every rail node innerHTML-swaps.
     assert 'id="stage-workspace"' in body
-    # Analyze is the selected/active default: the swap target carries the stage marker AND the
-    # real Analyze workspace (Phase 58 / 58-04) renders inside it -- the lane-card grid
-    # (#analyze-lanes) supersedes the Phase-57 bridged dag_canvas (id="pipeline-dag"), which now
-    # lives only on the legacy /pipeline/ dashboard. The rail aria-current assertion is added in Plan 03.
+    # Summary is the selected/active default: the swap target carries the stage marker AND the
+    # placeholder body renders inside it.
+    assert 'data-stage="summary"' in body
+    assert "data-summary-placeholder" in body
+    # The Analyze dashboard is NOT what rendered. Careful: the shared scaffold's hidden seed host
+    # emits an EMPTY <div id="analyze-lanes"></div> on every non-analyze workspace, so a bare
+    # 'id="analyze-lanes"' substring check would be a false positive. The stage marker is the
+    # unambiguous signal.
+    assert 'data-stage="analyze"' not in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_still_reachable_at_s_analyze(client: AsyncClient, make_file) -> None:  # type: ignore[no-untyped-def]
+    """SQ3-03 -- repointing / to Summary leaves the real Analyze workspace intact at /s/analyze."""
+    # Phase 61 (61-05, RECORD-04): with 0 files the analyze branch swaps in the first-run empty
+    # state; seed a file so this exercises its actual intent -- the real Analyze dashboard.
+    await make_file()
+    response = await client.get("/s/analyze")
+    assert response.status_code == 200
+    body = response.text
+    # The real Analyze workspace: the stage marker plus the lane-card grid (Phase 58 / 58-04).
     assert 'data-stage="analyze"' in body
     assert 'id="analyze-lanes"' in body
+    # And Analyze -- not Summary -- is the active rail node here.
+    assert re.search(r'data-rail-stage="analyze"[^>]*aria-current="page"', body), 'analyze rail node must carry aria-current="page" on /s/analyze'
+
+
+@pytest.mark.asyncio
+async def test_summary_stage_route_and_fragment(client: AsyncClient) -> None:
+    """SQ3-01 -- /s/summary serves the full shell on direct nav and a bare fragment on an HX swap.
+
+    The bare fragment must also carry the shared scaffold's hidden OOB seed host: the shell's ONE
+    persistent /pipeline/stats poll runs on the landing page too, and every fragment it re-emits
+    needs a pre-existing landing target or htmx logs ``htmx:oobErrorNoTarget`` every 5s. Summary
+    must NOT start a second poll loop of its own (single-poll discipline, WORK-05 / R-2).
+    """
+    full = await client.get("/s/summary")
+    assert full.status_code == 200
+    assert 'id="stage-workspace"' in full.text
+    assert "data-summary-placeholder" in full.text
+
+    hx = await client.get("/s/summary", headers={"HX-Request": "true"})
+    assert hx.status_code == 200
+    fragment = hx.text
+    assert "data-summary-placeholder" in fragment
+    # Content-only: a swapped fragment NEVER carries the document wrapper or head.
+    assert "<html" not in fragment
+    assert "<head" not in fragment
+    # The OOB seed host rides in via _workspace_scaffold.html -> _workspace_poll_seeds.html.
+    assert 'id="straggler-failed-card"' in fragment
+    # No second poll loop.
+    assert 'hx-trigger="every' not in fragment
+    assert "setInterval" not in fragment
 
 
 @pytest.mark.asyncio
@@ -91,17 +147,17 @@ async def test_unknown_stage_404(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_rail_nodes_wired(client: AsyncClient) -> None:
-    """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; analyze is active.
+    """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; summary is active.
 
-    The DAG rail is the nav spine: each of the 12 prototype-order nodes swaps ONLY
-    ``#stage-workspace`` (innerHTML) via ``/s/<id>`` with ``hx-push-url``. The ``/`` default
-    marks the analyze node ``aria-current="page"``.
+    The DAG rail is the nav spine: each of the 13 nodes swaps ONLY ``#stage-workspace``
+    (innerHTML) via ``/s/<id>`` with ``hx-push-url``. The ``/`` default marks the summary node
+    ``aria-current="page"`` (quick 260707-sq3 -- it was analyze before the landing repoint).
     """
     response = await client.get("/")
     assert response.status_code == 200
     body = response.text
 
-    # Every navigable node carries hx-get="/s/<id>" for all 12 prototype-order stages.
+    # Every navigable node carries hx-get="/s/<id>" for all 13 rail-order stages.
     for stage in _RAIL_STAGES:
         assert f'hx-get="/s/{stage}"' in body, f"rail node {stage} missing hx-get wiring"
 
@@ -109,12 +165,12 @@ async def test_rail_nodes_wired(client: AsyncClient) -> None:
     assert 'hx-target="#stage-workspace"' in body
     assert 'hx-swap="innerHTML"' in body
     assert 'hx-push-url="true"' in body
-    # Exactly one swap-target attr per navigable stage node (the 12 /s/ stages).
+    # Exactly one swap-target attr per navigable stage node (the 13 /s/ stages).
     assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES)
 
-    # The analyze node (the / default) is the active rail node: aria-current="page" sits on
-    # the same element carrying data-rail-stage="analyze".
-    assert re.search(r'data-rail-stage="analyze"[^>]*aria-current="page"', body), 'analyze rail node must carry aria-current="page" on the shell root'
+    # The summary node (the / default) is the active rail node: aria-current="page" sits on
+    # the same element carrying data-rail-stage="summary".
+    assert re.search(r'data-rail-stage="summary"[^>]*aria-current="page"', body), 'summary rail node must carry aria-current="page" on the shell root'
 
 
 @pytest.mark.asyncio
