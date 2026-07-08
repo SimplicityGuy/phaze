@@ -4,9 +4,10 @@ Covers:
 - GET /admin/agents — full page render (extends base.html, contains nav + table).
 - GET /admin/agents/_table — partial-only render (HTMX poll target).
 - HX-Request: true on /admin/agents — returns the partial only.
-- 5-state status-pill rendering (alive/stale/dead/revoked/never).
+- Status-pill rendering for the 4 states that reach the panel (alive/stale/dead/never).
+- Revoked agents are filtered out of the panel entirely (revoked_at IS NULL).
 - Empty state (UI-SPEC §Empty State LOCKED copy).
-- Sort order: alive → stale → dead → never → revoked (UI-SPEC LOCKED).
+- Sort order: alive → stale → dead → never (revoked agents are filtered out of the panel).
 - BLOCKER-2 failure-tolerant footer (htmx event listener + localStorage red banner).
 
 Uses a self-contained smoke-app fixture (mirrors test_pipeline_scans.py:46-78)
@@ -152,8 +153,12 @@ async def test_dedicated_table_route_returns_partial(smoke: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
-async def test_status_pills_render_all_5_states(smoke: AsyncClient) -> None:
-    """5-state status pill rendering with LOCKED Tailwind classes per UI-SPEC."""
+async def test_status_pills_render_4_visible_states(smoke: AsyncClient) -> None:
+    """Status pill rendering for the 4 states that reach the panel, LOCKED Tailwind classes.
+
+    Revoked agents are filtered out of the panel (revoked_at IS NULL), so the REVOKED
+    pill no longer renders here — see ``test_revoked_agent_absent``.
+    """
     response = await smoke.get("/admin/agents/_table")
     body = response.text
     # ALIVE — green-100/950 surface.
@@ -168,11 +173,28 @@ async def test_status_pills_render_all_5_states(smoke: AsyncClient) -> None:
     assert "DEAD" in body
     assert "bg-red-100 dark:bg-red-950" in body
     assert 'aria-label="Status: dead"' in body
-    # REVOKED — gray-100/800 surface (neutral).
-    assert "REVOKED" in body
-    # NEVER — same gray-100/800 surface (visually unified "no signal").
+    # NEVER — gray-100/800 surface (neutral "no signal").
     assert "NEVER" in body
     assert "bg-gray-100 dark:bg-gray-800" in body
+
+
+@pytest.mark.asyncio
+async def test_revoked_agent_absent(smoke: AsyncClient) -> None:
+    """Revoked agents (revoked_at IS NOT NULL) never render in the panel or its poll partial.
+
+    Core regression guard for the leak: the ``smoke`` fixture seeds an explicitly-revoked
+    ``RevokedBox`` (id ``revoked-agent``). It must be absent from BOTH render paths while a
+    non-revoked control (``AliveBox``) is present — proving the filter drops only revoked
+    rows, not the whole table.
+    """
+    for path in ("/admin/agents/_table", "/admin/agents"):
+        response = await smoke.get(path)
+        assert response.status_code == 200, response.text
+        body = response.text
+        assert "RevokedBox" not in body, f"revoked agent leaked into {path}"
+        assert 'aria-label="Status: revoked"' not in body, f"revoked status pill leaked into {path}"
+        # Non-revoked control still renders — the filter is not nuking the table.
+        assert "AliveBox" in body, f"non-revoked agent missing from {path}"
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +275,7 @@ async def test_empty_state(empty_smoke: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_sort_order(smoke: AsyncClient) -> None:
-    """Sort order: alive → stale → dead → never → revoked (UI-SPEC LOCKED)."""
+    """Sort order: alive → stale → dead → never (revoked agents are filtered out of the panel)."""
     response = await smoke.get("/admin/agents/_table")
     body = response.text
     # Names appear in the LOCKED sort order. We rely on substring positions.
@@ -262,10 +284,9 @@ async def test_sort_order(smoke: AsyncClient) -> None:
         "stale": body.find("StaleBox"),
         "dead": body.find("DeadBox"),
         "never": body.find("NeverBox"),
-        "revoked": body.find("RevokedBox"),
     }
     assert all(v > 0 for v in pos.values()), f"missing agent name in body: {pos}"
-    assert pos["alive"] < pos["stale"] < pos["dead"] < pos["never"] < pos["revoked"], f"sort order violated: {pos}"
+    assert pos["alive"] < pos["stale"] < pos["dead"] < pos["never"], f"sort order violated: {pos}"
 
 
 # ---------------------------------------------------------------------------

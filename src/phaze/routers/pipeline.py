@@ -479,7 +479,9 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     stats = await get_pipeline_stats(session)
 
     # Phase 27 D-05/D-06: agents for the Trigger Scan dropdown (non-revoked, ordered).
-    agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+    # SER-01: exclude kind="compute" agents (Kueue/burst backends) — they are media-less
+    # and cannot be scan targets, so they must never appear in the scan-picker.
+    agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
     agents = (await session.execute(agents_stmt)).scalars().all()
 
     # Phase 27 D-05 / UI-SPEC Component 4: last 10 non-LIVE ScanBatches with their

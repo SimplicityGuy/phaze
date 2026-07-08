@@ -1,4 +1,4 @@
-"""v7.0 shell router -- owns ``GET /`` (Analyze default) and ``GET /s/{stage}``.
+"""v7.0 shell router -- owns ``GET /`` (Summary default) and ``GET /s/{stage}``.
 
 This is the load-bearing spine of the v7.0 three-column "Hybrid Console" shell
 (Phase 57). It serves the structural shell (header · DAG rail · ``#stage-workspace`` ·
@@ -10,11 +10,13 @@ content partial that bridges it (D-01). ``stage`` is NEVER interpolated into a t
 path -- the partial name always comes from this static dict, closing the
 template-path-injection surface (T-57-01 / ASVS V5). An unknown stage 404s (D-02).
 
-The Analyze node (the ``/`` default) embeds the existing pipeline-dashboard content
-(``dag_canvas.html``); its context is built by the shared ``build_dashboard_context``
-factored out of ``pipeline.dashboard()`` so the two paths cannot drift (D-01 / RESEARCH
-Open-Q2). The remaining nodes render a minimal placeholder in Phase 57 -- their rich
-workspaces (and live content bridges) land with their workspaces in Phases 58-61.
+``GET /`` renders the Summary landing placeholder (quick 260707-sq3) -- a static, DB-free
+stage reserving the landing slot for a future at-a-glance overview. Analyze is one rail click
+away at ``/s/analyze``, where it still embeds the existing pipeline-dashboard content; its
+context is built by the shared ``build_dashboard_context`` factored out of
+``pipeline.dashboard()`` so the two paths cannot drift (D-01 / RESEARCH Open-Q2). The
+remaining nodes render a minimal placeholder in Phase 57 -- their rich workspaces (and live
+content bridges) land with their workspaces in Phases 58-61.
 """
 
 from __future__ import annotations
@@ -68,6 +70,11 @@ router = APIRouter(tags=["shell"])
 # (T-57-01 -- template-path-injection mitigation). The literals also act as the
 # dead-template guard's entry roots, so each stays reachable.
 STAGE_PARTIALS: dict[str, str] = {
+    # Quick 260707-sq3 (SQ3-01): the `/` landing placeholder. FIRST key so the dict order matches
+    # the rail order. A STATIC string literal (T-57-01: `stage` is never spliced into a template
+    # path) that also acts as the dead-template guard's entry root. The stage has NO DB-backed
+    # context -- `_render_stage` deliberately gives it no branch (zero reads, zero extra keys).
+    "summary": "shell/partials/summary_placeholder.html",
     # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
     # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
     "discover": "pipeline/partials/discover_workspace.html",
@@ -181,7 +188,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # edited — the swap is purely via stage_partial).
         if await _analyze_file_count(session) == 0:
             context["stage_partial"] = _EMPTY_STATE_PARTIAL
-            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+            # SER-01: only kind="fileserver" agents host media and can be scan targets;
+            # exclude kind="compute" (media-less burst backends) from the picker.
+            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
             context["agents"] = (await session.execute(agents_stmt)).scalars().all()
     elif stage == "discover":
         # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
@@ -190,7 +199,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # at the service/ORM layer (no router try/except). oob_counts stays False on the stage
         # render (Pitfall 3); the live sub-count refreshes via the single chrome poll's OOB seeds.
         context["recent_scans"] = await build_recent_scans(session)
-        agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+        # SER-01: only kind="fileserver" agents host media and can be scan targets;
+        # exclude kind="compute" (media-less burst backends) from the picker.
+        agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
         context["agents"] = (await session.execute(agents_stmt)).scalars().all()
     elif stage == "metadata":
         # Phase 58 (58-03, WORK-02): the Metadata workspace renders the metadata-pending queue --
@@ -277,8 +288,13 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
 
 @router.get("/", response_class=HTMLResponse)
 async def shell_home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """GET / -- the shell root with Analyze selected by default (SHELL-01, D-02 bare root)."""
-    return await _render_stage(request, "analyze", session)
+    """GET / -- the shell root renders the Summary landing placeholder (SHELL-01, D-02 bare root).
+
+    Quick 260707-sq3 (SQ3-02) repointed the default landing stage from Analyze to the static,
+    DB-free Summary placeholder. Analyze is unchanged and stays one rail click away at
+    ``/s/analyze``.
+    """
+    return await _render_stage(request, "summary", session)
 
 
 @router.get("/s/{stage}", response_class=HTMLResponse)
