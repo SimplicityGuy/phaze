@@ -13,7 +13,17 @@ findings:
   warning: 2
   info: 1
   total: 4
-status: issues_found
+resolved: 4
+status: resolved
+resolution_commit: ba489b62
+---
+
+> **Resolution (2026-07-08, commit `ba489b62`):** All 4 findings fixed inline during phase
+> execution. CR-01 — module-level `_test`-DB guard in `test_shadow_compare.py` refuses any
+> non-`_test` target (data-loss footgun closed). WR-01 — `_parse_dsn_or_exit` redacts DSN parse
+> failures and the password-masking `URL` object is threaded to the engine. WR-02 —
+> `--sample-cap` uses a `_non_negative_int` argparse type. IN-01 — sample query adds `ORDER BY id`.
+> Integration bucket re-run green (130 passed); ruff/mypy/bandit clean.
 ---
 
 # Phase 79: Code Review Report
