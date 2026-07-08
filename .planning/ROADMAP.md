@@ -22,7 +22,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 
 - [x] **Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)** — additive-only `032` creates the failure markers, dedup marker, cloud-routing sidecar rows, and partial indexes (mirrored into the ORM), backfilled from `files.state` **without touching `files.state`**; plus the independently-shippable rescan progress-wipe fix (MIG-01, MIG-03, PERF-01) (completed 2026-07-08)
 - [x] **Phase 78: Derivation Layer, Eligibility & Anti-Drift Test Harness** — the single-source predicate module (`enums/stage.py` DB-free + `services/stage_status.py`), `stage_status()` / `eligible()`, SAVEPOINT-wrapped in-flight detection, and the SQL⇔Python equivalence test; carries the **D-01 open decision** (written decision record required at plan-time) (DERIV-01..05, ELIG-01..04, INFLIGHT-01..03) (completed 2026-07-08)
-- [ ] **Phase 79: Shadow-Compare Gate (live corpus)** — a committed, re-runnable implication check between legacy `files.state` and the derived representation; must pass before any reader cutover and before `033` (MIG-02)
+- [x] **Phase 79: Shadow-Compare Gate (live corpus)** — a committed, re-runnable implication check between legacy `files.state` and the derived representation; must pass before any reader cutover and before `033` (MIG-02) (completed 2026-07-08)
 - [ ] **Phase 80: Recovery / Re-enqueue Cutover** — `reenqueue.py` + `reconcile_cloud_jobs.py` derive done/in-flight from `stage_status`/sidecars with no `FileRecord.state` read; deliberately **before** the pending-set/counts readers (double-negation dependency) (READ-03)
 - [ ] **Phase 81: Per-Stage Failure Persistence & Retry Paths** — durable failure markers for analyze + metadata (`report_metadata_failed` records instead of nothing) + reused fingerprint failure; a metadata retry path so a failure is never a permanent dead-end (FAIL-01..04)
 - [ ] **Phase 82: Counts & Pending-Set Cutover** — the three enrich pending sets + `get_pipeline_stats` derived from `stage_status`; the cross-stage deadlock dissolves; four-bucket per-stage counts; the 200K-scale poll latency measured (READ-01, READ-02, PERF-02)
@@ -267,7 +267,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 76. Compute/Push Hardening | 2026.7.2 | 3/3 | Complete    | 2026-07-06 |
 | 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
-| 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 0/0 | Not started | - |
+| 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 0/0 | Not started | - |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -317,8 +317,10 @@ Plans:
   5. Every `saq_jobs` read for `in_flight` is static SQL wrapped in a `begin_nested()` SAVEPOINT that degrades to a safe default; a **written D-01 decision record** fixes the authoritative `in_flight` source so a crashed-mid-run / callback-lost file is never falsely re-enqueued as `not_started`.
 
 **Plans**: 2 plans
+
 - [x] 78-01-PLAN.md — DB-free resolver + eligibility DAG (`enums/stage.py`): Stage/Status enums, ELIGIBILITY_DAG, resolve_status() precedence ladder, eligible() incl. ELIG-03 terminal-failed regression (Wave 1)
 - [x] 78-02-PLAN.md — SQL `ColumnElement[bool]` builders (`services/stage_status.py`) + ledger in_flight + saq_detail SAVEPOINT + D-01 decision record, locked by the DERIV-04 equivalence test (Wave 2)
+
 **Note**: INFLIGHT-03 / D-01 RESOLVED (78-CONTEXT.md): `in_flight` = `scheduling_ledger` AUTHORITATIVE, `saq_jobs` corroborating-only (rejected the naked union). Written decision record persisted in `services/stage_status.py` module docstring. Original open-decision framing — a written decision record is REQUIRED at plan-time (Architecture rejects the naked union; design/Stack lean union). The roadmap deliberately does not resolve it.
 
 ### Phase 79: Shadow-Compare Gate (live corpus)
@@ -332,7 +334,15 @@ Plans:
   2. The check asserts **implication, not equality**, with `FINGERPRINTED` documented as the one expected divergence; any other divergence is a hard fail.
   3. The gate passes on a restore of the live corpus after the `032` backfill, and its output is recorded in the phase VERIFICATION.
 
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+**Wave 1**
+
+- [x] 79-01-PLAN.md — Shared assertion core (`services/shadow_compare.py`): INVARIANTS registry (one implication per FileState value, §6.1/D-04; {FINGERPRINTED, LOCAL_ANALYZING} soft allowlist D-06) + `run_shadow_compare` count+capped-sample Report (D-05) reusing done/failed_clause (D-03), + hermetic fixture-corpus CI gate in the `integration` bucket (Wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 79-02-PLAN.md — Thin `python -m phaze.cli.shadow_compare` runner over the SAME core (D-01) + `[group('db')] shadow-compare` justfile recipe, nonzero-exit-on-hard-divergence contract (D-05); live 200K restore run DEFERRED to homelab (D-02) (Wave 2, depends 79-01)
 
 ### Phase 80: Recovery / Re-enqueue Cutover
 
