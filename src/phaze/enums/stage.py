@@ -162,3 +162,32 @@ def resolve_status(stage: Stage, scalars: Mapping[str, Any]) -> Status:
     if stage is Stage.APPLY:
         return _apply_status(row_present=row_present, failed=failed, inflight=inflight)
     raise ValueError(f"unknown stage: {stage!r}")  # pragma: no cover - exhaustive dispatch above
+
+
+def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_proposal: bool = False) -> bool:
+    """Pure predicate: is ``stage`` eligible to run given the derived per-stage ``status_map``?
+
+    Dispatched per stage — the enrich stages do NOT share one uniform rule (D-04 boundary; no DB):
+
+    - ``METADATA`` / ``FINGERPRINT``: eligible iff status NOT in ``(DONE, IN_FLIGHT)`` — i.e. eligible
+      when ``NOT_STARTED`` OR ``FAILED`` (ELIG-01 independence; ELIG-04 — a FAILED fingerprint is NOT
+      terminal and stays eligible for auto-retry; there is NO failure carve-out for these two).
+    - ``ANALYZE`` (the ONLY enrich carve-out): eligible iff status == ``NOT_STARTED`` — a FAILED analyze
+      is excluded (ELIG-03 terminal, retry is manual-only; the 44.5K over-enqueue guard). Mirrors
+      ``phaze.tasks.reenqueue._select_done_analyze_ids`` which treats ANALYSIS_FAILED as analyze-DONE so
+      ``recover_orphaned_work`` never auto-loops an un-analyzable file (do NOT import it — kept DB-free).
+    - ``APPLY``: eligible iff ``has_approved_proposal`` AND apply not already ``DONE`` — apply is gated on
+      an APPROVED proposal existing (ELIG-02), NOT on bare ``done(review)`` (which only means a proposal
+      exists). ``has_approved_proposal`` is the approval flag the caller supplies (the SQL twin filters
+      ``proposals.status = 'approved'``).
+    - ``TRACKLIST`` / ``PROPOSE`` / ``REVIEW``: every upstream in ``ELIGIBILITY_DAG[stage]`` must be
+      ``DONE`` AND the stage itself not already ``DONE`` (ELIG-02 upstream conjuncts).
+    """
+    if stage in (Stage.METADATA, Stage.FINGERPRINT):
+        return status_map.get(stage, Status.NOT_STARTED) not in (Status.DONE, Status.IN_FLIGHT)
+    if stage is Stage.ANALYZE:
+        return status_map.get(Stage.ANALYZE, Status.NOT_STARTED) == Status.NOT_STARTED
+    if stage is Stage.APPLY:
+        return has_approved_proposal and status_map.get(Stage.APPLY, Status.NOT_STARTED) != Status.DONE
+    upstream_done = all(status_map.get(u, Status.NOT_STARTED) == Status.DONE for u in ELIGIBILITY_DAG[stage])
+    return upstream_done and status_map.get(stage, Status.NOT_STARTED) != Status.DONE
