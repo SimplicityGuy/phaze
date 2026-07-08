@@ -25,6 +25,7 @@ is down; ``Base.metadata.create_all`` + a seeded ``legacy-application-server`` A
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import os
 from typing import TYPE_CHECKING
@@ -46,7 +47,7 @@ from phaze.services.shadow_compare import INVARIANTS, Invariant, InvariantResult
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Generator
 
 
 pytestmark = pytest.mark.integration
@@ -249,3 +250,113 @@ async def test_report_shape_respects_sample_cap_and_verbose(db_session: AsyncSes
     assert rf.count == 3
     assert len(rf.sample) == 3  # uncapped
     assert full.render(verbose=True)
+
+
+# --------------------------------------------------------------------------------------------------
+# cli -- the `python -m phaze.cli.shadow_compare` entry (D-01/D-02) drives the SAME core and locks the
+# D-05 exit-code contract: 1 on a seeded-divergent corpus, 0 on a clean one.
+#
+# `main()` runs its OWN `asyncio.run(...)`, so these cells are SYNC (calling `asyncio.run` from inside
+# pytest-asyncio's running loop would RuntimeError). They drive `main(["--database-url", SA_DSN, ...])`
+# so the CLI builds its OWN engine in its OWN loop (also exercising the D-02 --database-url path). The
+# corpus is COMMITTED (not flushed) via a self-contained `asyncio.run` helper -- main's separate
+# session cannot see an uncommitted transaction. A module-scoped setup/teardown creates the schema,
+# seeds the FK agent, and TRUNCATEs `files` CASCADE so committed rows never leak into the async cells.
+# --------------------------------------------------------------------------------------------------
+async def _cli_prepare_schema_and_seed_agent() -> None:
+    """Create all tables and ensure the FK ``legacy-application-server`` agent exists (committed)."""
+    engine = create_async_engine(SA_DSN)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as session:
+            if await session.get(Agent, _LEGACY_AGENT_ID) is None:
+                session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+                await session.commit()
+    finally:
+        await engine.dispose()
+
+
+async def _cli_commit_file(*, state: str) -> uuid.UUID:
+    """Commit a bare FileRecord at ``state`` (no backing rows) so the separate CLI session sees it."""
+    fid = uuid.uuid4()
+    engine = create_async_engine(SA_DSN)
+    try:
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as session:
+            session.add(
+                FileRecord(
+                    id=fid,
+                    sha256_hash=uuid.uuid4().hex,
+                    original_path=f"/media/{fid}.mp3",
+                    original_filename=f"{fid}.mp3",
+                    current_path=f"/media/{fid}.mp3",
+                    file_type="mp3",
+                    file_size=1234,
+                    state=state,
+                )
+            )
+            await session.commit()
+    finally:
+        await engine.dispose()
+    return fid
+
+
+async def _cli_truncate_corpus() -> None:
+    """TRUNCATE ``agents`` CASCADE so the COMMITTED CLI corpus (the seeded FK agent + its files, which
+    default ``agent_id`` to the legacy agent) never leaks into the rollback-isolated cells here or in
+    sibling test files -- a committed agent row would otherwise collide with their per-test agent seed.
+    """
+    from sqlalchemy import text
+
+    engine = create_async_engine(SA_DSN)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("TRUNCATE agents CASCADE"))
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def cli_corpus() -> Generator[None]:
+    """Sync fixture: probe PG (skip if down), build schema + FK agent, TRUNCATE on teardown.
+
+    Sync so the CLI cells can call the sync ``main()`` (which owns its own ``asyncio.run``) directly.
+    """
+    import psycopg
+
+    async def _probe() -> None:
+        try:
+            probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
+        except psycopg.OperationalError as exc:
+            pytest.skip(f"Postgres broker unavailable: {exc}")
+        else:
+            await probe.close()
+
+    asyncio.run(_probe())
+    asyncio.run(_cli_prepare_schema_and_seed_agent())
+    try:
+        yield
+    finally:
+        asyncio.run(_cli_truncate_corpus())
+
+
+@pytest.mark.usefixtures("cli_corpus")
+def test_cli_main_exits_nonzero_on_hard_divergence() -> None:
+    from phaze.cli import shadow_compare as cli
+
+    fid = asyncio.run(_cli_commit_file(state=FileState.APPROVED.value))  # HARD-divergent: no proposals row
+
+    # --database-url drives the CLI over its OWN engine (D-02 path); exit 1 on hard divergence (D-05).
+    assert cli.main(["--database-url", SA_DSN]) == 1
+    assert cli.main(["--database-url", SA_DSN, "--sample-cap", "5"]) == 1  # --sample-cap threads through
+    assert str(fid)  # the divergent file id is a real UUID we committed
+
+
+@pytest.mark.usefixtures("cli_corpus")
+def test_cli_main_exits_zero_on_clean_corpus() -> None:
+    from phaze.cli import shadow_compare as cli
+
+    # No divergent rows committed -> every HARD invariant is vacuously satisfied -> exit 0 (D-05).
+    assert cli.main(["--database-url", SA_DSN, "--verbose"]) == 0
