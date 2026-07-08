@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: 2026.7.2
-milestone_name: Multi-Compute Agents
-status: Awaiting next milestone
-last_updated: "2026-07-07T00:47:38.554Z"
-last_activity: 2026-07-07 — Milestone 2026.7.2 completed and archived
+milestone: 2026.7.5
+milestone_name: Parallel Enrich DAG
+status: planning
+last_updated: "2026-07-08T04:09:20.793Z"
+last_activity: 2026-07-08
 progress:
-  total_phases: 38
-  completed_phases: 5
-  total_plans: 17
-  completed_plans: 17
-  percent: 13
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,12 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 
 ## Current Position
 
-Phase: Milestone 2026.7.2 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-08 — Completed quick task 260707-ryn: leaned DB connection pools (hygiene + dispatch-queue min0/max2) to stop PgBouncer session-pool exhaustion
-
-**Release ship step (pending):** Milestone-completion PR **#215** open (archival + close-out fixes + `2026.7.1`→`2026.7.2` version bump). **After #215 merges to main:** create the annotated `2026.7.2` tag on the merged main commit and `git push origin 2026.7.2` (triggers the GHCR release publish, per [[project_release_procedure]]) — same procedure as `2026.7.0`/`2026.7.1`. (The prior "pending 2026.7.1 tag push" is resolved — `2026.7.1` is on origin, dereferencing to `ec80a53a`.)
+Status: Defining requirements
+Last activity: 2026-07-08 — Milestone 2026.7.5 started
 
 ## Performance Metrics
 
