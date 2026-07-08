@@ -101,6 +101,10 @@ None - no external service configuration required.
 - The DB-free contract (`Stage`, `Status`, `ELIGIBILITY_DAG`, `resolve_status`, `eligible`) is ready for plan 78-02 to build the SQLAlchemy twin `services/stage_status.py` against, and for the DERIV-04 SQL⇔Python equivalence test to lock the two halves together.
 - No cutover happened (purely additive alongside the existing linear `FileState`); the reader/writer cutover is Phase 79+.
 
+## Self-Check: PASSED
+
+All created files exist on disk (`src/phaze/enums/stage.py`, `tests/shared/test_stage_resolver.py`, `tests/shared/test_stage_eligibility_dag.py`, `78-01-SUMMARY.md`) and all task commits (`db933a26`, `f128f914`, `74d3ed2d`, `93880f3d`) plus the docs commit (`ce3b3a4b`) are present in the git log.
+
 ---
 *Phase: 78-derivation-layer-eligibility-anti-drift-test-harness*
 *Completed: 2026-07-08*
