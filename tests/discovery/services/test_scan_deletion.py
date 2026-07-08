@@ -29,6 +29,8 @@ import pytest
 from sqlalchemy import func, select
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord, FileState
@@ -61,6 +63,10 @@ _EXPECTED_COUNTS = {
     "metadata": 1,
     "tag_write_log": 1,
     "file_companions": 1,
+    # The full-graph seed creates no dedup_resolution / cloud_job sidecars, but the
+    # cascade always reports every table in its ordered list (0 rows deleted here).
+    "dedup_resolution": 0,
+    "cloud_job": 0,
     "files": 2,
     "scan_batches": 1,
 }
@@ -250,6 +256,53 @@ async def test_cross_batch_companion_join_dies_but_other_file_survives(session: 
     # But the batch-B file is untouched.
     assert await session.get(FileRecord, file_b_id) is not None
     assert await session.get(FileRecord, file_a_id) is None
+    assert await session.get(ScanBatch, batch_b_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_cascade_removes_dedup_resolution_and_cloud_job_sidecars(session: AsyncSession) -> None:
+    """delete_scan_cascade removes the dedup_resolution + cloud_job sidecar rows (CR-01 / WR-01).
+
+    Both tables carry bare ``ForeignKey("files.id")`` (no ``ondelete``); before the
+    fix, deleting a batch containing such a file raised an IntegrityError (500).
+    Also exercises the cross-batch ``canonical_file_id`` case: a dedup_resolution
+    row whose ``file_id`` is in a DIFFERENT batch but whose ``canonical_file_id``
+    points into the deleted batch must also be removed.
+    """
+    batch_a = ScanBatch(id=uuid.uuid4(), agent_id="legacy-application-server", scan_path="/a", status=ScanStatus.COMPLETED.value)
+    batch_b = ScanBatch(id=uuid.uuid4(), agent_id="legacy-application-server", scan_path="/b", status=ScanStatus.COMPLETED.value)
+    session.add_all([batch_a, batch_b])
+    await session.flush()
+
+    file_a = _make_file(batch_a.id, "a-media")  # in the batch being deleted
+    file_b = _make_file(batch_b.id, "b-media")  # in a surviving batch
+    session.add_all([file_a, file_b])
+    await session.flush()
+
+    # Sidecars on the batch-A file: a resolved-duplicate marker + a cloud_job row.
+    session.add(DedupResolution(id=uuid.uuid4(), file_id=file_a.id))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file_a.id, status=CloudJobStatus.AWAITING.value))
+    # Cross-batch: a dedup_resolution OWNED by batch B (file_id=file_b) whose
+    # canonical_file_id points into batch A. Deleting A must remove this row so
+    # file_a can be deleted without a dangling canonical pointer.
+    cross = DedupResolution(id=uuid.uuid4(), file_id=file_b.id, canonical_file_id=file_a.id)
+    session.add(cross)
+    await session.flush()
+
+    file_a_id, file_b_id, cross_id, batch_b_id = file_a.id, file_b.id, cross.id, batch_b.id
+
+    counts = await delete_scan_cascade(session, batch_a.id)
+    session.expire_all()
+
+    # Both dedup_resolution rows removed (file_a's own + the cross-batch canonical ref).
+    assert counts["dedup_resolution"] == 2
+    assert counts["cloud_job"] == 1
+    assert await _count(session, CloudJob) == 0
+    assert await _count(session, DedupResolution) == 0
+    assert await session.get(DedupResolution, cross_id) is None
+    # The batch-A file is gone; the batch-B file (and its batch) survive.
+    assert await session.get(FileRecord, file_a_id) is None
+    assert await session.get(FileRecord, file_b_id) is not None
     assert await session.get(ScanBatch, batch_b_id) is not None
 
 
