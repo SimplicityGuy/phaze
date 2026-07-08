@@ -212,7 +212,9 @@ async def run_shadow_compare(session: AsyncSession, *, sample_cap: int = 20, ver
 
         count = int((await session.execute(select(func.count(FileRecord.id)).where(condition))).scalar_one())
 
-        sample_query = select(FileRecord.id).where(condition)
+        # ORDER BY id keeps the capped sample deterministic across runs (IN-01) -- a bare LIMIT
+        # without an ORDER BY lets Postgres return an arbitrary subset, confusing live triage.
+        sample_query = select(FileRecord.id).where(condition).order_by(FileRecord.id)
         if not verbose:
             sample_query = sample_query.limit(sample_cap)
         sample = [str(fid) for fid in (await session.execute(sample_query)).scalars().all()]
