@@ -3,17 +3,18 @@
   <aside> in shell.html via {% include %}. Node order is VERBATIM from the prototype RAIL
   config (docs/.../prototype.html:97-116) and the 57-UI-SPEC "DAG Rail" table:
 
+      0 summary (landing/overview — the node `/` renders; PLACEHOLDER, no store key)
       1 discover (live: discovered)
       group Enrich · parallel: metadata (metadataDone) · fingerprint (fingerprintDone)
-                             · analyze (analyzeActive, blue-pulse, = / default)
+                             · analyze (analyzeActive, blue-pulse, one click away at /s/analyze)
       group Identify: trackid (STATIC label — no store key) · tracklist (tracklistDone)
       propose (proposalsDone)
       group Review & Apply (AMBER): rename · tagwrite · move · dedupe · cue (all STATIC)
       below-the-line (border-t): audit → /audit/ , agents → /admin/agents (plain links)
 
   Live-vs-static rule (locked): an x-text count renders ONLY for a node whose key already
-  exists in $store.pipeline (base.html:106-136). trackid + the five Review & Apply items
-  carry NO count. NEVER add a store key. Counts are numeric server/store values only.
+  exists in $store.pipeline (base.html:106-136). summary + trackid + the five Review & Apply
+  items carry NO count. NEVER add a store key. Counts are numeric server/store values only.
 
   HTMX wiring (every navigable node): hx-get="/s/<id>" hx-target="#stage-workspace"
   hx-swap="innerHTML" hx-push-url="true". The active node (node id == the shell `stage`
@@ -50,13 +51,29 @@
 
     <nav aria-label="Pipeline stages">
 
+        {# 0 — Summary (top-level node · the `/` landing page, quick 260707-sq3).
+           Placement: Summary is what `/` renders, so it reads first. It sits INSIDE this
+           existing Pipeline <nav> landmark (rather than above the eyebrow) so every navigable
+           rail node stays within one labelled nav landmark. Label-only — Summary is a static
+           placeholder with NO backing $store.pipeline key, so it carries no x-text count
+           (locked live-vs-static rule; matches the Track-ID node). #}
+        <button type="button"
+                data-rail-stage="summary"
+                hx-get="/s/summary" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                title="Summary"
+                {% if stage == 'summary' %}aria-current="page"{% endif %}
+                class="rail-node w-[calc(100%-1rem)] mx-2 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M10.5 6a7.5 7.5 0 1 0 7.5 7.5h-7.5V6Z"/><path d="M13.5 10.5H21A7.5 7.5 0 0 0 13.5 3v7.5Z"/></svg>
+            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Summary</span>
+        </button>
+
         {# 1 — Discover (top-level node · done) #}
         <button type="button"
                 data-rail-stage="discover"
                 hx-get="/s/discover" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
                 title="Discover"
                 {% if stage == 'discover' %}aria-current="page"{% endif %}
-                class="rail-node w-[calc(100%-1rem)] mx-2 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
+                class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776"/></svg>
             <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Discover</span>
             <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.discovered">0</span>
