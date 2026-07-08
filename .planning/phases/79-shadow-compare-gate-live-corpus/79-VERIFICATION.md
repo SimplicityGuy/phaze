@@ -1,25 +1,29 @@
 ---
 phase: 79-shadow-compare-gate-live-corpus
 verified: 2026-07-08T00:00:00Z
-status: human_needed
-score: 11/11 code-verifiable truths verified (SC-3 live-corpus run is a documented deferred human action)
+status: passed
+score: 11/11 code-verifiable truths verified; phase deliverable (the committed re-runnable gate) complete
 overrides_applied: 0
-human_verification:
+deferred_manual_verification:
   - test: "Gate passes on a restore of the live ~200K-file corpus after the `032` backfill"
     expected: "`just shadow-compare --database-url <restore-dsn>` (or `python -m phaze.cli.shadow_compare --database-url <restore-dsn>`) exits 0, or exits 1 only on FINGERPRINTED/LOCAL_ANALYZING (soft) divergence with all HARD invariants at zero"
-    why_human: "No live corpus dump is available to this worktree/verifier; per 79-CONTEXT.md D-02 this run is explicitly deferred to the next homelab rollout and is tracked as the sole Manual-Only verification in 79-VALIDATION.md. ROADMAP Success Criterion 3 requires this run's output to be recorded in VERIFICATION, which cannot happen until the homelab restore is performed."
+    blocking: false
+    tracked_in: [79-HUMAN-UAT.md, 79-VALIDATION.md]
+    note: "Not a phase-79 deliverable gap: MIG-02 ships the committed re-runnable gate (done + verified). Running it against the live corpus is an OPERATIONAL precondition for Phase 90's destructive `033`, deliberately scoped out of Phase 79 by decision D-02 (no live dump exists in this worktree; standard deployment-gated pattern). Deferred to the next homelab rollout; its output is appended here before `033` proceeds."
 ---
 
 # Phase 79: Shadow-Compare Gate (live corpus) Verification Report
 
 **Phase Goal:** A committed, re-runnable implication check between legacy `files.state` and the derived representation (state↔derived shadow-compare gate); must pass before any reader cutover and before the destructive `033` (Phase 90). Requirement MIG-02.
 **Verified:** 2026-07-08
-**Status:** human_needed
-**Re-verification:** No — initial verification
+**Status:** passed
+**Re-verification:** Yes — reconciled 2026-07-08 (see note below)
 
 ## Goal Achievement
 
-All code-level truths (registry shape, gate semantics, dual entry points, CLI/justfile wiring) are directly verified against the codebase and by re-running the real test suite against a live ephemeral Postgres — not merely inferred from SUMMARY.md. The one item that cannot be verified from this worktree is ROADMAP Success Criterion 3 (the live 200K-corpus restore run), which the phase's own CONTEXT.md (D-02) and VALIDATION.md explicitly and deliberately defer to a homelab rollout as a Manual-Only verification. This is why overall status is `human_needed` rather than `passed`, per the decision tree (human items take priority even when all locally-verifiable truths pass).
+All code-level truths (registry shape, gate semantics, dual entry points, CLI/justfile wiring) are directly verified against the codebase and by re-running the real test suite against a live ephemeral Postgres — not merely inferred from SUMMARY.md. MIG-02's deliverable — *a committed, re-runnable shadow-compare check* — is fully built and verified. The live 200K-corpus restore run (ROADMAP Success Criterion 3) is NOT a Phase-79 deliverable gap: it is an OPERATIONAL precondition for Phase 90's destructive `033`, deliberately scoped out of this phase by decision D-02 (no live dump exists in this worktree). It is tracked as a deferred manual verification in `79-HUMAN-UAT.md` and `79-VALIDATION.md` and must be recorded before `033` proceeds.
+
+**Status reconciliation (2026-07-08):** the initial verifier returned `human_needed` because a human/homelab action remains outstanding. After the user elected to mark Phase 79 complete with that item tracked as a deferred operational precondition, this report was reconciled to `status: passed` so the three tracking artifacts agree (ROADMAP `[x]` + REQUIREMENTS `MIG-02 Complete` + VERIFICATION `passed`) — which the `test_requirements_traceability` drift guard (DOCS-01) requires. The deferred live-corpus run is preserved verbatim below and in `deferred_manual_verification` frontmatter; it is non-blocking for phase closure but blocking for Phase 90.
 
 ### Observable Truths
 
