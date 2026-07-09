@@ -36,10 +36,10 @@
 
 ### Per-Stage Failure (FAIL)
 
-- [ ] **FAIL-01**: `analyze` failures persist a durable failure marker (replacing the `ANALYSIS_FAILED` enum value) with an error reason, backfilled from existing `ANALYSIS_FAILED` rows.
-- [ ] **FAIL-02**: `metadata` failures persist a durable failure marker — `report_metadata_failed` records the failure instead of nothing (closes the latent bug where terminally-failed metadata is invisible everywhere).
-- [ ] **FAIL-03**: A terminally-failed metadata file has a retry path — the operator can re-run it, so a metadata failure is never a permanent dead-end that blocks the file from ever reaching `propose`. *(closes gap G-01, CRITICAL)*
-- [ ] **FAIL-04**: `fingerprint` failure continues to persist via `fingerprint_results.status='failed'` (reused, not re-invented) and stays auto-retryable.
+- [x] **FAIL-01**: `analyze` failures persist a durable failure marker (replacing the `ANALYSIS_FAILED` enum value) with an error reason, backfilled from existing `ANALYSIS_FAILED` rows.
+- [x] **FAIL-02**: `metadata` failures persist a durable failure marker — `report_metadata_failed` records the failure instead of nothing (closes the latent bug where terminally-failed metadata is invisible everywhere).
+- [x] **FAIL-03**: A terminally-failed metadata file has a retry path — the operator can re-run it, so a metadata failure is never a permanent dead-end that blocks the file from ever reaching `propose`. *(closes gap G-01, CRITICAL)*
+- [x] **FAIL-04**: `fingerprint` failure continues to persist via `fingerprint_results.status='failed'` (reused, not re-invented) and stays auto-retryable.
 
 ### Reader Rework (READ)
 
@@ -137,10 +137,10 @@
 | INFLIGHT-01 | Phase 78 | Complete |
 | INFLIGHT-02 | Phase 78 | Complete |
 | INFLIGHT-03 | Phase 78 | Complete |
-| FAIL-01 | Phase 81 | Pending |
-| FAIL-02 | Phase 81 | Pending |
-| FAIL-03 | Phase 81 | Pending |
-| FAIL-04 | Phase 81 | Pending |
+| FAIL-01 | Phase 81 | Complete |
+| FAIL-02 | Phase 81 | Complete |
+| FAIL-03 | Phase 81 | Complete |
+| FAIL-04 | Phase 81 | Complete |
 | READ-01 | Phase 82 | Pending |
 | READ-02 | Phase 82 | Pending |
 | READ-03 | Phase 80 | Pending |
