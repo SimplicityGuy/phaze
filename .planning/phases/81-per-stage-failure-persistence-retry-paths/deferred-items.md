@@ -25,6 +25,19 @@ Not fixed here — logged for later triage.
 Both criticals (CR-01, CR-02) were fixed before phase close. These two warnings were not, and both are
 real. They are recorded here because each is a live hole that Phase 80's reader cutover will walk into.
 
+> **Bookkeeping correction (2026-07-09, security audit).** WR-03 was present in `81-REVIEW.md` but was
+> omitted from this file when the review outcome was first recorded — an orchestrator error, caught by
+> `gsd-security-auditor`. It has since been **FIXED** in `feaebc48`: `eligible()` / `domain_completed()`
+> compared `Status` (a StrEnum) with `is`, so a raw-string status map — exactly what a SQL round-trip
+> yields, since `stage_status_case` emits `Status.X.value` — made `eligible({ANALYZE: "failed"}, ANALYZE)`
+> return `True`, reporting a terminally-failed analyze as eligible (the 44.5K over-enqueue class). Now
+> coerced through `Status(...)` and compared by value; an unrecognised status raises. 21 new cells.
+>
+> The security audit also found and fixed a threat-register gap: the PG-invalid (NUL) limb of
+> `T-81-03-04` / `T-81-05-03` was never mitigated — a NUL in an agent's error text aborted the
+> transaction that also clears the scheduling ledger, stranding the file in an unbounded recovery loop.
+> Fixed in `1d6af9f7`. See `81-SECURITY.md`.
+
 - **WR-02 — the `domain_completed` drift-lock has a hole exactly where this phase started putting rows.**
   The Python twin's ladder ranks `IN_FLIGHT` above `FAILED` and returns `False`; the SQL
   `domain_completed_clause` has no `inflight` disjunct and returns `True`. So the twins disagree on any
