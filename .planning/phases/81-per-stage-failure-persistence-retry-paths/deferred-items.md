@@ -19,3 +19,27 @@ Not fixed here — logged for later triage.
   Residual (genuinely deferred): the 5432 default is a footgun for local runs. Either point the default at
   5433 to match `just test-db`, or have the `test-bucket` recipe export it. Left for the
   test-isolation hardening line.
+
+## Code review (81-REVIEW.md) — warnings left OPEN
+
+Both criticals (CR-01, CR-02) were fixed before phase close. These two warnings were not, and both are
+real. They are recorded here because each is a live hole that Phase 80's reader cutover will walk into.
+
+- **WR-02 — the `domain_completed` drift-lock has a hole exactly where this phase started putting rows.**
+  The Python twin's ladder ranks `IN_FLIGHT` above `FAILED` and returns `False`; the SQL
+  `domain_completed_clause` has no `inflight` disjunct and returns `True`. So the twins disagree on any
+  `in_flight ∧ failed` row. `tests/integration/test_stage_status_equivalence.py:421-427` acknowledges this
+  and excludes the `*_inflight` seeds — defensible while that cell was unreachable, because every failure
+  writer used to clear the ledger row in the same transaction. FAIL-03 changed that: `retry_metadata_failed`
+  deliberately leaves `metadata.failed_at` set (D-11) and then enqueues, so **every bulk-retried file now
+  occupies the excluded cell**. Phase 80 must either add an `inflight` term to the SQL twin (and un-exclude
+  the seeds) or apply the ledger check at the call site, as 81-01's SUMMARY already warns. Not fixed here:
+  it changes the SQL twin's shape and 81-06's retry semantics depend on current behavior.
+
+- **WR-01 — `report_metadata_failed`'s upsert can mark a fully-populated metadata row as failed.**
+  The `ON CONFLICT DO UPDATE` sets only `failed_at` / `error_message`, so a file that already has real tags
+  ends up with complete metadata *and* a failure marker. Three docstrings
+  (`routers/agent_metadata.py:126`, `services/pipeline.py:1348`, and the test helper) claim the payload
+  columns are NULL on a failure row. Reachable because `POST /api/v1/extract-metadata` re-enqueues all
+  music/video files regardless of state. Result: a file with usable metadata derives FAILED and loses
+  `propose` eligibility. No test starts from a row that already carries payload.

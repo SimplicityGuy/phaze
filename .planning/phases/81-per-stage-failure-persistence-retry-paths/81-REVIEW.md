@@ -26,10 +26,14 @@ files_reviewed_list:
   - tests/metadata/tasks/test_metadata_extraction.py
 findings:
   critical: 2
+  critical_fixed: 2
+  critical_open: 0
   warning: 6
   info: 4
   total: 12
 status: issues_found
+criticals_resolved: true
+resolution_commits: [a6398d33, 1ff92265]
 ---
 
 # Phase 81: Code Review Report
@@ -53,6 +57,29 @@ The five review-focus areas the workflow called out are, with one exception, cle
 The two critical findings are elsewhere. The first is a dual-write divergence that FAIL-01 *introduces* into an endpoint the phase did not touch: `retry_analysis_failed` clears `files.state` but leaves `analysis.failed_at` set, so the two halves of the marker/state pair disagree the moment an operator uses the analyze retry button. The second is a total-function violation in the new SQL twin: `domain_completed_clause` raises `KeyError` for four of the seven `Stage` values it accepts.
 
 **Twin drift (focus 3)** is real but narrower than a blocker: `domain_completed()` and `domain_completed_clause()` agree on the eleven enrich-stage cells the equivalence test seeds, but diverge on `in_flight ∧ failed` rows, which FAIL-03's retry now makes routinely reachable (WR-02).
+
+## Resolution (orchestrator, wave-2 close)
+
+Both criticals were independently reproduced and then FIXED before phase verification. Each fix was
+proven non-vacuous by reverting it and observing the new tests go red.
+
+| ID | Status | Fix commit | Evidence |
+|----|--------|-----------|----------|
+| CR-01 | ✅ fixed | `1ff92265` | 4 new integration tests; 3 fail without the fix |
+| CR-02 | ✅ fixed | `a6398d33` | 17 new DB-free contract tests; 12 fail without the guards |
+
+- **CR-01** — `retry_analysis_failed` now clears `analysis.failed_at` / `error_message` in the same
+  transaction as the state flip. Safe because migration 033's CHECK guarantees
+  `analysis_completed_at IS NULL` on a failed row, so the cleared row derives `not_started`.
+  The Phase-30 no-active-agent guard still mutates nothing.
+- **CR-02** — both twins now raise an identical `ValueError` for the four downstream stages instead of
+  a bare `KeyError` (SQL) / silently returning `True` on `DONE` (Python). Fail-loud rather than
+  defaulting, matching `reenqueue.py`'s existing "live-keys-only ... no domain predicate" classification.
+  Reviewer understated this one: the twins also diverged on non-failed downstream rows.
+
+Warnings WR-01 and WR-02 remain OPEN and are carried into the phase's deferred items — see
+`deferred-items.md`. WR-02 in particular is a live hole in the drift-lock now that FAIL-03's retry
+routinely produces `in_flight ∧ failed` rows.
 
 ## Critical Issues
 
