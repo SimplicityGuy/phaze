@@ -93,6 +93,15 @@ None - no external service configuration required.
 - FAIL-04 locked. The fingerprint failure marker is now regression-guarded as the existing per-engine row, so the Phase 82 counts/pending cutover and Phase 84 fingerprint-progress readers can rely on `eligible(FINGERPRINT)` staying True for failed engines without a hidden sentinel row.
 - No blockers.
 
+## Self-Check: PASSED
+
+- FOUND: tests/fingerprint/routers/test_agent_fingerprint_failure.py
+- FOUND: src/phaze/routers/agent_fingerprint.py
+- FOUND: .planning/phases/81-per-stage-failure-persistence-retry-paths/81-04-SUMMARY.md
+- FOUND commit 9f8f441e (Task 1 test)
+- FOUND commit 443cc27b (Task 2 docs)
+- FOUND commit 6b4e023b (SUMMARY)
+
 ---
 *Phase: 81-per-stage-failure-persistence-retry-paths*
 *Completed: 2026-07-09*
