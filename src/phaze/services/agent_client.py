@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_fingerprint import FingerprintFailureResponse, FingerprintWriteRequest, FingerprintWriteResponse
     from phaze.schemas.agent_heartbeat import HeartbeatRequest
     from phaze.schemas.agent_identity import AgentIdentity
-    from phaze.schemas.agent_metadata import MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
+    from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
     from phaze.schemas.agent_proposals import (
         ProposalStatePatch,
         ProposalStateResponse,
@@ -398,19 +398,25 @@ class PhazeAgentClient:
         )
         return UploadFailedResponse.model_validate(response.json())
 
-    async def report_metadata_failed(self, file_id: uuid.UUID) -> MetadataFailureResponse:
-        """POST /api/internal/agent/metadata/{file_id}/failed -- metadata terminal-ack (Phase 45 L-02 / CR-02).
+    async def report_metadata_failed(self, file_id: uuid.UUID, payload: MetadataFailurePayload | None = None) -> MetadataFailureResponse:
+        """POST /api/internal/agent/metadata/{file_id}/failed -- metadata terminal-ack (Phase 45 L-02 / CR-02; Phase 81 FAIL-02).
 
         The agent calls this on a retries-exhausted ``extract_file_metadata`` terminal
-        failure so the control side clears the ``extract_file_metadata:<file_id>``
-        scheduling-ledger row (the success path clears via ``put_metadata``). ``file_id``
-        rides the path only (AUTH-01); no body. httpx-only -- NO database import, keeping
-        the agent worker Postgres-free (tests/test_task_split.py)."""
+        failure so the control side (a) persists a durable metadata failure marker and
+        (b) clears the ``extract_file_metadata:<file_id>`` scheduling-ledger row (the
+        success path clears via ``put_metadata``). ``file_id`` rides the path only
+        (AUTH-01). ``payload`` is OPTIONAL: when present its triage ``reason``/``error``
+        rides the JSON body so control can populate ``error_message``; when ``None`` the
+        POST is bodyless (an old agent image), which the endpoint still accepts (200) --
+        the version-skew guard (D-10). httpx-only -- NO database import, keeping the agent
+        worker Postgres-free (tests/test_task_split.py)."""
         from phaze.schemas.agent_metadata import MetadataFailureResponse  # noqa: PLC0415
 
+        kwargs = {"json": payload.model_dump(mode="json")} if payload is not None else {}
         response = await self._request(
             "POST",
             f"/api/internal/agent/metadata/{file_id}/failed",
+            **kwargs,
         )
         return MetadataFailureResponse.model_validate(response.json())
 

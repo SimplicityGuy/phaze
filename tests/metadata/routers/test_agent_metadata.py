@@ -436,3 +436,152 @@ def test_metadata_failure_response_rejects_cleared_false() -> None:
 
     with pytest.raises(ValidationError):
         MetadataFailureResponse(agent_id="a", file_id=uuid.uuid4(), cleared=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase 81 (FAIL-02 / D-01 / D-10 / D-13): report_metadata_failed persists a
+# durable failure marker (both body paths) + put_metadata clears it on success.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_bodyless_persists_marker_and_clears_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """D-10 / FAIL-02: a BODYLESS POST (old agent) -> 200, inserts a failure row, clears the ledger.
+
+    The failure row has ``failed_at`` set and payload columns (artist/title/...) NULL, so
+    ``resolve_status(METADATA)`` derives FAILED, never DONE (D-01/D-02). The endpoint stays
+    version-skew-safe: an image that never learned the triage body still records the marker
+    AND clears ``extract_file_metadata:<file_id>`` (the CR-02 unbounded-loop guard).
+    """
+    from phaze.enums.stage import Stage, Status, resolve_status
+
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, key, "extract_file_metadata", file_id)
+    assert await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is True
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    # Failure marker set; payload columns stay NULL (payload-NULL failure row, D-01).
+    assert row.failed_at is not None, "bodyless failed POST must persist failed_at"
+    assert row.error_message is not None, "bodyless POST records a placeholder detail"
+    assert row.artist is None and row.title is None and row.album is None and row.year is None
+    # The failure-only row derives FAILED, not DONE (D-02).
+    status = resolve_status(Stage.METADATA, {"row_present": True, "failed_at": row.failed_at, "inflight": False})
+    assert status is Status.FAILED, f"payload-NULL failure row must derive FAILED, got {status}"
+    # Ledger cleared (CR-02).
+    assert not await _ledger_present(session, key), "terminal-failure callback must clear the ledger row"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_with_body_populates_error_message(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """D-10: a WITH-BODY POST (new agent) -> 200; error_message is populated as ``"<reason>: <error>"``."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "error", "error": "boom"})
+
+    assert r.status_code == 200, r.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.failed_at is not None
+    assert row.error_message == "error: boom", f"error_message must be '<reason>: <error>', got {row.error_message!r}"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_unknown_body_field_422(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """T-81-03-02: a present body with an unknown field -> 422 (extra='forbid')."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "error", "bogus": "x"})
+
+    assert r.status_code == 422, r.text
+    errors = r.json()["detail"]
+    assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "bogus"] for e in errors), errors
+
+
+@pytest.mark.asyncio
+async def test_metadata_empty_body_put_after_failure_clears_marker(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """D-13 sharp edge: an empty-body ``{}`` success PUT after a failure clears ``failed_at`` on the existing row.
+
+    Reproduction of the latent bug: without the empty-body clear branch a successful retry
+    that carries no fields (empty body) would leave the prior ``failed_at``/``error_message``
+    on the row, so the file would derive FAILED forever despite the success.
+    """
+    from phaze.enums.stage import Stage, Status, resolve_status
+
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        # First: a terminal failure stamps the marker.
+        r_fail = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "error", "error": "boom"})
+        # Then: an empty-body success PUT (extraction ran, no tags) must clear the marker.
+        r_ok = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={})
+
+    assert r_fail.status_code == 200, r_fail.text
+    assert r_ok.status_code == 200, r_ok.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.failed_at is None, "empty-body success PUT must clear failed_at (D-13)"
+    assert row.error_message is None, "empty-body success PUT must clear error_message (D-13)"
+    # The row now derives DONE (present, failed_at NULL), not FAILED.
+    status = resolve_status(Stage.METADATA, {"row_present": True, "failed_at": row.failed_at, "inflight": False})
+    assert status is Status.DONE, f"a cleared success row must derive DONE, got {status}"
+
+
+@pytest.mark.asyncio
+async def test_metadata_field_put_after_failure_clears_marker(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """D-13: a NON-empty success PUT after a failure also clears the marker (unconditional set_ clear)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r_fail = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "error", "error": "boom"})
+        r_ok = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "Recovered"})
+
+    assert r_fail.status_code == 200, r_fail.text
+    assert r_ok.status_code == 200, r_ok.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.artist == "Recovered"
+    assert row.failed_at is None, "a field success PUT must clear failed_at (D-13 unconditional set_ clear)"
+    assert row.error_message is None

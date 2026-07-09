@@ -4,7 +4,7 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,11 +13,19 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_metadata import MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
+from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 router = APIRouter(prefix="/api/internal/agent/metadata", tags=["agent-internal"])
+
+# Bound persisted failure detail to the payload's wire bound (T-81-03-04). The column is
+# ``Text`` (unbounded), so truncate the composed ``reason: error`` string defensively before
+# persist -- the same DoS-via-huge-string class the ``error`` field's ``max_length`` caps.
+_ERROR_MESSAGE_MAX = 2000
+# Fixed marker persisted when an OLD (bodyless) agent POSTs the terminal ack: the failure is
+# still durable (``failed_at`` set) but carries no agent triage detail (D-10 / CR-02).
+_BODYLESS_FAILURE_MESSAGE = "metadata extraction failed (no detail -- legacy agent)"
 
 
 @router.put("/{file_id}", status_code=status.HTTP_200_OK, response_model=MetadataWriteResponse)
@@ -68,17 +76,25 @@ async def put_metadata(
     payload = {**dumped, "file_id": file_id, "id": uuid.uuid4()}
     stmt = pg_insert(FileMetadata).values([payload])
     if dumped:
-        # `set_` covers ONLY the user-provided fields (D-14 field-level LWW);
-        # excludes file_id AND id from the SET clause (both are conflict-target /
-        # immutable PK -- existing row keeps its existing id).
+        # `set_` covers the user-provided fields (D-14 field-level LWW) PLUS an
+        # UNCONDITIONAL failure-marker clear (D-13): a real success must wipe any
+        # `failed_at`/`error_message` left by a prior `report_metadata_failed`, else a
+        # successful retry reads FAILED forever. `failed_at`/`error_message` sit OUTSIDE
+        # `exclude_unset` (the wire body never carries them). Excludes file_id AND id from
+        # the SET clause (both are conflict-target / immutable PK).
         stmt = stmt.on_conflict_do_update(
             index_elements=["file_id"],
-            set_={k: stmt.excluded[k] for k in dumped},
+            set_={**{k: stmt.excluded[k] for k in dumped}, "failed_at": None, "error_message": None},
         )
     else:
-        # Empty body -- no-op for existing rows; INSERT still happens for fresh ones.
-        # Avoids Postgres "SET clause empty" syntax error.
-        stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
+        # Empty body -- no user field to UPDATE, but STILL clear the failure marker on an
+        # existing row (D-13 sharp edge): an empty-body success PUT after a failure means
+        # extraction ran, so it must clear `failed_at`/`error_message`. A fresh INSERT sets
+        # both NULL anyway; a `DO NOTHING` here would strand the marker. Never an empty SET.
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["file_id"],
+            set_={"failed_at": None, "error_message": None},
+        )
     await session.execute(stmt)
     # 260707-rc4: guardedly advance DISCOVERED -> METADATA_EXTRACTED in the SAME transaction
     # as the upsert so a metadata callback unblocks the fingerprint stage + UI. Guarded on
@@ -100,26 +116,47 @@ async def report_metadata_failed(
     file_id: uuid.UUID,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    body: MetadataFailurePayload | None = None,
 ) -> MetadataFailureResponse:
-    """Terminal-ack for a retries-exhausted ``extract_file_metadata`` run (Phase 45 L-02 / CR-02).
+    """Terminal-ack for a retries-exhausted ``extract_file_metadata`` run (Phase 45 L-02 / CR-02; Phase 81 FAIL-02).
 
-    ``put_metadata`` clears the ledger row on SUCCESS; this endpoint closes the
-    terminal-failure hole so EVERY ``extract_file_metadata`` run clears
-    ``extract_file_metadata:<file_id>`` exactly once. Without it, a terminally-failed
-    metadata file stays in ``get_metadata_pending_files`` (which returns ALL music/video
-    files regardless of state), so ``is_domain_completed`` can never fire and
-    ``recover_orphaned_work`` re-enqueues it on every recovery pass forever -- the
-    unbounded recovery re-enqueue loop the ledger was introduced to prevent (CR-02).
+    Two effects, same transaction:
 
-    ``agent`` is bound from the auth dep (token, never body -- AUTH-01); the clear key is
-    reconstructed from the PATH ``file_id`` ONLY + the fixed function name, matching the
-    deterministic WRITE key exactly, so a forged request cannot redirect the clear to
-    another file's key (T-45-05). Clearing an absent row is a clean no-op (still 200).
-    The endpoint writes no FileState -- metadata has no dedicated terminal state; clearing
-    the ledger row is the sole required control-side effect.
+    1. **Persist a durable failure marker (FAIL-02 / D-01):** upsert a ``metadata`` row with
+       ``failed_at`` set and payload columns NULL. ``done(metadata)`` is ``EXISTS metadata
+       WHERE failed_at IS NULL`` (D-02, stage_status.py), so this failure-only row derives
+       FAILED -- never DONE -- making a terminally-failed metadata file visible in derivation
+       and counts. Before Phase 81 this endpoint wrote nothing (the latent bug FAIL-02 closes).
+       Metadata deliberately has NO backfill (D-03): no historical source ever persisted a
+       marker, so this is the go-forward writer only.
+    2. **Clear the scheduling-ledger row (CR-02):** ``put_metadata`` clears on SUCCESS; this
+       endpoint closes the terminal-failure hole so EVERY run clears
+       ``extract_file_metadata:<file_id>`` exactly once. Without it, a terminally-failed file
+       stays in ``get_metadata_pending_files`` forever and ``recover_orphaned_work`` re-enqueues
+       it on every recovery pass (the unbounded loop the ledger prevents).
+
+    Version-skew safety (D-10 / T-81-03-03): ``body`` is optional with a ``None`` default (NO
+    ``Body()`` wrapper) so a BODYLESS POST from an OLD agent image binds ``None``, returns 200,
+    and STILL persists the marker + clears the ledger. A NEW agent's triage body populates
+    ``error_message`` as ``"<reason>: <error>"`` (bounded). A present body with an unknown field
+    422s (``extra='forbid'``, T-81-03-02).
+
+    ``agent`` is bound from the auth dep (token, never body -- AUTH-01); BOTH the failure-row
+    ``file_id`` and the ledger clear key are reconstructed from the PATH ``file_id`` ONLY, never
+    the body (T-45-05 / T-81-03-01), so a forged request cannot redirect either write.
     """
+    # T-81-03-04: bound the persisted detail. The `error` field is already `max_length=2000`
+    # at the wire; truncate the composed message defensively (the column is unbounded Text).
+    error_message = f"{body.reason}: {body.error}"[:_ERROR_MESSAGE_MAX] if body is not None else _BODYLESS_FAILURE_MESSAGE
+    # FAIL-02 / D-01: durable failure row -- payload columns stay NULL so `done(metadata)`
+    # (EXISTS ... failed_at IS NULL) reads FAILED. Server-set `failed_at=func.now()`; the same
+    # shared `pg_insert(...).on_conflict_do_update` idiom as `put_metadata`. Stamp the PK
+    # explicitly because `FileMetadata.id` has a Python-only default that `pg_insert` bypasses.
+    now = func.now()
+    stmt = pg_insert(FileMetadata).values([{"file_id": file_id, "id": uuid.uuid4(), "failed_at": now, "error_message": error_message}])
+    stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_={"failed_at": now, "error_message": error_message})
+    await session.execute(stmt)
+    # CR-02: clear the ledger row in the SAME transaction. Key from the PATH file_id ONLY (T-45-05).
     await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")
     await session.commit()
-    # Touch ``agent`` so ARG001 doesn't fire; the binding's real role is auth-gating.
-    _ = agent.id
     return MetadataFailureResponse(agent_id=agent.id, file_id=file_id, cleared=True)
