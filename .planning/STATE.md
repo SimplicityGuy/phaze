@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
 status: executing
-last_updated: "2026-07-09T04:45:06.648Z"
-last_activity: 2026-07-09 -- Phase 81 planning complete
+last_updated: "2026-07-09T04:57:11.480Z"
+last_activity: 2026-07-09 -- Phase 81 execution started
 progress:
   total_phases: 52
   completed_phases: 3
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 80 — recovery / re enqueue cutover
+**Current focus:** Phase 81 — per-stage-failure-persistence-retry-paths
 
 ## Current Position
 
-Phase: 80
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-09 -- Phase 81 planning complete
+Phase: 81 (per-stage-failure-persistence-retry-paths) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 81
+Last activity: 2026-07-09 -- Phase 81 execution started
 
 ## Performance Metrics
 
