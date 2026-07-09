@@ -1341,6 +1341,25 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     return list(result.scalars().all())
 
 
+async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
+    """Return every FileRecord carrying a terminal metadata failure row (FAIL-03 retry set).
+
+    A metadata failure is persisted by the 81-03 writer as a ``metadata`` row with
+    ``failed_at`` set and the payload columns NULL, so ``done(metadata)`` derives FAILED rather
+    than DONE. This reuses the ``failed_clause(Stage.METADATA)`` shape (services/stage_status.py)
+    -- a correlated ``exists(select(FileMetadata.id).where(file_id == FileRecord.id,
+    FileMetadata.failed_at IS NOT NULL))`` -- so the operator bulk-retry endpoint re-enqueues
+    EXACTLY the set the derivation reports as terminally failed. Pure ORM / bound params, NO
+    f-string SQL (T-42-03).
+
+    D-11: this returns the files; the retry LEAVES the failure row in place and re-enqueues --
+    ``put_metadata``'s clear-on-success (81-03) wipes ``failed_at`` only when real metadata lands.
+    """
+    stmt = select(FileRecord).where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None))))
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def get_fingerprint_pending_files(session: AsyncSession) -> list[FileRecord]:
     """Return METADATA_EXTRACTED files PLUS failed-fingerprint-retry files, de-duplicated by id.
 
