@@ -14,6 +14,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
+from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
@@ -145,9 +146,15 @@ async def report_metadata_failed(
     ``file_id`` and the ledger clear key are reconstructed from the PATH ``file_id`` ONLY, never
     the body (T-45-05 / T-81-03-01), so a forged request cannot redirect either write.
     """
-    # T-81-03-04: bound the persisted detail. The `error` field is already `max_length=2000`
-    # at the wire; truncate the composed message defensively (the column is unbounded Text).
-    error_message = f"{body.reason}: {body.error}"[:_ERROR_MESSAGE_MAX] if body is not None else _BODYLESS_FAILURE_MESSAGE
+    # T-81-03-04 has two limbs and BOTH must hold:
+    #   (a) oversized -- the `error` field is already `max_length=2000` at the wire; truncate the
+    #       composed message defensively (the column is unbounded Text).
+    #   (b) PG-invalid -- NUL passes pydantic validation (only lone surrogates are rejected there,
+    #       as `string_unicode`), but Postgres rejects it with CharacterNotInRepertoireError. That
+    #       aborts the transaction, which rolls back the marker upsert AND the ledger clear below,
+    #       so the file is re-enqueued and fails identically forever. Sanitize BEFORE truncating:
+    #       stripping can only shorten, so the bound still holds.
+    error_message = sanitize_pg_text(f"{body.reason}: {body.error}")[:_ERROR_MESSAGE_MAX] if body is not None else _BODYLESS_FAILURE_MESSAGE
     # FAIL-02 / D-01: durable failure row -- payload columns stay NULL so `done(metadata)`
     # (EXISTS ... failed_at IS NULL) reads FAILED. Server-set `failed_at=func.now()`; the same
     # shared `pg_insert(...).on_conflict_do_update` idiom as `put_metadata`. Stamp the PK

@@ -239,3 +239,37 @@ async def test_success_after_failure_clears_marker(seed_test_agent: tuple[Agent,
     assert row.bpm == 130.0
     assert await _file_state(session, file_id) is FileState.ANALYZED
     assert await _no_mixed_row_exists(session)
+
+
+@pytest.mark.asyncio
+async def test_report_failed_nul_in_error_persists_and_clears_ledger(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """T-81-05-03 (PG-invalid limb): a NUL-bearing ``error`` must NOT abort the transaction.
+
+    NUL passes the wire (``max_length`` bounds length only; lone surrogates are separately rejected by
+    pydantic-core as ``string_unicode``), then Postgres rejects the write with
+    ``CharacterNotInRepertoireError``. Because the marker upsert, the ``files.state`` write and the
+    ledger clear all share one transaction, the rollback strands the ledger row and the file
+    re-analyzes into the identical failure forever. ``sanitize_pg_text`` strips NUL before persist.
+    """
+    nul_error = "bad" + chr(0) + "frame"
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_ledger(session, file_id)
+    assert await _ledger_present(session, file_id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "crashed", "error": nul_error})
+
+    assert r.status_code == 200, r.text
+    row = await _analysis_row(session, file_id)
+    assert row is not None
+    assert row.failed_at is not None
+    assert row.error_message is not None
+    assert chr(0) not in row.error_message, "NUL must be stripped before persist"
+    assert row.error_message == "crashed: badframe"
+    assert await _file_state(session, file_id) is FileState.ANALYSIS_FAILED
+    # The whole point: the transaction survived, so the ledger clear committed.
+    assert not await _ledger_present(session, file_id), "a NUL-bearing error must not strand the ledger row"
+    assert await _no_mixed_row_exists(session)

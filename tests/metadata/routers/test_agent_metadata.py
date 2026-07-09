@@ -585,3 +585,42 @@ async def test_metadata_field_put_after_failure_clears_marker(
     assert row.artist == "Recovered"
     assert row.failed_at is None, "a field success PUT must clear failed_at (D-13 unconditional set_ clear)"
     assert row.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_nul_in_error_persists_and_clears_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """T-81-03-04 (PG-invalid limb): a NUL-bearing ``error`` must NOT abort the transaction.
+
+    NUL clears pydantic validation (``max_length`` only bounds length; of the two PG-invalid classes
+    only lone surrogates are rejected at the wire, as ``string_unicode``). Postgres then rejects the
+    write with ``CharacterNotInRepertoireError``, rolling back BOTH the marker upsert and the ledger
+    clear -- so the file is re-enqueued and fails identically forever. That is the
+    unbounded-recovery-loop outcome the version-skew guard (T-81-03-03) exists to prevent, reached
+    through a different door. ``sanitize_pg_text`` strips NUL before persist, so the row lands and
+    the ledger clears.
+    """
+    nul_error = "bad" + chr(0) + "frame"
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, key, "extract_file_metadata", file_id)
+    assert await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "crashed", "error": nul_error})
+
+    assert r.status_code == 200, r.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.failed_at is not None
+    assert row.error_message is not None
+    assert chr(0) not in row.error_message, "NUL must be stripped before persist"
+    assert row.error_message == "crashed: badframe"
+    # The whole point: the transaction survived, so the ledger clear committed.
+    assert not await _ledger_present(session, key), "a NUL-bearing error must not strand the ledger row"

@@ -51,6 +51,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWriteResponse,
 )
 from phaze.services import s3_staging
+from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
@@ -349,8 +350,12 @@ async def report_analysis_failed(
     """
     # FAIL-01 / D-07: compose + defensively truncate the persisted detail (the column is unbounded Text;
     # `error` is already max_length=2000 at the wire). Mirrors report_metadata_failed's `reason: error`.
+    # T-81-05-03 PG-invalid limb: NUL clears pydantic but Postgres rejects it
+    # (CharacterNotInRepertoireError), aborting the transaction that also clears the ledger below ->
+    # the file re-enqueues and fails identically forever. Sanitize BEFORE truncating; stripping can
+    # only shorten, so the bound still holds.
     now = func.now()
-    error_message = f"{body.reason}: {body.error}"[:_ERROR_MESSAGE_MAX]
+    error_message = sanitize_pg_text(f"{body.reason}: {body.error}")[:_ERROR_MESSAGE_MAX]
     # FAIL-01 / D-05 dual-write, D-06: durable analyze-failure marker on the 1:1 `analysis` row. ON
     # CONFLICT DO UPDATE (not a bare UPDATE) because a pure analyze failure has no prior `analysis` row;
     # clear `analysis_completed_at` so the migration-033 XOR CHECK never sees a mixed row. Stamp the PK

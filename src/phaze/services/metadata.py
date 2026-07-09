@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import re
 from typing import Any
 
 import mutagen
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 import structlog
+
+from phaze.services.pg_text import sanitize_pg_text
 
 
 logger = structlog.get_logger(__name__)
@@ -65,19 +66,11 @@ _MP4_MAP: dict[str, str] = {
 #     when asyncpg transmits a text value. In a Python ``str`` astral characters are
 #     single code points (never stored as surrogate pairs), so any code point in this
 #     range is necessarily a LONE surrogate -- stripping the whole range is safe.
-# Everything else (other C0/C1 controls, DEL, Unicode noncharacters like U+FFFE/U+FFFF/
-# U+FDD0-U+FDEF) is VALID in a UTF8 database and is deliberately left intact -- stripping
-# it would corrupt legitimate tag text.
-_PG_INVALID_CHARS = re.compile(r"[\x00\ud800-\udfff]")
-
-
-def _sanitize_pg_text(s: str) -> str:
-    """Strip characters PostgreSQL cannot store in a UTF8 text/jsonb column.
-
-    Removes only NUL (U+0000) and lone Unicode surrogates (U+D800-U+DFFF); all other
-    control characters and noncharacters are preserved. See PostgreSQL §8.14.
-    """
-    return _PG_INVALID_CHARS.sub("", s)
+#
+# The implementation now lives in the stdlib-only ``services/pg_text`` module so the control-plane
+# routers can reuse it without importing ``mutagen`` through this module. Aliased here to keep this
+# module's existing call sites unchanged.
+_sanitize_pg_text = sanitize_pg_text
 
 
 def _first_str(val: Any) -> str | None:
