@@ -271,7 +271,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
-| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 6/6 | Complete   | 2026-07-09 |
+| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete   | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -427,7 +427,7 @@ Plans:
 
 **Wave 4** *(gap closure — verification found 6/7 must-haves; closes the failed D-02 single-writer must-have / WR-03)*
 
-- [ ] 83-07-PLAN.md — Consolidate the three awaiting writers into one CAS-preserving `hold_awaiting_cloud` + anti-drift source test (D-02, D-03, D-09/D-10/D-11/D-12)
+- [x] 83-07-PLAN.md — Consolidate the three awaiting writers into one CAS-preserving `hold_awaiting_cloud` + anti-drift source test (D-02, D-03, D-09/D-10/D-11/D-12)
 
 **Scope exclusion**: `tasks/reconcile_cloud_jobs.py` is owned by **Phase 80** (80-CONTEXT D-04) — its at-cap spill-back write is retired there, not here. This phase covers the sibling cloud-routing writers (`routers/agent_push.py`, `routers/pipeline.py`, `routers/agent_s3.py`) and the drain-candidate / dispatch reads.
 **Note (deps)**: Rewired off Phase 82 to break the `80 → 83 → 82 → 80` cycle. Phase 83 shares no requirement with 82 (pending sets / `get_pipeline_stats`); it needs the derivation layer (78), the shadow-compare gate (79), and the analyze failure marker (81) that `LOCAL_ANALYZING`-from-`in_flight(analyze)` and push-done-via-analyze-terminal both read. Because this phase now runs BEFORE 82 (the milestone thesis), its drain-re-pick hazard lands earlier — the integration test below is a hard gate, not a recommendation.
