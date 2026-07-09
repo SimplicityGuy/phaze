@@ -51,7 +51,7 @@
 
 ### Sidecar Migration (SIDECAR)
 
-- [ ] **SIDECAR-01**: Cloud-routing status (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) is represented via the `cloud_job` sidecar (and/or derived `in_flight(analyze)`), with the CAS-guard behavior of `/pushed`, `/mismatch`, and `/upload-failed` preserved or strengthened (closes the missing-CAS-guard bug at `agent_s3.py:195`).
+- [x] **SIDECAR-01**: Cloud-routing status (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) is represented via the `cloud_job` sidecar (and/or derived `in_flight(analyze)`), with the CAS-guard behavior of `/pushed`, `/mismatch`, and `/upload-failed` preserved or strengthened (closes the missing-CAS-guard bug at `agent_s3.py:195`).
 - [ ] **SIDECAR-02**: Dedup resolution (`DUPLICATE_RESOLVED`) is represented via a durable dedup marker, with resolve/undo preserved and backfilled from existing rows.
 - [ ] **SIDECAR-03**: Review decisions (approve/reject) and apply outcomes are read from `proposals.status` + `execution_log` — `FileRecord.state` is no longer a redundant, drift-prone mirror of proposal state (fixes the `store_proposals` MOVED-regression bug).
 
@@ -146,7 +146,7 @@
 | READ-03 | Phase 80 | Pending |
 | READ-04 | Phase 84 | Pending |
 | READ-05 | Phase 85 | Pending |
-| SIDECAR-01 | Phase 83 | Pending |
+| SIDECAR-01 | Phase 83 | Complete |
 | SIDECAR-02 | Phase 84 | Pending |
 | SIDECAR-03 | Phase 86 | Pending |
 | UI-01 | Phase 87 | Pending |

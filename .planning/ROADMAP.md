@@ -26,7 +26,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [ ] **Phase 80: Recovery / Re-enqueue Cutover** — `reenqueue.py` + `reconcile_cloud_jobs.py` derive done/in-flight from `stage_status`/sidecars with no `FileRecord.state` read; deliberately **before** the pending-set/counts readers (double-negation dependency) (READ-03)
 - [x] **Phase 81: Per-Stage Failure Persistence & Retry Paths** — durable failure markers for analyze + metadata (`report_metadata_failed` records instead of nothing) + reused fingerprint failure; a metadata retry path so a failure is never a permanent dead-end (FAIL-01..04) (completed 2026-07-09)
 - [ ] **Phase 82: Counts & Pending-Set Cutover** — the three enrich pending sets + `get_pipeline_stats` derived from `stage_status`; the cross-stage deadlock dissolves; four-bucket per-stage counts; the 200K-scale poll latency measured (READ-01, READ-02, PERF-02)
-- [ ] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01)
+- [x] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01) (completed 2026-07-09)
 - [ ] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02)
 - [ ] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05)
 - [ ] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03)
@@ -271,7 +271,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
-| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete   | 2026-07-09 |
+| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
