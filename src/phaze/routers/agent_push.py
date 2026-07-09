@@ -112,38 +112,44 @@ async def report_pushed(
     agent_ref = cast("str", backend.agent_ref)
     scratch_dir = cast("str", backend.scratch_dir)
 
-    # One transaction: PUSHING -> PUSHED, clear the push ledger row, enqueue compute analysis.
-    # WR-02: guard the transition on the CURRENT state being PUSHING so a duplicate/late callback
-    # (e.g. a push_file SAQ retry after its first callback already committed) is an idempotent no-op
-    # instead of clobbering an already-advanced file (ANALYZED/...) back to PUSHED and re-enqueuing
-    # process_file against a scratch copy the first run already deleted (which would re-trigger the
-    # CR-01 stranding). Only when the row actually transitioned do we clear the ledger + enqueue.
-    # An UPDATE returns a CursorResult at runtime (exposing rowcount); the async stubs type it as
+    # One transaction: terminalize compute's cloud_job row + PUSHING -> PUSHED dual-write, clear the push
+    # ledger row, enqueue compute analysis.
+    # SC#1/D-12: the CAS anchor is cloud_job.status == 'submitted' (compute's single in-flight status), NOT
+    # FileRecord.state == PUSHING -- collapsing the guard onto the sidecar as the single CAS domain and
+    # removing the last FileRecord.state ROUTING read here before Phase 90 drops the column. This single CAS
+    # replaces BOTH the old FileRecord PUSHING->PUSHED guard AND the unconditional cloud_job SUCCEEDED write:
+    # it terminalizes compute's row SUBMITTED->SUCCEEDED (D-08), draining it from the D-10 in-flight set so
+    # in_flight_count(compute) stays honest as the file advances (Phase 69, D-05). Anchoring on the
+    # 'submitted' literal is safe even though kueue's lifecycle also transits SUBMITTED: resolve_compute_backend
+    # returns None for a kueue backend_id and the handler already returned the 200 hold above, so a kueue file
+    # never reaches this CAS -- no defensive backend-kind check is added (D-12). WR-02: a duplicate/late /pushed
+    # (a push_file SAQ retry after its first callback committed) whose cloud_job already advanced past
+    # 'submitted' matches 0 rows -> idempotent no-op: NO FileRecord write, NO ledger clear, NO second
+    # process_file enqueue (which would clobber an already-ANALYZED file to PUSHED and re-trigger CR-01
+    # stranding). An UPDATE returns a CursorResult at runtime (exposing rowcount); the async stubs type it as
     # the base Result, so cast to read the affected-row count (mirrors services/scan_deletion.py).
     res = cast(
         "CursorResult[Any]",
         await session.execute(
-            update(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.PUSHING).values(state=FileState.PUSHED)
+            update(CloudJob)
+            .where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.SUBMITTED.value)
+            .values(status=CloudJobStatus.SUCCEEDED.value)
         ),
     )
     if res.rowcount == 0:
-        # Already advanced past PUSHING: a clean idempotent 200, no ledger clear, no re-enqueue.
+        # Already advanced past 'submitted': a clean idempotent 200, no ledger clear, no re-enqueue.
         await session.commit()
         logger.info(
-            "report_pushed: idempotent no-op (file no longer PUSHING)",
+            "report_pushed: idempotent no-op (cloud_job no longer 'submitted')",
             file_id=str(file_id),
             agent_id=agent.id,
         )
         return PushedResponse(file_id=file_id)
+    # rowcount != 0: gate the FileRecord dual-write (D-00c -- a PLAIN write, NOT a state == PUSHING predicate,
+    # which would re-introduce the FileRecord.state routing read SC#1 removes) + ledger clear + process_file
+    # enqueue behind the cloud_job CAS.
+    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.PUSHED))
     await clear_ledger_entry(session, f"push_file:{file_id}")
-
-    # D-08: terminalize compute's cloud_job row (SUBMITTED -> SUCCEEDED) in the SAME transaction as the
-    # PUSHING -> PUSHED flip. ComputeAgentBackend.dispatch wrote this row (backend_id set, s3_key NULL,
-    # SUBMITTED) when the file was staged; the /pushed callback is compute's reconcile path (§4.2), so
-    # terminalizing it here drains in_flight_count(compute) so the file leaves the backend's per-backend
-    # in-flight window as its FileState flips (Phase 69, D-05). Gated behind the WR-02 rowcount != 0
-    # guard above -- a duplicate/late callback (rowcount == 0) returned early and writes NOTHING here.
-    await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
 
     # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
     # transitional settings.active_compute_scratch_dir reduction accessor was DELETED in Phase 73

@@ -464,15 +464,18 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     A push_file SAQ retry can post /pushed twice; if the first committed and process_file has since
     finished (file now ANALYZED), the second callback must be an idempotent no-op -- it must not
     reset the row to PUSHED nor re-enqueue process_file (which would re-trigger CR-01 stranding).
+    Phase 83 (SC#1/D-12): the anchor swap keys the guard on cloud_job.status == 'submitted'. The first
+    /pushed already re-stamped the row SUBMITTED -> SUCCEEDED (dual-written with FileState), so seed the
+    cloud_job at SUCCEEDED -- the second callback's CAS matches 0 rows and is a clean idempotent no-op.
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
     # The file has already advanced all the way to ANALYZED (the first callback + analysis ran).
     file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
-    # Seed the cloud_job so the backend RESOLVES -- this exercises the WR-02 rowcount==0 idempotent guard
-    # (not the no-cloud_job hold): with a resolvable backend the flip is still a no-op because the file
-    # is no longer PUSHING.
-    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
+    # Seed the cloud_job so the backend RESOLVES (not the no-cloud_job hold). SC#1/D-12: the row already
+    # advanced to SUCCEEDED on the first /pushed, so the second callback's CAS on status=='submitted' is a
+    # 0-row idempotent no-op -- NOT because the file is no longer PUSHING (that routing read is now gone).
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)
 
     task_router = FakeTaskRouter()
     async with _make_client(session, task_router, raw_token) as ac:
@@ -484,11 +487,10 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     assert file_row.state == FileState.ANALYZED
     # Nothing re-enqueued -- the finished file is not re-analyzed.
     assert task_router.queues == {}
-    # WR-02: the cloud_job terminalization is gated behind the rowcount guard, so it stays SUBMITTED
-    # (NOT flipped to SUCCEEDED) on the idempotent no-op.
+    # SC#1/D-12: the CAS matched 0 rows (status already SUCCEEDED, not 'submitted'), so the row is UNCHANGED.
     cloud_job = await _cloud_job_row(session, file_id)
     assert cloud_job is not None
-    assert cloud_job.status == CloudJobStatus.SUBMITTED.value
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value
 
 
 @pytest.mark.asyncio
