@@ -1090,3 +1090,94 @@ def test_kube_models_pvc_name_round_trips_from_backends_toml(backends_toml_env: 
     settings = ControlSettings()
     [with_pvc] = [b for b in backends.resolve_backends(settings) if b.id == "kueue-x64"]
     assert with_pvc.config.kube.models_pvc_name == "phaze-essentia-models"
+
+
+# === hold_awaiting_cloud(): the shared go-forward awaiting writer (D-01/D-02/D-03/D-13) =====
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_fresh_hold_writes_one_row_and_flips_state(session: AsyncSession) -> None:
+    """D-02/D-00c: a fresh hold stamps ``AWAITING_CLOUD`` + inserts exactly one ``awaiting`` cloud_job row.
+
+    The row and the state flip are both visible WITHIN the uncommitted caller session (the helper never
+    commits -- the caller owns the commit boundary), so the assertions see them without any commit.
+    """
+    from sqlalchemy import select
+
+    file = _make_file(state=FileState.FINGERPRINTED)  # pre-hold state so the flip is genuinely observable
+    session.add(file)
+    await session.flush()
+
+    await backends.hold_awaiting_cloud(session, file)
+
+    assert file.state == FileState.AWAITING_CLOUD
+    rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == CloudJobStatus.AWAITING.value
+    assert rows[0].attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_respamps_failed_spill_row_retaining_spent_budget(session: AsyncSession) -> None:
+    """D-03: re-stamping a terminalized FAILED row upserts THE SAME row back to ``awaiting`` (no second row).
+
+    ``uq_cloud_job_file_id`` holds one row per file, so the spill path re-stamps via
+    ``on_conflict_do_update`` rather than inserting a fresh row. Passing
+    ``attempts=cloud_submit_max_attempts`` retains the budget-spent marker ``select_backend`` reads to
+    route the file to local.
+    """
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.FAILED.value, attempts=max_attempts))
+    await session.flush()
+
+    await backends.hold_awaiting_cloud(session, file, attempts=max_attempts)
+
+    rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalars().all()
+    assert len(rows) == 1  # uq_cloud_job_file_id -> still one row (re-stamped, not duplicated)
+    assert rows[0].status == CloudJobStatus.AWAITING.value
+    assert rows[0].attempts == max_attempts
+
+
+def test_awaiting_status_is_not_in_the_in_flight_set() -> None:
+    """D-03: ``'awaiting'`` stays OUT of :data:`backends.IN_FLIGHT` so a re-stamped hold never inflates a lane.
+
+    ``in_flight_count`` counts ``status IN IN_FLIGHT``; keeping ``awaiting`` out of that tuple is what lets a
+    spill re-stamp (or an inert LocalBackend hold-over row, D-13/D-14) exist without corrupting any backend's
+    per-lane in-flight accounting.
+    """
+    assert CloudJobStatus.AWAITING not in backends.IN_FLIGHT
+    assert CloudJobStatus.AWAITING.value not in {status.value for status in backends.IN_FLIGHT}
+
+
+@pytest.mark.asyncio
+async def test_local_dispatch_leaves_awaiting_row_present_and_flips_state(session: AsyncSession) -> None:
+    """D-13: LocalBackend.dispatch flips a held file to LOCAL_ANALYZING and NEITHER writes NOR deletes its row.
+
+    A held file carries an ``awaiting`` cloud_job row. LocalBackend stays a no-``cloud_job``-row
+    writer/deleter (D-05 chose the drain predicate conjunct over row deletion), so after a local dispatch
+    the inert ``awaiting`` row is still present, still ``status='awaiting'`` (it is reaped later by D-14, not
+    here) while ``file.state`` becomes ``LOCAL_ANALYZING``.
+    """
+    from sqlalchemy import select
+
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    file = _make_file(state=FileState.FINGERPRINTED)
+    session.add(file)
+    await session.flush()
+    await backends.hold_awaiting_cloud(session, file)  # held: awaiting row present, state AWAITING_CLOUD
+    await session.commit()
+
+    backend = _local()
+    await backend.dispatch(file, session, DedupFakeTaskRouter())
+
+    assert file.state == FileState.LOCAL_ANALYZING
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
+    assert job is not None  # LocalBackend did NOT delete the inert awaiting row (D-13)
+    assert job.status == CloudJobStatus.AWAITING.value  # nor re-write it

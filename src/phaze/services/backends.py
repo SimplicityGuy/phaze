@@ -81,6 +81,43 @@ IN_FLIGHT: tuple[CloudJobStatus, ...] = (
 )
 
 
+async def hold_awaiting_cloud(session: AsyncSession, file: FileRecord, *, attempts: int = 0) -> None:
+    """Stamp ``AWAITING_CLOUD`` + upsert the ``cloud_job`` awaiting row in the CALLER'S txn. NEVER commits.
+
+    The single go-forward writer of ``cloud_job.status='awaiting'`` (D-01/D-02): shared by the hold path
+    (``trigger_analysis``) and both over-cap spill paths (``report_upload_failed`` / ``report_push_mismatch``)
+    so the hard shadow invariant ``AWAITING_CLOUD => cloud_job(status='awaiting')``
+    (``shadow_compare.py:131``) holds for every go-forward hold instead of three hand-copied writers.
+
+    Dual-writes ``file.state = FileState.AWAITING_CLOUD`` (D-00c -- the ``state`` write survives to Phase 90,
+    only *reliance* on it is retired), then upserts the sidecar row keyed on ``file_id``
+    (``uq_cloud_job_file_id``): a fresh hold INSERTs ``status='awaiting'`` / ``attempts=0``; a spill re-stamp
+    of an already-terminalized row (e.g. a ``FAILED`` spill row) UPDATEs it back to ``status='awaiting'``
+    via ``on_conflict_do_update``, taking ``attempts`` from the argument so a spill caller retains
+    ``attempts=cloud_submit_max_attempts`` as the budget-spent marker ``select_backend`` reads to route to
+    local (D-03). ``'awaiting'`` is deliberately OUT of :data:`IN_FLIGHT`, so a re-stamped row never inflates
+    any backend's ``in_flight_count``.
+
+    Does NOT set ``backend_id`` (a hold has none) and leaves ``cloud_phase`` NULL. NEVER commits -- the
+    caller owns the commit boundary (the dispatch discipline at :meth:`Backend.dispatch`; a commit here
+    would drop the tick's ``pg_advisory_xact_lock`` and re-open the over-stage class, Landmine L1).
+    """
+    file.state = FileState.AWAITING_CLOUD  # D-00c dual-write; the state write dies in Phase 90
+    stmt = pg_insert(CloudJob).values(
+        # Stamp the PK explicitly (CR-01 defensive; mirrors ComputeAgentBackend.dispatch).
+        id=uuid.uuid4(),
+        file_id=file.id,
+        status=CloudJobStatus.AWAITING.value,
+        attempts=attempts,
+    )
+    stmt = stmt.on_conflict_do_update(
+        # uq_cloud_job_file_id -> a plain INSERT is unsafe on the spill re-stamp case; upsert on file_id.
+        index_elements=["file_id"],
+        set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts},
+    )
+    await session.execute(stmt)
+
+
 async def _enqueue_push_file(
     queue: Any,
     file: FileRecord,
