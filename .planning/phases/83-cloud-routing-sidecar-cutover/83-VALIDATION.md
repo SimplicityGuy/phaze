@@ -1,11 +1,18 @@
 ---
 phase: 83
 slug: cloud-routing-sidecar-cutover
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-09
 ---
+
+> **`nyquist_compliant: true`** — verified by gsd-plan-checker against all 6 plans: every task carries a
+> runnable `<verify><automated>` command, no `MISSING` placeholders, no watch-mode flags, no bare E2E
+> suites, and every Wave-0 gap below maps to a concrete plan task.
+>
+> **`wave_0_complete: false` is intentional and correct** — the Wave-0 test files are *planned*, not yet
+> written. Execute-phase flips this once they exist and pass in isolation.
 
 # Phase 83 — Validation Strategy
 
@@ -55,6 +62,7 @@ to its proving test. The planner must attach each row to a concrete task.
 | **SC#3 (HARD GATE)** | 2 | — | Two sequential `stage_cloud_window` ticks across (a) local dispatch, (b) rolled-back tick with a committed ledger row, (c) terminally-failed local analyze → each file dispatched **exactly once**, and **never** to a cloud backend after a local dispatch | integration | `just test-bucket integration` | integration | ❌ W0 — new file in `tests/integration/`; drive via `tests/analyze/tasks/test_release_awaiting_cloud.py` + `test_staging_cron.py` fixtures | ⬜ pending |
 | SC#3 (shadow green) | 2 | — | Shadow-compare stays green; the new go-forward `awaiting` writer + `034` repair make the **hard** `awaiting_cloud` invariant pass (it is violated at HEAD) | integration | `just test-bucket integration` | integration | ⚠ extend `tests/integration/test_shadow_compare.py` | ⬜ pending |
 | SC#1 (D-05/D-06/D-12) | 1–2 | — | Drain query, the three dispatch route flips, and the four callback guards read/write `cloud_job` (or derived `in_flight`) — **no `FileRecord.state` routing read** | static + behavioral | `just test-bucket analyze` + grep audit | analyze | ⚠ extend `tests/analyze/services/test_backends.py`, `test_dispatch_snapshot.py` | ⬜ pending |
+| SC#1 (D-12, compute callbacks) | 2 | T-83-PUSH-CLOBBER (Tampering) | A late/duplicate `/pushed` or over-cap `/mismatch` on an already-advanced file (`cloud_job` no longer `'submitted'`) matches 0 rows → idempotent no-op: no `FileRecord` clobber, no ledger clear, no `process_file` re-enqueue | regression | `just test-bucket agents` | agents | ❌ W0 — extend `tests/agents/routers/test_agent_push.py` (added in checker revision 1) | ⬜ pending |
 | D-04 (corpus repair) | 1 | T-83-03 (Tampering) | Migration `034` backfill is **idempotent** (`ON CONFLICT DO NOTHING`) and repairs the un-sidecar'd `AWAITING_CLOUD` corpus; static parameter-free SQL, no interpolation | migration | `MIGRATIONS_TEST_DATABASE_URL=…:5433… uv run pytest tests/integration/test_migrations/test_migration_034_*.py` | (migration) | ❌ W0 | ⬜ pending |
 | D-04 (autogenerate parity) | 1 | — | ORM `__table_args__` mirrors any `034` constraint so `alembic revision --autogenerate` yields an **empty diff** (77 D-01 precedent) | unit | `just test-bucket integration` | integration | ⚠ existing autogenerate-parity pattern | ⬜ pending |
 | D-03 (spill row) | 1 | — | `'awaiting' ∉ backends.IN_FLIGHT` — a re-stamped spill row does not corrupt per-backend `in_flight_count`; `select_backend` reads spent `attempts` and routes to local | unit | `just test-bucket analyze` | analyze | ⚠ extend `tests/analyze/services/test_backends.py` | ⬜ pending |
@@ -70,6 +78,7 @@ to its proving test. The planner must attach each row to a concrete task.
 
 - [ ] `tests/integration/test_<sc3_drain>.py` — the SC#3 two-tick double-dispatch gate (**hard gate**, per ROADMAP: "not a recommendation")
 - [ ] `tests/agents/routers/test_agent_s3.py` additions — SC#2 CAS full-no-op + D-11 concurrency (donor: T-73-13)
+- [ ] `tests/agents/routers/test_agent_push.py` additions — late/duplicate `/pushed` and over-cap `/mismatch` cannot clobber an advanced file (T-83-PUSH-CLOBBER; added in checker revision 1)
 - [ ] `tests/integration/test_migrations/test_migration_034_*.py` — idempotent backfill; **export `MIGRATIONS_TEST_DATABASE_URL` on port 5433**
 - [ ] `tests/integration/test_shadow_compare.py` additions — `awaiting_cloud` hard invariant green after the writer + `034`
 - [ ] `tests/shared/routers/test_pipeline.py` additions — `get_awaiting_cloud_count` derives from the drain clause

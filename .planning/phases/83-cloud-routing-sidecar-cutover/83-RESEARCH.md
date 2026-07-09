@@ -337,15 +337,17 @@ async def hold_awaiting_cloud(session: AsyncSession, file: FileRecord, *, attemp
 | A2 | Passing `cloud_job.updated_at` into `select_backend` instead of `file.updated_at` is a clean minimal change to the drain loop | D-07 | If the candidate query can't cheaply surface `cloud_job.updated_at`, the staleness-clock move needs an extra per-candidate read (like `_cloud_attempts_for`) — a small cost, not a blocker. `[ASSUMED]` |
 | A3 | `security_enforcement` is unset in config → treat as enabled, but this phase introduces no new external input/auth surface | Security Domain | Low — the phase is internal state representation; AUTH-01 (path-only file_id, `extra='forbid'` bodies) is preserved unchanged `[VERIFIED: agent_s3.py:170; agent_push.py:202]` |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should `report_uploaded`'s redundant `FileRecord.state == PUSHING` guard (`agent_s3.py:128`) move to the sidecar anchor now?**
+1. **RESOLVED — Should `report_uploaded`'s redundant `FileRecord.state == PUSHING` guard (`agent_s3.py:128`) move to the sidecar anchor now?**
    - What we know: once D-09 makes `cloud_job.status` the CAS domain, this second guard is belt-and-braces on a column Phase 90 removes `[VERIFIED: agent_s3.py:128]`.
    - What's unclear: whether symmetry justifies touching a working guard in this PR vs. deferring to Phase 90.
    - Recommendation: leave it (it is harmless dual-guarding and Phase 90 removes it anyway); note it as a deferred idea (already is). Do not expand scope.
+   - **RESOLVED: leave it.** ROADMAP SC#1 names only `/pushed`, `/mismatch`, and `/upload-failed` — `report_uploaded` is not in scope for the anchor swap. Already recorded in `83-CONTEXT.md` §Deferred Ideas. *(Note: this is NOT the same as `report_pushed` / `report_push_mismatch`, whose anchors ARE named by SC#1 and D-12 and DO move — see plan 83-04 Tasks 3 and 4, added in plan-checker revision iteration 1.)*
 
-2. **Does `034` + the Phase-90 renumber land in this PR or its own?**
+2. **RESOLVED — Does `034` + the Phase-90 renumber land in this PR or its own?**
    - Recommendation: land `034` here (it is the repair half of D-01); the renumber is doc-only and can ride along or be a follow-up — planner's call, low risk either way.
+   - **RESOLVED: `034` lands here** (plan 83-02, Wave 1, sequenced before the Wave-3 reader cutover). The `034 → 035` doc-renumber for Phase 90's destructive migration is doc-only; it rides along in 83-02. Use the re-verified line numbers in §"Migration 034" above — 81-CONTEXT D-08's cited lines have shifted (its "ROADMAP line 485" is now ROADMAP:497).
 
 ## Environment Availability
 
