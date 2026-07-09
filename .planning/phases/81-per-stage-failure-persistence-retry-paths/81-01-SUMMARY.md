@@ -111,6 +111,12 @@ None - this plan is pure derivation logic (DB-free tables + SQL predicate); no n
 - Phase 79 shadow gate expected green (no derived-status change; `eligible()` refactor is semantics-preserving) — to be confirmed at wave merge.
 - Note for reviewers: the two `domain_completed` twins are ledger-agnostic; recovery callers must apply in_flight/ledger checks separately (as `stage_status_case` already does at the status layer).
 
+## Self-Check: PASSED
+
+- Files: all 5 created/modified files present on disk.
+- Commits: f7373b15, da970ba1, dbaf8bcc, c6fc4ad6 all in git log.
+- No unexpected file deletions across the plan's commits.
+
 ---
 *Phase: 81-per-stage-failure-persistence-retry-paths*
 *Completed: 2026-07-09*
