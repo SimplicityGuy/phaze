@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.schemas.agent_metadata import MetadataWriteRequest
+from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataWriteRequest
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.metadata import extract_tags
 
@@ -62,7 +62,7 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
             raw_tags=tags.raw_tags,
         )
         await api.put_metadata(payload.file_id, body)
-    except Exception:
+    except Exception as exc:
         # Phase 45 (L-02 / CR-02): clear the scheduling-ledger row on the TERMINAL attempt only,
         # then re-raise so SAQ records the failed attempt. A retryable attempt (or job absent in a
         # pure unit test) re-raises silently so the one real retry can run -- the row survives for
@@ -71,11 +71,17 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
         # is_domain_completed can never fire and recover_orphaned_work re-enqueues it on every pass.
         job = ctx.get("job")
         if job is not None and not job.retryable:
+            # Phase 81 (FAIL-02): compose a triage payload so control persists a durable metadata
+            # failure marker (failed_at set) with the exception detail. `reason="error"` -- the
+            # SAQ terminal ack does not distinguish timeout/crash here. Truncate to the payload's
+            # `error` bound (max_length=2000) BEFORE construction so a very long exception string
+            # can't raise a ValidationError that would clobber the original error E1.
+            failure = MetadataFailurePayload(reason="error", error=str(exc)[:2000])
             # Best-effort ack: if report_metadata_failed ALSO raises (E2) while handling the
             # original failure (E1), swallow + log E2 so the bare `raise` below always re-raises
             # E1 -- SAQ must record the real task error, not the ack error (WR-01).
             try:
-                await api.report_metadata_failed(payload.file_id)
+                await api.report_metadata_failed(payload.file_id, failure)
             except Exception:
                 logger.warning("extract_file_metadata terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
         raise
