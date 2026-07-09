@@ -11,7 +11,7 @@ import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uui
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import select, update
 import structlog
 
 from phaze.config import settings
@@ -904,9 +904,11 @@ async def retry_analysis_failed(
       ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT flipping any
       state or enqueuing -- it never falls through to the consumer-less default queue.
     - Flip every failed file ANALYSIS_FAILED -> FINGERPRINTED (the canonical pre-analysis state)
-      and ``commit`` BEFORE any enqueue (get_session does NOT auto-commit): the files leave the
+      AND clear the ``analysis.failed_at`` / ``error_message`` marker in the SAME transaction, then
+      ``commit`` BEFORE any enqueue (get_session does NOT auto-commit): the files leave the
       red bucket immediately; ``put_analysis`` re-flips each -> ANALYZED on success, or
-      ``report_analysis_failed`` -> ANALYSIS_FAILED only if it fails AGAIN.
+      ``report_analysis_failed`` -> ANALYSIS_FAILED only if it fails AGAIN. Clearing BOTH halves of
+      the FAIL-01 dual-write is mandatory -- see the inline note below.
     - The deterministic key dedups any file with a live in-flight job to a no-op, so re-enqueuing
       the WHOLE failed set is safe (dedup-safe; no silent cap).
     """
@@ -934,8 +936,20 @@ async def retry_analysis_failed(
 
     # RESEARCH Pitfall 3: flip out of the terminal bucket and COMMIT before any enqueue so the
     # red count drops on the next 5s poll regardless of the enqueue outcome.
+    #
+    # Both halves of the FAIL-01 dual-write must clear together. `state` alone is no longer the
+    # truth: `report_analysis_failed` also stamps a durable `analysis.failed_at` marker, and
+    # `put_analysis` only clears it on a SUCCESSFUL re-analysis. Leaving it set here would strand
+    # every retried file as `state='fingerprinted' AND analysis.failed_at IS NOT NULL` -- a row the
+    # Phase 79 shadow-compare gate reads as divergent and `domain_completed(ANALYZE)` reads as
+    # "un-processable, do not re-run", so Phase 80 recovery would skip the very files we just
+    # re-enqueued. Clearing is safe: the XOR CHECK guarantees `analysis_completed_at IS NULL` on a
+    # failed row, so the file derives `not_started` -- exactly what a fresh re-analysis should see.
     for f in files:
         f.state = FileState.FINGERPRINTED
+    await session.execute(
+        update(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in files])).values(failed_at=None, error_message=None),
+    )
     await session.commit()
 
     for f in files:
