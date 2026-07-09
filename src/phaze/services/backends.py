@@ -42,7 +42,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Protocol, cast
 import uuid
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import CursorResult, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
@@ -60,6 +60,8 @@ from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
@@ -81,41 +83,72 @@ IN_FLIGHT: tuple[CloudJobStatus, ...] = (
 )
 
 
-async def hold_awaiting_cloud(session: AsyncSession, file: FileRecord, *, attempts: int = 0) -> None:
-    """Stamp ``AWAITING_CLOUD`` + upsert the ``cloud_job`` awaiting row in the CALLER'S txn. NEVER commits.
+async def hold_awaiting_cloud(
+    session: AsyncSession,
+    file: FileRecord,
+    *,
+    attempts: int = 0,
+    expect_status: Sequence[str] | None = None,
+    clear_cloud_phase: bool = False,
+) -> bool:
+    """The SINGLE go-forward writer of ``cloud_job.status='awaiting'`` (D-01/D-02). NEVER commits.
 
-    The single go-forward writer of ``cloud_job.status='awaiting'`` (D-01/D-02): shared by the hold path
-    (``trigger_analysis``) and both over-cap spill paths (``report_upload_failed`` / ``report_push_mismatch``)
-    so the hard shadow invariant ``AWAITING_CLOUD => cloud_job(status='awaiting')``
-    (``shadow_compare.py:131``) holds for every go-forward hold instead of three hand-copied writers.
+    Shared by the hold path (``trigger_analysis``) and both over-cap spill paths
+    (``report_upload_failed`` / ``report_push_mismatch``) so the hard shadow invariant
+    ``AWAITING_CLOUD => cloud_job(status='awaiting')`` (``shadow_compare.py:131``) holds for every
+    go-forward hold instead of three hand-copied writers. ``expect_status`` selects one of two modes:
 
-    Dual-writes ``file.state = FileState.AWAITING_CLOUD`` (D-00c -- the ``state`` write survives to Phase 90,
-    only *reliance* on it is retired), then upserts the sidecar row keyed on ``file_id``
-    (``uq_cloud_job_file_id``): a fresh hold INSERTs ``status='awaiting'`` / ``attempts=0``; a spill re-stamp
-    of an already-terminalized row (e.g. a ``FAILED`` spill row) UPDATEs it back to ``status='awaiting'``
-    via ``on_conflict_do_update``, taking ``attempts`` from the argument so a spill caller retains
-    ``attempts=cloud_submit_max_attempts`` as the budget-spent marker ``select_backend`` reads to route to
-    local (D-03). ``'awaiting'`` is deliberately OUT of :data:`IN_FLIGHT`, so a re-stamped row never inflates
-    any backend's ``in_flight_count``.
+    * **Hold mode** (``expect_status is None``): the unconditional upsert. Dual-writes
+      ``file.state = FileState.AWAITING_CLOUD`` (D-00c -- the ``state`` write survives to Phase 90, only
+      *reliance* on it is retired), then upserts the sidecar row keyed on ``file_id``
+      (``uq_cloud_job_file_id``) INSERTing ``status='awaiting'`` / ``attempts=0`` (or ``on_conflict``
+      re-stamping an existing row). Always returns ``True`` (the hold always writes).
+    * **Spill mode** (``expect_status`` a non-empty status set): a rowcount-guarded CAS ONLY. UPDATEs the
+      ``cloud_job`` row back to ``status='awaiting'`` iff its CURRENT status is in ``expect_status``,
+      taking ``attempts`` from the argument so the spill caller retains
+      ``attempts=cloud_submit_max_attempts`` as the budget-spent marker ``select_backend`` reads to route
+      to local (D-03), and clearing ``cloud_phase`` iff ``clear_cloud_phase`` (the s3 spill sets it, the
+      push spill must NOT touch it -- D-12). Returns ``res.rowcount > 0``: a ``False`` return means a
+      late/duplicate callback matched an already-advanced row (0 rows), and the CALLER keeps its FULL
+      no-op (no FileRecord write, no cleanup, no ledger clear -- D-10). This mode does NOT write
+      ``file.state`` and does NOT touch the FileRecord: the caller owns the gated dual-write behind the
+      returned bool.
 
-    Does NOT set ``backend_id`` (a hold has none) and leaves ``cloud_phase`` NULL. NEVER commits -- the
-    caller owns the commit boundary (the dispatch discipline at :meth:`Backend.dispatch`; a commit here
-    would drop the tick's ``pg_advisory_xact_lock`` and re-open the over-stage class, Landmine L1).
+    ``'awaiting'`` is deliberately OUT of :data:`IN_FLIGHT`, so a held/re-stamped row never inflates any
+    backend's ``in_flight_count`` (D-03). NEVER commits in EITHER mode -- the caller owns the commit
+    boundary (the dispatch discipline at :meth:`Backend.dispatch`; a commit here would drop the tick's
+    ``pg_advisory_xact_lock`` and re-open the over-stage class, Landmine L1).
     """
-    file.state = FileState.AWAITING_CLOUD  # D-00c dual-write; the state write dies in Phase 90
-    stmt = pg_insert(CloudJob).values(
-        # Stamp the PK explicitly (CR-01 defensive; mirrors ComputeAgentBackend.dispatch).
-        id=uuid.uuid4(),
-        file_id=file.id,
-        status=CloudJobStatus.AWAITING.value,
-        attempts=attempts,
+    if expect_status is None:
+        # Hold mode: the unconditional upsert + D-00c dual-write; always writes -> return True.
+        file.state = FileState.AWAITING_CLOUD  # D-00c dual-write; the state write dies in Phase 90
+        stmt = pg_insert(CloudJob).values(
+            # Stamp the PK explicitly (CR-01 defensive; mirrors ComputeAgentBackend.dispatch).
+            id=uuid.uuid4(),
+            file_id=file.id,
+            status=CloudJobStatus.AWAITING.value,
+            attempts=attempts,
+        )
+        stmt = stmt.on_conflict_do_update(
+            # uq_cloud_job_file_id -> a plain INSERT is unsafe on the spill re-stamp case; upsert on file_id.
+            index_elements=["file_id"],
+            set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts},
+        )
+        await session.execute(stmt)
+        return True
+
+    # Spill mode: rowcount-guarded CAS ONLY. Preserve the shipped D-09/D-10 guard -- an unconditional
+    # upsert here would clobber an already-advanced row back to AWAITING_CLOUD (T-83-01/T-83-PUSH-CLOBBER).
+    # Build the values so ``cloud_phase`` is ABSENT unless the caller asked to clear it (D-12): the s3 spill
+    # clears it (WR-01, off the "Running" tile), the push spill must NOT touch it.
+    values: dict[str, Any] = {"status": CloudJobStatus.AWAITING.value, "attempts": attempts}
+    if clear_cloud_phase:
+        values["cloud_phase"] = None
+    res = cast(
+        "CursorResult[Any]",
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id, CloudJob.status.in_(expect_status)).values(**values)),
     )
-    stmt = stmt.on_conflict_do_update(
-        # uq_cloud_job_file_id -> a plain INSERT is unsafe on the spill re-stamp case; upsert on file_id.
-        index_elements=["file_id"],
-        set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts},
-    )
-    await session.execute(stmt)
+    return res.rowcount > 0
 
 
 async def _enqueue_push_file(

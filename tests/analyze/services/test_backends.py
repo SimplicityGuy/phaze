@@ -1156,6 +1156,103 @@ async def test_hold_awaiting_cloud_respamps_failed_spill_row_retaining_spent_bud
     assert rows[0].attempts == max_attempts
 
 
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_hold_branch_returns_true(session: AsyncSession) -> None:
+    """D-02: the hold branch (``expect_status is None``) always writes, so it returns ``True``."""
+    file = _make_file(state=FileState.FINGERPRINTED)
+    session.add(file)
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(session, file)
+
+    assert result is True
+    assert file.state == FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_spill_cas_hit_restamps_clears_phase_and_leaves_state(session: AsyncSession) -> None:
+    """Spill branch CAS HIT: an in-flight ``uploading`` row is re-stamped to ``awaiting`` (D-03), ``cloud_phase`` cleared (D-12/WR-01).
+
+    The helper's spill branch does NOT touch ``file.state`` (the caller owns the gated dual-write behind
+    the returned bool), so the seeded ``PUSHING`` state is left untouched here.
+    """
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.UPLOADING.value, attempts=0, cloud_phase="running"))
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(
+        session,
+        file,
+        attempts=max_attempts,
+        expect_status=(CloudJobStatus.UPLOADING.value, CloudJobStatus.UPLOADED.value),
+        clear_cloud_phase=True,
+    )
+
+    assert result is True
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert row.status == CloudJobStatus.AWAITING.value
+    assert row.attempts == max_attempts
+    assert row.cloud_phase is None  # D-12/WR-01: cleared on the s3 spill path
+    assert file.state == FileState.PUSHING  # the helper did NOT write file.state on the spill branch
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_spill_cas_miss_is_full_noop(session: AsyncSession) -> None:
+    """Spill branch CAS MISS: an already-advanced row (``succeeded``) matches 0 rows -> ``False`` + row UNCHANGED.
+
+    This is the discriminating guard test (SC#2 / T-83-PUSH-CLOBBER): if the spill CAS were replaced by an
+    unconditional upsert, this row would be clobbered back to ``awaiting`` and the assertions below would go
+    RED. The caller keeps its FULL no-op on a ``False`` return (D-10).
+    """
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUCCEEDED.value, attempts=1))
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(session, file, attempts=max_attempts, expect_status=(CloudJobStatus.SUBMITTED.value,))
+
+    assert result is False
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert row.status == CloudJobStatus.SUCCEEDED.value  # UNCHANGED: the CAS matched 0 rows
+    assert row.attempts == 1  # attempts NOT bumped -- no unconditional write happened
+    assert file.state == FileState.PUSHING  # no FileRecord clobber
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_spill_preserves_cloud_phase_when_flag_omitted(session: AsyncSession) -> None:
+    """D-12: the spill branch leaves ``cloud_phase`` UNTOUCHED when ``clear_cloud_phase`` is omitted (the push path)."""
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUBMITTED.value, attempts=0, cloud_phase="running"))
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(session, file, attempts=max_attempts, expect_status=(CloudJobStatus.SUBMITTED.value,))
+
+    assert result is True
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert row.status == CloudJobStatus.AWAITING.value
+    assert row.cloud_phase == "running"  # D-12: push spill must NOT touch cloud_phase
+
+
 def test_awaiting_status_is_not_in_the_in_flight_set() -> None:
     """D-03: ``'awaiting'`` stays OUT of :data:`backends.IN_FLIGHT` so a re-stamped hold never inflates a lane.
 
