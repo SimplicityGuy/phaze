@@ -95,7 +95,7 @@
 - [x] **MIG-01**: Migration `032` is additive-only — it creates the failure markers, the dedup marker, and the cloud sidecar representation, adds the partial indexes, and backfills them from `FileRecord.state`, **without touching `files.state`**.
 - [x] **MIG-02**: A committed, re-runnable shadow-compare check asserts per-file *implication* invariants (e.g. `state=ANALYZED ⇒ analysis_completed_at IS NOT NULL`; `state=DUPLICATE_RESOLVED ⇒ dedup marker`) across the live corpus, with `FINGERPRINTED` documented as the one expected divergence; it must pass before any reader cutover and before the destructive migration.
 - [x] **MIG-03**: Rescanning a file no longer resets pipeline progress — with `FileRecord.state` gone, the `ON CONFLICT DO UPDATE SET state = excluded.state` progress-wipe is structurally impossible (fixes the rescan-wipe bug).
-- [ ] **MIG-04**: Migration `033` is destructive and lands last — after the shadow-compare passes on the live corpus and cloud-push lanes are drained/quiesced, it drops `ix_files_state`, drops `files.state`, and deletes the `FileState` enum; its `downgrade()` documents the enum reconstruction from derived sources (and its lossiness).
+- [ ] **MIG-04**: Migration `034` is destructive and lands last — after the shadow-compare passes on the live corpus and cloud-push lanes are drained/quiesced, it drops `ix_files_state`, drops `files.state`, and deletes the `FileState` enum; its `downgrade()` documents the enum reconstruction from derived sources (and its lossiness).
 
 ---
 
