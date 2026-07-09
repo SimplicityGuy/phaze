@@ -812,6 +812,36 @@ async def test_push_mismatch_over_cap_does_not_clobber_when_cloud_job_not_submit
 
 
 @pytest.mark.asyncio
+async def test_push_mismatch_over_cap_null_guard_no_file_is_full_noop(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """NULL-GUARD (83-07): an over-cap /mismatch whose FileRecord is absent is a FULL no-op, not a 500.
+
+    The over-cap spill routes through ``hold_awaiting_cloud``, whose CAS dereferences ``file.id``. If the
+    FileRecord load returns ``None`` (unreachable in practice -- ``cloud_job.file_id`` FKs ``files.id`` --
+    but the conservative guard is required), the handler must NOT call the helper (which would raise
+    ``AttributeError`` -> 500) and instead take the FULL no-op branch: ``cleared=False``, 200. No file /
+    cloud_job is seeded (so the D-07 reporter gate is skipped, backend is None), only the ledger at the cap.
+    """
+    _agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = uuid.uuid4()
+    await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds push_max_attempts=3
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text  # NULL-GUARD: full no-op, never a 500/AttributeError
+    assert r.json()["cleared"] is False
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None  # no ledger clear on the no-op
+    assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
 async def test_mismatch_holds_when_no_fileserver_agent(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
