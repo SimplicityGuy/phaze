@@ -438,16 +438,20 @@ No new external tool. No new package (CONTEXT: "Zero new dependencies").
 | A3 | `retry_failed_response.html` copy is stage-agnostic enough to reuse for metadata | Discretion #3 | LOW — read the template at plan time; add a label var if it hard-codes "analysis" |
 | A4 | Empty-body/no-Content-Type POST binds optional Pydantic param to `None` (→200) in this FastAPI version | FastAPI section | LOW — documented pattern (Context7); test both paths explicitly regardless |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Constraint name collision.** `analysis_completed_xor_failed` → convention-prefixed
    `ck_analysis_analysis_completed_xor_failed`. Verify the rendered name matches the autogenerate probe so the
    empty-diff holds (the `032` `status_enum` bare-name comment `:66-67` is the precedent to follow).
    *Recommendation:* assert the constraint name in the new migration test.
+   **RESOLVED:** 81-02 Task 1 passes the BARE name (the naming convention re-prefixes it) and 81-02 Task 2's
+   migration test asserts the rendered name equals `ck_analysis_analysis_completed_xor_failed`.
 
 2. **`report_analysis_failed` upsert when no `analysis` row exists.** A pure analyze failure never wrote an
    `analysis` row. The D-05 writer must `INSERT..ON CONFLICT (file_id) DO UPDATE` (like the `032` backfill),
    not a bare UPDATE. *Recommendation:* explicit in the plan; add a "failed with no prior row" test cell.
+   **RESOLVED:** 81-05 Task 1 uses `pg_insert(...).on_conflict_do_update` (index_elements=["file_id"]);
+   81-05 Task 3 adds the "failed with no prior row" test cell.
 
 ## Sources
 
