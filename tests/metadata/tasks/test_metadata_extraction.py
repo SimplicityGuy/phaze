@@ -151,7 +151,11 @@ async def test_terminal_attempt_acks_then_raises(mock_extract: MagicMock) -> Non
     with pytest.raises(RuntimeError, match="server down"):
         await extract_file_metadata(ctx, **_make_payload_kwargs(file_id=file_id))
 
-    api.report_metadata_failed.assert_awaited_once_with(file_id)
+    # Phase 81 (FAIL-02): the terminal ack now carries a triage payload composed from the
+    # original exception so control persists a durable metadata failure marker.
+    from phaze.schemas.agent_metadata import MetadataFailurePayload
+
+    api.report_metadata_failed.assert_awaited_once_with(file_id, MetadataFailurePayload(reason="error", error="server down"))
 
 
 @patch("phaze.tasks.metadata_extraction.extract_tags")
@@ -172,7 +176,10 @@ async def test_terminal_ack_failure_reraises_original_error(mock_extract: MagicM
     with pytest.raises(RuntimeError, match="controller 5xx"):
         await extract_file_metadata(ctx, **_make_payload_kwargs(file_id=file_id))
 
-    api.report_metadata_failed.assert_awaited_once_with(file_id)
+    # Phase 81 (FAIL-02): the ack carries the triage payload composed from E1's message.
+    from phaze.schemas.agent_metadata import MetadataFailurePayload
+
+    api.report_metadata_failed.assert_awaited_once_with(file_id, MetadataFailurePayload(reason="error", error="controller 5xx"))
 
 
 @patch("phaze.tasks.metadata_extraction.extract_tags")
