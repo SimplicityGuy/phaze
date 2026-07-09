@@ -51,6 +51,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWriteResponse,
 )
 from phaze.services import s3_staging
+from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
@@ -61,6 +62,12 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/internal/agent/analysis", tags=["agent-internal"])
+
+# Phase 81 (FAIL-01, D-07): bound the persisted analyze-failure detail to the payload's wire bound.
+# `analysis.error_message` is `Text` (unbounded), so truncate the composed `reason: error` string
+# defensively before persist -- the same DoS-via-huge-string class the `error` field's max_length caps.
+# Mirrors agent_metadata.py's `_ERROR_MESSAGE_MAX` (FAIL-02) so both failure writers share the bound.
+_ERROR_MESSAGE_MAX = 2000
 
 # Columns that physically exist on the `analysis` table. Wire-format fields
 # accepted by AnalysisWritePayload but absent here (e.g. `danceability`,
@@ -197,12 +204,17 @@ async def put_analysis(
     payload = {**dumped, "file_id": file_id, "id": uuid.uuid4()}
     stmt = pg_insert(AnalysisResult).values([payload])
     if dumped:
-        # `set_` covers ONLY the user-provided fields (D-14 field-level LWW);
-        # excludes file_id AND id from the SET clause (both are conflict-target /
-        # immutable PK -- existing row keeps its existing id).
+        # `set_` covers the user-provided fields (D-14 field-level LWW) PLUS an UNCONDITIONAL
+        # failure-marker clear (Phase 81 FAIL-01 / D-13): a real analysis success must wipe any
+        # `failed_at`/`error_message` left by a prior `report_analysis_failed`, else a successful
+        # (re)analysis reads FAILED forever. `failed_at`/`error_message` sit OUTSIDE `exclude_unset`
+        # (the wire body never carries them). Clearing `failed_at` here is ALSO what lets the
+        # completion branch below stamp `analysis_completed_at` without violating the migration-033
+        # XOR CHECK (both columns can never be non-NULL). Excludes file_id AND id from the SET clause
+        # (both are conflict-target / immutable PK -- existing row keeps its existing id).
         stmt = stmt.on_conflict_do_update(
             index_elements=["file_id"],
-            set_={k: stmt.excluded[k] for k in dumped},
+            set_={**{k: stmt.excluded[k] for k in dumped}, "failed_at": None, "error_message": None},
         )
     else:
         # Empty body -- no-op for existing rows; INSERT still happens for fresh ones.
@@ -325,7 +337,40 @@ async def report_analysis_failed(
     forged body cannot fail an arbitrary file (AUTH-01, T-43-05). The
     ``reason``/``error`` detail is validated + bounded by the payload (T-43-06);
     the terminal state itself is the durable signal recorded here.
+
+    Phase 81 (FAIL-01, D-05 dual-write): the same call now ALSO stamps a durable per-stage marker on
+    the file's ``analysis`` row -- ``failed_at = now()`` + ``error_message = "<reason>: <error>"`` --
+    while KEEPING the ``state = ANALYSIS_FAILED`` write. Phase 80's recovery derives ``failed(analyze)``
+    from this marker (D-02); the state write stays live until three ``files.state`` readers cut over in
+    Phases 80/82, and dies in Phase 90. The upsert is ``INSERT .. ON CONFLICT (file_id) DO UPDATE``
+    because a pure analyze failure never wrote an ``analysis`` row -- a bare UPDATE would silently no-op
+    (D-06). It clears ``analysis_completed_at`` in the same row so the migration-033 CHECK
+    (``analysis_completed_at`` XOR ``failed_at``) can never see a mixed row (D-06). All writes commit in
+    ONE transaction, ordered marker -> state -> ledger -> staged-object-delete (RESEARCH Discretion #1).
     """
+    # FAIL-01 / D-07: compose + defensively truncate the persisted detail (the column is unbounded Text;
+    # `error` is already max_length=2000 at the wire). Mirrors report_metadata_failed's `reason: error`.
+    # T-81-05-03 PG-invalid limb: NUL clears pydantic but Postgres rejects it
+    # (CharacterNotInRepertoireError), aborting the transaction that also clears the ledger below ->
+    # the file re-enqueues and fails identically forever. Sanitize BEFORE truncating; stripping can
+    # only shorten, so the bound still holds.
+    now = func.now()
+    error_message = sanitize_pg_text(f"{body.reason}: {body.error}")[:_ERROR_MESSAGE_MAX]
+    # FAIL-01 / D-05 dual-write, D-06: durable analyze-failure marker on the 1:1 `analysis` row. ON
+    # CONFLICT DO UPDATE (not a bare UPDATE) because a pure analyze failure has no prior `analysis` row;
+    # clear `analysis_completed_at` so the migration-033 XOR CHECK never sees a mixed row. Stamp the PK
+    # explicitly because `AnalysisResult.id` has a Python-only default that `pg_insert` bypasses. Server-
+    # set `failed_at=func.now()`; `file_id` is the PATH value only (AUTH-01 / T-81-05-01).
+    stmt = pg_insert(AnalysisResult).values(
+        [{"file_id": file_id, "id": uuid.uuid4(), "failed_at": now, "error_message": error_message, "analysis_completed_at": None}]
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["file_id"],
+        set_={"failed_at": now, "error_message": error_message, "analysis_completed_at": None},
+    )
+    await session.execute(stmt)
+    # D-05 dual-write: keep the `files.state = ANALYSIS_FAILED` write alive (three live readers depend on
+    # it until Phases 80/82 cut over; it dies in Phase 90). The additive marker changes no derived status.
     await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
     # Phase 45 (L-02, locked decision #1 -- THE POISON CASE): a terminal analyze failure must
     # NOT recovery-re-queue. Clear the process_file:<file_id> ledger row in the SAME transaction

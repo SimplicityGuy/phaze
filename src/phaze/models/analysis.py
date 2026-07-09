@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,9 +46,14 @@ class AnalysisResult(TimestampMixin, Base):
     # Phase 77 (PERF-01, migration 032): partial indexes mirroring what migration 032 creates, with
     # byte-identical names + normalized IS-NOT-NULL predicate text -- the ORM half of the
     # empty-autogenerate-diff contract. AnalysisResult had no __table_args__ before this phase.
+    # Phase 81 (FAIL-01, migration 033): the analyze stage is done XOR failed, never both. Mirrored
+    # here with the BARE name -- the ck_%(table_name)s_%(constraint_name)s convention renders it as
+    # ck_analysis_analysis_completed_xor_failed, matching what migration 033 creates (the ORM half of
+    # the empty-autogenerate-diff contract).
     __table_args__ = (
         Index("ix_analysis_completed", "file_id", postgresql_where=text("analysis_completed_at IS NOT NULL")),
         Index("ix_analysis_failed", "file_id", postgresql_where=text("failed_at IS NOT NULL")),
+        CheckConstraint("NOT (analysis_completed_at IS NOT NULL AND failed_at IS NOT NULL)", name="analysis_completed_xor_failed"),
     )
 
 

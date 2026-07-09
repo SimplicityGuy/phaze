@@ -59,10 +59,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, String, and_, case, cast, exists, false, func, select, text
+from sqlalchemy import ColumnElement, String, and_, case, cast, exists, false, func, or_, select, text
 import structlog
 
-from phaze.enums.stage import Stage, Status
+from phaze.enums.stage import FAILURE_IS_TERMINAL, Stage, Status
 from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -165,6 +165,33 @@ def inflight_clause(stage: Stage) -> ColumnElement[bool]:
     if func_name is None:
         return false()
     return exists(select(SchedulingLedger.key).where(SchedulingLedger.key == func.concat(func_name + ":", cast(FileRecord.id, String))))
+
+
+def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
+    """SQL twin of :func:`phaze.enums.stage.domain_completed` -- has ``stage`` reached a DOMAIN-COMPLETE state?
+
+    ``DONE`` is always domain-complete; a ``FAILED`` stage counts as complete ONLY when its failure is
+    terminal (:data:`~phaze.enums.stage.FAILURE_IS_TERMINAL`). Reuses the LOCKED ``done_clause`` /
+    ``failed_clause`` predicates verbatim (never a fresh CASE) so this stays byte-equivalent to its
+    ``ColumnElement`` siblings and the Python twin -- drift-locked by the equivalence test
+    (``tests/integration/test_stage_status_equivalence.py``), D-17.
+
+    When ``FAILURE_IS_TERMINAL[stage]`` is ``False`` (fingerprint) the failure disjunct is dropped and
+    the clause collapses to bare ``done_clause`` -- a FAILED fingerprint is NOT domain-complete (it
+    auto-retries, ELIG-04).
+
+    Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.FAILURE_IS_TERMINAL`),
+    matching the Python twin. Without this guard the bare subscript raised ``KeyError`` for the four
+    downstream stages while the Python twin happily returned ``True`` for a ``DONE`` one -- a silent twin
+    divergence on every non-failed downstream row.
+    """
+    if stage not in FAILURE_IS_TERMINAL:
+        # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
+        got = getattr(stage, "value", stage)
+        raise ValueError(f"domain_completed_clause is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {got!r}")
+    if FAILURE_IS_TERMINAL[stage]:
+        return or_(done_clause(stage), failed_clause(stage))
+    return done_clause(stage)
 
 
 def stage_status_case(stage: Stage) -> ColumnElement[str]:

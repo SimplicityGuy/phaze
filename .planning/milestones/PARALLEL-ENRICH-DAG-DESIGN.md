@@ -349,11 +349,11 @@ The migration is **two-step by design**, and the gate between the steps is the d
    scalar (a file can be `metadata`-done *and* `analyze`-done, which no single enum value encodes).
    `FINGERPRINTED` is the one documented, expected divergence (§6.1).
 
-3. **`033` — destructive.** Only after the shadow-compare passes on the live corpus: drop
+3. **`034` — destructive.** Only after the shadow-compare passes on the live corpus: drop
    `ix_files_state`, drop `files.state`, delete the `FileState` enum.
 
 **Quiesce requirement:** files in `PUSHING`/`uploading` at deploy time are mid-rsync/mid-S3-upload.
-The rollout must drain the cloud-push lanes (`--profile drain`) before `033`, or the backfill will
+The rollout must drain the cloud-push lanes (`--profile drain`) before `034`, or the backfill will
 snapshot a moving target. Note this in the release runbook.
 
 ---
