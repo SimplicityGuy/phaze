@@ -44,7 +44,7 @@ import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from phaze.enums.stage import Stage, eligible, resolve_status
+from phaze.enums.stage import Stage, domain_completed, eligible, resolve_status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
@@ -410,6 +410,60 @@ async def test_sql_equals_python(
     scalars = await load_scalars(db_session, stage, file_id)
     py_status = resolve_status(stage, scalars)
     assert sql_status == py_status == expected
+
+
+# --------------------------------------------------------------------------------------------------
+# D-17 domain_completed drift-lock: the DB-free ``domain_completed`` table twin == the SQL
+# ``domain_completed_clause`` twin, per seeded cell. Extends the DERIV-04 anti-drift guarantee to the
+# terminality axis so ``FAILURE_IS_TERMINAL`` can never drift between its Python and SQL readers (the
+# 44.5K over-enqueue guard rests on the two agreeing).
+#
+# SCOPE: the two ``domain_completed`` twins are LEDGER-AGNOSTIC by design -- ``domain_completed_clause``
+# is ``or_(done_clause, failed_clause)`` (terminal) / ``done_clause`` (fingerprint), with NO
+# ``inflight_clause`` disjunct; the Python ``domain_completed`` reads a resolved status but never treats
+# IN_FLIGHT as complete. in_flight precedence is layered separately at the ``resolve_status`` / ``eligible``
+# level, so the equivalence holds ONLY for non-in-flight rows. These cells therefore reuse the enrich-stage
+# seed fns EXCLUDING the ``*_inflight`` seeds. ``FAILURE_IS_TERMINAL`` is defined only for the three enrich
+# stages (D-15), so only enrich cells are exercised.
+DOMAIN_COMPLETED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], bool]] = [
+    # analyze -- terminal failure: DONE and FAILED both count as domain-complete.
+    (Stage.ANALYZE, seed_analysis_none, False),
+    (Stage.ANALYZE, seed_analysis_partial, False),  # completed_at NULL -> not_started -> not complete
+    (Stage.ANALYZE, seed_analysis_completed, True),
+    (Stage.ANALYZE, seed_analysis_failed, True),  # FAIL-01: analyze failure is TERMINAL
+    # metadata -- terminal failure: a failure-only row IS domain-complete (recovery must not re-run).
+    (Stage.METADATA, seed_metadata_none, False),
+    (Stage.METADATA, seed_metadata_done, True),
+    (Stage.METADATA, seed_metadata_failed_only, True),  # metadata failure is TERMINAL
+    # fingerprint -- NON-terminal failure: DONE completes, a failed-only row does NOT (auto-retries).
+    (Stage.FINGERPRINT, seed_fp_none, False),
+    (Stage.FINGERPRINT, seed_fp_success, True),
+    (Stage.FINGERPRINT, seed_fp_success_and_failed, True),  # DERIV-05: success wins -> done -> complete
+    (Stage.FINGERPRINT, seed_fp_failed_only, False),  # FAIL-04: fingerprint failure is NOT terminal
+]
+
+
+async def eval_sql_domain_completed(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> bool:
+    """Run the ``domain_completed_clause`` predicate in a SELECT and read the boolean back."""
+    from phaze.services.stage_status import domain_completed_clause  # lazy: keeps --co green in the RED state
+
+    result = await session.execute(select(domain_completed_clause(stage)).where(FileRecord.id == file_id))
+    return bool(result.scalar_one())
+
+
+@pytest.mark.parametrize("stage,seed_fn,expected", DOMAIN_COMPLETED_CASES)
+async def test_domain_completed_sql_equals_python(
+    db_session: AsyncSession,
+    stage: Stage,
+    seed_fn: Callable[[AsyncSession], Awaitable[uuid.UUID]],
+    expected: bool,
+) -> None:
+    """D-17 drift-lock: for every seeded cell, SQL ``domain_completed_clause`` == Python ``domain_completed`` == expected."""
+    file_id = await seed_fn(db_session)
+    sql_complete = await eval_sql_domain_completed(db_session, stage, file_id)
+    py_status = resolve_status(stage, await load_scalars(db_session, stage, file_id))
+    py_complete = domain_completed({stage: py_status}, stage)
+    assert sql_complete == py_complete == expected
 
 
 async def test_failed_fingerprint_stays_eligible(db_session: AsyncSession) -> None:
