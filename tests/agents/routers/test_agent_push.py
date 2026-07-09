@@ -464,15 +464,18 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     A push_file SAQ retry can post /pushed twice; if the first committed and process_file has since
     finished (file now ANALYZED), the second callback must be an idempotent no-op -- it must not
     reset the row to PUSHED nor re-enqueue process_file (which would re-trigger CR-01 stranding).
+    Phase 83 (SC#1/D-12): the anchor swap keys the guard on cloud_job.status == 'submitted'. The first
+    /pushed already re-stamped the row SUBMITTED -> SUCCEEDED (dual-written with FileState), so seed the
+    cloud_job at SUCCEEDED -- the second callback's CAS matches 0 rows and is a clean idempotent no-op.
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
     # The file has already advanced all the way to ANALYZED (the first callback + analysis ran).
     file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
-    # Seed the cloud_job so the backend RESOLVES -- this exercises the WR-02 rowcount==0 idempotent guard
-    # (not the no-cloud_job hold): with a resolvable backend the flip is still a no-op because the file
-    # is no longer PUSHING.
-    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
+    # Seed the cloud_job so the backend RESOLVES (not the no-cloud_job hold). SC#1/D-12: the row already
+    # advanced to SUCCEEDED on the first /pushed, so the second callback's CAS on status=='submitted' is a
+    # 0-row idempotent no-op -- NOT because the file is no longer PUSHING (that routing read is now gone).
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)
 
     task_router = FakeTaskRouter()
     async with _make_client(session, task_router, raw_token) as ac:
@@ -484,11 +487,49 @@ async def test_pushed_duplicate_callback_is_idempotent_noop(
     assert file_row.state == FileState.ANALYZED
     # Nothing re-enqueued -- the finished file is not re-analyzed.
     assert task_router.queues == {}
-    # WR-02: the cloud_job terminalization is gated behind the rowcount guard, so it stays SUBMITTED
-    # (NOT flipped to SUCCEEDED) on the idempotent no-op.
+    # SC#1/D-12: the CAS matched 0 rows (status already SUCCEEDED, not 'submitted'), so the row is UNCHANGED.
     cloud_job = await _cloud_job_row(session, file_id)
     assert cloud_job is not None
-    assert cloud_job.status == CloudJobStatus.SUBMITTED.value
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value
+
+
+@pytest.mark.asyncio
+async def test_pushed_does_not_clobber_when_cloud_job_not_submitted(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """SC#1/D-12 (T-83-PUSH-CLOBBER): a late/duplicate /pushed whose cloud_job already advanced cannot clobber.
+
+    After the anchor swap the /pushed CAS keys on ``cloud_job.status == 'submitted'`` (compute's single
+    in-flight status), NOT ``FileRecord.state == PUSHING``. A file whose cloud_job has already advanced past
+    ``submitted`` (here ``succeeded`` -- the first /pushed already ran) must be a clean idempotent 200 even
+    if the dual-written ``FileRecord.state`` still reads ``PUSHING``: the CAS matches 0 rows, so NO
+    FileRecord PUSHED write, NO ledger clear, NO second process_file enqueue (which would re-trigger CR-01
+    stranding). The old ``state == PUSHING`` guard would (wrongly) fire here.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)  # default registry: backend oci-a1 resolves (agent_ref compute-agent-01)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id)
+    # cloud_job already advanced to SUCCEEDED (the first /pushed committed); the dual-written FileRecord
+    # still lags at PUSHING -- the exact shape where a state-anchored guard would clobber but a
+    # cloud_job.status-anchored guard must not.
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    assert r.status_code == 200, r.text
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.PUSHING, "the CAS matched 0 rows -> FileRecord must NOT be re-written to PUSHED"
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value, "the already-advanced cloud_job must be UNCHANGED"
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None, "the push_file ledger row must NOT be cleared on the no-op"
+    assert task_router.queues == {}, "no second process_file may be enqueued on the idempotent no-op"
 
 
 @pytest.mark.asyncio
@@ -586,12 +627,18 @@ async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger
     Phase 69 (D-04): a compute push that exhausts its push_max_attempts re-drives no longer hard-fails.
     The file spills back to AWAITING_CLOUD so the next drain tick can route it to local -- ANALYSIS_FAILED
     now comes only from a LOCAL analysis failure. ``cleared`` stays True (the ledger row is cleared).
+    Phase 83 (SC#1/D-12/D-03): the spill CAS anchors on ``cloud_job.status == 'submitted'`` and re-stamps
+    the row to ``status='awaiting'`` (NOT 'failed') so the FileRecord dual-write + ledger clear fire behind
+    that rowcount -- a compute cloud_job row (seeded 'submitted') is REQUIRED for the spill to fire.
     """
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, backends_toml_env)
+    # Reporter registry: the seeded compute cloud_job's agent_ref == the reporting agent so D-07 passes.
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     # Already at the cap: the next attempt (4) exceeds push_max_attempts=3.
     await _seed_push_ledger(session, file_id, push_attempt=3)
+    # SC#1/D-12: the spill CAS keys on cloud_job.status=='submitted' -- seed the compute sidecar row so it fires.
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
     await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
 
     task_router = FakeTaskRouter()
@@ -608,8 +655,10 @@ async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row must be cleared on spill"
     # No re-drive enqueue happened.
     assert task_router.queues == {}
-    # A non-compute file (no cloud_job row) simply spills -- the cloud_job UPDATE is a 0-row no-op.
-    assert await _cloud_job_row(session, file_id) is None
+    # D-03: the cloud_job row is re-stamped submitted -> awaiting (NOT failed) so AWAITING_CLOUD => status='awaiting'.
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.AWAITING.value
 
 
 @pytest.mark.asyncio
@@ -655,9 +704,10 @@ async def test_push_mismatch_over_cap_compute_spill_marks_cloud_budget_spent(
     """SCHED-03/D-04 compute_spill: a COMPUTE file hitting the cap spills to AWAITING_CLOUD with cloud budget spent.
 
     ComputeAgentBackend.dispatch writes the cloud_job row as SUBMITTED (in the D-10 in-flight set). On the
-    cap spill the row must be terminalized (FAILED, drained from the in-flight set so in_flight_count stays
-    honest) AND its ``attempts`` bumped to >= cloud_submit_max_attempts so select_backend excludes cloud on
-    the next drain tick and routes the spilled file to LOCAL (D-04 total-cloud budget).
+    cap spill the row is re-stamped submitted -> awaiting (Phase 83 D-03: NOT 'failed', so the hard shadow
+    invariant AWAITING_CLOUD => status='awaiting' holds -- 'awaiting' is not in IN_FLIGHT, so in_flight_count
+    stays honest) AND its ``attempts`` bumped to >= cloud_submit_max_attempts so select_backend excludes
+    cloud on the next drain tick and routes the spilled file to LOCAL (D-04 total-cloud budget).
     """
     agent, raw_token = seed_test_agent
     # Reporter registry: the recorded backend's agent_ref == the reporting compute agent so D-07 passes
@@ -678,12 +728,87 @@ async def test_push_mismatch_over_cap_compute_spill_marks_cloud_budget_spent(
 
     file_row = await _file_row(session, file_id)
     assert file_row.state == FileState.AWAITING_CLOUD  # spill, not ANALYSIS_FAILED
-    # The compute cloud_job row is terminalized (drained from the D-10 in-flight set) AND its cloud
-    # budget is marked spent so the next drain tick routes the file to local (D-04).
+    # D-03: the compute cloud_job row is re-stamped submitted -> awaiting (drained from the D-10 in-flight
+    # set) AND its cloud budget is marked spent so the next drain tick routes the file to local (D-04).
     cloud_job = await _cloud_job_row(session, file_id)
     assert cloud_job is not None
-    assert cloud_job.status == CloudJobStatus.FAILED.value
+    assert cloud_job.status == CloudJobStatus.AWAITING.value
     assert cloud_job.attempts >= settings.cloud_submit_max_attempts, "cloud budget must be marked spent -> select_backend picks local"
+
+
+@pytest.mark.asyncio
+async def test_push_mismatch_over_cap_spill_restamps_cloud_job_to_awaiting(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """SC#1/D-03/D-12: the over-cap /mismatch spill re-stamps a 'submitted' cloud_job to 'awaiting' (NOT 'failed').
+
+    The spill CAS anchors on ``cloud_job.status == 'submitted'`` (compute's single in-flight status, D-12) and
+    re-stamps it to ``status='awaiting'`` with ``attempts = cloud_submit_max_attempts`` in the SAME CAS (D-03),
+    so the hard shadow invariant ``AWAITING_CLOUD => status='awaiting'`` holds after the spill (the old code
+    terminalized to ``failed``, violating it). The FileRecord dual-write to AWAITING_CLOUD + ledger clear are
+    gated behind that rowcount.
+    """
+    agent, raw_token = seed_test_agent
+    # Reporter registry: the recorded backend's agent_ref == the reporting compute agent so D-07 passes.
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
+    settings = ControlSettings()  # push_max_attempts=3, cloud_submit_max_attempts=3 (router defaults)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds the cap
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)  # backend_id oci-a1, agent_ref test-agent-01
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is True
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.AWAITING.value, "D-03: the spill re-stamps to 'awaiting', NOT 'failed'"
+    assert cloud_job.attempts >= settings.cloud_submit_max_attempts, "cloud budget stays spent -> select_backend routes to local"
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.AWAITING_CLOUD
+    assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row cleared behind the CAS rowcount"
+
+
+@pytest.mark.asyncio
+async def test_push_mismatch_over_cap_does_not_clobber_when_cloud_job_not_submitted(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """SC#1/D-12 (T-83-PUSH-CLOBBER): a late/duplicate over-cap /mismatch whose cloud_job already advanced cannot spill.
+
+    After the anchor swap the over-cap spill CAS keys on ``cloud_job.status == 'submitted'``, NOT
+    ``FileRecord.state == PUSHING``. A file whose cloud_job has already advanced past ``submitted`` (here
+    ``succeeded``) must be a FULL no-op even if the dual-written ``FileRecord.state`` still reads ``PUSHING``
+    and the reporter passes the D-07 gate: the CAS matches 0 rows, so NO cloud_job re-stamp, NO FileRecord
+    AWAITING_CLOUD write, NO ledger clear, ``cleared=False``. The old ``state == PUSHING`` guard would
+    (wrongly) spill the already-advanced file.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)  # D-07 passes (agent_ref test-agent-01)
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds the cap
+    # cloud_job already advanced to SUCCEEDED; the dual-written FileRecord still lags at PUSHING.
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False, "the CAS matched 0 rows -> nothing cleared"
+    file_row = await _file_row(session, file_id)
+    assert file_row.state == FileState.PUSHING, "the already-advanced file must NOT be spilled to AWAITING_CLOUD"
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value, "the already-advanced cloud_job must be UNCHANGED"
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None, "the ledger row must NOT be cleared on the no-op"
 
 
 @pytest.mark.asyncio
