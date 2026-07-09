@@ -99,3 +99,11 @@ None - no external service configuration required.
 ---
 *Phase: 83-cloud-routing-sidecar-cutover*
 *Completed: 2026-07-09*
+
+## Self-Check: PASSED
+- FOUND: `.planning/phases/83-cloud-routing-sidecar-cutover/83-03-SUMMARY.md`
+- FOUND: `src/phaze/routers/agent_analysis.py`
+- FOUND: `tests/agents/routers/test_agent_analysis.py`
+- FOUND commit: `482c3f07` (feat — reaper at both seams)
+- FOUND commit: `e817796f` (test — reaper unit tests)
+- FOUND commit: `d5eeb041` (docs — SUMMARY + deferred-items)
