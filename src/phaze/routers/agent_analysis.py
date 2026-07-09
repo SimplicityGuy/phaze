@@ -39,7 +39,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.models.cloud_job import CloudJob
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import (
@@ -263,6 +263,14 @@ async def put_analysis(
     # success result is recorded. No-op (zero S3 calls) when no cloud_job row exists (all-local).
     await _delete_staged_object_if_cloud(session, file_id)
 
+    # D-14 reaper: reap the inert `awaiting` cloud_job hold-over row this file may carry. D-05's
+    # conjunct (chosen over row deletion) means a locally-dispatched long file keeps its `awaiting`
+    # row forever; without this reaper the `*/5` drain tick scans a monotonically growing dead set at
+    # 200K, degrading `ix_cloud_job_awaiting`. The DELETE joins this seam's existing transaction (no new
+    # commit). The `status='awaiting'` filter leaves a cloud-analyzed file's SUCCEEDED/RUNNING row
+    # untouched. `file_id` is the PATH value only (AUTH-01).
+    await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
+
     await session.commit()
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
 
@@ -379,6 +387,12 @@ async def report_analysis_failed(
     # D-02 inline delete: a terminal failure is also a result-callback terminal outcome -- the
     # staged object is no longer needed. No-op (zero S3 calls) when no cloud_job row exists.
     await _delete_staged_object_if_cloud(session, file_id)
+    # D-14 reaper: a terminal failure is also an analyze-terminal seam -- reap the inert `awaiting`
+    # cloud_job hold-over row (D-05's conjunct leaves it behind) so `ix_cloud_job_awaiting` stays
+    # bounded and the `*/5` drain tick does not scan a growing dead set. Joins this seam's existing
+    # transaction (no new commit); `status='awaiting'` leaves a SUCCEEDED/RUNNING row untouched.
+    # `file_id` is the PATH value only (AUTH-01).
+    await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
     await session.commit()
     logger.warning(
         "analysis_failed reported",

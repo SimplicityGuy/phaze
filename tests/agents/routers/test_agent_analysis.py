@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_analysis import router as agent_analysis_router
@@ -78,6 +79,22 @@ async def _seed_ledger(session: AsyncSession, key: str, function: str, file_id: 
 async def _ledger_present(session: AsyncSession, key: str) -> bool:
     session.expire_all()
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
+    return row is not None
+
+
+async def _seed_cloud_job(session: AsyncSession, file_id: uuid.UUID, status: CloudJobStatus) -> None:
+    """Seed a cloud_job row at a chosen status (D-14 reaper tests).
+
+    `staging_bucket` is left NULL so the callback's `_delete_staged_object_if_cloud` guard
+    short-circuits with zero S3 calls -- the reaper behaviour is what the tests exercise, not staging.
+    """
+    session.add(CloudJob(file_id=file_id, status=status.value))
+    await session.commit()
+
+
+async def _cloud_job_present(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    session.expire_all()
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
     return row is not None
 
 
@@ -819,3 +836,68 @@ async def test_analysis_put_clear_uses_path_file_id_not_redirected(seed_test_age
     assert r.status_code == 200, r.text
     assert not await _ledger_present(session, key_a), "the PATH file_a ledger row must be cleared"
     assert await _ledger_present(session, key_b), "another file's ledger row must NOT be redirected/cleared"
+
+
+# ---------------------------------------------------------------------------
+# Phase 83 (D-14): awaiting-cloud_job reaper at both analyze-terminal seams
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_reaps_awaiting_cloud_job(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A successful PUT reaps the file's inert `awaiting` cloud_job hold-over row (D-14)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, CloudJobStatus.AWAITING)
+    assert await _cloud_job_present(session, file_id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 128.0})
+
+    assert r.status_code == 200, r.text
+    assert not await _cloud_job_present(session, file_id), "successful analyze callback must reap the awaiting cloud_job row"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_reaps_awaiting_cloud_job(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A terminal-failure POST reaps the file's inert `awaiting` cloud_job hold-over row (D-14)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, CloudJobStatus.AWAITING)
+    assert await _cloud_job_present(session, file_id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert r.status_code == 200, r.text
+    assert not await _cloud_job_present(session, file_id), "terminal-failure callback must reap the awaiting cloud_job row"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_leaves_succeeded_cloud_job(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A SUCCEEDED cloud_job row (cloud-analyzed file) is NOT touched by the terminal reaper (D-14)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, CloudJobStatus.SUCCEEDED)
+    assert await _cloud_job_present(session, file_id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert r.status_code == 200, r.text
+    assert await _cloud_job_present(session, file_id), "the status='awaiting' filter must leave a SUCCEEDED cloud_job row in place"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_leaves_running_cloud_job(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """A RUNNING cloud_job row (cloud-analyzed file) is NOT touched by the terminal reaper (D-14)."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, CloudJobStatus.RUNNING)
+    assert await _cloud_job_present(session, file_id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert r.status_code == 200, r.text
+    assert await _cloud_job_present(session, file_id), "the status='awaiting' filter must leave a RUNNING cloud_job row in place"
