@@ -89,6 +89,11 @@ None - no external service configuration required.
 - Sequenced in Wave 1: `034` lands before the 83-06 drain-candidate reader cutover, so repaired files are visible to the drain query instead of stranding.
 - Phase 90's destructive migration will renumber `034 → 035` (doc-only churn already accepted by 81 D-08); this plan only ADDS `034`.
 
+## Self-Check: PASSED
+
+- Files verified present: `alembic/versions/034_backfill_cloud_awaiting.py`, `tests/integration/test_migrations/test_migration_034_backfill_cloud_awaiting.py`, `.planning/phases/83-cloud-routing-sidecar-cutover/83-02-SUMMARY.md`
+- Commits verified in history: `32b44445` (Task 1), `6865ccdd` (Task 2)
+
 ---
 *Phase: 83-cloud-routing-sidecar-cutover*
 *Completed: 2026-07-09*
