@@ -41,6 +41,7 @@ from phaze.services.pipeline import (
     get_localqueue_unreachable,
     get_match_busy_count,
     get_match_pending_tracklists,
+    get_metadata_failed_files,
     get_metadata_pending_files,
     get_pipeline_stats,
     get_proposal_pending_batches,
@@ -946,6 +947,68 @@ async def retry_analysis_failed(
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/retry_failed_response.html",
+        context={"request": request, "count": len(files), "no_active_agent": False},
+    )
+
+
+@router.post("/pipeline/metadata-failed/retry", response_class=HTMLResponse)
+async def retry_metadata_failed(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: operator-gated BULK retry of every terminally-failed metadata file (FAIL-03).
+
+    Closes gap G-01 (SC#3): a metadata failure persisted by the 81-03 writer (``metadata`` row
+    with ``failed_at`` set, payload NULL) derives FAILED and would otherwise be a permanent
+    dead-end blocking the file from ever reaching ``propose``. This is the operator-gated retry:
+    it re-drives EVERY ``metadata.failed_at IS NOT NULL`` file through the SAME guarded funnel the
+    manual metadata triggers use -- per-agent routing -> ``NoActiveAgentError`` guard ->
+    :func:`_enqueue_extraction_jobs` (the COMPLETE ``ExtractMetadataPayload``, not a
+    dead-lettering file_id-only enqueue) + the central deterministic ``extract_file_metadata:<id>``
+    dedup key.
+
+    It mirrors :func:`retry_analysis_failed`'s Phase-30-hardened ordering, MINUS the state flip:
+    - Resolve the per-agent queue ONCE. ``extract_file_metadata`` is an AGENT_TASK; if no agent is
+      online ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT enqueuing
+      or mutating any state -- it never falls through to the consumer-less default queue (Phase-30).
+    - D-11: NO ``f.state`` flip. Metadata has no terminal FileState -- the failure lives only in the
+      ``metadata`` failure row. The row is LEFT in place; clearing ``failed_at`` here would make a
+      zero-metadata file read DONE forever. ``put_metadata``'s clear-on-success (81-03) wipes the
+      marker only when real metadata lands, or ``report_metadata_failed`` re-stamps it on another
+      failure. With no state mutation there is nothing to commit before the enqueue.
+    - The deterministic key dedups any file with a live in-flight job to a no-op, so re-enqueuing
+      the WHOLE failed set is safe (dedup-safe; no silent cap).
+    """
+    files = await get_metadata_failed_files(session)
+    if not files:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/metadata_retry_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False},
+        )
+
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        # Do NOT enqueue, do NOT mutate state, do NOT fall through to the default queue (Phase-30).
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/metadata_retry_response.html",
+            context={"request": request, "count": 0, "no_active_agent": True},
+        )
+
+    # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
+
+    # D-11: no state flip, so no pre-enqueue commit. Build the COMPLETE payload via the shared
+    # producer (a file_id-only enqueue dead-letters every job) and rely on the central
+    # extract_file_metadata:<file_id> key for in-flight dedup.
+    await _enqueue_extraction_jobs(routed.queue, files, agent_id)
+
+    logger.info("retry_metadata_failed re-queued files", count=len(files))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/metadata_retry_response.html",
         context={"request": request, "count": len(files), "no_active_agent": False},
     )
 

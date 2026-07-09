@@ -1,0 +1,22 @@
+{# 81-06 (FAIL-03): HTMX ack for the "Retry failed" bulk action on the Metadata Health card.
+
+   Stage-labelled twin of retry_failed_response.html (analyze). Renders one of three branches
+   from ints/bools ONLY (Jinja autoescape; no operator free-text). It swaps into the button's
+   result span only -- it carries NO hx-swap-oob id, so the 5s stats poll keeps re-pushing the
+   metadata-failed card untouched and the red count drops on the next tick.
+
+   D-11: the retry LEAVES the failure row and re-enqueues; put_metadata's clear-on-success wipes
+   failed_at only when real metadata lands, so this ack never implies the row was cleared. #}
+{% if no_active_agent %}
+<span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
+    No active agent — nothing re-queued.
+</span>
+{% elif count == 0 %}
+<span class="text-sm text-gray-600 dark:text-gray-400 font-medium">
+    No failed files to retry.
+</span>
+{% else %}
+<span class="text-sm text-green-600 dark:text-green-400 font-medium">
+    Re-queued {{ count }} failed file(s) for metadata extraction.
+</span>
+{% endif %}
