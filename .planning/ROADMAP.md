@@ -371,12 +371,16 @@ Plans:
   4. `fingerprint` failure continues to persist via `fingerprint_results.status='failed'` (reused, not re-invented) and stays auto-retryable.
 
 **Plans**: 6 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 81-01-PLAN.md — DB-free terminality/eligibility tables + domain_completed twin + eligible() refactor (wave 1)
 - [ ] 81-02-PLAN.md — Migration 033 (mixed-row cleanup then CHECK) + ORM mirror + destructive-migration doc renumber (wave 1)
 - [ ] 81-03-PLAN.md — Metadata failure marker + optional-body endpoint + put_metadata clear-on-success (wave 1)
 - [ ] 81-04-PLAN.md — Fingerprint failure regression tests + docstrings (no new writer) (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 81-05-PLAN.md — Analyze failure dual-write + put_analysis clear-on-success (wave 2, depends 81-02)
 - [ ] 81-06-PLAN.md — Metadata retry endpoint POST /pipeline/metadata-failed/retry (wave 2, depends 81-03)
 
