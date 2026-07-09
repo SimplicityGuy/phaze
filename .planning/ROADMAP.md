@@ -269,7 +269,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
-| 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 4/6 | In Progress | - |
+| 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 4/6 | In Progress|  |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
