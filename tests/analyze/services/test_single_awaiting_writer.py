@@ -26,11 +26,9 @@ _SRC_ROOT = Path(__file__).resolve().parents[3] / "src" / "phaze"
 _ALLOWED_WRITERS = {_SRC_ROOT / "services" / "backends.py"}
 
 
-def _status_value_writes_awaiting(keyword: ast.keyword) -> bool:
-    """True iff a ``status=`` keyword's value AST subtree references AWAITING or the literal ``"awaiting"``."""
-    if keyword.arg != "status":
-        return False
-    for sub in ast.walk(keyword.value):
+def _references_awaiting(node: ast.AST) -> bool:
+    """True iff an AST subtree references ``CloudJobStatus.AWAITING`` or the literal ``"awaiting"``."""
+    for sub in ast.walk(node):
         # CloudJobStatus.AWAITING(.value) -> an Attribute whose attr == "AWAITING".
         if isinstance(sub, ast.Attribute) and sub.attr == "AWAITING":
             return True
@@ -40,8 +38,85 @@ def _status_value_writes_awaiting(keyword: ast.keyword) -> bool:
     return False
 
 
+def _dict_writes_awaiting(node: ast.Dict) -> bool:
+    """True iff a dict literal maps the ``"status"`` key to an awaiting value."""
+    return any(
+        isinstance(key, ast.Constant) and key.value == "status" and _references_awaiting(value)
+        for key, value in zip(node.keys, node.values, strict=False)
+        if key is not None
+    )
+
+
+def _name_binds_awaiting_status(tree: ast.AST, name: str) -> bool:
+    """True iff ``name`` is ever bound to a dict that carries an awaiting ``status`` entry.
+
+    Covers both the dict-literal binding (``vals = {"status": AWAITING}``) and the subscript
+    mutation (``vals["status"] = AWAITING``) a drifter could reach for.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+            # vals = {"status": <awaiting>}
+            if (
+                isinstance(node.value, ast.Dict)
+                and _dict_writes_awaiting(node.value)
+                and any(isinstance(t, ast.Name) and t.id == name for t in targets)
+            ):
+                return True
+            # vals["status"] = <awaiting>
+            for target in targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == name
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "status"
+                    and _references_awaiting(node.value)
+                ):
+                    return True
+        # vals: dict[str, Any] = {"status": <awaiting>}
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+            and isinstance(node.value, ast.Dict)
+            and _dict_writes_awaiting(node.value)
+        ):
+            return True
+    return False
+
+
+def _targets_cloud_job(call: ast.Call) -> bool:
+    """True iff a ``.values(...)`` call's statement chain targets the ``CloudJob`` model."""
+    return any(isinstance(sub, ast.Name) and sub.id == "CloudJob" for sub in ast.walk(call))
+
+
+def _values_call_writes_awaiting(call: ast.Call, tree: ast.AST) -> bool:
+    """True iff a ``.values(...)`` call writes ``status='awaiting'`` — keyword OR ``**splat`` form."""
+    for keyword in call.keywords:
+        # (a) the literal keyword form: .values(status=CloudJobStatus.AWAITING.value, ...)
+        if keyword.arg == "status" and _references_awaiting(keyword.value):
+            return True
+        if keyword.arg is not None:
+            continue
+        # (b/c) the **splat form: .values(**vals). `keyword.arg is None` means `**`, and the
+        # shipped writer itself uses this idiom (backends.py `.values(**values)`) -- so a
+        # copy-pasted inline spill would too. A keyword-only scan is BLIND to it (found by
+        # 83-07 review WR-01; confirmed by mutation test).
+        if isinstance(keyword.value, ast.Dict) and _dict_writes_awaiting(keyword.value):
+            return True
+        if isinstance(keyword.value, ast.Name) and _name_binds_awaiting_status(tree, keyword.value.id):
+            return True
+        # (c) an UNRESOLVABLE splat (e.g. `.values(**build_row())`). Flag it only when the
+        # statement targets CloudJob AND the module knows about AWAITING at all -- otherwise
+        # every unrelated `.values(**row)` (services/proposal.py) would false-positive.
+        if not isinstance(keyword.value, ast.Dict | ast.Name) and _targets_cloud_job(call) and _references_awaiting(tree):
+            return True
+    return False
+
+
 def _file_writes_awaiting(path: Path) -> bool:
-    """True iff the module contains a ``.values(status=<awaiting>)`` call (a cloud_job awaiting WRITE)."""
+    """True iff the module writes ``cloud_job.status='awaiting'`` via a ``.values(...)`` call."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         # Match ``<stmt>.values(...)`` calls (covers both pg_insert(CloudJob).values(...) and
@@ -50,7 +125,7 @@ def _file_writes_awaiting(path: Path) -> bool:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "values"
-            and any(_status_value_writes_awaiting(kw) for kw in node.keywords)
+            and _values_call_writes_awaiting(node, tree)
         ):
             return True
     return False
