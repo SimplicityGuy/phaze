@@ -42,7 +42,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_s3 import UploadedRequest, UploadedResponse, UploadFailedRequest, UploadFailedResponse
 from phaze.services import cloud_staging, s3_staging
-from phaze.services.backends import resolved_non_local_kind
+from phaze.services.backends import hold_awaiting_cloud, resolved_non_local_kind
 from phaze.services.enqueue_router import NoActiveAgentError, resolve_queue_for_task
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
@@ -194,27 +194,29 @@ async def report_upload_failed(
     # Over the cap: CAS-guarded terminal spill (D-09/D-10/D-03) + cleanup + ledger clear, one transaction.
     if next_attempt > settings.push_max_attempts:
         cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
-        # D-09: the CAS anchor is cloud_job.status, NOT FileRecord.state -- the sidecar is the single CAS
-        # domain (SC#1; survives Phase 90's state-write removal). D-03: re-stamp the in-flight
-        # uploading/uploaded row to status='awaiting' (was FAILED) so the hard shadow invariant
-        # AWAITING_CLOUD => status='awaiting' holds, keeping attempts SPENT (>= cloud_submit_max_attempts) so
-        # select_backend routes the spilled file to LOCAL, and cloud_phase=None (WR-01, off the "Running"
-        # tile). This closes the unguarded agent_s3.py:195 clobber (SC#2 / T-83-01): a late/duplicate /failed
-        # on an already-advanced file whose cloud_job reads running/succeeded matches 0 rows and cannot be
-        # clobbered back to AWAITING_CLOUD. An UPDATE returns a CursorResult at runtime (exposing rowcount);
-        # the async stubs type it as the base Result, so cast to read the affected-row count.
-        res = cast(
-            "CursorResult[Any]",
-            await session.execute(
-                update(CloudJob)
-                .where(
-                    CloudJob.file_id == file_id,
-                    CloudJob.status.in_([CloudJobStatus.UPLOADING.value, CloudJobStatus.UPLOADED.value]),
-                )
-                .values(status=CloudJobStatus.AWAITING.value, cloud_phase=None, attempts=settings.cloud_submit_max_attempts)
-            ),
+        # D-01/D-02: route the over-cap spill re-stamp through the SINGLE awaiting writer
+        # (services.backends.hold_awaiting_cloud) instead of an inline CAS. Its spill branch preserves the
+        # exact shipped guard: D-09 anchors on cloud_job.status IN ('uploading','uploaded') (the sidecar is
+        # the single CAS domain, NOT FileRecord.state; SC#1); D-03 re-stamps the row to status='awaiting'
+        # (was FAILED) with attempts SPENT (>= cloud_submit_max_attempts) so select_backend routes the
+        # spilled file to LOCAL; clear_cloud_phase=True nulls cloud_phase (WR-01, off the "Running" tile,
+        # D-12). It returns False (a full no-op) when a late/duplicate /failed matches an already-advanced
+        # row (running/succeeded) -> the agent_s3.py:195 clobber stays closed (SC#2 / T-83-01).
+        #
+        # NULL-GUARD: the helper's CAS dereferences file.id, so load the FileRecord first. An absent file
+        # (unreachable in practice -- cloud_job.file_id FKs files.id, so a cloud_job cannot outlive its file)
+        # takes the FULL no-op below (cleared=False), identical to a CAS miss; passing None would raise
+        # AttributeError where the old disconnected update(FileRecord) silently matched 0 rows. No 404 here:
+        # the over-cap spill is an agent callback and a 404 would change the response contract.
+        file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+        cleared = file is not None and await hold_awaiting_cloud(
+            session,
+            file,
+            attempts=settings.cloud_submit_max_attempts,
+            expect_status=(CloudJobStatus.UPLOADING.value, CloudJobStatus.UPLOADED.value),
+            clear_cloud_phase=True,
         )
-        if res.rowcount == 0:
+        if not cleared:
             # D-10: FULL no-op -- NO FileRecord write, NO multipart abort, NO delete_staged_object (a live
             # Kueue job may be mid-download on the object; KSTAGE-04 still holds via the analyze-terminal
             # seams that own _delete_staged_object_if_cloud), NO ledger clear. Commit and return
@@ -226,7 +228,7 @@ async def report_upload_failed(
                 agent_id=agent.id,
             )
             return UploadFailedResponse(file_id=file_id, cleared=False)
-        # rowcount != 0: gate the FileRecord dual-write (D-00c) + S3 cleanup + ledger clear behind the CAS.
+        # cleared (helper CAS hit): gate the FileRecord dual-write (D-00c) + S3 cleanup + ledger clear behind the CAS.
         await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
         # Cleanup PRESERVED on the spill path: abort the multipart + delete the staged object so no orphaned
         # in-flight upload / leaked object survives (KSTAGE-04 / T-53-17) even though the file lives on locally.

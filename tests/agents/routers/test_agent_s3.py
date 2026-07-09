@@ -711,6 +711,42 @@ async def test_upload_failed_cas_noop_on_advanced_cloud_job(
         assert await _ledger_row(session, f"s3_upload:{file_id}") is not None, "D-10: the ledger row must NOT be cleared on the no-op"
 
 
+async def test_upload_failed_over_cap_null_guard_no_file_is_full_noop(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """NULL-GUARD (83-07): an over-cap /failed whose FileRecord is absent is a FULL no-op, not a 500.
+
+    The over-cap spill routes through ``hold_awaiting_cloud``, whose CAS dereferences ``file.id``. If the
+    FileRecord load returns ``None`` (unreachable in practice -- ``cloud_job.file_id`` FKs ``files.id`` --
+    but the conservative guard is required), the handler must NOT call the helper (which would raise
+    ``AttributeError`` -> 500) and instead take the FULL no-op branch: ``cleared=False``, 200.
+    """
+    _agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    # No file, no cloud_job seeded -- only the ledger at the cap so the over-cap branch is entered.
+    file_id = uuid.uuid4()
+    await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds push_max_attempts=3
+    abort = AsyncMock()
+    delete = AsyncMock()
+    redrive = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    monkeypatch.setattr(cloud_staging, "redrive_upload", redrive)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "no file"})
+
+    assert r.status_code == 200, r.text  # NULL-GUARD: full no-op, never a 500/AttributeError
+    assert r.json()["cleared"] is False
+    abort.assert_not_awaited()
+    delete.assert_not_awaited()
+    redrive.assert_not_awaited()
+    assert await _ledger_row(session, f"s3_upload:{file_id}") is not None  # no ledger clear on the no-op
+
+
 async def test_failed_concurrent_under_cap_no_lost_update(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
