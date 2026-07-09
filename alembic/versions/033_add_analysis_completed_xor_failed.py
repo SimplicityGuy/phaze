@@ -60,12 +60,7 @@ _CHECK_SQL = "NOT (analysis_completed_at IS NOT NULL AND failed_at IS NOT NULL)"
 # D-09 mixed-row cleanup. Static SQL literal (no interpolation, no model import). Clears ``failed_at``
 # and retains ``analysis_completed_at`` so *done wins* on every mixed row (D-04): no derived status
 # flips, no done marker is lost.
-_CLEANUP_MIXED_ROWS = """
-UPDATE analysis
-   SET failed_at = NULL
- WHERE analysis_completed_at IS NOT NULL
-   AND failed_at IS NOT NULL
-"""
+_CLEANUP_MIXED_ROWS = "UPDATE analysis SET failed_at = NULL WHERE analysis_completed_at IS NOT NULL AND failed_at IS NOT NULL"
 
 
 def upgrade() -> None:
