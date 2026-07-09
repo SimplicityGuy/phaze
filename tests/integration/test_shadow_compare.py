@@ -233,6 +233,51 @@ async def test_allowlist_soft_divergence_counted_but_not_gated(db_session: Async
 
 
 # --------------------------------------------------------------------------------------------------
+# awaiting_cloud green -- the exact shape the Phase-83 go-forward writer produces (D-00d / D-01).
+#
+# trigger_analysis now holds a long file via ``hold_awaiting_cloud`` (83-05 Task 1), and migration 034
+# backfills the already-held corpus: an AWAITING_CLOUD file ALWAYS carries its cloud_job(status='awaiting')
+# sidecar row. This asserts that shape yields ZERO divergence on the HARD ``awaiting_cloud`` invariant --
+# the invariant that is VIOLATED at HEAD for every file held since 032 (the D-01 gap the writer closes).
+# The complementary RED cell (an AWAITING_CLOUD file with NO row -> flags) is the parametrized
+# ``test_divergent_hard_invariant_flags`` above, so this GREEN cell is provably non-vacuous.
+# --------------------------------------------------------------------------------------------------
+async def test_awaiting_cloud_green_on_held_file_carrying_awaiting_row(db_session: AsyncSession) -> None:
+    fid = await _new_file(db_session, state=FileState.AWAITING_CLOUD.value)
+    db_session.add(CloudJob(file_id=fid, status="awaiting"))  # the sidecar row the writer + 034 guarantee
+    await db_session.flush()
+
+    report = await run_shadow_compare(db_session)
+
+    # The held file satisfies AWAITING_CLOUD => cloud_job(status='awaiting'): zero HARD divergence.
+    assert _result_for(report, "awaiting_cloud").count == 0
+    assert report.hard_fail_total == 0
+
+
+# --------------------------------------------------------------------------------------------------
+# implication (cloud) -- a LOCAL_ANALYZING file STILL carrying an inert awaiting row (post-D-13 local
+# dispatch, pre-D-14 reap) is NOT a violation: the awaiting_cloud invariant is one-directional
+# (state == AWAITING_CLOUD => row exists), so the CONVERSE (row => state == AWAITING_CLOUD) is not
+# asserted. LocalBackend.dispatch keeps the LOCAL_ANALYZING flip and leaves the awaiting row behind
+# (D-13); the reaper deletes it later (D-14). Implication-not-equality (79 D-04) must keep this green.
+# --------------------------------------------------------------------------------------------------
+async def test_local_analyzing_carrying_awaiting_row_does_not_violate_hard(db_session: AsyncSession) -> None:
+    fid = await _new_file(db_session, state=FileState.LOCAL_ANALYZING.value)
+    db_session.add(CloudJob(file_id=fid, status="awaiting"))  # inert leftover row after a local dispatch (D-13)
+    await db_session.flush()
+
+    report = await run_shadow_compare(db_session)
+
+    # The stray awaiting row on a LOCAL_ANALYZING file drives NO hard-invariant flag (no converse invariant).
+    assert report.hard_fail_total == 0
+    assert _result_for(report, "awaiting_cloud").count == 0  # not an AWAITING_CLOUD file -> outside its scope
+    # LOCAL_ANALYZING is still soft-allowlisted: counted + printed, never gated (D-06).
+    la = _result_for(report, "local_analyzing")
+    assert la.soft is True
+    assert la.count >= 1
+
+
+# --------------------------------------------------------------------------------------------------
 # core -- DB-free registry shape: D-04 comprehensiveness + D-06 allowlist (no DB touch).
 # --------------------------------------------------------------------------------------------------
 def test_core_registry_shape_locks_coverage_and_allowlist() -> None:
