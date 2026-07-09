@@ -20,6 +20,7 @@ S3 backend; the FakeTaskRouter stands in for the per-agent queue.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -27,6 +28,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -44,7 +46,7 @@ from tests._queue_fakes import FakeQueue, FakeTaskRouter
 
 if TYPE_CHECKING:
     import pytest
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
     from phaze.models.agent import Agent
 
@@ -622,13 +624,15 @@ async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """At the cap: cloud_job FAILED (budget spent) + abort + delete + ledger cleared + SPILL to AWAITING_CLOUD.
+    """At the cap: cloud_job re-stamped to AWAITING (budget spent) + abort + delete + ledger cleared + SPILL to AWAITING_CLOUD.
 
     Phase 69 (SCHED-03/D-04): a kueue upload that exhausts its re-drive cap no longer hard-fails. The
     file spills back to AWAITING_CLOUD with its cloud budget marked spent (``attempts >=
     cloud_submit_max_attempts``) so the next drain tick routes it to LOCAL -- ANALYSIS_FAILED now comes
-    only from a LOCAL analysis failure. The cleanup (abort multipart + delete staged object + ledger
-    clear) and WR-01 cloud_phase=None are PRESERVED; ``cleared`` stays True.
+    only from a LOCAL analysis failure. Phase 83 (D-03/D-09): the over-cap CAS re-stamps the cloud_job row
+    from ``uploading``/``uploaded`` to ``status='awaiting'`` (NOT ``failed``) so the hard shadow invariant
+    ``AWAITING_CLOUD => status='awaiting'`` holds. The cleanup (abort multipart + delete staged object +
+    ledger clear) and WR-01 cloud_phase=None are PRESERVED; ``cleared`` stays True.
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
@@ -653,11 +657,131 @@ async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(
     delete.assert_awaited_once()
     job = await _cloud_job(session, file_id)
     assert job is not None
-    assert job.status == CloudJobStatus.FAILED.value
-    assert job.cloud_phase is None  # WR-01: terminal row no longer counts toward the "Running" tile
+    assert job.status == CloudJobStatus.AWAITING.value  # D-03: re-stamped to awaiting (NOT failed) so AWAITING_CLOUD => status='awaiting'
+    assert job.cloud_phase is None  # WR-01: no longer counts toward the "Running" tile
     assert job.attempts >= settings.cloud_submit_max_attempts  # SCHED-03/D-04: cloud budget spent -> local next tick
     assert await _file_state(session, file_id) == FileState.AWAITING_CLOUD  # SCHED-03: spill, never ANALYSIS_FAILED
     assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
+
+
+# --- Phase 83 (SC#2 / T-83-01): the over-cap CAS must NOT clobber an already-advanced cloud_job ------
+
+
+async def test_upload_failed_cas_noop_on_advanced_cloud_job(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """SC#2 (T-83-01): a late/duplicate over-cap /upload-failed on an already-advanced cloud_job is a FULL no-op.
+
+    The named bug (``agent_s3.py:195``): the over-cap branch wrote ``cloud_job=FAILED`` +
+    ``FileRecord.state=AWAITING_CLOUD`` UNGUARDED. An already-``ANALYZED`` file whose cloud_job has
+    advanced to ``running``/``succeeded`` (a live/finished Kueue job) must NOT be clobbered back to
+    ``AWAITING_CLOUD``. D-09 anchors the CAS on ``cloud_job.status IN ('uploading','uploaded')`` so an
+    advanced row matches 0 rows; D-10 makes rowcount==0 a FULL no-op -- NO cloud_job write, NO FileRecord
+    write, NO multipart abort, NO ``delete_staged_object`` (which would kill a live download), NO ledger
+    clear -- commit and return ``cleared=False``.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    for advanced in (CloudJobStatus.RUNNING, CloudJobStatus.SUCCEEDED):
+        file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
+        await _seed_cloud_job(session, file_id, status=advanced)
+        await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds push_max_attempts=3 -> over-cap branch
+        abort = AsyncMock()
+        delete = AsyncMock()
+        redrive = AsyncMock()
+        monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+        monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+        monkeypatch.setattr(cloud_staging, "redrive_upload", redrive)
+
+        async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+            r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "late/duplicate"})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["cleared"] is False  # D-10: full no-op reports nothing cleared
+        job = await _cloud_job(session, file_id)
+        assert job is not None
+        assert job.status == advanced.value, "the advanced cloud_job must be UNCHANGED (CAS matched 0 rows)"
+        assert await _file_state(session, file_id) == FileState.ANALYZED, "the advanced file must NOT be clobbered to AWAITING_CLOUD"
+        abort.assert_not_awaited()  # D-10: no multipart abort on the no-op
+        delete.assert_not_awaited()  # D-10: no delete_staged_object -- a live Kueue job may be mid-download
+        redrive.assert_not_awaited()
+        assert await _ledger_row(session, f"s3_upload:{file_id}") is not None, "D-10: the ledger row must NOT be cleared on the no-op"
+
+
+async def test_failed_concurrent_under_cap_no_lost_update(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    async_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """D-11 (T-83-02): two concurrent under-cap /upload-failed increment ``s3_upload_attempt`` to EXACTLY 2.
+
+    Mirrors the /mismatch T-73-13 donor. The attempt RMW on the ``s3_upload:<file_id>`` ledger payload
+    must be serialized by a ``pg_advisory_xact_lock(hashtext(ledger_key))`` (NOT a row lock -- that would
+    self-deadlock against ``stage_file_to_s3``'s ``before_enqueue`` hook upserting the same row). Request A
+    holds the advisory lock across its transaction (parked at ``redrive_upload``) while request B blocks on
+    it, so B reads A's committed value and adds the second increment. Without the advisory lock both read 0
+    and write 1 (a lost update -> final 1); with it the persisted counter is exactly 2, so no file can
+    silently exceed its bounded upload budget.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    await _seed_ledger(session, file_id, attempt=0)  # both requests take the under-cap re-drive path (cap 3)
+    # End the seeding session's snapshot so the final read sees the concurrent commits.
+    await session.rollback()
+
+    reached = asyncio.Event()  # set once request A is parked mid-transaction (advisory lock held)
+    proceed = asyncio.Event()  # released by the test to let request A finish + drop the lock
+
+    async def _gated_redrive(_sess: AsyncSession, _file: FileRecord, router: Any) -> None:
+        # Park ONLY request A (its router carries the events) so A holds the advisory lock open while B
+        # is launched; request B's plain router runs straight through once it acquires the lock.
+        park_reached = getattr(router, "park_reached", None)
+        park_proceed = getattr(router, "park_proceed", None)
+        if park_reached is not None and park_proceed is not None:
+            park_reached.set()
+            await park_proceed.wait()
+
+    monkeypatch.setattr(cloud_staging, "redrive_upload", _gated_redrive)
+
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with factory() as session_a, factory() as session_b:
+        router_a = FakeTaskRouter()
+        router_a.park_reached = reached  # type: ignore[attr-defined]
+        router_a.park_proceed = proceed  # type: ignore[attr-defined]
+        client_a = _make_client(session_a, router_a, raw_token)
+        router_b = FakeTaskRouter()
+        client_b = _make_client(session_b, router_b, raw_token)
+
+        async with client_a, client_b:
+            task_a = asyncio.create_task(client_a.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "a"}))
+            # Wait until A is parked at redrive_upload with the advisory lock held in its open transaction.
+            await asyncio.wait_for(reached.wait(), timeout=10.0)
+
+            # Launch B: it must block on A's advisory lock at the attempt-RMW read (fixed code). Give it
+            # time to reach and queue on the lock (or, on unfixed code, to read the stale 0 and race ahead).
+            task_b = asyncio.create_task(client_b.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "b"}))
+            await asyncio.sleep(0.25)
+
+            # Release A: it writes s3_upload_attempt=1 and commits, dropping the lock so B reads 1 -> writes 2.
+            proceed.set()
+            resp_a, resp_b = await asyncio.gather(task_a, task_b)
+
+    assert resp_a.status_code == 200, resp_a.text
+    assert resp_b.status_code == 200, resp_b.text
+    assert resp_a.json()["cleared"] is False
+    assert resp_b.json()["cleared"] is False
+
+    # The advisory-locked RMW applied each increment exactly once: no lost update.
+    row = await _ledger_row(session, f"s3_upload:{file_id}")
+    assert row is not None
+    assert row.payload.get("s3_upload_attempt") == 2, "two concurrent under-cap /upload-failed must increment s3_upload_attempt to exactly 2"
 
 
 async def test_failed_unauthenticated_returns_401(session: AsyncSession) -> None:
