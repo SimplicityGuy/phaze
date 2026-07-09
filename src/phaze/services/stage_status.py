@@ -186,9 +186,9 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     divergence on every non-failed downstream row.
     """
     if stage not in FAILURE_IS_TERMINAL:
-        raise ValueError(
-            f"domain_completed_clause is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {stage.value!r}"
-        )
+        # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
+        got = getattr(stage, "value", stage)
+        raise ValueError(f"domain_completed_clause is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {got!r}")
     if FAILURE_IS_TERMINAL[stage]:
         return or_(done_clause(stage), failed_clause(stage))
     return done_clause(stage)

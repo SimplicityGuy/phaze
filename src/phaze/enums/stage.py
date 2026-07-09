@@ -200,11 +200,16 @@ def domain_completed(status_map: Mapping[Stage, Status], stage: Stage) -> bool:
     is asking a question this layer has deliberately not answered. The SQL twin raises identically.
     """
     if stage not in FAILURE_IS_TERMINAL:
-        raise ValueError(
-            f"domain_completed is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {stage.value!r}"
-        )
-    st = status_map.get(stage, Status.NOT_STARTED)
-    return st is Status.DONE or (st is Status.FAILED and FAILURE_IS_TERMINAL[stage])
+        # `getattr(..., "value", stage)`: a raw-`str` stage hashes equal to its StrEnum member, so it can
+        # reach here; `.value` would then AttributeError instead of raising the intended ValueError.
+        got = getattr(stage, "value", stage)
+        raise ValueError(f"domain_completed is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {got!r}")
+    # WR-03: compare by VALUE, not identity. `Status` is a StrEnum, so a status_map that came back
+    # through a SQL/JSON round-trip carries raw `str`s -- and `stage_status_case` emits exactly
+    # `Status.X.value` strings. Under `is`, a raw "done" matched nothing and this returned False for a
+    # genuinely-complete stage. Equality makes both spellings agree.
+    st = Status(status_map.get(stage, Status.NOT_STARTED))
+    return st == Status.DONE or (st == Status.FAILED and FAILURE_IS_TERMINAL[stage])
 
 
 def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_proposal: bool = False) -> bool:
@@ -230,8 +235,12 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
       ``DONE`` AND the stage itself not already ``DONE`` (ELIG-02 upstream conjuncts).
     """
     if stage in (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE):
-        status = status_map.get(stage, Status.NOT_STARTED)
-        return status not in (Status.DONE, Status.IN_FLIGHT) and (status is not Status.FAILED or ELIGIBLE_AFTER_FAILURE[stage])
+        # WR-03: coerce, then compare by VALUE. `Status` is a StrEnum, so a raw-`str` status_map (a SQL
+        # or JSON round-trip; `stage_status_case` emits `Status.X.value`) used to slip past
+        # `status is not Status.FAILED` -- identity fails for an equal string -- and reported a FAILED
+        # analyze as ELIGIBLE. That is the 44.5K over-enqueue class ELIG-03 exists to guard.
+        status = Status(status_map.get(stage, Status.NOT_STARTED))
+        return status not in (Status.DONE, Status.IN_FLIGHT) and (status != Status.FAILED or ELIGIBLE_AFTER_FAILURE[stage])
     if stage is Stage.APPLY:
         return has_approved_proposal and status_map.get(Stage.APPLY, Status.NOT_STARTED) != Status.DONE
     upstream_done = all(status_map.get(u, Status.NOT_STARTED) == Status.DONE for u in ELIGIBILITY_DAG[stage])

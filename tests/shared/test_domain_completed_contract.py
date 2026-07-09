@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from phaze.enums.stage import FAILURE_IS_TERMINAL, Stage, Status, domain_completed
+from phaze.enums.stage import FAILURE_IS_TERMINAL, Stage, Status, domain_completed, eligible
 from phaze.services.stage_status import domain_completed_clause
 
 
@@ -80,3 +80,46 @@ def test_enrich_stages_still_build_and_evaluate(stage: Stage) -> None:
     assert domain_completed({stage: Status.NOT_STARTED}, stage) is False
     assert domain_completed({stage: Status.FAILED}, stage) is FAILURE_IS_TERMINAL[stage]
     assert domain_completed_clause(stage) is not None
+
+
+# WR-03 (surfaced by the Phase 81 security audit): `Status` is a StrEnum, so a status_map that came
+# back through a SQL or JSON round-trip carries raw `str`s -- and `stage_status_case` emits exactly
+# `Status.X.value`. The predicates used to compare with `is`, which is False for an equal-but-distinct
+# string. `eligible({ANALYZE: "failed"}, ANALYZE)` therefore returned True: a terminally-failed analyze
+# reported as eligible, the 44.5K over-enqueue class ELIG-03 exists to guard. Python even warns:
+# SyntaxWarning: "is" with 'str' literal.
+
+
+@pytest.mark.parametrize("stage", ENRICH_STAGES)
+@pytest.mark.parametrize("status", list(Status))
+def test_eligible_agrees_between_enum_and_raw_string_status(stage: Stage, status: Status) -> None:
+    """`eligible` must return the same answer for `Status.X` and its raw `.value` string."""
+    assert eligible({stage: status}, stage) == eligible({stage: status.value}, stage)
+
+
+@pytest.mark.parametrize("stage", ENRICH_STAGES)
+@pytest.mark.parametrize("status", list(Status))
+def test_domain_completed_agrees_between_enum_and_raw_string_status(stage: Stage, status: Status) -> None:
+    """`domain_completed` must return the same answer for `Status.X` and its raw `.value` string."""
+    assert domain_completed({stage: status}, stage) == domain_completed({stage: status.value}, stage)
+
+
+def test_raw_failed_analyze_is_not_eligible() -> None:
+    """The specific regression: a raw-string FAILED analyze must stay INELIGIBLE (ELIG-03)."""
+    assert eligible({Stage.ANALYZE: "failed"}, Stage.ANALYZE) is False
+    assert domain_completed({Stage.ANALYZE: "failed"}, Stage.ANALYZE) is True
+
+
+def test_raw_failed_fingerprint_stays_eligible() -> None:
+    """And the mirror: a raw-string FAILED fingerprint stays ELIGIBLE for auto-retry (ELIG-04)."""
+    assert eligible({Stage.FINGERPRINT: "failed"}, Stage.FINGERPRINT) is True
+    assert domain_completed({Stage.FINGERPRINT: "failed"}, Stage.FINGERPRINT) is False
+
+
+@pytest.mark.parametrize("bogus", ["Done", "DONE", "", "unknown", "fail"])
+def test_invalid_status_string_fails_loud(bogus: str) -> None:
+    """An unrecognised status must raise, never silently read as NOT_STARTED."""
+    with pytest.raises(ValueError):
+        eligible({Stage.ANALYZE: bogus}, Stage.ANALYZE)
+    with pytest.raises(ValueError):
+        domain_completed({Stage.ANALYZE: bogus}, Stage.ANALYZE)
