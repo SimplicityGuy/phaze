@@ -271,7 +271,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
-| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 3/6 | In Progress|  |
+| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 5/6 | In Progress|  |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -418,8 +418,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 83-04-PLAN.md — Callback CAS collapse: `report_upload_failed` + `report_push_mismatch` (D-09/D-10/D-11/D-12/D-03, SC#2)
-- [ ] 83-05-PLAN.md — Go-forward hold-path cutover + shadow-gate green (D-01, D-00d)
+- [x] 83-04-PLAN.md — Callback CAS collapse: `report_upload_failed` + `report_push_mismatch` (D-09/D-10/D-11/D-12/D-03, SC#2)
+- [x] 83-05-PLAN.md — Go-forward hold-path cutover + shadow-gate green (D-01, D-00d)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
