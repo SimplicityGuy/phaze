@@ -203,12 +203,17 @@ async def put_analysis(
     payload = {**dumped, "file_id": file_id, "id": uuid.uuid4()}
     stmt = pg_insert(AnalysisResult).values([payload])
     if dumped:
-        # `set_` covers ONLY the user-provided fields (D-14 field-level LWW);
-        # excludes file_id AND id from the SET clause (both are conflict-target /
-        # immutable PK -- existing row keeps its existing id).
+        # `set_` covers the user-provided fields (D-14 field-level LWW) PLUS an UNCONDITIONAL
+        # failure-marker clear (Phase 81 FAIL-01 / D-13): a real analysis success must wipe any
+        # `failed_at`/`error_message` left by a prior `report_analysis_failed`, else a successful
+        # (re)analysis reads FAILED forever. `failed_at`/`error_message` sit OUTSIDE `exclude_unset`
+        # (the wire body never carries them). Clearing `failed_at` here is ALSO what lets the
+        # completion branch below stamp `analysis_completed_at` without violating the migration-033
+        # XOR CHECK (both columns can never be non-NULL). Excludes file_id AND id from the SET clause
+        # (both are conflict-target / immutable PK -- existing row keeps its existing id).
         stmt = stmt.on_conflict_do_update(
             index_elements=["file_id"],
-            set_={k: stmt.excluded[k] for k in dumped},
+            set_={**{k: stmt.excluded[k] for k in dumped}, "failed_at": None, "error_message": None},
         )
     else:
         # Empty body -- no-op for existing rows; INSERT still happens for fresh ones.
