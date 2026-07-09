@@ -192,7 +192,17 @@ def domain_completed(status_map: Mapping[Stage, Status], stage: Stage) -> bool:
     :func:`phaze.services.stage_status.domain_completed_clause`; the two are drift-locked by the Phase 78
     equivalence test (``tests/integration/test_stage_status_equivalence.py``). It is the durable "we tried
     and it is un-processable" fact the 44.5K over-enqueue guard rests on (D-17).
+
+    Defined ONLY for the three enrich stages (the keys of :data:`FAILURE_IS_TERMINAL`). The downstream
+    stages have NO domain predicate by design — ``phaze.tasks.reenqueue`` classifies them "live-keys-only"
+    because their terminal ack clears the ledger row on every outcome. Raising here (rather than defaulting)
+    keeps that exclusion explicit and total: a caller that reaches for terminality on ``propose``/``review``
+    is asking a question this layer has deliberately not answered. The SQL twin raises identically.
     """
+    if stage not in FAILURE_IS_TERMINAL:
+        raise ValueError(
+            f"domain_completed is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {stage.value!r}"
+        )
     st = status_map.get(stage, Status.NOT_STARTED)
     return st is Status.DONE or (st is Status.FAILED and FAILURE_IS_TERMINAL[stage])
 

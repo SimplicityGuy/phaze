@@ -179,7 +179,16 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     When ``FAILURE_IS_TERMINAL[stage]`` is ``False`` (fingerprint) the failure disjunct is dropped and
     the clause collapses to bare ``done_clause`` -- a FAILED fingerprint is NOT domain-complete (it
     auto-retries, ELIG-04).
+
+    Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.FAILURE_IS_TERMINAL`),
+    matching the Python twin. Without this guard the bare subscript raised ``KeyError`` for the four
+    downstream stages while the Python twin happily returned ``True`` for a ``DONE`` one -- a silent twin
+    divergence on every non-failed downstream row.
     """
+    if stage not in FAILURE_IS_TERMINAL:
+        raise ValueError(
+            f"domain_completed_clause is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {stage.value!r}"
+        )
     if FAILURE_IS_TERMINAL[stage]:
         return or_(done_clause(stage), failed_clause(stage))
     return done_clause(stage)
