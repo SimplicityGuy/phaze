@@ -26,9 +26,11 @@ The policy encodes (RESEARCH § "Pattern 2" + § "Novel Mechanism 3"):
 
 Signature note: attempts live on the file's `cloud_job` row, not on `FileRecord`, so the drain
 passes `cloud_attempts` explicitly rather than reading `file.cloud_attempts` (RESEARCH pseudocode
-used `file.cloud_attempts`; the real model has no such attribute). The function reads
-`file.updated_at` -- for a file parked in `AWAITING_CLOUD` this is its entry timestamp (no writer
-touches a parked row), so `now - file.updated_at` is exactly its wait duration (RESEARCH Q2).
+used `file.cloud_attempts`; the real model has no such attribute). The staleness clock is likewise
+passed explicitly as `lane_entered_at` -- Phase 83 (D-07) moved it from `file.updated_at` to the
+awaiting `cloud_job.updated_at`, because Phase 90 removes the dual-written `file.state` (and thus the
+`file.updated_at` lane-entry stamp), which would otherwise silently break `now - lane_entered_at` as
+the wait duration. FIFO ordering stays on the immutable `FileRecord.created_at` in the drain query.
 
 Local detection is `isinstance(slot["backend"], LocalBackend)`, NOT a rank-99 literal
 (RESEARCH Open Q4): rank is operator-tunable config; the class identity is the ground truth.
@@ -48,7 +50,6 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from phaze.config import ControlSettings
-    from phaze.models.file import FileRecord
     from phaze.services.backends import Backend
 
 
@@ -78,16 +79,17 @@ def _utilization(slot: BackendSlot) -> float:
 
 
 def select_backend(
-    file: FileRecord,
+    lane_entered_at: datetime,
     cloud_attempts: int,
     snapshot: dict[str, BackendSlot],
     now: datetime,
     cfg: ControlSettings,
 ) -> Backend | None:
-    """Return the backend to dispatch `file` to this tick, or `None` to hold it (never raises).
+    """Return the backend to dispatch this candidate to this tick, or `None` to hold it (never raises).
 
-    Pure and synchronous -- reads only `file.updated_at`, the in-memory `snapshot`, `cloud_attempts`,
-    and the two bounded config knobs. Encodes SCHED-01/04 + D-01/D-03/D-04/D-06 (see module docstring).
+    Pure and synchronous -- reads only `lane_entered_at` (the awaiting `cloud_job.updated_at` staleness
+    clock, D-07), the in-memory `snapshot`, `cloud_attempts`, and the two bounded config knobs. Encodes
+    SCHED-01/04 + D-01/D-03/D-04/D-06 (see module docstring).
     """
     # 1. Eligible = available AND has a free slot.
     eligible = [slot for slot in snapshot.values() if slot["available"] and slot["remaining"] > 0]
@@ -105,7 +107,7 @@ def select_backend(
     #    `any_non_local_online` keys off `available` (online-ness), distinguishing "cloud OFFLINE"
     #    (-> local now) from "cloud online but FULL" (-> local gated behind the wait threshold).
     any_non_local_online = any(slot["available"] for slot in snapshot.values() if not isinstance(slot["backend"], LocalBackend))
-    waited = (now - file.updated_at).total_seconds() >= cfg.cloud_spill_to_local_after_seconds
+    waited = (now - lane_entered_at).total_seconds() >= cfg.cloud_spill_to_local_after_seconds
     local_ok = (not any_non_local_online) or waited or attempts_exhausted
     if not local_ok:
         eligible = [slot for slot in eligible if not isinstance(slot["backend"], LocalBackend)]

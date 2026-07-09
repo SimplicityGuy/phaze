@@ -42,3 +42,30 @@ in two different buckets. A single hygiene task should address both.
 - **Disposition:** DEFERRED — pre-existing test-infra hermeticity defect, out of scope for the
   D-14 reaper plan. A future hygiene task should make the agents bucket hermetic (e.g. truncate
   shared tables per test, or a session-scoped engine with per-test transactional rollback).
+
+## 83-06 — backfill-held COMPUTE files carry a `process_file` recovery-ledger row the new drain conjunct now excludes
+
+- **Found during:** Plan 83-06, Task 2 (drain cutover), while reconciling the existing
+  `tests/shared/routers/test_pipeline.py` backfill tests against `~inflight_clause(ANALYZE)`.
+- **Interaction:** `trigger_backfill_cloud` (`src/phaze/routers/pipeline.py:861-876`) HOLDS a long
+  ANALYSIS_FAILED file in `AWAITING_CLOUD` (via `hold_awaiting_cloud` -> an `awaiting` cloud_job row)
+  **and**, for the **compute** target only, also seeds a `process_file:<id>` scheduling-ledger row so
+  `recover_orphaned_work` can replay it (the k8s branch deliberately SKIPS this seed, `:842-845`). The
+  Phase-83 drain cutover (D-05) now excludes any file with a `process_file` ledger row via
+  `~inflight_clause(ANALYZE)`. Pre-83 the drain read `state == AWAITING_CLOUD` and therefore DID pick
+  up such a backfill-held compute file; post-83 it does not.
+- **Effect:** a backfill-held **compute** file is skipped by `stage_cloud_window` (its recovery-seed
+  ledger row reads as "analyze in flight") and instead falls to LOCAL analysis via
+  `recover_orphaned_work` — i.e. mis-routed off the compute backend, NOT stranded forever. The
+  `AWAITING_CLOUD` hold + the retained awaiting cloud_job row are otherwise intact. (The k8s backfill
+  path is unaffected — it seeds no ledger row.)
+- **Why out of scope for 83-06:** `routers/pipeline.py` (the backfill endpoint) is NOT in this plan's
+  `files_modified`, and D-05 (`~inflight_clause(ANALYZE)` verbatim) is a LOCKED decision. Aligning the
+  backfill compute path (e.g. drop the `process_file` ledger seed for compute, mirroring the k8s
+  branch, and rely on the `cloud_job` awaiting row as the in-flight registry) is an architectural
+  change spanning unowned code + the recovery contract (`recover_orphaned_work`) — a Rule-4 decision
+  for the phase owner / milestone audit, not an auto-fix.
+- **Not covered by any test:** no test exercises backfill -> `stage_cloud_window` dispatch, so the
+  suite stays green; this is a latent behavioral interaction, flagged here for the verifier.
+- **Disposition:** DEFERRED — assign to the backfill/recovery owner (or the Phase-90 cutover) to
+  decide whether the compute backfill should stop seeding the `process_file` ledger row.

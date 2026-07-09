@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import text
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
@@ -1491,8 +1492,18 @@ async def test_get_discovered_files_with_duration_excludes_other_states(session:
 
 @pytest.mark.asyncio
 async def test_get_awaiting_cloud_count_happy_path(session: AsyncSession) -> None:
-    """Counts exactly the files in AWAITING_CLOUD; other states are excluded (D-05)."""
-    session.add_all([_file(4, FileState.AWAITING_CLOUD), _file(5, FileState.AWAITING_CLOUD), _file(6, FileState.DISCOVERED)])
+    """Counts exactly the genuinely-parked awaiting cloud_job rows; other states are excluded (Phase 83, D-15)."""
+    a, b, discovered = _file(4, FileState.AWAITING_CLOUD), _file(5, FileState.AWAITING_CLOUD), _file(6, FileState.DISCOVERED)
+    session.add_all([a, b, discovered])
+    await session.commit()
+    # Phase 83: the count derives from cloud_job(status='awaiting'), not FileRecord.state -- the two held
+    # files carry their sidecar rows; the DISCOVERED file has none (and would not be a drain candidate).
+    session.add_all(
+        [
+            CloudJob(id=uuid.uuid4(), file_id=a.id, status=CloudJobStatus.AWAITING.value),
+            CloudJob(id=uuid.uuid4(), file_id=b.id, status=CloudJobStatus.AWAITING.value),
+        ]
+    )
     await session.commit()
 
     assert await get_awaiting_cloud_count(session) == 2

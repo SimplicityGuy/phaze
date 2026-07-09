@@ -16,10 +16,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import inspect
 from typing import Any
-import uuid
 
 from phaze.config import ControlSettings
-from phaze.models.file import FileRecord, FileState
 from phaze.services.backend_selection import BackendSlot, select_backend
 from phaze.services.backends import ComputeAgentBackend, KueueBackend, LocalBackend
 
@@ -56,23 +54,6 @@ def _snapshot(*slots: BackendSlot) -> dict[str, BackendSlot]:
     return {slot["backend"].id: slot for slot in slots}
 
 
-def _file(*, updated_at: datetime) -> FileRecord:
-    """A minimal AWAITING_CLOUD FileRecord with a controllable `updated_at` (never persisted)."""
-    uid = uuid.uuid4()
-    file = FileRecord(
-        id=uid,
-        sha256_hash=uid.hex,
-        original_path=f"/music/{uid.hex}.mp3",
-        original_filename=f"{uid.hex}.mp3",
-        current_path=f"/music/{uid.hex}.mp3",
-        file_type="mp3",
-        file_size=1000,
-        state=FileState.AWAITING_CLOUD,
-    )
-    file.updated_at = updated_at
-    return file
-
-
 def _cfg(*, spill_after: int = 900, max_attempts: int = 3) -> ControlSettings:
     return ControlSettings(
         cloud_spill_to_local_after_seconds=spill_after,
@@ -88,7 +69,7 @@ def test_rank_first_picks_lowest_rank_available() -> None:
     b0 = _compute(id="rank0", rank=0, cap=4)
     b5 = _compute(id="rank5", rank=5, cap=4)
     snap = _snapshot(_slot(b0, remaining=4), _slot(b5, remaining=4))
-    picked = select_backend(_file(updated_at=NOW), 0, snap, NOW, _cfg())
+    picked = select_backend(NOW, 0, snap, NOW, _cfg())
     assert picked is b0
 
 
@@ -97,7 +78,7 @@ def test_spill_when_lowest_rank_full_picks_next_rank() -> None:
     b0 = _compute(id="rank0", rank=0, cap=4)
     b5 = _compute(id="rank5", rank=5, cap=4)
     snap = _snapshot(_slot(b0, remaining=0), _slot(b5, remaining=4))
-    picked = select_backend(_file(updated_at=NOW), 0, snap, NOW, _cfg())
+    picked = select_backend(NOW, 0, snap, NOW, _cfg())
     assert picked is b5
 
 
@@ -119,11 +100,11 @@ def test_mcomp04_compute_rank_cap_spread_prefers_free_arm64_then_spills_to_paid_
 
     # Both lanes have free slots -> the lower-rank (free) lane wins.
     both_free = _snapshot(_slot(free_arm64, remaining=2), _slot(paid_x86, remaining=2))
-    assert select_backend(_file(updated_at=NOW), 0, both_free, NOW, _cfg()) is free_arm64
+    assert select_backend(NOW, 0, both_free, NOW, _cfg()) is free_arm64
 
     # Free lane at cap (remaining==0) -> spill the next candidate to the paid lane, not a hold.
     free_full = _snapshot(_slot(free_arm64, remaining=0), _slot(paid_x86, remaining=2))
-    assert select_backend(_file(updated_at=NOW), 0, free_full, NOW, _cfg()) is paid_x86
+    assert select_backend(NOW, 0, free_full, NOW, _cfg()) is paid_x86
 
 
 # --- D-03: offline -> local is immediate (NOT staleness-gated) ----------------------------
@@ -138,7 +119,7 @@ def test_offline_all_non_local_spills_to_local_immediately() -> None:
         _slot(local, remaining=10),
     )
     # updated_at == now -> zero wait; offline path must NOT be gated by the staleness threshold.
-    picked = select_backend(_file(updated_at=NOW), 0, snap, NOW, _cfg())
+    picked = select_backend(NOW, 0, snap, NOW, _cfg())
     assert picked is local
 
 
@@ -153,8 +134,8 @@ def test_stale_full_to_local_gated_before_threshold_holds() -> None:
         _slot(compute, available=True, remaining=0),  # online but full
         _slot(local, remaining=10),
     )
-    file = _file(updated_at=NOW - timedelta(seconds=300))  # waited 300s < 900s threshold
-    assert select_backend(file, 0, snap, NOW, _cfg(spill_after=900)) is None
+    entered = NOW - timedelta(seconds=300)  # lane entry 300s ago < 900s threshold
+    assert select_backend(entered, 0, snap, NOW, _cfg(spill_after=900)) is None
 
 
 def test_stale_full_to_local_after_threshold_spills() -> None:
@@ -165,8 +146,8 @@ def test_stale_full_to_local_after_threshold_spills() -> None:
         _slot(compute, available=True, remaining=0),
         _slot(local, remaining=10),
     )
-    file = _file(updated_at=NOW - timedelta(seconds=1200))  # waited 1200s >= 900s threshold
-    assert select_backend(file, 0, snap, NOW, _cfg(spill_after=900)) is local
+    entered = NOW - timedelta(seconds=1200)  # lane entry 1200s ago >= 900s threshold
+    assert select_backend(entered, 0, snap, NOW, _cfg(spill_after=900)) is local
 
 
 # --- D-04: attempt-exclusion forces local -------------------------------------------------
@@ -181,7 +162,7 @@ def test_attempt_exhausted_excludes_cloud_routes_local() -> None:
         _slot(local, remaining=10),
     )
     # attempts == max (3) -> cloud excluded; local not staleness-gated because budget spent.
-    picked = select_backend(_file(updated_at=NOW), 3, snap, NOW, _cfg(max_attempts=3))
+    picked = select_backend(NOW, 3, snap, NOW, _cfg(max_attempts=3))
     assert picked is local
 
 
@@ -190,7 +171,7 @@ def test_attempt_below_max_still_prefers_cloud() -> None:
     compute = _compute(id="compute-a1", rank=10, cap=2)
     local = _local()
     snap = _snapshot(_slot(compute, remaining=2), _slot(local, remaining=10))
-    picked = select_backend(_file(updated_at=NOW), 2, snap, NOW, _cfg(max_attempts=3))
+    picked = select_backend(NOW, 2, snap, NOW, _cfg(max_attempts=3))
     assert picked is compute
 
 
@@ -202,10 +183,9 @@ def test_stateless_rerank_repicks_same_backend_after_prior_failure() -> None:
     compute = _compute(id="compute-a1", rank=10, cap=2)
     local = _local()
     snap = _snapshot(_slot(compute, remaining=2), _slot(local, remaining=10))
-    file = _file(updated_at=NOW)
     # Simulate a prior tick that "failed" on compute; the counter has not yet crossed the cap.
-    first = select_backend(file, 1, snap, NOW, _cfg(max_attempts=3))
-    second = select_backend(file, 1, snap, NOW, _cfg(max_attempts=3))
+    first = select_backend(NOW, 1, snap, NOW, _cfg(max_attempts=3))
+    second = select_backend(NOW, 1, snap, NOW, _cfg(max_attempts=3))
     assert first is compute
     assert second is compute  # re-picked, no per-file backend memory
 
@@ -213,7 +193,7 @@ def test_stateless_rerank_repicks_same_backend_after_prior_failure() -> None:
 def test_stateless_signature_has_no_last_failed_parameter() -> None:
     """D-06: the function carries no 'last-failed backend' / history parameter."""
     params = list(inspect.signature(select_backend).parameters)
-    assert params == ["file", "cloud_attempts", "snapshot", "now", "cfg"]
+    assert params == ["lane_entered_at", "cloud_attempts", "snapshot", "now", "cfg"]
 
 
 # --- SCHED-04: tie-break by utilization then stable id ------------------------------------
@@ -227,7 +207,7 @@ def test_tiebreak_prefers_lower_utilization() -> None:
         _slot(busy, remaining=1, cap=4),  # util = (4-1)/4 = 0.75
         _slot(idle, remaining=3, cap=4),  # util = (4-3)/4 = 0.25
     )
-    picked = select_backend(_file(updated_at=NOW), 0, snap, NOW, _cfg())
+    picked = select_backend(NOW, 0, snap, NOW, _cfg())
     assert picked is idle
 
 
@@ -239,7 +219,7 @@ def test_tiebreak_equal_utilization_breaks_on_stable_id() -> None:
         _slot(a, remaining=2, cap=4),  # util 0.5
         _slot(b, remaining=2, cap=4),  # util 0.5
     )
-    picked = select_backend(_file(updated_at=NOW), 0, snap, NOW, _cfg())
+    picked = select_backend(NOW, 0, snap, NOW, _cfg())
     assert picked is a
 
 
@@ -255,9 +235,9 @@ def test_hold_returns_none_when_no_backend_eligible() -> None:
         _slot(kueue, available=True, remaining=0),
     )
     # No local slot at all + all cloud unavailable/full + fresh file -> hold.
-    assert select_backend(_file(updated_at=NOW), 0, snap, NOW, _cfg()) is None
+    assert select_backend(NOW, 0, snap, NOW, _cfg()) is None
 
 
 def test_hold_when_empty_snapshot() -> None:
     """An empty snapshot -> None (hold), never raises / never divides by zero."""
-    assert select_backend(_file(updated_at=NOW), 0, {}, NOW, _cfg()) is None
+    assert select_backend(NOW, 0, {}, NOW, _cfg()) is None
