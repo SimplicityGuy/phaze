@@ -271,7 +271,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
-| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 3/6 | In Progress|  |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -412,9 +412,9 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 83-01-PLAN.md — Shared `hold_awaiting_cloud()` writer helper (D-00a/b/c, D-01, D-02, D-03, D-13)
-- [ ] 83-02-PLAN.md — Corpus-repair migration `034` + idempotent-backfill test (D-04)
-- [ ] 83-03-PLAN.md — D-14 inert awaiting-row reaper at the two analyze-terminal seams
+- [x] 83-01-PLAN.md — Shared `hold_awaiting_cloud()` writer helper (D-00a/b/c, D-01, D-02, D-03, D-13)
+- [x] 83-02-PLAN.md — Corpus-repair migration `034` + idempotent-backfill test (D-04)
+- [x] 83-03-PLAN.md — D-14 inert awaiting-row reaper at the two analyze-terminal seams
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
