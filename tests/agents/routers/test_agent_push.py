@@ -625,12 +625,18 @@ async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger
     Phase 69 (D-04): a compute push that exhausts its push_max_attempts re-drives no longer hard-fails.
     The file spills back to AWAITING_CLOUD so the next drain tick can route it to local -- ANALYSIS_FAILED
     now comes only from a LOCAL analysis failure. ``cleared`` stays True (the ledger row is cleared).
+    Phase 83 (SC#1/D-12/D-03): the spill CAS anchors on ``cloud_job.status == 'submitted'`` and re-stamps
+    the row to ``status='awaiting'`` (NOT 'failed') so the FileRecord dual-write + ledger clear fire behind
+    that rowcount -- a compute cloud_job row (seeded 'submitted') is REQUIRED for the spill to fire.
     """
     agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, backends_toml_env)
+    # Reporter registry: the seeded compute cloud_job's agent_ref == the reporting agent so D-07 passes.
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     # Already at the cap: the next attempt (4) exceeds push_max_attempts=3.
     await _seed_push_ledger(session, file_id, push_attempt=3)
+    # SC#1/D-12: the spill CAS keys on cloud_job.status=='submitted' -- seed the compute sidecar row so it fires.
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
     await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
 
     task_router = FakeTaskRouter()
@@ -647,8 +653,10 @@ async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row must be cleared on spill"
     # No re-drive enqueue happened.
     assert task_router.queues == {}
-    # A non-compute file (no cloud_job row) simply spills -- the cloud_job UPDATE is a 0-row no-op.
-    assert await _cloud_job_row(session, file_id) is None
+    # D-03: the cloud_job row is re-stamped submitted -> awaiting (NOT failed) so AWAITING_CLOUD => status='awaiting'.
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.AWAITING.value
 
 
 @pytest.mark.asyncio
@@ -694,9 +702,10 @@ async def test_push_mismatch_over_cap_compute_spill_marks_cloud_budget_spent(
     """SCHED-03/D-04 compute_spill: a COMPUTE file hitting the cap spills to AWAITING_CLOUD with cloud budget spent.
 
     ComputeAgentBackend.dispatch writes the cloud_job row as SUBMITTED (in the D-10 in-flight set). On the
-    cap spill the row must be terminalized (FAILED, drained from the in-flight set so in_flight_count stays
-    honest) AND its ``attempts`` bumped to >= cloud_submit_max_attempts so select_backend excludes cloud on
-    the next drain tick and routes the spilled file to LOCAL (D-04 total-cloud budget).
+    cap spill the row is re-stamped submitted -> awaiting (Phase 83 D-03: NOT 'failed', so the hard shadow
+    invariant AWAITING_CLOUD => status='awaiting' holds -- 'awaiting' is not in IN_FLIGHT, so in_flight_count
+    stays honest) AND its ``attempts`` bumped to >= cloud_submit_max_attempts so select_backend excludes
+    cloud on the next drain tick and routes the spilled file to LOCAL (D-04 total-cloud budget).
     """
     agent, raw_token = seed_test_agent
     # Reporter registry: the recorded backend's agent_ref == the reporting compute agent so D-07 passes
@@ -717,11 +726,11 @@ async def test_push_mismatch_over_cap_compute_spill_marks_cloud_budget_spent(
 
     file_row = await _file_row(session, file_id)
     assert file_row.state == FileState.AWAITING_CLOUD  # spill, not ANALYSIS_FAILED
-    # The compute cloud_job row is terminalized (drained from the D-10 in-flight set) AND its cloud
-    # budget is marked spent so the next drain tick routes the file to local (D-04).
+    # D-03: the compute cloud_job row is re-stamped submitted -> awaiting (drained from the D-10 in-flight
+    # set) AND its cloud budget is marked spent so the next drain tick routes the file to local (D-04).
     cloud_job = await _cloud_job_row(session, file_id)
     assert cloud_job is not None
-    assert cloud_job.status == CloudJobStatus.FAILED.value
+    assert cloud_job.status == CloudJobStatus.AWAITING.value
     assert cloud_job.attempts >= settings.cloud_submit_max_attempts, "cloud budget must be marked spent -> select_backend picks local"
 
 
