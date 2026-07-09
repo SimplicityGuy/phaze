@@ -130,6 +130,11 @@ All `<threat_model>` mitigations implemented: T-81-03-01 (path-only file_id keyi
 - FAIL-02 writer is live (go-forward only, no backfill per D-03). Phase 80 recovery derivation can now rely on a persisted metadata failure marker.
 - D-04 holds: no change to the Phase 78 `done_clause`/`failed_clause(METADATA)`; the Phase 79 shadow gate should stay green at wave merge (verified at the orchestrator's integration step, not here).
 
+## Self-Check: PASSED
+
+- SUMMARY.md present.
+- Commits verified: `d6d76e4f`, `76dd52e4`, `7b02fe72`, `0a93e581`.
+
 ---
 *Phase: 81-per-stage-failure-persistence-retry-paths*
 *Completed: 2026-07-09*
