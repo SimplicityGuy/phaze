@@ -346,14 +346,15 @@ Plans:
 
 ### Phase 80: Recovery / Re-enqueue Cutover
 
-**Goal**: Cut `reenqueue.py` and `reconcile_cloud_jobs.py` over to derive their done/in-flight sets from `stage_status`/sidecars with **no `FileRecord.state` read** — deliberately BEFORE the pending-set/counts readers, so recovery's "absent from pending" definition of done is not silently redefined under it through the new `in_flight` term (double-negation dependency).
-**Depends on**: Phase 78, Phase 79
+**Goal**: Cut `reenqueue.py` and `reconcile_cloud_jobs.py` over to derive their done/in-flight sets from `stage_status`/sidecars with **no `FileRecord.state` read**, and retire the single residual `FileRecord.state` write in `reconcile_cloud_jobs.py` (the at-cap spill-back) so both named files are fully state-free — deliberately BEFORE the pending-set/counts readers, so recovery's "absent from pending" definition of done is not silently redefined under it through the new `in_flight` term (double-negation dependency), and AFTER the writer-cutover phases (81, 83) that keep the derived sources live past the one-time `032` backfill.
+**Depends on**: Phase 78, Phase 79, Phase 81, Phase 83
 **Requirements**: READ-03
 **Success Criteria** (what must be TRUE):
 
-  1. `recover_orphaned_work` and `reconcile_cloud_jobs` derive their done/in-flight sets entirely from the Phase-78 registry + sidecars, with zero `FileRecord.state` reads.
+  1. `recover_orphaned_work` and `reconcile_cloud_jobs` derive their done/in-flight sets entirely from the Phase-78 registry + sidecars, with zero `FileRecord.state` reads; and the at-cap spill-back in `reconcile_cloud_jobs.py` writes the cloud sidecar instead of `FileRecord.state`, preserving the MKUE-04 clean-before-flip ordering under the held per-row advisory lock.
   2. The scheduling-ledger recovery contract and the "only previously-scheduled work recovers" guarantee are preserved — a regression test asserts a never-scheduled `discovered` file is not recovered (guards the over-enqueue class).
-  3. The shadow-compare gate (Phase 79) stays green after the cutover.
+  3. A failed **analyze** is never produced by any automatic recovery path — `FAILURE_IS_TERMINAL[analyze]` is encoded at the recovery layer, not just the derivation layer (guards the same over-enqueue class).
+  4. The shadow-compare gate (Phase 79) stays green after the cutover.
 
 **Plans**: TBD
 
@@ -387,7 +388,7 @@ Plans:
 ### Phase 83: Cloud-Routing Sidecar Cutover
 
 **Goal**: Represent cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar (and/or derived `in_flight(analyze)`) as **one atomic consistency domain** — the drain-candidate query, the dispatch route flips, and the CAS-guard collapse — closing the missing-CAS-guard bug.
-**Depends on**: Phase 82
+**Depends on**: Phase 78, Phase 79, Phase 81
 **Requirements**: SIDECAR-01
 **Success Criteria** (what must be TRUE):
 
@@ -396,6 +397,8 @@ Plans:
   3. The shadow-compare gate stays green and no double-dispatch / re-pick window is introduced (integration test).
 
 **Plans**: TBD
+**Scope exclusion**: `tasks/reconcile_cloud_jobs.py` is owned by **Phase 80** (80-CONTEXT D-04) — its at-cap spill-back write is retired there, not here. This phase covers the sibling cloud-routing writers (`routers/agent_push.py`, `routers/pipeline.py`, `routers/agent_s3.py`) and the drain-candidate / dispatch reads.
+**Note (deps)**: Rewired off Phase 82 to break the `80 → 83 → 82 → 80` cycle. Phase 83 shares no requirement with 82 (pending sets / `get_pipeline_stats`); it needs the derivation layer (78), the shadow-compare gate (79), and the analyze failure marker (81) that `LOCAL_ANALYZING`-from-`in_flight(analyze)` and push-done-via-analyze-terminal both read. Because this phase now runs BEFORE 82 (the milestone thesis), its drain-re-pick hazard lands earlier — the integration test below is a hard gate, not a recommendation.
 **Note**: Flagged for phase-level research at plan-time — the `AWAITING_CLOUD`/`PUSHED` drain-re-pick hazard is the sharpest new-regression risk in the milestone (recommend a live/integration test before committing the drain-candidate query).
 
 ### Phase 84: Dedup & Fingerprint-Progress Cutover
