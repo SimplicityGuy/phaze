@@ -69,6 +69,25 @@ ELIGIBILITY_DAG: dict[Stage, tuple[Stage, ...]] = {
 }
 
 
+# D-15: two ORTHOGONAL axes for the three enrich stages — conflating them is a live trap.
+#
+# FAILURE_IS_TERMINAL answers "does a FAILED stage count as domain-complete, so recovery must NOT
+# re-run it?" (used by ``domain_completed`` + the ``domain_completed_clause`` SQL twin). A terminal
+# failure is the durable "we tried and it is un-processable" fact the 44.5K over-enqueue guard rests
+# on — analyze + metadata failures are terminal (retry is operator-driven), a fingerprint failure is
+# NOT (it auto-retries).
+#
+# ELIGIBLE_AFTER_FAILURE answers "is a FAILED stage still eligible to auto-retry?" (consumed by
+# ``eligible``). It is the exact negation of the analyze carve-out formerly inlined in ``eligible`` —
+# ANALYZE is False (ELIG-03 terminal, manual retry only), METADATA/FINGERPRINT are True (ELIG-04).
+#
+# Encoding FAIL-01 (analyze terminal) and FAIL-04 (fingerprint auto-retryable) as two named tables
+# stops the recovery guard and the fingerprint retry from being coincidences two readers (the pure
+# ``eligible`` path and the ``domain_completed`` recovery path) must independently remember.
+FAILURE_IS_TERMINAL: dict[Stage, bool] = {Stage.ANALYZE: True, Stage.METADATA: True, Stage.FINGERPRINT: False}
+ELIGIBLE_AFTER_FAILURE: dict[Stage, bool] = {Stage.ANALYZE: False, Stage.METADATA: True, Stage.FINGERPRINT: True}
+
+
 # --------------------------------------------------------------------------------------------------
 # Per-stage resolver twins — each applies the DERIV-02 precedence ladder with ``inflight`` first.
 # --------------------------------------------------------------------------------------------------
@@ -164,16 +183,33 @@ def resolve_status(stage: Stage, scalars: Mapping[str, Any]) -> Status:
     raise ValueError(f"unknown stage: {stage!r}")  # pragma: no cover - exhaustive dispatch above
 
 
+def domain_completed(status_map: Mapping[Stage, Status], stage: Stage) -> bool:
+    """Pure predicate: has ``stage`` reached a DOMAIN-COMPLETE state that recovery must NOT re-run?
+
+    ``DONE`` is always domain-complete; a ``FAILED`` stage is domain-complete ONLY when the failure is
+    terminal (:data:`FAILURE_IS_TERMINAL`) — i.e. analyze / metadata (retry is operator-driven) but NOT
+    fingerprint (which auto-retries). This is the DB-free twin of
+    :func:`phaze.services.stage_status.domain_completed_clause`; the two are drift-locked by the Phase 78
+    equivalence test (``tests/integration/test_stage_status_equivalence.py``). It is the durable "we tried
+    and it is un-processable" fact the 44.5K over-enqueue guard rests on (D-17).
+    """
+    st = status_map.get(stage, Status.NOT_STARTED)
+    return st is Status.DONE or (st is Status.FAILED and FAILURE_IS_TERMINAL[stage])
+
+
 def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_proposal: bool = False) -> bool:
     """Pure predicate: is ``stage`` eligible to run given the derived per-stage ``status_map``?
 
     Dispatched per stage — the enrich stages do NOT share one uniform rule (D-04 boundary; no DB):
 
-    - ``METADATA`` / ``FINGERPRINT``: eligible iff status NOT in ``(DONE, IN_FLIGHT)`` — i.e. eligible
-      when ``NOT_STARTED`` OR ``FAILED`` (ELIG-01 independence; ELIG-04 — a FAILED fingerprint is NOT
-      terminal and stays eligible for auto-retry; there is NO failure carve-out for these two).
-    - ``ANALYZE`` (the ONLY enrich carve-out): eligible iff status == ``NOT_STARTED`` — a FAILED analyze
-      is excluded (ELIG-03 terminal, retry is manual-only; the 44.5K over-enqueue guard). Mirrors
+    - ``METADATA`` / ``FINGERPRINT`` / ``ANALYZE`` (the three enrich stages): eligible iff status NOT in
+      ``(DONE, IN_FLIGHT)`` AND (status is not ``FAILED`` OR :data:`ELIGIBLE_AFTER_FAILURE`\\ ``[stage]``).
+      The per-stage failure axis lives in the :data:`ELIGIBLE_AFTER_FAILURE` table, not inlined here
+      (D-15/D-16). This yields IDENTICAL truth to the prior per-branch dispatch: METADATA/FINGERPRINT
+      (``True``) → eligible when ``NOT_STARTED`` OR ``FAILED`` (ELIG-01 independence; ELIG-04 — a FAILED
+      fingerprint is NOT terminal and stays eligible for auto-retry); ANALYZE (``False``, the ONLY enrich
+      carve-out) → eligible iff ``NOT_STARTED`` — a FAILED analyze is excluded (ELIG-03 terminal, retry is
+      manual-only; the 44.5K over-enqueue guard). Mirrors
       ``phaze.tasks.reenqueue._select_done_analyze_ids`` which treats ANALYSIS_FAILED as analyze-DONE so
       ``recover_orphaned_work`` never auto-loops an un-analyzable file (do NOT import it — kept DB-free).
     - ``APPLY``: eligible iff ``has_approved_proposal`` AND apply not already ``DONE`` — apply is gated on
@@ -183,10 +219,9 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
     - ``TRACKLIST`` / ``PROPOSE`` / ``REVIEW``: every upstream in ``ELIGIBILITY_DAG[stage]`` must be
       ``DONE`` AND the stage itself not already ``DONE`` (ELIG-02 upstream conjuncts).
     """
-    if stage in (Stage.METADATA, Stage.FINGERPRINT):
-        return status_map.get(stage, Status.NOT_STARTED) not in (Status.DONE, Status.IN_FLIGHT)
-    if stage is Stage.ANALYZE:
-        return status_map.get(Stage.ANALYZE, Status.NOT_STARTED) == Status.NOT_STARTED
+    if stage in (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE):
+        status = status_map.get(stage, Status.NOT_STARTED)
+        return status not in (Status.DONE, Status.IN_FLIGHT) and (status is not Status.FAILED or ELIGIBLE_AFTER_FAILURE[stage])
     if stage is Stage.APPLY:
         return has_approved_proposal and status_map.get(Stage.APPLY, Status.NOT_STARTED) != Status.DONE
     upstream_done = all(status_map.get(u, Status.NOT_STARTED) == Status.DONE for u in ELIGIBILITY_DAG[stage])
