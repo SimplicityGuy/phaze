@@ -269,7 +269,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
-| 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 0/0 | Not started | - |
+| 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 4/6 | In Progress | - |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -374,10 +374,10 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 81-01-PLAN.md — DB-free terminality/eligibility tables + domain_completed twin + eligible() refactor (wave 1)
-- [ ] 81-02-PLAN.md — Migration 033 (mixed-row cleanup then CHECK) + ORM mirror + destructive-migration doc renumber (wave 1)
-- [ ] 81-03-PLAN.md — Metadata failure marker + optional-body endpoint + put_metadata clear-on-success (wave 1)
-- [ ] 81-04-PLAN.md — Fingerprint failure regression tests + docstrings (no new writer) (wave 1)
+- [x] 81-01-PLAN.md — DB-free terminality/eligibility tables + domain_completed twin + eligible() refactor (wave 1)
+- [x] 81-02-PLAN.md — Migration 033 (mixed-row cleanup then CHECK) + ORM mirror + destructive-migration doc renumber (wave 1)
+- [x] 81-03-PLAN.md — Metadata failure marker + optional-body endpoint + put_metadata clear-on-success (wave 1)
+- [x] 81-04-PLAN.md — Fingerprint failure regression tests + docstrings (no new writer) (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

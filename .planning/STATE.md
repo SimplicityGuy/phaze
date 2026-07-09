@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
 status: executing
-last_updated: "2026-07-09T04:57:11.480Z"
-last_activity: 2026-07-09 -- Phase 81 execution started
+last_updated: "2026-07-09T05:35:10.909Z"
+last_activity: 2026-07-09 -- Phase 81 wave 1 complete (81-02 shipped migration 033)
 progress:
   total_phases: 52
   completed_phases: 3
   total_plans: 13
-  completed_plans: 7
+  completed_plans: 11
   percent: 6
 ---
 
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 ## Current Position
 
 Phase: 81 (per-stage-failure-persistence-retry-paths) — EXECUTING
-Plan: 1 of 6
-Status: Executing Phase 81
-Last activity: 2026-07-09 -- Phase 81 execution started
+Plan: 5 of 6
+Status: Executing Phase 81 — wave 1 complete (plans 01-04), wave 2 (plans 05-06) pending
+Last activity: 2026-07-09 -- Phase 81 wave 1 complete (81-02 shipped migration 033)
 
 ## Performance Metrics
 
@@ -135,6 +135,8 @@ Last activity: 2026-07-09 -- Phase 81 execution started
 - [Phase 77]: 77-03: migration 032 lands the additive DDL mirroring 77-02 byte-for-byte + set-based read-only backfill from files.state; analyze-failed marker is an INSERT..ON CONFLICT (file_id) DO UPDATE UPSERT (report_analysis_failed writes no analysis row); dedup canonical derived deterministically (ORDER BY c.id LIMIT 1, nullable); cloud awaiting/uploading/uploaded gap-filled; metadata NOT backfilled (D-03); LOCAL_ANALYZING no row (D-05); files.state never written; saq_jobs never referenced
 - [Phase 77]: 77-03: empty-autogenerate-diff (PERF-01 SC#2) AUTOMATED via compare_metadata(compare_type=True) over run_sync, scoped to the 032 object set to ignore pre-existing unrelated ORM↔DB drift (naive DateTime TimestampMixin vs timestamptz on legacy tables; dropped search_vector/trgm indexes); ix_fprint_success KEPT (= ANY(ARRAY[...]) round-trips clean) — drop-and-defer contingency NOT triggered
 - [Phase 77]: 77-03: integration test deletes ALL cloud_job rows before downgrade (029 precedent) — backfilled NULL-s3_key uploading/uploaded rows trip migration 029's s3_key NOT NULL re-imposition on the teardown walk to base; the migrations-test DB can be left poisoned by a mid-downgrade abort (reset schema to recover)
+- [Phase ?]: 81-02: migration 033 runs the mixed-row cleanup UPDATE before create_check_constraint (D-09); done wins -- failed_at cleared, analysis_completed_at retained (D-04)
+- [Phase ?]: 81-02: the destructive Phase-90 migration is renumbered 033 -> 034 in forward-looking planning docs; dated historical records keep 033 (D-08)
 
 ### Pending Todos
 
@@ -220,6 +222,7 @@ None.
 | Phase 75 P02 | ~15min | 2 tasks | 1 files |
 | Phase 77 P01 | 20 | 2 tasks | 4 files |
 | Phase 77 P02 | ~20min | 2 tasks | 7 files |
+| Phase 81 P02 | 22min | 3 tasks | 8 files |
 
 ## Deferred Items
 
@@ -286,9 +289,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-09T03:53:28.109Z
-Stopped at: Phase 81 context gathered
-Resume file: .planning/phases/81-per-stage-failure-persistence-retry-paths/81-CONTEXT.md
+Last session: 2026-07-09T05:35:10.902Z
+Stopped at: Completed 81-02-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
