@@ -408,7 +408,7 @@ Plans:
   2. `report_upload_failed` gains a CAS guard so a late/duplicate reporter can no longer clobber an already-advanced file (closes the `agent_s3.py:195` bug), proven by a regression test.
   3. The shadow-compare gate stays green and no double-dispatch / re-pick window is introduced (integration test).
 
-**Plans**: 6 plans in 3 waves
+**Plans**: 7 plans in 4 waves (1 gap-closure)
 Plans:
 **Wave 1**
 
@@ -424,6 +424,10 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 
 - [x] 83-06-PLAN.md — Drain-candidate reader cutover + count card + staleness clock + SC#3 HARD GATE (D-05/D-06/D-07/D-15)
+
+**Wave 4** *(gap closure — verification found 6/7 must-haves; closes the failed D-02 single-writer must-have / WR-03)*
+
+- [ ] 83-07-PLAN.md — Consolidate the three awaiting writers into one CAS-preserving `hold_awaiting_cloud` + anti-drift source test (D-02, D-03, D-09/D-10/D-11/D-12)
 
 **Scope exclusion**: `tasks/reconcile_cloud_jobs.py` is owned by **Phase 80** (80-CONTEXT D-04) — its at-cap spill-back write is retired there, not here. This phase covers the sibling cloud-routing writers (`routers/agent_push.py`, `routers/pipeline.py`, `routers/agent_s3.py`) and the drain-candidate / dispatch reads.
 **Note (deps)**: Rewired off Phase 82 to break the `80 → 83 → 82 → 80` cycle. Phase 83 shares no requirement with 82 (pending sets / `get_pipeline_stats`); it needs the derivation layer (78), the shadow-compare gate (79), and the analyze failure marker (81) that `LOCAL_ANALYZING`-from-`in_flight(analyze)` and push-done-via-analyze-terminal both read. Because this phase now runs BEFORE 82 (the milestone thesis), its drain-re-pick hazard lands earlier — the integration test below is a hard gate, not a recommendation.
