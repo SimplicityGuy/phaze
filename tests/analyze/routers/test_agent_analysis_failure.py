@@ -273,3 +273,54 @@ async def test_report_failed_nul_in_error_persists_and_clears_ledger(seed_test_a
     # The whole point: the transaction survived, so the ledger clear committed.
     assert not await _ledger_present(session, file_id), "a NUL-bearing error must not strand the ledger row"
     assert await _no_mixed_row_exists(session)
+
+
+@pytest.mark.asyncio
+async def test_report_failed_oversized_error_rejected_and_no_row_persisted(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """T-81-05-03 (oversized limb): a 2001-char ``error`` -> 422 at the wire; NO analysis row is persisted.
+
+    ``AnalysisFailurePayload.error`` bounds free text with ``max_length=2000`` (T-81-05-03's oversized
+    limb, the DoS-via-huge-string threat -- same remediation as T-81-03-04). One char over the bound
+    must never reach the handler, so the rejected request must leave no trace: no ``analysis`` row for
+    this file (the precondition here has none), and no ``files.state`` flip to ``ANALYSIS_FAILED``.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    assert await _analysis_row(session, file_id) is None, "precondition: no prior analysis row"
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "error", "error": "x" * 2001})
+
+    assert r.status_code == 422, r.text
+    errors = r.json()["detail"]
+    assert any(e.get("type") == "string_too_long" and list(e.get("loc")) == ["body", "error"] for e in errors), errors
+
+    row = await _analysis_row(session, file_id)
+    assert row is None, "a rejected (422) failure POST must not persist an analysis failure row"
+    assert await _file_state(session, file_id) is FileState.DISCOVERED, "a rejected failure POST must not flip files.state"
+
+
+@pytest.mark.asyncio
+async def test_report_failed_error_at_max_length_boundary_is_accepted(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """T-81-05-03 boundary: a 2000-char ``error`` (exactly at ``max_length``) IS accepted -> 200, row persisted.
+
+    Regression guard against someone "fixing" the bound by lowering it below 2000: this asserts the
+    boundary is exact, not merely that 2001 is rejected.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "error", "error": "x" * 2000})
+
+    assert r.status_code == 200, r.text
+    row = await _analysis_row(session, file_id)
+    assert row is not None, "an accepted (2000-char) failure POST must persist the marker"
+    assert row.failed_at is not None
+    assert row.error_message is not None
+    assert row.error_message.startswith("error: "), f"error_message must be composed as '<reason>: <error>', got {row.error_message!r}"
+    assert await _file_state(session, file_id) is FileState.ANALYSIS_FAILED

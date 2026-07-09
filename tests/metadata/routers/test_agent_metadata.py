@@ -624,3 +624,59 @@ async def test_metadata_failed_nul_in_error_persists_and_clears_ledger(
     assert row.error_message == "crashed: badframe"
     # The whole point: the transaction survived, so the ledger clear committed.
     assert not await _ledger_present(session, key), "a NUL-bearing error must not strand the ledger row"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_oversized_error_rejected_and_no_row_persisted(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """T-81-03-04 (oversized limb): a 2001-char ``error`` -> 422 at the wire; NO metadata row is persisted.
+
+    ``MetadataFailurePayload.error`` bounds free text with ``max_length=2000`` (T-81-03-04's oversized
+    limb, the DoS-via-huge-string threat). One char over the bound must never reach the handler at all,
+    so the failed request must leave no trace: no ``metadata`` row for this file, present or absent a
+    prior one.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "error", "error": "x" * 2001})
+
+    assert r.status_code == 422, r.text
+    errors = r.json()["detail"]
+    assert any(e.get("type") == "string_too_long" and list(e.get("loc")) == ["body", "error"] for e in errors), errors
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) failure POST must not persist a metadata failure row"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_error_at_max_length_boundary_is_accepted(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """T-81-03-04 boundary: a 2000-char ``error`` (exactly at ``max_length``) IS accepted -> 200, row persisted.
+
+    Regression guard against someone "fixing" the bound by lowering it below 2000: this asserts the
+    boundary is exact, not merely that 2001 is rejected.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "error", "error": "x" * 2000})
+
+    assert r.status_code == 200, r.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.failed_at is not None, "an accepted (2000-char) failure POST must persist the marker"
+    assert row.error_message is not None
+    assert row.error_message.startswith("error: "), f"error_message must be composed as '<reason>: <error>', got {row.error_message!r}"
