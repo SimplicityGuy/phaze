@@ -11,6 +11,7 @@ from sqlalchemy.orm import aliased
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -24,10 +25,13 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.stage_status import domain_completed_clause, inflight_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
 
@@ -1245,23 +1249,54 @@ async def get_pushed_count(session: AsyncSession) -> int:
 # transaction so a concurrent tick cannot double-stage the same row (T-50-scratch-dos).
 
 
-async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> list[FileRecord]:
-    """Return up to ``limit`` oldest ``AWAITING_CLOUD`` files (FIFO by ``created_at``), row-locked (Phase 50, D-03).
+async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> list[tuple[FileRecord, datetime]]:
+    """Return up to ``limit`` oldest genuinely-parked cloud candidates + each row's staleness clock (Phase 83, D-05/D-06/D-07).
 
-    ``ORDER BY created_at ASC`` makes staging FIFO (the longest-held file goes first). ``FOR UPDATE
-    SKIP LOCKED`` lets a concurrent staging tick skip rows this transaction already locked instead of
-    blocking or double-staging them (T-50-scratch-dos). ``limit`` is the free-slot count the caller
-    computed as ``cloud_max_in_flight - window``; the caller must guarantee ``limit > 0`` before
-    calling (a ``LIMIT 0`` would be a pointless round-trip).
+    Cut over from the retired ``FileRecord.state == AWAITING_CLOUD`` read (SC#1) to the ``cloud_job``
+    sidecar + the derived ``in_flight(analyze)`` layer. A candidate is a file that:
+
+    * carries a ``cloud_job(status='awaiting')`` sidecar row (INNER join -- D-05 conjunct 1), AND
+    * is NOT analyze-in-flight (``~inflight_clause(ANALYZE)`` -- D-05 conjunct 2). A locally-dispatched
+      file whose ``process_file`` ledger row is committed is excluded, and that exclusion SURVIVES a
+      whole-tick rollback because the ledger row was committed by the ``before_enqueue`` hook's OWN
+      session -- the exact reason D-05 chose a predicate conjunct over deleting the awaiting row (a
+      deleted row restored on the rollback would re-pick the file and could cloud-dispatch it, the
+      double-dispatch SC#3 forbids). AND
+    * has NOT domain-completed its analyze (``~domain_completed_clause(ANALYZE)`` -- D-05 conjunct 3):
+      ``FAILURE_IS_TERMINAL[analyze]`` is True, so a terminally-failed local analyze is domain-complete
+      and never re-driven (the Phase-81 twin the ROADMAP dep-note names).
+
+    Composes the LOCKED ``inflight_clause`` / ``domain_completed_clause`` builders VERBATIM -- re-spelling
+    either breaks the DERIV-04 equivalence test (``tests/integration/test_stage_status_equivalence.py``).
+
+    FIFO stays on the immutable ``FileRecord.created_at`` (D-07 -- byte-identical discovery order to the
+    pre-cutover query; a file discovered months ago but held today still sorts to the front). The per-row
+    ``cloud_job.updated_at`` is surfaced alongside each candidate as the lane-entry staleness clock the
+    caller passes into ``select_backend`` (D-07): it lives on the awaiting row rather than
+    ``file.updated_at`` so Phase 90's removal of the dual-written ``file.state`` cannot silently break the
+    ``cloud_route_max_wait_sec`` spill clock.
+
+    D-06: the lock moves to the candidacy table -- ``with_for_update(of=CloudJob, skip_locked=True)`` over
+    the INNER join so Postgres re-evaluates ``cloud_job``'s ``WHERE`` after acquiring the lock (EvalPlanQual);
+    locking only ``files`` would read the deciding ``cloud_job.status`` column stale against the concurrent
+    callback routers / reconcile cron the tick's advisory lock does not cover. INNER (not outer) join is
+    required -- Postgres rejects ``FOR UPDATE`` on the nullable side of an outer join. ``limit`` is the
+    free-slot count the caller computed as ``sum(remaining)`` across available backends; the caller must
+    guarantee ``limit > 0`` (a ``LIMIT 0`` would be a pointless round-trip).
     """
     stmt = (
-        select(FileRecord)
-        .where(FileRecord.state == FileState.AWAITING_CLOUD)
+        select(FileRecord, CloudJob.updated_at)
+        .join(CloudJob, CloudJob.file_id == FileRecord.id)
+        .where(
+            CloudJob.status == CloudJobStatus.AWAITING.value,
+            ~inflight_clause(Stage.ANALYZE),
+            ~domain_completed_clause(Stage.ANALYZE),
+        )
         .order_by(FileRecord.created_at.asc())
         .limit(limit)
-        .with_for_update(skip_locked=True)
+        .with_for_update(of=CloudJob, skip_locked=True)
     )
-    return list((await session.execute(stmt)).scalars().all())
+    return [(file, updated_at) for file, updated_at in (await session.execute(stmt)).all()]
 
 
 def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:

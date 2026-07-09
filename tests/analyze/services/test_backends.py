@@ -679,12 +679,17 @@ async def test_local_dispatch_flips_to_local_analyzing(session: AsyncSession) ->
 
 @pytest.mark.asyncio
 async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSession) -> None:
-    """CR-01: after a local dispatch the file is absent from ``get_cloud_staging_candidates`` (no re-selection).
+    """CR-01 / D-05: after a local dispatch the file is excluded from ``get_cloud_staging_candidates``.
 
-    ``get_cloud_staging_candidates`` (pipeline.py) selects ``state == AWAITING_CLOUD``; the state flip
-    performed by ``LocalBackend.dispatch`` is exactly what removes the file from that candidate set --
-    the missing link the Phase-69 verifier flagged (LocalBackend.dispatch -> get_cloud_staging_candidates).
+    Post Phase-83 the drain no longer reads ``FileRecord.state`` (SC#1): a candidate must carry a
+    ``cloud_job(status='awaiting')`` row (INNER join) AND not be analyze-in-flight. ``LocalBackend.dispatch``
+    writes NO cloud_job row and deletes none (D-05 rejects deletion -- the awaiting row is retained); the
+    committed ``process_file:<id>`` ledger row (the ``before_enqueue`` hook's own write, seeded here since
+    the DedupFakeQueue does not run that hook) is what makes ``~inflight_clause(ANALYZE)`` exclude the file.
     """
+    from sqlalchemy import select
+
+    from phaze.models.scheduling_ledger import SchedulingLedger
     from phaze.services.pipeline import get_cloud_staging_candidates
 
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
@@ -693,13 +698,19 @@ async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSes
     session.add(file)
     await session.commit()
     fid = file.id
+    session.add(CloudJob(id=uuid.uuid4(), file_id=fid, status=CloudJobStatus.AWAITING.value))
+    await session.commit()
 
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
+    session.add(SchedulingLedger(key=f"process_file:{fid}", function="process_file", routing="agent", payload={"file_id": str(fid)}))
     await session.commit()
 
     candidates = await get_cloud_staging_candidates(session, limit=10)
-    assert fid not in {c.id for c in candidates}
+    assert fid not in {f.id for f, _ in candidates}  # excluded by ~inflight_clause(ANALYZE)
+    # D-05: the awaiting row is retained (the conjunct excludes; it does not delete the row).
+    retained = (await session.execute(select(CloudJob.status).where(CloudJob.file_id == fid))).scalar_one()
+    assert retained == CloudJobStatus.AWAITING.value
 
 
 @pytest.mark.asyncio

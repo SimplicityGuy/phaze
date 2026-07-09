@@ -201,17 +201,19 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # roll back mid-loop (that would end the txn and release the pg_advisory_xact_lock, re-opening the
         # over-stage class, Landmine L1). The advisory-lock scope + single post-loop commit are unchanged.
         try:
-            for index, file in enumerate(candidates):
+            for index, (file, lane_entered_at) in enumerate(candidates):
                 cloud_attempts = await _cloud_attempts_for(session, file.id)
                 # models/base.py: created_at/updated_at carry no timezone=True, so create_all yields naive
                 # datetimes while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the
                 # candidate's awareness (assume-UTC, the scan_reaper / pipeline_scans convention) so the pure
-                # select_backend staleness subtraction (now - file.updated_at) never raises -- WITHOUT
-                # mutating the parked AWAITING_CLOUD row (its updated_at is the staleness clock, RESEARCH A3).
+                # select_backend staleness subtraction (now - lane_entered_at) never raises. lane_entered_at
+                # is the awaiting cloud_job.updated_at surfaced by get_cloud_staging_candidates (D-07): the
+                # staleness clock lives on the sidecar row, NOT file.updated_at, so it survives Phase 90's
+                # removal of the dual-written file.state. The parked row is never mutated here.
                 now = datetime.now(UTC)
-                if file.updated_at.tzinfo is None:
+                if lane_entered_at.tzinfo is None:
                     now = now.replace(tzinfo=None)
-                target = select_backend(file, cloud_attempts, snapshot, now, cfg)
+                target = select_backend(lane_entered_at, cloud_attempts, snapshot, now, cfg)
                 if target is None:
                     # Clean per-candidate hold: no eligible backend for this file this tick. No state change
                     # -- the file stays AWAITING_CLOUD (guards the updated_at staleness signal, RESEARCH A3).

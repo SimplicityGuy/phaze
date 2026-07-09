@@ -42,7 +42,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from phaze.models.cloud_job import CloudJob
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.services import backends as backends_mod, enqueue_router, kube_staging, s3_staging
 from phaze.tasks import release_awaiting_cloud
@@ -226,6 +226,13 @@ async def _run_cell(
     files = [_make_file() for _ in range(held)]
     session.add_all(files)
     await session.commit()
+    # Phase 83 (D-05): every held AWAITING_CLOUD file carries a cloud_job(status='awaiting') sidecar row --
+    # the sidecar drain INNER-joins on it (no FileRecord.state read, SC#1). A dispatched file's row is
+    # upserted in place (on_conflict_do_update); a held file keeps its awaiting row, so cloud_job_count
+    # equals the held count in every cell.
+    for f in files:
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=CloudJobStatus.AWAITING.value))
+    await session.commit()
     ids = [f.id for f in files]
 
     router = DedupFakeTaskRouter()
@@ -263,10 +270,10 @@ _COMPUTE_UP_EXPECTED = {
     "compute_gate_checked": True,
     "staging_tasks": ["push_file"],  # compute rsync-push leg
     "state_counts": {"pushing": 2, "awaiting_cloud": 1},
-    # Wave 3 (68-04) landed D-03/D-08: ComputeAgentBackend.dispatch now writes an in-txn cloud_job row
-    # per staged file (backend_id set, s3_key NULL, SUBMITTED), so 2 staged files -> 2 cloud_job rows.
-    # This is the ONE deliberate snapshot change; every OTHER field stays byte-identical (BACK-04 proof).
-    "cloud_job_count": 2,
+    # Phase 83 (D-05): every held file now carries a cloud_job(status='awaiting') sidecar row (the drain's
+    # INNER-join candidacy). ComputeAgentBackend.dispatch upserts the 2 staged files' rows in place
+    # (on_conflict_do_update -> SUBMITTED); the 1 held file keeps its awaiting row -> 3 cloud_job rows total.
+    "cloud_job_count": 3,
     "tally": {"staged": 2, "skipped": 0},
 }
 
@@ -275,7 +282,7 @@ _COMPUTE_DOWN_EXPECTED = {
     "compute_gate_checked": True,
     "staging_tasks": [],
     "state_counts": {"pushing": 0, "awaiting_cloud": 3},
-    "cloud_job_count": 0,
+    "cloud_job_count": 3,  # Phase 83: 3 held files -> 3 retained awaiting rows (nothing dispatched)
     "tally": {"staged": 0, "skipped": 0},  # compute+down -> no-op hold (GATE-1)
 }
 
@@ -284,7 +291,7 @@ _KUEUE_UP_EXPECTED = {
     "compute_gate_checked": False,
     "staging_tasks": ["s3_upload"],  # kueue S3-staging leg
     "state_counts": {"pushing": 2, "awaiting_cloud": 1},
-    "cloud_job_count": 2,  # kueue already upserts cloud_job today (UPLOADING)
+    "cloud_job_count": 3,  # Phase 83: 2 staged rows upserted (UPLOADING) + 1 retained awaiting row
     "tally": {"staged": 2, "skipped": 0},
 }
 
@@ -297,7 +304,7 @@ _LOCAL_EXPECTED = {
     "compute_gate_checked": False,
     "staging_tasks": [],
     "state_counts": {"pushing": 0, "awaiting_cloud": 3},
-    "cloud_job_count": 0,
+    "cloud_job_count": 3,  # Phase 83: cloud_enabled=False no-op -> 3 held files keep their awaiting rows
     "tally": {"staged": 0, "skipped": 0},
 }
 

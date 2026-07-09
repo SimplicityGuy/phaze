@@ -215,7 +215,8 @@ async def _seed_awaiting_file(session: AsyncSession, *, attempts: int = 0) -> Fi
 
 
 async def _cloud_job_status(session: AsyncSession, file_id: uuid.UUID) -> str | None:
-    session.expire_all()
+    # A scalar-column select always round-trips to the DB (cloud_job.status is not identity-mapped), so
+    # no expire is needed -- and expiring here would evict the caller's still-referenced FileRecord.
     return (await session.execute(select(CloudJob.status).where(CloudJob.file_id == file_id))).scalar_one_or_none()
 
 
