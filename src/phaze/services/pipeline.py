@@ -1114,15 +1114,32 @@ async def get_discovered_files_with_duration(session: AsyncSession) -> list[tupl
 
 
 async def get_awaiting_cloud_count(session: AsyncSession) -> int:
-    """Return COUNT of files in ``FileState.AWAITING_CLOUD``, degrading to 0 on any DB error.
+    """Return COUNT of genuinely-parked awaiting cloud_job rows, degrading to 0 on any DB error (Phase 83, D-15).
 
-    Drives the dashboard "Awaiting cloud" card (D-05). Poll-safe via :func:`_safe_count`
-    (mirrors :func:`get_analysis_failed_count`): a DB hiccup degrades this node to 0 and rolls
-    back the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll.
+    Drives the dashboard "Awaiting cloud" card. Re-anchored off the retired
+    ``FileRecord.state == AWAITING_CLOUD`` display read onto the SAME clause the drain
+    (:func:`get_cloud_staging_candidates`) uses -- ``COUNT(cloud_job) WHERE status='awaiting' AND
+    ~inflight_clause(ANALYZE) AND ~domain_completed_clause(ANALYZE)`` -- so the card counts exactly the
+    rows the drain would pick and the two can NEVER disagree. A LOCAL_ANALYZING long file that still
+    carries its inert awaiting row (D-13 keeps the flip; D-14 reaps the row at the analyze-terminal seam)
+    is excluded from BOTH by ``~inflight_clause``, so it never inflates the card. Composes the LOCKED
+    clause builders verbatim (DERIV-04). Poll-safe via :func:`_safe_count` (mirrors
+    :func:`get_analysis_failed_count`): a DB hiccup degrades this node to 0 and rolls back the aborted
+    transaction rather than 500ing the hot 5s /pipeline/stats poll.
     """
     return await _safe_count(
         session,
-        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.AWAITING_CLOUD),
+        # INNER-join FileRecord so the correlated ``~exists(... file_id == FileRecord.id)`` clause builders
+        # resolve (they reference FileRecord.id); cloud_job.file_id is unique, so the join is 1:1 and the
+        # COUNT matches the drain's candidate set exactly.
+        select(func.count(CloudJob.id))
+        .select_from(CloudJob)
+        .join(FileRecord, FileRecord.id == CloudJob.file_id)
+        .where(
+            CloudJob.status == CloudJobStatus.AWAITING.value,
+            ~inflight_clause(Stage.ANALYZE),
+            ~domain_completed_clause(Stage.ANALYZE),
+        ),
         node="awaiting_cloud",
     )
 
