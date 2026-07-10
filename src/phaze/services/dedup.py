@@ -3,11 +3,14 @@
 from typing import Any
 import uuid as uuid_mod
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
+from phaze.services.stage_status import dedup_resolved_clause
 
 
 TAG_FIELDS = ["artist", "title", "album", "year", "genre", "track_number"]
@@ -70,12 +73,12 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset:
 
     Returns a paginated list of duplicate groups, each containing the
     shared hash, member count, and file details (id, path, size, type).
-    Excludes files with state DUPLICATE_RESOLVED.
+    Excludes files carrying a dedup_resolution marker (marker-existence is authority, not FileRecord.state).
     """
-    # Subquery: hashes that appear more than once (excluding resolved files)
+    # Subquery: hashes that appear more than once (excluding marker-resolved files)
     dup_hashes = (
         select(FileRecord.sha256_hash)
-        .where(FileRecord.state != FileState.DUPLICATE_RESOLVED)
+        .where(~dedup_resolved_clause())
         .group_by(FileRecord.sha256_hash)
         .having(func.count(FileRecord.id) > 1)
         .limit(limit)
@@ -87,7 +90,7 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset:
     stmt = (
         select(FileRecord)
         .where(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
-        .where(FileRecord.state != FileState.DUPLICATE_RESOLVED)
+        .where(~dedup_resolved_clause())
         .order_by(FileRecord.sha256_hash, FileRecord.original_path)
     )
     result = await session.execute(stmt)
@@ -122,10 +125,10 @@ async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int 
     bitrate, duration, artist, title, album, genre, year, track_number
     and tag completeness info in each file dict.
     """
-    # Subquery: hashes that appear more than once (excluding resolved files)
+    # Subquery: hashes that appear more than once (excluding marker-resolved files)
     dup_hashes = (
         select(FileRecord.sha256_hash)
-        .where(FileRecord.state != FileState.DUPLICATE_RESOLVED)
+        .where(~dedup_resolved_clause())
         .group_by(FileRecord.sha256_hash)
         .having(func.count(FileRecord.id) > 1)
         .limit(limit)
@@ -138,7 +141,7 @@ async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int 
         select(FileRecord, FileMetadata)
         .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
         .where(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
-        .where(FileRecord.state != FileState.DUPLICATE_RESOLVED)
+        .where(~dedup_resolved_clause())
         .order_by(FileRecord.sha256_hash, FileRecord.original_path)
     )
     result = await session.execute(stmt)
@@ -181,11 +184,11 @@ async def count_duplicate_groups(session: AsyncSession) -> int:
     """Count the total number of duplicate groups (hashes with >1 file).
 
     Returns the number of distinct SHA256 hashes that have more than one file.
-    Excludes files with state DUPLICATE_RESOLVED.
+    Excludes files carrying a dedup_resolution marker (marker-existence is authority, not FileRecord.state).
     """
     subq = (
         select(FileRecord.sha256_hash)
-        .where(FileRecord.state != FileState.DUPLICATE_RESOLVED)
+        .where(~dedup_resolved_clause())
         .group_by(FileRecord.sha256_hash)
         .having(func.count(FileRecord.id) > 1)
         .subquery()
@@ -203,10 +206,10 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
     """
     groups = await count_duplicate_groups(session)
 
-    # Subquery: hashes with >1 file (excluding resolved)
+    # Subquery: hashes with >1 file (excluding marker-resolved)
     dup_hashes = (
         select(FileRecord.sha256_hash)
-        .where(FileRecord.state != FileState.DUPLICATE_RESOLVED)
+        .where(~dedup_resolved_clause())
         .group_by(FileRecord.sha256_hash)
         .having(func.count(FileRecord.id) > 1)
         .subquery()
@@ -218,7 +221,7 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
         func.sum(FileRecord.file_size).label("total_size"),
     ).where(
         FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)),
-        FileRecord.state != FileState.DUPLICATE_RESOLVED,
+        ~dedup_resolved_clause(),
     )
     stats_result = await session.execute(stats_stmt)
     stats_row = stats_result.one()
@@ -232,7 +235,7 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
         )
         .where(
             FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)),
-            FileRecord.state != FileState.DUPLICATE_RESOLVED,
+            ~dedup_resolved_clause(),
         )
         .group_by(FileRecord.sha256_hash)
         .subquery()
@@ -257,7 +260,7 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     stmt = select(FileRecord).where(
         FileRecord.sha256_hash == group_hash,
         FileRecord.id != canonical_id,
-        FileRecord.state != FileState.DUPLICATE_RESOLVED,
+        ~dedup_resolved_clause(),
     )
     result = await session.execute(stmt)
     files = result.scalars().all()
@@ -265,22 +268,81 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     file_states: list[dict[str, Any]] = []
     for f in files:
         file_states.append({"id": str(f.id), "previous_state": f.state})
+        # D-00a: dual-write the dying FileState (retired Phase 90) alongside the durable marker.
+        # Only *reliance* on state is removed this phase; the write survives so services/proposal.py
+        # (Phase 86) keeps excluding resolved duplicates and this phase's shadow-compare gate stays green.
         f.state = FileState.DUPLICATE_RESOLVED
+
+    # D-01/D-02/D-03/D-07: the go-forward dedup_resolution writer that has not existed since 032's
+    # one-shot backfill. One bulk pg_insert for every non-canonical file in the group, ON CONFLICT
+    # (file_id) DO NOTHING (idempotent under an HTMX double-submit — first-writer-wins), inside the
+    # caller-owned txn (flush, never commit). Each row stamps the operator's actual canonical_id
+    # (strictly better than 032's ORDER BY c.id LIMIT 1 guess) and an explicit id — pg_insert bypasses
+    # DedupResolution.id's Python-side default=uuid.uuid4, so omitting it is a NULL-PK failure
+    # (agent_analysis.py:204 precedent). resolved_at rides its server_default.
+    if files:
+        rows = [{"id": uuid_mod.uuid4(), "file_id": f.id, "canonical_file_id": canonical_id} for f in files]
+        await session.execute(pg_insert(DedupResolution).values(rows).on_conflict_do_nothing(index_elements=["file_id"]))
 
     await session.flush()
     return len(file_states), file_states
 
 
 async def undo_resolve(session: AsyncSession, file_states: list[dict[str, Any]]) -> int:
-    """Restore file states from a saved state list.
+    """Undo a group resolution: DELETE the dedup markers and restore previous_state.
 
-    Accepts list of {id, previous_state} dicts. Returns count restored.
+    Accepts the browser-held ``[{id, previous_state}]`` payload (shape unchanged). The dedup marker is
+    the CAS anchor (D-05/D-06): one ``DELETE ... RETURNING file_id`` removes the markers, and the
+    ``FileRecord.state`` restore (dual-write bookkeeping that dies Phase 90) is applied ONLY to the
+    file_ids the DELETE actually returned. A stale-tab replay against a file re-resolved since finds no
+    marker, returns zero rows, and no-ops — it can never clobber the re-resolved state. Returns the
+    count actually restored (callers do not use it for control flow).
+
+    Threat mitigation (T-84-03-01/02): the restore is scoped to marker-bearing (operator-resolved) ids,
+    so an attacker-crafted payload of arbitrary ids restores nothing; and the attacker-supplied
+    ``previous_state`` is coerced to a real ``FileState`` member before it reaches ``FileRecord.state``,
+    with unknown values skipped.
     """
-    count = 0
+    # Parse and validate the ENTIRE browser-held payload before any write. An entry whose id is not a
+    # UUID, or whose previous_state is not a FileState member, is dropped here -- so its marker is never
+    # deleted. Validating after the DELETE would leave `state = duplicate_resolved` with no marker: the
+    # exact HARD divergence shadow_compare.py:135 forbids, and the invariant this phase's SC#3 keeps
+    # green. A malformed id must also not escape as an unhandled ValueError/KeyError (HTTP 500).
+    restore_by_id: dict[uuid_mod.UUID, FileState] = {}
     for entry in file_states:
-        file_id = uuid_mod.UUID(entry["id"]) if isinstance(entry["id"], str) else entry["id"]
-        stmt = update(FileRecord).where(FileRecord.id == file_id).values(state=entry["previous_state"])
-        await session.execute(stmt)
-        count += 1
+        raw_id = entry.get("id")
+        if isinstance(raw_id, uuid_mod.UUID):
+            file_id = raw_id
+        elif isinstance(raw_id, str):
+            try:
+                file_id = uuid_mod.UUID(raw_id)
+            except ValueError:
+                continue
+        else:
+            continue
+        raw_state = entry.get("previous_state")
+        if not isinstance(raw_state, str):
+            continue
+        try:
+            restore_by_id[file_id] = FileState(raw_state)  # T-84-03-02: reject non-members.
+        except ValueError:
+            continue
+
+    if not restore_by_id:
+        return 0
+
+    # CAS anchor: DELETE the markers, RETURNING the file_ids that actually held one (scan_deletion.py:119
+    # async ORM-DELETE hygiene). Only these ids may have their state restored. Scoped to restore_by_id, so
+    # a marker is deleted only when its state restore is guaranteed to follow.
+    result = await session.execute(
+        delete(DedupResolution)
+        .where(DedupResolution.file_id.in_(list(restore_by_id)))
+        .returning(DedupResolution.file_id)
+        .execution_options(synchronize_session=False)
+    )
+    returned: set[uuid_mod.UUID] = set(result.scalars().all())
+
+    for file_id in returned:
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=restore_by_id[file_id]))
     await session.flush()
-    return count
+    return len(returned)

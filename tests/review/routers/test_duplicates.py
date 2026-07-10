@@ -259,3 +259,72 @@ async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -
     response = await client.get("/duplicates/", follow_redirects=False)
     assert response.status_code == 302
     assert response.headers["location"] == "/s/dedupe"
+
+
+# ---------------------------------------------------------------------------
+# UAT regression (Phase 84): the resolve/undo endpoints must COMMIT.
+#
+# `get_session` (database.py:48-51) yields the session and never commits, and `services/dedup.py`
+# only `flush()`es (caller-owned transaction). Before this fix the router committed nothing, so a
+# resolve returned HTTP 200, rendered a success partial, and was rolled back on session close --
+# the dedup feature never persisted anything in production.
+#
+# Every pre-existing test missed it because `conftest.client` overrides `get_session` with the
+# test's OWN session, so assertions read uncommitted rows from inside the same transaction. These
+# tests assert from an INDEPENDENT session, which by definition sees only committed data.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_resolve_endpoint_commits_marker_and_state(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+    """After POST /resolve, a SEPARATE session sees the marker and the dual-written state."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    keeper = _make_file("/m/keeper.mp3", "mp3", HASH_A)
+    dup = _make_file("/m/dup.mp3", "mp3", HASH_A)
+    session.add_all([keeper, dup])
+    await session.flush()
+
+    response = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
+    assert response.status_code == 200
+
+    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with verify_factory() as verify:
+        markers = (await verify.execute(select(DedupResolution.file_id))).scalars().all()
+        assert list(markers) == [dup.id], "resolve did not COMMIT the dedup marker"
+
+        canonical = (await verify.execute(select(DedupResolution.canonical_file_id))).scalar_one()
+        assert canonical == keeper.id, "canonical_file_id must carry the operator's pick (D-03)"
+
+        state = (await verify.execute(select(FileRecord.state).where(FileRecord.id == dup.id))).scalar_one()
+        assert state == FileState.DUPLICATE_RESOLVED, "resolve did not COMMIT the dual-written state"
+
+
+@pytest.mark.asyncio
+async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+    """After POST /undo, a SEPARATE session sees the marker gone and previous_state restored."""
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    keeper = _make_file("/m/keeper.mp3", "mp3", HASH_A)
+    dup = _make_file("/m/dup.mp3", "mp3", HASH_A)
+    session.add_all([keeper, dup])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
+    assert resolve.status_code == 200
+
+    payload = json.dumps([{"id": str(dup.id), "previous_state": FileState.DISCOVERED.value}])
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
+    assert undo.status_code == 200
+
+    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with verify_factory() as verify:
+        remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
+        assert remaining == 0, "undo did not COMMIT the marker DELETE"
+
+        state = (await verify.execute(select(FileRecord.state).where(FileRecord.id == dup.id))).scalar_one()
+        assert state == FileState.DISCOVERED, "undo did not COMMIT the previous_state restore"

@@ -128,23 +128,28 @@ async def test_trigger_fingerprint_no_eligible(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_fingerprint_progress_returns_counts(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /api/v1/fingerprint/progress returns total/completed/failed counts."""
-    # 2 files in METADATA_EXTRACTED (eligible, not yet done)
-    f1 = _make_file(state=FileState.METADATA_EXTRACTED)
-    f2 = _make_file(state=FileState.METADATA_EXTRACTED)
-    # 1 file in FINGERPRINTED (completed)
-    f3 = _make_file(state=FileState.FINGERPRINTED)
-    session.add_all([f1, f2, f3])
+    """GET /api/v1/fingerprint/progress derives counts from fingerprint_results, not FileRecord.state.
+
+    The two `state` values below are deliberately misleading: `f3` is FINGERPRINTED with no
+    engine row, and `f4` is only METADATA_EXTRACTED but has a success row. `completed` must
+    count `f4` and ignore `f3` (D-11 / READ-04). Reverting the endpoint to `state ==
+    FINGERPRINTED` inverts both assertions.
+    """
+    f1 = _make_file(state=FileState.METADATA_EXTRACTED)  # failed engine only -> failed
+    f2 = _make_file(state=FileState.METADATA_EXTRACTED)  # no engine rows -> total only
+    f3 = _make_file(state=FileState.FINGERPRINTED)  # state says done, no row -> NOT completed
+    f4 = _make_file(state=FileState.METADATA_EXTRACTED)  # success row -> completed
+    session.add_all([f1, f2, f3, f4])
     await session.flush()
 
-    # Add a failed fingerprint result
     session.add(FingerprintResult(file_id=f1.id, engine="audfprint", status="failed", error_message="timeout"))
+    session.add(FingerprintResult(file_id=f4.id, engine="audfprint", status="success"))
     await session.commit()
 
     response = await client.get("/api/v1/fingerprint/progress")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 3
+    assert data["total"] == 4
     assert data["completed"] == 1
     assert data["failed"] == 1
 

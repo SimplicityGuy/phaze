@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: ready_to_plan
-last_updated: "2026-07-10T00:03:11.000Z"
-last_activity: 2026-07-09 -- Phase 83 shipped (PR #227)
+status: "Phase 84 shipped — PR #228"
+last_updated: "2026-07-10T05:29:03.367Z"
+last_activity: 2026-07-09
 progress:
   total_phases: 52
-  completed_phases: 19
-  total_plans: 76
-  completed_plans: 20
-  percent: 37
-stopped_at: Phase 83 shipped as PR #227 (verified 7/7) — ready to discuss Phase 84
+  completed_phases: 20
+  total_plans: 82
+  completed_plans: 26
+  percent: 38
 ---
 
 # Project State
@@ -21,20 +20,20 @@ stopped_at: Phase 83 shipped as PR #227 (verified 7/7) — ready to discuss Phas
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 84 — dedup & fingerprint progress cutover
+**Current focus:** Phase 85 — executed gate revival
 
 ## Current Position
 
-Phase: 84
+Phase: 85
 Plan: Not started
-Status: Ready to plan (Phase 83 shipped — PR #227, awaiting CI + merge)
+Status: Phase 84 shipped — PR #228
 Last activity: 2026-07-09
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 194
+- Total plans completed: 200
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -290,9 +289,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-09T18:50:41.889Z
-Stopped at: Phase 83 context gathered
-Resume file: .planning/phases/83-cloud-routing-sidecar-cutover/83-CONTEXT.md
+Last session: 2026-07-10T00:37:11.136Z
+Stopped at: Phase 84 context gathered
+Resume file: .planning/phases/84-dedup-fingerprint-progress-cutover/84-CONTEXT.md
 
 ## Operator Next Steps
 

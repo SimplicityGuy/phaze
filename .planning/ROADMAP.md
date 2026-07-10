@@ -27,7 +27,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 81: Per-Stage Failure Persistence & Retry Paths** — durable failure markers for analyze + metadata (`report_metadata_failed` records instead of nothing) + reused fingerprint failure; a metadata retry path so a failure is never a permanent dead-end (FAIL-01..04) (completed 2026-07-09)
 - [ ] **Phase 82: Counts & Pending-Set Cutover** — the three enrich pending sets + `get_pipeline_stats` derived from `stage_status`; the cross-stage deadlock dissolves; four-bucket per-stage counts; the 200K-scale poll latency measured (READ-01, READ-02, PERF-02)
 - [x] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01) (completed 2026-07-09)
-- [ ] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02)
+- [x] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02) (completed 2026-07-10)
 - [ ] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05)
 - [ ] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03)
 - [ ] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01)
@@ -272,7 +272,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
-| 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
@@ -436,7 +436,7 @@ Plans:
 ### Phase 84: Dedup & Fingerprint-Progress Cutover
 
 **Goal**: Cut `services/dedup.py` and `get_fingerprint_progress` over to the dedup marker / output tables, so dedup resolve/undo and the fingerprint progress bar derive from data rather than `FileRecord.state`.
-**Depends on**: Phase 82
+**Depends on**: Phase 77, Phase 78, Phase 79 <!-- corrected 2026-07-09: was "Phase 82" (stale). Verified during plan-phase: file sets are disjoint (82 owns services/pipeline.py; 84 owns services/dedup.py + services/fingerprint.py), no phase-82 branch exists, and 84's real upstreams are 77 (dedup_resolution table + ix_fprint_success), 78 (stage_status predicate module), 79 (shadow gate) — all merged on main. -->
 **Requirements**: READ-04, SIDECAR-02
 **Success Criteria** (what must be TRUE):
 
@@ -444,7 +444,25 @@ Plans:
   2. `get_fingerprint_progress` derives from the per-engine coverage predicate / output tables, not `FileRecord.state`.
   3. The shadow-compare gate stays green after the cutover.
 
-**Plans**: TBD
+**Plans**: 6 plans in 4 waves
+Plans:
+**Wave 1**
+
+- [x] 84-01-PLAN.md — Migration `035` reconcile (bidirectional dedup marker vs files.state) + migration test (SIDECAR-02) [wave 1]
+- [x] 84-02-PLAN.md — D-13 `dedup_resolved_clause()` predicate in stage_status.py + D-08 model docstring note (READ-04, SIDECAR-02) [wave 1]
+
+**Wave 2** *(depends on 84-01, 84-02)*
+
+- [x] 84-03-PLAN.md — dedup.py cutover: pg_insert writer + DELETE…RETURNING CAS undo + nine reader flips + divergence & shadow-compare tests (READ-04, SIDECAR-02) [wave 2]
+- [x] 84-04-PLAN.md — get_fingerprint_progress rewrite over MUSIC_VIDEO_TYPES + marker + done/failed_clause + real-DB replacement test (READ-04) [wave 2]
+
+**Wave 3** *(depends on 84-03, 84-04)*
+
+- [x] 84-05-PLAN.md — AST source-scan guard over dedup.py + fingerprint.py, mutation-tested both directions (READ-04, SIDECAR-02) [wave 3]
+
+**Wave 4** *(depends on 84-03, 84-04, 84-05 — operator checkpoint)*
+
+- [x] 84-06-PLAN.md — Live-corpus `just shadow-compare` run after `035`, assert hard_fail_total=0 (SIDECAR-02) [wave 4]
 
 ### Phase 85: EXECUTED-Gate Revival
 

@@ -5,6 +5,7 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
 from phaze.services.dedup import (
@@ -420,11 +421,15 @@ def test_tag_completeness_none() -> None:
 
 @pytest.mark.asyncio
 async def test_find_duplicate_groups_excludes_resolved(session: AsyncSession) -> None:
-    """Files with state=DUPLICATE_RESOLVED are excluded from grouping."""
+    """Files carrying a dedup_resolution marker are excluded from grouping (marker is authority)."""
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/resolved.mp3", "mp3", HASH_A)
+    # Post-cutover the readers key on the marker (~dedup_resolved_clause()), NOT FileRecord.state.
+    # Seed the marker (plus the surviving dual-write state) so f2 is excluded.
     f2.state = FileState.DUPLICATE_RESOLVED
     session.add_all([f1, f2])
+    await session.flush()
+    session.add(DedupResolution(file_id=f2.id, canonical_file_id=f1.id))
     await session.flush()
 
     groups = await find_duplicate_groups(session)
@@ -507,12 +512,15 @@ async def test_resolve_group(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_undo_resolve(session: AsyncSession) -> None:
-    """undo_resolve restores file states from saved state list."""
+    """undo_resolve DELETEs the markers and restores previous_state for the returned ids (D-05/D-06)."""
     f1 = _make_file("/dir/a.mp3", "mp3", HASH_A)
     f1.state = FileState.DUPLICATE_RESOLVED
     f2 = _make_file("/dir/b.mp3", "mp3", HASH_A)
     f2.state = FileState.DUPLICATE_RESOLVED
     session.add_all([f1, f2])
+    await session.flush()
+    # Post-cutover undo is a marker DELETE...RETURNING CAS: the ids must carry a marker to be restored.
+    session.add_all([DedupResolution(file_id=f1.id), DedupResolution(file_id=f2.id)])
     await session.flush()
 
     file_states = [
