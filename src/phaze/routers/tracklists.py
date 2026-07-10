@@ -15,12 +15,13 @@ from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
+from phaze.services.stage_status import is_applied
 from phaze.services.tracklist_matcher import compute_match_confidence
 from phaze.services.tracklist_scraper import TracklistScraper
 
@@ -135,7 +136,7 @@ async def list_tracklists(
         if tl.status == "approved" and tl.file_id:
             fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tl.file_id))
             fr = fr_result.scalar_one_or_none()
-            if fr and fr.state == FileState.EXECUTED:
+            if fr and await is_applied(session, fr.id):
                 tl._cue_version = _get_cue_version(fr.current_path)  # type: ignore[attr-defined]
             else:
                 tl._cue_version = 0  # type: ignore[attr-defined]
@@ -597,7 +598,7 @@ async def approve_tracklist(
     if tracklist.file_id:
         fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tracklist.file_id))
         fr = fr_result.scalar_one_or_none()
-        if fr and fr.state == FileState.EXECUTED:
+        if fr and await is_applied(session, fr.id):
             cue_version = _get_cue_version(fr.current_path)
 
     return templates.TemplateResponse(
@@ -894,7 +895,7 @@ async def _render_tracklist_list(request: Request, session: AsyncSession, filter
         if tl.status == "approved" and tl.file_id:
             fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tl.file_id))
             fr = fr_result.scalar_one_or_none()
-            if fr and fr.state == FileState.EXECUTED:
+            if fr and await is_applied(session, fr.id):
                 tl._cue_version = _get_cue_version(fr.current_path)  # type: ignore[attr-defined]
             else:
                 tl._cue_version = 0  # type: ignore[attr-defined]

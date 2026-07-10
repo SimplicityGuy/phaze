@@ -458,7 +458,12 @@ def seed_pending_proposal(session: AsyncSession, make_file):  # type: ignore[no-
 
 @pytest_asyncio.fixture
 def seed_executed_file_with_metadata(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
-    """Return an async factory inserting an EXECUTED file + its FileMetadata (tag-compare source)."""
+    """Return an async factory inserting an applied file + its FileMetadata (tag-compare source).
+
+    Phase 85: applied-ness is carried by an EXECUTED ``RenameProposal`` (the ``applied()`` gate),
+    NOT by ``files.state``. The file is seeded ``state='moved'`` (a real post-apply state, not the
+    dead ``EXECUTED`` sentinel) so a reverted ``state == EXECUTED`` guard would drop it (mutation-safe).
+    """
 
     async def _make(
         *,
@@ -470,7 +475,15 @@ def seed_executed_file_with_metadata(session: AsyncSession, make_file):  # type:
         genre: str | None = None,
         track_number: int | None = None,
     ) -> tuple[FileRecord, FileMetadata]:
-        file = await make_file(state=FileState.EXECUTED, original_filename=original_filename)
+        file = await make_file(state=FileState.MOVED, original_filename=original_filename)
+        session.add(
+            RenameProposal(
+                id=uuid.uuid4(),
+                file_id=file.id,
+                proposed_filename=original_filename,
+                status=ProposalStatus.EXECUTED.value,
+            )
+        )
         md = FileMetadata(
             id=uuid.uuid4(),
             file_id=file.id,
@@ -505,15 +518,27 @@ def seed_duplicate_group(session: AsyncSession, make_file):  # type: ignore[no-u
 
 @pytest_asyncio.fixture
 def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
-    """Return an async factory inserting an EXECUTED file + approved Tracklist + a version/track.
+    """Return an async factory inserting an applied file + approved Tracklist + a version/track.
 
     ``eligible=True`` seeds >=1 timestamped track (the cue eligibility gate); ``eligible=False``
     seeds a track with NO timestamp (the ineligible "awaiting tracklist match" card).
+
+    Phase 85: applied-ness is carried by an EXECUTED ``RenameProposal`` (the ``applied()`` gate),
+    not ``files.state``; the file is seeded ``state='moved'`` so a reverted ``state == EXECUTED``
+    cue guard would drop it (mutation-safe).
     """
 
     async def _make(*, eligible: bool = True, original_filename: str | None = None) -> tuple[FileRecord, Tracklist, TracklistVersion]:
         fname = original_filename or ("cue-eligible.mp3" if eligible else "cue-ineligible.mp3")
-        file = await make_file(state=FileState.EXECUTED, original_filename=fname)
+        file = await make_file(state=FileState.MOVED, original_filename=fname)
+        session.add(
+            RenameProposal(
+                id=uuid.uuid4(),
+                file_id=file.id,
+                proposed_filename=fname,
+                status=ProposalStatus.EXECUTED.value,
+            )
+        )
         tracklist = Tracklist(
             id=uuid.uuid4(),
             external_id=f"ext-{uuid.uuid4().hex[:12]}",

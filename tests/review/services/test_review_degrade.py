@@ -10,9 +10,15 @@ stub session (no D-08 seam needed).
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+import uuid
 
 import pytest
 
+from phaze.models.file import FileRecord, FileState
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.services.review import (
     _format_quality,
     _format_size,
@@ -21,6 +27,10 @@ from phaze.services.review import (
     get_pending_proposal_rows,
     get_tagwrite_review_rows,
 )
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class _RaisingSession:
@@ -88,3 +98,91 @@ def test_format_size_edges() -> None:
 def test_format_quality_with_and_without_bitrate() -> None:
     assert _format_quality({"file_size": 22_400_000, "bitrate": 320}).startswith("320 kbps · ")
     assert "kbps" not in _format_quality({"file_size": 22_400_000})  # covers the no-bitrate branch
+
+
+# ---------------------------------------------------------------------------
+# READ-05 / Plan 85-04 — applied() cutover + D-03 bound on get_tagwrite_review_rows
+#
+# These exercise the REAL predicate against the DB session fixture:
+#   * D-03: the builder never returns more than ``_MAX_REVIEW_ROWS`` (the render can't
+#     blow up on the now-populating applied backlog at 200K scale).
+#   * D-01 admit: a file is offered iff an ``executed`` RenameProposal exists — the file's
+#     own ``state`` is deliberately ``moved`` (NOT ``executed``), so the row only appears
+#     because ``applied_clause()`` reads ``proposals.status``, not ``files.state``.
+#   * D-02 idempotency: an applied file with a COMPLETED ``TagWriteLog`` is excluded
+#     (the ``completed_subq`` anti-join is preserved).
+# ---------------------------------------------------------------------------
+
+
+async def _seed_applied_tagwrite_file(session: AsyncSession, *, completed_log: bool = False) -> uuid.UUID:
+    """Insert an APPLIED (state='moved' + executed proposal) file with a >=1-change tag comparison.
+
+    ``FileMetadata.title`` is left NULL while the filename carries a parseable title, so the proposed
+    tags differ from the current metadata (``changed_count >= 1``) and the file qualifies for the
+    tag-write queue. Applied-ness comes ENTIRELY from the ``executed`` ``RenameProposal`` — the file's
+    ``state`` is ``moved`` (the real apply-path outcome), never ``executed``. Pass ``completed_log=True``
+    to also attach a COMPLETED ``TagWriteLog`` (the D-02 idempotency exclusion case).
+    """
+    file_id = uuid.uuid4()
+    filename = "Some Artist - Some Title.mp3"
+    session.add(
+        FileRecord(
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/dest/{uuid.uuid4().hex}/{filename}",
+            original_filename=filename,
+            current_path=f"/dest/{filename}",
+            file_type="mp3",
+            file_size=5_000_000,
+            state=FileState.MOVED,  # NOT 'executed' — applied-ness is carried by the proposal, not files.state
+        )
+    )
+    await session.flush()
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file_id, artist="Some Artist", title=None))
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            proposed_filename=filename,
+            status=ProposalStatus.EXECUTED.value,
+        )
+    )
+    if completed_log:
+        session.add(
+            TagWriteLog(
+                id=uuid.uuid4(),
+                file_id=file_id,
+                before_tags={},
+                after_tags={"title": "Some Title"},
+                source="review",
+                status=TagWriteStatus.COMPLETED.value,
+            )
+        )
+    await session.commit()
+    return file_id
+
+
+@pytest.mark.asyncio
+async def test_get_tagwrite_review_rows_bounded_by_cap(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-03: the builder returns at most ``_MAX_REVIEW_ROWS`` even when more applied files qualify."""
+    monkeypatch.setattr("phaze.services.review._MAX_REVIEW_ROWS", 3)
+    for _ in range(5):  # 5 qualifying applied files > the patched cap of 3
+        await _seed_applied_tagwrite_file(session)
+
+    rows = await get_tagwrite_review_rows(session)
+
+    assert len(rows) == 3, "the .limit(_MAX_REVIEW_ROWS) cap bounds the builder (D-03)"
+
+
+@pytest.mark.asyncio
+async def test_get_tagwrite_review_rows_admits_applied_excludes_completed(session: AsyncSession) -> None:
+    """D-01 admit + D-02 idempotency: an applied file appears; one with a COMPLETED log does not."""
+    admitted_id = await _seed_applied_tagwrite_file(session, completed_log=False)
+    completed_id = await _seed_applied_tagwrite_file(session, completed_log=True)
+
+    offered_ids = {row["file_id"] for row in await get_tagwrite_review_rows(session)}
+
+    # D-01: admitted purely because an executed proposal exists (its files.state is 'moved').
+    assert admitted_id in offered_ids
+    # D-02: the completed_subq anti-join excludes the already-written file (idempotency preserved).
+    assert completed_id not in offered_ids

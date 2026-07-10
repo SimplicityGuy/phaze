@@ -5,16 +5,20 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 from mutagen.mp3 import MP3
 import pytest
 
 from phaze.models.file import FileState
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteStatus
 
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.services.tag_writer import (
     _write_mp4,
     _write_vorbis,
@@ -22,6 +26,21 @@ from phaze.services.tag_writer import (
     verify_write,
     write_tags,
 )
+
+
+async def _add_proposal(session: AsyncSession, file_id: uuid.UUID, status: str) -> None:
+    """Insert one ``RenameProposal`` with ``status`` for ``file_id`` and commit."""
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            proposed_filename="Renamed Set.mp3",
+            proposed_path=None,
+            confidence=0.95,
+            status=status,
+        )
+    )
+    await session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -181,31 +200,77 @@ class TestVerifyWrite:
 
 
 class TestExecuteTagWrite:
-    """Tests for execute_tag_write async function."""
+    """Tests for execute_tag_write async function.
 
-    def _make_file_record(self, state: str = FileState.EXECUTED, current_path: str = "/mock/dest/test.mp3") -> MagicMock:
-        """Create a mock FileRecord."""
+    READ-05 / D-01: the guard at ``tag_writer.py`` now gates on ``await is_applied(session,
+    file_record.id)`` -- a real DB ``EXISTS`` over ``proposals.status == 'executed'`` -- NOT on
+    ``file_record.state``. The guard behavior cases (SC#2) therefore seed REAL rows against the test
+    DB; the write-mechanics cases patch ``is_applied`` to explicitly admit the file so they exercise
+    the mutagen path in isolation.
+    """
+
+    def _make_file_record(self, current_path: str = "/mock/dest/test.mp3") -> MagicMock:
+        """Create a mock FileRecord for the write-mechanics cases (the guard is patched separately).
+
+        Note (READ-05): the file's ``state`` is deliberately NOT set here -- the revived guard reads
+        ``applied()`` (an executed proposal), never ``file_record.state``, so a mock ``.state`` no
+        longer drives the guard.
+        """
         fr = MagicMock()
-        fr.state = state
         fr.current_path = current_path
-        fr.id = MagicMock()
+        fr.id = uuid.uuid4()
         return fr
 
+    # ------------------------------------------------------------------------------------------------
+    # SC#2 guard behavior (real DB rows, mutation-checked) -- the load-bearing behavior-revival test.
+    # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_rejects_non_executed_file(self) -> None:
-        """execute_tag_write raises ValueError for non-EXECUTED files."""
-        fr = self._make_file_record(state=FileState.APPROVED)
-        session = AsyncMock()
-        with pytest.raises(ValueError, match="executed"):
-            await execute_tag_write(session, fr, {"artist": "Test"}, "tracklist")
+    async def test_applied_file_passes_guard(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """SC#2: an actually-applied file (executed proposal, ``state != 'executed'``) PASSES the guard.
 
+        This is the behavior the phase revives: pre-Phase-85 the guard read ``file_record.state !=
+        FileState.EXECUTED`` and ALWAYS failed (no ``src/`` writer produces ``FileState.EXECUTED``).
+        The file's own ``state`` is deliberately ``'moved'`` -- the real apply-path outcome -- proving
+        the guard admits on ``proposals.status == 'executed'`` alone.
+
+        Mutation check (recorded in SUMMARY): reverting the guard to ``file_record.state !=
+        FileState.EXECUTED`` makes this fixture (``file.state == 'moved'``) RAISE and this test go RED.
+        """
+        file = await make_file(state=FileState.MOVED)
+        assert file.state != FileState.EXECUTED.value  # premise: the file's own state is NOT 'executed'
+        await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
+
+        with (
+            patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+            patch("phaze.services.tag_writer.write_tags"),
+            patch("phaze.services.tag_writer.verify_write", return_value={}),
+        ):
+            log_entry = await execute_tag_write(session, file, {"artist": "New Artist"}, "tracklist")
+
+        # The guard admitted the file and the write path ran to completion.
+        assert log_entry.status == TagWriteStatus.COMPLETED
+        assert log_entry.file_id == file.id
+
+    @pytest.mark.asyncio
+    async def test_non_applied_file_raises(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A file with no executed proposal (only a failed one) RAISES ``ValueError`` matching 'executed'."""
+        file = await make_file(state=FileState.MOVED)
+        await _add_proposal(session, file.id, ProposalStatus.FAILED.value)
+
+        with pytest.raises(ValueError, match="executed"):
+            await execute_tag_write(session, file, {"artist": "Test"}, "tracklist")
+
+    # ------------------------------------------------------------------------------------------------
+    # Write-mechanics cases -- guard explicitly admitted so the mutagen path is exercised in isolation.
+    # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
     async def test_creates_tag_write_log_on_success(self, mp3_file: Path) -> None:
         """execute_tag_write creates a TagWriteLog entry on successful write."""
         fr = self._make_file_record(current_path=str(mp3_file))
         session = AsyncMock()
 
-        log_entry = await execute_tag_write(session, fr, {"artist": "New Artist"}, "tracklist")
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            log_entry = await execute_tag_write(session, fr, {"artist": "New Artist"}, "tracklist")
 
         assert log_entry.status == TagWriteStatus.COMPLETED
         assert log_entry.source == "tracklist"
@@ -221,7 +286,8 @@ class TestExecuteTagWrite:
         fr = self._make_file_record(current_path=str(bad_path))
         session = AsyncMock()
 
-        log_entry = await execute_tag_write(session, fr, {"artist": "Test"}, "manual_edit")
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            log_entry = await execute_tag_write(session, fr, {"artist": "Test"}, "manual_edit")
 
         assert log_entry.status == TagWriteStatus.FAILED
         assert log_entry.error_message is not None
@@ -231,10 +297,10 @@ class TestExecuteTagWrite:
     async def test_uses_current_path_not_original(self) -> None:
         """execute_tag_write uses file_record.current_path."""
         fr = self._make_file_record(current_path="/dest/music.mp3")
-        fr.state = FileState.EXECUTED
         session = AsyncMock()
 
         with (
+            patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)),
             patch("phaze.services.tag_writer.extract_tags") as mock_extract,
             patch("phaze.services.tag_writer.write_tags") as mock_write,
             patch("phaze.services.tag_writer.verify_write", return_value={}),
@@ -249,7 +315,10 @@ class TestExecuteTagWrite:
         fr = self._make_file_record(current_path=str(mp3_file))
         session = AsyncMock()
 
-        with patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"expected": "A", "actual": "B"}}):
+        with (
+            patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)),
+            patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"expected": "A", "actual": "B"}}),
+        ):
             log_entry = await execute_tag_write(session, fr, {"artist": "A"}, "tracklist")
             assert log_entry.status == TagWriteStatus.DISCREPANCY
             assert log_entry.discrepancies == {"artist": {"expected": "A", "actual": "B"}}

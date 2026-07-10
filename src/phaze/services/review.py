@@ -8,8 +8,9 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
 :func:`phaze.services.pipeline.get_analyze_stage_files`). No enqueue, no commit, no schema change.
 
 * :func:`get_pending_proposal_rows` -- pending ``RenameProposal`` rows (Rename/Move, Plan 60-02).
-* :func:`get_tagwrite_review_rows`  -- EXECUTED files with a pending, >=1-change tag comparison
-  (Tag-write, Plan 60-03; Pitfall 3 -- only EXECUTED files without a COMPLETED ``TagWriteLog``).
+* :func:`get_tagwrite_review_rows`  -- applied files (``applied_clause()``, READ-05/D-01) with a
+  pending, >=1-change tag comparison (Tag-write, Plan 60-03; Pitfall 3 -- only applied files without
+  a COMPLETED ``TagWriteLog``).
 * :func:`get_dedupe_groups`         -- scored duplicate groups + keeper flag (Dedupe, Plan 60-04;
   keeper == ``score_group``'s ``canonical_id``; the radio resolves via ``/duplicates/{hash}/resolve``).
 * :func:`get_cue_review_cards`      -- eligible + gated cue cards with an IN-MEMORY ``.cue`` preview
@@ -25,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 import structlog
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _build_cue_tracks, _get_eligible_tracklist_query
@@ -38,6 +39,7 @@ from phaze.routers.tags import (
 from phaze.services.cue_generator import generate_cue_content
 from phaze.services.dedup import find_duplicate_groups_with_metadata, score_group
 from phaze.services.proposal_queries import get_proposals_page
+from phaze.services.stage_status import applied_clause
 from phaze.services.tag_proposal import compute_proposed_tags
 
 
@@ -46,6 +48,13 @@ if TYPE_CHECKING:
 
 
 logger = structlog.get_logger(__name__)
+
+# D-03 / T-85-01: a fixed cap on the two genuinely-unbounded operator list builders below. Neither
+# ``get_tagwrite_review_rows`` nor ``get_cue_review_cards`` takes an operator-supplied ``page_size``
+# (they are degrade-safe render helpers), so a fixed ``.limit(...)`` is a stronger DoS control than a
+# ``Query(le=100)`` bound: the now-populating applied() backlog (READ-05) can never blow up the render
+# at 200K scale. Chosen low-thousands, consistent with the in-tree page bounds and ``_MAX_BULK_TAG_WRITE``.
+_MAX_REVIEW_ROWS = 2000
 
 
 async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any]]:
@@ -90,8 +99,10 @@ def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
 async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]]:
     """Return the pending tag-write review rows as plain dicts for the Tag-write workspace (degrade-safe).
 
-    Surfaces ONLY ``EXECUTED`` files that have NO ``COMPLETED`` ``TagWriteLog`` (Pitfall 3 -- a file
-    still awaiting a move never appears, so an empty queue is CORRECT, not a bug) and whose
+    Surfaces ONLY applied files (READ-05/D-01 -- an ``executed`` ``RenameProposal`` exists, via
+    ``applied_clause()``; the file's ``state`` column is NEVER read) that have NO ``COMPLETED``
+    ``TagWriteLog`` (Pitfall 3 -- a file still awaiting a move never appears, so an empty queue is
+    CORRECT, not a bug), bounded by ``_MAX_REVIEW_ROWS`` (D-03), and whose
     server-computed tag comparison has ``>= 1`` change (there is something to write). For each it mirrors
     ``tags.list_tags``: ``compute_proposed_tags`` over the file's metadata + tracklist + accepted Discogs
     link, then ``_build_comparison`` / ``_count_changes``. The whole read runs inside a
@@ -106,8 +117,9 @@ async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]
             stmt = (
                 select(FileRecord)
                 .options(selectinload(FileRecord.file_metadata))
-                .where(FileRecord.state == FileState.EXECUTED, FileRecord.id.not_in(completed_subq))
+                .where(applied_clause(), FileRecord.id.not_in(completed_subq))
                 .order_by(FileRecord.original_filename)
+                .limit(_MAX_REVIEW_ROWS)
             )
             file_records = list((await session.execute(stmt)).scalars().all())
 
@@ -202,13 +214,15 @@ async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
 async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     """Return eligible + gated cue cards for the Cue preview workspace (degrade-safe, NO disk write).
 
-    Surfaces two sets, both approved tracklists on an EXECUTED file:
+    Surfaces two sets, both approved tracklists on an applied file (READ-05/D-01 -- an ``executed``
+    ``RenameProposal`` exists, via ``applied_clause()``; the file's ``state`` column is NEVER read),
+    each set bounded by ``_MAX_REVIEW_ROWS`` (D-03):
 
     * **eligible** -- ``>= 1`` timestamped track (``_get_eligible_tracklist_query``). For each, the ``.cue``
       preview text is built ENTIRELY IN MEMORY via ``_build_cue_tracks`` + ``generate_cue_content`` -- the
       render NEVER calls ``write_cue_file`` and NEVER touches disk (T-60-CUE; the write happens only on an
       explicit APPROVE -> ``POST /cue/{id}/generate``, which IS the approve/write -- there is no /approve route).
-    * **gated** -- approved + EXECUTED but NO timestamped track (the "awaiting tracklist match…" ineligible
+    * **gated** -- approved + applied but NO timestamped track (the "awaiting tracklist match…" ineligible
       card, rendered ``opacity-60`` with no approve control).
 
     The whole read runs inside a ``session.begin_nested()`` SAVEPOINT and returns ``[]`` on any error so the
@@ -221,6 +235,8 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
             cards: list[dict[str, Any]] = []
 
             for tracklist, file_record in await _get_eligible_tracklist_query(session):
+                if len(cards) >= _MAX_REVIEW_ROWS:  # D-03: cap the eligible half at the same bound.
+                    break
                 cue_text: str | None = None
                 if tracklist.latest_version_id:
                     cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
@@ -235,7 +251,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                     }
                 )
 
-            # Gated: approved + EXECUTED file but NO timestamped track (mirrors cue._get_cue_stats missing set).
+            # Gated: approved + applied() file but NO timestamped track (mirrors cue._get_cue_stats missing set).
             has_timestamp_subq = (
                 select(TracklistVersion.tracklist_id)
                 .join(TracklistTrack, TracklistTrack.version_id == TracklistVersion.id)
@@ -248,10 +264,11 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                 .where(
                     Tracklist.status == "approved",
                     Tracklist.file_id.is_not(None),
-                    FileRecord.state == FileState.EXECUTED,
+                    applied_clause(),
                     Tracklist.id.not_in(has_timestamp_subq),
                 )
                 .order_by(Tracklist.artist, Tracklist.event)
+                .limit(_MAX_REVIEW_ROWS)
             )
             for tracklist, file_record in (await session.execute(gated_stmt)).tuples().all():
                 cards.append(

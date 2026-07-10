@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
 
 
@@ -45,7 +46,14 @@ async def _executed_file(
     sha256: str | None = None,
     file_size: int = 5_000_000,
 ) -> FileRecord:
-    """Insert an EXECUTED FileRecord + FileMetadata (the tag-apply target)."""
+    """Insert an APPLIED FileRecord + FileMetadata (the tag-apply target).
+
+    READ-05 / D-01: the tag-apply guard now reads ``applied()`` — an ``executed`` ``RenameProposal``
+    exists — NOT ``file.state == 'executed'`` (no ``src/`` writer produces that value). So this seeds an
+    ``executed`` proposal and sets the file's own ``state`` to ``MOVED`` (the real apply-path outcome).
+    The ``MOVED`` state makes the fixture mutation-sensitive: a guard reverted to ``state == EXECUTED``
+    would reject it, so the audit genuinely exercises the ``proposals.status`` predicate.
+    """
     file = FileRecord(
         id=uuid.uuid4(),
         sha256_hash=sha256 or (uuid.uuid4().hex + uuid.uuid4().hex),
@@ -54,11 +62,19 @@ async def _executed_file(
         current_path=f"/dest/{filename}",
         file_type="mp3",
         file_size=file_size,
-        state=FileState.EXECUTED,
+        state=FileState.MOVED,
     )
     session.add(file)
     await session.flush()
     session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, artist=artist, title="Old Title"))
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            proposed_filename=filename,
+            status=ProposalStatus.EXECUTED.value,
+        )
+    )
     await session.commit()
     await session.refresh(file)
     return file
@@ -145,9 +161,9 @@ async def test_dedupe_resolve_one_resolution_and_undo_round_trips(client: AsyncC
     assert (await session.execute(resolved_stmt)).scalar_one() == 1, "exactly one resolution per resolve"
 
     # Undo round-trips the file_states blob the resolve response carries.
-    file_states = json.dumps([{"id": str(other.id), "previous_state": FileState.EXECUTED.value}])
+    file_states = json.dumps([{"id": str(other.id), "previous_state": FileState.MOVED.value}])
     undo = await client.post(f"/duplicates/{shared}/undo", data={"file_states": file_states})
     assert undo.status_code == 200
 
     await session.refresh(other)
-    assert other.state == FileState.EXECUTED.value, "undo restores the non-canonical file's prior state"
+    assert other.state == FileState.MOVED.value, "undo restores the non-canonical file's prior state"

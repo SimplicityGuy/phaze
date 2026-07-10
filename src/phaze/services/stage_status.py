@@ -77,6 +77,8 @@ from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
+    import uuid
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -110,6 +112,58 @@ def dedup_resolved_clause() -> ColumnElement[bool]:
     agent-worker import boundary, D-00e).
     """
     return exists(select(DedupResolution.id).where(DedupResolution.file_id == FileRecord.id))
+
+
+def applied_clause() -> ColumnElement[bool]:
+    """Return the correlated ``applied`` predicate for a file (a ``ColumnElement[bool]``).
+
+    READ-05 / D-01: a file is ``applied`` iff an ``executed`` proposal exists for it --
+    ``exists(proposals WHERE file_id == FileRecord.id AND status == 'executed')``. This is the
+    single authoritative apply-outcome source: ``proposals.status`` is transactionally coupled to the
+    agent's copy->verify->delete apply path (an IO failure forces ``status='failed'``), whereas a
+    ``FileState.EXECUTED`` value is produced by NO writer in ``src/`` (the whole reason READ-05's gates
+    were dead). This predicate therefore NEVER reads the file's ``state`` column and NEVER touches
+    ``execution_log`` (a best-effort, swallowed-exception audit log that can false-positive on a
+    stale/deleted path -- T-85-02).
+
+    Like :func:`dedup_resolved_clause`, this is a **FILE-LEVEL** predicate: it takes NO ``stage``
+    argument, correlates to :class:`~phaze.models.file.FileRecord` via a correlated ``exists(...)``,
+    and is deliberately kept OUT of the ``Stage`` dispatch ladders (:func:`done_clause` /
+    :func:`failed_clause` / :func:`stage_status_case`) so it never perturbs the DERIV-04 equivalence
+    test. Do NOT reuse ``done_clause(Stage.APPLY)`` here -- that joins ``execution_log`` (rejected by
+    D-01).
+
+    A file CAN carry multiple non-pending proposals (``uq_proposals_file_id_pending`` enforces one
+    PENDING proposal per file ONLY); a file with BOTH a ``failed`` and an ``executed`` proposal is
+    applied. ``exists(status == 'executed')`` is the correct authoritative multi-proposal test.
+    """
+    return exists(
+        select(RenameProposal.id).where(
+            RenameProposal.file_id == FileRecord.id,
+            RenameProposal.status == "executed",  # ProposalStatus.EXECUTED.value
+        )
+    )
+
+
+async def is_applied(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """READ-05 / D-01 per-record twin of :func:`applied_clause` -- ``True`` iff an executed proposal exists.
+
+    Issues a single scalar ``EXISTS`` query for ``file_id`` (for the write guards that hold a
+    ``file_id`` + ``session`` but no proposal). NEVER reads the file's ``state`` column, NEVER touches
+    ``execution_log``, and never lazy-loads ``proposal.file`` (``lazy="raise"``).
+    """
+    return bool(
+        await session.scalar(
+            select(
+                exists(
+                    select(RenameProposal.id).where(
+                        RenameProposal.file_id == file_id,
+                        RenameProposal.status == "executed",  # ProposalStatus.EXECUTED.value
+                    )
+                )
+            )
+        )
+    )
 
 
 def done_clause(stage: Stage) -> ColumnElement[bool]:

@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: executing
-last_updated: "2026-07-10T20:37:59.819Z"
-last_activity: 2026-07-10 -- Phase 82 execution started
+status: "Phase 85 shipped — PR #230"
+last_updated: "2026-07-10T22:15:46.519Z"
+last_activity: 2026-07-10
 progress:
   total_phases: 52
-  completed_phases: 7
-  total_plans: 35
-  completed_plans: 31
-  percent: 13
+  completed_phases: 22
+  total_plans: 91
+  completed_plans: 35
+  percent: 42
 ---
 
 # Project State
@@ -20,20 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 82 — counts-pending-set-cutover
+**Current focus:** Phase 86 — proposals cutover
 
 ## Current Position
 
-Phase: 82 (counts-pending-set-cutover) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 82
-Last activity: 2026-07-10 -- Phase 82 execution started
+Phase: 86
+Plan: Not started
+Status: Phase 85 shipped — PR #230
+Last activity: 2026-07-10
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 205
+- Total plans completed: 209
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -289,9 +289,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-10T19:33:02.956Z
-Stopped at: Phase 82 context gathered
-Resume file: .planning/phases/82-counts-pending-set-cutover/82-CONTEXT.md
+Last session: 2026-07-10T19:26:51.054Z
+Stopped at: Phase 85 context gathered
+Resume file: .planning/phases/85-executed-gate-revival/85-CONTEXT.md
 
 ## Operator Next Steps
 
