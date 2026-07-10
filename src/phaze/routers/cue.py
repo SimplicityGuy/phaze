@@ -15,10 +15,11 @@ import structlog
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string, write_cue_file
 from phaze.services.proposal_queries import Pagination
+from phaze.services.stage_status import applied_clause, is_applied
 
 
 logger = structlog.get_logger(__name__)
@@ -45,7 +46,7 @@ async def _get_eligible_tracklist_query(session: AsyncSession) -> list[tuple[Tra
         .where(
             Tracklist.status == "approved",
             Tracklist.file_id.is_not(None),
-            FileRecord.state == FileState.EXECUTED,
+            applied_clause(),
             Tracklist.id.in_(has_timestamp_subq),
         )
         .order_by(
@@ -86,7 +87,7 @@ async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
         .where(
             Tracklist.status == "approved",
             Tracklist.file_id.is_not(None),
-            FileRecord.state == FileState.EXECUTED,
+            applied_clause(),
             Tracklist.id.not_in(has_timestamp_subq),
         )
     )
@@ -247,8 +248,8 @@ async def generate_cue(
     if tracklist is None:
         return HTMLResponse(content="Tracklist not found", status_code=404)
 
-    # Validate file state
-    if file_record is None or file_record.state != FileState.EXECUTED:
+    # Validate the file is applied (READ-05/D-01: an executed proposal exists, NOT files.state).
+    if file_record is None or not await is_applied(session, file_record.id):
         toast_msg = "File must be executed before generating a CUE sheet. Run the pipeline to move the file to its destination."
         return _render_error_toast(request, toast_msg)
 
