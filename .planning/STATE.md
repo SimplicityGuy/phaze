@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: "Phase 84 shipped — PR #228"
-last_updated: "2026-07-10T05:29:03.367Z"
-last_activity: 2026-07-09
+status: "Phase 80 shipped — PR #229"
+last_updated: "2026-07-10T19:06:50.890Z"
+last_activity: 2026-07-10
 progress:
   total_phases: 52
-  completed_phases: 20
-  total_plans: 82
-  completed_plans: 26
-  percent: 38
+  completed_phases: 21
+  total_plans: 87
+  completed_plans: 31
+  percent: 40
 ---
 
 # Project State
@@ -20,20 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 85 — executed gate revival
+**Current focus:** Phase 81 — per stage failure persistence retry paths
 
 ## Current Position
 
-Phase: 85
+Phase: 81
 Plan: Not started
-Status: Phase 84 shipped — PR #228
-Last activity: 2026-07-09
+Status: Phase 80 shipped — PR #229
+Last activity: 2026-07-10
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 200
+- Total plans completed: 205
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -289,9 +289,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-10T00:37:11.136Z
-Stopped at: Phase 84 context gathered
-Resume file: .planning/phases/84-dedup-fingerprint-progress-cutover/84-CONTEXT.md
+Last session: 2026-07-10T06:22:06.459Z
+Stopped at: Phase 80 context gathered
+Resume file: .planning/phases/80-recovery-re-enqueue-cutover/80-CONTEXT.md
 
 ## Operator Next Steps
 

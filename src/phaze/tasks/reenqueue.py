@@ -15,7 +15,8 @@ surviving ``saq_jobs`` rows itself, and reclaims timed-out ``active`` jobs on it
 "queue-loss" is now the rare, DETECTABLE asymmetry "``saq_jobs`` has zero queued/active rows while
 the durable scheduling ledger still records scheduled work" (a truncate / restore-from-backup /
 fresh migration). Steady state produces ZERO automatic enqueues -- DO NOT re-introduce a
-steady-state auto-advance cron or the deleted ``reenqueue_discovered`` producer.
+steady-state auto-advance cron or the deleted ``reenqueue_discovered`` producer. (Phase 80 left this
+durability contract untouched; it only changed HOW ``domain-completed`` is derived -- see below.)
 
 THE PHASE-45 LEDGER REFRAME (45-CONTEXT, the operator spec -- READ THIS BEFORE TOUCHING RECOVERY):
 Pre-Phase-45 recovery derived its work from the ``services/pipeline.py`` COMPLEMENT-OF-DONE
@@ -36,23 +37,39 @@ enqueued it (``ctx["queue"].enqueue`` for controller rows; the active agent's pe
 agent rows). A never-scheduled ``DISCOVERED`` file has NO ledger row, so the incident sweep CANNOT
 recur. ``force=True`` flips to "reconcile the ledger now", bypassing ONLY the no-op DETECT gate --
 never the per-item deterministic-key dedup, so a forced reconcile over a live queue stays idempotent
-(no doubling, Phase-32 class).
+(no doubling, Phase-32 class). Phase 80 (READ-03) preserved this ledger-recovery contract verbatim
+while cutting the ``domain-completed`` exclusion over to the derived predicate layer (see the third
+reframe below): the WORK set is still, exactly, ``ledger MINUS live MINUS domain-completed``.
 
 THE PER-STAGE DOMAIN-COMPLETED PREDICATE (the SECONDARY net for Plan 02's residual gap):
-``FileState`` is a SINGLE column with NO per-stage FAILED states, so a FileState-derived "done"
-predicate is reliable only where a stage's success advances the column past its own gate. The
-exclusion is therefore EXPLICIT and TOTAL per stage (asserted in test_recovery.py):
+Phase 80 (READ-03) CUT this predicate over from ``FileRecord.state`` reads to the Phase-78/81
+single-source derivation layer (``services/stage_status.py``): recovery now derives "done" DIRECTLY
+from the per-stage output tables via the LOCKED ``done_clause`` / ``domain_completed_clause`` builders,
+with ZERO ``FileRecord.state`` reads. This lands AFTER migration ``036`` backfilled
+``analysis.analysis_completed_at`` (so ``done(analyze)`` reads a complete corpus) and BEFORE Phase 82
+redefines "pending", closing the double-negation (D-05): the enrich branches flip from
+``absent-from-pending`` (which would silently become ``done OR in_flight`` once pending = ``NOT done AND
+NOT in_flight``) to a DIRECT ``in done-set`` test. The exclusion stays EXPLICIT and TOTAL per stage
+(asserted in test_recovery.py):
 
-- predicate-covered (:data:`_DOMAIN_COMPLETED_STAGES`): ``process_file`` (analyze; done when
-  state in {ANALYZED, ANALYSIS_FAILED}), ``extract_file_metadata`` (done when NOT in the metadata
-  pending set), ``fingerprint_file`` (done when NOT in the fingerprint pending set), and
-  ``push_file`` (Phase 50; done when state in {PUSHED, ANALYZED, ANALYSIS_FAILED}). Metadata and
-  fingerprint have NO ``/failed`` callback (Plan 02 residual gap), so this is their PRIMARY net;
-  push has no terminal clear before its callback, so FileState is its reliable done signal.
+- predicate-covered (:data:`_DOMAIN_COMPLETED_STAGES`): ``process_file`` (analyze; done via
+  ``domain_completed_clause(ANALYZE)`` == done OR terminal-failed -- FAILURE_IS_TERMINAL[analyze],
+  so an un-analyzable file is NEVER auto-re-driven), ``extract_file_metadata`` (done via
+  ``domain_completed_clause(METADATA)`` with the D-10 ``enqueued_at <= failed_at`` gate applied at the
+  call site), ``fingerprint_file`` (done via ``done_clause(FINGERPRINT)`` ONLY -- a FAILED fingerprint
+  auto-retries, the intentional analyze/fingerprint asymmetry D-01 encodes), and ``push_file`` (done
+  via ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` -- D-07, no backend-kind
+  resolution needed because a ``push_file`` ledger row implies compute).
 - live-keys-only (everything else): ``scan_live_set`` (Plan 02's terminal ack clears its ledger row
   on EVERY outcome, so any surviving row is genuinely orphaned -- no domain predicate) plus the four
   controller stages (``generate_proposals`` / ``search_tracklist`` / ``scrape_and_store_tracklist``
   / ``match_tracklist_to_discogs``; Plan 01's after_process clears them on every terminal status).
+
+All done-sets are LEDGER-SCOPED (D-06): recovery only ever asks about files that appear in the ledger,
+so every done-set query binds the ledger's file-ids as a SINGLE Postgres array (``= ANY(:ids)``), never
+a bare ``.in_(fids)`` (the asyncpg 32767 param cap -- the ledger reached ~44.5K rows in the 2026-06-18
+incident). Deriving "done" directly inverts the set-size characteristic (the pending sets were small;
+the done set is most of a 200K corpus), which the ledger scope keeps at O(|ledger|).
 
 Routing carries forward the Phase-32 pitfalls: agent rows route to the active agent's per-agent
 queue via ``select_active_agent`` + ``ctx["task_router"].queue_for(agent.id)`` -- NEVER the
@@ -63,28 +80,33 @@ instead of raising. The cached ``task_router`` is reused, never reconstructed pe
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC
 import json
 from typing import TYPE_CHECKING, Any, cast
+import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import ARRAY, Select, bindparam, exists, func, or_, select, text
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 import structlog
 
 from phaze.config import get_settings
-from phaze.models.cloud_job import CloudJob
-from phaze.models.file import FileRecord, FileState
+from phaze.enums.stage import Stage
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.services.backends import IN_FLIGHT
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
-from phaze.services.pipeline import (
-    count_inflight_jobs,
-    get_fingerprint_pending_files,
-    get_live_job_keys,
-    get_metadata_pending_files,
-)
+from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
+from phaze.services.stage_status import domain_completed_clause, done_clause
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
@@ -104,16 +126,16 @@ logger = structlog.get_logger(__name__)
 # reconcile can NEVER double the queue (the Phase-32 doubling class is closed). Every enqueue
 # goes strictly through the keyed producers (never a raw random-key queue.enqueue).
 #
-# The THREE agent stages whose ledger clear is NOT reliable on every terminal outcome get an
+# The FOUR agent stages whose ledger clear is NOT reliable on every terminal outcome get an
 # explicit domain-completed predicate; the other five are live-keys-only (their clear IS
 # reliable). The classification is TOTAL: predicate-covered XOR live-keys-only, asserted in a
 # test against _KEY_BUILDERS so no stage is silently undefined (T-45-17).
 _DOMAIN_COMPLETED_STAGES: frozenset[str] = frozenset(
     {
-        "process_file",  # analyze: done when state in {ANALYZED, ANALYSIS_FAILED}
-        "extract_file_metadata",  # done when NOT in get_metadata_pending_files
-        "fingerprint_file",  # done when NOT in get_fingerprint_pending_files
-        "push_file",  # Phase 50 (D-10): done when state in {PUSHED, ANALYZED, ANALYSIS_FAILED}
+        "process_file",  # analyze: domain_completed_clause(ANALYZE) == done OR terminal-failed
+        "extract_file_metadata",  # domain_completed_clause(METADATA) + the D-10 enqueued_at gate at the call site
+        "fingerprint_file",  # done_clause(FINGERPRINT) ONLY -- a failed fingerprint auto-retries (D-01)
+        "push_file",  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
     }
 )
 """Keyed functions that carry a per-stage domain-completed predicate (the SECONDARY exclusion).
@@ -121,11 +143,30 @@ _DOMAIN_COMPLETED_STAGES: frozenset[str] = frozenset(
 EVERY other keyed function (``scan_live_set`` + the four controller stages) is live-keys-only --
 its ledger row is reliably cleared on every terminal outcome (scan via Plan 02's ack; controllers
 via Plan 01's after_process), so any surviving row IS genuinely orphaned and needs no domain net.
-``push_file`` (Phase 50) joins the predicate-covered set: a crash between the staging cron and the
-push callback leaves a PUSHING file with no terminal clear, so its FileState (advanced to PUSHED on
-a successful land, or onward to ANALYZED) is the reliable done signal.
+Phase 80 (READ-03) cut every predicate over to the derived layer -- ``process_file`` /
+``extract_file_metadata`` / ``fingerprint_file`` / ``push_file`` are now derived from the per-stage
+output tables via the LOCKED ``done_clause`` / ``domain_completed_clause`` builders, with ZERO
+``FileRecord.state`` reads (the old FileState-derived "done" is gone).
 Kept in sync with ``deterministic_key._KEY_BUILDERS`` by a totality test in test_recovery.py.
 """
+
+
+@dataclass(frozen=True)
+class _DoneSets:
+    """The ledger-scoped per-stage domain-completed derivation, computed ONCE per recovery run (D-06).
+
+    Every set/dict is keyed by file-id STRING and scoped to the ledger's files only (``= ANY(:ids)``),
+    so membership is O(1) in :func:`is_domain_completed` and the derivation is O(|ledger|), never
+    O(200K corpus). The metadata cell is split into a domain-completed set + a ``failed_at`` map so the
+    call site can apply the D-10 ``enqueued_at <= failed_at`` gate (which needs the per-row ledger
+    timestamp) to the failed subset.
+    """
+
+    analyze_done: set[str]  # domain_completed_clause(ANALYZE): done OR terminal-failed
+    metadata_domain_completed: set[str]  # domain_completed_clause(METADATA): done OR failed (D-10 gate refines failed)
+    metadata_failed_at: dict[str, datetime]  # failed_clause(METADATA) rows -> failed_at (D-10 gate)
+    fingerprint_done: set[str]  # done_clause(FINGERPRINT): a success/completed engine (failed auto-retries)
+    push_done: set[str]  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
 
 
 def _zero() -> dict[str, int]:
@@ -133,80 +174,155 @@ def _zero() -> dict[str, int]:
     return {"reenqueued": 0, "skipped": 0}
 
 
-async def _build_done_sets(session: AsyncSession) -> dict[str, set[str]]:
-    """Compute the per-stage domain-completed file-id sets ONCE for the predicate.
+def _ledger_fids(rows: Sequence[SchedulingLedger]) -> list[uuid.UUID]:
+    """Extract the distinct, UUID-parseable natural file-ids from the run's ledger rows (D-06 scope).
 
-    Returns a mapping keyed by the predicate-covered function name to the set of file-id strings
-    that are DONE for that stage:
-
-    - ``process_file``: a direct query for files in {ANALYZED, ANALYSIS_FAILED} (analyze has BOTH a
-      success PUT and a ``/failed`` callback in Plan 02, so this is a belt-and-suspenders net for a
-      crash-without-callback).
-    - ``extract_file_metadata`` / ``fingerprint_file``: the COMPLEMENT of the existing pending-set
-      boundary -- a file NOT returned by ``get_metadata_pending_files`` / ``get_fingerprint_pending_files``
-      is "done" for that stage. We reuse those queries' membership (NOT their complement-of-done
-      SWEEP semantics): the pending set is the small, bounded set of files still needing the stage,
-      and we treat "absent from it" as done. This is the PRIMARY net for the metadata/fingerprint
-      residual gap (Plan 02: a retries-exhausted job with NO ``/failed`` callback).
-
-    IMPORTANT (45-03 acceptance): ``get_metadata_pending_files`` / ``get_fingerprint_pending_files``
-    are imported here ONLY to derive the done-set predicate (membership), NOT to enqueue their
-    complement. The recovery WORK set comes exclusively from the ledger. The old complement-of-done
-    SWEEP queries (``get_files_by_state``/``get_untracked_files``/``get_proposal_pending_batches``/
-    ``get_scrape_pending_tracklists``/``get_match_pending_tracklists``) are GONE from recovery.
+    The done-set queries only ever ask about files that appear in the ledger, so this is the exact
+    ``fids`` bound as the ``= ANY(array)`` scope. A row whose payload carries no ``file_id`` (or a
+    non-UUID natural id -- e.g. a controller set-hash) is skipped: it can never be a per-file
+    output-table match, so excluding it from the scope is a pure optimization with no behavior change.
     """
-    return {
-        # process_file: an EXPLICIT done set (file ids in a terminal analyze state).
-        _ANALYZE_DONE: {str(fid) for fid in (await session.scalars(_select_done_analyze_ids())).all()},
-        # metadata/fingerprint: the PENDING membership; is_domain_completed treats "absent" as done.
-        _METADATA_PENDING: {str(f.id) for f in await get_metadata_pending_files(session)},
-        _FINGERPRINT_PENDING: {str(f.id) for f in await get_fingerprint_pending_files(session)},
-        # push_file (Phase 50): an EXPLICIT done set (file ids that have LANDED on compute scratch
-        # or advanced past it). A still-PUSHING file is absent -> orphaned -> re-driven.
-        _PUSH_DONE: {str(fid) for fid in (await session.scalars(_select_done_push_ids())).all()},
+    out: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+    for row in rows:
+        nid = _natural_id(row)
+        if nid is None:
+            continue
+        try:
+            fid = uuid.UUID(nid)
+        except ValueError:
+            continue
+        if fid not in seen:
+            seen.add(fid)
+            out.append(fid)
+    return out
+
+
+def _fids_scope(fids: list[uuid.UUID], name: str) -> Any:
+    """``FileRecord.id = ANY(:name)`` -- a SINGLE Postgres array bind, never a bare ``.in_(fids)``.
+
+    D-06 / Landmine 5: a bare ``.in_(fids)`` expands to one bind per element and crashes asyncpg past
+    the 32767-param wire cap (the ledger reached ~44.5K rows in the 2026-06-18 incident). Binding the
+    whole id list as ONE ``uuid[]`` array param sidesteps the ceiling entirely while the Phase-77
+    partial indexes still drive each per-stage probe. There is NO ``= ANY(array)`` idiom elsewhere in
+    the codebase (RESEARCH §e); this is the phase's one genuinely new query pattern.
+    """
+    return FileRecord.id == func.any(bindparam(name, value=fids, type_=ARRAY(PGUUID(as_uuid=True))))
+
+
+async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _DoneSets:
+    """Compute the ledger-scoped per-stage domain-completed derivation ONCE (D-05/D-06/D-07/D-10).
+
+    Derives "done" DIRECTLY from the Phase-78/81 predicate layer -- ZERO ``FileRecord.state`` reads:
+
+    - ``analyze_done``: ``domain_completed_clause(ANALYZE)`` (done OR terminal-failed -- an
+      un-analyzable file stays terminal, FAILURE_IS_TERMINAL[analyze]).
+    - ``metadata_domain_completed`` + ``metadata_failed_at``: ``domain_completed_clause(METADATA)`` gives
+      the done-OR-failed set (both terminal for metadata); the failed rows' ``failed_at`` is read alongside
+      so the call site can REFINE the failed subset with the D-10 gate
+      (``done OR (failed AND enqueued_at <= failed_at)``) -- both twins stay ledger-agnostic. Deriving the
+      set via ``domain_completed_clause`` (not a bare ``done_clause``) is what makes the D-11 lock bite: a
+      ``~inflight_clause`` conjunct wrongly added to it would drop every failed-and-inflight candidate.
+    - ``fingerprint_done``: ``done_clause(FINGERPRINT)`` ONLY (a failed fingerprint auto-retries, so it
+      is NOT domain-complete -- the analyze/fingerprint asymmetry D-01 encodes).
+    - ``push_done``: ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` (D-07). A
+      ``push_file`` ledger row implies compute (``_enqueue_push_file`` is its only producer), so no
+      backend-kind resolution is needed: SUCCEEDED covers the landed-but-not-yet-analyzed window and
+      ``domain_completed(analyze)`` covers the onward advance; a SUBMITTED / AWAITING / no-row file is
+      NOT push-done and re-drives.
+
+    Every query keeps its own per-stage shape (one targeted probe per stage) so each Phase-77 partial
+    index drives its own scan, and every probe is scoped to ``fids`` via a single ``= ANY(array)`` bind
+    (:func:`_fids_scope`). An empty ledger short-circuits to empty sets (no pointless round-trips).
+    """
+    if not fids:
+        return _DoneSets(set(), set(), {}, set(), set())
+
+    analyze_done = {str(fid) for fid in (await session.scalars(_select_done_analyze_ids(fids))).all()}
+    metadata_domain_completed = {
+        str(fid)
+        for fid in (await session.scalars(select(FileRecord.id).where(_fids_scope(fids, "m_ids"), domain_completed_clause(Stage.METADATA)))).all()
     }
+    metadata_failed_at = {
+        str(file_id): failed_at
+        for file_id, failed_at in (
+            await session.execute(
+                select(FileMetadata.file_id, FileMetadata.failed_at).where(
+                    FileMetadata.file_id == func.any(bindparam("mf_ids", value=fids, type_=ARRAY(PGUUID(as_uuid=True)))),
+                    FileMetadata.failed_at.isnot(None),
+                )
+            )
+        ).all()
+    }
+    fingerprint_done = {
+        str(fid) for fid in (await session.scalars(select(FileRecord.id).where(_fids_scope(fids, "f_ids"), done_clause(Stage.FINGERPRINT)))).all()
+    }
+    push_done = {str(fid) for fid in (await session.scalars(_select_done_push_ids(fids))).all()}
+
+    return _DoneSets(
+        analyze_done=analyze_done,
+        metadata_domain_completed=metadata_domain_completed,
+        metadata_failed_at=metadata_failed_at,
+        fingerprint_done=fingerprint_done,
+        push_done=push_done,
+    )
 
 
-# Stable done-set keys (avoid stringly-typed drift between _build_done_sets and is_domain_completed).
-_ANALYZE_DONE = "analyze_done"
-_METADATA_PENDING = "metadata_pending"
-_FINGERPRINT_PENDING = "fingerprint_pending"
-_PUSH_DONE = "push_done"
+def _select_done_analyze_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
+    """Build the ledger-scoped SELECT for file ids whose analyze stage is DOMAIN-COMPLETE (D-01/D-06).
 
-
-def _select_done_analyze_ids() -> Any:
-    """Build the SELECT for file ids whose analyze stage is terminal (ANALYZED / ANALYSIS_FAILED).
-
-    quick-260707-d79: ANALYSIS_FAILED is DELIBERATELY treated as analyze-DONE here so a genuinely
-    un-analyzable file is NEVER auto-looped by ``recover_orphaned_work``. The operator-gated
-    ``POST /pipeline/analysis-failed/retry`` (routers/pipeline.py ``retry_analysis_failed``) is the
-    manual counterpart that re-drives failed files -- it flips them out of ANALYSIS_FAILED (->
-    FINGERPRINTED) BEFORE re-enqueuing, so a re-driven file is no longer in this terminal set.
-    Do NOT add ANALYSIS_FAILED to a "pending" query here; that would re-introduce the auto-loop.
+    ``domain_completed_clause(ANALYZE)`` == ``done OR failed`` -- both terminal, because
+    ``FAILURE_IS_TERMINAL[analyze]`` is True: a genuinely un-analyzable file (analyze FAILED) is
+    domain-complete and is NEVER auto-looped by ``recover_orphaned_work``. The operator-gated
+    ``POST /pipeline/analysis-failed/retry`` (``routers/pipeline.py`` ``retry_analysis_failed``) is the
+    manual counterpart -- it CLEARS ``analysis.failed_at`` BEFORE re-enqueuing (the Phase-81 CR-01 fix),
+    so a re-driven file leaves the failed disjunct and is no longer domain-complete (and analyze has no
+    ambiguous D-10 cell, unlike metadata). Scoped to the ledger's ``fids`` via a single array bind.
     """
-    return select(FileRecord.id).where(FileRecord.state.in_([FileState.ANALYZED, FileState.ANALYSIS_FAILED]))
+    return select(FileRecord.id).where(_fids_scope(fids, "a_ids"), domain_completed_clause(Stage.ANALYZE))
 
 
-def _select_done_push_ids() -> Any:
-    """Build the SELECT for file ids whose push stage is done (PUSHED, or advanced to a terminal analyze state).
+def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
+    """Build the ledger-scoped SELECT for file ids whose push stage is done (D-07, sidecar-derived).
 
-    Phase 50 (D-10): a file is push-done once it has landed on compute scratch (PUSHED) -- or moved
-    onward to ANALYZED / ANALYSIS_FAILED, which can only happen after a successful push. A file still
-    in PUSHING / AWAITING_CLOUD / DISCOVERED is NOT push-done, so its push_file row re-drives.
+    ``push_done = cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)``. A ``push_file``
+    ledger row is created ONLY by ``ComputeAgentBackend.dispatch`` -> ``_enqueue_push_file``, so a
+    push_file row IMPLIES the compute lane (kueue never enqueues push_file); on that lane SUCCEEDED
+    means "pushed and analyzing" and SUBMITTED means "still pushing". This is behavior-identical to the
+    retired ``state IN (PUSHED, ANALYZED, ANALYSIS_FAILED)``: SUCCEEDED covers PUSHED (the
+    landed-but-not-yet-analyzed window) and ``domain_completed(analyze)`` covers the onward advance. A
+    file at SUBMITTED / AWAITING / no-row is NOT push-done and its push_file row correctly re-drives.
+    NO ``FileRecord.state`` read. Scoped to the ledger's ``fids`` via a single array bind.
     """
-    return select(FileRecord.id).where(FileRecord.state.in_([FileState.PUSHED, FileState.ANALYZED, FileState.ANALYSIS_FAILED]))
+    succeeded = exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status == CloudJobStatus.SUCCEEDED.value))
+    return select(FileRecord.id).where(_fids_scope(fids, "p_ids"), or_(succeeded, domain_completed_clause(Stage.ANALYZE)))
 
 
 async def _get_awaiting_cloud_ids(session: AsyncSession) -> set[str]:
-    """File-id strings for files currently held in AWAITING_CLOUD (Phase 49, CR-01).
+    """File-id strings for held AWAITING_CLOUD long files, for the compute-only recovery partition (CLOUDROUTE-02).
 
-    A backfill-held long file carries an agent-routed ``process_file`` ledger row (D-09) and is NOT
-    analyze-done, so recovery treats it as orphaned. It must route to a COMPUTE agent ONLY -- routing
-    it to the most-recently-seen agent (typically a fileserver, the exact condition that held it)
-    would analyze the long file locally and violate CLOUDROUTE-02. The set is small and bounded (held
-    files only), read ONCE per recovery run alongside the done-sets.
+    Recovery-SPECIFIC predicate: a held long file is one with an ``cloud_job(status='awaiting')`` sidecar
+    row that has NOT domain-completed its analyze. It deliberately does NOT reuse the drain/card's
+    :func:`~phaze.services.stage_status.awaiting_candidate_clause`, because that clause conjoins
+    ``~inflight_clause(ANALYZE)`` and every held compute file ALREADY carries a ``process_file:<id>``
+    scheduling-ledger row -- the D-09 held-file backfill seed at ``routers/pipeline.py`` inserts it for
+    every file the duration router parks in ``AWAITING_CLOUD`` on the compute path. So
+    ``~inflight_clause(ANALYZE)`` is False by construction for exactly the held files this partition
+    exists to catch, and reusing ``awaiting_candidate_clause`` here made ``held_agent_rows`` provably
+    empty -- re-introducing the Phase-49 CR-01 CLOUDROUTE-02 bug (held long files routed kind-agnostically
+    to a fileserver and analyzed locally). The drain/card KEEP ``~inflight_clause`` (they route NEW work
+    and must skip a locally-analyzing file); recovery does not, because it operates only on ALREADY-orphaned
+    rows -- ``recover_orphaned_work`` has already excluded any file whose ``process_file`` key is live
+    (``r.key not in live``), so a genuinely mid-local-analysis file never reaches this set's consumers.
+    The INNER join supplies the ``FileRecord`` the correlated builder references. Read ONCE per run.
     """
-    return {str(fid) for fid in (await session.scalars(select(FileRecord.id).where(FileRecord.state == FileState.AWAITING_CLOUD))).all()}
+    stmt = (
+        select(FileRecord.id)
+        .select_from(FileRecord)
+        .join(CloudJob, CloudJob.file_id == FileRecord.id)
+        .where(CloudJob.status == CloudJobStatus.AWAITING.value, ~domain_completed_clause(Stage.ANALYZE))
+    )
+    return {str(fid) for fid in (await session.scalars(stmt)).all()}
 
 
 async def _in_flight_cloud_job_ids(session: AsyncSession) -> set[str]:
@@ -239,18 +355,27 @@ def _natural_id(row: SchedulingLedger) -> str | None:
     return str(fid) if fid is not None else None
 
 
-def is_domain_completed(row: SchedulingLedger, done_sets: dict[str, set[str]]) -> bool:
-    """Return True only for a predicate-covered row whose file is DONE for that stage.
+def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
+    """Return True only for a predicate-covered row whose file is DOMAIN-COMPLETE for that stage.
 
     ALWAYS False for the five live-keys-only functions (scan_live_set + the four controller
     stages): their ledger clear is reliable on every terminal outcome, so the live-key filter is
     the sole exclusion and any surviving row is genuinely orphaned. For the four predicate-covered
-    agent stages, "done" is:
+    agent stages the derivation reads DIRECTLY from the done-sets (D-05 -- the double-negation cut:
+    the enrich branches now test ``fid in done_set``, never ``fid not in pending_set``, so once
+    Phase 82 redefines pending as ``NOT done AND NOT in_flight`` a genuinely-orphaned in-flight-ledger
+    file cannot be silently mis-classified as done):
 
-    - ``process_file``: file id in the analyze-done set (ANALYZED / ANALYSIS_FAILED).
-    - ``push_file``: file id in the push-done set (PUSHED / ANALYZED / ANALYSIS_FAILED).
-    - ``extract_file_metadata`` / ``fingerprint_file``: file id ABSENT from the stage's pending set
-      (the complement-of-pending == done boundary).
+    - ``process_file``: file id in ``analyze_done`` (domain_completed(analyze) == done OR terminal-failed).
+    - ``push_file``: file id in ``push_done`` (succeeded OR domain_completed(analyze), D-07).
+    - ``fingerprint_file``: file id in ``fingerprint_done`` (done ONLY -- a failed fingerprint auto-retries).
+    - ``extract_file_metadata``: the D-10 cell. Domain-complete when ``done(metadata)`` OR the metadata
+      FAILED AND the ledger row's ``enqueued_at <= metadata.failed_at``. metadata is the ONLY stage with
+      this ambiguous cell: ``retry_metadata_failed`` LEAVES ``failed_at`` set (81 D-11) then re-enqueues,
+      so ``(ledger row AND failed_at)`` is ambiguous. ``enqueued_at > failed_at`` (an orphaned OPERATOR
+      retry) re-drives; ``enqueued_at < failed_at`` (a callback that wrote the marker but crashed before
+      clearing the ledger) stays terminal. ``analysis.failed_at`` is cleared on retry (CR-01), so analyze
+      has no such cell -- the asymmetry is intentional (D-10).
     """
     function = row.function
     if function not in _DOMAIN_COMPLETED_STAGES:
@@ -259,13 +384,25 @@ def is_domain_completed(row: SchedulingLedger, done_sets: dict[str, set[str]]) -
     if fid is None:
         return False
     if function == "process_file":
-        return fid in done_sets[_ANALYZE_DONE]
+        return fid in done_sets.analyze_done
     if function == "push_file":
-        return fid in done_sets[_PUSH_DONE]
-    if function == "extract_file_metadata":
-        return fid not in done_sets[_METADATA_PENDING]
-    # fingerprint_file
-    return fid not in done_sets[_FINGERPRINT_PENDING]
+        return fid in done_sets.push_done
+    if function == "fingerprint_file":
+        return fid in done_sets.fingerprint_done
+    # extract_file_metadata -- D-10 call-site gate via SchedulingLedger.enqueued_at.
+    if fid not in done_sets.metadata_domain_completed:
+        return False  # neither done nor failed -> genuinely pending -> re-drive
+    failed_at = done_sets.metadata_failed_at.get(fid)
+    if failed_at is None:
+        return True  # done (a metadata row present, failed_at NULL) -> domain-complete
+    # failed -> the D-10 cell: terminal only when the ledger row PRE-DATES the failure marker.
+    # ``scheduling_ledger.enqueued_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (migration 022), so asyncpg
+    # returns it NAIVE in production, while ``metadata.failed_at`` is ``timezone=True`` (aware). Coerce
+    # the naive ledger stamp to UTC-aware before comparing -- a bare ``naive <= aware`` raises TypeError
+    # and would abort the whole recovery run (CR-02). The in-memory D-10 unit rows are already aware, so
+    # this is a no-op for them and the real fix only shows against a DB round-trip (see the CR-02 test).
+    enqueued_at = row.enqueued_at if row.enqueued_at.tzinfo is not None else row.enqueued_at.replace(tzinfo=UTC)
+    return enqueued_at <= failed_at
 
 
 async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) -> None:
@@ -341,7 +478,9 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
 
         rows = await get_ledger_rows(session)
         live = await get_live_job_keys(session)
-        done_sets = await _build_done_sets(session)
+        # D-06: the done-sets are scoped to the ledger's files ONLY (O(|ledger|), never O(200K)). Read
+        # the fids once from the same rows and bind them as a single Postgres array (:func:`_fids_scope`).
+        done_sets = await _build_done_sets(session, _ledger_fids(rows))
         # SCHED-05: a file with an in-flight cloud_job row (any backend_id) is owned SOLELY by its
         # backend reconcile/`/pushed` callback -- excluding it here keeps exactly one recovery owner
         # per backend kind, so a compute-backed cloud file gains no second recovery path (no replay

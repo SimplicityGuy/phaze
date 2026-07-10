@@ -45,7 +45,7 @@
 
 - [ ] **READ-01**: The three enrich pending sets are derived from `stage_status` (not from `FileRecord.state`), so metadata/fingerprint/analyze each surface every not-done, not-in-flight file independent of the others — the current cross-stage deadlock is gone (a file can complete all three, in any order).
 - [ ] **READ-02**: `get_pipeline_stats` reports per-stage counts from output tables (the linear `GROUP BY FileRecord.state` is removed), and the DAG shows four-bucket per-stage counts (not_started / in_flight / done / failed) including a visible failed count per enrich stage.
-- [ ] **READ-03**: Recovery/re-enqueue (`reenqueue.py`, `reconcile_cloud_jobs.py`) derive their done/in-flight sets from `stage_status`/sidecars with no `FileRecord.state` read, preserving the scheduling-ledger recovery contract and the "only previously-scheduled work recovers" guarantee.
+- [x] **READ-03**: Recovery/re-enqueue (`reenqueue.py`, `reconcile_cloud_jobs.py`) derive their done/in-flight sets from `stage_status`/sidecars with no `FileRecord.state` read, preserving the scheduling-ledger recovery contract and the "only previously-scheduled work recovers" guarantee.
 - [x] **READ-04**: Dedup (`services/dedup.py`) and `get_fingerprint_progress` derive from the dedup marker / output tables rather than `FileRecord.state`.
 - [ ] **READ-05**: The dead `state == EXECUTED` gates are revived against the real apply-outcome source — tag writing, review, tags/cue/tracklists guards fire for actually-applied files (fixes the permanently-dead tag-writer path).
 
@@ -95,7 +95,7 @@
 - [x] **MIG-01**: Migration `032` is additive-only — it creates the failure markers, the dedup marker, and the cloud sidecar representation, adds the partial indexes, and backfills them from `FileRecord.state`, **without touching `files.state`**.
 - [x] **MIG-02**: A committed, re-runnable shadow-compare check asserts per-file *implication* invariants (e.g. `state=ANALYZED ⇒ analysis_completed_at IS NOT NULL`; `state=DUPLICATE_RESOLVED ⇒ dedup marker`) across the live corpus, with `FINGERPRINTED` documented as the one expected divergence; it must pass before any reader cutover and before the destructive migration.
 - [x] **MIG-03**: Rescanning a file no longer resets pipeline progress — with `FileRecord.state` gone, the `ON CONFLICT DO UPDATE SET state = excluded.state` progress-wipe is structurally impossible (fixes the rescan-wipe bug).
-- [ ] **MIG-04**: Migration `034` is destructive and lands last — after the shadow-compare passes on the live corpus and cloud-push lanes are drained/quiesced, it drops `ix_files_state`, drops `files.state`, and deletes the `FileState` enum; its `downgrade()` documents the enum reconstruction from derived sources (and its lossiness).
+- [ ] **MIG-04**: The destructive migration (number assigned at plan time) is destructive and lands last — after the shadow-compare passes on the live corpus and cloud-push lanes are drained/quiesced, it drops `ix_files_state`, drops `files.state`, and deletes the `FileState` enum; its `downgrade()` documents the enum reconstruction from derived sources (and its lossiness).
 
 ---
 
@@ -143,7 +143,7 @@
 | FAIL-04 | Phase 81 | Complete |
 | READ-01 | Phase 82 | Pending |
 | READ-02 | Phase 82 | Pending |
-| READ-03 | Phase 80 | Pending |
+| READ-03 | Phase 80 | Complete |
 | READ-04 | Phase 84 | Complete |
 | READ-05 | Phase 85 | Pending |
 | SIDECAR-01 | Phase 83 | Complete |

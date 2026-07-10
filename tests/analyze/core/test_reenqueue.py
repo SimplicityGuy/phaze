@@ -18,20 +18,23 @@ controller-queue stand-in), ``task_router`` (a ``DedupFakeTaskRouter`` modeling 
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks.reenqueue import (
     _DOMAIN_COMPLETED_STAGES,
-    _PUSH_DONE,
     _build_done_sets,
+    _ledger_fids,
     is_domain_completed,
     recover_orphaned_work,
 )
@@ -106,6 +109,31 @@ async def _seed_push_ledger(session: AsyncSession, *, file_id: uuid.UUID) -> str
     await upsert_ledger_entry(session, key=key, function="push_file", kwargs=payload)
     await session.commit()
     return key
+
+
+async def _seed_cloud_job_succeeded(session: AsyncSession, file_id: uuid.UUID) -> None:
+    """Seed a compute ``cloud_job`` row at status='succeeded' -- the D-07 sidecar 'pushed and landed' signal.
+
+    Phase 80 cut push-done from ``FileRecord.state == PUSHED`` to
+    ``cloud_job.status='succeeded' OR domain_completed(analyze)`` (D-07). A landed-but-not-yet-analyzed
+    file is now represented by a SUCCEEDED compute cloud_job row (SUCCEEDED = 'pushed and analyzing' on
+    the compute lane), NOT the retired ``PUSHED`` FileState.
+    """
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file_id, backend_id="oci-a1", s3_key=None, status=CloudJobStatus.SUCCEEDED.value))
+    await session.commit()
+
+
+async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed: bool = False, failed: bool = False) -> None:
+    """Seed the ``analysis`` output row Phase-80 derives analyze-done from (NAND: never both markers)."""
+    session.add(
+        AnalysisResult(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            analysis_completed_at=datetime.now(UTC) if completed else None,
+            failed_at=datetime.now(UTC) if failed else None,
+        )
+    )
+    await session.commit()
 
 
 # --- PUSHING -> re-drive to a fileserver ------------------------------------------------
@@ -200,14 +228,20 @@ async def test_pushing_pushed_state_is_domain_completed(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A PUSHED file's push_file row is domain-completed (landed on scratch) -> NOT re-pushed."""
+    """A landed (cloud_job='succeeded') file's push_file row is domain-completed -> NOT re-pushed.
+
+    D-07: push-done is now ``cloud_job.status='succeeded' OR domain_completed(analyze)`` (sidecar-derived,
+    no FileRecord.state read). A SUCCEEDED compute cloud_job row is the 'pushed and landed' signal that
+    replaced the retired ``FileState.PUSHED``.
+    """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f = _make_file(state=FileState.PUSHED)
+    f = _make_file(state=FileState.PUSHING)
     session.add(f)
     await session.commit()
+    await _seed_cloud_job_succeeded(session, f.id)  # landed on compute scratch (D-07)
     await _seed_push_ledger(session, file_id=f.id)
 
     router = DedupFakeTaskRouter()
@@ -224,7 +258,12 @@ async def test_pushing_analyzed_state_is_domain_completed(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A push_file row whose file is ANALYZED / ANALYSIS_FAILED is past pushing -> domain-completed."""
+    """A push_file row whose file has domain-completed analyze (done/failed) is past pushing -> domain-completed.
+
+    D-07's second disjunct: ``domain_completed(analyze)`` covers the onward advance past PUSHED. Derived
+    from the ``analysis`` output row (completed_at / failed_at), not the retired ANALYZED / ANALYSIS_FAILED
+    FileState.
+    """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
@@ -233,6 +272,8 @@ async def test_pushing_analyzed_state_is_domain_completed(
     f_failed = _make_file(state=FileState.ANALYSIS_FAILED)
     session.add_all([f_done, f_failed])
     await session.commit()
+    await _seed_analysis(session, f_done.id, completed=True)
+    await _seed_analysis(session, f_failed.id, failed=True)
     await _seed_push_ledger(session, file_id=f_done.id)
     await _seed_push_ledger(session, file_id=f_failed.id)
 
@@ -252,21 +293,27 @@ async def test_pushed_file_is_not_analyze_done_for_process_file(
     async_engine: AsyncEngine,
     session: AsyncSession,
 ) -> None:
-    """D-10: PUSHED is NOT in the analyze done-set, so a process_file row for it stays orphaned.
+    """D-07: a landed (cloud_job='succeeded') file is push-done but NOT analyze-done, so its process_file row re-drives.
 
-    A pushed file has landed on compute scratch but is not yet analyzed; the analyze done-set
-    must remain {ANALYZED, ANALYSIS_FAILED} only, so recovery keeps driving its analysis.
+    A landed file has rsynced to compute scratch but is not yet analyzed; push-done is derived from the
+    SUCCEEDED cloud_job sidecar (D-07), while analyze-done requires an ``analysis`` output row -- which
+    this file lacks -- so recovery keeps driving its analysis. Both derivations are ledger-scoped, so a
+    ledger row for the file must exist for it to appear in a done-set.
     """
-    f = _make_file(state=FileState.PUSHED)
+    f = _make_file(state=FileState.PUSHING)
     session.add(f)
     await session.commit()
+    await _seed_cloud_job_succeeded(session, f.id)  # landed -> push-done via D-07
+    key = await _seed_push_ledger(session, file_id=f.id)
 
-    done_sets = await _build_done_sets(session)
+    done_sets = await _build_done_sets(
+        session, _ledger_fids([SchedulingLedger(key=key, function="push_file", routing="agent", payload={"file_id": str(f.id)})])
+    )
 
-    # PUSHED IS in the push done-set...
-    assert str(f.id) in done_sets[_PUSH_DONE]
+    # The landed file IS in the push done-set (SUCCEEDED cloud_job, D-07)...
+    assert str(f.id) in done_sets.push_done
 
-    # ...but a process_file row for the same PUSHED file is NOT domain-completed (analyze still pending).
+    # ...but a process_file row for the same file is NOT domain-completed (no analysis row -> analyze pending).
     pf_row = SchedulingLedger(key=f"process_file:{f.id}", function="process_file", routing="agent", payload={"file_id": str(f.id)})
     assert is_domain_completed(pf_row, done_sets) is False
 
