@@ -10,6 +10,7 @@ import pytest
 
 from phaze.models.file import FileRecord, FileState
 from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
 
 
 if TYPE_CHECKING:
@@ -22,7 +23,8 @@ async def _create_executed_file(
     *,
     filename: str = "Artist - Test Track.mp3",
     file_type: str = "mp3",
-    state: str = FileState.EXECUTED,
+    state: str = FileState.MOVED,
+    applied: bool = True,
     artist: str | None = "Old Artist",
     title: str | None = "Old Title",
     album: str | None = None,
@@ -30,7 +32,14 @@ async def _create_executed_file(
     genre: str | None = None,
     track_number: int | None = None,
 ) -> tuple[FileRecord, FileMetadata]:
-    """Create an EXECUTED FileRecord with FileMetadata for testing."""
+    """Create an applied FileRecord with FileMetadata for testing.
+
+    READ-05 / D-01: the tag routes now gate on ``applied()`` -- an ``executed`` RenameProposal exists
+    -- NOT on ``file.state == 'executed'`` (no ``src/`` writer produces that value). By default this
+    seeds an ``executed`` proposal and sets the file's own ``state`` to ``'moved'`` (the real
+    apply-path outcome), so the list/count/guard routes see it as a tag-write target. Pass
+    ``applied=False`` to seed a file with NO executed proposal (a non-applied file the guards reject).
+    """
     file_id = uuid.uuid4()
     file_record = FileRecord(
         id=file_id,
@@ -56,6 +65,17 @@ async def _create_executed_file(
         track_number=track_number,
     )
     session.add(metadata)
+    if applied:
+        session.add(
+            RenameProposal(
+                id=uuid.uuid4(),
+                file_id=file_id,
+                proposed_filename=filename,
+                proposed_path=None,
+                confidence=0.95,
+                status=ProposalStatus.EXECUTED.value,
+            )
+        )
     await session.commit()
     return file_record, metadata
 
@@ -182,8 +202,8 @@ async def test_write_tags_non_integer_year_and_track_number_kept_as_string(clien
 
 @pytest.mark.asyncio
 async def test_write_tags_non_executed_rejected(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /tags/{file_id}/write for non-EXECUTED file returns error."""
-    file_record, _ = await _create_executed_file(session, state=FileState.DISCOVERED)
+    """POST /tags/{file_id}/write for a non-applied file (no executed proposal) returns error."""
+    file_record, _ = await _create_executed_file(session, state=FileState.DISCOVERED, applied=False)
     response = await client.post(
         f"/tags/{file_record.id}/write",
         data={"artist": "Test"},

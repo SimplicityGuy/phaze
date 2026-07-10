@@ -15,9 +15,9 @@ from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TRCK
 from mutagen.mp4 import MP4
 import structlog
 
-from phaze.models.file import FileState
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.services.metadata import extract_tags
+from phaze.services.stage_status import is_applied
 
 
 if TYPE_CHECKING:
@@ -172,7 +172,7 @@ async def execute_tag_write(
 
     Args:
         session: Async database session.
-        file_record: The FileRecord to write tags to (must be EXECUTED).
+        file_record: The FileRecord to write tags to (must be applied -- an executed proposal exists).
         proposed_tags: Dict of proposed tag values.
         source: Source of the proposal ("tracklist", "metadata", "manual_edit").
 
@@ -180,9 +180,9 @@ async def execute_tag_write(
         The created TagWriteLog entry.
 
     Raises:
-        ValueError: If file_record.state is not EXECUTED.
+        ValueError: If the file is not applied (no executed proposal -- READ-05 / D-01).
     """
-    if file_record.state != FileState.EXECUTED:
+    if not await is_applied(session, file_record.id):
         msg = "Only executed files can have tags written"
         raise ValueError(msg)
 
