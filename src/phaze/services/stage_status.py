@@ -64,6 +64,7 @@ import structlog
 
 from phaze.enums.stage import FAILURE_IS_TERMINAL, Stage, Status
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -209,6 +210,14 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     matching the Python twin. Without this guard the bare subscript raised ``KeyError`` for the four
     downstream stages while the Python twin happily returned ``True`` for a ``DONE`` one -- a silent twin
     divergence on every non-failed downstream row.
+
+    D-11 REJECTED OPTION (do NOT "harden" this clause): ``~inflight_clause(stage)`` MUST NEVER be
+    added as a conjunct here. Every recovery candidate is a scheduling-ledger row BY CONSTRUCTION, so
+    ``~inflight_clause`` would be False for every candidate, making ``domain_completed`` return False
+    for ALL of them -- silently disabling the secondary over-enqueue net (the 2026-06-18 ~44.5K-job
+    incident class) while staying a green no-op for the drain/card (which already conjoin
+    ``~inflight_clause`` separately in :func:`awaiting_candidate_clause`). This clause answers ONLY
+    "has the domain reached a terminal state?" and must stay orthogonal to in-flight-ness.
     """
     if stage not in FAILURE_IS_TERMINAL:
         # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
@@ -217,6 +226,40 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     if FAILURE_IS_TERMINAL[stage]:
         return or_(done_clause(stage), failed_clause(stage))
     return done_clause(stage)
+
+
+def awaiting_candidate_clause() -> ColumnElement[bool]:
+    """Return the single-source awaiting-cloud candidate predicate (Phase 80, D-08/D-09).
+
+    A file is an awaiting-cloud candidate iff it carries a ``cloud_job(status='awaiting')`` sidecar
+    row AND is NOT analyze-in-flight AND has NOT domain-completed its analyze:
+
+        ``and_(CloudJob.status == 'awaiting', ~inflight_clause(ANALYZE), ~domain_completed_clause(ANALYZE))``
+
+    -- the same three conjuncts, in the same order, as the two inline spellings this builder REPLACES
+    (``get_awaiting_cloud_count`` + ``get_cloud_staging_candidates`` in ``services/pipeline.py``).
+    Plan 80-04's ``_get_awaiting_cloud_ids`` becomes the third consumer, so the card, the drain, and
+    recovery derive from ONE source and can NEVER disagree (D-08).
+
+    Composed ENTIRELY from the LOCKED :func:`inflight_clause` / :func:`domain_completed_clause`
+    builders verbatim (no re-spelled predicate) so the DERIV-04 equivalence guarantee holds. A file
+    mid-local-analysis (which still carries an inert ``awaiting`` row until the D-14 reap seam) is
+    correctly excluded by ``~inflight_clause`` and never routed to a compute agent (D-08).
+
+    Like :func:`dedup_resolved_clause`, this takes NO ``stage`` argument and is deliberately kept OUT
+    of the ``Stage`` dispatch ladder (:func:`stage_status_case` et al.), so the equivalence test that
+    raises on unknown stages does not pick it up (D-13). It needs only the AWAITING status literal (no
+    ``backends.toml`` config), so it does not touch 83 D-12's pushing/pushed rejection (D-09).
+
+    Callers MUST provide the ``CloudJob`` ⋈ ``FileRecord`` join (INNER, on
+    ``CloudJob.file_id == FileRecord.id``) so the correlated ``~exists(... == FileRecord.id)`` inside
+    the composed builders resolves.
+    """
+    return and_(
+        CloudJob.status == CloudJobStatus.AWAITING.value,
+        ~inflight_clause(Stage.ANALYZE),
+        ~domain_completed_clause(Stage.ANALYZE),
+    )
 
 
 def stage_status_case(stage: Stage) -> ColumnElement[str]:
