@@ -33,7 +33,6 @@ from phaze.services.pipeline import (
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
-    get_pipeline_stats,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -44,6 +43,7 @@ from phaze.services.pipeline import (
     get_scrape_pending_tracklists,
     get_search_busy_count,
     get_stage_busy_counts,
+    get_stage_progress,
     get_straggler_count,
     get_untracked_files,
 )
@@ -52,70 +52,6 @@ from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-
-@pytest.mark.asyncio
-async def test_get_pipeline_stats_empty(session: AsyncSession):
-    """Empty database returns zero counts for all stages."""
-    stats = await get_pipeline_stats(session)
-    assert stats["discovered"] == 0
-    assert stats["metadata_extracted"] == 0
-    assert stats["analyzed"] == 0
-    assert stats["proposal_generated"] == 0
-    assert stats["approved"] == 0
-    assert stats["executed"] == 0
-
-
-@pytest.mark.asyncio
-async def test_get_pipeline_stats_counts(session: AsyncSession):
-    """Stats reflect actual file counts per state."""
-    for i in range(3):
-        f = FileRecord(
-            id=uuid.uuid4(),
-            sha256_hash=f"abc{i:064d}"[:64],
-            original_path=f"/music/test{i}.mp3",
-            original_filename=f"test{i}.mp3",
-            current_path=f"/music/test{i}.mp3",
-            file_type="mp3",
-            file_size=1000,
-            state=FileState.DISCOVERED,
-        )
-        session.add(f)
-    session.add(
-        FileRecord(
-            id=uuid.uuid4(),
-            sha256_hash="xyz0" + "0" * 60,
-            original_path="/music/done.mp3",
-            original_filename="done.mp3",
-            current_path="/music/done.mp3",
-            file_type="mp3",
-            file_size=1000,
-            state=FileState.ANALYZED,
-        )
-    )
-    await session.commit()
-    stats = await get_pipeline_stats(session)
-    assert stats["discovered"] == 3
-    assert stats["analyzed"] == 1
-
-
-@pytest.mark.asyncio
-async def test_get_pipeline_stats_includes_metadata_extracted(session: AsyncSession):
-    """Stats include METADATA_EXTRACTED state count."""
-    f = FileRecord(
-        id=uuid.uuid4(),
-        sha256_hash="m" * 64,
-        original_path="/music/tagged.mp3",
-        original_filename="tagged.mp3",
-        current_path="/music/tagged.mp3",
-        file_type="mp3",
-        file_size=1000,
-        state=FileState.METADATA_EXTRACTED,
-    )
-    session.add(f)
-    await session.commit()
-    stats = await get_pipeline_stats(session)
-    assert stats["metadata_extracted"] == 1
 
 
 @pytest.mark.asyncio
@@ -394,8 +330,8 @@ async def test_get_stage_busy_counts_degrade_does_not_poison_session(session: As
     counts = await get_stage_busy_counts(session)
     assert counts == {"metadata": 0, "analyze": 0, "fingerprint": 0}
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +423,8 @@ async def test_get_search_busy_count_degrade_does_not_poison_session(session: As
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_search_busy_count(session) == 0
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -579,8 +515,8 @@ async def test_get_scan_busy_count_degrade_does_not_poison_session(session: Asyn
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_scan_busy_count(session) == 0
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -709,8 +645,8 @@ async def test_get_scrape_busy_count_degrade_does_not_poison_session(session: As
     """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_scrape_busy_count(session) == 0
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 @pytest.mark.asyncio
@@ -749,8 +685,8 @@ async def test_get_match_busy_count_degrade_does_not_poison_session(session: Asy
     """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_match_busy_count(session) == 0
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1110,8 +1046,8 @@ async def test_get_straggler_count_degrade_does_not_poison_session(session: Asyn
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_straggler_count(session, 3600) == 0
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------

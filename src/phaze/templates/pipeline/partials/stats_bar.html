@@ -1,3 +1,11 @@
+{# Phase 82 (D-05, READ-02): ``stats`` is now the DERIVED seven-key dict from
+   ``routers/pipeline._derive_stats`` (off ``get_stage_progress``'s output-table counts), NOT the
+   removed ``FileRecord.state``-grouped ``get_pipeline_stats``. The key NAMES are preserved so the six
+   visible cards below + the three OOB ``x-init`` store writes read the SAME ``stats.<key>`` and the
+   Alpine ``$store.pipeline.discovered / .metadataExtracted / .analyzed`` keys stay stable (Pitfall 4) --
+   only the server-side source changed. ``stats.metadata_extracted`` now counts every music/video file
+   with a done metadata row (not the transient linear METADATA_EXTRACTED state): these numbers
+   legitimately differ post-cutover -- the cross-stage deadlock dissolving, not a regression. #}
 <div class="grid grid-cols-6 gap-4">
     <div class="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-blue-700 dark:text-blue-400">{{ stats.discovered }}</p>
