@@ -228,6 +228,16 @@ one fixed in PR #189, still live in a second function.
   exists, `models/fingerprint.py:21`, so a `GROUP BY` would be cheap) is operator-console work and
   belongs to Phase 87's UI-02.
 
+- **D-17:** **All three keys share `total`'s denominator.** `completed` and `failed` each carry the
+  same `file_type IN MUSIC_VIDEO_TYPES AND NOT EXISTS(dedup marker)` guards as `total` (D-10), so
+  `completed ⊆ total` and `failed ⊆ total` hold unconditionally and the progress bar can never exceed
+  100%.
+
+  Resolves the gap between D-10 (which scopes `total`) and D-11 (which stated `completed`/`failed`
+  as bare `done_clause`/`failed_clause`). Without this, a file fingerprinted *before* being resolved
+  as a duplicate counts toward `completed` but not `total`. Locked by operator 2026-07-09; it is the
+  reading D-10 already implies ("keeps `completed/total` reachable").
+
 ### Predicate home & anti-drift guard (D-13 … D-16 — LOCKED)
 
 - **D-13:** **The dedup-resolved predicate lives in `services/stage_status.py`** — the module Phase 78
@@ -257,9 +267,19 @@ one fixed in PR #189, still live in a second function.
   (`find_duplicate_groups`, `find_duplicate_groups_with_metadata`, `count_duplicate_groups`,
   `get_duplicate_stats`, `resolve_group`'s selection) and `get_fingerprint_progress`'s denominator.
 
-  **The source scan** asserts `FileState.DUPLICATE_RESOLVED` no longer appears in `services/dedup.py`
-  or `services/fingerprint.py` — it catches a `state` read reintroduced at a *new* site the behavioral
+  **The source scan** asserts `FileState.DUPLICATE_RESOLVED` no longer appears **in a read position**
+  in `services/dedup.py` — inside a `Compare`, or as any argument (positional included) to
+  `where`/`filter`/`having` — and that `FileState.FINGERPRINTED` does not appear at all in
+  `services/fingerprint.py`. It catches a `state` read reintroduced at a *new* site the behavioral
   test does not exercise.
+
+  **Scoped, not bare-absence — this is load-bearing.** D-00a keeps the dual-writer
+  `f.state = FileState.DUPLICATE_RESOLVED` at `dedup.py:268` until Phase 90, so a literal "the string
+  is absent" assertion is *impossible against correct code*. The guard must allow exactly that one
+  write occurrence (RHS of an `Assign` to a `.state` attribute) and forbid every read occurrence.
+  Three of the nine read sites (`dedup.py:221,235,260`) pass the clause as a **positional** `.where(a, b, c)`
+  argument, so an AST rule that only inspects keyword args is blind to them. Mutation-test both
+  directions: reintroducing a read must go RED; the surviving writer must stay GREEN.
 
   **Both guards MUST be mutation-tested before the phase closes** (break the source, watch RED,
   restore). The source scan in particular must survive the failure mode that made 83's grep toothless:
