@@ -91,6 +91,9 @@ async def run_explains(dsn: str) -> None:
         print(f"\n===== EXPLAIN (ANALYZE, BUFFERS) @ {n_files} files =====")  # noqa: T201
         for label, stmt in _hot_statements().items():
             sql = _compile(stmt)
+            # `sql` is a SQLAlchemy-compiled statement from the fixed `_hot_statements()` set (no user input);
+            # only the constant `EXPLAIN (ANALYZE, BUFFERS)` prefix is added. Dev/CI-only bench.
+            # nosemgrep: python.lang.security.audit.sqli.asyncpg-sqli.asyncpg-sqli
             rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS) {sql}")
             print(f"\n----- {label} -----")  # noqa: T201
             for r in rows:

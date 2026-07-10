@@ -152,6 +152,9 @@ async def _copy_unnest(conn: asyncpg.Connection, table: str, columns: list[str],
     for start in range(0, len(rows), _BATCH):
         chunk = rows[start : start + _BATCH]
         arrays = [[r[j] for r in chunk] for j in range(len(columns))]
+        # `stmt` interpolates only hard-coded identifiers (see the S608 note where it is built); every VALUE is
+        # a bound `*arrays` param, not string-interpolated. Dev/CI-only seeder, no user input (T-82-07).
+        # nosemgrep: python.lang.security.audit.sqli.asyncpg-sqli.asyncpg-sqli,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         await conn.execute(stmt, *arrays)
         inserted += len(chunk)
     return inserted
@@ -166,6 +169,9 @@ async def seed(dsn: str, n: int, *, reseed: bool) -> dict[str, int]:
         if reseed:
             if "perf" not in str(db_name):
                 raise SystemExit(f"--reseed refused: database {db_name!r} is not a perf DB (name must contain 'perf'). Refusing to TRUNCATE.")
+            # `_SEED_TABLES` is a module-level constant of hard-coded table names (no user input); additionally
+            # gated by the perf-DB-name guard above (T-82-07 / T-82-08).
+            # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query,python.lang.security.audit.sqli.asyncpg-sqli.asyncpg-sqli,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             await conn.execute(f"TRUNCATE {', '.join(_SEED_TABLES)} RESTART IDENTITY CASCADE")
 
         # FK parent: the legacy agent every FileRecord references by default.
