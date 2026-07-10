@@ -409,7 +409,23 @@ Plans:
   2. `get_pipeline_stats` reports per-stage counts from output tables (the linear `GROUP BY state` is removed) and the DAG shows four-bucket per-stage counts (`not_started` / `in_flight` / `done` / `failed`) that sum to total, including a visible failed count per enrich stage.
   3. The `/pipeline/stats` poll latency at 200K-file scale is measured and recorded in the phase VERIFICATION; no denormalized status column is added unless that measurement proves the derived query too slow (YAGNI is the default).
 
-**Plans**: TBD
+**Plans**: 4 plans in 4 waves
+Plans:
+**Wave 1**
+
+- [ ] 82-01-PLAN.md — `eligible_clause(stage)` in `stage_status.py` + `ELIGIBLE_CASES` DERIV-04 harness extension (additive; READ-01) [wave 1]
+
+**Wave 2** *(depends on 82-01)*
+
+- [ ] 82-02-PLAN.md — Three enrich pending-set cutovers (eligible_clause ∧ ~dedup ∧ file_type) + A1 cloud double-dispatch resolution + mutation-tested anti-drift/divergence guards + SC#1 all-orderings test (READ-01) [wave 2]
+
+**Wave 3** *(depends on 82-02 — shared `services/pipeline.py`)*
+
+- [ ] 82-03-PLAN.md — `get_stage_progress` four-bucket enrich nodes + `get_pipeline_stats` removal + 3 caller migrations + `stats_bar.html` key remap (READ-02) [wave 3]
+
+**Wave 4** *(depends on 82-02, 82-03)*
+
+- [ ] 82-04-PLAN.md — PERF-02 200K synthetic-seed bench + EXPLAIN ANALYZE index-scan evidence + VERIFICATION record + DENORM-01 go/no-go (PERF-02) [wave 4]
 
 ### Phase 83: Cloud-Routing Sidecar Cutover
 
