@@ -1,13 +1,16 @@
 ---
 phase: 85-executed-gate-revival
 verified: 2026-07-10T21:52:26Z
-status: human_needed
+status: passed
+resolved: 2026-07-10
 score: 5/5 must-haves verified
 overrides_applied: 0
+human_verification_resolution: "The sole human item (WR-01 disposition) was decided by the operator on 2026-07-10: ACCEPT as tracked follow-up debt (recorded in .planning/todos/pending/wr-01-review-builder-limit-before-filter.md and 85-HUMAN-UAT.md). Both success criteria remain VERIFIED 2/2 (predicate revival + mutation-checked behavior change). secure-phase clean (0 threats open), validate-phase Nyquist-compliant, verify-work 5/5 passed. The one remaining Manual-Only check — the live 200K-corpus tag/CUE write — is inherently post-deploy and is tracked in 85-HUMAN-UAT.md for the next homelab rollout; it cannot gate the PR that delivers the deploy. Status flipped human_needed -> passed on this basis."
 human_verification:
   - test: "Confirm the WR-01 review finding (SQL .limit() applied BEFORE the Python qualification filter in get_tagwrite_review_rows / bulk_write_no_discrepancies) is an acceptable known-debt item for this phase, or requires a follow-up plan before shipping at the 200K-scale the phase explicitly targets."
     expected: "A decision: accept as documented follow-up work, or open a closure plan to fix the ordering so qualifying rows are never starved behind a wall of non-qualifying applied files."
     why_human: "This is a design/priority tradeoff already surfaced in 85-REVIEW.md (WR-01..WR-04, status: issues_found, 0 critical/4 warnings). It does not block the phase's stated goal (predicate revival + mutation-verified behavior change), but it does undermine the D-03 bound's practical guarantee at scale. Needs a product/priority call, not a code check."
+    resolution: "RESOLVED 2026-07-10 — operator accepted as tracked follow-up debt (todos/pending/wr-01-review-builder-limit-before-filter.md)."
 ---
 
 # Phase 85: EXECUTED-Gate Revival Verification Report
