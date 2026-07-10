@@ -11,7 +11,6 @@ from sqlalchemy.orm import aliased
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -25,7 +24,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.stage_status import domain_completed_clause, inflight_clause
+from phaze.services.stage_status import awaiting_candidate_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -1132,14 +1131,7 @@ async def get_awaiting_cloud_count(session: AsyncSession) -> int:
         # INNER-join FileRecord so the correlated ``~exists(... file_id == FileRecord.id)`` clause builders
         # resolve (they reference FileRecord.id); cloud_job.file_id is unique, so the join is 1:1 and the
         # COUNT matches the drain's candidate set exactly.
-        select(func.count(CloudJob.id))
-        .select_from(CloudJob)
-        .join(FileRecord, FileRecord.id == CloudJob.file_id)
-        .where(
-            CloudJob.status == CloudJobStatus.AWAITING.value,
-            ~inflight_clause(Stage.ANALYZE),
-            ~domain_completed_clause(Stage.ANALYZE),
-        ),
+        select(func.count(CloudJob.id)).select_from(CloudJob).join(FileRecord, FileRecord.id == CloudJob.file_id).where(awaiting_candidate_clause()),
         node="awaiting_cloud",
     )
 
@@ -1304,11 +1296,7 @@ async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> lis
     stmt = (
         select(FileRecord, CloudJob.updated_at)
         .join(CloudJob, CloudJob.file_id == FileRecord.id)
-        .where(
-            CloudJob.status == CloudJobStatus.AWAITING.value,
-            ~inflight_clause(Stage.ANALYZE),
-            ~domain_completed_clause(Stage.ANALYZE),
-        )
+        .where(awaiting_candidate_clause())
         .order_by(FileRecord.created_at.asc())
         .limit(limit)
         .with_for_update(of=CloudJob, skip_locked=True)
