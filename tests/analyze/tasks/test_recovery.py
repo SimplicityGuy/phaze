@@ -31,6 +31,7 @@ SAQ deterministic-key dedup).
 from __future__ import annotations
 
 import contextlib
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -40,10 +41,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
+from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import clear_ledger_entry, upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
-from phaze.tasks.reenqueue import _ANALYZE_DONE, _DOMAIN_COMPLETED_STAGES, _build_done_sets, is_domain_completed, recover_orphaned_work
+from phaze.tasks.reenqueue import (
+    _DOMAIN_COMPLETED_STAGES,
+    _build_done_sets,
+    _DoneSets,
+    _get_awaiting_cloud_ids,
+    _ledger_fids,
+    is_domain_completed,
+    recover_orphaned_work,
+)
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 
 
@@ -132,6 +143,40 @@ async def _seed_ledger(
     await upsert_ledger_entry(session, key=key, function=function, kwargs=pay, timeout=timeout, retries=retries)
     await session.commit()
     return key
+
+
+# --- Phase-80 output-table seeds (the derived done/failed source, replacing FileState reads) ------
+
+
+async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed: bool = False, failed: bool = False) -> None:
+    """Seed the ``analysis`` row Phase-80 derives analyze done/failed from (NAND: never both markers)."""
+    session.add(
+        AnalysisResult(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            analysis_completed_at=datetime.now(UTC) if completed else None,
+            failed_at=datetime.now(UTC) if failed else None,
+        )
+    )
+    await session.commit()
+
+
+async def _seed_metadata(session: AsyncSession, file_id: uuid.UUID, *, failed_at: datetime | None = None) -> None:
+    """Seed the ``metadata`` row Phase-80 derives metadata done (failed_at NULL) / failed (failed_at set) from."""
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file_id, failed_at=failed_at))
+    await session.commit()
+
+
+async def _seed_fingerprint(session: AsyncSession, file_id: uuid.UUID, *, status: str = "success", engine: str = "chromaprint") -> None:
+    """Seed one ``fingerprint_results`` engine row (status='success' => fingerprint done, DERIV-05)."""
+    session.add(FingerprintResult(id=uuid.uuid4(), file_id=file_id, engine=engine, status=status))
+    await session.commit()
+
+
+async def _seed_awaiting_cloud_job(session: AsyncSession, file_id: uuid.UUID) -> None:
+    """Seed a ``cloud_job(status='awaiting')`` sidecar row -- the Phase-83 representation of a parked file."""
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file_id, backend_id=None, s3_key=None, status=CloudJobStatus.AWAITING.value))
+    await session.commit()
 
 
 # --- The incident regression -----------------------------------------------------------
@@ -345,7 +390,12 @@ async def test_analyze_done_row_is_excluded(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A process_file row whose file is ANALYZED (or ANALYSIS_FAILED) is domain-completed -> excluded."""
+    """A process_file row whose analyze is done (completed_at) OR terminally-failed (failed_at) is excluded.
+
+    Phase 80 (D-01): analyze domain-completion is ``domain_completed_clause(ANALYZE)`` == done OR
+    terminal-failed, derived from the ``analysis`` output row -- NOT a FileState read. Both a completed
+    and a terminally-failed analyze are domain-complete (FAILURE_IS_TERMINAL[analyze] -> never auto-re-driven).
+    """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
@@ -354,6 +404,8 @@ async def test_analyze_done_row_is_excluded(
     f_failed = _make_file(state=FileState.ANALYSIS_FAILED)
     session.add_all([f_done, f_failed])
     await session.commit()
+    await _seed_analysis(session, f_done.id, completed=True)
+    await _seed_analysis(session, f_failed.id, failed=True)
     await _seed_ledger(session, function="process_file", file_id=f_done.id)
     await _seed_ledger(session, function="process_file", file_id=f_failed.id)
 
@@ -371,18 +423,20 @@ async def test_metadata_done_row_is_excluded(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An extract_file_metadata row whose file is NOT in the metadata pending set is excluded.
+    """An extract_file_metadata row whose file has a completed metadata row (failed_at NULL) is excluded.
 
-    get_metadata_pending_files returns all music/video files, so a NON-music file (e.g. a
-    deleted/absent file_id with no FileRecord) is "done" for metadata. Here the ledger row
-    points at a file_id that has NO FileRecord, so it is not in the pending set -> excluded.
+    Phase 80 (D-05): metadata done is now DERIVED DIRECTLY via ``done_clause(METADATA)`` (a ``metadata``
+    row present AND ``failed_at IS NULL``), not the retired "absent from the pending set" complement.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    ghost_id = uuid.uuid4()  # no FileRecord -> not in get_metadata_pending_files
-    await _seed_ledger(session, function="extract_file_metadata", file_id=ghost_id)
+    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id)  # failed_at NULL -> metadata done
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
@@ -420,18 +474,19 @@ async def test_fingerprint_done_row_is_excluded(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fingerprint_file row whose file is NOT in the fingerprint pending set is excluded.
+    """A fingerprint_file row whose file has a successful fingerprint engine row is excluded.
 
-    get_fingerprint_pending_files returns METADATA_EXTRACTED files (+ failed-retry); an ANALYZED
-    file is past that gate (done) and is therefore not in the pending set -> excluded.
+    Phase 80 (D-05): fingerprint done is now DERIVED DIRECTLY via ``done_clause(FINGERPRINT)`` -- a
+    ``success``/``completed`` engine row (DERIV-05) -- not the retired "absent from the pending set".
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f_done = _make_file(state=FileState.ANALYZED)  # past the fingerprint gate
+    f_done = _make_file(state=FileState.ANALYZED)
     session.add(f_done)
     await session.commit()
+    await _seed_fingerprint(session, f_done.id, status="success")  # a success engine -> fingerprint done
     await _seed_ledger(session, function="fingerprint_file", file_id=f_done.id)
 
     router = DedupFakeTaskRouter()
@@ -571,100 +626,113 @@ async def test_awaiting_cloud_file_stays_pending_in_recovery(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D-04: an AWAITING_CLOUD file is NOT analyze-done and NOT domain-completed for process_file.
+    """D-04: a parked (cloud_job='awaiting') file with no analysis row is NOT analyze-domain-completed.
 
     A held (duration-routed) file must keep being re-driven by recovery/release until it is genuinely
-    analyzed, so it must NEVER be classified as done. The analyze done-set is {ANALYZED,
-    ANALYSIS_FAILED} ONLY, and AWAITING_CLOUD is deliberately ABSENT from it -- D-04 is satisfied BY
-    OMISSION (no source change to ``_DOMAIN_COMPLETED_STAGES`` or the done-set). This test guards the
-    omission so a future done-set edit cannot silently mark a held file complete.
+    analyzed, so it must NEVER be classified as done. Phase 80 derives analyze-done from the ``analysis``
+    output row via ``domain_completed_clause(ANALYZE)``; a parked file has none, so it is ABSENT from the
+    analyze done-set. This test guards the omission so a future derivation edit cannot silently mark a
+    held file complete.
     """
     f = _make_file(state=FileState.AWAITING_CLOUD)
     session.add(f)
     await session.commit()
+    await _seed_awaiting_cloud_job(session, f.id)
+    key = await _seed_ledger(session, function="process_file", file_id=f.id)
 
-    done_sets = await _build_done_sets(session)
+    rows = [SchedulingLedger(key=key, function="process_file", routing="agent", payload={"file_id": str(f.id)})]
+    done_sets = await _build_done_sets(session, _ledger_fids(rows))
 
-    # The AWAITING_CLOUD file is NOT in the analyze done-set ({ANALYZED, ANALYSIS_FAILED}).
-    assert str(f.id) not in done_sets[_ANALYZE_DONE]
+    # The parked file has no analysis row -> NOT in the analyze done-set.
+    assert str(f.id) not in done_sets.analyze_done
 
     # A process_file ledger row for the held file is NOT domain-completed -> recovery would replay it.
-    row = SchedulingLedger(key=f"process_file:{f.id}", function="process_file", routing="agent", payload={"file_id": str(f.id)})
-    assert is_domain_completed(row, done_sets) is False
+    assert is_domain_completed(rows[0], done_sets) is False
 
 
-# --- Phase 49 CR-01: held (AWAITING_CLOUD) process_file rows are compute-only in recovery --------
+# --- Phase 80 D-08: the awaiting-candidate set is the single-source clause, ~inflight-guarded --------
 #
-# Backfill (D-09) seeds a process_file ledger row for a long file it HELD in AWAITING_CLOUD (no
-# compute agent was online). That row is agent-routed and NOT analyze-done, so recovery sees it as
-# orphaned. The kind-agnostic ``select_active_agent`` would route it to the most-recently-seen agent
-# of ANY kind -- typically a fileserver, since "no compute agent online" is the exact condition that
-# held the file -- and the fileserver would then analyze the long file LOCALLY, violating CLOUDROUTE-02
-# (the 4h-timeout incident this milestone exists to fix). Recovery MUST route a held process_file row
-# to a COMPUTE agent only; with none online it skips the row (the */5 release_awaiting_cloud cron
-# drains the AWAITING_CLOUD state-set, so the file is not lost). Non-held process_file rows (a normal
-# lost analyze of a short file) must STILL recover to any online agent -- the fix must not over-restrict.
+# Phase 80 cut ``_get_awaiting_cloud_ids`` over from the retired ``FileRecord.state == AWAITING_CLOUD``
+# read to the single-source ``awaiting_candidate_clause()`` -- the SAME clause the drain and the
+# "Awaiting cloud" card consume (D-08), so all three can never disagree. Its ``~inflight_clause(ANALYZE)``
+# conjunct is load-bearing: a file MID-LOCAL-ANALYSIS still carries an inert ``awaiting`` cloud_job row
+# (D-13 keeps the flip; D-14 reaps it only at the analyze-terminal seam), and its committed
+# ``process_file`` ledger row must EXCLUDE it from the awaiting set -- otherwise recovery would mis-route
+# a locally-analyzing file to a COMPUTE agent (CLOUDROUTE-02). In the sidecar model a genuinely-PARKED
+# long file is held WITHOUT a control-side ``process_file`` ledger row (the hold path parks; it does not
+# enqueue), so a ``process_file`` orphan implies the file is being analyzed on an agent already and
+# recovery routes it kind-agnostically -- never diverted to a compute-only skip.
 
 
 @pytest.mark.asyncio
-async def test_held_process_file_row_skips_when_only_fileserver_online(
-    async_engine: AsyncEngine,
+async def test_awaiting_candidate_with_inflight_ledger_is_excluded_from_held_set(
     session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CR-01: a held (AWAITING_CLOUD) process_file row is NOT routed to a fileserver in recovery.
+    """D-08: a file with an ``awaiting`` cloud_job AND a ``process_file`` ledger row is EXCLUDED from the awaiting set.
 
-    The held file's condition is "no compute agent online", so the only agent is a fileserver.
-    Routing the long file there would analyze it locally (CLOUDROUTE-02 violation). Recovery must
-    skip the row, leaving it for the release cron -- never enqueue it onto the fileserver queue.
+    The committed ``process_file`` ledger row makes ``inflight_clause(ANALYZE)`` True, so
+    ``~inflight_clause`` excludes the file -- it is mid-local-analysis, not a genuinely-parked cloud
+    candidate, and must never be routed to a compute agent (CLOUDROUTE-02).
+    MUTATION: dropping ``~inflight_clause(ANALYZE)`` from ``awaiting_candidate_clause`` re-includes it -> RED.
     """
-    _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)  # genuine queue-loss
-    _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")  # only a fileserver online
-    held = _make_file(state=FileState.AWAITING_CLOUD)
-    session.add(held)
+    f = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(f)
     await session.commit()
-    await _seed_ledger(session, function="process_file", file_id=held.id)
+    await _seed_awaiting_cloud_job(session, f.id)
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # inflight(analyze) -> excluded
 
-    router = DedupFakeTaskRouter()
-    controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
-
-    # The held long file must NOT land on the fileserver queue -- it is left for the release cron.
-    assert not any(k.startswith("nox") for k in router.queues)
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert str(f.id) not in await _get_awaiting_cloud_ids(session)
 
 
 @pytest.mark.asyncio
-async def test_held_process_file_row_routes_to_compute_when_online(
+async def test_genuinely_parked_awaiting_file_is_in_held_set(
+    session: AsyncSession,
+) -> None:
+    """D-08: a genuinely-parked file (``awaiting`` cloud_job, NO process_file ledger row) IS an awaiting candidate.
+
+    A held file that carries no in-flight analyze ledger row is a real cloud candidate the drain/release
+    owns; ``_get_awaiting_cloud_ids`` must surface it (and it correctly has NO process_file orphan for
+    recovery to route, since the hold path parks without enqueuing).
+    MUTATION: reverting to a bare ``FileRecord.state == AWAITING_CLOUD`` read (dropping the cloud_job
+    INNER join) would keep passing here but re-include the inflight file above -> the pair is the lock.
+    """
+    f = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(f)
+    await session.commit()
+    await _seed_awaiting_cloud_job(session, f.id)  # parked, no process_file ledger row
+
+    assert str(f.id) in await _get_awaiting_cloud_ids(session)
+
+
+@pytest.mark.asyncio
+async def test_local_analysis_process_file_orphan_recovers_kind_agnostically(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CR-01: a held (AWAITING_CLOUD) process_file row recovers to the COMPUTE queue, not fileserver.
+    """A mid-local-analysis process_file orphan (inert ``awaiting`` row + process_file ledger) routes kind-agnostic.
 
-    With both a fileserver and a compute agent online, the held long file must route to the compute
-    agent's per-agent queue (kind-aware selection), never the fileserver's.
+    Because the file is EXCLUDED from the awaiting set by ``~inflight_clause`` (D-08), recovery does NOT
+    divert it to a compute-only skip -- it is a normal lost analyze that recovers to the only online
+    (fileserver) agent. This replaces the pre-cutover "held-row is compute-only" expectation, which
+    assumed the retired backfill model where a parked long file carried a process_file ledger row.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    await seed_active_agent(session, agent_id="cloud", kind="compute")
-    held = _make_file(state=FileState.AWAITING_CLOUD)
-    session.add(held)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")  # only a fileserver online
+    f = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(f)
     await session.commit()
-    await _seed_ledger(session, function="process_file", file_id=held.id)
+    await _seed_awaiting_cloud_job(session, f.id)  # inert awaiting row (mid-local-analysis)
+    await _seed_ledger(session, function="process_file", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # Routed to the compute agent's queue; the fileserver queue never saw the held file.
-    assert "cloud-analyze" in router.queues
-    assert [str(held.id)] == [payload["file_id"] for _name, payload in router.queues["cloud-analyze"].captured]
-    assert not any(k.startswith("nox") for k in router.queues)
+    # Not held (excluded by ~inflight) -> recovers normally onto the only online agent.
+    assert "nox-analyze" in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
@@ -729,7 +797,8 @@ def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
     still backstop a still-live item, so replaying is the safe default.
     """
     row = SchedulingLedger(key="process_file:ghost", function="process_file", routing="agent", payload={})
-    assert is_domain_completed(row, {"analyze_done": set(), "metadata_pending": set(), "fingerprint_pending": set()}) is False
+    empty = _DoneSets(analyze_done=set(), metadata_domain_completed=set(), metadata_failed_at={}, fingerprint_done=set(), push_done=set())
+    assert is_domain_completed(row, empty) is False
 
 
 # --- Idempotency backstop --------------------------------------------------------------
@@ -1093,8 +1162,8 @@ async def test_single_owner_terminal_cloud_job_does_not_block_recovery(
     """SCHED-05 guard: a file whose cloud_job is TERMINAL (FAILED) is NOT in the in-flight set.
 
     Only {UPLOADING, UPLOADED, SUBMITTED, RUNNING} are in-flight; a spilled/terminal FAILED row means
-    no backend owns the re-drive anymore, so a still-held AWAITING_CLOUD file must recover via the
-    held path (routing to a compute agent). The exclusion is by in-flight status, not by row presence.
+    no backend owns the re-drive anymore, so a still-orphaned process_file row must recover (here to the
+    only online agent, a compute agent). The exclusion is by in-flight status, not by row presence.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -1110,7 +1179,7 @@ async def test_single_owner_terminal_cloud_job_does_not_block_recovery(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # Terminal cloud_job -> no backend owner -> the held file recovers via the compute-only held path.
+    # Terminal cloud_job -> no backend owner -> the process_file row recovers onto the only online agent.
     assert "cloud-analyze" in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
@@ -1121,10 +1190,10 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SCHED-05 guard: a held AWAITING_CLOUD file with NO cloud_job still recovers via the held path.
+    """SCHED-05 guard: an orphaned process_file row with NO cloud_job still recovers -- no regression.
 
-    A genuinely-orphaned held file (no cloud_job row was ever written) is not owned by any backend
-    callback, so the existing compute-only held recovery path must still re-drive it -- no regression.
+    A genuinely-orphaned file (no cloud_job row was ever written) is not owned by any backend callback,
+    so recovery must still re-drive its process_file row (here to the only online agent) -- no regression.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -1144,6 +1213,171 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
-# Silence the unused-import lint for the analysis model imported for parity with the prior
-# harness seed shape (kept available for future domain-completed seeding scenarios).
-_ = AnalysisResult
+# --- Phase 80 (READ-03): SC-2 / SC-3 / D-10 both-cells / D-11 regression cases ----------------------
+#
+# Each is mutation-named: it names the source mutation that turns it RED, so a future edit that
+# re-opens the 44.5K over-enqueue class (SC-2), auto-re-drives a terminal analyze (SC-3), mis-resolves
+# the metadata in_flight-and-failed cell (D-10), or falls into the ~inflight_clause trap (D-11) is caught.
+
+
+@pytest.mark.asyncio
+async def test_sc2_never_scheduled_discovered_file_with_no_ledger_row_is_not_recovered(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SC-2: a never-scheduled ``discovered`` file with NO ledger row is NOT recovered (the 44.5K guard).
+
+    Recovery drives EXCLUSIVELY off ``get_ledger_rows`` -- a file that was never scheduled has no ledger
+    row, so it is invisible to recovery even after a genuine queue-loss. This is the headline guard
+    against the 2026-06-18 over-enqueue incident class (recovery sweeping never-scheduled discovered files).
+    MUTATION: iterating the file corpus (e.g. ``get_files_by_state(DISCOVERED)``) instead of the ledger
+    re-enqueues this file -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)  # genuine queue-loss
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    orphan = _make_file(state=FileState.DISCOVERED)  # never scheduled -> no ledger row
+    session.add(orphan)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert all(t == {"reenqueued": 0, "skipped": 0} for t in result["stages"].values())
+    assert controller_queue.captured == []
+    assert router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_sc3_failed_analyze_with_surviving_ledger_row_is_terminal_never_reenqueued(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SC-3: a FAILED analyze with a surviving process_file ledger row is domain-complete -> never auto-re-driven.
+
+    ``FAILURE_IS_TERMINAL[analyze]`` is True, so ``domain_completed_clause(ANALYZE)`` counts a terminally
+    failed analyze as complete -- an un-analyzable file is NEVER auto-looped by recovery (manual retry
+    only, which clears ``failed_at`` first). This encodes ELIG-03's twin at the recovery layer.
+    MUTATION: dropping the ``failed_clause`` disjunct from ``domain_completed_clause(ANALYZE)`` (or
+    bypassing it in ``is_domain_completed``) re-drives the failed analyze -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.ANALYSIS_FAILED)
+    session.add(f)
+    await session.commit()
+    await _seed_analysis(session, f.id, failed=True)  # terminal analyze failure (failed_at set)
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # ledger row SURVIVES the failure
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert router.queues == {}
+
+
+async def _metadata_done_sets_for(
+    session: AsyncSession, *, file_id: uuid.UUID, key: str, enqueued_at: datetime
+) -> tuple[SchedulingLedger, _DoneSets]:
+    """Build the ledger row (with an explicit ``enqueued_at``) + the ledger-scoped done-sets for a metadata probe."""
+    row = SchedulingLedger(key=key, function="extract_file_metadata", routing="agent", payload={"file_id": str(file_id)}, enqueued_at=enqueued_at)
+    done_sets = await _build_done_sets(session, _ledger_fids([row]))
+    return row, done_sets
+
+
+@pytest.mark.asyncio
+async def test_d10_cell_a_orphaned_operator_retry_redrives_metadata(session: AsyncSession) -> None:
+    """D-10 Cell A: metadata failed AND ``enqueued_at > failed_at`` (an orphaned OPERATOR retry) -> re-drives.
+
+    ``retry_metadata_failed`` LEAVES ``metadata.failed_at`` set then re-enqueues, so a ledger row whose
+    ``enqueued_at`` is AFTER ``failed_at`` is a fresh operator retry that MUST re-drive (not stay terminal).
+    MUTATION: flipping the gate comparison to ``>=`` / ``<`` (or dropping it) makes this domain-complete -> RED.
+    """
+    failed_at = datetime.now(UTC)
+    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+
+    row, done_sets = await _metadata_done_sets_for(session, file_id=f.id, key=key, enqueued_at=failed_at + timedelta(minutes=5))
+
+    # The failed metadata IS in the domain-completed set (done OR failed), but the D-10 gate re-drives it
+    # because enqueued_at (the retry) is AFTER failed_at -> is_domain_completed False -> recovery replays.
+    assert str(f.id) in done_sets.metadata_domain_completed
+    assert str(f.id) in done_sets.metadata_failed_at
+    assert is_domain_completed(row, done_sets) is False
+
+
+@pytest.mark.asyncio
+async def test_d10_cell_b_callback_partial_failure_stays_terminal(session: AsyncSession) -> None:
+    """D-10 Cell B: metadata failed AND ``enqueued_at < failed_at`` (a callback that wrote the marker but crashed) -> terminal.
+
+    The failure ack wrote ``failed_at`` but crashed before clearing the ledger, so the surviving row's
+    ``enqueued_at`` PRE-DATES ``failed_at``: the stage IS domain-complete and must stay terminal (never re-drive).
+    MUTATION: dropping the ``enqueued_at <= failed_at`` gate (bare ``done OR failed``) leaves this True but
+    turns Cell A RED -- the pair proves the gate is non-vacuous.
+    """
+    failed_at = datetime.now(UTC)
+    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+
+    row, done_sets = await _metadata_done_sets_for(session, file_id=f.id, key=key, enqueued_at=failed_at - timedelta(minutes=5))
+
+    # enqueued_at (the lost callback's row) PRE-DATES failed_at -> domain-complete -> stays terminal.
+    assert is_domain_completed(row, done_sets) is True
+
+
+def test_d10_analyze_clears_failed_at_but_metadata_does_not() -> None:
+    """The analyze/metadata retry ASYMMETRY that is the root of the D-10 cell (guards a future symmetric change).
+
+    ``retry_analysis_failed`` CLEARS ``analysis.failed_at`` before re-enqueuing (so analyze has no ambiguous
+    ``in_flight AND failed`` cell), while ``retry_metadata_failed`` deliberately LEAVES ``metadata.failed_at``
+    set (81 D-11) -- which is exactly why only metadata carries the D-10 ``enqueued_at`` gate. Asserting the
+    asymmetry at the source pins it: a future change that made metadata symmetric (clearing failed_at on
+    retry) would need to revisit the D-10 gate, and this test forces that conversation.
+    """
+    import inspect
+
+    from phaze.routers import pipeline as pipeline_router
+
+    analyze_src = inspect.getsource(pipeline_router.retry_analysis_failed).replace(" ", "")
+    metadata_src = inspect.getsource(pipeline_router.retry_metadata_failed).replace(" ", "")
+    # analyze retry CLEARS the failure marker (values(failed_at=None, ...)); metadata retry does NOT.
+    assert "failed_at=None" in analyze_src
+    assert "failed_at=None" not in metadata_src
+
+
+@pytest.mark.asyncio
+async def test_d11_inflight_clause_is_not_in_domain_completed_clause(session: AsyncSession) -> None:
+    """D-11: ``~inflight_clause`` must NEVER be a conjunct of ``domain_completed_clause`` -- the both-cells lock.
+
+    Every recovery candidate is a scheduling-ledger row BY CONSTRUCTION, so a metadata file that has both
+    a ``failed_at`` marker AND a committed ``extract_file_metadata`` ledger row (inflight) MUST still
+    resolve as domain-complete via the Cell B path. Adding ``~inflight_clause(METADATA)`` to
+    ``domain_completed_clause`` would make it False for EVERY candidate -- silently disabling the secondary
+    over-enqueue net (the 44.5K incident class) while staying a green no-op for the drain/card.
+    MUTATION: adding ``~inflight_clause(stage)`` to ``domain_completed_clause`` makes this row re-drive -> RED.
+    """
+    failed_at = datetime.now(UTC)
+    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED
+    # The ledger row (inflight by construction) has enqueued_at BEFORE failed_at -> Cell B terminal.
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+
+    row, done_sets = await _metadata_done_sets_for(session, file_id=f.id, key=key, enqueued_at=failed_at - timedelta(minutes=5))
+
+    # Despite the inflight ledger row, the terminal cell still resolves domain-complete (D-11 trap avoided).
+    assert is_domain_completed(row, done_sets) is True
