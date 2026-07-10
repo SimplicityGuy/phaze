@@ -18,10 +18,10 @@ decision: D-16.2
 > the invariant this phase owns has zero exposure. See the summary for the measurement and the
 > deploy-ordering constraint it surfaced. The text below is retained for provenance.
 
-Plan 84-06 was **not executed**. It is `autonomous: false` and requires a restore of the
-live corpus plus an operator-supplied DSN, neither of which the executor has access to.
-
-**This phase is NOT complete.** Plans 84-01 … 84-05 are done and verified; 84-06 remains open.
+*(Historical, as written on 2026-07-10 before the read-only run.)* Plan 84-06 was initially deferred:
+it is `autonomous: false` and was believed to require a snapshot restore plus an operator-supplied DSN.
+That belief rested on the non-existent `_test`-suffix guard — see Corrections below. It has since been
+executed read-only against the live database; see `84-06-SUMMARY.md`.
 
 ## Why this cannot be skipped
 
