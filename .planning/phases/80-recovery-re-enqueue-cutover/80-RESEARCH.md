@@ -331,7 +331,7 @@ Guard that `~inflight_clause(stage)` is **never** added to `domain_completed_cla
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED at plan time)
 
 1. **`stage_control.STAGE_TO_FUNCTION` / `_shared` import from `reenqueue.py`?** The ledger-scoped done queries reuse `domain_completed_clause`/`done_clause` from `services/stage_status.py`, which reenqueue can import (it already imports from `services`). No blocker identified, but the plan should confirm `reenqueue.py` importing `services.stage_status` does not trip `tests/test_task_split.py` (the control-only import boundary — `reenqueue.py` must never be importable from the agent worker). `stage_status.py` imports only models + enums + `tasks._shared.stage_control`; it is control-plane-safe, so the import should be clean. **Resolvable by:** running `just test-bucket shared` (or the specific `test_task_split.py`) after wiring the import. Low risk.
 2. **Exact `036` downgrade policy.** Recommended documented no-op; if the team wants a reversible downgrade, the only faithful option is to archive the pre-backfill NULL set inside the migration — out of proportion for a data-only backfill. **Resolvable at plan time** by the migration author choosing no-op (recommended) vs. archive.
