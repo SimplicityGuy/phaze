@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord, FileState
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from tests._queue_fakes import install_fake_queues, seed_active_agent
@@ -27,6 +28,21 @@ def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -
         file_type=file_type,
         file_size=1000,
         state=FileState.DISCOVERED,
+    )
+
+
+def _make_executed_proposal(file_id: uuid.UUID) -> RenameProposal:
+    """Seed an ``executed`` RenameProposal so ``applied()`` (READ-05/D-01) admits the file.
+
+    The cue-version guards now read ``await is_applied(session, fr.id)`` (an executed proposal),
+    NOT ``fr.state == FileState.EXECUTED``. Fixtures that expect a CUE badge must carry an executed
+    proposal; the file is left at ``state='moved'`` so the badge proves the guard reads the proposal.
+    """
+    return RenameProposal(
+        id=uuid.uuid4(),
+        file_id=file_id,
+        proposed_filename="applied.mp3",
+        status=ProposalStatus.EXECUTED,
     )
 
 
@@ -1192,11 +1208,14 @@ async def test_approve_tracklist_no_candidates_no_bulk_button(session: AsyncSess
 @pytest.mark.asyncio
 async def test_undo_link_preserves_cue_version(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/undo-link list response includes CUE version badge for other tracklists."""
+    # READ-05/D-01: applied-ness comes from an executed proposal, not file.state (kept at 'moved').
     file1 = _make_file(original_path="/music/set1.mp3")
-    file1.state = FileState.EXECUTED
+    file1.state = FileState.MOVED
     file2 = _make_file(original_path="/music/set2.mp3")
-    file2.state = FileState.EXECUTED
+    file2.state = FileState.MOVED
     session.add_all([file1, file2])
+    await session.flush()
+    session.add_all([_make_executed_proposal(file1.id), _make_executed_proposal(file2.id)])
     await session.flush()
 
     # Tracklist to undo-link
@@ -1302,10 +1321,17 @@ async def test_render_tracklist_list_cue_version_not_approved(session: AsyncSess
 
 @pytest.mark.asyncio
 async def test_list_tracklists_cue_version_executed(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /tracklists/ shows CUE badge for approved tracklist with EXECUTED file."""
+    """GET /tracklists/ shows CUE badge for approved tracklist with an applied (executed-proposal) file.
+
+    READ-05/D-01: the cue-version guard reads ``is_applied`` (an executed proposal), so the file is
+    left at ``state='moved'`` and made applied via an executed proposal -- proving the badge derives
+    from ``proposals.status``, not ``files.state``.
+    """
     file = _make_file()
-    file.state = FileState.EXECUTED
+    file.state = FileState.MOVED
     session.add(file)
+    await session.flush()
+    session.add(_make_executed_proposal(file.id))
     await session.flush()
 
     tl = _make_tracklist(file_id=file.id, match_confidence=90, status="approved")
