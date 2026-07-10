@@ -149,6 +149,11 @@ async def resolve_group_endpoint(
 ) -> HTMLResponse:
     """Resolve a duplicate group by marking non-canonical files."""
     resolved_count, resolved_file_states = await resolve_group(session, group_hash, canonical_id)
+    # `services/` builds and flushes but never commits (caller-owned transaction). `get_session`
+    # yields the session WITHOUT committing, so the router must — otherwise the marker and the
+    # dual-written state are rolled back on session close and the HTMX partial reports a resolve
+    # that never happened. Matches routers/tags.py:369, routers/tracklists.py.
+    await session.commit()
     stats = await get_duplicate_stats(session)
 
     return templates.TemplateResponse(
@@ -175,6 +180,7 @@ async def undo_resolve_endpoint(
     """Undo a group resolution, restoring files to previous states."""
     parsed_states = json.loads(file_states)
     await undo_resolve(session, parsed_states)
+    await session.commit()  # `get_session` does not commit; without this the undo is rolled back.
 
     # Re-fetch group data after undo
     groups = await find_duplicate_groups_with_metadata(session, limit=1000, offset=0)
@@ -215,6 +221,7 @@ async def bulk_resolve(
         all_file_states.extend(file_states)
         resolved_groups += 1
 
+    await session.commit()  # `get_session` does not commit; without this every resolve is rolled back.
     stats = await get_duplicate_stats(session)
 
     return templates.TemplateResponse(
@@ -240,6 +247,7 @@ async def bulk_undo(
     """Undo a bulk resolution, restoring all files."""
     parsed_states = json.loads(file_states)
     await undo_resolve(session, parsed_states)
+    await session.commit()  # `get_session` does not commit; without this the bulk undo is rolled back.
 
     # Re-fetch groups for the page
     offset = (page - 1) * page_size
