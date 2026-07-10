@@ -1,9 +1,9 @@
 ---
 phase: 80
 slug: recovery-re-enqueue-cutover
-status: approved
+status: verified
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-10
 ---
 
@@ -53,13 +53,26 @@ just test-bucket integration
 
 ## Per-Task Verification Map
 
-*To be completed by the planner — one row per task in each `*-PLAN.md`.*
+*Completed post-execution (2026-07-10). One row per task; every row's named test was run green.*
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 80-XX-YY | XX | N | READ-03 | — | — | unit/integration | `just test-bucket analyze` | ✅ | ⬜ pending |
+| 80-01-1 | 01 | 1 | READ-03 / SC-4 | T-80-01, T-80-02 | Migration `036` backfills `analysis_completed_at` with the `failed_at IS NULL` NAND guard | migration | `just test-bucket integration` (5433 exports) | ✅ | ✅ green |
+| 80-01-2 | 01 | 1 | SC-4 | T-80-01 | Idempotent backfill + empty autogenerate + no-op downgrade; NAND-guard mutation-proven | migration | `test_migration_036_backfill_analysis_completed_at.py` | ✅ | ✅ green |
+| 80-01-3 | 01 | 1 | READ-03 (D-14) | T-80-03 | Prose-only destructive-migration de-numbering; docs-drift integrity preserved | docs-guard | `just docs-drift` | ✅ | ✅ green |
+| 80-02-1 | 02 | 1 | READ-03 | T-80-04, T-80-06 | `awaiting_candidate_clause()` single-source builder composed from LOCKED builders | unit | `test_awaiting_candidate_clause.py` | ✅ | ✅ green |
+| 80-02-2 | 02 | 1 | READ-03 | T-80-05 | Two `pipeline.py` call sites repointed; D-11 trap docstring | integration | `test_stage_status_equivalence.py` (36/36) | ✅ | ✅ green |
+| 80-03-1 | 03 | 1 | READ-03 / SC-1 | T-80-07, T-80-08 | At-cap spill via `hold_awaiting_cloud` CAS; zero `FileRecord.state` write; `cloud_job.status='awaiting'` not `FAILED` | integration | `test_reconcile_cloud_jobs.py` | ✅ | ✅ green |
+| 80-03-2 | 03 | 1 | SC-1 | T-80-09 | MKUE-04 clean-before-flip: `delete_staged_object` under lock before commit; attempts not incremented | integration | `test_reconcile_cloud_jobs.py` (spill ordering) | ✅ | ✅ green |
+| 80-04-1 | 04 | 2 | READ-03 / SC-2, SC-3 | T-80-10, T-80-11, T-80-13 | State-free done-set derivation via LOCKED builders; `= ANY(array)` bind; import boundary | integration | `test_recovery.py` + `test_task_split.py` | ✅ | ✅ green |
+| 80-04-2 | 04 | 2 | SC-2, SC-3, D-10, D-11 | T-80-12 | SC-2/SC-3/D-10 both-cells/D-11 regressions, each mutation-named | integration | `test_sc2_…`, `test_sc3_…`, `test_d10_cell_a/b_…` | ✅ | ✅ green |
+| 80-05-1 | 05 | 3 | SC-1 | T-80-14 | Clean-absence AST guard over both cutover files; forms #1–#6 mutation-proven RED + GREEN false-positives | source-assertion | `test_reenqueue_reconcile_source_scan.py` (13/13) | ✅ | ✅ green |
+| 80-05-2 | 05 | 3 | D-11 | T-80-15 | DERIV-04 SCOPE comment amended with the `~inflight_clause` rejected-option rationale | source-doc | `test_stage_status_equivalence.py` | ✅ | ✅ green |
+| CR-01 | 04 | post | READ-03 (CLOUDROUTE-02) | T-80-04 | Held AWAITING_CLOUD file is compute-only, never analyzed locally on a fileserver; recovery predicate drops `~inflight_clause` | integration | `test_held_process_file_orphan_is_not_analyzed_locally_on_a_fileserver` / `…_routes_to_a_compute_agent` / `test_held_file_with_process_file_seed_is_in_the_held_set` | ✅ | ✅ green |
+| CR-02 | 04 | post | D-10 | T-80-12 | D-10 gate coerces naive ledger `enqueued_at` to UTC-aware; no `TypeError` on the DB-read path | integration | `test_d10_gate_does_not_crash_on_db_read_ledger_row` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*CR-01/CR-02 rows are the post-execution code-review fixes (commit `5da4036e`); both RED-first mutation-proven.*
 
 ---
 
@@ -141,7 +154,33 @@ New additions:
 - [x] Wave 0 covers all MISSING references
 - [x] No watch-mode flags
 - [x] Feedback latency < 60s
-- [ ] Every guard test observed RED under its named mutation, then restored *(verified at execution time)*
+- [x] Every guard test observed RED under its named mutation, then restored *(SC-1 AST forms #1–#6 + reconcile spill by executor 80-05/80-03; SC-2/SC-3/D-10/D-11 by executor 80-04; CR-01 held-routing + CR-02 tz-gate mutation-proven by orchestrator at fix time)*
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** approved 2026-07-10 (plan-checker VERIFICATION PASSED)
+**Approval:** approved 2026-07-10 (plan-checker VERIFICATION PASSED) · verified 2026-07-10 (post-execution Nyquist audit — see trail below)
+
+---
+
+## Validation Audit 2026-07-10
+
+State A audit of the completed phase. Every success criterion and requirement (READ-03) maps to a real, named test that was run green; no coverage gaps found; no gsd-nyquist-auditor gap-fill needed.
+
+| Metric | Count |
+|--------|-------|
+| Requirements / SCs audited | READ-03 + SC-1..SC-4 + D-10 + D-11 |
+| COVERED (automated, green) | all |
+| PARTIAL | 0 |
+| MISSING | 0 |
+| Escalated to manual-only | 1 (live-corpus shadow-compare — pre-existing, prod-corpus-dependent) |
+
+**Coverage map (SC → shipped test):**
+
+- **SC-1** — `test_reenqueue_reconcile_source_scan.py` (13 tests, AST forms #1–#6 mutation-proven) + `test_reconcile_cloud_jobs.py` (spill status + MKUE-04 ordering).
+- **SC-2** — `test_sc2_never_scheduled_discovered_file_with_no_ledger_row_is_not_recovered`.
+- **SC-3** — `test_sc3_failed_analyze_with_surviving_ledger_row_is_terminal_never_reenqueued`.
+- **SC-4** — `test_migration_036_backfill_analysis_completed_at.py` (4 tests, idempotent + downgrade + NAND mutation). Live shadow-compare stays Manual-Only (prod corpus).
+- **D-10** — `test_d10_cell_a_…` / `test_d10_cell_b_…` / `test_d10_analyze_clears_failed_at_but_metadata_does_not` **+ CR-02 addition** `test_d10_gate_does_not_crash_on_db_read_ledger_row` (DB-round-trip, the gap the in-memory cells missed).
+- **D-11** — recovery regression (Cell B goes RED under the trap) + `test_stage_status_equivalence.py:429` REJECTED-OPTION RATIONALE.
+- **CR-01 (new)** — `test_held_process_file_orphan_is_not_analyzed_locally_on_a_fileserver` + `…_routes_to_a_compute_agent` + `test_held_file_with_process_file_seed_is_in_the_held_set` lock the CLOUDROUTE-02 held-routing behavior the review found broken.
+
+**Note:** the last sign-off box (mutation-RED discipline) was the only item deferred to execution time in the plan-phase strategy; it is now satisfied — the executors mutation-proved their guards and the orchestrator additionally RED-first mutation-proved the CR-01 (2 tests) and CR-02 (1 test) fixes.
