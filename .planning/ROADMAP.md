@@ -488,7 +488,13 @@ Plans:
   1. An `applied(f)` predicate (joining `execution_log` through `proposals`, since `execution_log` has no `file_id`) replaces every dead `state == EXECUTED` gate in `tag_writer.py`, `review.py`, `tags.py`, `cue.py`, `tracklists.py`.
   2. A test asserts the behavior change explicitly — an actually-applied file now passes the tag/CUE guards that previously always failed.
 
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 85-01-PLAN.md — `applied()` predicate pair (applied_clause/is_applied) in stage_status.py + SC#1 unit contract + D-04 UI badge [wave 1]
+- [ ] 85-02-PLAN.md — tag-write cutover (tag_writer.py + tags.py 5 sites, bounded bulk) + SC#2 mutation-checked behavior test [wave 2]
+- [ ] 85-03-PLAN.md — CUE + tracklists cutover (cue.py 3 sites, tracklists.py 3 guards) + CUE-admit fixtures [wave 2]
+- [ ] 85-04-PLAN.md — review.py list builders + D-03 pagination bound + review-audit fixtures [wave 3]
 **Note**: Isolated on its own PR — **must not be bundled** with any other phase; live-UAT-worthy because it changes filesystem behavior, not just status representation.
 
 ### Phase 86: Proposals Cutover
