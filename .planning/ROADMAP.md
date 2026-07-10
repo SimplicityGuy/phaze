@@ -273,7 +273,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
-| 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
+| 85. EXECUTED-Gate Revival | 2026.7.5 | 3/4 | In Progress|  |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
@@ -492,12 +492,12 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 85-01-PLAN.md — `applied()` predicate pair (applied_clause/is_applied) in stage_status.py + SC#1 unit contract + D-04 UI badge [wave 1]
+- [x] 85-01-PLAN.md — `applied()` predicate pair (applied_clause/is_applied) in stage_status.py + SC#1 unit contract + D-04 UI badge [wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 85-02-PLAN.md — tag-write cutover (tag_writer.py + tags.py 5 sites, bounded bulk) + SC#2 mutation-checked behavior test [wave 2]
-- [ ] 85-03-PLAN.md — CUE + tracklists cutover (cue.py 3 sites, tracklists.py 3 guards) + CUE-admit fixtures [wave 2]
+- [x] 85-02-PLAN.md — tag-write cutover (tag_writer.py + tags.py 5 sites, bounded bulk) + SC#2 mutation-checked behavior test [wave 2]
+- [x] 85-03-PLAN.md — CUE + tracklists cutover (cue.py 3 sites, tracklists.py 3 guards) + CUE-admit fixtures [wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
