@@ -13,7 +13,6 @@ from phaze.services.fingerprint import (
     IngestResult,
     PanakoAdapter,
     QueryMatch,
-    get_fingerprint_progress,
 )
 
 
@@ -288,25 +287,10 @@ class TestFingerprintOrchestrator:
         assert result == {"audfprint": True, "panako": False}
 
 
-class TestGetFingerprintProgress:
-    """Tests for progress tracking function."""
-
-    async def test_get_progress_returns_counts(self):
-        """get_fingerprint_progress returns total/completed/failed counts."""
-        mock_session = AsyncMock()
-
-        # Mock execute calls: total=100, completed=50, failed=5
-        mock_result_total = MagicMock()
-        mock_result_total.scalar_one.return_value = 100
-        mock_result_completed = MagicMock()
-        mock_result_completed.scalar_one.return_value = 50
-        mock_result_failed = MagicMock()
-        mock_result_failed.scalar_one.return_value = 5
-
-        mock_session.execute = AsyncMock(side_effect=[mock_result_total, mock_result_completed, mock_result_failed])
-
-        result = await get_fingerprint_progress(mock_session)
-        assert result == {"total": 100, "completed": 50, "failed": 5}
+# NOTE: get_fingerprint_progress is exercised by the real-DB integration test
+# tests/integration/test_fingerprint_progress.py (D-15). The former mock stub here
+# (side_effect list + assert-your-own-dict) stayed green through any rewrite -- including a
+# wrong one -- so it was deleted rather than adapted.
 
 
 class TestConfigSettings:

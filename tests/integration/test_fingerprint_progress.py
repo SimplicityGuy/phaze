@@ -1,0 +1,168 @@
+"""Real-PG replacement for the toothless ``get_fingerprint_progress`` mock stub (Phase 84, D-15).
+
+The former unit test (``tests/fingerprint/services/test_fingerprint.py``) stubbed ``session.execute``
+with a ``side_effect`` list and asserted the very dict it fed in, so it stayed green through ANY rewrite
+of the query -- including a wrong one. This seeds a real Postgres corpus and calls the real function,
+pinning:
+
+* **D-10** -- ``total`` is ``file_type IN MUSIC_VIDEO_TYPES`` AND ``~dedup_resolved_clause()``; a
+  non-audio file and a marker-present music file are BOTH excluded, while a ``state='duplicate_resolved'``
+  music file with NO marker is INCLUDED (proving the derivation keys on the marker, not ``FileRecord.state``).
+* **D-11 / DERIV-05** -- ``completed`` and ``failed`` are FILE counts: a file with one engine ``success``
+  + one engine ``failed`` counts toward ``completed`` (one success wins), NOT ``failed``; a file with two
+  ``failed`` engine rows counts ``1`` toward ``failed`` (a FILE, not a ROW count).
+* **D-17** -- ``completed ⊆ total`` and ``failed ⊆ total`` (shared denominator).
+
+Real-PG harness idiom mirrors ``tests/integration/test_shadow_compare.py`` (DSN derivation +
+connectivity-probe ``pytest.skip`` so a bare ``uv run pytest`` skips rather than errors when Postgres is
+down; ``Base.metadata.create_all`` + a seeded ``legacy-application-server`` Agent for the
+``files.agent_id`` RESTRICT FK; per-test rollback). Run with real PG via ``just test-bucket integration``
+(ephemeral PG ``:5433``).
+
+MUTATION EVIDENCE (recorded in 84-04-SUMMARY.md): reverting ``completed`` to
+``state == FileState.FINGERPRINTED`` drops ``completed`` from 2 to 0 (RED); reverting ``failed`` to a
+``fingerprint_results`` ROW count over ``status='failed'`` lifts ``failed`` from 1 to 2 (RED).
+"""
+
+from __future__ import annotations
+
+import os
+from typing import TYPE_CHECKING
+import uuid
+
+import pytest
+import pytest_asyncio
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from phaze.models.agent import Agent
+from phaze.models.base import Base
+from phaze.models.dedup_resolution import DedupResolution
+from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
+from phaze.services.fingerprint import get_fingerprint_progress
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+
+pytestmark = pytest.mark.integration
+
+
+# Raw libpq broker DSN + SQLAlchemy async DSN, derived exactly as tests/integration/test_shadow_compare.py.
+BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
+    "postgresql+asyncpg://", "postgresql://"
+)
+SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
+
+# This test only reads (per-test rollback), so it is not destructive; still refuse a non-`_test` DB so a
+# bare run against a dev stack can never seed rows into it. `just test-db` points at `phaze_test`.
+_TARGET_DB = make_url(SA_DSN).database or ""
+if not _TARGET_DB.endswith("_test"):
+    pytest.skip(
+        f"Refusing to run integration tests against non-test database {_TARGET_DB!r}; "
+        "set TEST_DATABASE_URL to a *_test DSN (e.g. run `just test-db`).",
+        allow_module_level=True,
+    )
+
+_LEGACY_AGENT_ID = "legacy-application-server"
+
+
+@pytest_asyncio.fixture
+async def db_session() -> AsyncGenerator[AsyncSession]:
+    """Yield a real-PG ``AsyncSession`` with all ORM tables present and the FK agent seeded.
+
+    Probes broker connectivity first and ``pytest.skip``s when Postgres is down. ``create_all`` makes
+    the harness independent of Alembic. The test runs in one rolled-back transaction.
+    """
+    import psycopg
+
+    try:
+        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres broker unavailable: {exc}")
+    else:
+        await probe.close()
+
+    engine = create_async_engine(SA_DSN)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+        await session.flush()
+        try:
+            yield session
+        finally:
+            await session.rollback()
+    await engine.dispose()
+
+
+async def _new_file(session: AsyncSession, *, file_type: str, state: str = FileState.DISCOVERED.value) -> uuid.UUID:
+    """Seed a bare FileRecord of ``file_type`` at ``state`` with NO backing rows; return its id."""
+    fid = uuid.uuid4()
+    session.add(
+        FileRecord(
+            id=fid,
+            sha256_hash=uuid.uuid4().hex,
+            original_path=f"/media/{fid}.{file_type}",
+            original_filename=f"{fid}.{file_type}",
+            current_path=f"/media/{fid}.{file_type}",
+            file_type=file_type,
+            file_size=1234,
+            state=state,
+        )
+    )
+    await session.flush()
+    return fid
+
+
+async def _add_fp(session: AsyncSession, file_id: uuid.UUID, engine: str, status: str) -> None:
+    """Seed one per-engine fingerprint_results row for ``file_id``."""
+    session.add(FingerprintResult(file_id=file_id, engine=engine, status=status))
+    await session.flush()
+
+
+async def test_get_fingerprint_progress_derives_from_output_tables(db_session: AsyncSession) -> None:
+    """The 3-key contract, derived from file_type + dedup marker + done/failed_clause (D-09..D-17)."""
+    # (1) music file with an engine success -> total + completed.
+    f_success = await _new_file(db_session, file_type="mp3")
+    await _add_fp(db_session, f_success, "audfprint", "success")
+
+    # (2) video file, no fingerprint rows -> total only.
+    await _new_file(db_session, file_type="mp4")
+
+    # (3) non-audio file -> excluded from total entirely (D-10 denominator).
+    f_txt = await _new_file(db_session, file_type="txt")
+    await _add_fp(db_session, f_txt, "audfprint", "success")  # even a success cannot pull a non-MV file into total.
+
+    # (4) dedup-resolved music file (marker present) -> excluded from total (D-10 marker exclusion).
+    f_marked = await _new_file(db_session, file_type="mp3")
+    db_session.add(DedupResolution(file_id=f_marked))
+    await db_session.flush()
+
+    # (5) music file at state='duplicate_resolved' but NO marker -> INCLUDED in total. This is the
+    #     marker-not-state proof: a state read would exclude it; the derivation includes it.
+    await _new_file(db_session, file_type="mp3", state=FileState.DUPLICATE_RESOLVED.value)
+
+    # (6) one engine success + one engine failure -> completed, NOT failed (DERIV-05: one success wins).
+    f_mixed = await _new_file(db_session, file_type="mp3")
+    await _add_fp(db_session, f_mixed, "audfprint", "success")
+    await _add_fp(db_session, f_mixed, "panako", "failed")
+
+    # (7) all engines failed (two failed rows) -> failed, counted ONCE (a FILE, not a ROW count).
+    f_failed = await _new_file(db_session, file_type="mp3")
+    await _add_fp(db_session, f_failed, "audfprint", "failed")
+    await _add_fp(db_session, f_failed, "panako", "failed")
+
+    progress = await get_fingerprint_progress(db_session)
+
+    # total = {1 music-success, 2 video, 5 dup-resolved-no-marker, 6 mixed, 7 all-failed} = 5.
+    # Excluded: 3 (non-audio, D-10), 4 (marker present, D-10).
+    assert progress == {"total": 5, "completed": 2, "failed": 1}
+
+    # D-17: completed and failed are strict subsets of total (progress bar can never exceed 100%).
+    assert progress["completed"] <= progress["total"]
+    assert progress["failed"] <= progress["total"]
