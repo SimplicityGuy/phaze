@@ -268,7 +268,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
-| 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 3/5 | In Progress|  |
+| 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 4/5 | In Progress|  |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
@@ -366,7 +366,7 @@ Plans:
 
 **Wave 2** *(depends on 80-01, 80-02)*
 
-- [ ] 80-04-PLAN.md — `reenqueue.py` done-set cutover (predicate-layer derivation, ledger-scoped `= ANY(array)` bind, D-10 metadata gate) + SC-2/SC-3/D-10/D-11 regressions (D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11) [wave 2]
+- [x] 80-04-PLAN.md — `reenqueue.py` done-set cutover (predicate-layer derivation, ledger-scoped `= ANY(array)` bind, D-10 metadata gate) + SC-2/SC-3/D-10/D-11 regressions (D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11) [wave 2]
 
 **Wave 3** *(depends on 80-03, 80-04)*
 
