@@ -268,7 +268,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
-| 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/5 | Not started | - |
+| 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 3/5 | In Progress|  |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
@@ -360,9 +360,9 @@ Plans:
 Plans:
 **Wave 1** *(parallel — disjoint files)*
 
-- [ ] 80-01-PLAN.md — Migration `036` (`analysis_completed_at` backfill, NAND-safe) + per-migration test + D-14 doc de-numbering (D-13, D-14) — **blocking prerequisite of 80-04** [wave 1]
-- [ ] 80-02-PLAN.md — Extract `awaiting_candidate_clause()` into `stage_status.py` + repoint the two inline `pipeline.py` call sites + D-11 docstring note (D-08, D-09, D-11) [wave 1]
-- [ ] 80-03-PLAN.md — `reconcile_cloud_jobs.py` at-cap write retirement via `hold_awaiting_cloud` spill-mode CAS + spill regression (D-04, D-12) [wave 1]
+- [x] 80-01-PLAN.md — Migration `036` (`analysis_completed_at` backfill, NAND-safe) + per-migration test + D-14 doc de-numbering (D-13, D-14) — **blocking prerequisite of 80-04** [wave 1]
+- [x] 80-02-PLAN.md — Extract `awaiting_candidate_clause()` into `stage_status.py` + repoint the two inline `pipeline.py` call sites + D-11 docstring note (D-08, D-09, D-11) [wave 1]
+- [x] 80-03-PLAN.md — `reconcile_cloud_jobs.py` at-cap write retirement via `hold_awaiting_cloud` spill-mode CAS + spill regression (D-04, D-12) [wave 1]
 
 **Wave 2** *(depends on 80-01, 80-02)*
 
