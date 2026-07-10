@@ -1,3 +1,158 @@
+---
+phase: 82-counts-pending-set-cutover
+verified: 2026-07-10T23:00:00Z
+status: passed
+score: 3/3 roadmap success criteria verified (12/12 plan-level must-haves verified)
+overrides_applied: 0
+---
+
+# Phase 82: Counts & Pending-Set Cutover — Verification Report
+
+**Phase Goal:** Rewrite the three enrich pending sets and `get_pipeline_stats` off `stage_status`, so
+metadata/fingerprint/analyze each surface every not-done, not-in-flight file independent of the others —
+the cross-stage deadlock dissolves — and measure the 5s poll at 200K-file scale.
+
+**Verified:** 2026-07-10
+**Status:** passed
+**Re-verification:** No — initial verification
+
+This section is the goal-backward verifier's independent verdict, added on top of the plan-04-authored
+PERF-02 measurement below (preserved verbatim — see "PERF-02 Measurement" further down). Nothing below the
+`---` divider was written or altered by this verification pass.
+
+## Goal Achievement
+
+### Observable Truths (Roadmap Success Criteria)
+
+| # | Truth | Status | Evidence |
+|---|-------|--------|----------|
+| 1 | A single file can complete all three enrich stages in **any order** — each enrich pending set is derived from `stage_status` with no upstream and no `FileRecord.state` read, proven by a test running the three stages in every ordering. | ✓ VERIFIED | `eligible_clause(stage)` (`src/phaze/services/stage_status.py:231`) drift-locked to the Python `eligible()` via a 14-cell `ELIGIBLE_CASES` matrix. All three pending helpers (`get_metadata_pending_files`, `get_fingerprint_pending_files`, `get_discovered_files_with_duration`) compose `eligible_clause(stage) ∧ ~dedup_resolved_clause() ∧ file_type ∈ MUSIC_VIDEO_TYPES` — zero `FileRecord.state` reads (confirmed by an AST source-scan, mutation-tested live, see below). `test_enrich_pending_sets_are_independent` (parametrized over all 6 `permutations` of {metadata, fingerprint, analyze}) plus two deadlock-detection cells (`test_metadata_done_state_advanced_still_in_analyze_set`, `test_analyzed_but_unfingerprinted_still_in_fingerprint_set`) — re-ran live, **88 passed** (see Test Execution below). |
+| 2 | `get_pipeline_stats` reports per-stage counts from output tables (linear `GROUP BY state` removed) and the DAG shows four-bucket per-stage counts (`not_started`/`in_flight`/`done`/`failed`) that sum to total, including a visible failed count per enrich stage. | ✓ VERIFIED | `grep -rn "get_pipeline_stats\|group_by(FileRecord.state)" src/phaze/` returns only historical doc-comments (no `def`/import/call). `_safe_bucket_counts` (`pipeline.py:323`) + the four-bucket enrich nodes in `get_stage_progress` (`pipeline.py:362`), reusing the LOCKED `stage_status_case`. `test_enrich_nodes_are_four_bucket_summing_to_total` and `test_seeded_failed_rows_are_visible_per_stage` pass live. Three callers (`_build_dag_context`, `build_dashboard_context`, `pipeline_stats_partial`) + `stats_bar.html` re-express the seven former keys via `_derive_stats`, keeping the Alpine OOB store keys stable. |
+| 3 | The `/pipeline/stats` poll latency at 200K-file scale is measured and recorded in the phase VERIFICATION; no denormalized status column is added unless that measurement proves the derived query too slow (YAGNI is the default). | ✓ VERIFIED (deliverable produced; over-budget finding surfaced, not a phase failure — see reasoning below) | `82-VERIFICATION.md` (this file, section "PERF-02" below) records real `EXPLAIN (ANALYZE, BUFFERS)` plans on a dedicated 200K synthetic corpus at migration HEAD (036), endpoint/direct p50/p95 timings, per-query 032-partial-index evidence, and an explicit DENORM-01 NO-GO/deferred decision with reasoning. The measurement was produced honestly (including an honest "3 of 5 named indexes chosen" finding, not fabricated). |
+
+**Score:** 3/3 roadmap success criteria verified.
+
+### PERF-02 judgment call — over-budget number is a follow-up, not a phase failure
+
+The measured `/pipeline/stats` p50 (~1.4s endpoint / ~1.29s `get_stage_progress` direct) is **over** the D-07
+`< ~1s` soft budget. PERF-02's contractual deliverable, per REQUIREMENTS.md and the roadmap SC text, is *"the
+poll latency… is measured and recorded… no denormalized status column is added unless that measurement proves
+the derived query too slow"* — i.e., the deliverable is the measurement + a licensed decision, not a specific
+latency number. Plan 82-04 did not silently accept the overage: it root-caused it (the three enrich
+four-bucket reads run **sequentially** inside `get_stage_progress`, ~1.15s combined), verified that
+`work_mem`/HashAggregate tuning does not help (the cost is per-row correlated `EXISTS` SubPlans, not a sort
+spill), and made a reasoned NO-GO/deferred call on DENORM-01 — recommending `asyncio.gather`-based
+parallelization of the three bucket reads (projected ≈0.5s) as the cheaper, correctness-neutral fix, to be
+re-measured before DENORM-01 is pulled forward. This is exactly the engineering judgment PERF-02 exists to
+produce (YAGNI: derive → measure → decide, not denormalize speculatively), and the decision explicitly says it
+is "flagged for operator review" rather than a silently-accepted regression.
+
+**Verdict:** Truth #3 is VERIFIED as a measurement-and-decision deliverable. The over-budget number and the
+recommended parallelization fix are surfaced here as a **tracked follow-up**, not a phase gap:
+
+- **Follow-up (non-blocking):** Parallelize the three `_safe_bucket_counts` reads in `get_stage_progress` via
+  `asyncio.gather` on independent sessions and re-measure against the `< ~1s` budget at 200K before
+  considering DENORM-01. (Source: `82-04-SUMMARY.md` / this file's "DENORM-01 go / no-go decision" section.)
+- The current 5s degrade-safe poll interval absorbs the measured ~1.4s comfortably; no user-facing regression
+  today.
+
+### Required Artifacts
+
+| Artifact | Expected | Status | Details |
+|----------|----------|--------|---------|
+| `src/phaze/services/stage_status.py` | `eligible_clause(stage)` — SQL twin of `eligible()`, enrich-only | ✓ VERIFIED | `def eligible_clause` at line 231; table-driven off `ELIGIBLE_AFTER_FAILURE`; docstring documents the correlated-`~exists` join contract. |
+| `tests/integration/test_stage_status_equivalence.py` | `ELIGIBLE_CASES` (14 cells) + `test_eligible_sql_equals_python` | ✓ VERIFIED | Present; re-ran live, all 15 `eligible`-keyed tests pass (14 matrix cells + guard). |
+| `src/phaze/services/pipeline.py` | Three pending helpers cut over; `_safe_bucket_counts`; `get_pipeline_stats` deleted | ✓ VERIFIED | `get_metadata_pending_files` (:1441), `get_fingerprint_pending_files` (:1480), `get_discovered_files_with_duration` (:1151) all compose `eligible_clause`; `_safe_bucket_counts` (:323); no `def get_pipeline_stats` anywhere. |
+| `tests/integration/test_enrich_pending_independence.py` | SC#1 all-orderings + A1 cloud-exclusion | ✓ VERIFIED | 7 tests incl. `test_enrich_pending_sets_are_independent` (parametrized ×6), `test_cloud_dispatched_file_absent_from_analyze_set` (parametrized over awaiting/uploading/submitted-style active statuses). |
+| `tests/integration/test_pending_set_divergence.py` | Behavioral state/derived-disagreement guard | ✓ VERIFIED | 5 tests, each with a `MUTATION:` comment; live-verified one cell inverts under a hand-mutation (below). |
+| `tests/shared/test_pending_set_source_scan.py` | Mutation-tested AST source scan — zero `FileState` reads | ✓ VERIFIED | 7 tests; live mutation-tested by this verifier (re-introduced a `FileState.DISCOVERED` read into `get_metadata_pending_files` → guard went RED; reverted → GREEN). |
+| `src/phaze/routers/pipeline.py` | `notYetEnriched`/`build_dashboard_context`/`pipeline_stats_partial` re-expressed off `stage_progress` | ✓ VERIFIED | `_derive_stats` (:137) re-expresses the seven keys; `_build_dag_context` threads a single `get_stage_progress` read. |
+| `src/phaze/templates/pipeline/partials/stats_bar.html` | Key remap; Alpine `$store.pipeline.*` keys stable | ✓ VERIFIED | Documenting comment added; six cards + three OOB `x-init` writes unchanged in key names. |
+| `tests/integration/test_stage_progress_buckets.py` | Four-bucket-sums-to-total + visible failed count | ✓ VERIFIED | 4 tests; re-ran live, pass. |
+| `tests/shared/services/test_pipeline.py` | Reconciled to derived semantics (stale tests deleted, `get_pipeline_stats` gone) | ✓ VERIFIED | `grep -c "get_pipeline_stats"` → 0; full file passes live (183 combined with router file). |
+| `scripts/seed_perf_corpus.py` | Idempotent parameterized ~200K corpus seeder | ✓ VERIFIED | Present; `uv run ruff check` clean; referenced/exercised by `82-04-SUMMARY.md`. |
+| `justfile` | `perf-seed`/`perf-explain` recipes (db group) | ✓ VERIFIED | `just perf-db-up/-down`, `perf-seed`, `perf-explain` present (flagged with a minor unquoted-interpolation warning in `82-REVIEW.md` WR-03, non-blocking). |
+| `.planning/phases/82-counts-pending-set-cutover/82-VERIFICATION.md` | PERF-02 numbers + index-scan evidence + DENORM-01 decision | ✓ VERIFIED | This file (preserved section below). |
+
+### Key Link Verification
+
+| From | To | Via | Status | Details |
+|------|----|----|--------|---------|
+| Three pending helpers | `eligible_clause` / `dedup_resolved_clause` | `eligible_clause(Stage.{METADATA,FINGERPRINT,ANALYZE}) ∧ ~dedup_resolved_clause()` | ✓ WIRED | Confirmed by direct read of `pipeline.py:1441-1500,1151-1183`; matches the plan's `key_links` pattern exactly. |
+| `get_discovered_files_with_duration` | cloud_job active-status exclusion | `~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES)))` | ✓ WIRED | `pipeline.py:1179`; `_ACTIVE_CLOUD_STATUSES` defined :60; the A1 double-dispatch landmine is closed with a traced (not assumed) finding recorded in `82-02-SUMMARY.md`. |
+| `get_stage_progress` enrich nodes | `stage_status_case(stage)` | One `GROUP BY` per enrich stage via a materialized inner subquery (Postgres `GroupingError` workaround) | ✓ WIRED | `pipeline.py:347-348`; reuses the LOCKED CASE ladder verbatim (no fresh `case(` in the function body). |
+| `routers/pipeline.py` callers | `get_stage_progress` | `_derive_stats` re-expression, single-read threaded into `_build_dag_context` | ✓ WIRED | `routers/pipeline.py:137-164, 275-276`; no double heavy read on the poll path. |
+
+### Requirements Coverage
+
+| Requirement | Source Plan | Description | Status | Evidence |
+|-------------|-------------|-------------|--------|----------|
+| READ-01 | 82-01, 82-02 | Three enrich pending sets derived from `stage_status`, independent, no `FileRecord.state` read | ✓ SATISFIED | `eligible_clause` + three cut-over helpers + independence/divergence/source-scan tests, all live-verified passing. |
+| READ-02 | 82-03 | `get_pipeline_stats` removed; DAG shows four-bucket per-stage counts summing to total with visible failed | ✓ SATISFIED | `get_pipeline_stats` deleted; `_safe_bucket_counts` four-bucket nodes; sum-to-total + failed-visibility tests live-verified passing. |
+| PERF-02 | 82-04 | `/pipeline/stats` poll latency at 200K measured and recorded; DENORM-01 gated on the measurement | ✓ SATISFIED | Measurement + DENORM-01 decision recorded in this file (below), honest about the over-budget finding and index-usage partiality. |
+
+No orphaned requirements: `REQUIREMENTS.md` maps exactly READ-01, READ-02, PERF-02 to Phase 82, and all three appear in a plan's `requirements:` frontmatter. (Note: `REQUIREMENTS.md`'s own checkbox/status column still shows these as "Pending" — this is a document-maintenance step, not evidence of incompleteness; the underlying code and tests are green as demonstrated above.)
+
+### Anti-Patterns Found
+
+| File | Line | Pattern | Severity | Impact |
+|------|------|---------|----------|--------|
+| — | — | `grep -n -E "TBD\|FIXME\|XXX"` across all phase-touched files | none found | — | No debt markers in any file this phase modified. |
+
+`82-REVIEW.md` (already produced separately) found 3 warnings (dead `PIPELINE_STAGES` constant, a
+substring-based `--reseed` destructive-op guard weaker than the suffix guard it claims to mirror in
+`scripts/seed_perf_corpus.py`, and unquoted `{{N}}`/`{{ITER}}` justfile interpolation) and 3 info items. None
+are must-have blockers — they are maintainability/hardening items in a **dev-only local perf-measurement
+script and justfile recipes**, not in the production read path. Recorded here for traceability; not
+re-litigated (see `82-REVIEW.md` for full detail and suggested fixes).
+
+### Behavioral Spot-Checks / Mutation Verification (run live by this verifier)
+
+| Behavior | Command | Result | Status |
+|----------|---------|--------|--------|
+| ELIG-03 guard has teeth (drop the analyze `~failed_clause` conjunct) | Mutated `eligible_clause` to skip the analyze failed-conjunct, re-ran `pytest -k eligible` | `test_eligible_sql_equals_python[analyze-seed_analysis_failed-False]` went RED (`assert True == False`); reverted → GREEN (15 passed) | ✓ PASS |
+| AST source-scan guard has teeth (reintroduce a `FileState` read) | Injected `FileRecord.state != FileState.DISCOVERED` into `get_metadata_pending_files`, re-ran `test_pending_helpers_have_zero_filestate_reads` | Guard went RED (`get_metadata_pending_files reads FileState.DISCOVERED at line 1455`); reverted → GREEN | ✓ PASS |
+| SC#1 all-orderings + deadlock cells | `pytest tests/integration/test_enrich_pending_independence.py` against a private `*_test`-suffixed DB (own container, own DSN) | 7 passed | ✓ PASS |
+| Four-bucket sum-to-total + visible failed | `pytest tests/integration/test_stage_progress_buckets.py` | 4 passed | ✓ PASS |
+| get_pipeline_stats fully removed | `grep -rn "get_pipeline_stats" src/phaze/` (def/import/call only, not comments) | Only historical doc-comments, no executable reference | ✓ PASS |
+| Full regression: DERIV-04 equivalence + independence + divergence + source-scan + four-bucket + stats-caller | `pytest tests/integration/test_stage_status_equivalence.py tests/integration/test_enrich_pending_independence.py tests/integration/test_pending_set_divergence.py tests/shared/test_pending_set_source_scan.py tests/integration/test_stage_progress_buckets.py tests/shared/routers/test_pipeline_stats.py -q` | **88 passed**, 0 skipped (private `phaze_verify82_test` DB on the shared `:5433` container, isolated from other sessions) | ✓ PASS |
+| Pre-existing test files reconciled and green | `pytest tests/shared/services/test_pipeline.py tests/shared/routers/test_pipeline.py -q` | **183 passed** | ✓ PASS |
+| Downstream consumers unaffected (fingerprint router, recovery, and the Phase-83-reconciled analyze stage-progress tests) | `pytest tests/fingerprint/routers/test_pipeline_fingerprint.py tests/analyze/tasks/test_recovery.py tests/analyze/core/test_stage_progress.py -q` | **66 passed** — confirms the commit `1622239e` reconciliation (old drifted analyze-done semantics → canonical `done_clause`) is correct and does not regress recovery/fingerprint consumers | ✓ PASS |
+| Type/lint clean on touched production files | `uv run mypy src/phaze/services/pipeline.py src/phaze/services/stage_status.py src/phaze/routers/pipeline.py scripts/seed_perf_corpus.py scripts/perf_explain.py` + `uv run ruff check` (same set) | mypy: Success, no issues in 5 source files; ruff: All checks passed | ✓ PASS |
+
+### Test Execution (Test Environment)
+
+Ran against a **private, dedicated** database (`phaze_verify82_test`, suffix `_test` required by the
+harness's own destructive-op guard) on the shared `phaze-test-db` container (port 5433), per the
+test-environment contract. `TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_QUEUE_URL` /
+`PHAZE_REDIS_URL` all pointed at the private DB — no silent-skip false pass. Database dropped after
+verification; the shared `phaze-test-db` container and any other session's data were never touched.
+
+### Human Verification Required
+
+None. All must-haves are verifiable via automated tests + direct source/grep inspection + live mutation
+checks; no visual/UX/real-time/external-service behavior in this phase's scope requires human testing. The
+DENORM-01 over-budget finding is a recorded engineering decision (not an open verification question) —
+surfaced above as a tracked, non-blocking follow-up for operator awareness, per this phase's explicit
+verification instructions.
+
+### Gaps Summary
+
+No gaps. All three roadmap success criteria (READ-01, READ-02, PERF-02) and all twelve plan-level
+must-haves across 82-01 through 82-04 are verified against the live codebase and a live test run, not
+merely against SUMMARY.md claims — including two independent mutation checks (ELIG-03 conjunct removal,
+FileState-read reintroduction) performed by this verifier from scratch to confirm the anti-drift guards
+have real teeth, not just passing assertions. The one open item — parallelizing the three sequential
+four-bucket reads to bring `/pipeline/stats` under the D-07 `< ~1s` soft budget — is a recorded,
+non-blocking follow-up licensed by the PERF-02 measurement itself, not a phase-goal failure.
+
+---
+
+_Verified: 2026-07-10_
+_Verifier: Claude (gsd-verifier)_
+
+---
+
 # Phase 82 — VERIFICATION
 
 Recorded manual/measured verifications for the Counts & Pending-Set Cutover phase. This file holds the
