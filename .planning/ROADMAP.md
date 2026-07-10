@@ -272,7 +272,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
-| 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 4/6 | In Progress|  |
+| 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 5/6 | In Progress|  |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
@@ -458,7 +458,7 @@ Plans:
 
 **Wave 3** *(depends on 84-03, 84-04)*
 
-- [ ] 84-05-PLAN.md — AST source-scan guard over dedup.py + fingerprint.py, mutation-tested both directions (READ-04, SIDECAR-02) [wave 3]
+- [x] 84-05-PLAN.md — AST source-scan guard over dedup.py + fingerprint.py, mutation-tested both directions (READ-04, SIDECAR-02) [wave 3]
 
 **Wave 4** *(depends on 84-03, 84-04, 84-05 — operator checkpoint)*
 
