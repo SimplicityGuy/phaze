@@ -268,7 +268,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 77. Additive Schema & Rescan-Wipe Fix (migration 032) | 2026.7.5 | 3/3 | Complete    | 2026-07-08 |
 | 78. Derivation Layer, Eligibility & Anti-Drift Test Harness | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
-| 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/5 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
@@ -356,7 +356,21 @@ Plans:
   3. A failed **analyze** is never produced by any automatic recovery path — `FAILURE_IS_TERMINAL[analyze]` is encoded at the recovery layer, not just the derivation layer (guards the same over-enqueue class).
   4. The shadow-compare gate (Phase 79) stays green after the cutover.
 
-**Plans**: TBD
+**Plans**: 5 plans in 3 waves
+Plans:
+**Wave 1** *(parallel — disjoint files)*
+
+- [ ] 80-01-PLAN.md — Migration `036` (`analysis_completed_at` backfill, NAND-safe) + per-migration test + D-14 doc de-numbering (D-13, D-14) — **blocking prerequisite of 80-04** [wave 1]
+- [ ] 80-02-PLAN.md — Extract `awaiting_candidate_clause()` into `stage_status.py` + repoint the two inline `pipeline.py` call sites + D-11 docstring note (D-08, D-09, D-11) [wave 1]
+- [ ] 80-03-PLAN.md — `reconcile_cloud_jobs.py` at-cap write retirement via `hold_awaiting_cloud` spill-mode CAS + spill regression (D-04, D-12) [wave 1]
+
+**Wave 2** *(depends on 80-01, 80-02)*
+
+- [ ] 80-04-PLAN.md — `reenqueue.py` done-set cutover (predicate-layer derivation, ledger-scoped `= ANY(array)` bind, D-10 metadata gate) + SC-2/SC-3/D-10/D-11 regressions (D-01, D-02, D-03, D-05, D-06, D-07, D-10, D-11) [wave 2]
+
+**Wave 3** *(depends on 80-03, 80-04)*
+
+- [ ] 80-05-PLAN.md — Mutation-proven AST "zero `FileRecord.state` reads" guard over both files + equivalence SCOPE amendment (SC-1, D-11) [wave 3]
 
 ### Phase 81: Per-Stage Failure Persistence & Retry Paths
 
