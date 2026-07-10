@@ -22,7 +22,9 @@ findings:
   warning: 2
   info: 3
   total: 5
-status: issues_found
+status: resolved
+resolution_commit: 5215d82c
+resolution_note: "WR-01 and WR-02 fixed in 5215d82c with 3 mutation-verified regression tests. Info nits folded into the same refactor."
 ---
 
 # Phase 84: Code Review Report
@@ -180,3 +182,31 @@ inconsistent corpus, so the `max_per_group_subq` clause has its own teeth.
 _Reviewed: 2026-07-10_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
+
+---
+
+## Resolution (orchestrator, 2026-07-10)
+
+Both Warning findings were fixed in `5215d82c` before the phase closed out.
+
+| ID | Finding | Disposition |
+|----|---------|-------------|
+| WR-01 | `undo_resolve` deleted the marker before coercing `previous_state`; a coercion failure left `state='duplicate_resolved'` with no marker — the hard `shadow_compare.py:135` divergence this phase's SC#3 must keep green | **Fixed.** Payload is now fully parsed and validated into `restore_by_id` before any write; the `DELETE` is scoped to only those ids, so a marker is removed only when its state restore is guaranteed to follow. |
+| WR-02 | A malformed UUID or missing `"id"` key raised an unhandled `ValueError`/`KeyError` → HTTP 500 before reaching the CAS | **Fixed.** Non-UUID and non-`str` ids are dropped during validation; a mixed payload restores the valid entries and drops the rest. |
+| Info ×3 | double-parse of ids, duplicate-entry count inflation, minor coverage gap | **Folded into the same refactor.** The dict collapses duplicates and the return value is now the `RETURNING` cardinality rather than a loop counter. |
+
+The D-06 CAS is unchanged: `DELETE … RETURNING` still decides what is written, so a stale-tab
+replay against a since-re-resolved file still matches zero rows and no-ops.
+
+**Mutation evidence.** Three regression tests were added to
+`tests/integration/test_dedup_resolve_undo_shadow.py`. Run against the pre-fix implementation
+(`a67ed16a`) all three go **RED**; against the fix all five tests in the file are **GREEN**:
+
+```
+test_undo_with_invalid_previous_state_keeps_marker_and_gate_green  FAILED -> passed
+test_undo_with_malformed_uuid_does_not_raise                       FAILED -> passed
+test_undo_duplicate_entries_do_not_inflate_count                   FAILED -> passed
+```
+
+Post-fix: integration 179, discovery 204, fingerprint 82, review 421 — all passing.
+`uv run ruff check .` and `uv run mypy .` clean.
