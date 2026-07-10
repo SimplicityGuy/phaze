@@ -483,6 +483,66 @@ async def test_domain_completed_sql_equals_python(
     assert sql_complete == py_complete == expected
 
 
+# --------------------------------------------------------------------------------------------------
+# READ-01 eligibility drift-lock: the DB-free ``eligible`` table twin == the SQL ``eligible_clause``
+# twin, per seeded cell. Extends the DERIV-04 anti-drift guarantee to the ELIGIBILITY axis so
+# ``ELIGIBLE_AFTER_FAILURE`` can never drift between its Python and SQL readers -- the 44.5K
+# over-enqueue guard rests on the two agreeing on the analyze carve-out (ELIG-03).
+#
+# SCOPE: ``eligible_clause`` is enrich-only (keyed on ``ELIGIBLE_AFTER_FAILURE``, three keys), so only
+# enrich cells are exercised. Unlike ``DOMAIN_COMPLETED_CASES`` these cells DO include the ``*_inflight``
+# seeds: ``eligible`` folds the ``in_flight`` precedence in directly (an in-flight stage is ineligible),
+# and ``eligible_clause`` mirrors it via the ``~inflight_clause`` conjunct, so the equivalence holds for
+# the in-flight rows too.
+#
+# The single load-bearing anti-drift cell is ``(Stage.ANALYZE, seed_analysis_failed, False)``: it goes
+# RED if a future edit drops the analyze ``~failed_clause`` conjunct (the ELIG-03 44.5K over-enqueue
+# guard). METADATA/FINGERPRINT keep their FAILED rows eligible (ELIGIBLE_AFTER_FAILURE True -- ELIG-04
+# auto-retry). Reuses the enrich-stage seed fns verbatim -- no new fixtures.
+ELIGIBLE_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], bool]] = [
+    # metadata: eligible when NOT_STARTED or FAILED; not when DONE or IN_FLIGHT (ELIG-01/04).
+    (Stage.METADATA, seed_metadata_none, True),
+    (Stage.METADATA, seed_metadata_done, False),
+    (Stage.METADATA, seed_metadata_failed_only, True),  # ELIGIBLE_AFTER_FAILURE True -> stays eligible
+    (Stage.METADATA, seed_metadata_inflight, False),
+    # fingerprint: same shape (ELIG-04 -- a failed-only fingerprint stays eligible for auto-retry).
+    (Stage.FINGERPRINT, seed_fp_none, True),
+    (Stage.FINGERPRINT, seed_fp_success, False),
+    (Stage.FINGERPRINT, seed_fp_success_and_failed, False),  # DERIV-05 success wins -> done -> ineligible
+    (Stage.FINGERPRINT, seed_fp_failed_only, True),  # ELIG-04 failed-only stays eligible
+    (Stage.FINGERPRINT, seed_fp_inflight, False),
+    # analyze: eligible ONLY when NOT_STARTED -- a FAILED analyze is TERMINAL (ELIG-03, 44.5K guard).
+    (Stage.ANALYZE, seed_analysis_none, True),
+    (Stage.ANALYZE, seed_analysis_partial, True),  # completed_at NULL -> not_started -> eligible
+    (Stage.ANALYZE, seed_analysis_completed, False),
+    (Stage.ANALYZE, seed_analysis_failed, False),  # <- the load-bearing ELIG-03 carve-out cell
+    (Stage.ANALYZE, seed_analysis_failed_inflight, False),  # precedence: ledger row -> in_flight -> ineligible
+]
+
+
+async def eval_sql_eligible(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> bool:
+    """Run the ``eligible_clause`` predicate in a SELECT and read the boolean back."""
+    from phaze.services.stage_status import eligible_clause  # lazy: keeps --co green in the RED state
+
+    result = await session.execute(select(eligible_clause(stage)).where(FileRecord.id == file_id))
+    return bool(result.scalar_one())
+
+
+@pytest.mark.parametrize("stage,seed_fn,expected", ELIGIBLE_CASES)
+async def test_eligible_sql_equals_python(
+    db_session: AsyncSession,
+    stage: Stage,
+    seed_fn: Callable[[AsyncSession], Awaitable[uuid.UUID]],
+    expected: bool,
+) -> None:
+    """READ-01 drift-lock: for every seeded cell, SQL ``eligible_clause`` == Python ``eligible`` == expected."""
+    file_id = await seed_fn(db_session)
+    sql_eligible = await eval_sql_eligible(db_session, stage, file_id)
+    py_status = resolve_status(stage, await load_scalars(db_session, stage, file_id))
+    py_eligible = eligible({stage: py_status}, stage)
+    assert sql_eligible == py_eligible == expected
+
+
 async def test_failed_fingerprint_stays_eligible(db_session: AsyncSession) -> None:
     """ELIG-04: a failed-only fingerprint is NOT done, so ``eligible()`` keeps it eligible for retry."""
     file_id = await seed_fp_failed_only(db_session)
