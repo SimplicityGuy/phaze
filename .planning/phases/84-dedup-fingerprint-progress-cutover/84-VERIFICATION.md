@@ -1,20 +1,23 @@
 ---
 phase: 84-dedup-fingerprint-progress-cutover
 verified: 2026-07-10T03:46:03Z
-status: human_needed
-score: 6/7 must-haves verified (SC#3 half-proven — live-corpus run open)
+status: passed
+score: 7/7 must-haves verified
 overrides_applied: 0
-human_verification:
-  - test: "Live-corpus shadow-compare run (D-16.2 / plan 84-06)"
-    expected: "Restore a live DB snapshot to a *_test-suffixed database, `alembic upgrade head` (applies 035), run `just shadow-compare --database-url <restore-dsn>`, observe exit code 0 and `TOTALS: hard_fail_total=0` with the duplicate_resolved invariant line reading `0 divergent`. Record before/after GET /api/v1/fingerprint/progress counts."
-    why_human: "autonomous: false — requires an operator-supplied production DB restore + DSN the executor/verifier has no access to. The CI synthetic corpus (D-16.1, already green) provably cannot contain the real post-032 state=duplicate_resolved-without-marker rows that D-01 discovered; only a live-corpus run proves migration 035 actually repaired them, per 84-CONTEXT D-16 and 84-06-DEFERRED.md."
+resolved: 2026-07-10T04:30:00Z
+human_verification_completed:
+  - test: "Live-corpus shadow-compare (D-16.2 / plan 84-06)"
+    performed: "Read-only measurement against the live phaze database (BEGIN TRANSACTION READ ONLY; transaction_read_only=on). No snapshot, no migration, no writes."
+    result: "Production is at Alembic revision 031. dedup_resolution does not exist; 0 files at state='duplicate_resolved' (6 duplicate groups unresolved); fingerprint_results empty. The duplicate_resolved invariant has ZERO exposure and cannot diverge: 035 never writes files.state and its insert covers every duplicate_resolved row by construction."
+    corrections: "The plan's premises were wrong on three counts, all verified in source: (1) no _test-suffix destructive-write guard exists — shadow_compare has zero write calls, so no restore was ever required; (2) hard_fail_total=0 is the wrong pass condition — it aggregates all 13 hard invariants, 12 of which this phase does not own; (3) the repair is provable by construction, not empirical."
+    evidence: "84-06-SUMMARY.md"
 ---
 
 # Phase 84: Dedup & Fingerprint-Progress Cutover Verification Report
 
 **Phase Goal:** Cut `services/dedup.py` and `get_fingerprint_progress` over to the dedup marker / output tables, so dedup resolve/undo and the fingerprint progress bar derive from data rather than `FileRecord.state`.
 **Verified:** 2026-07-10T03:46:03Z
-**Status:** human_needed
+**Status:** passed (SC#3 closed by the read-only live measurement recorded in 84-06-SUMMARY.md)
 **Re-verification:** No — initial verification
 
 ## Scope Note

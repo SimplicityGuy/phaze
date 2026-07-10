@@ -107,6 +107,18 @@ operator resolve one of the 6 waiting duplicate groups, stamping `state = 'dupli
 no marker — reintroducing D-01 exactly. Phases 77–84 are all unreleased, so shipping them together
 satisfies this; do not cherry-pick `032` ahead.
 
+**Status: satisfied structurally** (operator, 2026-07-10). Nothing deploys to production except via a
+tagged release, and no release will be tagged before Phase 84 merges. `032` and Phase 84 therefore land
+in the same image, so the marker table can never exist in production without its writer. The constraint
+requires no further action — it is recorded here so a future cherry-pick or hotfix does not violate it.
+
+**Deploy-time expectation for that first release:** it will apply `032`, `033`, `034`, `035` in one
+`alembic upgrade head`. `032` backfills `analysis_results` for the 1050 `analyzed` + 429
+`analysis_failed` files and gap-fills `cloud_job`; `035` is a no-op (0 rows both halves). Re-run
+`just shadow-compare` afterwards and expect `hard_fail_total = 0` per the prediction table above.
+That run is a **deploy checklist item, not a merge blocker** — it cannot regress the `duplicate_resolved`
+invariant, which has zero exposure.
+
 ## Method note
 
 No DSN, password, or connection string appears in this report, in the transcript, or in any commit.

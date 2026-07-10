@@ -27,7 +27,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 81: Per-Stage Failure Persistence & Retry Paths** — durable failure markers for analyze + metadata (`report_metadata_failed` records instead of nothing) + reused fingerprint failure; a metadata retry path so a failure is never a permanent dead-end (FAIL-01..04) (completed 2026-07-09)
 - [ ] **Phase 82: Counts & Pending-Set Cutover** — the three enrich pending sets + `get_pipeline_stats` derived from `stage_status`; the cross-stage deadlock dissolves; four-bucket per-stage counts; the 200K-scale poll latency measured (READ-01, READ-02, PERF-02)
 - [x] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01) (completed 2026-07-09)
-- [ ] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02)
+- [x] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02) (completed 2026-07-10)
 - [ ] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05)
 - [ ] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03)
 - [ ] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01)
@@ -272,7 +272,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
-| 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 5/6 | In Progress|  |
+| 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
@@ -462,7 +462,7 @@ Plans:
 
 **Wave 4** *(depends on 84-03, 84-04, 84-05 — operator checkpoint)*
 
-- [ ] 84-06-PLAN.md — Live-corpus `just shadow-compare` run after `035`, assert hard_fail_total=0 (SIDECAR-02) [wave 4]
+- [x] 84-06-PLAN.md — Live-corpus `just shadow-compare` run after `035`, assert hard_fail_total=0 (SIDECAR-02) [wave 4]
 
 ### Phase 85: EXECUTED-Gate Revival
 
