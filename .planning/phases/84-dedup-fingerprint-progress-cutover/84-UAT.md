@@ -1,5 +1,6 @@
 ---
 status: complete
+resolution: 3/3 gaps closed (2 fixed in 74f1f12f, 1 corrected in 7a7dc138 + backlog item)
 phase: 84-dedup-fingerprint-progress-cutover
 source: [84-01-SUMMARY.md, 84-02-SUMMARY.md, 84-03-SUMMARY.md, 84-04-SUMMARY.md, 84-05-SUMMARY.md, 84-06-SUMMARY.md]
 started: 2026-07-10
@@ -40,13 +41,13 @@ evidence: |
 
 ### 4. Resolving a duplicate group persists the marker and the state
 expected: `POST /duplicates/{hash}/resolve` writes one `dedup_resolution` row (`canonical_file_id` = the operator's pick) and dual-writes `files.state = 'duplicate_resolved'`. Reloading the page no longer shows the group.
-result: issue
+result: issue -> FIXED (74f1f12f), retested pass
 reported: "POST returns HTTP 200 and the HTMX partial reports the group resolved, but the database has 0 markers and 0 duplicate_resolved files. A fresh page load still lists the group."
 severity: blocker
 
 ### 5. Undo restores previous state and deletes the marker
 expected: `POST /duplicates/{hash}/undo` DELETEs the marker and restores `previous_state` for the returned ids.
-result: issue
+result: issue -> FIXED (74f1f12f), retested pass
 reported: "POST returns HTTP 200 but the marker and the duplicate_resolved state are both unchanged. Same root cause as test 4."
 severity: blocker
 
@@ -65,7 +66,7 @@ evidence: "Second `upgrade head` was a no-op; `dedup_resolution` still holds exa
 
 ### 8. Post-deploy shadow-compare prediction holds on the real corpus
 expected: Per `84-06-SUMMARY.md`, the first release carrying `032`–`035` should yield `hard_fail_total = 0`, because `032` backfills the analyze rows for the 1050 `analyzed` and 429 `analysis_failed` files.
-result: issue
+result: issue -> CORRECTED (7a7dc138) + backlog item
 reported: "The prediction is wrong. The analyze stage is backed by table `analysis` (not `analysis_results`, which does not exist). `done_clause(ANALYZE)` requires `analysis.analysis_completed_at IS NOT NULL`, and 1001 of the 1050 production `analyzed` files have that column NULL. Nothing in 032-035 backfills it (032 backfills `analysis.failed_at` only). So `hard_fail_total` will be ~1001, not 0, and `just shadow-compare` will exit 1 on the first deploy."
 severity: major
 
@@ -124,3 +125,23 @@ claim is false. It is the third fabricated fact found in this phase's artifacts,
 `_test`-suffix destructive-write guard and the `analysis_results` table name.
 
 The UAT database `phaze_uat_test` (port 5433) is left in place for fix verification.
+
+
+---
+
+## Resolution (2026-07-10)
+
+| Gap | Disposition |
+|-----|-------------|
+| Test 4 — resolve never persists | **Fixed** `74f1f12f`: `await session.commit()` added to all four write endpoints. Retested end-to-end against a live app: marker written with the operator's canonical, state dual-written, group leaves the page. |
+| Test 5 — undo never persists | **Fixed** in the same commit. Retested: marker DELETEd, `previous_state` restored, `shadow-compare` still `hard_fail_total=0`. |
+| Test 8 — post-deploy prediction wrong | **Corrected** `7a7dc138` in `84-06-SUMMARY.md`. Backlog item filed: `.planning/todos/pending/analysis-completed-at-backfill.md`. Owner: milestone / Phase 79 follow-up. |
+
+**Regression tests** (`tests/review/routers/test_duplicates.py`): two HTTP-level tests that assert
+persistence from an **independent session**, which sees only committed data. Mutation-verified —
+removing the four commits turns both RED while the 10 pre-existing router tests stay GREEN. That
+contrast is the finding: `tests/conftest.py:216` overrides `get_session` with the test's own session,
+so every existing test read uncommitted rows from inside the same transaction.
+
+Suite after fix: review 423, integration 183, shared 1010, discovery 204, fingerprint 82 — all green.
+`ruff` and `mypy` clean.
