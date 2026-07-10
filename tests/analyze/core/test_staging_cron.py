@@ -162,6 +162,18 @@ async def _states_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.
     return {r.id: r.state for r in rows}
 
 
+async def _seed_awaiting_rows(session: AsyncSession, files: list[FileRecord]) -> None:
+    """Give each held AWAITING_CLOUD file its ``cloud_job(status='awaiting')`` sidecar row (Phase 83, D-05).
+
+    The sidecar drain (``get_cloud_staging_candidates``) no longer reads ``FileRecord.state`` (SC#1); it
+    INNER-joins ``cloud_job`` on ``status='awaiting'``. A bare ``state`` write is therefore no longer a drain
+    candidate -- the go-forward writer (``hold_awaiting_cloud``) + migration 034 give every held file this row.
+    """
+    for f in files:
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=CloudJobStatus.AWAITING.value))
+    await session.commit()
+
+
 async def _seed_in_flight(
     session: AsyncSession,
     *,
@@ -221,6 +233,7 @@ async def test_one_free_slot_stages_one(async_engine: AsyncEngine, session: Asyn
     held = [_make_file() for _ in range(3)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -277,6 +290,7 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     held = [_make_file() for _ in range(3)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -313,6 +327,7 @@ async def test_fileserver_vanishes_mid_tick_holds_cleanly(
     held = [_make_file() for _ in range(2)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     # Simulate the mid-tick revocation: backends.select_active_agent (called INSIDE dispatch) raises for
@@ -404,6 +419,7 @@ async def test_cloud_compute_stages_normally(async_engine: AsyncEngine, session:
     held = [_make_file() for _ in range(3)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -448,6 +464,7 @@ async def test_k8s_branch_skips_compute_gate_and_stages_to_s3(
     held = [_make_file() for _ in range(3)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -476,6 +493,7 @@ async def test_k8s_branch_holds_with_no_fileserver(
     held = [_make_file() for _ in range(3)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -532,6 +550,7 @@ async def test_fifo_oldest_awaiting_cloud_first(async_engine: AsyncEngine, sessi
     # Insert out of order to prove the ORDER BY (not insertion order) drives selection.
     session.add_all([newest, oldest, middle])
     await session.commit()
+    await _seed_awaiting_rows(session, [newest, oldest, middle])
 
     router = DedupFakeTaskRouter()
     result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
@@ -555,6 +574,7 @@ async def test_backlog_of_144_stages_at_most_n(async_engine: AsyncEngine, sessio
     backlog = [_make_file() for _ in range(144)]
     session.add_all(backlog)
     await session.commit()
+    await _seed_awaiting_rows(session, backlog)
     ids = [f.id for f in backlog]
 
     router = DedupFakeTaskRouter()
@@ -616,6 +636,7 @@ async def test_double_tick_dedups_via_deterministic_key(async_engine: AsyncEngin
     session.add(f)
     await session.commit()
     fid = f.id
+    await _seed_awaiting_rows(session, [f])  # Phase 83: the held file carries its awaiting sidecar row
 
     router = DedupFakeTaskRouter()
     # Pre-enqueue the deterministic key on the fileserver queue so the cron's enqueue dedups to None.
@@ -798,6 +819,7 @@ async def test_multi_backend_tick_dispatches_rank_first_and_spills(
     fourth = _make_file(created_at=base + timedelta(hours=3))
     session.add_all([fourth, oldest, third, second])  # insert out of order -- ORDER BY created_at drives it
     await session.commit()
+    await _seed_awaiting_rows(session, [fourth, oldest, third, second])
     oldest_id, second_id, third_id, fourth_id = oldest.id, second.id, third.id, fourth.id  # capture before the drain expires the objects
 
     router = DedupFakeTaskRouter()
@@ -810,8 +832,9 @@ async def test_multi_backend_tick_dispatches_rank_first_and_spills(
     # Spill: compute-a's cap=1 is full within the tick, so the next two land on compute-b (rank 20).
     assert backend_ids[second_id] == "compute-b"
     assert backend_ids[third_id] == "compute-b"
-    # Beyond total capacity (1+2=3): the 4th candidate is never fetched and stays AWAITING_CLOUD.
-    assert fourth_id not in backend_ids
+    # Beyond total capacity (1+2=3): the 4th candidate is never fetched -- its awaiting cloud_job row is
+    # retained (D-05 no-deletion) with backend_id still NULL (never dispatched), and it stays AWAITING_CLOUD.
+    assert backend_ids[fourth_id] is None
     assert (await _states_for(session, [fourth_id]))[fourth_id] == FileState.AWAITING_CLOUD
 
 
@@ -875,14 +898,16 @@ async def test_held_awaiting_untouched_keeps_updated_at(
     _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")  # single compute-1 backend; NO local
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    # A parked file whose cloud budget is spent: its terminal (FAILED) cloud_job holds attempts == max (3),
-    # so it is NOT in-flight (remaining stays 2) yet select_backend excludes it from cloud and finds no local.
+    # A parked file whose cloud budget is spent: post Phase-83 (D-03) a spilled row is re-stamped to
+    # status='awaiting' (NOT terminal FAILED) while retaining attempts == max (3) as the budget-spent
+    # marker. 'awaiting' is out of IN_FLIGHT so remaining stays 2, yet select_backend excludes it from
+    # cloud (attempts exhausted) and finds no local -> a clean per-candidate hold.
     f = _make_file()
     f.updated_at = datetime.now() - timedelta(hours=5)  # backdated entry timestamp (naive, matches the column)
     session.add(f)
     await session.commit()
     fid = f.id
-    session.add(CloudJob(id=uuid.uuid4(), file_id=fid, backend_id="compute-1", s3_key=None, status=CloudJobStatus.FAILED.value, attempts=3))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=fid, backend_id="compute-1", s3_key=None, status=CloudJobStatus.AWAITING.value, attempts=3))
     await session.commit()
 
     session.expire_all()
@@ -897,10 +922,10 @@ async def test_held_awaiting_untouched_keeps_updated_at(
     after = (await session.execute(select(FileRecord.updated_at).where(FileRecord.id == fid))).scalar_one()
     assert after == before, "a held AWAITING_CLOUD row must not be UPDATE-dirtied (updated_at is the staleness clock)"
     assert (await _states_for(session, [fid]))[fid] == FileState.AWAITING_CLOUD
-    # The drain never touched the cloud_job either -- attempts stays 3, status stays FAILED.
+    # The drain never touched the cloud_job either -- attempts stays 3, status stays awaiting.
     cj = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
     assert cj.attempts == 3
-    assert cj.status == CloudJobStatus.FAILED.value
+    assert cj.status == CloudJobStatus.AWAITING.value
 
 
 # --- CR-01 (SCHED-01/03): a file spilled to local is NOT re-dispatched to cloud on a later tick ---
@@ -915,17 +940,18 @@ async def test_local_spill_not_redispatched_to_cloud(
     """CR-01 verifier scenario: spill-to-local then cloud-frees -> the file is NOT re-dispatched to cloud.
 
     Registry: compute-1 (rank 10) + local (rank 99). Tick 1 runs with the compute agent OFFLINE, so the
-    sole AWAITING_CLOUD file spills to local immediately (D-03 offline->local, not staleness-gated) and
-    LocalBackend.dispatch flips it to LOCAL_ANALYZING -- removing it from the AWAITING_CLOUD candidate set.
-    Tick 2 brings the compute agent ONLINE with a free slot; because the file is no longer AWAITING_CLOUD
-    it is NOT a drain candidate, so it stays LOCAL_ANALYZING and grows NO cloud_job row (no cross-backend
+    sole held file spills to local immediately (D-03 offline->local, not staleness-gated) and
+    LocalBackend.dispatch flips it to LOCAL_ANALYZING. Post Phase-83 the drain excludes it on tick 2 via
+    ``~inflight_clause(ANALYZE)`` -- its committed ``process_file:<id>`` ledger row (the before_enqueue
+    hook's own write, seeded here since the DedupFakeQueue does not run that hook), NOT the retired
+    ``FileRecord.state`` read. Its ``cloud_job(status='awaiting')`` row is RETAINED (D-05 rejects deletion;
+    the D-14 reaper clears it at the analyze-terminal seam, not the drain). Tick 2 brings the compute agent
+    ONLINE with a free slot; the file must NOT be re-selected / cloud-dispatched (no cross-backend
     double-dispatch, no stranded SUBMITTED compute cloud_job / leaked cap slot).
 
-    Before the CR-01 fix (RED): tick 1 leaves the file in AWAITING_CLOUD, so tick 2 re-selects it and
-    dispatches it to the freed compute backend (PUSHING + a cloud_job row) -- the exact double-dispatch.
+    Before the cutover (RED): the ledger conjunct absent, tick 2 re-selects the still-awaiting file and
+    dispatches it to the freed compute backend (PUSHING + a promoted cloud_job row) -- the exact double-dispatch.
     """
-    from sqlalchemy import func
-
     _patch_multi_backends(
         monkeypatch,
         [
@@ -941,22 +967,31 @@ async def test_local_spill_not_redispatched_to_cloud(
     session.add(f)
     await session.commit()
     fid = f.id
+    await _seed_awaiting_rows(session, [f])  # the held file carries its awaiting sidecar row (Phase 83)
 
     router = DedupFakeTaskRouter()
     result1 = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
 
-    # The file spilled to local: dispatched exactly once, now LOCAL_ANALYZING (off the AWAITING_CLOUD set).
+    # The file spilled to local: dispatched exactly once, now LOCAL_ANALYZING.
     assert result1 == {"staged": 1, "skipped": 0}
     assert (await _states_for(session, [fid]))[fid] == FileState.LOCAL_ANALYZING
+    # Seed the committed process_file:<id> ledger row the before_enqueue hook would have written (the
+    # DedupFakeQueue does not run that hook) -- the ~inflight_clause fact that excludes it on tick 2.
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    session.add(SchedulingLedger(key=f"process_file:{fid}", function="process_file", routing="agent", payload={"file_id": str(fid)}))
+    await session.commit()
 
     # Tick 2: the compute agent comes online with a free slot -- a would-be cloud re-dispatch opportunity.
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     result2 = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
 
-    # No candidate remains (the file left AWAITING_CLOUD): it is untouched, still LOCAL_ANALYZING.
+    # No candidate remains (~inflight_clause excludes the locally-dispatched file): still LOCAL_ANALYZING.
     assert result2 == {"staged": 0, "skipped": 0}
     assert (await _states_for(session, [fid]))[fid] == FileState.LOCAL_ANALYZING
-    # And it grew NO cloud_job row -- no cross-backend double-dispatch, no leaked compute cap slot.
+    # It grew no COMPUTE cloud_job row -- its awaiting row is retained (D-05 no-deletion), never promoted
+    # to a compute SUBMITTED row (no cross-backend double-dispatch, no leaked compute cap slot).
     session.expire_all()
-    cloud_job_count = int((await session.execute(select(func.count(CloudJob.id)).where(CloudJob.file_id == fid))).scalar() or 0)
-    assert cloud_job_count == 0
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    assert row.status == CloudJobStatus.AWAITING.value  # retained awaiting row, never a promoted compute row
+    assert row.backend_id is None  # never dispatched to compute (no backend_id stamp)

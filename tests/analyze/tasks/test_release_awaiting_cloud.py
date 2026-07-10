@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -82,7 +82,10 @@ class _StubBackend:
         if self._raise_on == "dispatch_noagent":
             raise NoActiveAgentError("fileserver")
         file.state = FileState.PUSHING
-        session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, backend_id=self.id, s3_key=None, status=CloudJobStatus.SUBMITTED.value))
+        # Post Phase-83 the held file already carries an awaiting cloud_job row (the sidecar drain's INNER
+        # join requires it), so PROMOTE it (mirrors ComputeAgentBackend/KueueBackend's on_conflict_do_update)
+        # rather than INSERTing a second row -- a fresh INSERT would violate uq_cloud_job_file_id.
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id, status=CloudJobStatus.SUBMITTED.value))
         return True
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:  # noqa: ARG002
@@ -133,6 +136,17 @@ def _make_file() -> FileRecord:
     )
 
 
+async def _seed_awaiting_rows(session: AsyncSession, files: list[FileRecord]) -> None:
+    """Give each held AWAITING_CLOUD file its ``cloud_job(status='awaiting')`` sidecar row (Phase 83, D-05).
+
+    The sidecar drain (``get_cloud_staging_candidates``) INNER-joins ``cloud_job`` on ``status='awaiting'``
+    (SC#1: no ``FileRecord.state`` read), so a bare ``state`` write is no longer a drain candidate.
+    """
+    for f in files:
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=CloudJobStatus.AWAITING.value))
+    await session.commit()
+
+
 async def _states_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
     session.expire_all()
     rows = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
@@ -168,6 +182,7 @@ async def test_stage_cloud_window_isolation_is_available_raise_does_not_poison_t
     held = [_make_file() for _ in range(2)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -201,6 +216,7 @@ async def test_stage_cloud_window_isolation_in_flight_count_raise_treats_backend
     held = [_make_file() for _ in range(2)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -236,6 +252,7 @@ async def test_mcomp05_flaky_compute_backend_degrades_to_zero_slots_healthy_comp
     held = [_make_file() for _ in range(2)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -273,6 +290,7 @@ async def test_stage_cloud_window_isolation_generic_dispatch_raise_holds_candida
     held = [_make_file() for _ in range(2)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -284,7 +302,9 @@ async def test_stage_cloud_window_isolation_generic_dispatch_raise_holds_candida
     assert raiser.dispatch_calls == 2
     # Both files stay AWAITING_CLOUD and grow NO cloud_job row (the raising path mutated nothing).
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
-    assert await _backend_ids_for(session, ids) == {}
+    # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
+    # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
+    assert set((await _backend_ids_for(session, ids)).values()) == {None}
 
 
 # --- Preserved semantics: a dispatch NoActiveAgentError holds ALL remaining + BREAKS -----------
@@ -309,6 +329,7 @@ async def test_stage_cloud_window_isolation_dispatch_noactiveagent_holds_all_and
     held = [_make_file() for _ in range(2)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     router = DedupFakeTaskRouter()
@@ -318,7 +339,9 @@ async def test_stage_cloud_window_isolation_dispatch_noactiveagent_holds_all_and
     # BREAK semantics: the fileserver-vanish path holds ALL remaining after ONE failing dispatch.
     assert vanish.dispatch_calls == 1
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
-    assert await _backend_ids_for(session, ids) == {}
+    # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
+    # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
+    assert set((await _backend_ids_for(session, ids)).values()) == {None}
 
 
 # --- CR-02: an unexpected raise (poisoned txn) is caught by the tick safety net (cron NEVER raises) ---
@@ -345,6 +368,7 @@ async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
     held = [_make_file() for _ in range(2)]
     session.add_all(held)
     await session.commit()
+    await _seed_awaiting_rows(session, held)
     ids = [f.id for f in held]
 
     # Force an unexpected raise from the loop body OUTSIDE the per-candidate dispatch try.
@@ -361,4 +385,6 @@ async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
     assert healthy.dispatch_calls == 0  # the raise fired before any dispatch was attempted
     # Whole tick rolled back: no file flipped AWAITING_CLOUD -> PUSHING, no cloud_job row written.
     assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
-    assert await _backend_ids_for(session, ids) == {}
+    # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
+    # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
+    assert set((await _backend_ids_for(session, ids)).values()) == {None}

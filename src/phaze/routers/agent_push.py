@@ -48,7 +48,7 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file
-from phaze.services.backends import resolve_compute_backend
+from phaze.services.backends import hold_awaiting_cloud, resolve_compute_backend
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
@@ -112,38 +112,44 @@ async def report_pushed(
     agent_ref = cast("str", backend.agent_ref)
     scratch_dir = cast("str", backend.scratch_dir)
 
-    # One transaction: PUSHING -> PUSHED, clear the push ledger row, enqueue compute analysis.
-    # WR-02: guard the transition on the CURRENT state being PUSHING so a duplicate/late callback
-    # (e.g. a push_file SAQ retry after its first callback already committed) is an idempotent no-op
-    # instead of clobbering an already-advanced file (ANALYZED/...) back to PUSHED and re-enqueuing
-    # process_file against a scratch copy the first run already deleted (which would re-trigger the
-    # CR-01 stranding). Only when the row actually transitioned do we clear the ledger + enqueue.
-    # An UPDATE returns a CursorResult at runtime (exposing rowcount); the async stubs type it as
+    # One transaction: terminalize compute's cloud_job row + PUSHING -> PUSHED dual-write, clear the push
+    # ledger row, enqueue compute analysis.
+    # SC#1/D-12: the CAS anchor is cloud_job.status == 'submitted' (compute's single in-flight status), NOT
+    # FileRecord.state == PUSHING -- collapsing the guard onto the sidecar as the single CAS domain and
+    # removing the last FileRecord.state ROUTING read here before Phase 90 drops the column. This single CAS
+    # replaces BOTH the old FileRecord PUSHING->PUSHED guard AND the unconditional cloud_job SUCCEEDED write:
+    # it terminalizes compute's row SUBMITTED->SUCCEEDED (D-08), draining it from the D-10 in-flight set so
+    # in_flight_count(compute) stays honest as the file advances (Phase 69, D-05). Anchoring on the
+    # 'submitted' literal is safe even though kueue's lifecycle also transits SUBMITTED: resolve_compute_backend
+    # returns None for a kueue backend_id and the handler already returned the 200 hold above, so a kueue file
+    # never reaches this CAS -- no defensive backend-kind check is added (D-12). WR-02: a duplicate/late /pushed
+    # (a push_file SAQ retry after its first callback committed) whose cloud_job already advanced past
+    # 'submitted' matches 0 rows -> idempotent no-op: NO FileRecord write, NO ledger clear, NO second
+    # process_file enqueue (which would clobber an already-ANALYZED file to PUSHED and re-trigger CR-01
+    # stranding). An UPDATE returns a CursorResult at runtime (exposing rowcount); the async stubs type it as
     # the base Result, so cast to read the affected-row count (mirrors services/scan_deletion.py).
     res = cast(
         "CursorResult[Any]",
         await session.execute(
-            update(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.PUSHING).values(state=FileState.PUSHED)
+            update(CloudJob)
+            .where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.SUBMITTED.value)
+            .values(status=CloudJobStatus.SUCCEEDED.value)
         ),
     )
     if res.rowcount == 0:
-        # Already advanced past PUSHING: a clean idempotent 200, no ledger clear, no re-enqueue.
+        # Already advanced past 'submitted': a clean idempotent 200, no ledger clear, no re-enqueue.
         await session.commit()
         logger.info(
-            "report_pushed: idempotent no-op (file no longer PUSHING)",
+            "report_pushed: idempotent no-op (cloud_job no longer 'submitted')",
             file_id=str(file_id),
             agent_id=agent.id,
         )
         return PushedResponse(file_id=file_id)
+    # rowcount != 0: gate the FileRecord dual-write (D-00c -- a PLAIN write, NOT a state == PUSHING predicate,
+    # which would re-introduce the FileRecord.state routing read SC#1 removes) + ledger clear + process_file
+    # enqueue behind the cloud_job CAS.
+    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.PUSHED))
     await clear_ledger_entry(session, f"push_file:{file_id}")
-
-    # D-08: terminalize compute's cloud_job row (SUBMITTED -> SUCCEEDED) in the SAME transaction as the
-    # PUSHING -> PUSHED flip. ComputeAgentBackend.dispatch wrote this row (backend_id set, s3_key NULL,
-    # SUBMITTED) when the file was staged; the /pushed callback is compute's reconcile path (§4.2), so
-    # terminalizing it here drains in_flight_count(compute) so the file leaves the backend's per-backend
-    # in-flight window as its FileState flips (Phase 69, D-05). Gated behind the WR-02 rowcount != 0
-    # guard above -- a duplicate/late callback (rowcount == 0) returned early and writes NOTHING here.
-    await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
 
     # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
     # transitional settings.active_compute_scratch_dir reduction accessor was DELETED in Phase 73
@@ -189,10 +195,13 @@ async def report_push_mismatch(
     The ``push_attempt`` counter lives in the ``push_file:<file_id>`` ledger payload JSONB
     (migration-free, Pitfall 4). Read it (default 0) and increment:
 
-    - ``attempt + 1 > push_max_attempts`` -> SPILL to ``FileState.AWAITING_CLOUD`` + cloud_job FAILED
-      with ``attempts`` marked spent + ``clear_ledger_entry`` in one transaction (Phase 69, SCHED-03/D-04):
-      the file falls to local on the next drain tick instead of re-pushing forever (T-50-loop). The
-      terminal ``ANALYSIS_FAILED`` now comes only from a local analysis failure.
+    - ``attempt + 1 > push_max_attempts`` -> SPILL to ``FileState.AWAITING_CLOUD`` via a CAS on
+      ``cloud_job.status == 'submitted'`` (SC#1/D-12: the sidecar is the single CAS domain, no
+      ``FileRecord.state`` routing read) that re-stamps the row ``submitted -> awaiting`` with ``attempts``
+      marked spent (D-03), + ``clear_ledger_entry`` in one transaction (Phase 69, SCHED-03/D-04): the file
+      falls to local on the next drain tick instead of re-pushing forever (T-50-loop). The terminal
+      ``ANALYSIS_FAILED`` now comes only from a local analysis failure. A late/duplicate /mismatch on a
+      file whose cloud_job already advanced past ``submitted`` matches 0 rows and cannot clobber it.
     - otherwise -> re-enqueue ``push_file`` on the FILESERVER queue (the rsync initiator) keeping
       the file ``PUSHING`` (the slot is retained, Open-Q1), and stamp the incremented
       ``push_attempt`` back onto the ledger row. The deterministic ``push_file:<id>`` key dedups a
@@ -250,41 +259,55 @@ async def report_push_mismatch(
         # Spill the file back to AWAITING_CLOUD so the next release_awaiting_cloud drain tick can route it
         # to a lower-rank backend -- and, because this backend's cloud budget is now exhausted, to LOCAL.
         # ANALYSIS_FAILED comes ONLY from a local analysis failure; every cloud-failure path spills to local.
-        # CR-01 (WR-02-symmetric CAS guard): gate the spill on the CURRENT state being PUSHING, exactly like
-        # /pushed's PUSHING->PUSHED transition. A duplicate/late /mismatch (SAQ retry, or a stale/removed-backend
-        # reporter that skipped the D-07 gate) must NOT clobber a file that has already advanced past PUSHING
-        # (ANALYZED/PROPOSED/EXECUTED/...) back to AWAITING_CLOUD -- that reintroduces the exact stranding the
-        # /pushed guard prevents. Only a file genuinely still PUSHING may be spilled.
-        res = cast(
-            "CursorResult[Any]",
-            await session.execute(
-                update(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.PUSHING).values(state=FileState.AWAITING_CLOUD)
-            ),
+        #
+        # SC#1/D-12 anchor swap: the CAS guard now keys on cloud_job.status == 'submitted' (compute's single
+        # in-flight status), NOT FileRecord.state == PUSHING -- collapsing the guard onto the sidecar as the
+        # single CAS domain and removing the last FileRecord.state ROUTING read before Phase 90 drops the
+        # column. D-03: this SAME CAS re-stamps the row submitted -> awaiting (was a separate FAILED write) so
+        # the hard shadow invariant AWAITING_CLOUD => status='awaiting' holds, keeping attempts SPENT
+        # (>= cloud_submit_max_attempts) so select_backend excludes cloud and routes the file to local (D-04).
+        # A duplicate/late /mismatch (SAQ retry) -- or a stale/removed-backend reporter that skipped the D-07
+        # gate -- on a file whose cloud_job already advanced past 'submitted' (SUCCEEDED/RUNNING/reaped) matches
+        # 0 rows and CANNOT clobber it back to AWAITING_CLOUD (T-83-PUSH-CLOBBER).
+        #
+        # D-01/D-02: route the spill re-stamp through the SINGLE awaiting writer
+        # (services.backends.hold_awaiting_cloud) instead of an inline CAS. Its spill branch keys on
+        # expect_status=('submitted',) and re-stamps submitted -> awaiting with attempts SPENT (D-03),
+        # returning False (a full no-op) on the 0-row advanced-file case. NO clear_cloud_phase: the push
+        # spill must NOT touch cloud_phase (D-12 -- only the s3 spill clears it).
+        #
+        # NULL-GUARD: the helper's CAS dereferences file.id, so load the FileRecord (none is loaded in this
+        # branch today). An absent file (unreachable in practice -- cloud_job.file_id FKs files.id) takes the
+        # FULL no-op below (cleared=False), identical to a CAS miss; passing None would raise AttributeError
+        # where the old disconnected update(FileRecord) silently matched 0 rows. No 404 here: the over-cap
+        # spill is an agent callback and a 404 would change the response contract.
+        file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+        cleared = file is not None and await hold_awaiting_cloud(
+            session,
+            file,
+            attempts=settings.cloud_submit_max_attempts,
+            expect_status=(CloudJobStatus.SUBMITTED.value,),
         )
-        if res.rowcount == 0:
-            # Already advanced past PUSHING: idempotent no-op. No cloud_job terminalization, no ledger clear.
+        if not cleared:
+            # cloud_job no longer 'submitted' (already advanced, reaped, or a non-compute file with no row):
+            # idempotent FULL no-op. No cloud_job write, no FileRecord write, no ledger clear.
             await session.commit()
             logger.info(
-                "report_push_mismatch: idempotent no-op (file no longer PUSHING, over-cap spill skipped)",
+                "report_push_mismatch: idempotent no-op (cloud_job no longer 'submitted', over-cap spill skipped)",
                 file_id=str(file_id),
                 agent_id=agent.id,
             )
             return PushMismatchResponse(file_id=file_id, cleared=False)
-        # Terminalize compute's cloud_job row (SUBMITTED -> FAILED) in the SAME transaction, mirroring the
-        # /pushed success path (SUCCEEDED at L127): FAILED drains the row from the D-10 in-flight set so
-        # in_flight_count(compute) stays honest and the backend's cap slot is released (Phase 69, D-05).
-        # Mark the total-cloud budget SPENT (attempts >= cloud_submit_max_attempts): select_backend reads
-        # cloud_job.attempts to exclude cloud, so this stamp forces the next drain tick onto local (D-04).
-        # A no-op for non-compute files (no cloud_job row -> 0 rows affected) and idempotent.
-        await session.execute(
-            update(CloudJob)
-            .where(CloudJob.file_id == file_id)
-            .values(status=CloudJobStatus.FAILED.value, attempts=settings.cloud_submit_max_attempts)
-        )
+        # cleared (helper CAS hit): gate the FileRecord dual-write (D-00c -- a PLAIN write, NOT a state == PUSHING
+        # predicate, which would re-introduce the FileRecord.state routing read SC#1 removes) + the ledger
+        # clear behind the cloud_job CAS. The submitted -> awaiting re-stamp above already drained the row
+        # from the D-10 in-flight set so in_flight_count(compute) stays honest and the backend's cap slot is
+        # released (Phase 69, D-05); 'awaiting' is not in IN_FLIGHT (D-03).
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
         logger.warning(
-            "report_push_mismatch: push cap reached -> spill to AWAITING_CLOUD (routes to local)",
+            "report_push_mismatch: push cap reached -> cloud_job re-stamped to awaiting + spill to AWAITING_CLOUD (routes to local)",
             file_id=str(file_id),
             agent_id=agent.id,
             attempt=next_attempt,

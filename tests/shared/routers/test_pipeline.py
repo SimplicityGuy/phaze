@@ -633,6 +633,40 @@ async def test_analyze_ui_no_agents_surfaces_held_count(client: AsyncClient, ses
     assert capture == []
 
 
+@pytest.mark.asyncio
+async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: AsyncSession) -> None:
+    """D-15: get_awaiting_cloud_count counts EXACTLY the drain's genuinely-parked awaiting rows.
+
+    Re-anchored (Phase 83) off the retired ``FileRecord.state == AWAITING_CLOUD`` display read onto
+    ``COUNT(cloud_job) WHERE status='awaiting' AND ~inflight_clause(ANALYZE) AND
+    ~domain_completed_clause(ANALYZE)`` -- the SAME clause ``get_cloud_staging_candidates`` uses, so the
+    card and the drain can NEVER disagree. A LOCAL_ANALYZING long file that still carries its inert
+    awaiting row (D-13 keeps the flip; D-14 reaps the row at the analyze-terminal seam) is
+    analyze-in-flight, so it is excluded from BOTH the count and the drain candidate set.
+    """
+    from phaze.services.pipeline import get_awaiting_cloud_count, get_cloud_staging_candidates
+
+    # (1) A genuinely-parked awaiting file: awaiting row, no ledger, no analysis -> counted.
+    parked = _make_file(state=FileState.AWAITING_CLOUD)
+    # (2) A locally-dispatched long file: still carries its awaiting row (D-13) but is analyze-in-flight
+    #     (a committed process_file:<id> ledger row) -> excluded from the count AND the drain.
+    analyzing = _make_file(state=FileState.LOCAL_ANALYZING)
+    session.add_all([parked, analyzing])
+    await session.commit()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=parked.id, status=CloudJobStatus.AWAITING.value))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=analyzing.id, status=CloudJobStatus.AWAITING.value))
+    session.add(
+        SchedulingLedger(key=f"process_file:{analyzing.id}", function="process_file", routing="agent", payload={"file_id": str(analyzing.id)})
+    )
+    await session.commit()
+
+    # Only the genuinely-parked file is counted; the analyze-in-flight file is excluded.
+    assert await get_awaiting_cloud_count(session) == 1
+    # And the count agrees with the drain candidate set exactly (card and drain cannot disagree).
+    candidates = await get_cloud_staging_candidates(session, limit=10)
+    assert {f.id for f, _ in candidates} == {parked.id}
+
+
 # ---------------------------------------------------------------------------
 # Phase 49 Plan 03: POST /pipeline/backfill-cloud — "Backfill to cloud" action
 # (D-08/D-09/D-10). Selects EXACTLY the timed-out long files
@@ -1928,9 +1962,14 @@ async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession
 
 @pytest.mark.asyncio
 async def test_dashboard_renders_awaiting_cloud_card(client: AsyncClient, session: AsyncSession) -> None:
-    """The dashboard renders the AWAITING_CLOUD count in the #awaiting-cloud-card (D-05)."""
-    session.add_all([_make_file(state=FileState.AWAITING_CLOUD) for _ in range(3)])
+    """The dashboard renders the awaiting-cloud count in the #awaiting-cloud-card (Phase 83, D-15)."""
+    awaiting = [_make_file(state=FileState.AWAITING_CLOUD) for _ in range(3)]
+    session.add_all(awaiting)
     session.add(_make_file(state=FileState.DISCOVERED))
+    await session.commit()
+    # Phase 83: the card counts genuinely-parked cloud_job(status='awaiting') rows, not FileRecord.state.
+    for f in awaiting:
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=CloudJobStatus.AWAITING.value))
     await session.commit()
 
     response = await client.get("/s/analyze", headers={"HX-Request": "true"})
@@ -1949,7 +1988,12 @@ async def test_dashboard_renders_awaiting_cloud_card(client: AsyncClient, sessio
 @pytest.mark.asyncio
 async def test_stats_partial_emits_awaiting_cloud_card_oob(client: AsyncClient, session: AsyncSession) -> None:
     """The 5s /pipeline/stats poll re-pushes the awaiting-cloud card OUT-OF-BAND (hx-swap-oob)."""
-    session.add_all([_make_file(state=FileState.AWAITING_CLOUD) for _ in range(2)])
+    awaiting = [_make_file(state=FileState.AWAITING_CLOUD) for _ in range(2)]
+    session.add_all(awaiting)
+    await session.commit()
+    # Phase 83: the card counts genuinely-parked cloud_job(status='awaiting') rows, not FileRecord.state.
+    for f in awaiting:
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=CloudJobStatus.AWAITING.value))
     await session.commit()
 
     response = await client.get("/pipeline/stats")

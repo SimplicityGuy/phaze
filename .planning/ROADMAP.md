@@ -26,7 +26,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [ ] **Phase 80: Recovery / Re-enqueue Cutover** — `reenqueue.py` + `reconcile_cloud_jobs.py` derive done/in-flight from `stage_status`/sidecars with no `FileRecord.state` read; deliberately **before** the pending-set/counts readers (double-negation dependency) (READ-03)
 - [x] **Phase 81: Per-Stage Failure Persistence & Retry Paths** — durable failure markers for analyze + metadata (`report_metadata_failed` records instead of nothing) + reused fingerprint failure; a metadata retry path so a failure is never a permanent dead-end (FAIL-01..04) (completed 2026-07-09)
 - [ ] **Phase 82: Counts & Pending-Set Cutover** — the three enrich pending sets + `get_pipeline_stats` derived from `stage_status`; the cross-stage deadlock dissolves; four-bucket per-stage counts; the 200K-scale poll latency measured (READ-01, READ-02, PERF-02)
-- [ ] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01)
+- [x] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01) (completed 2026-07-09)
 - [ ] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02)
 - [ ] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05)
 - [ ] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03)
@@ -271,7 +271,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
-| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
@@ -408,7 +408,27 @@ Plans:
   2. `report_upload_failed` gains a CAS guard so a late/duplicate reporter can no longer clobber an already-advanced file (closes the `agent_s3.py:195` bug), proven by a regression test.
   3. The shadow-compare gate stays green and no double-dispatch / re-pick window is introduced (integration test).
 
-**Plans**: TBD
+**Plans**: 7 plans in 4 waves (1 gap-closure)
+Plans:
+**Wave 1**
+
+- [x] 83-01-PLAN.md — Shared `hold_awaiting_cloud()` writer helper (D-00a/b/c, D-01, D-02, D-03, D-13)
+- [x] 83-02-PLAN.md — Corpus-repair migration `034` + idempotent-backfill test (D-04)
+- [x] 83-03-PLAN.md — D-14 inert awaiting-row reaper at the two analyze-terminal seams
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 83-04-PLAN.md — Callback CAS collapse: `report_upload_failed` + `report_push_mismatch` (D-09/D-10/D-11/D-12/D-03, SC#2)
+- [x] 83-05-PLAN.md — Go-forward hold-path cutover + shadow-gate green (D-01, D-00d)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 83-06-PLAN.md — Drain-candidate reader cutover + count card + staleness clock + SC#3 HARD GATE (D-05/D-06/D-07/D-15)
+
+**Wave 4** *(gap closure — verification found 6/7 must-haves; closes the failed D-02 single-writer must-have / WR-03)*
+
+- [x] 83-07-PLAN.md — Consolidate the three awaiting writers into one CAS-preserving `hold_awaiting_cloud` + anti-drift source test (D-02, D-03, D-09/D-10/D-11/D-12)
+
 **Scope exclusion**: `tasks/reconcile_cloud_jobs.py` is owned by **Phase 80** (80-CONTEXT D-04) — its at-cap spill-back write is retired there, not here. This phase covers the sibling cloud-routing writers (`routers/agent_push.py`, `routers/pipeline.py`, `routers/agent_s3.py`) and the drain-candidate / dispatch reads.
 **Note (deps)**: Rewired off Phase 82 to break the `80 → 83 → 82 → 80` cycle. Phase 83 shares no requirement with 82 (pending sets / `get_pipeline_stats`); it needs the derivation layer (78), the shadow-compare gate (79), and the analyze failure marker (81) that `LOCAL_ANALYZING`-from-`in_flight(analyze)` and push-done-via-analyze-terminal both read. Because this phase now runs BEFORE 82 (the milestone thesis), its drain-re-pick hazard lands earlier — the integration test below is a hard gate, not a recommendation.
 **Note**: Flagged for phase-level research at plan-time — the `AWAITING_CLOUD`/`PUSHED` drain-re-pick hazard is the sharpest new-regression risk in the milestone (recommend a live/integration test before committing the drain-candidate query).

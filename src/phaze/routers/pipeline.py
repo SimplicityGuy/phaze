@@ -23,7 +23,7 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
-from phaze.services.backends import get_backend_lane_snapshot, resolved_non_local_kind
+from phaze.services.backends import get_backend_lane_snapshot, hold_awaiting_cloud, resolved_non_local_kind
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pipeline import (
     count_active_agents,
@@ -343,7 +343,12 @@ async def _route_discovered_by_duration(
         if is_long:
             # Phase 50 (CLOUDPIPE-01): ALWAYS hold -- no direct-to-compute path. The bounded
             # stage_cloud_window cron is the single, unbypassable entry to the compute pipeline.
-            file.state = FileState.AWAITING_CLOUD
+            # Phase 83 (D-01): hold via the shared writer so every go-forward hold carries its
+            # cloud_job(status='awaiting', attempts=0) sidecar row -- closing the missing-writer gap
+            # that violated the hard shadow invariant AWAITING_CLOUD => cloud_job(status='awaiting')
+            # on every held file since migration 032. The helper dual-writes file.state (D-00c) and
+            # NEVER commits; the existing post-loop commit below is the hold's own commit boundary.
+            await hold_awaiting_cloud(session, file)
             held += 1
         elif fileserver_agent is not None:
             local_files.append(file)

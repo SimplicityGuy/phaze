@@ -679,12 +679,17 @@ async def test_local_dispatch_flips_to_local_analyzing(session: AsyncSession) ->
 
 @pytest.mark.asyncio
 async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSession) -> None:
-    """CR-01: after a local dispatch the file is absent from ``get_cloud_staging_candidates`` (no re-selection).
+    """CR-01 / D-05: after a local dispatch the file is excluded from ``get_cloud_staging_candidates``.
 
-    ``get_cloud_staging_candidates`` (pipeline.py) selects ``state == AWAITING_CLOUD``; the state flip
-    performed by ``LocalBackend.dispatch`` is exactly what removes the file from that candidate set --
-    the missing link the Phase-69 verifier flagged (LocalBackend.dispatch -> get_cloud_staging_candidates).
+    Post Phase-83 the drain no longer reads ``FileRecord.state`` (SC#1): a candidate must carry a
+    ``cloud_job(status='awaiting')`` row (INNER join) AND not be analyze-in-flight. ``LocalBackend.dispatch``
+    writes NO cloud_job row and deletes none (D-05 rejects deletion -- the awaiting row is retained); the
+    committed ``process_file:<id>`` ledger row (the ``before_enqueue`` hook's own write, seeded here since
+    the DedupFakeQueue does not run that hook) is what makes ``~inflight_clause(ANALYZE)`` exclude the file.
     """
+    from sqlalchemy import select
+
+    from phaze.models.scheduling_ledger import SchedulingLedger
     from phaze.services.pipeline import get_cloud_staging_candidates
 
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
@@ -693,13 +698,19 @@ async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSes
     session.add(file)
     await session.commit()
     fid = file.id
+    session.add(CloudJob(id=uuid.uuid4(), file_id=fid, status=CloudJobStatus.AWAITING.value))
+    await session.commit()
 
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
+    session.add(SchedulingLedger(key=f"process_file:{fid}", function="process_file", routing="agent", payload={"file_id": str(fid)}))
     await session.commit()
 
     candidates = await get_cloud_staging_candidates(session, limit=10)
-    assert fid not in {c.id for c in candidates}
+    assert fid not in {f.id for f, _ in candidates}  # excluded by ~inflight_clause(ANALYZE)
+    # D-05: the awaiting row is retained (the conjunct excludes; it does not delete the row).
+    retained = (await session.execute(select(CloudJob.status).where(CloudJob.file_id == fid))).scalar_one()
+    assert retained == CloudJobStatus.AWAITING.value
 
 
 @pytest.mark.asyncio
@@ -1090,3 +1101,191 @@ def test_kube_models_pvc_name_round_trips_from_backends_toml(backends_toml_env: 
     settings = ControlSettings()
     [with_pvc] = [b for b in backends.resolve_backends(settings) if b.id == "kueue-x64"]
     assert with_pvc.config.kube.models_pvc_name == "phaze-essentia-models"
+
+
+# === hold_awaiting_cloud(): the shared go-forward awaiting writer (D-01/D-02/D-03/D-13) =====
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_fresh_hold_writes_one_row_and_flips_state(session: AsyncSession) -> None:
+    """D-02/D-00c: a fresh hold stamps ``AWAITING_CLOUD`` + inserts exactly one ``awaiting`` cloud_job row.
+
+    The row and the state flip are both visible WITHIN the uncommitted caller session (the helper never
+    commits -- the caller owns the commit boundary), so the assertions see them without any commit.
+    """
+    from sqlalchemy import select
+
+    file = _make_file(state=FileState.FINGERPRINTED)  # pre-hold state so the flip is genuinely observable
+    session.add(file)
+    await session.flush()
+
+    await backends.hold_awaiting_cloud(session, file)
+
+    assert file.state == FileState.AWAITING_CLOUD
+    rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == CloudJobStatus.AWAITING.value
+    assert rows[0].attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_respamps_failed_spill_row_retaining_spent_budget(session: AsyncSession) -> None:
+    """D-03: re-stamping a terminalized FAILED row upserts THE SAME row back to ``awaiting`` (no second row).
+
+    ``uq_cloud_job_file_id`` holds one row per file, so the spill path re-stamps via
+    ``on_conflict_do_update`` rather than inserting a fresh row. Passing
+    ``attempts=cloud_submit_max_attempts`` retains the budget-spent marker ``select_backend`` reads to
+    route the file to local.
+    """
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.FAILED.value, attempts=max_attempts))
+    await session.flush()
+
+    await backends.hold_awaiting_cloud(session, file, attempts=max_attempts)
+
+    rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalars().all()
+    assert len(rows) == 1  # uq_cloud_job_file_id -> still one row (re-stamped, not duplicated)
+    assert rows[0].status == CloudJobStatus.AWAITING.value
+    assert rows[0].attempts == max_attempts
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_hold_branch_returns_true(session: AsyncSession) -> None:
+    """D-02: the hold branch (``expect_status is None``) always writes, so it returns ``True``."""
+    file = _make_file(state=FileState.FINGERPRINTED)
+    session.add(file)
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(session, file)
+
+    assert result is True
+    assert file.state == FileState.AWAITING_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_spill_cas_hit_restamps_clears_phase_and_leaves_state(session: AsyncSession) -> None:
+    """Spill branch CAS HIT: an in-flight ``uploading`` row is re-stamped to ``awaiting`` (D-03), ``cloud_phase`` cleared (D-12/WR-01).
+
+    The helper's spill branch does NOT touch ``file.state`` (the caller owns the gated dual-write behind
+    the returned bool), so the seeded ``PUSHING`` state is left untouched here.
+    """
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.UPLOADING.value, attempts=0, cloud_phase="running"))
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(
+        session,
+        file,
+        attempts=max_attempts,
+        expect_status=(CloudJobStatus.UPLOADING.value, CloudJobStatus.UPLOADED.value),
+        clear_cloud_phase=True,
+    )
+
+    assert result is True
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert row.status == CloudJobStatus.AWAITING.value
+    assert row.attempts == max_attempts
+    assert row.cloud_phase is None  # D-12/WR-01: cleared on the s3 spill path
+    assert file.state == FileState.PUSHING  # the helper did NOT write file.state on the spill branch
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_spill_cas_miss_is_full_noop(session: AsyncSession) -> None:
+    """Spill branch CAS MISS: an already-advanced row (``succeeded``) matches 0 rows -> ``False`` + row UNCHANGED.
+
+    This is the discriminating guard test (SC#2 / T-83-PUSH-CLOBBER): if the spill CAS were replaced by an
+    unconditional upsert, this row would be clobbered back to ``awaiting`` and the assertions below would go
+    RED. The caller keeps its FULL no-op on a ``False`` return (D-10).
+    """
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUCCEEDED.value, attempts=1))
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(session, file, attempts=max_attempts, expect_status=(CloudJobStatus.SUBMITTED.value,))
+
+    assert result is False
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert row.status == CloudJobStatus.SUCCEEDED.value  # UNCHANGED: the CAS matched 0 rows
+    assert row.attempts == 1  # attempts NOT bumped -- no unconditional write happened
+    assert file.state == FileState.PUSHING  # no FileRecord clobber
+
+
+@pytest.mark.asyncio
+async def test_hold_awaiting_cloud_spill_preserves_cloud_phase_when_flag_omitted(session: AsyncSession) -> None:
+    """D-12: the spill branch leaves ``cloud_phase`` UNTOUCHED when ``clear_cloud_phase`` is omitted (the push path)."""
+    from sqlalchemy import select
+
+    from phaze.config import get_settings
+
+    max_attempts = get_settings().cloud_submit_max_attempts
+    file = _make_file(state=FileState.PUSHING)
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUBMITTED.value, attempts=0, cloud_phase="running"))
+    await session.flush()
+
+    result = await backends.hold_awaiting_cloud(session, file, attempts=max_attempts, expect_status=(CloudJobStatus.SUBMITTED.value,))
+
+    assert result is True
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert row.status == CloudJobStatus.AWAITING.value
+    assert row.cloud_phase == "running"  # D-12: push spill must NOT touch cloud_phase
+
+
+def test_awaiting_status_is_not_in_the_in_flight_set() -> None:
+    """D-03: ``'awaiting'`` stays OUT of :data:`backends.IN_FLIGHT` so a re-stamped hold never inflates a lane.
+
+    ``in_flight_count`` counts ``status IN IN_FLIGHT``; keeping ``awaiting`` out of that tuple is what lets a
+    spill re-stamp (or an inert LocalBackend hold-over row, D-13/D-14) exist without corrupting any backend's
+    per-lane in-flight accounting.
+    """
+    assert CloudJobStatus.AWAITING not in backends.IN_FLIGHT
+    assert CloudJobStatus.AWAITING.value not in {status.value for status in backends.IN_FLIGHT}
+
+
+@pytest.mark.asyncio
+async def test_local_dispatch_leaves_awaiting_row_present_and_flips_state(session: AsyncSession) -> None:
+    """D-13: LocalBackend.dispatch flips a held file to LOCAL_ANALYZING and NEITHER writes NOR deletes its row.
+
+    A held file carries an ``awaiting`` cloud_job row. LocalBackend stays a no-``cloud_job``-row
+    writer/deleter (D-05 chose the drain predicate conjunct over row deletion), so after a local dispatch
+    the inert ``awaiting`` row is still present, still ``status='awaiting'`` (it is reaped later by D-14, not
+    here) while ``file.state`` becomes ``LOCAL_ANALYZING``.
+    """
+    from sqlalchemy import select
+
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    file = _make_file(state=FileState.FINGERPRINTED)
+    session.add(file)
+    await session.flush()
+    await backends.hold_awaiting_cloud(session, file)  # held: awaiting row present, state AWAITING_CLOUD
+    await session.commit()
+
+    backend = _local()
+    await backend.dispatch(file, session, DedupFakeTaskRouter())
+
+    assert file.state == FileState.LOCAL_ANALYZING
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
+    assert job is not None  # LocalBackend did NOT delete the inert awaiting row (D-13)
+    assert job.status == CloudJobStatus.AWAITING.value  # nor re-write it
