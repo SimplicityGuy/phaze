@@ -28,7 +28,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import false as sa_false, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -241,4 +241,61 @@ async def test_undo_duplicate_entries_do_not_inflate_count(db_session: AsyncSess
 
     assert restored == 1
     assert dup.id not in await _marker_file_ids(db_session)
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+
+
+# ---------------------------------------------------------------------------
+# T-84-03-03 (threat model): a concurrent HTMX double-submit of resolve must be idempotent.
+#
+# `resolve_group` guards with `on_conflict_do_nothing(index_elements=["file_id"])`. Nothing tested it:
+# the selection filters `~dedup_resolved_clause()`, so a *sequential* second POST never reaches the
+# INSERT, and the conflict can only fire when a concurrent transaction's marker was invisible to our
+# SELECT snapshot. Both cases are covered below.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_second_resolve_of_same_group_is_a_noop(db_session: AsyncSession) -> None:
+    """Sequential double-submit: the second resolve selects nothing, inserts nothing, raises nothing."""
+    keeper = await _file(db_session)
+    dup = await _file(db_session)
+    await db_session.flush()
+
+    first_count, _payload = await resolve_group(db_session, HASH_A, keeper.id)
+    assert first_count == 1
+    assert await _marker_file_ids(db_session) == {dup.id}
+
+    second_count, second_payload = await resolve_group(db_session, HASH_A, keeper.id)
+
+    assert second_count == 0
+    assert second_payload == []
+    assert await _marker_file_ids(db_session) == {dup.id}  # still exactly one marker
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_double_submit_insert_conflict_is_a_noop(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent double-submit: a marker the SELECT could not see must not raise IntegrityError.
+
+    Models the race exactly. Under real concurrency, transaction B's snapshot predates A's insert, so
+    B's `~dedup_resolved_clause()` filter does not exclude the file and B attempts the INSERT anyway.
+    Blinding the clause reproduces that deterministically against the *real* pg_insert statement.
+    Removing `.on_conflict_do_nothing(...)` from `resolve_group` makes this raise IntegrityError.
+    """
+    keeper = await _file(db_session)
+    dup = await _file(db_session)
+    await db_session.flush()
+
+    # Transaction A already inserted the marker (and committed, in the real race).
+    db_session.add(DedupResolution(file_id=dup.id, canonical_file_id=keeper.id))
+    await db_session.flush()
+
+    # Transaction B's snapshot cannot see it -> its exclusion filter matches nothing.
+    monkeypatch.setattr("phaze.services.dedup.dedup_resolved_clause", lambda: sa_false())
+
+    count, _payload = await resolve_group(db_session, HASH_A, keeper.id)
+
+    assert count == 1  # B believed it resolved the file...
+    markers = await _marker_file_ids(db_session)
+    assert markers == {dup.id}  # ...but first-writer-wins: still exactly one marker, no IntegrityError
+    await db_session.refresh(dup)
+    assert dup.state == FileState.DUPLICATE_RESOLVED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
