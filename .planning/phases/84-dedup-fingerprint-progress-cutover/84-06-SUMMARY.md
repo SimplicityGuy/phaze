@@ -30,8 +30,8 @@ application server, with every statement issued inside `BEGIN TRANSACTION READ O
 |------|-------|
 | Alembic revision applied in production | **`031`** |
 | `dedup_resolution` table present | **No** |
-| `analysis_results` table present | No |
-| `file_metadata` table present | No |
+| `analysis` table present (backs `done_clause(ANALYZE)`) | Yes — 1214 rows, but only **49** have `analysis_completed_at` set |
+| `file_metadata` table present | No (the metadata table is named `metadata`) |
 | Files with `state = 'duplicate_resolved'` | **0** |
 | Duplicate groups (sha256 with >1 file) | 6 (none ever resolved) |
 | `fingerprint_results` rows | **0** (fingerprinting has never run) |
@@ -47,8 +47,13 @@ and 83 are merged to `main` but unreleased.
 
 This makes D-01's premise — "every group resolved since `032` landed carries `state =
 duplicate_resolved` with no marker" — **vacuous on this corpus**. `032` never landed, the marker
-table does not exist, and **no duplicate has ever been resolved** (0 rows in that state, despite 6
-duplicate groups sitting in the UI awaiting review).
+table does not exist, and there are **0 rows in that state**, despite 6 duplicate groups sitting in
+the UI awaiting review.
+
+> **Why 0, corrected 2026-07-10:** this was originally read as "no operator ever resolved a duplicate".
+> The Phase-84 UAT found a better explanation — `routers/duplicates.py` never committed its
+> transaction, so **every resolve silently rolled back** while the UI reported success. Resolutions
+> may well have been clicked. Fixed in `74f1f12f`; see `84-UAT.md` tests 4–5.
 
 Consequences:
 
@@ -85,19 +90,47 @@ The originally-specified pass condition (`TOTALS: hard_fail_total = 0`) was also
 phase** — `hard_fail_total` aggregates all thirteen hard invariants, twelve of which Phase 84 does not
 own. Scoped to the invariant this phase does own, the result is `0 divergent`.
 
-## Post-deploy prediction (recorded so it can be checked)
+## Post-deploy prediction — CORRECTED 2026-07-10 (was wrong)
+
+> **The original prediction in this section was incorrect and has been replaced.** It named a table
+> (`analysis_results`) that does not exist, and assumed `032` backfills the analyze-completed rows.
+> Both were wrong. Found by the Phase-84 UAT (`84-UAT.md`, test 8).
 
 Once `032`–`035` apply, the hard invariants with live exposure are:
 
-| Invariant | Files | Why it should hold |
+| Invariant | Files | Post-deploy status |
 |-----------|-------|--------------------|
-| `duplicate_resolved ⇒ marker` | 0 | no rows |
-| `analyzed ⇒ analysis row` | 1050 | `032` backfills `analysis_results` from `files.state` |
-| `analysis_failed ⇒ failed_clause` | 429 | same `032` backfill |
-| `pushing ⇒ cloud_job` | 4 | **already satisfied**: all 4 have a `cloud_job` row (7 rows total) |
+| `duplicate_resolved ⇒ marker` | 0 | **0 divergent** — no rows, and `035` never writes `files.state` |
+| `pushing ⇒ cloud_job` | 4 | **0 divergent** — all 4 already have a `cloud_job` row (7 rows total) |
+| `analysis_failed ⇒ analysis.failed_at` | 429 | **0 divergent** — `032`'s `_BACKFILL_ANALYZE_FAILED` upserts it |
+| `analyzed ⇒ analysis.analysis_completed_at IS NOT NULL` | 1050 | ⚠ **~1001 divergent** |
 
-All other gated states have 0 files. So `hard_fail_total = 0` is achievable on the first deploy that
-carries `032`–`035`, contingent only on `032`'s backfill behaving as its own phase-77 test asserts.
+**`hard_fail_total = 0` is NOT reachable on the first deploy.** The analyze stage is backed by table
+**`analysis`** (`models/analysis.py` → `AnalysisResult`), not `analysis_results`.
+`done_clause(Stage.ANALYZE)` requires `analysis.analysis_completed_at IS NOT NULL` (DERIV-03,
+`stage_status.py:123`). Measured read-only on production: all 1050 `analyzed` files have an `analysis`
+row, but only **49** have `analysis_completed_at` set — 1001 have it NULL (1165 of 1214 total rows are
+NULL). `032` backfills `analysis.failed_at` for `analysis_failed` files only
+(`_BACKFILL_ANALYZE_FAILED`); **nothing in `032`–`035` populates `analysis_completed_at`.**
+
+Since the `analyzed` invariant is HARD (`soft=False`, `shadow_compare.py` registry), the first
+`just shadow-compare` after deploy will report ~1001 divergences and **exit 1**.
+
+**This is not a Phase 84 defect** — Phase 84's own invariant (`duplicate_resolved`) is clean. It is a
+milestone-level data gap: `analysis_completed_at` is a newer column that legacy rows never populated,
+and Phase 79 deferred the live gate run that would have surfaced it (79 D-02) — the same root cause as
+D-01. Do not read a red `hard_fail_total` after deploy as a Phase 84 regression.
+
+**Open item (owner: milestone / Phase 79 follow-up).** Decide between:
+1. backfill `analysis.analysis_completed_at` from `updated_at` for `state='analyzed'` rows (a `036`
+   data migration, mirroring `032`'s analyze-failed upsert), or
+2. move `analyzed` to the soft allowlist with a documented rationale, or
+3. accept a non-zero `hard_fail_total` until Phase 90 and gate only on named invariants.
+
+Until that is settled, the deploy check should be scoped to the invariant this phase owns:
+`duplicate_resolved: 0 divergent`.
+
+---
 
 ## Deploy-ordering constraint (carry into the release)
 
@@ -113,11 +146,12 @@ in the same image, so the marker table can never exist in production without its
 requires no further action — it is recorded here so a future cherry-pick or hotfix does not violate it.
 
 **Deploy-time expectation for that first release:** it will apply `032`, `033`, `034`, `035` in one
-`alembic upgrade head`. `032` backfills `analysis_results` for the 1050 `analyzed` + 429
-`analysis_failed` files and gap-fills `cloud_job`; `035` is a no-op (0 rows both halves). Re-run
-`just shadow-compare` afterwards and expect `hard_fail_total = 0` per the prediction table above.
-That run is a **deploy checklist item, not a merge blocker** — it cannot regress the `duplicate_resolved`
-invariant, which has zero exposure.
+`alembic upgrade head`. `032` upserts `analysis.failed_at` for the 429 `analysis_failed` files and
+gap-fills `cloud_job`; `035` is a no-op (0 rows both halves). Re-run `just shadow-compare` afterwards
+and expect the **`duplicate_resolved` invariant line to read `0 divergent`** — but expect
+`hard_fail_total` to be **non-zero** (~1001) because of the unrelated `analyzed` invariant, per the
+corrected prediction table above. That run is a **deploy checklist item, not a merge blocker**, and a
+red `hard_fail_total` is NOT a Phase 84 regression.
 
 ## Method note
 
