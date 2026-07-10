@@ -436,7 +436,7 @@ Plans:
 ### Phase 84: Dedup & Fingerprint-Progress Cutover
 
 **Goal**: Cut `services/dedup.py` and `get_fingerprint_progress` over to the dedup marker / output tables, so dedup resolve/undo and the fingerprint progress bar derive from data rather than `FileRecord.state`.
-**Depends on**: Phase 82
+**Depends on**: Phase 77, Phase 78, Phase 79 <!-- corrected 2026-07-09: was "Phase 82" (stale). Verified during plan-phase: file sets are disjoint (82 owns services/pipeline.py; 84 owns services/dedup.py + services/fingerprint.py), no phase-82 branch exists, and 84's real upstreams are 77 (dedup_resolution table + ix_fprint_success), 78 (stage_status predicate module), 79 (shadow gate) — all merged on main. -->
 **Requirements**: READ-04, SIDECAR-02
 **Success Criteria** (what must be TRUE):
 
