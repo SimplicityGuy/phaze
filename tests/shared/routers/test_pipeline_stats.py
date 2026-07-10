@@ -77,8 +77,13 @@ async def test_get_pipeline_stats_is_removed_no_filestate_group_by(client: Async
     import phaze.services.pipeline as service_mod
 
     assert not hasattr(service_mod, "get_pipeline_stats"), "get_pipeline_stats must be deleted (D-05)"
-    assert "group_by(FileRecord.state)" not in inspect.getsource(service_mod), "no FileRecord.state GROUP BY may survive in the stats path"
-    assert "get_pipeline_stats" not in inspect.getsource(router_mod), "the router must not reference the removed get_pipeline_stats"
+    # No executable ``FileRecord.state`` GROUP BY survives in the stats path. Strip comment lines so a
+    # doc-comment that mentions the removed shape for context does not false-positive (the guard is
+    # about live SQL, not prose) -- then assert no ``group_by(FileRecord.state)`` call remains.
+    code_lines = [ln for ln in inspect.getsource(service_mod).splitlines() if not ln.lstrip().startswith("#")]
+    assert "group_by(FileRecord.state)" not in "\n".join(code_lines), "no FileRecord.state GROUP BY may survive in the stats path"
+    # The router must not IMPORT/bind the removed function (a historical mention in a docstring is fine).
+    assert not hasattr(router_mod, "get_pipeline_stats"), "the router must not import the removed get_pipeline_stats"
 
 
 @pytest.mark.asyncio
