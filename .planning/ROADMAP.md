@@ -489,12 +489,20 @@ Plans:
   2. A test asserts the behavior change explicitly — an actually-applied file now passes the tag/CUE guards that previously always failed.
 
 **Plans**: 4 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 85-01-PLAN.md — `applied()` predicate pair (applied_clause/is_applied) in stage_status.py + SC#1 unit contract + D-04 UI badge [wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 85-02-PLAN.md — tag-write cutover (tag_writer.py + tags.py 5 sites, bounded bulk) + SC#2 mutation-checked behavior test [wave 2]
 - [ ] 85-03-PLAN.md — CUE + tracklists cutover (cue.py 3 sites, tracklists.py 3 guards) + CUE-admit fixtures [wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 85-04-PLAN.md — review.py list builders + D-03 pagination bound + review-audit fixtures [wave 3]
+
 **Note**: Isolated on its own PR — **must not be bundled** with any other phase; live-UAT-worthy because it changes filesystem behavior, not just status representation.
 
 ### Phase 86: Proposals Cutover
