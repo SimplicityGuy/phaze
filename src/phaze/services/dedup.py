@@ -303,30 +303,46 @@ async def undo_resolve(session: AsyncSession, file_states: list[dict[str, Any]])
     ``previous_state`` is coerced to a real ``FileState`` member before it reaches ``FileRecord.state``,
     with unknown values skipped.
     """
-    ids = [uuid_mod.UUID(e["id"]) if isinstance(e["id"], str) else e["id"] for e in file_states]
-    if not ids:
+    # Parse and validate the ENTIRE browser-held payload before any write. An entry whose id is not a
+    # UUID, or whose previous_state is not a FileState member, is dropped here -- so its marker is never
+    # deleted. Validating after the DELETE would leave `state = duplicate_resolved` with no marker: the
+    # exact HARD divergence shadow_compare.py:135 forbids, and the invariant this phase's SC#3 keeps
+    # green. A malformed id must also not escape as an unhandled ValueError/KeyError (HTTP 500).
+    restore_by_id: dict[uuid_mod.UUID, FileState] = {}
+    for entry in file_states:
+        raw_id = entry.get("id")
+        if isinstance(raw_id, uuid_mod.UUID):
+            file_id = raw_id
+        elif isinstance(raw_id, str):
+            try:
+                file_id = uuid_mod.UUID(raw_id)
+            except ValueError:
+                continue
+        else:
+            continue
+        raw_state = entry.get("previous_state")
+        if not isinstance(raw_state, str):
+            continue
+        try:
+            restore_by_id[file_id] = FileState(raw_state)  # T-84-03-02: reject non-members.
+        except ValueError:
+            continue
+
+    if not restore_by_id:
         return 0
 
     # CAS anchor: DELETE the markers, RETURNING the file_ids that actually held one (scan_deletion.py:119
-    # async ORM-DELETE hygiene). Only these ids may have their state restored.
+    # async ORM-DELETE hygiene). Only these ids may have their state restored. Scoped to restore_by_id, so
+    # a marker is deleted only when its state restore is guaranteed to follow.
     result = await session.execute(
         delete(DedupResolution)
-        .where(DedupResolution.file_id.in_(ids))
+        .where(DedupResolution.file_id.in_(list(restore_by_id)))
         .returning(DedupResolution.file_id)
         .execution_options(synchronize_session=False)
     )
     returned: set[uuid_mod.UUID] = set(result.scalars().all())
 
-    count = 0
-    for entry in file_states:
-        file_id = uuid_mod.UUID(entry["id"]) if isinstance(entry["id"], str) else entry["id"]
-        if file_id not in returned:
-            continue  # no marker deleted for this id (stale replay / crafted id) — no state write.
-        try:
-            restored_state = FileState(entry["previous_state"])  # T-84-03-02: coerce; reject non-members.
-        except ValueError:
-            continue
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=restored_state))
-        count += 1
+    for file_id in returned:
+        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=restore_by_id[file_id]))
     await session.flush()
-    return count
+    return len(returned)

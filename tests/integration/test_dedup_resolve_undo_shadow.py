@@ -177,3 +177,68 @@ async def test_stale_undo_replay_is_a_noop(db_session: AsyncSession) -> None:
     assert f_c.state == FileState.DUPLICATE_RESOLVED
     assert f_b.state == FileState.DISCOVERED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+
+
+# ---------------------------------------------------------------------------
+# Regression: a malformed undo payload must never delete a marker (code-review WR-01/WR-02).
+#
+# `undo_resolve` deletes the marker and restores `FileRecord.state` from an attacker-controllable,
+# browser-held payload. If validation ran AFTER the DELETE, an unusable `previous_state` would skip
+# the restore while the marker was already gone -- leaving `state='duplicate_resolved'` with no
+# marker, the exact HARD divergence at shadow_compare.py:135 that SC#3 must keep green.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_undo_with_invalid_previous_state_keeps_marker_and_gate_green(db_session: AsyncSession) -> None:
+    """An unknown previous_state drops the entry BEFORE the DELETE — marker survives, gate stays green."""
+    keeper = await _file(db_session)
+    dup = await _file(db_session)
+    await db_session.flush()
+
+    _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
+    assert dup.id in await _marker_file_ids(db_session)
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+
+    # Corrupt the state the browser echoes back. Nothing may be written.
+    poisoned = [{**entry, "previous_state": "not_a_real_state"} for entry in payload]
+    restored = await undo_resolve(db_session, poisoned)
+
+    assert restored == 0
+    assert dup.id in await _marker_file_ids(db_session)  # marker NOT deleted
+    await db_session.refresh(dup)
+    assert dup.state == FileState.DUPLICATE_RESOLVED  # state untouched
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0  # no orphaned state
+
+
+@pytest.mark.asyncio
+async def test_undo_with_malformed_uuid_does_not_raise(db_session: AsyncSession) -> None:
+    """A non-UUID id is dropped, not propagated as a 500 — and it cannot suppress valid entries."""
+    keeper = await _file(db_session)
+    dup = await _file(db_session)
+    await db_session.flush()
+
+    _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
+
+    # A garbage id, a missing-key entry, and the one real entry, all in the same payload.
+    mixed = [{"id": "definitely-not-a-uuid", "previous_state": FileState.DISCOVERED.value}, {"previous_state": FileState.DISCOVERED.value}, *payload]
+    restored = await undo_resolve(db_session, mixed)
+
+    assert restored == 1  # only the real entry was restored; no exception escaped
+    assert dup.id not in await _marker_file_ids(db_session)
+    await db_session.refresh(dup)
+    assert dup.state == FileState.DISCOVERED
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+
+
+@pytest.mark.asyncio
+async def test_undo_duplicate_entries_do_not_inflate_count(db_session: AsyncSession) -> None:
+    """The same file listed twice restores once — the count is the marker DELETE's RETURNING cardinality."""
+    keeper = await _file(db_session)
+    dup = await _file(db_session)
+    await db_session.flush()
+
+    _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
+    restored = await undo_resolve(db_session, [*payload, *payload])
+
+    assert restored == 1
+    assert dup.id not in await _marker_file_ids(db_session)
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
