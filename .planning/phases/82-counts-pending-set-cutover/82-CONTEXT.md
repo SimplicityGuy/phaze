@@ -62,9 +62,19 @@ read queries right and proving they stay fast at scale.
   only, read inside a `begin_nested()` SAVEPOINT, never flips the boolean, degrade-safe. Guards the
   44.5K over-enqueue class: a crashed/callback-lost file keeps its ledger row → reads `in_flight`, never
   falsely `not_started`.
-- **D-00c: `in_flight(ANALYZE)` spans the `cloud_job` sidecar** (Phase 83). `AWAITING_CLOUD`/`PUSHING`/
-  `PUSHED`/`LOCAL_ANALYZING` are all derived in-flight, so the analyze pending set automatically excludes
-  cloud-in-flight files with no extra clause — `inflight_clause(ANALYZE)` already composes them.
+- **D-00c ⚠ CORRECTED (2026-07-10, post-research A1): `inflight_clause(ANALYZE)` is LEDGER-ONLY — it does
+  NOT read `cloud_job`.** `services/stage_status.py:176-193` derives in-flight solely from a
+  `scheduling_ledger` row on the `"<analyze-fn>:<file_id>"` key; and `tasks/reconcile_cloud_jobs.py:122-123`
+  states the cloud path **"writes NO scheduling-ledger row … never a `process_file` ledger seed."** So a
+  cloud-dispatched file (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`) is excluded from the derived analyze pending
+  set **only if** its original local analyze ledger row is still present (not cleared on cloud hand-off).
+  **This is the phase's sharpest correctness risk (double-dispatch: local + cloud).** The plan MUST (a)
+  trace the ledger clear-on-handoff timing across the Phase-83 dispatch path, and (b) EITHER prove the
+  ledger row survives until cloud analysis reports terminal, OR add an explicit active-`cloud_job`
+  exclusion conjunct to the analyze pending set (e.g. `~exists(cloud_job WHERE status IN
+  ('awaiting','pushing','pushed'))`). A regression test asserting a `PUSHING`/`PUSHED` file is ABSENT from
+  the analyze pending set is mandatory (mirrors the Phase-83 drain-re-pick hazard). `LOCAL_ANALYZING` is
+  `in_flight(analyze)` via the ledger (local job running) — that limb is fine.
 - **D-00d: Per-stage failure policy is fully encoded** in `enums/stage.py`: `ELIGIBLE_AFTER_FAILURE =
   {ANALYZE: False, METADATA: True, FINGERPRINT: True}`. So a failed **analyze** is terminal (excluded
   from the analyze pending set, ELIG-03 — the manual-retry-only guard against the 44.5K incident); a
