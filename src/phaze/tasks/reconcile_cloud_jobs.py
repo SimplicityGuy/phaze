@@ -18,8 +18,9 @@ outcome phaze records the result in the DB and COMMITS *before* it deletes the J
 can never lose to GC -- ``ttlSecondsAfterFinished`` (900s) is only the never-reconciled backstop. On a
 no-callback terminal (Failed/Evicted) it also deletes the staged S3 object (D-05); the success path
 does NOT (the callback already deleted it inline). A no-callback terminal under the cap re-drives a
-fresh ``submit_cloud_job`` (D-08); at the cap the FileRecord SPILLS BACK to AWAITING_CLOUD (SCHED-03/D-04)
-so the next drain tick routes it to the local safety net (``attempts >= cap``) rather than hard-failing.
+fresh ``submit_cloud_job`` (D-08); at the cap the cloud_job sidecar is re-stamped ``status='awaiting'`` via
+the single spill-mode writer (``hold_awaiting_cloud``, D-04/D-12) with NO ``FileRecord.state`` write, so the
+next drain tick routes it to the local safety net (``attempts >= cap``) rather than hard-failing.
 Inadmissible (operator misconfig) holds indefinitely + alerts and NEVER consumes
 the cap (D-06/D-07); healthy Pending is silent.
 
@@ -37,12 +38,12 @@ import contextlib
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
-from sqlalchemy import update
+from sqlalchemy import select
 import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services import kube_staging, s3_staging
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
 
@@ -151,19 +152,23 @@ async def _handle_no_callback_terminal(
     tally: dict[str, int],
     kube: KubeConfig,
 ) -> None:
-    """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill back to AWAITING_CLOUD at cap (D-08/SCHED-03).
+    """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill the sidecar to 'awaiting' at cap (D-08/SCHED-03).
 
     At cap (``attempts + 1 > cloud_submit_max_attempts``) the ordering is the load-bearing terminal
     sequence (MKUE-04 clean-before-flip, D-01/D-03/D-04): capture the OLD (backend_id, staging_bucket)
     identity, ``delete_staged_object`` the old object UNDER the still-held per-row advisory lock (before
-    the flip commit) -> record cloud_job FAILED + clear ``staging_bucket`` + flip the FileRecord back to
-    AWAITING_CLOUD + COMMIT (which releases the lock) -> ``delete_job`` (post-commit). Deleting the old
+    the spill commit) -> re-stamp the cloud_job sidecar ``status='awaiting'`` via the single spill-mode
+    writer (``hold_awaiting_cloud``, D-04/D-12 -- reconcile writes NO ``FileRecord.state``) + clear
+    ``staging_bucket`` + COMMIT (which releases the lock) -> ``delete_job`` (post-commit). Deleting the old
     object before the commit that makes the file a drain candidate closes Pitfall 9: a concurrent drain
     tick cannot re-dispatch + re-stage a new object under the same ``file_id`` key until this txn commits,
     so the trailing delete can never destroy the new owner's object. The file is NOT hard-failed on cloud
     flakiness (SCHED-03): because ``cloud_job.attempts`` already equals ``cap``, the next drain tick's
     ``select_backend`` excludes every cloud backend (``attempts >= cap``) and routes the file to the local
-    safety net -- ANALYSIS_FAILED then comes only from a local failure (D-04), never from this branch.
+    safety net -- ANALYSIS_FAILED then comes only from a local failure (D-04), never from this branch. The
+    spilled kueue file stays at its prior ``PUSHED`` state (reconcile no longer touches ``FileRecord``),
+    which satisfies the loosened pushed/pushing shadow invariants -- fixing the HARD ``state=AWAITING_CLOUD``
+    + ``cloud_job.status=FAILED`` shadow violation that is live on ``main`` today.
 
     Under cap it is a re-drive: delete the prior Job and CONFIRM it is gone (the race guard) BEFORE
     incrementing ``attempts`` + committing and enqueuing the fresh ``submit_cloud_job``. If the prior
@@ -176,19 +181,20 @@ async def _handle_no_callback_terminal(
     next_attempt = cloud_job.attempts + 1
 
     if next_attempt > cap:
-        # SCHED-03/D-04: at the cloud cap DO NOT hard-fail. Terminalize the cloud_job (FAILED decrements
-        # in-flight -- the reconcile-only-decrements invariant) and SPILL the file back to AWAITING_CLOUD.
-        # ``cloud_job.attempts`` already equals ``cap`` here (the last under-cap re-drive set it), so the
-        # next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file to local (the
-        # guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
+        # SCHED-03/D-04: at the cloud cap DO NOT hard-fail. Re-stamp the cloud_job sidecar to 'awaiting'
+        # ('awaiting' is NOT in IN_FLIGHT, so the row drops out of ``in_flight_count`` -- the
+        # reconcile-only-decrements invariant) and write NO FileRecord.state (D-04, the whole point of the
+        # cutover). ``cloud_job.attempts`` already equals ``cap`` here (the last under-cap re-drive set it),
+        # so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file to local
+        # (the guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
         # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
-        # ``updated_at`` on the flip gives a fresh staleness clock (desirable).
+        # ``updated_at`` on the spill gives a fresh staleness clock (desirable).
         #
         # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
         # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
         # (acquired at the TOP of this ``KueueBackend.reconcile`` per-row unit, backends.py) -- i.e. BEFORE
-        # the ``session.commit()`` that flips the file to AWAITING_CLOUD and thus RELEASES the lock, making
-        # the file a drain candidate. The re-dispatch reuses the SAME ``file_id``-scoped S3 key; if D-06
+        # the ``session.commit()`` that persists the 'awaiting' re-stamp (making the file a drain candidate)
+        # and thus RELEASES the lock. The re-dispatch reuses the SAME ``file_id``-scoped S3 key; if D-06
         # lands the re-stage on the same bucket, a delete that ran AFTER the lock released would race the
         # new stage and destroy the object the new pod needs. Deleting before the flip guarantees the old
         # object is gone before any re-stage can occur (the drain holds the same lock across its whole
@@ -204,17 +210,43 @@ async def _handle_no_callback_terminal(
         bucket = s3_staging.resolve_bucket_config(cfg, old_bucket_id)
         with contextlib.suppress(Exception):
             if bucket is not None:
-                await s3_staging.delete_staged_object(file_id, bucket)
-        cloud_job.status = CloudJobStatus.FAILED.value
-        cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit.
-        cloud_job.cloud_phase = None  # WR-01: terminal row must not inflate the admission-state "Running" tile.
+                await s3_staging.delete_staged_object(file_id, bucket)  # MKUE-04: under the still-held lock, BEFORE the commit.
+        # D-04/D-12: swap the retired FileRecord.state write + FAILED pre-mutation for the SINGLE go-forward
+        # awaiting writer in spill mode (reconcile is its FOURTH caller, alongside agent_s3/agent_push). The
+        # rowcount-guarded CAS OWNS the status write (UPDATE cloud_job ... WHERE status IN (SUBMITTED,RUNNING)),
+        # so we do NOT pre-mutate cloud_job.status here -- an autoflush of a dirty status would make the CAS
+        # miss its own row (RESEARCH Landmine 3). ``attempts=cap`` is the budget-spent MARKER (a set, NOT an
+        # increment), so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file
+        # to local; ``clear_cloud_phase=True`` nulls cloud_phase (WR-01, off the "Running" tile). Unlike the
+        # agent_s3/agent_push siblings (which KEEP the gated FileRecord dual-write, 83 D-00c), reconcile writes
+        # NO FileRecord.state at all (D-04): the spilled kueue file stays at its prior PUSHED state, which
+        # satisfies the loosened pushed/pushing shadow invariants -- fixing the HARD state=AWAITING_CLOUD +
+        # cloud_job.status=FAILED shadow violation live on main today.
+        from phaze.services.backends import hold_awaiting_cloud  # noqa: PLC0415 -- deferred to break the backends<->reconcile_cloud_jobs import cycle
+
+        # The helper's spill-mode CAS dereferences file.id (it does NOT write file.state); load the FileRecord.
+        # The FK files.id <- cloud_job.file_id guarantees the row exists, so None is unreachable in practice --
+        # the guard is for mypy (scalar_one_or_none is Optional) and defense-in-depth (a None file skips the CAS
+        # cleanly, matching the agent_s3/agent_push no-op).
+        file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+        if file is not None:
+            await hold_awaiting_cloud(
+                session,
+                file,
+                attempts=cap,
+                expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value),
+                clear_cloud_phase=True,
+            )
+        cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
         cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
         await session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
         await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
         tally["failed"] += 1
         logger.warning(
-            "reconcile_cloud_jobs: submit cap reached -> spill back to AWAITING_CLOUD", file_id=str(file_id), attempt=next_attempt, cap=cap
+            "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
+            file_id=str(file_id),
+            attempt=next_attempt,
+            cap=cap,
         )
         return
 
