@@ -46,13 +46,13 @@
 - [ ] **READ-01**: The three enrich pending sets are derived from `stage_status` (not from `FileRecord.state`), so metadata/fingerprint/analyze each surface every not-done, not-in-flight file independent of the others — the current cross-stage deadlock is gone (a file can complete all three, in any order).
 - [ ] **READ-02**: `get_pipeline_stats` reports per-stage counts from output tables (the linear `GROUP BY FileRecord.state` is removed), and the DAG shows four-bucket per-stage counts (not_started / in_flight / done / failed) including a visible failed count per enrich stage.
 - [ ] **READ-03**: Recovery/re-enqueue (`reenqueue.py`, `reconcile_cloud_jobs.py`) derive their done/in-flight sets from `stage_status`/sidecars with no `FileRecord.state` read, preserving the scheduling-ledger recovery contract and the "only previously-scheduled work recovers" guarantee.
-- [ ] **READ-04**: Dedup (`services/dedup.py`) and `get_fingerprint_progress` derive from the dedup marker / output tables rather than `FileRecord.state`.
+- [x] **READ-04**: Dedup (`services/dedup.py`) and `get_fingerprint_progress` derive from the dedup marker / output tables rather than `FileRecord.state`.
 - [ ] **READ-05**: The dead `state == EXECUTED` gates are revived against the real apply-outcome source — tag writing, review, tags/cue/tracklists guards fire for actually-applied files (fixes the permanently-dead tag-writer path).
 
 ### Sidecar Migration (SIDECAR)
 
 - [x] **SIDECAR-01**: Cloud-routing status (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) is represented via the `cloud_job` sidecar (and/or derived `in_flight(analyze)`), with the CAS-guard behavior of `/pushed`, `/mismatch`, and `/upload-failed` preserved or strengthened (closes the missing-CAS-guard bug at `agent_s3.py:195`).
-- [ ] **SIDECAR-02**: Dedup resolution (`DUPLICATE_RESOLVED`) is represented via a durable dedup marker, with resolve/undo preserved and backfilled from existing rows.
+- [x] **SIDECAR-02**: Dedup resolution (`DUPLICATE_RESOLVED`) is represented via a durable dedup marker, with resolve/undo preserved and backfilled from existing rows.
 - [ ] **SIDECAR-03**: Review decisions (approve/reject) and apply outcomes are read from `proposals.status` + `execution_log` — `FileRecord.state` is no longer a redundant, drift-prone mirror of proposal state (fixes the `store_proposals` MOVED-regression bug).
 
 ### Operator UI (UI)
@@ -144,10 +144,10 @@
 | READ-01 | Phase 82 | Pending |
 | READ-02 | Phase 82 | Pending |
 | READ-03 | Phase 80 | Pending |
-| READ-04 | Phase 84 | Pending |
+| READ-04 | Phase 84 | Complete |
 | READ-05 | Phase 85 | Pending |
 | SIDECAR-01 | Phase 83 | Complete |
-| SIDECAR-02 | Phase 84 | Pending |
+| SIDECAR-02 | Phase 84 | Complete |
 | SIDECAR-03 | Phase 86 | Pending |
 | UI-01 | Phase 87 | Pending |
 | UI-02 | Phase 87 | Pending |
