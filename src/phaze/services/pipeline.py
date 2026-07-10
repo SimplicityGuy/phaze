@@ -11,6 +11,7 @@ from sqlalchemy.orm import aliased
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -24,7 +25,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.stage_status import awaiting_candidate_clause
+from phaze.services.stage_status import awaiting_candidate_clause, dedup_resolved_clause, eligible_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -43,6 +44,27 @@ logger = structlog.get_logger(__name__)
 # use at routers/pipeline.py:318-319 so the dashboard denominator matches the set
 # of files those stages are actually enqueued for.
 MUSIC_VIDEO_TYPES = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
+
+
+# T-82-A1 (double-dispatch guard): a file whose ``cloud_job`` row is in any of these ACTIVE (non-terminal)
+# statuses is currently being handled by the cloud path and MUST NOT be a local analyze candidate. The
+# analyze-set trace (82-02 SUMMARY): the cloud hand-off enqueues ``push_file`` (never ``process_file``)
+# and holds ``AWAITING_CLOUD``/``PUSHING`` with NO ``process_file:<id>`` scheduling-ledger row, so
+# ``~inflight_clause(ANALYZE)`` alone does NOT exclude a cloud-dispatched file -- this explicit conjunct
+# is load-bearing. ``FAILED`` is deliberately EXCLUDED: a terminally-failed cloud burst with no
+# ``AnalysisResult`` is a legitimate local-retry candidate (the spill/recovery paths re-home it). A
+# genuinely-done cloud burst (``SUCCEEDED`` with a landed ``AnalysisResult``) is already excluded by
+# ``~done_clause`` inside ``eligible_clause``; listing ``SUCCEEDED`` here is the belt-and-suspenders that
+# also covers the compute ``PUSHED`` window (``cloud_job.status='succeeded'`` while analysis still runs on
+# the agent, before its ``process_file`` ledger row lands).
+_ACTIVE_CLOUD_STATUSES: tuple[str, ...] = (
+    CloudJobStatus.AWAITING.value,
+    CloudJobStatus.UPLOADING.value,
+    CloudJobStatus.UPLOADED.value,
+    CloudJobStatus.SUBMITTED.value,
+    CloudJobStatus.RUNNING.value,
+    CloudJobStatus.SUCCEEDED.value,
+)
 
 
 # The pipeline stages in order, for display
@@ -1096,17 +1118,35 @@ async def get_analysis_failed_count(session: AsyncSession) -> int:
 
 
 async def get_discovered_files_with_duration(session: AsyncSession) -> list[tuple[FileRecord, float | None]]:
-    """Return ``(FileRecord, duration)`` for every DISCOVERED file (LEFT OUTER JOIN metadata).
+    """Return ``(FileRecord, duration)`` for every analyze-pending music/video file (LEFT OUTER JOIN metadata).
 
-    The duration is the joined ``FileMetadata.duration`` (or ``None`` when no metadata row
-    exists yet). Captured into the in-memory list here because ``FileRecord.file_metadata`` is
-    ``lazy="noload"`` -- a later access in a background task would NOT lazy-load it, so the
-    duration the per-file router (Plan 02) routes on must be read in this query.
+    READ-01 cutover: the analyze pending set is now DERIVED, not gated on ``FileRecord.state ==
+    DISCOVERED``. A file is analyze-pending iff it is a music/video type, is ``eligible_clause(ANALYZE)``
+    (``~inflight ∧ ~done ∧ ~failed`` -- ELIG-03 keeps a FAILED analyze terminal, the 44.5K over-enqueue
+    guard), is NOT dedup-resolved, and is NOT being handled by the cloud path (T-82-A1). This dissolves
+    the cross-stage deadlock the old state gate created -- a file whose ``state`` advanced past
+    ``DISCOVERED`` (e.g. to ``METADATA_EXTRACTED``) but was never analyzed re-surfaces here correctly.
+
+    The ``file_type.in_(MUSIC_VIDEO_TYPES)`` scope is NEWLY required: the old state-gated query was
+    file-type-agnostic, so without it a non-music DISCOVERED file would leak into the analyze set
+    (Pitfall 1). The ``~exists(cloud_job in ACTIVE statuses)`` conjunct is the explicit A1 double-dispatch
+    guard -- see ``_ACTIVE_CLOUD_STATUSES``: a cloud-held/pushing file carries NO ``process_file`` ledger
+    row, so ``eligible_clause``'s ``~inflight`` alone would re-admit it to the local analyze set.
+
+    The duration is the joined ``FileMetadata.duration`` (or ``None`` when no metadata row exists yet).
+    The LEFT OUTER JOIN is PRESERVED (the per-file cloud duration-router reads ``FileMetadata.duration``);
+    it is captured into the in-memory list here because ``FileRecord.file_metadata`` is ``lazy="noload"``
+    -- a later access in a background task would NOT lazy-load it.
     """
     stmt = (
         select(FileRecord, FileMetadata.duration)
         .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
-        .where(FileRecord.state == FileState.DISCOVERED)
+        .where(
+            FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+            eligible_clause(Stage.ANALYZE),
+            ~dedup_resolved_clause(),
+            ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES))),
+        )
     )
     result = await session.execute(stmt)
     return [(record, duration) for record, duration in result.all()]

@@ -1478,19 +1478,6 @@ async def test_get_discovered_files_with_duration_outerjoin_null(session: AsyncS
 
 
 @pytest.mark.asyncio
-async def test_get_discovered_files_with_duration_excludes_other_states(session: AsyncSession) -> None:
-    """Only DISCOVERED files are returned; an ANALYZED file is excluded."""
-    discovered = _file(2, FileState.DISCOVERED)
-    other = _file(3, FileState.ANALYZED)
-    session.add_all([discovered, other])
-    await session.commit()
-
-    rows = await get_discovered_files_with_duration(session)
-
-    assert {r.id for r, _ in rows} == {discovered.id}
-
-
-@pytest.mark.asyncio
 async def test_get_awaiting_cloud_count_happy_path(session: AsyncSession) -> None:
     """Counts exactly the genuinely-parked awaiting cloud_job rows; other states are excluded (Phase 83, D-15)."""
     a, b, discovered = _file(4, FileState.AWAITING_CLOUD), _file(5, FileState.AWAITING_CLOUD), _file(6, FileState.DISCOVERED)
