@@ -273,7 +273,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
-| 85. EXECUTED-Gate Revival | 2026.7.5 | 3/4 | In Progress|  |
+| 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete   | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
@@ -501,7 +501,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 85-04-PLAN.md — review.py list builders + D-03 pagination bound + review-audit fixtures [wave 3]
+- [x] 85-04-PLAN.md — review.py list builders + D-03 pagination bound + review-audit fixtures [wave 3]
 
 **Note**: Isolated on its own PR — **must not be bundled** with any other phase; live-UAT-worthy because it changes filesystem behavior, not just status representation.
 
