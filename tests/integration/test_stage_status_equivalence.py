@@ -425,6 +425,23 @@ async def test_sql_equals_python(
 # level, so the equivalence holds ONLY for non-in-flight rows. These cells therefore reuse the enrich-stage
 # seed fns EXCLUDING the ``*_inflight`` seeds. ``FAILURE_IS_TERMINAL`` is defined only for the three enrich
 # stages (D-15), so only enrich cells are exercised.
+#
+# D-11 REJECTED-OPTION RATIONALE (Phase 80, READ-03 -- why this test is NOT the lock, and what the
+# ``*_inflight`` exclusion above protects): a tempting "fix" (WR-02's own literal suggestion) is to add a
+# ``~inflight_clause(stage)`` conjunct to ``domain_completed_clause`` so an in-flight row never reads as
+# domain-complete. That is a TRAP and MUST NEVER be done. ``inflight_clause`` is *scheduling-ledger row
+# existence* (``stage_status.py``), and in ``recover_orphaned_work`` EVERY candidate is a ledger row by
+# construction -- so the added ``~inflight_clause`` disjunct would make ``domain_completed`` return False
+# for EVERY recovery candidate, silently DISABLING the secondary over-enqueue net wholesale (the 44.5K
+# incident class, reintroduced). Crucially, the trap is INVISIBLE HERE: the drain and the "Awaiting cloud"
+# count card already read ``... AND ~inflight_clause``, and these DERIV-04 cells deliberately EXCLUDE the
+# ``*_inflight`` seeds -- so adding ``~inflight_clause`` to ``domain_completed_clause`` is a pure no-op for
+# every row this equivalence test (and the drain/card) ever sees, and the test STAYS GREEN. The real lock
+# is the recovery-LAYER regression in ``tests/analyze/tasks/test_recovery.py`` (Plan 80-04): because its
+# candidates ARE ledger rows, the trap makes ``domain_completed`` False for all of them and its Cell B goes
+# RED. Keep the ``*_inflight`` exclusion (it is what makes this test correctly ledger-agnostic); do NOT
+# "harden" it by adding in-flight cells here to try to catch the trap -- that responsibility lives at the
+# recovery layer, by design.
 DOMAIN_COMPLETED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], bool]] = [
     # analyze -- terminal failure: DONE and FAILED both count as domain-complete.
     (Stage.ANALYZE, seed_analysis_none, False),
