@@ -8,7 +8,7 @@ updated: 2026-07-10T00:00:00Z
 
 ## Current Test
 
-[awaiting human decision on WR-01 disposition]
+[awaiting live-deploy UAT of revived tag/CUE writing — item 2]
 
 ## Tests
 
@@ -23,7 +23,9 @@ can occupy the alphabetically-first `.limit()` slots on every submit and starve 
 them, since zero-change files never get a COMPLETED log to evict them via `completed_subq`. Files remain
 individually writable (WARNING, not data loss), and both phase success criteria (predicate revival +
 mutation-verified behavior change) are fully met independent of this.
-result: [pending]
+result: resolved — accepted as tracked follow-up debt (operator decision 2026-07-10); WR-01..04
+captured in `.planning/todos/pending/wr-01-review-builder-limit-before-filter.md`. Phase completed on
+this basis.
 
 ### 2. Live-UAT of revived tag/CUE writing (phase is filesystem-mutating, own-PR)
 expected: On a real deploy, an actually-applied file (state='moved' with an executed proposal) now
@@ -34,9 +36,9 @@ result: [pending]
 ## Summary
 
 total: 2
-passed: 0
+passed: 1
 issues: 0
-pending: 2
+pending: 1
 skipped: 0
 blocked: 0
 
