@@ -391,9 +391,16 @@ async def _analysis_aggregates(session: AsyncSession, file_id: uuid.UUID) -> tup
 
 
 async def _analyze_is_done(session: AsyncSession, file_id: uuid.UUID) -> bool:
-    """True iff the Phase 32 re-enqueue done-predicate classifies the file as analyze-done."""
+    """True iff the recovery done-predicate classifies the file as analyze-domain-complete.
+
+    Phase 80 (READ-03) cut ``_select_done_analyze_ids`` over from a ``FileRecord.state`` read to the
+    ledger-scoped ``domain_completed_clause(ANALYZE)`` derivation, so it now takes the fids to bind (a
+    single-element list is enough for this single-file probe). A crash-partial analysis row has
+    ``analysis_completed_at`` NULL (not done, not failed) -> not domain-complete; a completed rerun
+    stamps ``analysis_completed_at`` -> done.
+    """
     session.expire_all()
-    done_ids = set((await session.scalars(_select_done_analyze_ids())).all())
+    done_ids = set((await session.scalars(_select_done_analyze_ids([file_id]))).all())
     return file_id in done_ids
 
 
