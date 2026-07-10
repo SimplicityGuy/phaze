@@ -9,6 +9,7 @@ not the state machine.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
@@ -66,7 +67,9 @@ async def test_analyzed_but_no_metadata_counts_independently(session: AsyncSessi
     f = _make_file(1, state=FileState.ANALYZED)
     session.add(f)
     await session.flush()
-    session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=128.0))
+    # done(analyze) is the canonical derivation-layer clause: analysis_completed_at IS NOT NULL
+    # (DERIV-03 / Phase 82 cutover). A bare partial-analysis row is in_flight, not done.
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=128.0, analysis_completed_at=datetime.now(UTC)))
     await session.commit()
 
     progress = await get_stage_progress(session)
@@ -220,7 +223,8 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession):
     session.add(f)
     await session.flush()
     session.add(FileMetadata(id=uuid.uuid4(), file_id=f.id))
-    session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=120.0))
+    # analysis_completed_at required for done(analyze) under the canonical derivation layer (DERIV-03 / Phase 82).
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
     session.add(FingerprintResult(id=uuid.uuid4(), file_id=f.id, engine="chromaprint", status="completed"))
     await session.commit()
 
