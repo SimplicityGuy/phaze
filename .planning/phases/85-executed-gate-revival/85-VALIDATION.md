@@ -1,10 +1,11 @@
 ---
 phase: 85
 slug: executed-gate-revival
-status: approved
+status: verified
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-07-10
+updated: 2026-07-10
 ---
 
 # Phase 85 — Validation Strategy
@@ -36,23 +37,24 @@ created: 2026-07-10
 
 ## Per-Task Verification Map
 
-| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 85-01-xx | 01 | 1 | READ-05 | — | `applied()` predicate returns true iff `proposals.status=='executed'`; never reads `file.state` | unit | `just test-bucket review` | ❌ W0 | ⬜ pending |
-| 85-01-xx | 01 | 1 | READ-05 | — | **Behavior change (SC#2):** an actually-applied file now PASSES the tag/CUE guards that previously always failed | unit | `just test-bucket review` | ❌ W0 | ⬜ pending |
-| 85-0x-xx | 0x | 2 | READ-05 | — | Unbounded operator list builders (`review.py:get_tagwrite_review_rows` + sibling) return a bounded page | unit | `just test-bucket review` | ❌ W0 | ⬜ pending |
+| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Test File | Status |
+|---------|------|------|-------------|------------|-----------------|-----------|-----------|--------|
+| 85-01 | 01 | 1 | READ-05 | T-85-02 | `applied()` predicate returns true iff `proposals.status=='executed'`; never reads `file.state` | unit (DB) | `tests/shared/test_applied_clause.py` (7 cases incl. `test_applied_never_reads_file_state`, `test_failed_and_executed_proposals_is_applied`) | ✅ green |
+| 85-02 | 02 | 2 | READ-05 | T-85-02 | **Behavior change (SC#2):** an actually-applied file (`state='moved'` + executed proposal) now PASSES the tag guard that previously always failed; a non-applied file RAISES | unit (DB) | `tests/review/services/test_tag_writer.py::TestExecuteTagWrite::{test_applied_file_passes_guard,test_non_applied_file_raises}` (mutation-verified RED→GREEN by 85-VERIFICATION) | ✅ green |
+| 85-03 | 03 | 2 | READ-05 | T-85-02 | **SC#2 (CUE):** CUE generation admits an applied file seeded `state='moved'`, rejects a non-applied file | unit (route) | `tests/review/routers/test_cue.py::{test_generate_cue_admits_applied_file_not_executed_state,test_generate_cue_file_not_applied}` | ✅ green |
+| 85-04 | 04 | 3 | READ-05 | T-85-04, T-85-06 | Unbounded operator list builders (`get_tagwrite_review_rows` / `get_cue_review_cards`) return a bounded page (D-03 `_MAX_REVIEW_ROWS`) | unit (DB) | `tests/review/services/test_review_degrade.py::test_get_tagwrite_review_rows_bounded_by_cap` (+ degrade-wrapper cells) | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
-*Exact task IDs assigned by the planner; this map is the coverage contract, not the task breakdown.*
+*Cross-referenced against the executed test suite 2026-07-10; all 12 contract tests pass (`-p no:randomly`, ephemeral DB on 5433).*
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] Test(s) for the `applied()` / `applied_clause()` predicate + `is_applied()` per-record helper — bucket `review` (or `shared` if predicate lives in a shared module).
-- [ ] The SC#2 behavior-change test: seed an applied file (`proposals.status='executed'`), assert it now passes a previously-always-failing guard. **Mutation-test it** — break the predicate, confirm RED, restore.
-- [ ] Pagination test(s) for the newly-bounded list builders.
-- [ ] Assert from an INDEPENDENT session where a mutating router path is exercised (conftest get_session override reads uncommitted rows).
+- [x] Test(s) for the `applied()` / `applied_clause()` predicate + `is_applied()` per-record helper — landed in `tests/shared/test_applied_clause.py` (shared bucket; the predicate lives in the shared `services/stage_status.py`).
+- [x] The SC#2 behavior-change test: seed an applied file (`state='moved'` + `proposals.status='executed'`), assert it now passes a previously-always-failing guard. **Mutation-tested** — 85-VERIFICATION independently reverted `tag_writer.py:185` to the dead `state != EXECUTED` guard, watched `test_applied_file_passes_guard` go RED, restored, re-ran GREEN.
+- [x] Pagination/bound test for the newly-bounded list builders — `test_get_tagwrite_review_rows_bounded_by_cap` monkeypatches `_MAX_REVIEW_ROWS=3` and asserts the builder returns exactly 3.
+- [x] Assert from an INDEPENDENT session where a mutating router path is exercised — the route tests (`test_cue.py`, `test_tags.py`) exercise the write/generate paths and read back via the DB-backed fixtures (get_session override reads uncommitted rows; assertions use committed reads).
 
 *Existing pytest infrastructure covers the framework; no new framework install.*
 
@@ -63,6 +65,22 @@ created: 2026-07-10
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
 | Live-corpus tag/CUE write end-to-end | READ-05 | Requires the real applied-file corpus + filesystem mutation; not reproducible in unit tests | Deploy to homelab; confirm Tags/Cue operator lists populate with real applied files; trigger one manual tag-write; verify tags written to the file on disk and a `TagWriteLog` COMPLETED row persists |
+
+---
+
+## Validation Audit 2026-07-10
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+
+State A audit (post-execution). Cross-referenced the plan-time coverage contract against the executed
+test suite: all 3 automated requirement-verification items are COVERED by real, green tests
+(predicate contract, SC#2 behavior change incl. mutation-verification, D-03 bound). No MISSING or
+PARTIAL gaps — the gsd-nyquist-auditor was not needed. The one Manual-Only item (live-corpus tag/CUE
+write) remains tracked in `85-HUMAN-UAT.md` for the next homelab rollout. Phase is Nyquist-compliant.
 
 ---
 
