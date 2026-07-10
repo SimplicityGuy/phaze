@@ -64,6 +64,7 @@ import structlog
 
 from phaze.enums.stage import FAILURE_IS_TERMINAL, Stage, Status
 from phaze.models.analysis import AnalysisResult
+from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
@@ -84,6 +85,30 @@ logger = structlog.get_logger(__name__)
 # DERIV-05: a fingerprint engine row in either of these states counts the stage done. Mirrors the
 # Phase-59 WR-02 spelling and the ``ix_fprint_success`` partial index (renders ``= ANY (ARRAY[...])``).
 _DONE_FP: tuple[str, ...] = ("success", "completed")
+
+
+def dedup_resolved_clause() -> ColumnElement[bool]:
+    """Return the correlated ``dedup-resolved`` predicate for a file (a ``ColumnElement[bool]``).
+
+    This is a **FILE-LEVEL** predicate, NOT a per-:class:`~phaze.enums.stage.Stage` one -- dedup
+    resolution is a corpus-hygiene fact about a file, not one of the pipeline stages. It takes NO
+    ``stage`` argument and correlates to :class:`~phaze.models.file.FileRecord` in the enclosing query
+    via a correlated ``exists(...)`` (never an outer-join-null / negated-membership anti-pattern),
+    identical in body to :func:`phaze.services.shadow_compare._dedup_exists`. Marker-row existence
+    means resolved; ``~dedup_resolved_clause()`` therefore means "not resolved" (the shape the Wave-2
+    dedup readers and ``get_fingerprint_progress``'s denominator consume).
+
+    It is deliberately kept OUT of the ``Stage`` dispatch ladders (:func:`done_clause` /
+    :func:`failed_clause` / :func:`inflight_clause` / :func:`domain_completed_clause` /
+    :func:`stage_status_case`) -- those all raise ``ValueError`` on an unknown stage and are
+    drift-locked to the Python resolver by ``tests/integration/test_stage_status_equivalence.py`` (D-13).
+    A non-``Stage`` clause must not touch that test.
+
+    Both consumers import this predicate from here (the single-source predicate module, Phase 78):
+    ``services/dedup.py`` at module level, ``services/fingerprint.py`` **inside** its function (the
+    agent-worker import boundary, D-00e).
+    """
+    return exists(select(DedupResolution.id).where(DedupResolution.file_id == FileRecord.id))
 
 
 def done_clause(stage: Stage) -> ColumnElement[bool]:
