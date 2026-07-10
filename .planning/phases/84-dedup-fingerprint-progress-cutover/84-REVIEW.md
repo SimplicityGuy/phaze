@@ -32,7 +32,7 @@ resolution_note: "WR-01 and WR-02 fixed in 5215d82c with 3 mutation-verified reg
 **Reviewed:** 2026-07-10
 **Depth:** standard (per-file, language-aware; cross-referenced imports and the shadow invariant)
 **Files Reviewed:** 13
-**Status:** issues_found (2 Warnings, 3 Info — no Blockers)
+**Status:** resolved — found 2 Warnings + 3 Info (no Blockers); all fixed in `5215d82c`. See "Resolution" at the end of this report.
 
 ## Summary
 
