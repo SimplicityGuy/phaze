@@ -270,7 +270,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 79. Shadow-Compare Gate (live corpus) | 2026.7.5 | 2/2 | Complete    | 2026-07-08 |
 | 80. Recovery / Re-enqueue Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-10 |
 | 81. Per-Stage Failure Persistence & Retry Paths | 2026.7.5 | 6/6 | Complete    | 2026-07-09 |
-| 82. Counts & Pending-Set Cutover | 2026.7.5 | 2/4 | In Progress|  |
+| 82. Counts & Pending-Set Cutover | 2026.7.5 | 3/4 | In Progress|  |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
@@ -421,7 +421,7 @@ Plans:
 
 **Wave 3** *(depends on 82-02 — shared `services/pipeline.py`)*
 
-- [ ] 82-03-PLAN.md — `get_stage_progress` four-bucket enrich nodes + `get_pipeline_stats` removal + 3 caller migrations + `stats_bar.html` key remap (READ-02) [wave 3]
+- [x] 82-03-PLAN.md — `get_stage_progress` four-bucket enrich nodes + `get_pipeline_stats` removal + 3 caller migrations + `stats_bar.html` key remap (READ-02) [wave 3]
 
 **Wave 4** *(depends on 82-02, 82-03)*
 
