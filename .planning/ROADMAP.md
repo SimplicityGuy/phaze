@@ -28,7 +28,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [ ] **Phase 82: Counts & Pending-Set Cutover** — the three enrich pending sets + `get_pipeline_stats` derived from `stage_status`; the cross-stage deadlock dissolves; four-bucket per-stage counts; the 200K-scale poll latency measured (READ-01, READ-02, PERF-02)
 - [x] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01) (completed 2026-07-09)
 - [x] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02) (completed 2026-07-10)
-- [ ] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05)
+- [x] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05) (completed 2026-07-10)
 - [ ] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03)
 - [ ] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01)
 - [ ] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03)
@@ -273,7 +273,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 82. Counts & Pending-Set Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
-| 85. EXECUTED-Gate Revival | 2026.7.5 | 0/0 | Not started | - |
+| 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
@@ -488,7 +488,21 @@ Plans:
   1. An `applied(f)` predicate (joining `execution_log` through `proposals`, since `execution_log` has no `file_id`) replaces every dead `state == EXECUTED` gate in `tag_writer.py`, `review.py`, `tags.py`, `cue.py`, `tracklists.py`.
   2. A test asserts the behavior change explicitly — an actually-applied file now passes the tag/CUE guards that previously always failed.
 
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+**Wave 1**
+
+- [x] 85-01-PLAN.md — `applied()` predicate pair (applied_clause/is_applied) in stage_status.py + SC#1 unit contract + D-04 UI badge [wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 85-02-PLAN.md — tag-write cutover (tag_writer.py + tags.py 5 sites, bounded bulk) + SC#2 mutation-checked behavior test [wave 2]
+- [x] 85-03-PLAN.md — CUE + tracklists cutover (cue.py 3 sites, tracklists.py 3 guards) + CUE-admit fixtures [wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 85-04-PLAN.md — review.py list builders + D-03 pagination bound + review-audit fixtures [wave 3]
+
 **Note**: Isolated on its own PR — **must not be bundled** with any other phase; live-UAT-worthy because it changes filesystem behavior, not just status representation.
 
 ### Phase 86: Proposals Cutover

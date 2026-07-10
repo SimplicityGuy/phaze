@@ -13,11 +13,12 @@ from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.proposal_queries import Pagination
+from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import execute_tag_write
 
@@ -37,11 +38,16 @@ FIELD_LABELS: dict[str, str] = {
 
 VALID_FIELDS = set(CORE_FIELDS)
 
+# D-03: bound the operator-triggered no-discrepancy bulk loop. Reviving the applied() gate can make a
+# large first-time-visible applied backlog suddenly enumerable; cap one submit at a batch of this size
+# (low-thousands, consistent with in-tree page bounds) so the loop cannot blow up at 200K scale.
+_MAX_BULK_TAG_WRITE = 2000
+
 
 async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
     """Count pending, completed, and discrepancy files for tag writing."""
-    # Count EXECUTED files (potential tag write targets)
-    executed_stmt = select(func.count(FileRecord.id)).where(FileRecord.state == FileState.EXECUTED)
+    # Count applied files (potential tag write targets -- an executed proposal exists, READ-05/D-01)
+    executed_stmt = select(func.count(FileRecord.id)).where(applied_clause())
     executed_result = await session.execute(executed_stmt)
     total_executed = executed_result.scalar() or 0
 
@@ -167,16 +173,11 @@ async def list_tags(
     if request.headers.get("HX-Request") != "true":
         return RedirectResponse(url="/s/tagwrite", status_code=302)
 
-    # Query EXECUTED files with metadata
-    stmt = (
-        select(FileRecord)
-        .options(selectinload(FileRecord.file_metadata))
-        .where(FileRecord.state == FileState.EXECUTED)
-        .order_by(FileRecord.original_filename)
-    )
+    # Query applied files with metadata (an executed proposal exists, READ-05/D-01)
+    stmt = select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(applied_clause()).order_by(FileRecord.original_filename)
 
     # Count total
-    count_stmt = select(func.count(FileRecord.id)).where(FileRecord.state == FileState.EXECUTED)
+    count_stmt = select(func.count(FileRecord.id)).where(applied_clause())
     count_result = await session.execute(count_stmt)
     total = count_result.scalar() or 0
 
@@ -333,7 +334,7 @@ async def write_file_tags(
     if file_record is None:
         return HTMLResponse(content="File not found", status_code=404)
 
-    if file_record.state != FileState.EXECUTED:
+    if not await is_applied(session, file_id):
         return HTMLResponse(content="Only executed files can have tags written", status_code=400)
 
     form_data = await request.form()
@@ -406,21 +407,24 @@ async def bulk_write_no_discrepancies(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """REVIEW-02 (D-03 / OQ-1): write tags for every qualifying EXECUTED file, server-re-queried.
+    """REVIEW-02 (D-03 / OQ-1): write tags for every qualifying applied file, server-re-queried.
 
     Mirrors ``tracklists.reject_low_confidence`` discipline -- the server re-queries the candidate
-    set at submit (EXECUTED files with metadata that have NO COMPLETED ``TagWriteLog``) and applies
-    the LOCKED D-03 / OQ-1 predicate (:func:`_qualifies_for_bulk_write`): ``>= 1`` changed field AND
-    no field that would blank an existing tag. It reads NO client-supplied id-list, so a stale or
-    forged selection can never mass-apply. Non-qualifying files stay per-file Approve/Edit/Skip.
-    Each qualifying file is written via the EXISTING :func:`execute_tag_write` (no new apply logic).
+    set at submit (applied files -- an executed proposal exists, READ-05/D-01 -- with metadata that
+    have NO COMPLETED ``TagWriteLog``) and applies the LOCKED D-03 / OQ-1 predicate
+    (:func:`_qualifies_for_bulk_write`): ``>= 1`` changed field AND no field that would blank an
+    existing tag. It reads NO client-supplied id-list, so a stale or forged selection can never
+    mass-apply. Non-qualifying files stay per-file Approve/Edit/Skip. The candidate set is capped at
+    :data:`_MAX_BULK_TAG_WRITE` per submit (D-03) so a large first-time-visible applied backlog cannot
+    blow up the loop. Each qualifying file is written via the EXISTING :func:`execute_tag_write`.
     """
     completed_subq = select(TagWriteLog.file_id).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
     stmt = (
         select(FileRecord)
         .options(selectinload(FileRecord.file_metadata))
-        .where(FileRecord.state == FileState.EXECUTED, FileRecord.id.not_in(completed_subq))
+        .where(applied_clause(), FileRecord.id.not_in(completed_subq))
         .order_by(FileRecord.original_filename)
+        .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
     )
     file_records = list((await session.execute(stmt)).scalars().all())
 

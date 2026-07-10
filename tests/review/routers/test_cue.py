@@ -9,6 +9,7 @@ import uuid
 import pytest
 
 from phaze.models.file import FileRecord, FileState
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
@@ -24,12 +25,20 @@ async def _create_approved_tracklist_with_file(
     *,
     artist: str = "DJ Shadow",
     event: str = "Coachella 2024",
-    file_state: str = FileState.EXECUTED,
+    applied: bool = True,
     with_timestamps: bool = True,
     track_count: int = 3,
     source: str = "1001tracklists",
 ) -> tuple[Tracklist, FileRecord]:
-    """Create an approved tracklist with an EXECUTED file and tracks with timestamps."""
+    """Create an approved tracklist with an applied file and timestamped tracks.
+
+    READ-05/D-01: a file is "applied" iff an ``executed`` :class:`RenameProposal` exists for it,
+    NOT ``file.state == 'executed'`` (no ``src/`` writer produces that state -- it was the whole
+    reason the CUE gate was dead). The file is seeded with ``state='moved'`` (a real post-apply
+    state) so these fixtures prove the CUE gate reads ``applied()`` (``proposals.status``), not
+    ``files.state``. Pass ``applied=False`` to seed an ``approved`` (non-executed) proposal so the
+    file is NOT applied (excluded from the eligible set / rejected by ``generate_cue``).
+    """
     file_id = uuid.uuid4()
     file_record = FileRecord(
         id=file_id,
@@ -39,10 +48,19 @@ async def _create_approved_tracklist_with_file(
         current_path=f"/dest/{artist} - Live @ {event}.mp3",
         file_type="mp3",
         file_size=50_000_000,
-        state=file_state,
+        state=FileState.MOVED,
     )
     session.add(file_record)
     await session.flush()
+
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            proposed_filename=f"{artist} - Live @ {event}.mp3",
+            status=ProposalStatus.EXECUTED if applied else ProposalStatus.APPROVED,
+        )
+    )
 
     tracklist_id = uuid.uuid4()
     version_id = uuid.uuid4()
@@ -154,6 +172,30 @@ async def test_generate_cue_success(client: AsyncClient, session: AsyncSession, 
 
 
 @pytest.mark.asyncio
+async def test_generate_cue_admits_applied_file_not_executed_state(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """SC#2 (READ-05/D-01): generate_cue ADMITS a file whose applied-ness comes from an executed proposal.
+
+    The file's ``state`` is ``'moved'`` (NEVER ``'executed'`` -- no prod writer sets that), yet the CUE
+    is written because ``is_applied`` reads ``proposals.status == 'executed'``. This is the behavior that
+    was dead before READ-05 (the old ``state == EXECUTED`` guard rejected every real applied file).
+    Mutation guard: revert ``generate_cue`` to ``file_record.state != FileState.EXECUTED`` and this test
+    goes RED (the fixture's ``state='moved'`` file would be rejected).
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session, applied=True)
+    assert file_record.state == FileState.MOVED  # applied-ness is NOT carried by files.state
+
+    audio_path = tmp_path / f"{file_record.original_filename}"
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert "CUE file generated" in response.text or "toast-container" in response.text
+    assert audio_path.with_suffix(".cue").exists()
+
+
+@pytest.mark.asyncio
 async def test_generate_cue_not_found(client: AsyncClient, session: AsyncSession) -> None:
     """POST /cue/{id}/generate with non-existent tracklist returns 404."""
     fake_id = uuid.uuid4()
@@ -162,9 +204,14 @@ async def test_generate_cue_not_found(client: AsyncClient, session: AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_generate_cue_file_not_executed(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/{id}/generate with non-EXECUTED file returns error toast."""
-    tracklist, file_record = await _create_approved_tracklist_with_file(session, file_state=FileState.APPROVED)
+async def test_generate_cue_file_not_applied(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """SC#2 (READ-05/D-01): a non-applied file (only an approved, non-executed proposal) is rejected.
+
+    ``generate_cue`` now gates on ``is_applied`` (an executed proposal), not ``file.state`` -- a file
+    that never got an executed proposal returns the "must be executed" toast even though it carries an
+    approved proposal.
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session, applied=False)
 
     audio_path = tmp_path / f"{file_record.original_filename}"
     audio_path.write_text("fake audio")
@@ -376,9 +423,10 @@ async def test_generate_cue_not_approved(client: AsyncClient, session: AsyncSess
         current_path=str(tmp_path / "test.mp3"),
         file_type="mp3",
         file_size=50_000_000,
-        state=FileState.EXECUTED,
+        state=FileState.MOVED,
     )
     session.add(file_record)
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="test.mp3", status=ProposalStatus.EXECUTED))
     (tmp_path / "test.mp3").write_text("fake")
 
     tracklist = Tracklist(
@@ -455,9 +503,10 @@ async def test_generate_cue_no_latest_version(client: AsyncClient, session: Asyn
         current_path=str(tmp_path / "test.mp3"),
         file_type="mp3",
         file_size=50_000_000,
-        state=FileState.EXECUTED,
+        state=FileState.MOVED,
     )
     session.add(file_record)
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="test.mp3", status=ProposalStatus.EXECUTED))
     (tmp_path / "test.mp3").write_text("fake")
 
     tracklist = Tracklist(

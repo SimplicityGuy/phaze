@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
+from sqlalchemy import select
 
+import phaze
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord, FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -104,6 +107,40 @@ async def test_proposals_list_shows_proposals(client: AsyncClient, session: Asyn
     response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "DJ Shadow - Live @ Coachella 2025.mp3" in response.text
+
+
+_PROPOSAL_ROW_TEMPLATE = Path(phaze.__file__).parent / "templates" / "proposals" / "partials" / "proposal_row.html"
+
+
+@pytest.mark.asyncio
+async def test_executed_badge_derives_from_proposal_status(client: AsyncClient, session: AsyncSession) -> None:
+    """D-04: the 'Executed' badge renders from ``proposal.status == 'executed'``, not ``file.state``.
+
+    ``create_test_proposal`` leaves ``file.state`` at ``PROPOSAL_GENERATED`` (NOT ``'executed'``), so a
+    rendered 'Executed' badge can ONLY come from the proposal's own status -- the whole point of the
+    cutover. With the pre-fix template (``proposal.file.state == 'executed'``) this badge would never
+    render for this fixture; this test flips RED if the reader regresses to ``file.state``.
+    """
+    proposal = await create_test_proposal(session, proposed_filename="Applied Set.mp3", status=ProposalStatus.EXECUTED)
+    # Premise (read independently -- proposal.file is lazy="raise"): file.state is NOT 'executed'.
+    file_state = await session.scalar(select(FileRecord.state).where(FileRecord.id == proposal.file_id))
+    assert file_state != FileState.EXECUTED.value
+
+    response = await client.get("/proposals/?status=all", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "Applied Set.mp3" in response.text
+    assert "Executed</span>" in response.text
+
+
+def test_proposal_row_badge_reads_status_not_file_state() -> None:
+    """Source-scan (D-04 / Pitfall 4): the badge branch reads ``proposal.status``; no ``file.state`` survives.
+
+    Phase 90 drops ``files.state``; the last stray ``proposal.file.state`` reader must be gone so it
+    does not trip over the removed column.
+    """
+    src = _PROPOSAL_ROW_TEMPLATE.read_text(encoding="utf-8")
+    assert 'proposal.status == "executed"' in src
+    assert "proposal.file.state" not in src
 
 
 @pytest.mark.asyncio
