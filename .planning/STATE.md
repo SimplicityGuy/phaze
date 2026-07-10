@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: ready_to_plan
-last_updated: 2026-07-10T22:01:09.660Z
-last_activity: 2026-07-10 -- Phase 85 execution started
+status: "Phase 85 shipped — PR #230"
+last_updated: "2026-07-10T22:15:46.519Z"
+last_activity: 2026-07-10
 progress:
   total_phases: 52
   completed_phases: 22
   total_plans: 91
   completed_plans: 35
   percent: 42
-stopped_at: Phase 85 complete (4/4) — ready to discuss Phase 86
 ---
 
 # Project State
@@ -27,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 
 Phase: 86
 Plan: Not started
-Status: Ready to plan
+Status: Phase 85 shipped — PR #230
 Last activity: 2026-07-10
 
 ## Performance Metrics
