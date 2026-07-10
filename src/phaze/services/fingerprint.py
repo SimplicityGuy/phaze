@@ -254,42 +254,48 @@ class FingerprintOrchestrator:
 
 
 async def get_fingerprint_progress(session: AsyncSession) -> dict[str, int]:
-    """Return total/completed/failed counts from fingerprint_results and files tables.
+    """Return total/completed/failed fingerprint counts, DERIVED from output tables + the dedup marker.
 
-    - total: count of files eligible for fingerprinting (METADATA_EXTRACTED or later, excluding FAILED)
-    - completed: count of files in FINGERPRINTED state
-    - failed: count of fingerprint_results with status='failed'
+    All three keys share ONE denominator (D-10/D-17): files whose ``file_type`` is in
+    :data:`~phaze.services.pipeline.MUSIC_VIDEO_TYPES` AND that are NOT dedup-resolved
+    (``~dedup_resolved_clause()``). Because every key rides that denominator, ``completed`` and
+    ``failed`` are strict subsets of ``total`` and the progress bar can never exceed 100%:
 
-    DB imports are intentionally function-local: this service module is loaded
-    by the agent worker (which is forbidden from importing ``phaze.database`` /
-    ``phaze.models``). Only the controller invokes this function, so lazy
-    imports keep the structural invariant intact (Phase 26 Plan 11 / Plan 10).
+    - ``total``: count of music/video files not dedup-resolved. Derived from ``file_type`` + the dedup
+      marker only -- NO ``FileRecord.state`` read (READ-04 / D-10).
+    - ``completed``: of those, files whose fingerprint stage is DONE -- ``done_clause(Stage.FINGERPRINT)``:
+      any engine row with ``status IN ('success','completed')`` (rides the ``ix_fprint_success`` partial
+      index). This is now a FILE count. Previously it read ``state == FINGERPRINTED``, whose sole writer
+      is ``retry_analysis_failed`` -- so it counted ~nothing; the number VISIBLY JUMPS. That is the fix,
+      not a regression (D-11).
+    - ``failed``: of those, files whose fingerprint stage is FAILED -- ``failed_clause(Stage.FINGERPRINT)``:
+      no engine succeeded AND at least one engine failed (DERIV-05 aggregation). This is now a FILE count.
+      Previously it was a ``fingerprint_results`` ROW count, which double-counted a two-engine failure and
+      misclassified a one-success/one-failure file as failed; the number VISIBLY DROPS. That is the fix,
+      not a regression (D-11).
+
+    The 3-key ``{total, completed, failed}`` contract is preserved (D-09) so ``docs/api.md`` and the
+    ``justfile`` curl recipe keep working. There is no per-engine breakdown -- ``done_clause(FINGERPRINT)``
+    already IS the per-engine coverage predicate; a GROUP BY engine is Phase 87 (D-12).
+
+    DB imports are intentionally function-local: this service module is loaded by the agent worker, which
+    is forbidden from importing ``phaze.database`` / ``phaze.models`` / ``phaze.services.pipeline`` /
+    ``phaze.services.stage_status`` at module scope. Only the controller invokes this function, so lazy
+    imports keep the agent-worker import boundary intact (D-00e / Pitfall 5).
     """
     from sqlalchemy import func, select  # noqa: PLC0415
 
-    from phaze.models.file import FileRecord, FileState  # noqa: PLC0415
-    from phaze.models.fingerprint import FingerprintResult  # noqa: PLC0415
+    from phaze.enums.stage import Stage  # noqa: PLC0415
+    from phaze.models.file import FileRecord  # noqa: PLC0415
+    from phaze.services.pipeline import MUSIC_VIDEO_TYPES  # noqa: PLC0415
+    from phaze.services.stage_status import dedup_resolved_clause, done_clause, failed_clause  # noqa: PLC0415
 
-    # Total: files in states eligible for fingerprinting
-    eligible_states = {
-        FileState.METADATA_EXTRACTED,
-        FileState.FINGERPRINTED,
-        FileState.ANALYZED,
-        FileState.PROPOSAL_GENERATED,
-        FileState.APPROVED,
-        FileState.REJECTED,
-        FileState.EXECUTED,
-        FileState.DUPLICATE_RESOLVED,
-    }
-    total_result = await session.execute(select(func.count(FileRecord.id)).where(FileRecord.state.in_(eligible_states)))
-    total = total_result.scalar_one()
+    # Shared denominator (D-10/D-17): music/video files that are NOT dedup-resolved. Every key rides this
+    # tuple, so completed ⊆ total and failed ⊆ total.
+    denom = (FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), ~dedup_resolved_clause())
 
-    # Completed: files in FINGERPRINTED state
-    completed_result = await session.execute(select(func.count(FileRecord.id)).where(FileRecord.state == FileState.FINGERPRINTED))
-    completed = completed_result.scalar_one()
-
-    # Failed: fingerprint_results with status='failed'
-    failed_result = await session.execute(select(func.count(FingerprintResult.id)).where(FingerprintResult.status == "failed"))
-    failed = failed_result.scalar_one()
+    total = (await session.execute(select(func.count(FileRecord.id)).where(*denom))).scalar_one()
+    completed = (await session.execute(select(func.count(FileRecord.id)).where(*denom, done_clause(Stage.FINGERPRINT)))).scalar_one()
+    failed = (await session.execute(select(func.count(FileRecord.id)).where(*denom, failed_clause(Stage.FINGERPRINT)))).scalar_one()
 
     return {"total": total, "completed": completed, "failed": failed}
