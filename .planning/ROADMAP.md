@@ -444,7 +444,25 @@ Plans:
   2. `get_fingerprint_progress` derives from the per-engine coverage predicate / output tables, not `FileRecord.state`.
   3. The shadow-compare gate stays green after the cutover.
 
-**Plans**: TBD
+**Plans**: 6 plans in 4 waves
+Plans:
+**Wave 1**
+
+- [ ] 84-01-PLAN.md — Migration `035` reconcile (bidirectional dedup marker vs files.state) + migration test (SIDECAR-02) [wave 1]
+- [ ] 84-02-PLAN.md — D-13 `dedup_resolved_clause()` predicate in stage_status.py + D-08 model docstring note (READ-04, SIDECAR-02) [wave 1]
+
+**Wave 2** *(depends on 84-01, 84-02)*
+
+- [ ] 84-03-PLAN.md — dedup.py cutover: pg_insert writer + DELETE…RETURNING CAS undo + nine reader flips + divergence & shadow-compare tests (READ-04, SIDECAR-02) [wave 2]
+- [ ] 84-04-PLAN.md — get_fingerprint_progress rewrite over MUSIC_VIDEO_TYPES + marker + done/failed_clause + real-DB replacement test (READ-04) [wave 2]
+
+**Wave 3** *(depends on 84-03, 84-04)*
+
+- [ ] 84-05-PLAN.md — AST source-scan guard over dedup.py + fingerprint.py, mutation-tested both directions (READ-04, SIDECAR-02) [wave 3]
+
+**Wave 4** *(depends on 84-03, 84-04, 84-05 — operator checkpoint)*
+
+- [ ] 84-06-PLAN.md — Live-corpus `just shadow-compare` run after `035`, assert hard_fail_total=0 (SIDECAR-02) [wave 4]
 
 ### Phase 85: EXECUTED-Gate Revival
 
