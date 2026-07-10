@@ -47,7 +47,7 @@
 - [ ] **READ-02**: `get_pipeline_stats` reports per-stage counts from output tables (the linear `GROUP BY FileRecord.state` is removed), and the DAG shows four-bucket per-stage counts (not_started / in_flight / done / failed) including a visible failed count per enrich stage.
 - [x] **READ-03**: Recovery/re-enqueue (`reenqueue.py`, `reconcile_cloud_jobs.py`) derive their done/in-flight sets from `stage_status`/sidecars with no `FileRecord.state` read, preserving the scheduling-ledger recovery contract and the "only previously-scheduled work recovers" guarantee.
 - [x] **READ-04**: Dedup (`services/dedup.py`) and `get_fingerprint_progress` derive from the dedup marker / output tables rather than `FileRecord.state`.
-- [ ] **READ-05**: The dead `state == EXECUTED` gates are revived against the real apply-outcome source — tag writing, review, tags/cue/tracklists guards fire for actually-applied files (fixes the permanently-dead tag-writer path).
+- [x] **READ-05**: The dead `state == EXECUTED` gates are revived against the real apply-outcome source — tag writing, review, tags/cue/tracklists guards fire for actually-applied files (fixes the permanently-dead tag-writer path).
 
 ### Sidecar Migration (SIDECAR)
 
@@ -145,7 +145,7 @@
 | READ-02 | Phase 82 | Pending |
 | READ-03 | Phase 80 | Complete |
 | READ-04 | Phase 84 | Complete |
-| READ-05 | Phase 85 | Pending |
+| READ-05 | Phase 85 | Complete |
 | SIDECAR-01 | Phase 83 | Complete |
 | SIDECAR-02 | Phase 84 | Complete |
 | SIDECAR-03 | Phase 86 | Pending |
