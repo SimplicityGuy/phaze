@@ -44,7 +44,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
-from phaze.services.scheduling_ledger import clear_ledger_entry, upsert_ledger_entry
+from phaze.services.scheduling_ledger import clear_ledger_entry, get_ledger_rows, upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks.reenqueue import (
     _DOMAIN_COMPLETED_STAGES,
@@ -652,36 +652,38 @@ async def test_awaiting_cloud_file_stays_pending_in_recovery(
 
 # --- Phase 80 D-08: the awaiting-candidate set is the single-source clause, ~inflight-guarded --------
 #
-# Phase 80 cut ``_get_awaiting_cloud_ids`` over from the retired ``FileRecord.state == AWAITING_CLOUD``
-# read to the single-source ``awaiting_candidate_clause()`` -- the SAME clause the drain and the
-# "Awaiting cloud" card consume (D-08), so all three can never disagree. Its ``~inflight_clause(ANALYZE)``
-# conjunct is load-bearing: a file MID-LOCAL-ANALYSIS still carries an inert ``awaiting`` cloud_job row
-# (D-13 keeps the flip; D-14 reaps it only at the analyze-terminal seam), and its committed
-# ``process_file`` ledger row must EXCLUDE it from the awaiting set -- otherwise recovery would mis-route
-# a locally-analyzing file to a COMPUTE agent (CLOUDROUTE-02). In the sidecar model a genuinely-PARKED
-# long file is held WITHOUT a control-side ``process_file`` ledger row (the hold path parks; it does not
-# enqueue), so a ``process_file`` orphan implies the file is being analyzed on an agent already and
-# recovery routes it kind-agnostically -- never diverted to a compute-only skip.
+# Phase 80 (CR-01 fix): ``_get_awaiting_cloud_ids`` is the RECOVERY-specific held-file predicate --
+# ``cloud_job(status='awaiting') AND NOT domain_completed(ANALYZE)``. It deliberately does NOT reuse the
+# drain/card's ``awaiting_candidate_clause()``: that clause conjoins ``~inflight_clause(ANALYZE)``, and
+# every held compute file ALREADY carries a ``process_file:<id>`` ledger row (the D-09 held-file backfill
+# seed at ``routers/pipeline.py`` inserts it for every file the duration router parks in AWAITING_CLOUD on
+# the compute path). Reusing that clause therefore made ``held_agent_rows`` provably empty -- the held long
+# file fell into ``other_agent_rows`` and was routed kind-agnostically to a fileserver and analyzed LOCALLY,
+# re-introducing the Phase-49 CR-01 CLOUDROUTE-02 bug. Recovery is safe WITHOUT the in-flight exclusion
+# because ``recover_orphaned_work`` already drops any file whose ``process_file`` key is LIVE
+# (``r.key not in live``), so a genuinely mid-local-analysis file never reaches this set's consumers.
 
 
 @pytest.mark.asyncio
-async def test_awaiting_candidate_with_inflight_ledger_is_excluded_from_held_set(
+async def test_held_file_with_process_file_seed_is_in_the_held_set(
     session: AsyncSession,
 ) -> None:
-    """D-08: a file with an ``awaiting`` cloud_job AND a ``process_file`` ledger row is EXCLUDED from the awaiting set.
+    """CR-01: a held file (``awaiting`` cloud_job + the D-09 ``process_file`` seed) IS in the held set.
 
-    The committed ``process_file`` ledger row makes ``inflight_clause(ANALYZE)`` True, so
-    ``~inflight_clause`` excludes the file -- it is mid-local-analysis, not a genuinely-parked cloud
-    candidate, and must never be routed to a compute agent (CLOUDROUTE-02).
-    MUTATION: dropping ``~inflight_clause(ANALYZE)`` from ``awaiting_candidate_clause`` re-includes it -> RED.
+    The D-09 held-file backfill seeds a ``process_file`` ledger row for every compute-path file parked in
+    AWAITING_CLOUD, so ``inflight_clause(ANALYZE)`` is True by construction for exactly the held files this
+    partition must catch. ``_get_awaiting_cloud_ids`` must therefore NOT conjoin ``~inflight_clause`` --
+    otherwise the file self-excludes, ``held_agent_rows`` is empty, and CLOUDROUTE-02 is violated.
+    MUTATION: reintroducing ``~inflight_clause(ANALYZE)`` (e.g. reusing ``awaiting_candidate_clause()``)
+    drops this file from the set -> RED.
     """
     f = _make_file(state=FileState.AWAITING_CLOUD)
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
-    await _seed_ledger(session, function="process_file", file_id=f.id)  # inflight(analyze) -> excluded
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # the D-09 held-file seed
 
-    assert str(f.id) not in await _get_awaiting_cloud_ids(session)
+    assert str(f.id) in await _get_awaiting_cloud_ids(session)
 
 
 @pytest.mark.asyncio
@@ -705,17 +707,20 @@ async def test_genuinely_parked_awaiting_file_is_in_held_set(
 
 
 @pytest.mark.asyncio
-async def test_local_analysis_process_file_orphan_recovers_kind_agnostically(
+async def test_held_process_file_orphan_is_not_analyzed_locally_on_a_fileserver(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A mid-local-analysis process_file orphan (inert ``awaiting`` row + process_file ledger) routes kind-agnostic.
+    """CR-01 (CLOUDROUTE-02): a held AWAITING_CLOUD orphan is NEVER routed to a fileserver for local analysis.
 
-    Because the file is EXCLUDED from the awaiting set by ``~inflight_clause`` (D-08), recovery does NOT
-    divert it to a compute-only skip -- it is a normal lost analyze that recovers to the only online
-    (fileserver) agent. This replaces the pre-cutover "held-row is compute-only" expectation, which
-    assumed the retired backfill model where a parked long file carried a process_file ledger row.
+    A held long file carries an ``awaiting`` cloud_job + the D-09 ``process_file`` seed. With only a
+    FILESERVER online, the compute-only partition finds no compute agent and SKIPS the file (the */5
+    ``release_awaiting_cloud`` cron drains the AWAITING_CLOUD set -- the file is not lost). It must NOT be
+    re-enqueued onto the fileserver's analyze lane. This is the exact Phase-49 CR-01 regression the cutover
+    re-opened by reusing ``awaiting_candidate_clause()`` for ``held_ids``.
+    MUTATION: reintroducing ``~inflight_clause(ANALYZE)`` in ``_get_awaiting_cloud_ids`` empties
+    ``held_agent_rows`` -> the file falls to ``other_agent_rows`` -> ``nox-analyze`` -> RED.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -724,15 +729,47 @@ async def test_local_analysis_process_file_orphan_recovers_kind_agnostically(
     f = _make_file(state=FileState.AWAITING_CLOUD)
     session.add(f)
     await session.commit()
-    await _seed_awaiting_cloud_job(session, f.id)  # inert awaiting row (mid-local-analysis)
-    await _seed_ledger(session, function="process_file", file_id=f.id)
+    await _seed_awaiting_cloud_job(session, f.id)
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # the D-09 held-file seed
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # Not held (excluded by ~inflight) -> recovers normally onto the only online agent.
-    assert "nox-analyze" in router.queues
+    # Held + no compute agent -> skipped for the release cron, NEVER analyzed locally on the fileserver.
+    assert "nox-analyze" not in router.queues
+    assert result["stages"]["process_file"]["reenqueued"] == 0
+
+
+@pytest.mark.asyncio
+async def test_held_process_file_orphan_routes_to_a_compute_agent(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-01 (CLOUDROUTE-02): a held AWAITING_CLOUD orphan routes to a COMPUTE agent when one is online.
+
+    Companion to the fileserver-skip case: with a compute agent online, the held file's ``process_file``
+    orphan re-drives onto the COMPUTE agent's analyze lane (never a fileserver).
+    MUTATION: reintroducing ``~inflight_clause(ANALYZE)`` empties ``held_agent_rows``; the file would still
+    reach ``cloud-analyze`` here (only a compute agent is online) but the fileserver-skip twin above turns
+    RED -- the pair is the lock.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="cloud", kind="compute")  # a compute agent online
+    f = _make_file(state=FileState.AWAITING_CLOUD)
+    session.add(f)
+    await session.commit()
+    await _seed_awaiting_cloud_job(session, f.id)
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # the D-09 held-file seed
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert "cloud-analyze" in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
@@ -1336,6 +1373,36 @@ async def test_d10_cell_b_callback_partial_failure_stays_terminal(session: Async
 
     # enqueued_at (the lost callback's row) PRE-DATES failed_at -> domain-complete -> stays terminal.
     assert is_domain_completed(row, done_sets) is True
+
+
+@pytest.mark.asyncio
+async def test_d10_gate_does_not_crash_on_db_read_ledger_row(session: AsyncSession) -> None:
+    """CR-02: the D-10 gate must NOT raise on a DB-read (naive) ``enqueued_at`` vs aware ``failed_at``.
+
+    ``scheduling_ledger.enqueued_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (migration 022) -> asyncpg returns
+    it NAIVE, while ``metadata.failed_at`` is ``timezone=True`` (aware). The Cell A/B tests above build the
+    ledger row IN MEMORY with an aware ``enqueued_at`` and never round-trip through ``get_ledger_rows``, so
+    they miss the mismatch. Reading the row back from the DB (the production ``recover_orphaned_work`` path)
+    makes ``enqueued_at`` naive; a bare ``naive <= aware`` raises ``TypeError`` and aborts the whole recovery
+    run. This asserts the coercion holds against the real DB representation.
+    MUTATION: dropping the ``tzinfo``-coercion at the gate (bare ``row.enqueued_at <= failed_at``) -> RED
+    (``TypeError: can't compare offset-naive and offset-aware datetimes``).
+    """
+    failed_at = datetime.now(UTC)
+    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED (aware failed_at)
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)  # committed -> naive enqueued_at
+
+    # Read the row back the way production does -> enqueued_at is NAIVE (from the WITHOUT TIME ZONE column).
+    row = next(r for r in await get_ledger_rows(session) if r.key == key)
+    assert row.enqueued_at.tzinfo is None  # guards the premise: the DB really returns a naive stamp
+    done_sets = await _build_done_sets(session, _ledger_fids([row]))
+
+    # The committed row's server-default enqueued_at is AFTER failed_at (an orphaned retry) -> re-drives,
+    # but the point is that the comparison COMPLETES without a TypeError.
+    assert is_domain_completed(row, done_sets) is False
 
 
 def test_d10_analyze_clears_failed_at_but_metadata_does_not() -> None:

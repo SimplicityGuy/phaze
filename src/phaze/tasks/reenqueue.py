@@ -81,6 +81,7 @@ instead of raising. The cached ``task_router`` is reused, never reconstructed pe
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
 import json
 from typing import TYPE_CHECKING, Any, cast
 import uuid
@@ -98,7 +99,7 @@ from phaze.services.backends import IN_FLIGHT
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
-from phaze.services.stage_status import awaiting_candidate_clause, domain_completed_clause, done_clause
+from phaze.services.stage_status import domain_completed_clause, done_clause
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 
 
@@ -298,21 +299,29 @@ def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
 
 
 async def _get_awaiting_cloud_ids(session: AsyncSession) -> set[str]:
-    """File-id strings for files that are genuinely PARKED awaiting-cloud candidates (Phase 80, D-08).
+    """File-id strings for held AWAITING_CLOUD long files, for the compute-only recovery partition (CLOUDROUTE-02).
 
-    Cut over from the retired ``FileRecord.state == AWAITING_CLOUD`` read to the single-source
-    :func:`~phaze.services.stage_status.awaiting_candidate_clause` -- the SAME clause the drain
-    (``get_cloud_staging_candidates``) and the "Awaiting cloud" card (``get_awaiting_cloud_count``)
-    consume, so the card, the drain, and recovery derive from ONE source and can NEVER disagree (D-08).
-    A candidate is a file with a ``cloud_job(status='awaiting')`` sidecar row that is NOT analyze-in-flight
-    AND has NOT domain-completed its analyze. The ``~inflight_clause(ANALYZE)`` conjunct is load-bearing:
-    a file MID-LOCAL-ANALYSIS still carries an inert ``awaiting`` row (D-13 keeps the flip; D-14 reaps
-    it only at the analyze-terminal seam), and its committed ``process_file`` ledger row correctly
-    EXCLUDES it here -- so recovery never mis-routes a locally-analyzing file to a COMPUTE agent
-    (CLOUDROUTE-02, the very invariant this helper enforces). The INNER join supplies the ``FileRecord``
-    the correlated builders reference. Read ONCE per recovery run, alongside the done-sets.
+    Recovery-SPECIFIC predicate: a held long file is one with an ``cloud_job(status='awaiting')`` sidecar
+    row that has NOT domain-completed its analyze. It deliberately does NOT reuse the drain/card's
+    :func:`~phaze.services.stage_status.awaiting_candidate_clause`, because that clause conjoins
+    ``~inflight_clause(ANALYZE)`` and every held compute file ALREADY carries a ``process_file:<id>``
+    scheduling-ledger row -- the D-09 held-file backfill seed at ``routers/pipeline.py`` inserts it for
+    every file the duration router parks in ``AWAITING_CLOUD`` on the compute path. So
+    ``~inflight_clause(ANALYZE)`` is False by construction for exactly the held files this partition
+    exists to catch, and reusing ``awaiting_candidate_clause`` here made ``held_agent_rows`` provably
+    empty -- re-introducing the Phase-49 CR-01 CLOUDROUTE-02 bug (held long files routed kind-agnostically
+    to a fileserver and analyzed locally). The drain/card KEEP ``~inflight_clause`` (they route NEW work
+    and must skip a locally-analyzing file); recovery does not, because it operates only on ALREADY-orphaned
+    rows -- ``recover_orphaned_work`` has already excluded any file whose ``process_file`` key is live
+    (``r.key not in live``), so a genuinely mid-local-analysis file never reaches this set's consumers.
+    The INNER join supplies the ``FileRecord`` the correlated builder references. Read ONCE per run.
     """
-    stmt = select(FileRecord.id).select_from(FileRecord).join(CloudJob, CloudJob.file_id == FileRecord.id).where(awaiting_candidate_clause())
+    stmt = (
+        select(FileRecord.id)
+        .select_from(FileRecord)
+        .join(CloudJob, CloudJob.file_id == FileRecord.id)
+        .where(CloudJob.status == CloudJobStatus.AWAITING.value, ~domain_completed_clause(Stage.ANALYZE))
+    )
     return {str(fid) for fid in (await session.scalars(stmt)).all()}
 
 
@@ -387,7 +396,13 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     if failed_at is None:
         return True  # done (a metadata row present, failed_at NULL) -> domain-complete
     # failed -> the D-10 cell: terminal only when the ledger row PRE-DATES the failure marker.
-    return row.enqueued_at <= failed_at
+    # ``scheduling_ledger.enqueued_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (migration 022), so asyncpg
+    # returns it NAIVE in production, while ``metadata.failed_at`` is ``timezone=True`` (aware). Coerce
+    # the naive ledger stamp to UTC-aware before comparing -- a bare ``naive <= aware`` raises TypeError
+    # and would abort the whole recovery run (CR-02). The in-memory D-10 unit rows are already aware, so
+    # this is a no-op for them and the real fix only shows against a DB round-trip (see the CR-02 test).
+    enqueued_at = row.enqueued_at if row.enqueued_at.tzinfo is not None else row.enqueued_at.replace(tzinfo=UTC)
+    return enqueued_at <= failed_at
 
 
 async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) -> None:
