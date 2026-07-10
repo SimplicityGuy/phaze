@@ -1408,15 +1408,21 @@ async def get_backfill_candidates(session: AsyncSession, threshold_sec: int) -> 
 
 
 async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
-    """Return all music/video FileRecords -- the metadata-extraction pending set.
+    """Return the DERIVED metadata-extraction pending set -- music/video files eligible for metadata (READ-01).
 
     The EXACT set the manual metadata triggers (``trigger_metadata_extraction`` /
-    ``trigger_extraction_ui``) enqueue: every music/video file regardless of state (D-04
-    backfill -- metadata extraction is idempotent per file and the deterministic
-    ``extract_file_metadata:<file_id>`` key dedups an in-flight re-run). Pure ORM
-    ``file_type.in_(MUSIC_VIDEO_TYPES)`` with NO interpolated operator input (T-42-03).
+    ``trigger_extraction_ui``) and the Phase-42 recovery producer enqueue. READ-01 cutover: DERIVED from
+    ``eligible_clause(METADATA)`` (``~inflight ∧ ~done`` -- ``ELIGIBLE_AFTER_FAILURE[METADATA]`` is True,
+    so a FAILED metadata row stays eligible for the ELIG-04 auto-retry) instead of the prior
+    state-agnostic "every music/video file", and excludes dedup-resolved files. A file whose metadata is
+    genuinely done (a row present with ``failed_at`` NULL) drops out; a not-started or failed one stays.
+    Pure ORM / bound params, NO interpolated operator input (T-42-03).
     """
-    stmt = select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        eligible_clause(Stage.METADATA),
+        ~dedup_resolved_clause(),
+    )
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
@@ -1441,38 +1447,26 @@ async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
 
 
 async def get_fingerprint_pending_files(session: AsyncSession) -> list[FileRecord]:
-    """Return METADATA_EXTRACTED files PLUS failed-fingerprint-retry files, de-duplicated by id.
+    """Return the DERIVED fingerprint pending set -- music/video files eligible for fingerprinting (READ-01).
 
-    The EXACT set the manual ``trigger_fingerprint`` API endpoint enqueues: files in
-    ``METADATA_EXTRACTED`` state (ready for fingerprinting) UNION files carrying a
-    ``FingerprintResult`` with ``status == "failed"`` that are not yet ``FINGERPRINTED``
-    (retry per D-16). The two sets are merged and de-duplicated by id (keeping the
-    ``FileRecord`` rows so the full ``FingerprintFilePayload`` can be built downstream).
-
-    Phase 42 consistency fix: the HTMX ``trigger_fingerprint_ui`` endpoint previously queried
-    ONLY ``METADATA_EXTRACTED`` (no failed-retry scope); routing it through this shared helper
-    ALIGNS it with the API endpoint (it GAINS the failed-retry scope) -- an intended fix so the
-    manual UI and API triggers and recovery cannot drift. Pure ORM with NO interpolated
-    operator input (T-42-03).
+    The EXACT set the manual ``trigger_fingerprint`` / ``trigger_fingerprint_ui`` endpoints and the
+    Phase-42 recovery producer enqueue. READ-01 cutover: DERIVED from ``eligible_clause(FINGERPRINT)`` in
+    a SINGLE ``.where(...)`` -- the prior ``get_files_by_state(METADATA_EXTRACTED)`` UNION with the
+    failed-retry sub-select AND the manual de-dup-by-id loop are COLLAPSED. This loses no coverage:
+    ``ELIGIBLE_AFTER_FAILURE[FINGERPRINT]`` is True, so ``eligible_clause`` is ``~inflight ∧ ~done``
+    (it drops the ``~failed`` conjunct), which subsumes the old failed-retry set -- a failed-only
+    fingerprint (DERIV-05: no engine ``success``/``completed``) is NOT ``done`` and therefore stays
+    eligible (ELIG-04 auto-retry). A single ``.where`` cannot emit a duplicate row, so the de-dup loop is
+    unnecessary. Dedup-resolved files are excluded. Pure ORM / bound params, NO interpolated operator
+    input (T-42-03).
     """
-    files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
-
-    failed_stmt = (
-        select(FileRecord)
-        .join(FingerprintResult, FingerprintResult.file_id == FileRecord.id)
-        .where(FingerprintResult.status == "failed")
-        .where(FileRecord.state != FileState.FINGERPRINTED)
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        eligible_clause(Stage.FINGERPRINT),
+        ~dedup_resolved_clause(),
     )
-    failed_files = list((await session.execute(failed_stmt)).scalars().all())
-
-    seen_ids: set[str] = set()
-    out: list[FileRecord] = []
-    for f in [*files, *failed_files]:
-        fid = str(f.id)
-        if fid not in seen_ids:
-            seen_ids.add(fid)
-            out.append(f)
-    return out
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:

@@ -14,7 +14,6 @@ from sqlalchemy import text
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
@@ -30,7 +29,6 @@ from phaze.services.pipeline import (
     get_backfill_candidates,
     get_discovered_files_with_duration,
     get_files_by_state,
-    get_fingerprint_pending_files,
     get_global_reconciliation,
     get_match_busy_count,
     get_match_pending_tracklists,
@@ -851,49 +849,6 @@ async def test_get_metadata_pending_files_returns_only_music_video(session: Asyn
     ids = {f.id for f in result}
     assert music.id in ids
     assert other.id not in ids
-
-
-@pytest.mark.asyncio
-async def test_get_fingerprint_pending_files_unions_metadata_extracted_and_failed_retry(session: AsyncSession) -> None:
-    """Fingerprint pending = METADATA_EXTRACTED union failed-retry (state != FINGERPRINTED), deduped by id.
-
-    A METADATA_EXTRACTED file is in; a failed-fingerprint file still not FINGERPRINTED is in (retry);
-    a FINGERPRINTED file with a failed result is excluded; a plain DISCOVERED file is excluded.
-    """
-    ready = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
-    failed_retry = _make_pipeline_file(state=FileState.ANALYZED)
-    already_done = _make_pipeline_file(state=FileState.FINGERPRINTED)
-    discovered = _make_pipeline_file(state=FileState.DISCOVERED)
-    session.add_all([ready, failed_retry, already_done, discovered])
-    await session.flush()
-    session.add_all(
-        [
-            FingerprintResult(id=uuid.uuid4(), file_id=failed_retry.id, engine="audfprint", status="failed"),
-            FingerprintResult(id=uuid.uuid4(), file_id=already_done.id, engine="audfprint", status="failed"),
-        ]
-    )
-    await session.flush()
-
-    result = await get_fingerprint_pending_files(session)
-    ids = [f.id for f in result]
-    assert ready.id in ids
-    assert failed_retry.id in ids
-    assert already_done.id not in ids
-    assert discovered.id not in ids
-
-
-@pytest.mark.asyncio
-async def test_get_fingerprint_pending_files_dedups_metadata_extracted_with_failed_result(session: AsyncSession) -> None:
-    """A METADATA_EXTRACTED file that ALSO has a failed fingerprint result appears exactly once."""
-    dual = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
-    session.add(dual)
-    await session.flush()
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=dual.id, engine="audfprint", status="failed"))
-    await session.flush()
-
-    result = await get_fingerprint_pending_files(session)
-    ids = [f.id for f in result]
-    assert ids.count(dual.id) == 1
 
 
 @pytest.mark.asyncio

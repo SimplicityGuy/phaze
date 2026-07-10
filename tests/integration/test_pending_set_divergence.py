@@ -88,8 +88,12 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
-        session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
-        await session.flush()
+        # Idempotent FK-agent seed: the shared ``*_test`` DB may already carry a committed
+        # ``legacy-application-server`` agent (a sibling bucket's committing test) -- re-adding it would
+        # raise UniqueViolationError at flush (82-01 SUMMARY environmental note). Only add if absent.
+        if await session.get(Agent, _LEGACY_AGENT_ID) is None:
+            session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+            await session.flush()
         try:
             yield session
         finally:
