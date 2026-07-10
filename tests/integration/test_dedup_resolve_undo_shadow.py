@@ -299,3 +299,60 @@ async def test_concurrent_double_submit_insert_conflict_is_a_noop(db_session: As
     await db_session.refresh(dup)
     assert dup.state == FileState.DUPLICATE_RESOLVED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+
+
+# ---------------------------------------------------------------------------
+# T-84-03-02 branch coverage (Nyquist gap, validate-phase): the undo payload arrives from the browser,
+# so every validation branch in `undo_resolve` is attacker-reachable. Two were uncovered:
+#   dedup.py:315 — `id` already a uuid.UUID rather than a str
+#   dedup.py:325 — `previous_state` not a str at all (JSON `null` -> None)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_undo_accepts_uuid_typed_id(db_session: AsyncSession) -> None:
+    """A payload whose `id` is a real UUID object (not a str) restores normally (dedup.py:315)."""
+    keeper = await _file(db_session)
+    dup = await _file(db_session)
+    await db_session.flush()
+
+    _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
+    # The browser sends strings; internal callers may pass UUID objects. Both must work.
+    uuid_typed = [{"id": uuid.UUID(entry["id"]), "previous_state": entry["previous_state"]} for entry in payload]
+
+    restored = await undo_resolve(db_session, uuid_typed)
+
+    assert restored == 1
+    assert dup.id not in await _marker_file_ids(db_session)
+    await db_session.refresh(dup)
+    assert dup.state == FileState.DISCOVERED
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+
+
+@pytest.mark.asyncio
+async def test_undo_with_null_previous_state_keeps_marker(db_session: AsyncSession) -> None:
+    """A JSON `null` (or any non-str) previous_state drops the entry BEFORE the DELETE.
+
+    `FileState(None)` raises, so validating after the DELETE would orphan the marker — the same
+    hard-divergence class as WR-01. The entry must be dropped during validation instead.
+
+    What this actually locks: the `try/except ValueError` around `FileState(raw_state)`. Removing it
+    makes both this test and its sibling RED. The `isinstance(raw_state, str)` check on the line above
+    is **not** a runtime control -- `FileState` is a `StrEnum`, so its members already satisfy
+    `isinstance(x, str)`, and `FileState(None | 42 | [...] | True)` raises `ValueError` regardless.
+    That check exists solely to narrow `Any | None` to `str` for mypy; deleting it changes no behaviour
+    and no mutation can turn it RED. Recorded rather than papered over: a branch that survives every
+    mutation is type-checker scaffolding, not a guard.
+    """
+    keeper = await _file(db_session)
+    dup = await _file(db_session)
+    await db_session.flush()
+
+    _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
+
+    for bad_state in (None, 42, ["discovered"]):
+        poisoned = [{**entry, "previous_state": bad_state} for entry in payload]
+        assert await undo_resolve(db_session, poisoned) == 0
+        assert dup.id in await _marker_file_ids(db_session)  # marker survives every time
+
+    await db_session.refresh(dup)
+    assert dup.state == FileState.DUPLICATE_RESOLVED
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
