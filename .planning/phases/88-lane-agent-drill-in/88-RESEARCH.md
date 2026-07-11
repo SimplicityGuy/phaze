@@ -338,17 +338,16 @@ async def agent_activity(
 | A2 | Recommended N=20 for lane recent completions (D-07) | Pattern 2 / D-07 | Wrong N is a one-line change; D-07 explicitly leaves N to planning |
 | A3 | Local-lane "recent completions" is best sourced from recently-completed `AnalysisResult` for files owned by the local fileserver agent, OR omitted per D-06 kind-adaptivity | Open Question 1 | A wrong choice shows an empty/odd completions list on the local lane; flag for user/planner |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Local-lane recent completions source (D-06/D-07).**
+> Both resolved during planning (Phase 88 plans committed). Resolutions locked below.
+
+1. **Local-lane recent completions source (D-06/D-07).** → **RESOLVED (omit).** Plan 88-02 Task 1: local lanes write no `CloudJob` rows, so the lane body renders the "No completions in the last 20" empty state rather than fabricating a source (per D-06 kind-adaptivity). Option (a) chosen.
    - What we know: compute/kueue lanes have `CloudJob` rows (backend_id + status='succeeded'); a `LocalBackend` writes NO `cloud_job` row (backends.py:276 in_flight_count always 0).
    - What's unclear: where a local lane's "recent completions" come from. Candidate: last-N `AnalysisResult` (order by `analysis_completed_at` DESC) for files whose owning agent is the local fileserver — but `AnalysisResult` carries no `backend_id`, so "which lane completed it" is not directly attributable.
    - Recommendation: per D-06 kind-adaptivity, either (a) omit the recent-completions section on the local lane entirely (show "No completions in the last {N}" or hide it), or (b) source it from `AnalysisResult.analysis_completed_at` DESC. Prefer (a) for a clean first cut; flag to the user in discuss/plan.
 
-2. **Where `pipeline_stats_partial` reads `?lane=` for highlight re-render.**
-   - What we know: `pipeline_stats_partial` (pipeline.py:686) re-includes `_analyze_lanes.html` with `oob=True` each 5s. To re-apply the selected ring (D-02) it must receive the selected `backend_id`.
-   - What's unclear: whether the param arrives on the poll request (HTMX includes the pushed URL's query on `hx-get`? — by default HTMX does NOT append the current URL's query to an `hx-get`). The poll `hx-get="/pipeline/stats"` will NOT carry `?lane=` automatically.
-   - Recommendation: add `hx-include` or `hx-vals='js:...'` reading the current `?lane=` from `location.search`, OR have the poll endpoint re-read a small client-set value. The planner must wire the selected id into the poll request explicitly — this is the subtle part of D-02. Verify against HTMX 2.0.10 `hx-vals`/`hx-include` semantics.
+2. **Where the poll reads `?lane=` for highlight re-render.** → **RESOLVED (explicit `hx-vals`).** The `/pipeline/stats` poll is a single persistent chrome-level element in `shell/shell.html:196-198` (NOT in `_analyze_lanes.html`, which has no `hx-get` of its own). Plan 88-01 Task 3 adds `hx-vals='js:{lane: new URLSearchParams(location.search).get("lane")}'` to that `#pipeline-stats` element, and the agent-param `hx-vals` to the `#agents-table-section` self-poll in `agents_table.html`, so the pushed `?lane=`/`?agent=` reaches the poll endpoint for the D-02 highlight re-render. HTMX does NOT auto-append the pushed URL's query — this wiring is mandatory, not optional.
 
 ## Environment Availability
 
