@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -34,9 +34,17 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.database import get_session
+from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.services.agent_liveness import classify, classify_compute_lanes, sort_key
+from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
+
+
+# The six pipeline stages surfaced in the agent-activity COUNT matrix (DRILL-02 / D-04). TRACKLIST is
+# OMITTED (the 7-stage -> 6-pill remap, RESEARCH Pitfall 3); REVIEW renders under "Appr" and APPLY under
+# "Exec" in the template. Ordered for the matrix's left-to-right column order.
+_ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
 
 
 logger = structlog.get_logger(__name__)
@@ -57,6 +65,15 @@ def _is_htmx(request: Request) -> bool:
     ("Search UI: HTMX partial detection via truthy HX-Request header check").
     """
     return request.headers.get("hx-request") == "true"
+
+
+def _resolve_selected_agent(agent: str | None, agents: list[Agent]) -> str | None:
+    """Resolve the pushed ``?agent=`` id by lookup-in-known-set (DRILL-03 / D-02, T-88-01).
+
+    Returns the id only when it names a currently-loaded agent, so an unknown/absent/hostile id
+    highlights nothing and can never reach a template as a trusted value. Kept ASCII/autoescaped.
+    """
+    return agent if agent is not None and any(a.id == agent for a in agents) else None
 
 
 async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
@@ -91,6 +108,7 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
 async def page(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    agent: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Render either the full ``admin/agents.html`` page or the partial.
 
@@ -117,6 +135,10 @@ async def page(
             "refreshed_at_iso": now.isoformat(),
             "compute_lane_state": compute_lane_state,
             "compute_lane_count": compute_lane_count,
+            # Phase 88 (88-01, DRILL-03 / D-02): seed the selected-agent highlight from ?agent= so a
+            # reload re-opens the row selection; the self-poll re-applies it thereafter. Lookup-in-
+            # known-set (T-88-01) — unknown/absent id highlights nothing, never errors.
+            "selected_agent": _resolve_selected_agent(agent, agents),
             "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
         },
     )
@@ -126,12 +148,18 @@ async def page(
 async def table_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    agent: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Return the agents_table partial UNCONDITIONALLY.
 
     This is the HTMX poll target. The partial re-emits its own
     ``hx-trigger="every 5s"`` attribute so the next tick fires automatically
     after the outerHTML swap (UI-SPEC §Polling LOCKED — never halts).
+
+    Phase 88 (88-01, DRILL-03 / D-02): the ``#agents-table-section`` self-poll carries the pushed
+    ``?agent=`` via ``hx-vals`` (agents_table.html), so this tick re-emits the selected-row highlight
+    (aria-current + ring) on the matching row. Resolved by lookup-in-known-set (T-88-01) — an
+    unknown/absent id highlights nothing, never a 422/500 into the poll.
     """
     agents, now = await _load_agents(session)
     compute_lane_state, compute_lane_count = await classify_compute_lanes(session)
@@ -145,5 +173,68 @@ async def table_partial(
             "refreshed_at_iso": now.isoformat(),
             "compute_lane_state": compute_lane_state,
             "compute_lane_count": compute_lane_count,
+            "selected_agent": _resolve_selected_agent(agent, agents),
+        },
+    )
+
+
+@router.get("/{agent_id}/_activity", response_class=HTMLResponse)
+async def agent_activity(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_id: str,
+) -> HTMLResponse:
+    """Render the agent-activity body fragment swapped into the shared ``#detail-pane`` shell (DRILL-02).
+
+    The wave-2 body for plan 88-01's non-modal detail pane: the agent-row trigger's
+    ``hx-get="/admin/agents/{id}/_activity"`` innerHTML-swaps THIS fragment into ``#detail-pane``, and
+    the fragment carries its OWN bounded ``hx-trigger="every 5s"`` self-refresh (D-03) — so the endpoint
+    returns the body directly, NOT the shell (the 88-01 shell is a static host with no body slot).
+
+    For a found agent the fragment stacks (D-05): liveness header (``classify`` transient ``_status`` +
+    kind badge + last-seen) → a per-agent 6-stage COUNT matrix (one indexed ``GROUP BY stage_status_case``
+    per stage scoped to ``agent_id`` via :func:`_agent_stage_buckets`, D-04/D-00a) → per-lane queue depths
+    → recent scan batches. Every read is bounded + degrade-safe (D-00b): an unknown ``agent_id`` renders
+    a friendly empty fragment at **200** (mirroring the sibling ``lane_detail`` never-error posture, T-88-07)
+    — NEVER an ``HTTPException`` / JSON / 500 — and an agent owning 0 files renders the "owns no files yet"
+    empty state. The 200 (not 404) is load-bearing: the ``/admin/agents`` page has no htmx 404 swap opt-in
+    (its ``htmx:responseError`` handler targets ``#agents-table-section``, not ``#detail-pane``), so a 404
+    fragment would be DISCARDED — the pane would keep stale content and the self-poll would 404-loop forever
+    on an agent revoked mid-view (WR-01/WR-02). The not-found fragment carries NO own-tick, so returning it
+    at 200 terminates the poll loop cleanly.
+
+    Read-only: ``get_session`` never commits and this handler issues no writes (T-88-10 — it reads ONLY
+    the derived ``stage_status_case``, never ``FileRecord.state``).
+    """
+    now = datetime.now(UTC)
+    agent = await session.get(Agent, agent_id)
+    if agent is None:
+        # Friendly empty fragment (T-88-07 IDOR guard): a raw/unknown/hostile id renders a benign body,
+        # never a raw-param-driven 500. Returned at 200 (WR-01) — the /admin/agents page has no htmx 404
+        # swap opt-in, so a 404 would be discarded, leaving stale pane content and a 404-looping self-poll
+        # on a revoked-mid-view agent. The fragment carries no own-tick, so 200 terminates the poll cleanly.
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/partials/_agent_activity.html",
+            context={"request": request, "agent": None, "now": now},
+        )
+
+    agent._status = classify(agent, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
+    # D-04: a per-agent 6-stage matrix of COUNTS — one indexed GROUP BY per stage, keyed by Stage VALUE
+    # ('metadata'..'apply') so the template's Appr=review / Exec=apply remap resolves (RESEARCH Pitfall 3).
+    buckets = {stage.value: await _agent_stage_buckets(session, agent_id, stage) for stage in _ACTIVITY_STAGES}
+    queue_depths = await get_agent_lane_depths(request.app.state, agent_id)
+    recent_scans = await get_agent_recent_scans(session, agent_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/partials/_agent_activity.html",
+        context={
+            "request": request,
+            "agent": agent,
+            "now": now,
+            "buckets": buckets,
+            "queue_depths": queue_depths,
+            "recent_scans": recent_scans,
+            "refreshed_at_iso": now.isoformat(),
         },
     )

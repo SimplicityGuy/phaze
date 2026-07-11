@@ -86,9 +86,9 @@
 
 *Folded in from the #222 post-deploy backlog. The agent-activity view consumes the new `stage_status`.*
 
-- [ ] **DRILL-01**: Clicking a backend-lane card opens a lane-detail view (new `GET /pipeline/lanes/{backend_id}`) showing that lane's queues / in-flight / waiting / quota / recent completions.
-- [ ] **DRILL-02**: Clicking an agent row opens an agent-detail view (new `GET /admin/agents/{agent_id}/_activity`) showing owned files grouped by derived `stage_status`, recent scan batches, per-lane queue depths, and liveness.
-- [ ] **DRILL-03**: The drill-in survives the 5s poll swap (selection carried via URL param / rendered outside the polled `outerHTML` region so it is not clobbered) and is keyboard-accessible (`role=button`, Enter/Space, focus ring).
+- [x] **DRILL-01**: Clicking a backend-lane card opens a lane-detail view (new `GET /pipeline/lanes/{backend_id}`) showing that lane's queues / in-flight / waiting / quota / recent completions.
+- [x] **DRILL-02**: Clicking an agent row opens an agent-detail view (new `GET /admin/agents/{agent_id}/_activity`) showing owned files grouped by derived `stage_status`, recent scan batches, per-lane queue depths, and liveness.
+- [x] **DRILL-03**: The drill-in survives the 5s poll swap (selection carried via URL param / rendered outside the polled `outerHTML` region so it is not clobbered) and is keyboard-accessible (`role=button`, Enter/Space, focus ring).
 
 ### Migration & Verification (MIG)
 
@@ -164,9 +164,9 @@
 | LEGACY-02 | Phase 89 | Pending |
 | LEGACY-03 | Phase 89 | Pending |
 | PRIO-01 | Phase 87 | Complete |
-| DRILL-01 | Phase 88 | Pending |
-| DRILL-02 | Phase 88 | Pending |
-| DRILL-03 | Phase 88 | Pending |
+| DRILL-01 | Phase 88 | Complete |
+| DRILL-02 | Phase 88 | Complete |
+| DRILL-03 | Phase 88 | Complete |
 | PROV-01 | — | Deferred (v2) |
 | DENORM-01 | — | Deferred (v2) — PERF-02 (Phase 82) measured over budget, NO-GO/deferred; revisit after asyncio.gather parallelization |
 

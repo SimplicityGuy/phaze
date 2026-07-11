@@ -53,7 +53,7 @@ from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
-from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
+from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
 from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
@@ -798,3 +798,69 @@ async def get_backend_lane_snapshot(session: AsyncSession) -> list[dict[str, Any
             logger.warning("backend_lane_snapshot_rollback_failed", exc_info=True)
         return []
     return lanes
+
+
+# --- Phase 88 (88-02, DRILL-01): degrade-safe lane-detail data helpers ---------------------
+#
+# Two bounded, read-only, secret-free reads that feed the `GET /pipeline/lanes/{backend_id}` body
+# (_lane_detail.html). Both degrade to [] / 0 on any error so they can NEVER 500 the drill-in pane's
+# own 5s tick (D-00b / PERF-01). Neither exposes any config/SecretStr/kube token -- only the CloudJob
+# status/timestamp/file_id scalars and the broker depth counts.
+
+# D-07: the fixed last-N cap on the recent-completions list -- predictable render cost under any
+# throughput (no whole-corpus scan per poll). Newest-first, bounded by this LIMIT.
+LANE_RECENT_N = 20
+
+
+async def get_lane_recent_completions(session: AsyncSession, backend_id: str, kind: str, limit: int = LANE_RECENT_N) -> list[CloudJob]:
+    """Return up to ``limit`` most-recent succeeded ``CloudJob`` rows for a compute/kueue lane (D-07).
+
+    For a ``local`` lane returns ``[]`` unconditionally: a :class:`LocalBackend` writes NO ``cloud_job``
+    row (``in_flight_count`` is always 0, the dispatch short-circuit), so it has no cloud completions to
+    show -- the template renders the "No completions in the last N" empty state instead (Open Question 1
+    resolution: omit, don't fabricate). For compute/kueue lanes the query is bounded by ``updated_at``
+    DESC + ``LIMIT limit`` (D-07); any query error degrades to ``[]`` with a guarded rollback so it can
+    never raise into the hot 5s tick (D-00b). Secret-free: only the CloudJob row scalars leave here.
+    """
+    if kind == "local":
+        return []
+    try:
+        stmt = (
+            select(CloudJob)
+            .where(
+                CloudJob.backend_id == backend_id,
+                CloudJob.status == CloudJobStatus.SUCCEEDED.value,
+            )
+            .order_by(CloudJob.updated_at.desc())
+            .limit(limit)
+        )
+        rows = list((await session.execute(stmt)).scalars().all())
+    except Exception:
+        logger.warning("lane_recent_completions_degraded", backend_id=backend_id, exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("lane_recent_completions_rollback_failed", backend_id=backend_id, exc_info=True)
+        return []
+    return rows
+
+
+async def get_lane_queue_depths(app_state: Any, backend_id: str) -> dict[str, int]:
+    """Return per-lane-tier queue depth ``{analyze, fingerprint, meta, io}`` for a lane's backing agent.
+
+    Mirrors the ``get_queue_activity`` idiom (services/pipeline.py): each tier's depth is
+    ``count("queued") + count("active")`` on the ``phaze-agent-<backend_id>-<lane>`` Queue. Only the
+    ``queued`` / ``active`` kinds are read (scheduled/cron jobs excluded). Every tier is isolated in its
+    own ``try/except -> 0`` so a missing ``app.state.task_router`` (the test lifespan-skip) or a broker
+    hiccup degrades that tier to 0 and NEVER 500s the 5s tick (D-00b). Bounded: one count pair per tier,
+    no corpus scan. A kueue/unattributed lane whose id names no live agent queue simply reads 0s.
+    """
+    depths: dict[str, int] = dict.fromkeys(LANES, 0)
+    for lane in LANES:
+        try:
+            queue = app_state.task_router.queue_for(backend_id, lane)
+            depths[lane] = await queue.count("queued") + await queue.count("active")
+        except Exception:
+            depths[lane] = 0
+            logger.warning("lane_queue_depth_degraded", backend_id=backend_id, lane=lane, exc_info=True)
+    return depths

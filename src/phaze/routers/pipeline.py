@@ -32,7 +32,14 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
-from phaze.services.backends import get_backend_lane_snapshot, hold_awaiting_cloud, resolved_non_local_kind
+from phaze.services.backends import (
+    LANE_RECENT_N,
+    get_backend_lane_snapshot,
+    get_lane_queue_depths,
+    get_lane_recent_completions,
+    hold_awaiting_cloud,
+    resolved_non_local_kind,
+)
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
@@ -685,9 +692,17 @@ async def dashboard() -> RedirectResponse:
 @router.get("/pipeline/stats", response_class=HTMLResponse)
 async def pipeline_stats_partial(
     request: Request,
+    lane: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Return the stats bar partial for HTMX polling refresh."""
+    """Return the stats bar partial for HTMX polling refresh.
+
+    Phase 88 (88-01, DRILL-03 / D-02): the single persistent ``#pipeline-stats`` poll carries the
+    pushed ``?lane=`` via ``hx-vals`` (shell.html), so this hot 5s tick re-emits the selected-lane
+    highlight (aria-current + ring) on the matching card through the OOB ``_analyze_lanes`` grid.
+    ``lane`` is resolved by lookup-in-known-set against the snapshot (T-88-01): an unknown/absent id
+    resolves to ``None`` and highlights nothing — never a 422/500 into the poll.
+    """
     # Phase 82 (D-05, READ-02): ONE get_stage_progress read feeds the derived seven-key `stats` dict
     # (via _derive_stats -- the removed FileRecord.state get_pipeline_stats) AND the per-node DAG
     # context below (passed through so the heavy multi-count read runs once on the hot 5s poll).
@@ -738,6 +753,9 @@ async def pipeline_stats_partial(
     # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
     # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
     lanes = await get_backend_lane_snapshot(session)
+    # D-02 poll survival: resolve the pushed ?lane= by lookup-in-known-set (T-88-01) so the OOB
+    # _analyze_lanes grid re-emits the selected ring only for a real, currently-rendered lane.
+    selected_lane = lane if any(one.get("id") == lane for one in lanes) else None
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -762,9 +780,59 @@ async def pipeline_stats_partial(
             "running_count": cloud_phase_counts["running"],
             "finished_count": cloud_phase_counts["finished"],
             "lanes": lanes,
+            "selected_lane": selected_lane,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
+        },
+    )
+
+
+@router.get("/pipeline/lanes/{backend_id}", response_class=HTMLResponse)
+async def lane_detail(
+    request: Request,
+    backend_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return the lane-detail body fragment for a backend lane (DRILL-01 / D-06 / D-07 / D-00b).
+
+    Swapped as innerHTML into the shared ``#detail-pane`` (88-01 shell). ``backend_id`` is operator-
+    declared, so it is resolved by lookup-in-known-set against the degrade-safe
+    :func:`get_backend_lane_snapshot` (T-88-03): an unknown/offline id renders the friendly "Lane
+    offline" empty fragment (200, HTML -- never a 500/JSON/HTTPException, never a raw-param-driven read),
+    so htmx still swaps a body into the pane. For a resolved lane the kind-adaptive body renders the
+    last ``LANE_RECENT_N`` newest-first succeeded completions (compute/kueue only, D-07) and the per-lane
+    queue depths; every read is bounded + degrade-safe (D-00b) and the body carries its own bounded 5s
+    tick (D-03). Read-only -- no commit. Only secret-free snapshot scalars + completion status/timestamps
+    leave here (T-88-04); ``backend_id``/``kind`` stay Jinja-autoescaped (T-88-05).
+    """
+    lanes = await get_backend_lane_snapshot(session)  # degrade-safe -> []
+    lane = next((one for one in lanes if one["id"] == backend_id), None)
+    if lane is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/_lane_detail.html",
+            context={
+                "lane": None,
+                "backend_id": backend_id,
+                "recent_completions": [],
+                "queue_depths": {},
+                "refreshed_at": None,
+                "recent_n": LANE_RECENT_N,
+            },
+        )
+    recent_completions = await get_lane_recent_completions(session, backend_id, lane["kind"])
+    queue_depths = await get_lane_queue_depths(request.app.state, backend_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_lane_detail.html",
+        context={
+            "lane": lane,
+            "backend_id": backend_id,
+            "recent_completions": recent_completions,
+            "queue_depths": queue_depths,
+            "refreshed_at": datetime.now(UTC),
+            "recent_n": LANE_RECENT_N,
         },
     )
 

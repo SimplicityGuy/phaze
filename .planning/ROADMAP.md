@@ -31,7 +31,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05) (completed 2026-07-10)
 - [x] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03) (completed 2026-07-11)
 - [x] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01) (completed 2026-07-11)
-- [ ] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03)
+- [x] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03) (completed 2026-07-11)
 - [ ] **Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution** — delete the orphaned legacy scan path (removes two `FileState` writers), reattribute historical `legacy-application-server`-owned rows to a real fileserver agent, then drop the `agent_id` default + delete the sentinel row (RESTRICT-FK-ordered) (LEGACY-01..03)
 - [ ] **Phase 90: Destructive Migration & Writer Removal** — gated last (shadow-compare green + cloud-push lanes drained): drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, remove the remaining `.state=` writers (MIG-04)
 
@@ -276,7 +276,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
-| 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
+| 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
 
@@ -600,7 +600,16 @@ Plans:
   2. Clicking an agent row opens `GET /admin/agents/{agent_id}/_activity` showing owned files grouped by derived `stage_status`, recent scan batches, per-lane queue depths, and liveness.
   3. The drill-in survives the 5s poll swap (selection carried via URL param / rendered outside the polled `outerHTML` region) and is keyboard-accessible (`role=button`, Enter/Space, focus ring).
 
-**Plans**: TBD
+**Plans**: 3 plans in 2 waves
+**Wave 1**
+
+- [x] 88-01-PLAN.md — Shared non-modal detail-pane shell + keyboard-accessible triggers + `?param` poll-survival highlight (DRILL-03; D-01/D-02/D-03/D-08/D-09) [wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 88-02-PLAN.md — `GET /pipeline/lanes/{backend_id}` + `_lane_detail.html` (kind-adaptive fields, N=20 recent completions, degrade-safe) (DRILL-01; D-06/D-07) [wave 2]
+- [x] 88-03-PLAN.md — `GET /admin/agents/{agent_id}/_activity` + per-agent GROUP BY stage aggregate + `_agent_activity.html` (DRILL-02; D-00a/D-04/D-05) [wave 2]
+
 **UI hint**: yes
 
 ### Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution
