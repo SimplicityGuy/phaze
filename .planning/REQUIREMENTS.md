@@ -57,11 +57,11 @@
 
 ### Operator UI (UI)
 
-- [ ] **UI-01**: The file-row "State" display is derived from `stage_status` per stage (a per-file stage matrix), replacing the raw-enum-string column; the list is paginated and never renders a query that scans the whole 200K corpus per poll.
-- [ ] **UI-02**: The operator can see failed files per enrich stage and trigger a retry from the console (fingerprint/metadata retry + the existing manual analyze retry). *(failure visibility + retry affordance)*
-- [ ] **UI-03**: For any file not in a stage's pending set, the operator can see **why it is not eligible** — an eligibility trace over the pure `eligible()` conjuncts (done? in-flight? upstream unmet? terminally failed?). *(closes gap G-04; the diagnostic whose absence hid the current deadlock)*
-- [ ] **UI-04**: The operator can force a stage to done / skip a stage for a specific file, so the `failed` bucket for genuinely-unprocessable files can converge rather than accumulate permanently. *(gap G-03)*
-- [ ] **UI-05**: An orphaned/stuck-work count is surfaced (files with an in-flight marker but no progress), derived for free from the chosen `in_flight` source.
+- [x] **UI-01**: The file-row "State" display is derived from `stage_status` per stage (a per-file stage matrix), replacing the raw-enum-string column; the list is paginated and never renders a query that scans the whole 200K corpus per poll.
+- [x] **UI-02**: The operator can see failed files per enrich stage and trigger a retry from the console (fingerprint/metadata retry + the existing manual analyze retry). *(failure visibility + retry affordance)*
+- [x] **UI-03**: For any file not in a stage's pending set, the operator can see **why it is not eligible** — an eligibility trace over the pure `eligible()` conjuncts (done? in-flight? upstream unmet? terminally failed?). *(closes gap G-04; the diagnostic whose absence hid the current deadlock)*
+- [x] **UI-04**: The operator can force a stage to done / skip a stage for a specific file, so the `failed` bucket for genuinely-unprocessable files can converge rather than accumulate permanently. *(gap G-03)*
+- [x] **UI-05**: An orphaned/stuck-work count is surfaced (files with an in-flight marker but no progress), derived for free from the chosen `in_flight` source.
 
 ### Performance (PERF)
 
@@ -80,7 +80,7 @@
 
 *Folded in from the #222 post-deploy backlog. Backend is live end-to-end; only the v7.0-deleted UI control is missing.*
 
-- [ ] **PRIO-01**: The operator can change a per-stage job priority from the shell (a stepper wired to the existing `POST /pipeline/stages/{stage}/priority` endpoint — ▲ raises priority / lowers the number), re-connecting the orphaned setter; pause/resume controls are surfaced too if that endpoint is likewise orphaned.
+- [x] **PRIO-01**: The operator can change a per-stage job priority from the shell (a stepper wired to the existing `POST /pipeline/stages/{stage}/priority` endpoint — ▲ raises priority / lowers the number), re-connecting the orphaned setter; pause/resume controls are surfaced too if that endpoint is likewise orphaned.
 
 ### Lane / Agent Drill-In (DRILL)
 
@@ -149,11 +149,11 @@
 | SIDECAR-01 | Phase 83 | Complete |
 | SIDECAR-02 | Phase 84 | Complete |
 | SIDECAR-03 | Phase 86 | Complete |
-| UI-01 | Phase 87 | Pending |
-| UI-02 | Phase 87 | Pending |
-| UI-03 | Phase 87 | Pending |
-| UI-04 | Phase 87 | Pending |
-| UI-05 | Phase 87 | Pending |
+| UI-01 | Phase 87 | Complete |
+| UI-02 | Phase 87 | Complete |
+| UI-03 | Phase 87 | Complete |
+| UI-04 | Phase 87 | Complete |
+| UI-05 | Phase 87 | Complete |
 | PERF-01 | Phase 77 | Complete |
 | PERF-02 | Phase 82 | Complete |
 | MIG-01 | Phase 77 | Complete |
@@ -163,7 +163,7 @@
 | LEGACY-01 | Phase 89 | Pending |
 | LEGACY-02 | Phase 89 | Pending |
 | LEGACY-03 | Phase 89 | Pending |
-| PRIO-01 | Phase 87 | Pending |
+| PRIO-01 | Phase 87 | Complete |
 | DRILL-01 | Phase 88 | Pending |
 | DRILL-02 | Phase 88 | Pending |
 | DRILL-03 | Phase 88 | Pending |
