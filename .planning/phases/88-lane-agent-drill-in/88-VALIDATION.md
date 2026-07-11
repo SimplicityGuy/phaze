@@ -3,8 +3,9 @@ phase: 88
 slug: lane-agent-drill-in
 status: approved
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-11
+audited: 2026-07-11
 ---
 
 # Phase 88 — Validation Strategy
@@ -42,11 +43,11 @@ created: 2026-07-11
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 88-01-XX | 88-01 | 1 | DRILL-03 | — | Trigger is `role=button` + Enter/Space; pane `role=region` non-modal; Esc dismiss clears `?param`; focus returns by stable id after a poll swap; both self-polls carry the pushed `?lane=`/`?agent=` via `hx-vals` (shell.html + agents_table.html) | api + markup assertion | `uv run pytest tests/analyze/routers/test_lane_drill_survival.py tests/agents/routers/test_agent_drill_survival.py` | ❌ W0 | ⬜ pending |
-| 88-02-XX | 88-02 | 2 | DRILL-01 | — | `GET /pipeline/lanes/{backend_id}` returns kind-adaptive fields; kueue-only quota/inadmissible absent for local/compute; last-N recent completions newest-first; unknown backend_id → graceful empty, never 500 | api | `uv run pytest tests/analyze/routers/test_lane_detail.py` | ❌ W0 | ⬜ pending |
-| 88-03-XX | 88-03 | 2 | DRILL-02 | — | `GET /admin/agents/{agent_id}/_activity` returns per-agent 6-stage bucket COUNTS via bounded `GROUP BY` aggregate (not row materialization); liveness + queue depths + recent scan batches; agent-owns-0-files → empty state, never 500 | api + query-correctness | `uv run pytest tests/agents/routers/test_agent_activity.py` | ❌ W0 | ⬜ pending |
-| 88-03-XX | 88-03 | 2 | DRILL-02 | — | The per-agent aggregate materializes the `stage_status_case` label in an inner subquery then `GROUP BY`s it (Postgres GroupingError guard); counts filtered by `agent_id == X` match hand-computed fixture corpus | integration (real PG) | `uv run pytest tests/integration/test_agent_stage_buckets.py` | ❌ W0 | ⬜ pending |
-| 88-02/03-XX | 88-02, 88-03 | 2 | DRILL-01/02 (D-00b) | — | Both endpoints + their live-refresh ticks degrade to 0/None via `_safe_count`/SAVEPOINT under a forced DB error rather than 500-ing the 5s poll | api (fault injection) | `uv run pytest tests/analyze/routers/test_lane_detail.py tests/agents/routers/test_agent_activity.py -k degrade` | ❌ W0 | ⬜ pending |
+| 88-01-XX | 88-01 | 1 | DRILL-03 | — | Trigger is `role=button` + Enter/Space; pane `role=region` non-modal; Esc dismiss clears `?param`; focus returns by stable id after a poll swap; both self-polls carry the pushed `?lane=`/`?agent=` via `hx-vals` (shell.html + agents_table.html) | api + markup assertion | `uv run pytest tests/analyze/routers/test_lane_drill_survival.py tests/agents/routers/test_agent_drill_survival.py` | ✅ | ✅ green |
+| 88-02-XX | 88-02 | 2 | DRILL-01 | — | `GET /pipeline/lanes/{backend_id}` returns kind-adaptive fields; kueue-only quota/inadmissible absent for local/compute; last-N recent completions newest-first; unknown backend_id → graceful empty, never 500 | api | `uv run pytest tests/analyze/routers/test_lane_detail.py` | ✅ | ✅ green |
+| 88-03-XX | 88-03 | 2 | DRILL-02 | — | `GET /admin/agents/{agent_id}/_activity` returns per-agent 6-stage bucket COUNTS via bounded `GROUP BY` aggregate (not row materialization); liveness + queue depths + recent scan batches; agent-owns-0-files → empty state, never 500 | api + query-correctness | `uv run pytest tests/agents/routers/test_agent_activity.py` | ✅ | ✅ green |
+| 88-03-XX | 88-03 | 2 | DRILL-02 | — | The per-agent aggregate materializes the `stage_status_case` label in an inner subquery then `GROUP BY`s it (Postgres GroupingError guard); counts filtered by `agent_id == X` match hand-computed fixture corpus | integration (real PG) | `uv run pytest tests/integration/test_agent_stage_buckets.py` | ✅ | ✅ green |
+| 88-02/03-XX | 88-02, 88-03 | 2 | DRILL-01/02 (D-00b) | — | Both endpoints + their live-refresh ticks degrade to 0/None via `_safe_count`/SAVEPOINT under a forced DB error rather than 500-ing the 5s poll | api (fault injection) | `uv run pytest tests/analyze/routers/test_lane_detail.py tests/agents/routers/test_agent_activity.py -k degrade` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -54,10 +55,10 @@ created: 2026-07-11
 
 ## Wave 0 Requirements
 
-- [ ] `tests/analyze/routers/test_lane_detail.py` + `test_lane_drill_survival.py` — lane endpoint (DRILL-01) + poll-survival/a11y markup (DRILL-03)
-- [ ] `tests/agents/routers/test_agent_activity.py` + `test_agent_drill_survival.py` — agent endpoint (DRILL-02) + poll-survival/a11y markup (DRILL-03)
-- [ ] `tests/integration/test_agent_stage_buckets.py` — per-agent `GROUP BY` bucket-count aggregate (real Postgres 5433, GroupingError guard); mirrors `tests/integration/test_stage_progress_buckets.py`
-- [ ] Reuse existing `conftest.py` fixtures (independent-session assertion pattern; agent + FileRecord + CloudJob factories)
+- [x] `tests/analyze/routers/test_lane_detail.py` + `test_lane_drill_survival.py` — lane endpoint (DRILL-01) + poll-survival/a11y markup (DRILL-03)
+- [x] `tests/agents/routers/test_agent_activity.py` + `test_agent_drill_survival.py` — agent endpoint (DRILL-02) + poll-survival/a11y markup (DRILL-03)
+- [x] `tests/integration/test_agent_stage_buckets.py` — per-agent `GROUP BY` bucket-count aggregate (real Postgres 5433, GroupingError guard); mirrors `tests/integration/test_stage_progress_buckets.py`
+- [x] Reuse existing `conftest.py` fixtures (independent-session assertion pattern; agent + FileRecord + CloudJob factories)
 
 *Test files placed in real `tests/buckets.json` directories (`analyze`, `agents`, `integration`) — NOT `tests/api`/`tests/unit` (nonexistent buckets). CI bucketing is directory-based; a file outside a bucket dir is skipped by every CI shard.*
 
@@ -86,3 +87,30 @@ created: 2026-07-11
 - [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** approved 2026-07-11
+
+---
+
+## Validation Audit 2026-07-11
+
+Post-execution audit (State A). All plan-time requirement rows cross-referenced against the now-existing
+test files and re-run for fresh green evidence — no gaps, no auditor spawn needed.
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 5 |
+| COVERED (green) | 5 |
+| PARTIAL | 0 |
+| MISSING | 0 |
+| Gaps resolved | 0 |
+| Escalated to manual-only | 0 |
+
+**Evidence (real Postgres 5433 + migrations DB, `-p no:randomly`):** the 5 referenced Wave-0 files ran
+**30 passed** together; the `-k degrade` fault-injection selector matches 4 D-00b/SAVEPOINT degrade tests.
+Fuller regression evidence from execute-phase: `agents` bucket 463 passed · `analyze` bucket 576 passed ·
+`integration` 262 passed · `shared` 1135 passed. The two Manual-Only rows (focus-ring rendering /
+selected-highlight persistence across a live poll) remain manual — visual/interaction behaviors not fully
+assertable headless — and are pinned by markup-level survival assertions as a partial proxy.
+
+**Note:** the post-execution code review added a CR-01 regression test
+(`test_stage_bucket_degrade_preserves_outer_transaction`, mutation-verified) that the `-k degrade`
+selector now also covers, strengthening the D-00b row beyond the plan-time baseline.
