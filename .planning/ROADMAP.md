@@ -532,8 +532,13 @@ Plans:
   2. The `store_proposals` MOVED/UNCHANGED-omission regression evaporates rather than being patched — proven by a test that a `MOVED` file is not re-proposed.
 
 **Plans**: 3 plans (2 waves)
+**Wave 1**
+
 - [ ] 86-01-PLAN.md — Delete the service-layer proposal→file.state cascade (proposal.py + proposal_queries.py) + mutation-verified D-03 regression test
 - [ ] 86-02-PLAN.md — Rework the apply-PATCH contract (agent_proposals.py) to echo the request + drop the file.state mirror + adapt router tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 86-03-PLAN.md — Mutation-verified AST source-scan anti-drift guard over all three cutover files
 
 ### Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority
