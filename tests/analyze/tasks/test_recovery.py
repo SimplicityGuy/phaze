@@ -44,6 +44,7 @@ from phaze.models.file import FileRecord, FileState
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.stage_skip import StageSkip
 from phaze.services.scheduling_ledger import clear_ledger_entry, get_ledger_rows, upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks.reenqueue import (
@@ -176,6 +177,17 @@ async def _seed_fingerprint(session: AsyncSession, file_id: uuid.UUID, *, status
 async def _seed_awaiting_cloud_job(session: AsyncSession, file_id: uuid.UUID) -> None:
     """Seed a ``cloud_job(status='awaiting')`` sidecar row -- the Phase-83 representation of a parked file."""
     session.add(CloudJob(id=uuid.uuid4(), file_id=file_id, backend_id=None, s3_key=None, status=CloudJobStatus.AWAITING.value))
+    await session.commit()
+
+
+async def _seed_stage_skip(session: AsyncSession, file_id: uuid.UUID, *, stage: str) -> None:
+    """Seed a ``stage_skip(file_id, stage)`` force-skip marker (Phase 87, D-08).
+
+    Recovery reads ``domain_completed_clause`` for analyze/metadata, into which Plan 02 threaded
+    ``skipped_clause`` as an unconditional disjunct -- so a force-skipped file is domain-complete and
+    NEVER re-enqueued (behavior 5). The marker is ADDITIVE: it never clears a failure row.
+    """
+    session.add(StageSkip(id=uuid.uuid4(), file_id=file_id, stage=stage, reason="operator force-skip"))
     await session.commit()
 
 
@@ -587,6 +599,149 @@ async def test_cleared_fingerprint_row_is_not_reenqueued(
     assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
     assert controller_queue.captured == []
     assert router.queues == {}
+
+
+# --- Phase 87 (D-08): a FORCE-SKIPPED file is domain-complete -> NOT re-enqueued (behavior 5) ------
+#
+# A file the operator force-skipped (a ``stage_skip`` marker) must never be re-driven by recovery even
+# when its ledger row survived a crash/restart and its saq_jobs key is not live -- otherwise the skip is
+# meaningless and the file re-enters the queue (the over-enqueue class D-08 guards). analyze/metadata
+# recovery read ``domain_completed_clause``, into which Plan 02 threaded ``skipped_clause`` as an
+# unconditional disjunct, so the exclusion propagates with ZERO edits to reenqueue.py.
+
+
+@pytest.mark.asyncio
+async def test_skipped_analyze_row_is_excluded_from_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process_file row whose analyze is force-SKIPPED is domain-complete -> NOT re-enqueued (behavior 5).
+
+    The file is a music DISCOVERED file with NO analysis row -- absent the skip marker it WOULD be an
+    orphaned recovery candidate (proved by ``test_orphaned_agent_row_replays_through_keyed_producer``).
+    The ``stage_skip(analyze)`` marker makes ``domain_completed_clause(ANALYZE)`` True (its ``skipped_clause``
+    disjunct), so ``is_domain_completed`` excludes it and recovery replays NOTHING. The marker is additive
+    (no ``analysis`` row cleared/created), so this attributes the exclusion to the skip alone.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)  # would-be orphan absent the marker
+    session.add(f)
+    await session.commit()
+    await _seed_stage_skip(session, f.id, stage="analyze")
+    await _seed_ledger(session, function="process_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_skipped_analyze_row_is_excluded_on_manual_force(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The manual ``force=True`` "Recover" path ALSO excludes a force-skipped analyze file (behavior 5).
+
+    ``is_domain_completed`` gates the orphan set identically on both paths (``force`` only bypasses the
+    no-op DETECT gate, never the domain-completed exclusion), so the skip holds under a manual reconcile
+    over a live queue too.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 3)  # queue NOT empty: force=True is the only way past the detect gate
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+    await _seed_stage_skip(session, f.id, stage="analyze")
+    await _seed_ledger(session, function="process_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue), force=True)
+
+    assert result["forced"] is True
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_skipped_metadata_row_is_excluded_from_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An extract_file_metadata row whose metadata is force-SKIPPED is domain-complete -> NOT re-enqueued.
+
+    Absent the marker this music DISCOVERED file IS in the metadata pending set and WOULD replay
+    (``test_metadata_pending_row_replays``). ``domain_completed_clause(METADATA)`` gains the file via its
+    ``skipped_clause`` disjunct, and since no metadata ``failed_at`` row exists the D-10 gate is not even
+    reached -- ``metadata_domain_completed`` membership alone excludes it.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.DISCOVERED)
+    session.add(f)
+    await session.commit()
+    await _seed_stage_skip(session, f.id, stage="metadata")
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert router.queues == {}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "GAP (87-03 deferred): recovery's fingerprint_done reads done_clause(FINGERPRINT) ONLY, NOT "
+        "domain_completed_clause -- so skipped_clause is not consulted and a force-skipped fingerprint "
+        "with a surviving ledger row IS re-enqueued, violating behavior 5. Fix: _build_done_sets should "
+        "derive fingerprint_done from or_(done_clause, skipped_clause). When that lands this xfail XPASSes "
+        "and (strict) turns RED -- remove the marker then. See deferred-items.md."
+    ),
+)
+@pytest.mark.asyncio
+async def test_skipped_fingerprint_row_is_excluded_from_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DESIRED (currently RED): a force-SKIPPED fingerprint file should be excluded from recovery (behavior 5).
+
+    This encodes the correct behavior as a tracked regression guard. It currently FAILS because
+    ``_build_done_sets`` computes ``fingerprint_done`` from ``done_clause(FINGERPRINT)`` alone (to keep a
+    FAILED fingerprint auto-retryable) and never consults ``skipped_clause`` -- so the skip does not
+    suppress the re-drive. Documented in the phase ``deferred-items.md`` and flagged to the orchestrator.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file(state=FileState.METADATA_EXTRACTED)  # in fingerprint pending set absent the marker
+    session.add(f)
+    await session.commit()
+    await _seed_stage_skip(session, f.id, stage="fingerprint")
+    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
 
 
 @pytest.mark.asyncio
