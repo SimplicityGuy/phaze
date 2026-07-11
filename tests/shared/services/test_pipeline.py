@@ -14,7 +14,6 @@ from sqlalchemy import text
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord, FileState
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
@@ -30,12 +29,10 @@ from phaze.services.pipeline import (
     get_backfill_candidates,
     get_discovered_files_with_duration,
     get_files_by_state,
-    get_fingerprint_pending_files,
     get_global_reconciliation,
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
-    get_pipeline_stats,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -46,6 +43,7 @@ from phaze.services.pipeline import (
     get_scrape_pending_tracklists,
     get_search_busy_count,
     get_stage_busy_counts,
+    get_stage_progress,
     get_straggler_count,
     get_untracked_files,
 )
@@ -54,70 +52,6 @@ from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-
-@pytest.mark.asyncio
-async def test_get_pipeline_stats_empty(session: AsyncSession):
-    """Empty database returns zero counts for all stages."""
-    stats = await get_pipeline_stats(session)
-    assert stats["discovered"] == 0
-    assert stats["metadata_extracted"] == 0
-    assert stats["analyzed"] == 0
-    assert stats["proposal_generated"] == 0
-    assert stats["approved"] == 0
-    assert stats["executed"] == 0
-
-
-@pytest.mark.asyncio
-async def test_get_pipeline_stats_counts(session: AsyncSession):
-    """Stats reflect actual file counts per state."""
-    for i in range(3):
-        f = FileRecord(
-            id=uuid.uuid4(),
-            sha256_hash=f"abc{i:064d}"[:64],
-            original_path=f"/music/test{i}.mp3",
-            original_filename=f"test{i}.mp3",
-            current_path=f"/music/test{i}.mp3",
-            file_type="mp3",
-            file_size=1000,
-            state=FileState.DISCOVERED,
-        )
-        session.add(f)
-    session.add(
-        FileRecord(
-            id=uuid.uuid4(),
-            sha256_hash="xyz0" + "0" * 60,
-            original_path="/music/done.mp3",
-            original_filename="done.mp3",
-            current_path="/music/done.mp3",
-            file_type="mp3",
-            file_size=1000,
-            state=FileState.ANALYZED,
-        )
-    )
-    await session.commit()
-    stats = await get_pipeline_stats(session)
-    assert stats["discovered"] == 3
-    assert stats["analyzed"] == 1
-
-
-@pytest.mark.asyncio
-async def test_get_pipeline_stats_includes_metadata_extracted(session: AsyncSession):
-    """Stats include METADATA_EXTRACTED state count."""
-    f = FileRecord(
-        id=uuid.uuid4(),
-        sha256_hash="m" * 64,
-        original_path="/music/tagged.mp3",
-        original_filename="tagged.mp3",
-        current_path="/music/tagged.mp3",
-        file_type="mp3",
-        file_size=1000,
-        state=FileState.METADATA_EXTRACTED,
-    )
-    session.add(f)
-    await session.commit()
-    stats = await get_pipeline_stats(session)
-    assert stats["metadata_extracted"] == 1
 
 
 @pytest.mark.asyncio
@@ -396,8 +330,8 @@ async def test_get_stage_busy_counts_degrade_does_not_poison_session(session: As
     counts = await get_stage_busy_counts(session)
     assert counts == {"metadata": 0, "analyze": 0, "fingerprint": 0}
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -489,8 +423,8 @@ async def test_get_search_busy_count_degrade_does_not_poison_session(session: As
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_search_busy_count(session) == 0
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -581,8 +515,8 @@ async def test_get_scan_busy_count_degrade_does_not_poison_session(session: Asyn
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_scan_busy_count(session) == 0
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -711,8 +645,8 @@ async def test_get_scrape_busy_count_degrade_does_not_poison_session(session: As
     """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_scrape_busy_count(session) == 0
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 @pytest.mark.asyncio
@@ -751,8 +685,8 @@ async def test_get_match_busy_count_degrade_does_not_poison_session(session: Asy
     """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_match_busy_count(session) == 0
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -851,49 +785,6 @@ async def test_get_metadata_pending_files_returns_only_music_video(session: Asyn
     ids = {f.id for f in result}
     assert music.id in ids
     assert other.id not in ids
-
-
-@pytest.mark.asyncio
-async def test_get_fingerprint_pending_files_unions_metadata_extracted_and_failed_retry(session: AsyncSession) -> None:
-    """Fingerprint pending = METADATA_EXTRACTED union failed-retry (state != FINGERPRINTED), deduped by id.
-
-    A METADATA_EXTRACTED file is in; a failed-fingerprint file still not FINGERPRINTED is in (retry);
-    a FINGERPRINTED file with a failed result is excluded; a plain DISCOVERED file is excluded.
-    """
-    ready = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
-    failed_retry = _make_pipeline_file(state=FileState.ANALYZED)
-    already_done = _make_pipeline_file(state=FileState.FINGERPRINTED)
-    discovered = _make_pipeline_file(state=FileState.DISCOVERED)
-    session.add_all([ready, failed_retry, already_done, discovered])
-    await session.flush()
-    session.add_all(
-        [
-            FingerprintResult(id=uuid.uuid4(), file_id=failed_retry.id, engine="audfprint", status="failed"),
-            FingerprintResult(id=uuid.uuid4(), file_id=already_done.id, engine="audfprint", status="failed"),
-        ]
-    )
-    await session.flush()
-
-    result = await get_fingerprint_pending_files(session)
-    ids = [f.id for f in result]
-    assert ready.id in ids
-    assert failed_retry.id in ids
-    assert already_done.id not in ids
-    assert discovered.id not in ids
-
-
-@pytest.mark.asyncio
-async def test_get_fingerprint_pending_files_dedups_metadata_extracted_with_failed_result(session: AsyncSession) -> None:
-    """A METADATA_EXTRACTED file that ALSO has a failed fingerprint result appears exactly once."""
-    dual = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
-    session.add(dual)
-    await session.flush()
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=dual.id, engine="audfprint", status="failed"))
-    await session.flush()
-
-    result = await get_fingerprint_pending_files(session)
-    ids = [f.id for f in result]
-    assert ids.count(dual.id) == 1
 
 
 @pytest.mark.asyncio
@@ -1155,8 +1046,8 @@ async def test_get_straggler_count_degrade_does_not_poison_session(session: Asyn
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_straggler_count(session, 3600) == 0
     # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_pipeline_stats(session)
-    assert follow_up["discovered"] == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1475,19 +1366,6 @@ async def test_get_discovered_files_with_duration_outerjoin_null(session: AsyncS
     record, duration = rows[0]
     assert record.id == f.id
     assert duration is None
-
-
-@pytest.mark.asyncio
-async def test_get_discovered_files_with_duration_excludes_other_states(session: AsyncSession) -> None:
-    """Only DISCOVERED files are returned; an ANALYZED file is excluded."""
-    discovered = _file(2, FileState.DISCOVERED)
-    other = _file(3, FileState.ANALYZED)
-    session.add_all([discovered, other])
-    await session.commit()
-
-    rows = await get_discovered_files_with_duration(session)
-
-    assert {r.id for r, _ in rows} == {discovered.id}
 
 
 @pytest.mark.asyncio

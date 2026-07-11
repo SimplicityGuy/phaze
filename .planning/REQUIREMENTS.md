@@ -43,8 +43,8 @@
 
 ### Reader Rework (READ)
 
-- [ ] **READ-01**: The three enrich pending sets are derived from `stage_status` (not from `FileRecord.state`), so metadata/fingerprint/analyze each surface every not-done, not-in-flight file independent of the others — the current cross-stage deadlock is gone (a file can complete all three, in any order).
-- [ ] **READ-02**: `get_pipeline_stats` reports per-stage counts from output tables (the linear `GROUP BY FileRecord.state` is removed), and the DAG shows four-bucket per-stage counts (not_started / in_flight / done / failed) including a visible failed count per enrich stage.
+- [x] **READ-01**: The three enrich pending sets are derived from `stage_status` (not from `FileRecord.state`), so metadata/fingerprint/analyze each surface every not-done, not-in-flight file independent of the others — the current cross-stage deadlock is gone (a file can complete all three, in any order).
+- [x] **READ-02**: `get_pipeline_stats` reports per-stage counts from output tables (the linear `GROUP BY FileRecord.state` is removed), and the DAG shows four-bucket per-stage counts (not_started / in_flight / done / failed) including a visible failed count per enrich stage.
 - [x] **READ-03**: Recovery/re-enqueue (`reenqueue.py`, `reconcile_cloud_jobs.py`) derive their done/in-flight sets from `stage_status`/sidecars with no `FileRecord.state` read, preserving the scheduling-ledger recovery contract and the "only previously-scheduled work recovers" guarantee.
 - [x] **READ-04**: Dedup (`services/dedup.py`) and `get_fingerprint_progress` derive from the dedup marker / output tables rather than `FileRecord.state`.
 - [x] **READ-05**: The dead `state == EXECUTED` gates are revived against the real apply-outcome source — tag writing, review, tags/cue/tracklists guards fire for actually-applied files (fixes the permanently-dead tag-writer path).
@@ -66,7 +66,7 @@
 ### Performance (PERF)
 
 - [x] **PERF-01**: Partial indexes sized to the exact `done`/`failed` predicates keep the `NOT EXISTS` pending anti-joins and the per-stage counts fast at 200K-file scale; each index is mirrored into the ORM `__table_args__` so `autogenerate` stays in sync.
-- [ ] **PERF-02**: The `/pipeline/stats` poll latency at 200K-file corpus scale is measured and recorded in the phase VERIFICATION; no denormalized status column is added unless that measurement shows the derived query is too slow (YAGNI is the default).
+- [x] **PERF-02**: The `/pipeline/stats` poll latency at 200K-file corpus scale is measured and recorded in the phase VERIFICATION; no denormalized status column is added unless that measurement shows the derived query is too slow (YAGNI is the default).
 
 ### Legacy Sentinel Retirement (LEGACY)
 
@@ -141,8 +141,8 @@
 | FAIL-02 | Phase 81 | Complete |
 | FAIL-03 | Phase 81 | Complete |
 | FAIL-04 | Phase 81 | Complete |
-| READ-01 | Phase 82 | Pending |
-| READ-02 | Phase 82 | Pending |
+| READ-01 | Phase 82 | Complete |
+| READ-02 | Phase 82 | Complete |
 | READ-03 | Phase 80 | Complete |
 | READ-04 | Phase 84 | Complete |
 | READ-05 | Phase 85 | Complete |
@@ -155,7 +155,7 @@
 | UI-04 | Phase 87 | Pending |
 | UI-05 | Phase 87 | Pending |
 | PERF-01 | Phase 77 | Complete |
-| PERF-02 | Phase 82 | Pending |
+| PERF-02 | Phase 82 | Complete |
 | MIG-01 | Phase 77 | Complete |
 | MIG-02 | Phase 79 | Complete |
 | MIG-03 | Phase 77 | Complete |
@@ -167,6 +167,8 @@
 | DRILL-01 | Phase 88 | Pending |
 | DRILL-02 | Phase 88 | Pending |
 | DRILL-03 | Phase 88 | Pending |
+| PROV-01 | — | Deferred (v2) |
+| DENORM-01 | — | Deferred (v2) — PERF-02 (Phase 82) measured over budget, NO-GO/deferred; revisit after asyncio.gather parallelization |
 
 **Coverage:**
 - v1 requirements: 42 total *(the initial "41 total" was an off-by-one; the traceability table has always listed 42 distinct IDs)*

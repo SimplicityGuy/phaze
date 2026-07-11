@@ -9,6 +9,14 @@ test_db_container := "phaze-test-db"
 test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
 # Fixed container name for the ephemeral integration-test Redis
 test_redis_container := "phaze-test-redis"
+# Dedicated ephemeral Postgres for the Phase-82 PERF-02 /pipeline/stats bench. A SEPARATE container
+# (own port 5545) so a concurrent `just test-db` recreate can never wipe the ~200K seeded corpus
+# mid-measurement (the shared phaze-test-db is torn down/recreated by sibling sessions).
+perf_db_container := "phaze-perf-db"
+perf_db_port := env_var_or_default("PHAZE_PERF_DB_PORT", "5545")
+perf_db_name := "phaze_perf82"
+perf_db_dsn := "postgresql://phaze:phaze@localhost:" + perf_db_port + "/" + perf_db_name
+perf_db_sa_dsn := "postgresql+asyncpg://phaze:phaze@localhost:" + perf_db_port + "/" + perf_db_name
 # Standalone Tailwind CSS binary version. Keep in sync with the Dockerfile
 # css-build stage. NO Node — the standalone binary compiles assets/src/app.css.
 tailwind_version := "v4.3.2"
@@ -483,6 +491,47 @@ db-history:
 [group('db')]
 shadow-compare *ARGS:
     uv run python -m phaze.cli.shadow_compare {{ ARGS }}
+
+[doc('Start a DEDICATED ephemeral Postgres for the PERF-02 bench (own port, never wiped by test-db recreates)')]
+[group('db')]
+perf-db-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    container="{{perf_db_container}}"
+    port="{{perf_db_port}}"
+    if [ "$(docker inspect -f '{{{{.State.Running}}}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+        echo "🐘 ${container} already running on port ${port}"
+    else
+        docker rm -f "$container" >/dev/null 2>&1 || true
+        echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
+        docker run -d --name "$container" \
+            -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
+            -p "${port}:5432" postgres:18-alpine >/dev/null
+    fi
+    for _ in $(seq 1 30); do
+        if docker exec "$container" pg_isready -U phaze -d {{perf_db_name}} >/dev/null 2>&1; then
+            echo "✅ ${container} ready on localhost:${port} ({{perf_db_name}})"; exit 0
+        fi
+        sleep 1
+    done
+    echo "❌ ${container} did not become ready within 30s" >&2; exit 1
+
+[doc('Stop and remove the dedicated PERF-02 bench Postgres')]
+[group('db')]
+perf-db-down:
+    docker rm -f "{{perf_db_container}}" >/dev/null 2>&1 || true
+    @echo "🧹 Removed {{perf_db_container}}"
+
+[doc('Migrate the perf DB to HEAD (>=036) and seed the ~N synthetic corpus for the PERF-02 bench (Phase 82)')]
+[group('db')]
+perf-seed N='200000':
+    PHAZE_DATABASE_URL="{{perf_db_sa_dsn}}" uv run alembic upgrade head
+    uv run python scripts/seed_perf_corpus.py --n {{N}} --dsn "{{perf_db_dsn}}" --reseed
+
+[doc('EXPLAIN ANALYZE the derived hot queries + time /pipeline/stats against the seeded perf DB (PERF-02, D-07)')]
+[group('db')]
+perf-explain ITER='20':
+    uv run python scripts/perf_explain.py --dsn "{{perf_db_dsn}}" --iterations {{ITER}}
 
 [doc('Download essentia ML models for audio analysis')]
 [group('models')]

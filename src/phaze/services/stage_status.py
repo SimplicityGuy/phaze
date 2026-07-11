@@ -59,10 +59,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, String, and_, case, cast, exists, false, func, or_, select, text
+from sqlalchemy import ColumnElement, String, and_, case, cast, exists, false, func, not_, or_, select, text
 import structlog
 
-from phaze.enums.stage import FAILURE_IS_TERMINAL, Stage, Status
+from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, FAILURE_IS_TERMINAL, Stage, Status
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
@@ -280,6 +280,51 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     if FAILURE_IS_TERMINAL[stage]:
         return or_(done_clause(stage), failed_clause(stage))
     return done_clause(stage)
+
+
+def eligible_clause(stage: Stage) -> ColumnElement[bool]:
+    """SQL twin of :func:`phaze.enums.stage.eligible` for the three ENRICH stages only (READ-01).
+
+    Mirrors the Python truth (``enums/stage.py``, the enrich branch)::
+
+        status not in (DONE, IN_FLIGHT) and (status != FAILED or ELIGIBLE_AFTER_FAILURE[stage])
+
+    Because :func:`stage_status_case` applies the precedence ladder ``in_flight ≻ done ≻ failed ≻
+    not_started`` (the SAQ ledger wins), a file is neither ``IN_FLIGHT`` nor ``DONE`` iff BOTH
+    ``~inflight_clause(stage)`` and ``~done_clause(stage)`` hold -- so ``status not in (DONE,
+    IN_FLIGHT)`` maps exactly to ``~inflight ∧ ~done``. The FAILED carve-out is TABLE-DRIVEN off
+    :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE` (NEVER an inline per-stage identity check):
+
+    - metadata / fingerprint (``ELIGIBLE_AFTER_FAILURE True`` -- ELIG-04 auto-retry): ``~inflight ∧ ~done``
+      leaves a FAILED (and a NOT_STARTED) row eligible.
+    - analyze (``ELIGIBLE_AFTER_FAILURE False`` -- ELIG-03 terminal, manual retry only): append
+      ``~failed_clause(stage)`` so ONLY a NOT_STARTED analyze is eligible. This is the load-bearing
+      conjunct behind the 2026-06-18 ~44.5K over-enqueue guard; dropping it re-admits failed analyze
+      rows to the pending set (the ``(ANALYZE, seed_analysis_failed, False)`` drift cell + mutation
+      check in the equivalence test guard it).
+
+    ``has_approved_proposal`` (an APPLY-only flag in the Python twin) is irrelevant here, so the
+    signature stays a single ``stage`` param.
+
+    Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE`),
+    matching the Python twin -- reaching for eligibility on a downstream stage via THIS builder is a
+    question this layer deliberately does not answer, so it raises ``ValueError`` (same shape as
+    :func:`domain_completed_clause`).
+
+    Correlated-``~exists`` join contract: composes ``inflight_clause`` / ``done_clause`` /
+    ``failed_clause`` verbatim, each a correlated ``~exists(... == FileRecord.id)``, so the enclosing
+    query MUST select-from / join :class:`~phaze.models.file.FileRecord` (the pending-set queries
+    already do). Dedup is a file-level fact kept OUT of here: compose ``~dedup_resolved_clause()`` at
+    the ``pipeline.py`` query level (D-03), not inside ``eligible_clause``.
+    """
+    if stage not in ELIGIBLE_AFTER_FAILURE:
+        # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
+        got = getattr(stage, "value", stage)
+        raise ValueError(f"eligible_clause is defined only for the enrich stages {sorted(s.value for s in ELIGIBLE_AFTER_FAILURE)}; got {got!r}")
+    conjuncts = [not_(inflight_clause(stage)), not_(done_clause(stage))]
+    if not ELIGIBLE_AFTER_FAILURE[stage]:  # analyze: a FAILED analyze is terminal (ELIG-03 over-enqueue guard)
+        conjuncts.append(not_(failed_clause(stage)))
+    return and_(*conjuncts)
 
 
 def awaiting_candidate_clause() -> ColumnElement[bool]:

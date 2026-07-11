@@ -43,7 +43,6 @@ from phaze.services.pipeline import (
     get_match_pending_tracklists,
     get_metadata_failed_files,
     get_metadata_pending_files,
-    get_pipeline_stats,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -135,8 +134,40 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
     return min(fallback, stage_total) if stage_total > 0 else fallback
 
 
+def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str, int]:
+    """Re-express the seven former ``get_pipeline_stats`` keys off ``get_stage_progress`` (Phase 82, D-05/READ-02).
+
+    The stats path no longer reads ``FileRecord.state``: each of the seven keys ``stats_bar.html``
+    consumes maps to a derived :func:`get_stage_progress` output-table count --
+    ``discovered→discovery.done``, ``metadata_extracted→metadata.done``, ``fingerprinted→fingerprint.done``,
+    ``analyzed→analyze.done``, ``proposal_generated→proposals.done``, ``approved→execute.total``,
+    ``executed→execute.done``. The key NAMES are preserved so ``stats_bar.html``'s six visible cards +
+    three OOB ``x-init`` store writes need NO template change (the Alpine ``$store.pipeline.*`` keys stay
+    stable, Pitfall 4 -- only the server-side source changes). ``queue_progress_percent`` consumes the
+    same derived ``analyzed`` numerator.
+
+    SEMANTIC SHIFT (this is the deadlock dissolving, not a regression): ``metadata_extracted`` now counts
+    every music/video file whose metadata is done (a ``metadata`` row with ``failed_at`` NULL), NOT the
+    transient linear ``METADATA_EXTRACTED`` state (which a file leaves on advancing to
+    FINGERPRINTED/ANALYZED). These numbers legitimately differ post-cutover.
+    """
+
+    def done(node: str) -> int:
+        return int(stage_progress[node]["done"] or 0)
+
+    return {
+        "discovered": done("discovery"),
+        "metadata_extracted": done("metadata"),
+        "fingerprinted": done("fingerprint"),
+        "analyzed": done("analyze"),
+        "proposal_generated": done("proposals"),
+        "approved": int(stage_progress["execute"]["total"] or 0),
+        "executed": done("execute"),
+    }
+
+
 async def _build_dag_context(
-    app_state: Any, session: AsyncSession, activity: dict[str, int], stats: dict[str, int] | None = None
+    app_state: Any, session: AsyncSession, activity: dict[str, int], stage_progress: dict[str, dict[str, int | None]] | None = None
 ) -> dict[str, dict[str, int]]:
     """Build the per-DAG-node store-key context consumed by stats_bar.html + the 35-05 canvas.
 
@@ -147,10 +178,15 @@ async def _build_dag_context(
     0 — the Scan/Search node has NO ``tracklistTotal`` store key, so its em-dash stays a
     render-side concern) so it is safe to interpolate into the ``x-init`` numeric store writes.
 
+    ``stage_progress`` is the already-computed :func:`get_stage_progress` result, passed through by
+    both the dashboard and poll callers so the (heavy, multi-count) read happens ONCE per request
+    (Phase 82, D-05 -- the former ``get_pipeline_stats`` pass-through this replaces). When omitted
+    (direct test callers) it is computed here.
+
     Returns ``{"dag": {<storeKey>: int, ...}}`` carrying every per-node sub-key seeded into
     ``$store.pipeline`` (base.html, 35-04 Task 1).
     """
-    stage = await get_stage_progress(session)
+    stage = stage_progress if stage_progress is not None else await get_stage_progress(session)
     counters = await _read_pipeline_counters(app_state)
 
     def done(node: str) -> int:
@@ -232,13 +268,12 @@ async def _build_dag_context(
     dag["matchBusy"] = int(await get_match_busy_count(session))
 
     # Phase 58 (58-02, WORK-01): the Discover "not yet enriched" backlog -- a READ-ONLY derived
-    # int (discovered files that have no extracted metadata yet), clamped >= 0. No new query path
-    # and no new poll: it reuses get_pipeline_stats (passed through by both poll/dashboard callers
-    # to avoid a duplicate query; read here if a direct caller omits it) and rides the existing
-    # dag.items() OOB seed loop onto the dag-seed-notYetEnriched placeholder the workspaces pre-mount.
-    if stats is None:
-        stats = await get_pipeline_stats(session)
-    dag["notYetEnriched"] = max(int(stats["discovered"]) - int(stats["metadata_extracted"]), 0)
+    # int (music/video files whose metadata is not yet done), clamped >= 0. Phase 82 (D-05) derives
+    # it from the get_stage_progress metadata node (total - done) instead of the removed
+    # get_pipeline_stats (discovered - metadata_extracted), which read FileRecord.state. No new query
+    # path (``stage`` is already computed above) and no new poll: it rides the existing dag.items()
+    # OOB seed loop onto the dag-seed-notYetEnriched placeholder the workspaces pre-mount.
+    dag["notYetEnriched"] = max(int(stage["metadata"]["total"] or 0) - int(stage["metadata"]["done"] or 0), 0)
 
     return {"dag": dag}
 
@@ -482,7 +517,12 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     SAVEPOINT/``_safe_count`` fallbacks and the queue/counter reads isolate their own
     failures), so this builder never 500s the page.
     """
-    stats = await get_pipeline_stats(session)
+    # Phase 82 (D-05, READ-02): ONE get_stage_progress read feeds both the derived seven-key `stats`
+    # dict (via _derive_stats -- replacing the removed FileRecord.state get_pipeline_stats) AND the
+    # per-node DAG context (passed through to _build_dag_context so the heavy multi-count read happens
+    # once). queue_progress_percent's numerator is the derived stats["analyzed"] (== analyze.done).
+    stage_progress = await get_stage_progress(session)
+    stats = _derive_stats(stage_progress)
 
     # Phase 27 D-05/D-06: agents for the Trigger Scan dropdown (non-revoked, ordered).
     # SER-01: exclude kind="compute" agents (Kueue/burst backends) — they are media-less
@@ -509,8 +549,8 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # (DB-truth) + the maintained completed counters (backstop) + the queue activity. The
     # 35-05 canvas seeds these into $store.pipeline on the full-page render; here they ride
     # the dashboard context. _build_dag_context isolates its own counter-source failures.
-    # stats is passed through so the Phase-58 notYetEnriched derived seed reuses it (no 2nd query).
-    dag_ctx = await _build_dag_context(app_state, session, activity, stats)
+    # stage_progress is passed through so _build_dag_context reuses the same read (no 2nd query).
+    dag_ctx = await _build_dag_context(app_state, session, activity, stage_progress)
 
     # Phase 44 (44-04): the STRAGGLER count (long-running in-flight process_file jobs,
     # "still grinding") and the ANALYSIS_FAILED count ("gave up") -- two distinct buckets
@@ -626,7 +666,11 @@ async def pipeline_stats_partial(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Return the stats bar partial for HTMX polling refresh."""
-    stats = await get_pipeline_stats(session)
+    # Phase 82 (D-05, READ-02): ONE get_stage_progress read feeds the derived seven-key `stats` dict
+    # (via _derive_stats -- the removed FileRecord.state get_pipeline_stats) AND the per-node DAG
+    # context below (passed through so the heavy multi-count read runs once on the hot 5s poll).
+    stage_progress = await get_stage_progress(session)
+    stats = _derive_stats(stage_progress)
     # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
     # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
     # poll can never 500. queue_progress_percent precomputes the guarded "Processing" bar
@@ -637,8 +681,8 @@ async def pipeline_stats_partial(
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
     # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
-    # stats is passed through so the Phase-58 notYetEnriched derived seed reuses it (no 2nd query).
-    dag_ctx = await _build_dag_context(request.app.state, session, activity, stats)
+    # stage_progress is passed through so _build_dag_context reuses the same read (no 2nd query).
+    dag_ctx = await _build_dag_context(request.app.state, session, activity, stage_progress)
     # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
     # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
     # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.

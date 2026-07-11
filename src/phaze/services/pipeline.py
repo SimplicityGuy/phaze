@@ -11,6 +11,7 @@ from sqlalchemy.orm import aliased
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -24,7 +25,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.stage_status import awaiting_candidate_clause
+from phaze.services.stage_status import awaiting_candidate_clause, dedup_resolved_clause, eligible_clause, stage_status_case
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -45,6 +46,27 @@ logger = structlog.get_logger(__name__)
 MUSIC_VIDEO_TYPES = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
 
 
+# T-82-A1 (double-dispatch guard): a file whose ``cloud_job`` row is in any of these ACTIVE (non-terminal)
+# statuses is currently being handled by the cloud path and MUST NOT be a local analyze candidate. The
+# analyze-set trace (82-02 SUMMARY): the cloud hand-off enqueues ``push_file`` (never ``process_file``)
+# and holds ``AWAITING_CLOUD``/``PUSHING`` with NO ``process_file:<id>`` scheduling-ledger row, so
+# ``~inflight_clause(ANALYZE)`` alone does NOT exclude a cloud-dispatched file -- this explicit conjunct
+# is load-bearing. ``FAILED`` is deliberately EXCLUDED: a terminally-failed cloud burst with no
+# ``AnalysisResult`` is a legitimate local-retry candidate (the spill/recovery paths re-home it). A
+# genuinely-done cloud burst (``SUCCEEDED`` with a landed ``AnalysisResult``) is already excluded by
+# ``~done_clause`` inside ``eligible_clause``; listing ``SUCCEEDED`` here is the belt-and-suspenders that
+# also covers the compute ``PUSHED`` window (``cloud_job.status='succeeded'`` while analysis still runs on
+# the agent, before its ``process_file`` ledger row lands).
+_ACTIVE_CLOUD_STATUSES: tuple[str, ...] = (
+    CloudJobStatus.AWAITING.value,
+    CloudJobStatus.UPLOADING.value,
+    CloudJobStatus.UPLOADED.value,
+    CloudJobStatus.SUBMITTED.value,
+    CloudJobStatus.RUNNING.value,
+    CloudJobStatus.SUCCEEDED.value,
+)
+
+
 # The pipeline stages in order, for display
 PIPELINE_STAGES = [
     FileState.DISCOVERED,
@@ -58,17 +80,16 @@ PIPELINE_STAGES = [
 ]
 
 
-async def get_pipeline_stats(session: AsyncSession) -> dict[str, int]:
-    """Get file counts per pipeline stage.
-
-    Returns dict mapping state name to count, e.g.:
-    {"discovered": 42, "analyzed": 10, "proposal_generated": 5, ...}
-    """
-    stmt = select(FileRecord.state, func.count(FileRecord.id)).group_by(FileRecord.state)
-    result = await session.execute(stmt)
-    counts: dict[str, int] = {row[0]: row[1] for row in result.all()}
-    # Ensure all stages are present (default 0)
-    return {stage.value: counts.get(stage.value, 0) for stage in PIPELINE_STAGES}
+# NOTE (Phase 82, D-05/READ-02): ``get_pipeline_stats`` -- the linear per-``FileRecord.state`` grouped
+# counter -- was REMOVED here. The stats path no longer groups by (or reads) ``FileRecord.state``: its
+# three former callers
+# (``routers/pipeline.py`` ``_build_dag_context`` / ``build_dashboard_context`` /
+# ``pipeline_stats_partial``) now derive the seven consumed keys from :func:`get_stage_progress`'s
+# output-table counts (``discovered→discovery.done``, ``metadata_extracted→metadata.done``,
+# ``fingerprinted→fingerprint.done``, ``analyzed→analyze.done``, ``proposal_generated→proposals.done``,
+# ``approved→execute.total``, ``executed→execute.done``). ``PIPELINE_STAGES`` (above) is retained: it is
+# still consumed by the ANALYSIS_FAILED-bucket invariant test + the ``get_analysis_failed_count``
+# docstring, and does NOT read state on the hot poll path.
 
 
 # --- Scanned / deduped / unique reconciliation (quick 260622-i0w) -----------------------
@@ -299,24 +320,66 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
         return 0
 
 
+async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, int]:
+    """Return the four-way ``{not_started, in_flight, done, failed}`` count for ``stage``, degrade-safe.
+
+    ONE ``GROUP BY stage_status_case(stage)`` scoped to music/video files. Because every music/video
+    file resolves to exactly one of the four :func:`phaze.services.stage_status.stage_status_case`
+    buckets (precedence ``in_flight ≻ done ≻ failed ≻ not_started``), the four counts SUM to
+    ``music_video_total`` on a healthy query. Reuses the LOCKED ``stage_status_case`` ``CASE`` ladder
+    verbatim -- NEVER a fresh ``CASE`` (D-04) -- so the buckets can never drift from the DERIV-04
+    equivalence lock (and, transitively, the Python resolver).
+
+    Mirrors the :func:`_safe_count` degrade discipline (INFLIGHT-02): the dict zero-fills first, and on
+    ANY exception this logs a warning, guarded-rolls-back the aborted transaction (so a Postgres
+    "current transaction is aborted" state cannot poison the later stage COUNTs), and returns the
+    all-zero dict -- it NEVER raises into the hot 5s /pipeline/stats poll. On that fail-safe-to-zero
+    degrade the four buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
+    invariant is a healthy-query property only, NEVER a runtime assertion in the poll path (Pitfall 3).
+    """
+    out: dict[str, int] = {s.value: 0 for s in Status}
+    # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the label in the
+    # outer query. Grouping directly by ``stage_status_case(stage)`` fails on Postgres -- the CASE ladder
+    # embeds correlated ``exists(... == FileRecord.id)`` subqueries, and a top-level GROUP BY on that
+    # expression re-projects the ungrouped ``files.id`` ("subquery uses ungrouped column" GroupingError).
+    # The derived-table form evaluates the per-file status once per row (where ``files.id`` is in scope),
+    # so the outer aggregation groups a plain scalar label.
+    status_subq = select(stage_status_case(stage).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
+    stmt = select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+    try:
+        for status_label, n in (await session.execute(stmt)).all():
+            if status_label in out:
+                out[status_label] = int(n)
+    except Exception:
+        logger.warning("stage_bucket_degraded", stage=stage.value, exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("stage_bucket_rollback_failed", stage=stage.value, exc_info=True)
+    return out
+
+
 async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:
     """Authoritative per-DAG-node reconcile source (D-03) -- counts each stage's OUTPUT table.
 
-    Unlike :func:`get_pipeline_stats`, which groups by the LINEAR ``FileRecord.state``
-    (a single enum per file) and therefore STRUCTURALLY cannot report parallel-stage
-    done-counts, this query counts ``COUNT(DISTINCT file_id / tracklist_id)`` against
-    each stage's write target. A file that is both fingerprinted AND analyzed contributes
-    to BOTH ``fingerprint.done`` and ``analyze.done`` here -- impossible to express through
-    the single-valued state enum (RESEARCH Q5).
+    The single-valued linear ``FileRecord.state`` (one enum per file) STRUCTURALLY cannot report
+    parallel-stage done-counts; this query instead counts each stage's OUTPUT table. A file that is
+    both fingerprinted AND analyzed contributes to BOTH ``fingerprint.done`` and ``analyze.done``
+    here -- impossible to express through the single-valued state enum (RESEARCH Q5). Phase 82
+    (READ-02, D-05) removed the former state-grouped ``get_pipeline_stats`` entirely; the stats path
+    now derives its seven keys from THIS function (no ``FileRecord.state`` read).
 
-    Returns a dict keyed by DAG node, each value ``{"done": int, "total": int | None}``:
+    Returns a dict keyed by DAG node. The three ENRICH nodes carry the FOUR-BUCKET shape
+    ``{not_started, in_flight, done, failed, total}`` (Phase 82); every OTHER node keeps
+    ``{"done": int, "total": int | None}``:
 
     - ``discovery``   -- done = COUNT(files); total = itself (bar is always 100%)
-    - ``metadata``    -- done = DISTINCT file_id in ``metadata``; total = music/video file count
-    - ``fingerprint`` -- done = DISTINCT file_id in ``fingerprint_results`` (status in ('success','completed') -- the
-      engine adapters persist ``'success'`` via ``put_fingerprint``; ``'completed'`` is tolerated defensively but
-      never written); total = music/video count
-    - ``analyze``     -- done = DISTINCT file_id in ``analysis``; total = music/video count
+    - ``metadata``    -- FOUR-BUCKET via ``stage_status_case(METADATA)`` over music/video files
+      (:func:`_safe_bucket_counts`); ``done`` = row present + ``failed_at`` NULL; total = music/video count
+    - ``fingerprint`` -- FOUR-BUCKET via ``stage_status_case(FINGERPRINT)``; ``done`` = any engine row in
+      ('success','completed'); ``failed`` = failed-only (no success); total = music/video count
+    - ``analyze``     -- FOUR-BUCKET via ``stage_status_case(ANALYZE)``; ``done`` = ``analysis`` row with
+      ``analysis_completed_at`` NOT NULL (a partial in-flight row is ``in_flight``, not done); total = music/video count
     - ``scan_search`` -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
       renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
     - ``scrape``      -- done = DISTINCT tracklist_id in ``tracklist_versions``; total = COUNT(tracklists)
@@ -325,10 +388,8 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
       ``metadata`` AND ``analysis``, mirroring routers/pipeline.py:116-128)
     - ``execute``     -- done = DISTINCT file_id with a completed ``execution_log`` row; total = approved-proposal count
 
-    Each source is wrapped in :func:`_safe_count` so a single failing stage degrades to
-    ``done=0`` (or ``total=0``) and the function never raises into the 5s poll. The linear
-    :func:`get_pipeline_stats` is intentionally left untouched -- it remains the truth for the
-    strictly-linear Proposals/Approved/Executed tail where ``state`` IS the truth.
+    Each source is wrapped in :func:`_safe_count` (or :func:`_safe_bucket_counts` for the enrich
+    nodes) so a single failing stage degrades to zero and the function never raises into the 5s poll.
     """
     music_video_total = await _safe_count(
         session,
@@ -370,22 +431,14 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     return {
         "discovery": {"done": discovery_done, "total": discovery_done},
-        "metadata": {
-            "done": await _safe_count(session, select(func.count(distinct(FileMetadata.file_id))), node="metadata"),
-            "total": music_video_total,
-        },
-        "fingerprint": {
-            "done": await _safe_count(
-                session,
-                select(func.count(distinct(FingerprintResult.file_id))).where(FingerprintResult.status.in_(("success", "completed"))),
-                node="fingerprint",
-            ),
-            "total": music_video_total,
-        },
-        "analyze": {
-            "done": await _safe_count(session, select(func.count(distinct(AnalysisResult.file_id))), node="analyze"),
-            "total": music_video_total,
-        },
+        # Phase 82 (READ-02, D-04/D-05): the three enrich nodes are FOUR-BUCKET
+        # ({not_started, in_flight, done, failed} + total) via one GROUP BY stage_status_case(stage)
+        # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the four buckets sum
+        # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
+        # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
+        "metadata": {**await _safe_bucket_counts(session, Stage.METADATA), "total": music_video_total},
+        "fingerprint": {**await _safe_bucket_counts(session, Stage.FINGERPRINT), "total": music_video_total},
+        "analyze": {**await _safe_bucket_counts(session, Stage.ANALYZE), "total": music_video_total},
         "scan_search": {
             "done": await _safe_count(session, select(func.count(distinct(Tracklist.file_id))), node="scan_search"),
             "total": None,  # counter-only: no table defines "should get a tracklist" (RESEARCH Q5 / UI-SPEC)
@@ -1071,9 +1124,9 @@ async def get_analysis_failed_files(session: AsyncSession) -> list[FileRecord]:
 async def get_analysis_failed_count(session: AsyncSession) -> int:
     """Return COUNT of files in ``FileState.ANALYSIS_FAILED``, degrading to 0 on any DB error.
 
-    Poll-safe via :func:`_safe_count` (mirrors the ANALYZED-count precedent in
-    :func:`get_pipeline_stats`): a DB hiccup degrades this node to 0 and rolls back the aborted
-    transaction rather than 500ing the hot 5s /pipeline/stats poll. ``ANALYSIS_FAILED`` is its
+    Poll-safe via :func:`_safe_count` (the standard stage-count degrade discipline): a DB hiccup
+    degrades this node to 0 and rolls back the aborted transaction rather than 500ing the hot 5s
+    /pipeline/stats poll. ``ANALYSIS_FAILED`` is its
     own bucket and is deliberately NOT added to ``PIPELINE_STAGES`` (D-02 -- it would double-count
     in the linear bar).
     """
@@ -1096,17 +1149,35 @@ async def get_analysis_failed_count(session: AsyncSession) -> int:
 
 
 async def get_discovered_files_with_duration(session: AsyncSession) -> list[tuple[FileRecord, float | None]]:
-    """Return ``(FileRecord, duration)`` for every DISCOVERED file (LEFT OUTER JOIN metadata).
+    """Return ``(FileRecord, duration)`` for every analyze-pending music/video file (LEFT OUTER JOIN metadata).
 
-    The duration is the joined ``FileMetadata.duration`` (or ``None`` when no metadata row
-    exists yet). Captured into the in-memory list here because ``FileRecord.file_metadata`` is
-    ``lazy="noload"`` -- a later access in a background task would NOT lazy-load it, so the
-    duration the per-file router (Plan 02) routes on must be read in this query.
+    READ-01 cutover: the analyze pending set is now DERIVED, not gated on ``FileRecord.state ==
+    DISCOVERED``. A file is analyze-pending iff it is a music/video type, is ``eligible_clause(ANALYZE)``
+    (``~inflight ∧ ~done ∧ ~failed`` -- ELIG-03 keeps a FAILED analyze terminal, the 44.5K over-enqueue
+    guard), is NOT dedup-resolved, and is NOT being handled by the cloud path (T-82-A1). This dissolves
+    the cross-stage deadlock the old state gate created -- a file whose ``state`` advanced past
+    ``DISCOVERED`` (e.g. to ``METADATA_EXTRACTED``) but was never analyzed re-surfaces here correctly.
+
+    The ``file_type.in_(MUSIC_VIDEO_TYPES)`` scope is NEWLY required: the old state-gated query was
+    file-type-agnostic, so without it a non-music DISCOVERED file would leak into the analyze set
+    (Pitfall 1). The ``~exists(cloud_job in ACTIVE statuses)`` conjunct is the explicit A1 double-dispatch
+    guard -- see ``_ACTIVE_CLOUD_STATUSES``: a cloud-held/pushing file carries NO ``process_file`` ledger
+    row, so ``eligible_clause``'s ``~inflight`` alone would re-admit it to the local analyze set.
+
+    The duration is the joined ``FileMetadata.duration`` (or ``None`` when no metadata row exists yet).
+    The LEFT OUTER JOIN is PRESERVED (the per-file cloud duration-router reads ``FileMetadata.duration``);
+    it is captured into the in-memory list here because ``FileRecord.file_metadata`` is ``lazy="noload"``
+    -- a later access in a background task would NOT lazy-load it.
     """
     stmt = (
         select(FileRecord, FileMetadata.duration)
         .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
-        .where(FileRecord.state == FileState.DISCOVERED)
+        .where(
+            FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+            eligible_clause(Stage.ANALYZE),
+            ~dedup_resolved_clause(),
+            ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES))),
+        )
     )
     result = await session.execute(stmt)
     return [(record, duration) for record, duration in result.all()]
@@ -1368,15 +1439,21 @@ async def get_backfill_candidates(session: AsyncSession, threshold_sec: int) -> 
 
 
 async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
-    """Return all music/video FileRecords -- the metadata-extraction pending set.
+    """Return the DERIVED metadata-extraction pending set -- music/video files eligible for metadata (READ-01).
 
     The EXACT set the manual metadata triggers (``trigger_metadata_extraction`` /
-    ``trigger_extraction_ui``) enqueue: every music/video file regardless of state (D-04
-    backfill -- metadata extraction is idempotent per file and the deterministic
-    ``extract_file_metadata:<file_id>`` key dedups an in-flight re-run). Pure ORM
-    ``file_type.in_(MUSIC_VIDEO_TYPES)`` with NO interpolated operator input (T-42-03).
+    ``trigger_extraction_ui``) and the Phase-42 recovery producer enqueue. READ-01 cutover: DERIVED from
+    ``eligible_clause(METADATA)`` (``~inflight ∧ ~done`` -- ``ELIGIBLE_AFTER_FAILURE[METADATA]`` is True,
+    so a FAILED metadata row stays eligible for the ELIG-04 auto-retry) instead of the prior
+    state-agnostic "every music/video file", and excludes dedup-resolved files. A file whose metadata is
+    genuinely done (a row present with ``failed_at`` NULL) drops out; a not-started or failed one stays.
+    Pure ORM / bound params, NO interpolated operator input (T-42-03).
     """
-    stmt = select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        eligible_clause(Stage.METADATA),
+        ~dedup_resolved_clause(),
+    )
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
@@ -1401,38 +1478,26 @@ async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
 
 
 async def get_fingerprint_pending_files(session: AsyncSession) -> list[FileRecord]:
-    """Return METADATA_EXTRACTED files PLUS failed-fingerprint-retry files, de-duplicated by id.
+    """Return the DERIVED fingerprint pending set -- music/video files eligible for fingerprinting (READ-01).
 
-    The EXACT set the manual ``trigger_fingerprint`` API endpoint enqueues: files in
-    ``METADATA_EXTRACTED`` state (ready for fingerprinting) UNION files carrying a
-    ``FingerprintResult`` with ``status == "failed"`` that are not yet ``FINGERPRINTED``
-    (retry per D-16). The two sets are merged and de-duplicated by id (keeping the
-    ``FileRecord`` rows so the full ``FingerprintFilePayload`` can be built downstream).
-
-    Phase 42 consistency fix: the HTMX ``trigger_fingerprint_ui`` endpoint previously queried
-    ONLY ``METADATA_EXTRACTED`` (no failed-retry scope); routing it through this shared helper
-    ALIGNS it with the API endpoint (it GAINS the failed-retry scope) -- an intended fix so the
-    manual UI and API triggers and recovery cannot drift. Pure ORM with NO interpolated
-    operator input (T-42-03).
+    The EXACT set the manual ``trigger_fingerprint`` / ``trigger_fingerprint_ui`` endpoints and the
+    Phase-42 recovery producer enqueue. READ-01 cutover: DERIVED from ``eligible_clause(FINGERPRINT)`` in
+    a SINGLE ``.where(...)`` -- the prior ``get_files_by_state(METADATA_EXTRACTED)`` UNION with the
+    failed-retry sub-select AND the manual de-dup-by-id loop are COLLAPSED. This loses no coverage:
+    ``ELIGIBLE_AFTER_FAILURE[FINGERPRINT]`` is True, so ``eligible_clause`` is ``~inflight ∧ ~done``
+    (it drops the ``~failed`` conjunct), which subsumes the old failed-retry set -- a failed-only
+    fingerprint (DERIV-05: no engine ``success``/``completed``) is NOT ``done`` and therefore stays
+    eligible (ELIG-04 auto-retry). A single ``.where`` cannot emit a duplicate row, so the de-dup loop is
+    unnecessary. Dedup-resolved files are excluded. Pure ORM / bound params, NO interpolated operator
+    input (T-42-03).
     """
-    files = await get_files_by_state(session, FileState.METADATA_EXTRACTED)
-
-    failed_stmt = (
-        select(FileRecord)
-        .join(FingerprintResult, FingerprintResult.file_id == FileRecord.id)
-        .where(FingerprintResult.status == "failed")
-        .where(FileRecord.state != FileState.FINGERPRINTED)
+    stmt = select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        eligible_clause(Stage.FINGERPRINT),
+        ~dedup_resolved_clause(),
     )
-    failed_files = list((await session.execute(failed_stmt)).scalars().all())
-
-    seen_ids: set[str] = set()
-    out: list[FileRecord] = []
-    for f in [*files, *failed_files]:
-        fid = str(f.id)
-        if fid not in seen_ids:
-            seen_ids.add(fid)
-            out.append(f)
-    return out
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
