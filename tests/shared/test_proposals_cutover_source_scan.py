@@ -23,8 +23,12 @@ Invariants enforced (RESEARCH forms #1-#6):
 * ``#3`` ``update(FileRecord).where(...).values(state=FileState.X)`` -- the **removed write** (flagged by
   the ``FileState.<member>`` occurrence scan; the keyword ``state=`` param name is NOT an attribute, so
   the ``.state``-read scan correctly ignores it -- only the ``FileState`` RHS is the violation).
-* ``#4`` ``file.state`` -- a read/write off an instance bound to a ``FileRecord`` (the apply-PATCH write
-  ``file_record.state = FileState.MOVED`` Plan 02 removed).
+* ``#4`` ``.state`` read/write off a FileRecord-shaped base, matched BASE-KIND-AGNOSTICALLY (WR-01): a bare
+  ``ast.Name`` bound to a ``FileRecord`` -- either via a ``FileRecord``-textual RHS OR the two-step ORM
+  row-fetch idiom ``file_record = result.scalar_one_or_none()`` the deleted ``store_proposals`` used -- OR ANY
+  ``ast.Attribute`` chain such as ``proposal.file.state`` (the exact chained-attribute cascade Plan 01 deleted
+  from ``update_proposal_status``, whose base ``proposal.file`` is an ``ast.Attribute``, not a ``ast.Name``).
+  Keying stays on ``.attr == "state"`` only, so ``.status`` / ``.file_state`` / ``.id`` never fire.
 * ``#5`` ``getattr(file, "state")`` -- the reflective read.
 * ``#6`` ``FileRecord.state`` passed **positionally** into ``.where(a, b, <read>)`` -- the Phase-83
   blind spot. The scan walks BOTH ``Call.args`` and ``Call.keywords`` of the ``.where``-family funcs,
@@ -74,6 +78,13 @@ assert _AGENT_PROPOSALS.exists(), _AGENT_PROPOSALS
 # argument of one of these is a read of ``FileRecord.state`` (the exact thing the cutover removed).
 _WHERE_FUNCS = frozenset({"where", "filter", "filter_by", "having"})
 
+# SQLAlchemy Result row-fetch idioms. A local assigned from one of these (``file_record =
+# result.scalar_one_or_none()``) holds a ``FileRecord`` ORM row even though its assignment RHS never
+# textually mentions ``FileRecord`` -- the exact two-step idiom the deleted ``store_proposals`` code used
+# (WR-01, compounding factor 1). ``_orm_row_bound_names`` treats such a local as FileRecord-bound so a
+# ``file_record.state`` write/read off it is caught by the base-kind-agnostic scanners below.
+_ROW_FETCH_METHODS = frozenset({"scalar_one_or_none", "scalar_one", "scalar", "first", "one_or_none", "one"})
+
 
 def _filerecord_bound_names(tree: ast.AST) -> set[str]:
     """Names that resolve to a ``FileRecord`` (the model class + any local assigned from a FileRecord expr).
@@ -92,45 +103,79 @@ def _filerecord_bound_names(tree: ast.AST) -> set[str]:
     return names
 
 
-def _state_reads(tree: ast.AST) -> list[ast.Attribute]:
-    """Every ``<FileRecord-bound>.state`` attribute READ (forms #1, #2, #4, #6).
+def _orm_row_bound_names(tree: ast.AST) -> set[str]:
+    """Names bound from a SQLAlchemy Result row-fetch idiom (``x = result.scalar_one_or_none()`` etc.).
 
-    Matches ``ast.Attribute`` nodes whose ``.attr`` is ``"state"``, whose context is ``Load`` (a READ --
-    never the ``Store`` target of ``f.state = ...``), and whose base ``Name`` resolves to ``FileRecord``.
-    Walks the WHOLE tree, so a read nested anywhere -- inside ``.in_(...)``, an ``ast.Compare``, or a
-    POSITIONAL ``.where`` arg (the Phase-83 blind spot) -- is reached, because ``ast.walk`` descends into
-    both ``Call.args`` and ``Call.keywords``.
+    Closes WR-01 compounding factor 1: the deleted ``store_proposals`` code obtained its ``FileRecord``
+    row via the two-step idiom ``result = await session.execute(select(FileRecord)...)`` then
+    ``file_record = result.scalar_one_or_none()``. ``file_record``'s assignment RHS references ``result``,
+    NOT ``FileRecord`` textually, so ``_filerecord_bound_names`` never binds it and a re-added
+    ``file_record.state = "moved"`` write off it evades the bare-Name scanners. Any local assigned from a
+    call whose method is one of ``_ROW_FETCH_METHODS`` (``.scalar_one_or_none()`` / ``.scalar_one()`` /
+    ``.scalar()`` / ``.first()`` / ``.one_or_none()`` / ``.one()``) is therefore treated as a FileRecord-bound
+    row. Deliberately conservative-broad (it also binds locals fetched from a non-FileRecord select), but
+    that only makes a spurious ``x.state`` read/write *more* likely to be flagged -- strictly stronger, and
+    never a false-positive on ``.status`` / ``.id`` because every scanner keys ONLY on ``.attr == "state"``.
     """
-    bound = _filerecord_bound_names(tree)
-    return [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and node.attr == "state"
-        and isinstance(node.ctx, ast.Load)
-        and isinstance(node.value, ast.Name)
-        and node.value.id in bound
-    ]
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(
+            isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr in _ROW_FETCH_METHODS for sub in ast.walk(node.value)
+        ):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+def _state_reads(tree: ast.AST) -> list[ast.Attribute]:
+    """Every ``.state`` attribute READ off a FileRecord-shaped base (forms #1, #2, #4, #6).
+
+    Matches ``ast.Attribute`` nodes whose ``.attr`` is ``"state"`` and whose context is ``Load`` (a READ --
+    never the ``Store`` target of ``f.state = ...``). Base-kind-agnostic per WR-01: the ``.state`` is flagged
+    when its base is EITHER (a) a bare ``ast.Name`` bound to a ``FileRecord`` (via ``_filerecord_bound_names``
+    OR an ORM row-fetch idiom, ``_orm_row_bound_names``), OR (b) ANY ``ast.Attribute`` chain -- e.g.
+    ``proposal.file.state``, the exact chained-attribute shape Plan 01 deleted from ``update_proposal_status``,
+    whose base is ``proposal.file`` (an ``ast.Attribute``, NOT a ``ast.Name``) and so evaded the old
+    bare-Name-only scan. Keying stays strictly on ``.attr == "state"`` -- ``.status`` / ``.file_state`` /
+    ``.id`` are never flagged, and the three clean source files have zero ``.state`` attribute nodes so this
+    broadening stays false-positive-free. Walks the WHOLE tree, so a read nested anywhere -- inside
+    ``.in_(...)``, an ``ast.Compare``, or a POSITIONAL ``.where`` arg (the Phase-83 blind spot) -- is reached,
+    because ``ast.walk`` descends into both ``Call.args`` and ``Call.keywords``.
+    """
+    bound = _filerecord_bound_names(tree) | _orm_row_bound_names(tree)
+    hits: list[ast.Attribute] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and node.attr == "state" and isinstance(node.ctx, ast.Load)):
+            continue
+        base = node.value
+        if isinstance(base, ast.Attribute) or (isinstance(base, ast.Name) and base.id in bound):
+            hits.append(node)
+    return hits
 
 
 def _state_writes(tree: ast.AST) -> list[ast.Attribute]:
-    """Every ``<FileRecord-bound>.state`` attribute WRITE (form #4's Store side, e.g. ``file_record.state = X``).
+    """Every ``.state`` attribute WRITE off a FileRecord-shaped base (form #4's Store side).
 
-    Plan 02 removed exactly this: the apply-PATCH ``file_record.state = FileState.MOVED`` write. A ``Store``
-    context ``.state`` attribute off a FileRecord-bound name is a re-added mirror write and must be flagged.
-    (The template guarded read-only files; here the retired sites include a WRITE, so the Store side is
-    scanned explicitly rather than relying on the ``FileState`` RHS occurrence alone.)
+    Plan 01/02 removed exactly these: the apply-PATCH ``file_record.state = FileState.MOVED`` mirror write,
+    the ``update_proposal_status`` chained ``proposal.file.state = FileState.APPROVED.value`` cascade, and the
+    two-step-ORM-idiom ``file_record = result.scalar_one_or_none(); file_record.state = "moved"`` write in
+    ``store_proposals``. Base-kind-agnostic per WR-01: a ``Store``-context ``.state`` attribute is flagged when
+    its base is EITHER (a) a bare ``ast.Name`` bound to a ``FileRecord`` (``_filerecord_bound_names`` OR the
+    ORM row-fetch idiom ``_orm_row_bound_names`` -- so the two-step idiom whose RHS references ``result``, not
+    ``FileRecord`` textually, is no longer invisible), OR (b) ANY ``ast.Attribute`` chain (``proposal.file.state``,
+    whose base ``proposal.file`` is an ``ast.Attribute``). Keying stays strictly on ``.attr == "state"``; the
+    three clean source files have zero ``.state`` attribute nodes, so this stays false-positive-free.
     """
-    bound = _filerecord_bound_names(tree)
-    return [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and node.attr == "state"
-        and isinstance(node.ctx, ast.Store)
-        and isinstance(node.value, ast.Name)
-        and node.value.id in bound
-    ]
+    bound = _filerecord_bound_names(tree) | _orm_row_bound_names(tree)
+    hits: list[ast.Attribute] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and node.attr == "state" and isinstance(node.ctx, ast.Store)):
+            continue
+        base = node.value
+        if isinstance(base, ast.Attribute) or (isinstance(base, ast.Name) and base.id in bound):
+            hits.append(node)
+    return hits
 
 
 def _filestate_occurrences(tree: ast.AST) -> list[ast.Attribute]:
@@ -353,6 +398,43 @@ def test_guard_flags_positional_where_read() -> None:
     # FileRecord.state (read) + FileState.MOVED (occurrence) = 2.
     assert len(violations) == 2
     assert {getattr(n, "attr", None) for n in violations} == {"state", "MOVED"}
+
+
+def test_guard_flags_chained_attr_string_write() -> None:
+    """MUTATION #4c (RED / WR-01): ``proposal.file.state = "approved"`` -- the chained-attribute cascade.
+
+    Re-encodes the EXACT literal shape Plan 01 deleted from ``update_proposal_status``
+    (``proposal.file.state = FileState.APPROVED.value``, reintroduced here in its string-value form). The
+    assignment target is ``Attribute(value=Attribute(value=Name('proposal'), attr='file'), attr='state')`` --
+    its base is an ``ast.Attribute`` (``proposal.file``), NOT a bare ``ast.Name``, so the OLD bare-Name-only
+    scanner returned ``[]`` (the WR-01 blind spot). There is NO ``FileState`` node here, so coverage rests
+    ENTIRELY on the base-kind-agnostic ``.state``-write scan added in Task 1. Mutation-verified RED->GREEN
+    (revert the broadening -> ``_violations`` returns ``[]`` -> this asserts fail); see 86-05-SUMMARY.md.
+    """
+    source = 'proposal.file.state = "approved"\n'
+    violations = _violations(source)
+    assert violations != []
+    writes = [n for n in violations if isinstance(n, ast.Attribute) and n.attr == "state" and isinstance(n.ctx, ast.Store)]
+    assert len(writes) == 1
+    assert isinstance(writes[0].value, ast.Attribute)  # the chained ``proposal.file`` base
+
+
+def test_guard_flags_two_step_orm_idiom_write() -> None:
+    """MUTATION #4d (RED / WR-01 factor 1): the two-step ORM idiom ``store_proposals`` itself used.
+
+    Re-encodes ``file_record = result.scalar_one_or_none()`` then ``file_record.state = "moved"`` -- the exact
+    idiom the deleted ``store_proposals`` code used. ``file_record``'s binding RHS is ``result.scalar_one_or_none()``,
+    which does NOT textually contain ``FileRecord``, so the OLD ``_filerecord_bound_names`` never bound it and
+    the write was invisible. This proves the ``_orm_row_bound_names`` binding added in Task 1 has teeth: the
+    bare-Name base ``file_record`` is recognised as a FileRecord row via the row-fetch idiom. Mutation-verified
+    RED->GREEN (revert the broadening -> ``_violations`` returns ``[]``); see 86-05-SUMMARY.md.
+    """
+    source = 'file_record = result.scalar_one_or_none()\nfile_record.state = "moved"\n'
+    violations = _violations(source)
+    assert violations != []
+    writes = [n for n in violations if isinstance(n, ast.Attribute) and n.attr == "state" and isinstance(n.ctx, ast.Store)]
+    assert len(writes) == 1
+    assert isinstance(writes[0].value, ast.Name)  # bare ``file_record`` bound via the ORM row-fetch idiom
 
 
 # ---------------------------------------------------------------------------
