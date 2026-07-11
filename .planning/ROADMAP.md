@@ -274,7 +274,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
-| 86. Proposals Cutover | 2026.7.5 | 3/3 | Complete   | 2026-07-11 |
+| 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete   | 2026-07-11 |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
@@ -543,8 +543,8 @@ Plans:
 
 **Gap-closure Wave** *(post-verification; both plans parallel, disjoint files)*
 
-- [ ] 86-04-PLAN.md — Fix the stale `test_proposal.py` file.state cascade assertion; prove the full `tests/review` bucket green (VERIFICATION Gap 1)
-- [ ] 86-05-PLAN.md — Broaden the AST guard to base-kind-agnostic `.state` matching + two mutation-verified RED cases for the chained-attr / two-step-ORM shapes (VERIFICATION Gap 2 / WR-01)
+- [x] 86-04-PLAN.md — Fix the stale `test_proposal.py` file.state cascade assertion; prove the full `tests/review` bucket green (VERIFICATION Gap 1)
+- [x] 86-05-PLAN.md — Broaden the AST guard to base-kind-agnostic `.state` matching + two mutation-verified RED cases for the chained-attr / two-step-ORM shapes (VERIFICATION Gap 2 / WR-01)
 
 ### Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority
 
