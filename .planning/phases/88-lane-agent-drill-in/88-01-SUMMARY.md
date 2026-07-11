@@ -153,3 +153,8 @@ None - no external service configuration required.
 ---
 *Phase: 88-lane-agent-drill-in*
 *Completed: 2026-07-11*
+
+## Self-Check: PASSED
+- Created files verified on disk: `_detail_pane.html`, `test_lane_drill_survival.py`, `test_agent_drill_survival.py`, `88-01-SUMMARY.md`
+- Task commits verified: `e6010b9f` (Task 1), `45c1a94d` (Task 2), `13a1d864` (Task 3)
+- Verification gate: 7/7 survival tests green; `analyze` bucket 566 passed; `agents` bucket 455 passed; `ruff`/`ruff format`/`mypy` clean on changed sources
