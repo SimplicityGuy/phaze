@@ -3,8 +3,9 @@ phase: 87
 slug: operator-ui-stage-matrix-failure-retry-eligibility-trace-pri
 status: approved
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-11
+audited: 2026-07-11
 ---
 
 # Phase 87 — Validation Strategy
@@ -39,20 +40,22 @@ created: 2026-07-11
 
 ## Critical-Behavior → Plan Coverage Map
 
-> Traced against the 8 committed plans during plan-phase verification (plan-checker, 2026-07-11). 10/10 critical behaviors map to an automated test in a specific plan.
+> Traced against the 8 committed plans during plan-phase verification (plan-checker, 2026-07-11), then
+> re-audited against the EXECUTED phase (validate-phase, 2026-07-11): 10/10 critical behaviors are COVERED
+> by a real, green, shipped test — all 13 behavior-home files ran green together (203 passed).
 
-| Behavior | Owning Plan(s) | Test Home |
-|----------|----------------|-----------|
-| 1 skipped-file-leaves-pending-set | 87-03 | pending-set exclusion tests (3 enrich stages) |
-| 2 skipped-reads-as-distinct-bucket | 87-02, 87-03 | `stage_status_case` precedence tests |
-| 3 skip-orthogonal-across-enrich (corrected) | 87-03 | orthogonality assertion (subsumed by 1 & 5) |
-| 4 DERIV-04-covers-skipped | 87-03 | extended `test_stage_status_equivalence.py` fixtures |
-| 5 force-skip-not-re-enqueued-by-recovery | 87-03 | recovery/re-enqueue exclusion + manual-trigger tests |
-| 6 additive-only-writer keeps shadow-green | 87-03, 87-06 | shadow-compare green + writer additive-only assertion |
-| 7 paginated-table-no-whole-corpus-scan | 87-04 | EXPLAIN / bounded-LIMIT test on seeded corpus |
-| 8 terminal-analyze-retry-is-manual-only | 87-07 | analyze retry manual-path (no auto-loop) test |
-| 9 skip-reason-sanitized-and-persisted | 87-06 | `sanitize_pg_text` round-trip + empty-reason reject |
-| 10 eligibility-trace-single-row | 87-06 | single-row conjunct trace + named-blocker test |
+| Behavior | Owning Plan(s) | Shipped Test Home | Status |
+|----------|----------------|-------------------|--------|
+| 1 skipped-file-leaves-pending-set | 87-03 | `tests/{analyze,fingerprint,metadata}/test_skipped_leaves_pending.py` (one per enrich stage) | COVERED |
+| 2 skipped-reads-as-distinct-bucket | 87-02, 87-03 | `tests/shared/test_stage_resolver.py` + `tests/integration/test_stage_status_equivalence.py` (precedence `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started`) | COVERED |
+| 3 skip-orthogonal-across-enrich (corrected) | 87-03 | subsumed by behaviors 1 & 5 (enrich stages have no mutual upstream — `ELIGIBILITY_DAG` empty) | COVERED |
+| 4 DERIV-04-covers-skipped | 87-03 | `tests/integration/test_stage_status_equivalence.py` (skipped cells on all 3 enrich axes) | COVERED |
+| 5 force-skip-not-re-enqueued-by-recovery | 87-03 (+ orchestrator fix) | `tests/analyze/tasks/test_recovery.py::test_skipped_{analyze,metadata,fingerprint}_row_is_excluded_from_recovery` — the fingerprint case was a real behavior-5 gap found + fixed inline (`reenqueue.py fingerprint_done = or_(done_clause, skipped_clause)`), the xfail tripwire flipped to a passing mutation-verified guard | COVERED |
+| 6 additive-only-writer keeps shadow-green | 87-03, 87-06 | `tests/integration/test_shadow_compare_skipped.py` + `tests/analyze/test_force_skip_writer.py::test_skip_never_clears_analysis_failed_at` | COVERED |
+| 7 paginated-table-no-whole-corpus-scan | 87-04 | `tests/integration/test_files_page.py` (asserts `"count(" not in sql`; EXPLAIN rides the Phase-77 partial indexes) | COVERED |
+| 8 terminal-analyze-retry-is-manual-only | 87-07 | `tests/analyze/test_retry_affordances.py::test_analyze_failure_is_never_auto_eligible` | COVERED |
+| 9 skip-reason-sanitized-and-persisted | 87-06 (+ orchestrator fix) | `tests/analyze/test_force_skip_writer.py` — NUL round-trip + empty-reason reject + `test_nul_only_reason_returns_422` (WR-01, validates the sanitized value) + `test_duplicate_force_skip_is_idempotent_not_500` (CR-01) | COVERED |
+| 10 eligibility-trace-single-row | 87-06 | `tests/shared/test_eligibility_trace.py::test_trace_is_single_row_no_corpus_scan` + named-blocker assertion | COVERED |
 
 ---
 
@@ -75,9 +78,9 @@ Derived from RESEARCH §Validation Architecture. Each is a correctness-load-bear
 
 ## Wave 0 Requirements
 
-- [ ] `tests/integration/test_migrations/test_037_*.py` — migration up/down + `UNIQUE(file_id, stage)` + optional stage CHECK for the new `stage_skip` sidecar.
-- [ ] Fixtures for a file with each combination of stage markers (done/failed/skipped/in_flight) to drive behaviors 1–4 — extend existing derived-status fixtures rather than build fresh.
-- [ ] Extend the Phase-78 DERIV-04 equivalence fixture matrix with `skipped` rows (behavior 4).
+- [x] `tests/integration/test_migrations/test_037_stage_skip.py` — migration up/down + `UNIQUE(file_id, stage)` + enrich-only stage CHECK for the new `stage_skip` sidecar (shipped 87-01, mutation-verified).
+- [x] Fixtures for a file with each combination of stage markers (done/failed/skipped/in_flight) to drive behaviors 1–4 — landed in the extended `test_stage_status_equivalence.py` seeds + the per-stage `test_skipped_leaves_pending.py` files (87-02/87-03).
+- [x] Extend the Phase-78 DERIV-04 equivalence fixture matrix with `skipped` rows (behavior 4) — shipped in 87-03.
 
 *Existing pytest + per-bucket infrastructure covers the framework; no framework install needed.*
 
@@ -90,6 +93,27 @@ Derived from RESEARCH §Validation Architecture. Each is a correctness-load-bear
 | Pill-matrix visual legibility (light+dark, colorblind glyph cue) | UI-01 | Visual rendering not asserted by pytest | Load the files table + a selected file's right pane in both themes; confirm the 5-bucket pills (done ✓ / in_flight ● / not_started — / failed ✗ / skipped ⊘) are distinguishable by glyph, not color alone |
 | Priority-inversion label clarity | PRIO-01 | Copy/UX judgment | Confirm the ▲/▼ stepper tooltip + aria-labels make "▲ raises priority = lowers the number" unambiguous |
 | Orphan badge appears near the correct stage | UI-05 | Visual placement | Seed an in-flight-no-progress file; confirm the DAG-rail badge shows the count near the affected stage |
+
+---
+
+## Validation Audit 2026-07-11
+
+| Metric | Count |
+|--------|-------|
+| Critical behaviors | 10 |
+| COVERED (automated, green) | 10 |
+| PARTIAL / MISSING | 0 |
+| Wave-0 requirements complete | 3/3 |
+| Manual-only (inherently visual/UX) | 3 |
+| Gaps to fill | 0 |
+
+Re-audited against the executed phase (State A). All 13 behavior-home test files ran green together
+(`203 passed`) against the `:5433` ephemeral DB. No auditor spawn was needed — there were no automatable
+gaps to fill. Two behaviors (5, 9) were strengthened mid-execution by orchestrator inline fixes, each
+mutation-verified: behavior-5 gained the fingerprint recovery-exclusion guard (`reenqueue.py`
+`or_(done_clause, skipped_clause)`), and behavior-9 gained the NUL-only-reason 422 guard (WR-01) plus the
+idempotent-duplicate guard (CR-01). The 3 Manual-Only items are inherently visual/UX (pill legibility,
+stepper-label clarity, orphan-badge placement) and are not automatable by pytest — they remain manual.
 
 ---
 
