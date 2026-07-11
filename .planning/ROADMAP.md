@@ -277,7 +277,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
-| 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 1/2 | In Progress|  |
+| 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete   | 2026-07-11 |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
@@ -631,7 +631,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 89-02-PLAN.md — Migration 038 reattributes legacy-owned rows to the sole fileserver + deletes the sentinel row, with its integration test (LEGACY-02, LEGACY-03 migration half)
+- [x] 89-02-PLAN.md — Migration 038 reattributes legacy-owned rows to the sole fileserver + deletes the sentinel row, with its integration test (LEGACY-02, LEGACY-03 migration half)
 
 ### Phase 90: Destructive Migration & Writer Removal
 
