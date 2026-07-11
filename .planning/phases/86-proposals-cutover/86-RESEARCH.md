@@ -307,14 +307,16 @@ caller discards the response.
 |---|-------|---------|---------------|
 | — | (none) | — | All claims verified against live source in this worktree. No `[ASSUMED]` claims. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Exact new test-file placement for the D-03 stale-batch test** — recommendation: extend
    `tests/shared/core/test_proposals_upsert.py` (same bucket, same harness) rather than a new file, so
    `_seed_file`/`_batch`/`_count` are reused. Non-blocking (Claude's discretion in CONTEXT.md).
+   **RESOLVED:** Plan 86-01 places the D-03 test (`test_stale_batch_does_not_disturb_executed_file`) in
+   `tests/shared/core/test_proposals_upsert.py` as recommended.
 2. **Idempotent replay echo value** (`None` vs `body.file_state`) — both honest per D-02; recommend
    `None` (no outcome was requested on a pure replay, and the request `file_state` may be absent).
-   Non-blocking.
+   Non-blocking. **RESOLVED:** Plan 86-02 chooses `None` for the idempotent replay echo.
 
 ## Sources
 

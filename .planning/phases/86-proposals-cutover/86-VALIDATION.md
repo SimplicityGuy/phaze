@@ -1,8 +1,8 @@
 ---
 phase: 86
 slug: proposals-cutover
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-10
 ---
@@ -70,12 +70,12 @@ created: 2026-07-10
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 60s
-- [ ] Every new guard mutation-verified (RED→restore recorded)
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 60s
+- [ ] Every new guard mutation-verified (RED→restore recorded) — *asserted at execution time*
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-07-10 (plan-checker VERIFICATION PASSED; 5/5 tasks carry automated verify, no watch-mode, latency <60s)
