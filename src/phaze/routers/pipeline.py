@@ -16,11 +16,17 @@ import structlog
 
 from phaze.config import settings
 from phaze.database import async_session, get_session
-from phaze.enums.stage import Stage, Status
+from phaze.enums.stage import ELIGIBILITY_DAG, ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible, resolve_status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
+from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
+from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
@@ -285,8 +291,6 @@ async def _build_dag_context(
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-    from phaze.models.tracklist import Tracklist
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -1178,6 +1182,208 @@ async def force_skip_stage(
         f'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
         f"Skipped {stage} — reason recorded.</div></div>"
     )
+
+
+# --------------------------------------------------------------------------------------------------
+# Per-file eligibility trace (UI-03 / D-06/D-07): the diagnostic whose absence hid the deadlock. A
+# single-row resolve_status/eligible() evaluation (NOT a corpus scan, T-87-23) that names the ONE
+# unmet blocker keeping a stage out of the pending set.
+# --------------------------------------------------------------------------------------------------
+
+# Display label per stage for the six-pill matrix + trace verdict (the 7->6 remap: tracklist is
+# omitted; review renders as "Appr", apply as "Exec"). Mirrors _stage_matrix.html's pill order.
+_STAGE_TRACE_LABELS: dict[Stage, str] = {
+    Stage.METADATA: "Meta",
+    Stage.FINGERPRINT: "FP",
+    Stage.ANALYZE: "Analyze",
+    Stage.PROPOSE: "Prop",
+    Stage.REVIEW: "Appr",
+    Stage.APPLY: "Exec",
+}
+
+
+async def _one_stage_scalars(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> dict[str, Any]:
+    """Read ONE file's per-stage scalars in the DB-free ``resolve_status`` shape (mirrors ``load_scalars``).
+
+    Every read is strictly ``file_id``-scoped (T-87-23 — a single-row evaluation, never a corpus scan).
+    """
+    func_name = STAGE_TO_FUNCTION.get(stage.value)
+    inflight = False
+    if func_name is not None:
+        ledger_row = (await session.execute(select(SchedulingLedger.key).where(SchedulingLedger.key == f"{func_name}:{file_id}"))).first()
+        inflight = ledger_row is not None
+
+    async def _skipped() -> bool:
+        found = (await session.execute(select(StageSkip.id).where(StageSkip.file_id == file_id, StageSkip.stage == stage.value))).first()
+        return found is not None
+
+    if stage is Stage.ANALYZE:
+        arow = (
+            await session.execute(select(AnalysisResult.analysis_completed_at, AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))
+        ).first()
+        return {"completed_at": arow[0] if arow else None, "failed_at": arow[1] if arow else None, "inflight": inflight, "skipped": await _skipped()}
+    if stage is Stage.METADATA:
+        mrow = (await session.execute(select(FileMetadata.failed_at).where(FileMetadata.file_id == file_id))).first()
+        return {"row_present": mrow is not None, "failed_at": mrow[0] if mrow else None, "inflight": inflight, "skipped": await _skipped()}
+    if stage is Stage.FINGERPRINT:
+        rows = (await session.execute(select(FingerprintResult.status).where(FingerprintResult.file_id == file_id))).all()
+        return {"engine_statuses": [r[0] for r in rows], "inflight": inflight, "skipped": await _skipped()}
+    if stage is Stage.TRACKLIST:
+        present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
+        return {"row_present": present, "failed": False, "inflight": inflight}
+    if stage in (Stage.PROPOSE, Stage.REVIEW):
+        present = (await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id))).first() is not None
+        failed = (
+            await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id, RenameProposal.status == "failed"))
+        ).first() is not None
+        return {"row_present": present, "failed": failed, "inflight": inflight}
+    # apply: execution_log joined through proposals (execution_log has NO file_id)
+    present = (
+        await session.execute(
+            select(ExecutionLog.id)
+            .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
+            .where(RenameProposal.file_id == file_id, ExecutionLog.status == "completed")
+        )
+    ).first() is not None
+    failed = (
+        await session.execute(
+            select(ExecutionLog.id)
+            .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
+            .where(RenameProposal.file_id == file_id, ExecutionLog.status == "failed")
+        )
+    ).first() is not None
+    return {"row_present": present, "failed": failed, "inflight": inflight}
+
+
+async def _has_approved_proposal(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """file_id-scoped single-row probe: does an APPROVED proposal exist? (apply's ELIG-02 gate)."""
+    row = (
+        await session.execute(
+            select(RenameProposal.id).where(RenameProposal.file_id == file_id, RenameProposal.status == ProposalStatus.APPROVED.value)
+        )
+    ).first()
+    return row is not None
+
+
+async def _eligibility_trace_context(session: AsyncSession, file_id: uuid.UUID, stage: Stage) -> dict[str, Any]:
+    """Evaluate ``eligible()`` for ONE file/stage and build the named-conjunct trace context (UI-03, D-06/D-07).
+
+    Loads the stage's own status plus its ``ELIGIBILITY_DAG`` upstream statuses (single-row reads),
+    evaluates the REAL ``eligible()`` (the scheduler's source of truth) in Python, and names the single
+    unmet blocker. Enrich stages have no upstream, so ``upstream met?`` is vacuously true. The upstream
+    conjunct STRICTLY mirrors ``eligible()`` (upstream must be DONE): under the OQ-1 SCOPE-MINIMAL
+    resolution a force-skipped enrich upstream does NOT unblock its downstream (Phase 90), so a SKIPPED
+    upstream is rendered as still-gating — a lenient "skipped = met" display would make the trace claim a
+    downstream is eligible when the scheduler permanently gates it (the deadlock UI-03 exists to expose).
+    NOT a corpus query (T-87-23).
+    """
+    label = _STAGE_TRACE_LABELS.get(stage, stage.value)
+    upstreams = ELIGIBILITY_DAG[stage]
+    statuses: dict[Stage, Status] = {stage: resolve_status(stage, await _one_stage_scalars(session, stage, file_id))}
+    for u in upstreams:
+        statuses[u] = resolve_status(u, await _one_stage_scalars(session, u, file_id))
+    has_approved = await _has_approved_proposal(session, file_id) if stage is Stage.APPLY else False
+
+    target = statuses[stage]
+    is_done = target == Status.DONE
+    is_in_flight = target == Status.IN_FLIGHT
+    is_skipped = target == Status.SKIPPED
+    is_terminal_fail = stage in ELIGIBLE_AFTER_FAILURE and target == Status.FAILED and not ELIGIBLE_AFTER_FAILURE[stage]
+
+    if stage is Stage.APPLY:
+        # apply is gated on an APPROVED proposal (ELIG-02), NOT on bare done(review).
+        upstream_met = has_approved
+        upstream_phrase = "approved proposal exists" if has_approved else "no approved proposal"
+    elif upstreams:
+        # STRICT mirror of eligible()'s downstream check (upstream must be DONE). Under the OQ-1
+        # SCOPE-MINIMAL resolution a force-skipped enrich upstream does NOT unblock its downstream
+        # (deferred to Phase 90), so a SKIPPED upstream stays gating — the trace names it honestly
+        # rather than claiming a downstream is eligible when the scheduler permanently gates it.
+        unmet = [u for u in upstreams if statuses[u] != Status.DONE]
+        upstream_met = not unmet
+        if upstream_met:
+            upstream_phrase = "all upstream done"
+        elif statuses[unmet[0]] == Status.SKIPPED:
+            upstream_phrase = f"{unmet[0].value} skipped — downstream stays gated (Phase 90)"
+        else:
+            upstream_phrase = f"{unmet[0].value} not done"
+    else:  # enrich: empty upstream is vacuously met (ELIG-01 independence)
+        upstream_met = True
+        upstream_phrase = "no upstream (enrich stage)"
+
+    # Verdict is the REAL eligible() — the single source of truth the scheduler uses. A diagnostic that
+    # diverged from it would hide the very deadlock UI-03 exists to expose.
+    is_eligible = eligible(statuses, stage, has_approved_proposal=has_approved)
+
+    # The single blocker follows eligible()'s short-circuit order (skipped folds onto the settled done? line).
+    blocker = ""
+    if not is_eligible:
+        if is_done or is_skipped:
+            blocker = "done"
+        elif is_in_flight:
+            blocker = "inflight"
+        elif is_terminal_fail:
+            blocker = "terminal"
+        elif not upstream_met:
+            blocker = "upstream"
+
+    if is_done:
+        done_ok, done_phrase = True, "already done"
+    elif is_skipped:
+        done_ok, done_phrase = True, "force-skipped (⊘) — recorded as skipped, not done"
+    else:
+        done_ok, done_phrase = False, "not done"
+
+    conjuncts = [
+        {"question": "done?", "ok": done_ok, "phrase": done_phrase, "blocker": blocker == "done"},
+        {
+            "question": "in-flight?",
+            "ok": is_in_flight,
+            "phrase": "currently running" if is_in_flight else "not running",
+            "blocker": blocker == "inflight",
+        },
+        {"question": "upstream met?", "ok": upstream_met, "phrase": upstream_phrase, "blocker": blocker == "upstream"},
+        {
+            "question": "terminal fail?",
+            "ok": is_terminal_fail,
+            "phrase": "terminal failure — retry is manual" if is_terminal_fail else "no terminal failure",
+            "blocker": blocker == "terminal",
+        },
+    ]
+    verdict = f"{label} — eligible (in the pending set)" if is_eligible else f"{label} — NOT eligible"
+    return {"stage_label": label, "eligible": is_eligible, "verdict": verdict, "conjuncts": conjuncts, "unavailable": False}
+
+
+@router.get("/pipeline/files/{file_id}/trace/{stage}", response_class=HTMLResponse)
+async def eligibility_trace(
+    request: Request,
+    file_id: uuid.UUID,
+    stage: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Per-file, per-stage eligibility trace (UI-03) — the diagnostic whose absence hid the deadlock.
+
+    Renders ``_eligibility_trace.html`` under the clicked pill: a verdict line plus the four named
+    conjuncts (``done?`` · ``in-flight?`` · ``upstream met?`` · ``terminal fail?``) with the single
+    unmet blocker highlighted. It is a single-row ``resolve_status``/``eligible()`` evaluation
+    (T-87-23 — never a corpus scan) and degrades to "Trace unavailable this tick." on any error, so a
+    poll never 500s.
+    """
+    stage_enum: Stage | None
+    try:
+        stage_enum = Stage(stage)
+    except ValueError:
+        stage_enum = None
+    context: dict[str, Any] = {"request": request}
+    if stage_enum is None:
+        context["unavailable"] = True
+        return templates.TemplateResponse(request=request, name="pipeline/partials/_eligibility_trace.html", context=context)
+    try:
+        context.update(await _eligibility_trace_context(session, file_id, stage_enum))
+    except Exception:
+        logger.warning("eligibility_trace degraded", file_id=str(file_id), stage=stage, exc_info=True)
+        context["unavailable"] = True
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_eligibility_trace.html", context=context)
 
 
 @router.post("/pipeline/files/{file_id}/deepen", response_class=HTMLResponse)
