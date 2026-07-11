@@ -72,6 +72,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -197,6 +198,27 @@ def done_clause(stage: Stage) -> ColumnElement[bool]:
     raise ValueError(f"unknown stage: {stage!r}")  # pragma: no cover - exhaustive dispatch above
 
 
+def skipped_clause(stage: Stage) -> ColumnElement[bool]:
+    """Return the correlated ``skipped`` predicate for an ENRICH ``stage`` (a ``ColumnElement[bool]``).
+
+    D-08 force-skip marker: a ``stage_skip`` row on ``(file_id, stage)`` means the operator has
+    force-skipped this enrich stage. Mirrors :func:`done_clause`'s correlated-``exists`` shape (marker-row
+    existence = the fact), correlating to :class:`~phaze.models.file.FileRecord` in the enclosing query --
+    never an outer-join-null / negated-membership anti-pattern. Every operand is an ORM column or the
+    bound ``stage.value`` param (T-87-05: never f-string SQL).
+
+    Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE`),
+    mirroring :func:`eligible_clause`'s enrich-only guard: force-skip is an enrich-only affordance (D-10),
+    so reaching for it on a downstream stage raises ``ValueError`` (T-87-06). The ``stage_skip`` table's
+    own ``CHECK(stage IN ('metadata','analyze','fingerprint'))`` is the storage-side twin of this guard.
+    """
+    if stage not in ELIGIBLE_AFTER_FAILURE:
+        # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
+        got = getattr(stage, "value", stage)
+        raise ValueError(f"skipped_clause is defined only for the enrich stages {sorted(s.value for s in ELIGIBLE_AFTER_FAILURE)}; got {got!r}")
+    return exists(select(StageSkip.id).where(StageSkip.file_id == FileRecord.id, StageSkip.stage == stage.value))
+
+
 def failed_clause(stage: Stage) -> ColumnElement[bool]:
     """Return the correlated ``failed`` predicate for ``stage`` (a ``ColumnElement[bool]``).
 
@@ -250,15 +272,16 @@ def inflight_clause(stage: Stage) -> ColumnElement[bool]:
 def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     """SQL twin of :func:`phaze.enums.stage.domain_completed` -- has ``stage`` reached a DOMAIN-COMPLETE state?
 
-    ``DONE`` is always domain-complete; a ``FAILED`` stage counts as complete ONLY when its failure is
+    ``DONE`` and ``SKIPPED`` (D-08 force-skip marker) are always domain-complete; a ``FAILED`` stage
+    counts as complete ONLY when its failure is
     terminal (:data:`~phaze.enums.stage.FAILURE_IS_TERMINAL`). Reuses the LOCKED ``done_clause`` /
-    ``failed_clause`` predicates verbatim (never a fresh CASE) so this stays byte-equivalent to its
-    ``ColumnElement`` siblings and the Python twin -- drift-locked by the equivalence test
-    (``tests/integration/test_stage_status_equivalence.py``), D-17.
+    ``skipped_clause`` / ``failed_clause`` predicates verbatim (never a fresh CASE) so this stays
+    byte-equivalent to its ``ColumnElement`` siblings and the Python twin -- drift-locked by the
+    equivalence test (``tests/integration/test_stage_status_equivalence.py``), D-17.
 
     When ``FAILURE_IS_TERMINAL[stage]`` is ``False`` (fingerprint) the failure disjunct is dropped and
-    the clause collapses to bare ``done_clause`` -- a FAILED fingerprint is NOT domain-complete (it
-    auto-retries, ELIG-04).
+    the clause collapses to ``or_(done_clause, skipped_clause)`` -- a FAILED fingerprint is NOT
+    domain-complete (it auto-retries, ELIG-04), but a force-skipped one still is.
 
     Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.FAILURE_IS_TERMINAL`),
     matching the Python twin. Without this guard the bare subscript raised ``KeyError`` for the four
@@ -277,9 +300,13 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
         # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
         got = getattr(stage, "value", stage)
         raise ValueError(f"domain_completed_clause is defined only for the enrich stages {sorted(s.value for s in FAILURE_IS_TERMINAL)}; got {got!r}")
+    # D-08: a force-skipped stage is ALWAYS domain-complete (recovery must never re-enqueue it), so
+    # `skipped_clause` is an unconditional disjunct alongside `done_clause` (matching the Python twin's
+    # `st in (DONE, SKIPPED)`). The terminal-failure disjunct stays gated on FAILURE_IS_TERMINAL.
+    disjuncts = [done_clause(stage), skipped_clause(stage)]
     if FAILURE_IS_TERMINAL[stage]:
-        return or_(done_clause(stage), failed_clause(stage))
-    return done_clause(stage)
+        disjuncts.append(failed_clause(stage))
+    return or_(*disjuncts)
 
 
 def eligible_clause(stage: Stage) -> ColumnElement[bool]:
@@ -287,12 +314,13 @@ def eligible_clause(stage: Stage) -> ColumnElement[bool]:
 
     Mirrors the Python truth (``enums/stage.py``, the enrich branch)::
 
-        status not in (DONE, IN_FLIGHT) and (status != FAILED or ELIGIBLE_AFTER_FAILURE[stage])
+        status not in (DONE, IN_FLIGHT, SKIPPED) and (status != FAILED or ELIGIBLE_AFTER_FAILURE[stage])
 
-    Because :func:`stage_status_case` applies the precedence ladder ``in_flight ≻ done ≻ failed ≻
-    not_started`` (the SAQ ledger wins), a file is neither ``IN_FLIGHT`` nor ``DONE`` iff BOTH
-    ``~inflight_clause(stage)`` and ``~done_clause(stage)`` hold -- so ``status not in (DONE,
-    IN_FLIGHT)`` maps exactly to ``~inflight ∧ ~done``. The FAILED carve-out is TABLE-DRIVEN off
+    Because :func:`stage_status_case` applies the precedence ladder ``in_flight ≻ done ≻ skipped ≻ failed
+    ≻ not_started`` (the SAQ ledger wins), a file is none of ``IN_FLIGHT`` / ``DONE`` / ``SKIPPED`` iff
+    ``~inflight_clause(stage)`` and ``~done_clause(stage)`` and ``~skipped_clause(stage)`` all hold -- so
+    ``status not in (DONE, IN_FLIGHT, SKIPPED)`` maps exactly to ``~inflight ∧ ~done ∧ ~skipped`` (D-08: a
+    force-skipped stage leaves the pending set). The FAILED carve-out is TABLE-DRIVEN off
     :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE` (NEVER an inline per-stage identity check):
 
     - metadata / fingerprint (``ELIGIBLE_AFTER_FAILURE True`` -- ELIG-04 auto-retry): ``~inflight ∧ ~done``
@@ -321,7 +349,7 @@ def eligible_clause(stage: Stage) -> ColumnElement[bool]:
         # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
         got = getattr(stage, "value", stage)
         raise ValueError(f"eligible_clause is defined only for the enrich stages {sorted(s.value for s in ELIGIBLE_AFTER_FAILURE)}; got {got!r}")
-    conjuncts = [not_(inflight_clause(stage)), not_(done_clause(stage))]
+    conjuncts = [not_(inflight_clause(stage)), not_(done_clause(stage)), not_(skipped_clause(stage))]  # D-08: a skipped stage leaves the pending set
     if not ELIGIBLE_AFTER_FAILURE[stage]:  # analyze: a FAILED analyze is terminal (ELIG-03 over-enqueue guard)
         conjuncts.append(not_(failed_clause(stage)))
     return and_(*conjuncts)
@@ -362,10 +390,17 @@ def awaiting_candidate_clause() -> ColumnElement[bool]:
 
 
 def stage_status_case(stage: Stage) -> ColumnElement[str]:
-    """Compose the 4-way per-stage status CASE ladder (``in_flight ≻ done ≻ failed ≻ not_started``).
+    """Compose the per-stage status CASE ladder (``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``).
 
     The SQL twin of :func:`phaze.enums.stage.resolve_status`, locked equal by the DERIV-04
     equivalence test. Drop it into a ``SELECT`` correlated to :class:`~phaze.models.file.FileRecord`.
+
+    The three ENRICH stages (metadata/analyze/fingerprint) get a 5-way ladder with the
+    ``skipped_clause`` branch inserted ``done ≻ skipped ≻ failed`` (D-08 force-skip marker). The four
+    downstream stages have NO force-skip affordance (``skipped_clause`` raises on them, D-10), so they
+    keep the original 4-way ladder. ``skipped ≻ failed`` is load-bearing: the force-skip writer is
+    additive (never clears ``failed_at``), so ``failed_clause`` may still be True -- CASE order makes
+    ``skipped`` win (Pitfall 2), matching the Python twin's branch order.
 
     NOTE on apply eligibility (do NOT wire this here -- additive-only): ``done(apply)`` above means an
     ``execution_log`` completion row exists. Apply *eligibility* (ELIG-02) is a DIFFERENT predicate --
@@ -375,12 +410,14 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
     ``file_id``), mirroring the Python ``has_approved_proposal`` apply flag (plan 78-01). It is NOT a
     bare ``done(review)`` (which only means a proposal exists). Eligibility clauses land at cutover.
     """
-    return case(
+    branches = [
         (inflight_clause(stage), Status.IN_FLIGHT.value),
         (done_clause(stage), Status.DONE.value),
-        (failed_clause(stage), Status.FAILED.value),
-        else_=Status.NOT_STARTED.value,
-    )
+    ]
+    if stage in ELIGIBLE_AFTER_FAILURE:  # enrich stages only -- skipped_clause raises on downstream (D-10)
+        branches.append((skipped_clause(stage), Status.SKIPPED.value))
+    branches.append((failed_clause(stage), Status.FAILED.value))
+    return case(*branches, else_=Status.NOT_STARTED.value)
 
 
 # Corroborating detail ONLY (D-02). Static SQL -- the sole literals are the status allowlist

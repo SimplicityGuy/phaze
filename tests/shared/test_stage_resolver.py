@@ -164,6 +164,27 @@ def test_downstream_stage_ignores_skipped_scalar() -> None:
     assert resolve_status(Stage.PROPOSE, {"row_present": True, "skipped": True}) is Status.DONE
 
 
+@pytest.mark.parametrize("stage", [Stage.METADATA, Stage.ANALYZE, Stage.FINGERPRINT])
+def test_skipped_clause_builds_for_enrich_stages(stage: Stage) -> None:
+    # SQL twin guard: `skipped_clause` builds a ColumnElement for each enrich stage. Function-local import
+    # keeps this module's DB-free top-level contract (the subprocess guard below) intact.
+    from sqlalchemy import ColumnElement
+
+    from phaze.services.stage_status import skipped_clause
+
+    assert isinstance(skipped_clause(stage), ColumnElement)
+
+
+@pytest.mark.parametrize("stage", [Stage.TRACKLIST, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY])
+def test_skipped_clause_raises_on_downstream_stage(stage: Stage) -> None:
+    # D-10: force-skip is enrich-only. `skipped_clause` raises ValueError on any downstream stage,
+    # mirroring the enrich-only guard on eligible_clause / domain_completed_clause.
+    from phaze.services.stage_status import skipped_clause
+
+    with pytest.raises(ValueError, match="enrich stages"):
+        skipped_clause(stage)
+
+
 # --------------------------------------------------------------------------------------
 # D-04 / T-78-01 agent import boundary — the resolver module is DB-free
 # --------------------------------------------------------------------------------------
