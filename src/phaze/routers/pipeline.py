@@ -1343,7 +1343,7 @@ async def force_skip_stage(
 # --------------------------------------------------------------------------------------------------
 
 # Display label per stage for the six-pill matrix + trace verdict (the 7->6 remap: tracklist is
-# omitted; review renders as "Appr", apply as "Exec"). Mirrors _stage_matrix.html's pill order.
+# omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.
 _STAGE_TRACE_LABELS: dict[Stage, str] = {
     Stage.METADATA: "Meta",
     Stage.FINGERPRINT: "FP",
