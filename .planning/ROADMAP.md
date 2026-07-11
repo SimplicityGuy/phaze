@@ -531,7 +531,7 @@ Plans:
   1. Review decisions (approve/reject) and apply outcomes are read from `proposals.status` + `execution_log`; the `_TERMINAL_FILE_STATES` file-state cascade in `proposal.py` / `proposal_queries.py` / `agent_proposals.py` is deleted.
   2. The `store_proposals` MOVED/UNCHANGED-omission regression evaporates rather than being patched — proven by a test that a `MOVED` file is not re-proposed.
 
-**Plans**: 3 plans (2 waves)
+**Plans**: 5 plans (2 execution waves + 1 gap-closure wave)
 **Wave 1**
 
 - [x] 86-01-PLAN.md — Delete the service-layer proposal→file.state cascade (proposal.py + proposal_queries.py) + mutation-verified D-03 regression test
@@ -540,6 +540,11 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 86-03-PLAN.md — Mutation-verified AST source-scan anti-drift guard over all three cutover files
+
+**Gap-closure Wave** *(post-verification; both plans parallel, disjoint files)*
+
+- [ ] 86-04-PLAN.md — Fix the stale `test_proposal.py` file.state cascade assertion; prove the full `tests/review` bucket green (VERIFICATION Gap 1)
+- [ ] 86-05-PLAN.md — Broaden the AST guard to base-kind-agnostic `.state` matching + two mutation-verified RED cases for the chained-attr / two-step-ORM shapes (VERIFICATION Gap 2 / WR-01)
 
 ### Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority
 
