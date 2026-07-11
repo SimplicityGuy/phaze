@@ -276,7 +276,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
-| 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
+| 88. Lane / Agent Drill-In | 2026.7.5 | 1/3 | In Progress|  |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
 
@@ -603,7 +603,7 @@ Plans:
 **Plans**: 3 plans in 2 waves
 **Wave 1**
 
-- [ ] 88-01-PLAN.md — Shared non-modal detail-pane shell + keyboard-accessible triggers + `?param` poll-survival highlight (DRILL-03; D-01/D-02/D-03/D-08/D-09) [wave 1]
+- [x] 88-01-PLAN.md — Shared non-modal detail-pane shell + keyboard-accessible triggers + `?param` poll-survival highlight (DRILL-03; D-01/D-02/D-03/D-08/D-09) [wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
