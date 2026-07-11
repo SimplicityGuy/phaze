@@ -195,8 +195,13 @@ async def agent_activity(
     kind badge + last-seen) → a per-agent 6-stage COUNT matrix (one indexed ``GROUP BY stage_status_case``
     per stage scoped to ``agent_id`` via :func:`_agent_stage_buckets`, D-04/D-00a) → per-lane queue depths
     → recent scan batches. Every read is bounded + degrade-safe (D-00b): an unknown ``agent_id`` renders
-    a friendly empty fragment with a 404 status (record.py idiom, T-88-07) — NEVER an ``HTTPException`` /
-    JSON / 500 — and an agent owning 0 files renders the "owns no files yet" empty state.
+    a friendly empty fragment at **200** (mirroring the sibling ``lane_detail`` never-error posture, T-88-07)
+    — NEVER an ``HTTPException`` / JSON / 500 — and an agent owning 0 files renders the "owns no files yet"
+    empty state. The 200 (not 404) is load-bearing: the ``/admin/agents`` page has no htmx 404 swap opt-in
+    (its ``htmx:responseError`` handler targets ``#agents-table-section``, not ``#detail-pane``), so a 404
+    fragment would be DISCARDED — the pane would keep stale content and the self-poll would 404-loop forever
+    on an agent revoked mid-view (WR-01/WR-02). The not-found fragment carries NO own-tick, so returning it
+    at 200 terminates the poll loop cleanly.
 
     Read-only: ``get_session`` never commits and this handler issues no writes (T-88-10 — it reads ONLY
     the derived ``stage_status_case``, never ``FileRecord.state``).
@@ -205,12 +210,13 @@ async def agent_activity(
     agent = await session.get(Agent, agent_id)
     if agent is None:
         # Friendly empty fragment (T-88-07 IDOR guard): a raw/unknown/hostile id renders a benign body,
-        # never a raw-param-driven 500. 404 status is advisory — the swapped fragment still renders.
+        # never a raw-param-driven 500. Returned at 200 (WR-01) — the /admin/agents page has no htmx 404
+        # swap opt-in, so a 404 would be discarded, leaving stale pane content and a 404-looping self-poll
+        # on a revoked-mid-view agent. The fragment carries no own-tick, so 200 terminates the poll cleanly.
         return templates.TemplateResponse(
             request=request,
             name="admin/partials/_agent_activity.html",
             context={"request": request, "agent": None, "now": now},
-            status_code=404,
         )
 
     agent._status = classify(agent, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern

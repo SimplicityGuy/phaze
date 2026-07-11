@@ -755,7 +755,7 @@ async def pipeline_stats_partial(
     lanes = await get_backend_lane_snapshot(session)
     # D-02 poll survival: resolve the pushed ?lane= by lookup-in-known-set (T-88-01) so the OOB
     # _analyze_lanes grid re-emits the selected ring only for a real, currently-rendered lane.
-    selected_lane = lane if any(one["id"] == lane for one in lanes) else None
+    selected_lane = lane if any(one.get("id") == lane for one in lanes) else None
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",

@@ -6,9 +6,14 @@ Covers:
   D-03 own-tick (hx-trigger="every 5s" re-fetching into #detail-pane).
 - Appr=Stage.REVIEW / Exec=Stage.APPLY remap (RESEARCH Pitfall 3): a proposal-only file reads DONE in
   the Appr column and NOT DONE in the Exec column.
-- Unknown agent_id -> friendly empty fragment (404 body, never a 500 / JSON / HTTPException).
+- Unknown agent_id -> friendly empty fragment at 200 (WR-01), never a 500 / JSON / HTTPException; the
+  not-found fragment carries no own-tick so a revoked-mid-view poll loop terminates (WR-02).
 - Agent owning 0 files -> "This agent owns no files yet." empty state.
 - Queue depths degrade to 0 (the smoke app has no app.state.task_router) — never a 500.
+- The own-tick is a SELF-REMOVING dedicated element, not the body root (CR-02) — a root poll would
+  re-open a dismissed pane every 5s.
+- A bucket-query degrade (CR-01) rolls back a SAVEPOINT only, so the caller's loaded ``agent`` ORM object
+  is NOT expired (a plain rollback would expire it and 500 the render on the next lazy load).
 - The fragment reads ONLY derived stage_status_case counts — never renders FileRecord.state (T-88-10).
 
 Uses the smoke-app fixture from test_admin_agents.py (mounts admin_agents.router on a bare FastAPI app,
@@ -129,6 +134,16 @@ async def test_known_agent_returns_activity_fragment(smoke: AsyncClient) -> None
     assert 'hx-get="/admin/agents/activity-agent/_activity"' in body
     assert 'hx-trigger="every 5s"' in body
     assert 'hx-target="#detail-pane"' in body
+    # CR-02 regression: the own-tick must be a SELF-REMOVING dedicated element (matches _lane_detail.html),
+    # NOT the body root. A poll on the root re-fires the shell's onLoaded() (open=true) each swap and
+    # re-opens a dismissed pane. The x-effect removes the tick once the shell's `open` flips false.
+    assert "window.htmx.remove($el)" in body
+    assert 'x-effect="if (armed && !open && window.htmx) window.htmx.remove($el)"' in body
+    # The body root (#agent-activity-body) must NOT itself carry the poll — parse the root's open tag and
+    # assert it is free of hx-* poll attributes (else ✕/Esc are inert).
+    root_open_tag = body.split('id="agent-activity-body"', 1)[1].split(">", 1)[0]
+    assert "hx-trigger" not in root_open_tag
+    assert "hx-get" not in root_open_tag
 
 
 @pytest.mark.asyncio
@@ -166,14 +181,22 @@ async def test_appr_exec_remap(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_unknown_agent_friendly_empty_fragment(smoke: AsyncClient) -> None:
-    """An unknown agent_id renders a friendly empty fragment (404 body), never a 500 / JSON."""
+    """An unknown agent_id renders a friendly empty fragment at 200 (WR-01), never a 500 / JSON.
+
+    200 (not 404) is load-bearing: the /admin/agents page has no htmx 404 swap opt-in, so a 404 fragment
+    would be discarded — the pane would keep stale content and a revoked-mid-view agent would 404-loop.
+    """
     response = await smoke.get("/admin/agents/does-not-exist/_activity")
-    assert response.status_code == 404
+    assert response.status_code == 200, response.text
     body = response.text
     assert "<html" not in body
     assert "Agent not found" in body
     # It is HTML, not a JSON error envelope.
     assert '{"detail"' not in body
+    # WR-02: the not-found fragment carries NO own-tick — a revoked-mid-view agent's poll loop terminates
+    # (nothing re-fetches /_activity once the not-found body is swapped in).
+    assert 'hx-trigger="every 5s"' not in body
+    assert "/_activity" not in body
 
 
 @pytest.mark.asyncio
@@ -204,3 +227,41 @@ async def test_no_raw_state_render(smoke: AsyncClient) -> None:
     body = (await smoke.get(f"/admin/agents/{_AGENT_ID}/_activity")).text
     # The seeded files are all DISCOVERED — that raw state string must never reach the fragment.
     assert "discovered" not in body.lower()
+
+
+@pytest.mark.asyncio
+async def test_stage_bucket_degrade_preserves_outer_transaction(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: a bucket-query failure degrades via a SAVEPOINT that rolls back the NESTED scope ALONE.
+
+    ``agent_activity`` loads ``agent`` BEFORE the six ``_agent_stage_buckets`` reads and renders its
+    attributes AFTER. The degrade must NOT roll back the outer transaction — a plain ``session.rollback()``
+    there discards the caller's work and (in production, where ``agent`` is a persistent row) expires it,
+    500-ing the render on the next lazy load.
+
+    Distinguishing signal (fixture never commits, so ``inspect().expired`` cannot tell the two apart —
+    a plain rollback expunges the pending flush to *transient*, not *expired*): flush ``agent``, then force
+    the inner bucket SELECT to fail. Under the SAVEPOINT fix the earlier flush survives in the intact outer
+    transaction, so ``session.get`` still finds ``agent``. Under a plain ``session.rollback()`` the whole
+    outer transaction unwinds, the uncommitted flush is discarded, and ``session.get`` returns ``None``.
+    """
+    from unittest.mock import AsyncMock
+
+    from phaze.enums.stage import Stage
+    from phaze.services.pipeline import _agent_stage_buckets
+
+    agent = Agent(id="cr01-agent", name="Cr01Box", scan_roots=[], last_seen_at=datetime.now(UTC), kind="compute")
+    session.add(agent)
+    await session.flush()
+
+    # Force ONLY the inner bucket SELECT to fail; the flush above already happened on the real execute.
+    real_execute = session.execute
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=RuntimeError("boom")))
+    out = await _agent_stage_buckets(session, "cr01-agent", Stage.ANALYZE)
+    monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
+
+    # Degrades to the all-zero dict, never raises (D-00b).
+    assert out
+    assert set(out.values()) == {0}
+    # CR-01: the outer transaction (and the earlier flush of ``agent``) must survive the degrade. A plain
+    # ``session.rollback()`` would unwind the outer txn and this lookup would be None.
+    assert await session.get(Agent, "cr01-agent") is not None

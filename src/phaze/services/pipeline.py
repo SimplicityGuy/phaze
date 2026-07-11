@@ -376,11 +376,16 @@ async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stag
     ``stage_status_case`` buckets (precedence ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``), the
     five counts SUM to the agent's music/video total on a HEALTHY query -- a healthy-path property only,
     NEVER a runtime assertion in the poll path (Pitfall 3). On ANY query error this mirrors the
-    :func:`_safe_bucket_counts` degrade discipline (INFLIGHT-02 / D-00b): it logs a warning, guarded-
-    rolls-back the aborted transaction (so a Postgres "current transaction is aborted" state cannot
-    poison the later per-stage COUNTs on the same 5s tick), and returns the all-zero dict -- it NEVER
-    raises into the hot ``/admin/agents/{id}/_activity`` poll. On that fail-safe degrade the five buckets
-    intentionally do NOT sum to the total.
+    :func:`_safe_bucket_counts` degrade discipline (INFLIGHT-02 / D-00b): it logs a warning and returns
+    the all-zero dict -- it NEVER raises into the hot ``/admin/agents/{id}/_activity`` poll. On that
+    fail-safe degrade the five buckets intentionally do NOT sum to the total.
+
+    The read runs inside a SAVEPOINT (``begin_nested``) so a bucket-query error rolls back the NESTED
+    scope ALONE -- recovering the aborted transaction WITHOUT expiring the caller's already-loaded
+    ``agent`` ORM object. ``agent_activity`` loads ``agent`` BEFORE these six bucket reads and renders
+    its attributes AFTER, so a plain ``session.rollback()`` here would expire ``agent`` and 500 the
+    render on the next lazy load (CR-01) -- exactly the hazard :func:`get_agent_recent_scans` guards
+    against on the same object.
     """
     out: dict[str, int] = {s.value: 0 for s in Status}
     # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the scalar label in
@@ -396,15 +401,17 @@ async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stag
     )
     stmt = select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
     try:
-        for status_label, n in (await session.execute(stmt)).all():
-            if status_label in out:
-                out[status_label] = int(n)
+        # SAVEPOINT degrade (CR-01 / D-00b): roll back the NESTED scope alone on error so the aborted
+        # transaction recovers WITHOUT expiring the caller's already-loaded ``agent`` (a plain
+        # ``session.rollback()`` would expire it and 500 the render on the next lazy load).
+        async with session.begin_nested():
+            rows = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("agent_stage_bucket_degraded", stage=stage.value, agent_id=agent_id, exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("agent_stage_bucket_rollback_failed", stage=stage.value, agent_id=agent_id, exc_info=True)
+        return out
+    for status_label, n in rows:
+        if status_label in out:
+            out[status_label] = int(n)
     return out
 
 

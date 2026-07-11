@@ -48,12 +48,7 @@
 {# Music/video total = sum of the metadata buckets (every owned music/video file resolves to exactly
    one bucket). 0 -> the agent owns no files yet. #}
 {% set _mv_total = (buckets.metadata.values() | sum) if buckets and buckets.metadata else 0 %}
-<div id="agent-activity-body"
-     hx-get="/admin/agents/{{ agent.id }}/_activity"
-     hx-trigger="every 5s"
-     hx-target="#detail-pane"
-     hx-swap="innerHTML"
-     class="space-y-5">
+<div id="agent-activity-body" class="space-y-5">
 
     {# (1) Liveness header (D-05). #}
     <div>
@@ -144,12 +139,25 @@
         {% endif %}
     </div>
 
-    {# D-03 own-tick "Last refreshed Ns ago" countdown (agents_table.html:82-86 idiom). The 5s poll is
-       carried by the #agent-activity-body root above; this only advances the visible countdown. #}
+    {# D-03 own-tick "Last refreshed Ns ago" countdown (agents_table.html:82-86 idiom). This only advances
+       the visible countdown; the 5s server poll is the self-removing tick below. #}
     <p class="text-xs text-gray-500 dark:text-gray-400"
        x-data="{ refreshedAt: new Date('{{ refreshed_at_iso }}'), now: new Date(), get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); } }"
        x-init="setInterval(() => now = new Date(), 1000)">
         Last refreshed <span x-text="secondsAgo + 's ago'"></span>
     </p>
+
+    {# D-03 own-tick (CR-02): the 5s self-refresh lives on a DEDICATED child, NOT the body root -- a poll
+       on the root re-fires the shell's onLoaded() (open=true) every swap and re-opens a dismissed pane.
+       This element removes itself once the pane is dismissed (matches _lane_detail.html:109-115): after
+       the pane has opened (armed), if the shell's `open` flips false (✕/Esc) it removes itself so it can
+       never re-open the pane, and the poll loop terminates. `armed` skips the pre-open initTree pass. #}
+    <div hx-get="/admin/agents/{{ agent.id }}/_activity"
+         hx-trigger="every 5s"
+         hx-target="#detail-pane"
+         hx-swap="innerHTML"
+         x-data="{ armed: false }"
+         x-init="$nextTick(() => { armed = true })"
+         x-effect="if (armed && !open && window.htmx) window.htmx.remove($el)"></div>
 </div>
 {% endif %}
