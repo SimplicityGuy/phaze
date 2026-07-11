@@ -586,6 +586,65 @@ async def get_live_job_keys(session: AsyncSession) -> set[str]:
     return {row[0] for row in rows}
 
 
+async def get_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
+    """Return the per-enrich-stage orphaned/stuck (recovery-candidate) count, degrade-safe (Phase 87, UI-05/D-05).
+
+    orphan(stage) = the number of ``scheduling_ledger`` rows for the stage's function that are NEITHER
+    live (a queued/active ``saq_jobs`` key) NOR domain-completed NOR owned by an in-flight ``cloud_job``
+    -- i.e. EXACTLY the set :func:`phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for
+    that stage. Parity with recovery is DEFINITIONAL (T-87-31 / OQ-2): this reuses recovery's OWN
+    classification predicate (``is_domain_completed`` + the per-stage done-set derivation
+    ``_build_done_sets`` + the in-flight cloud exclusion ``_in_flight_cloud_job_ids``) rather than
+    re-deriving the done clauses here, so the amber rail badge can never drift from what recovery does.
+
+    Returns ``{metadata, analyze, fingerprint}`` -> int (the three :data:`STAGE_TO_FUNCTION` enrich
+    functions ``extract_file_metadata`` / ``process_file`` / ``fingerprint_file``); ``push_file`` /
+    ``scan_live_set`` / the controller functions are NOT part of the per-enrich badge.
+
+    No staleness threshold is used, so the naive-``enqueued_at`` footgun (Pitfall 4, project memory)
+    never bites here -- the only naive/aware comparison is the D-10 metadata cell inside
+    ``is_domain_completed``, which already coerces the naive ledger stamp to UTC-aware (CR-02).
+
+    Failure isolation (T-87-28): the whole derivation runs inside a SAVEPOINT
+    (``session.begin_nested()``); on ANY DB error the nested scope is rolled back ALONE -- recovering
+    the aborted Postgres transaction WITHOUT expiring the dashboard's already-loaded ORM objects (a
+    plain ``session.rollback()`` would 500 the page on the next lazy load) -- and the all-zero default
+    is returned. It NEVER raises into the hot 5s /pipeline/stats poll. The ``reenqueue`` import is
+    FUNCTION-LOCAL: ``reenqueue`` imports :func:`get_live_job_keys` FROM this module, so a top-level
+    import would be circular; deferring it also keeps the agent-worker import boundary intact
+    (``reenqueue`` is control-only and must never be loaded merely by importing ``services.pipeline``).
+    """
+    out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    try:
+        async with session.begin_nested():
+            # Function-local import (see docstring): break the reenqueue<->pipeline import cycle and
+            # preserve the control-only boundary (tests/test_task_split.py).
+            from phaze.services.scheduling_ledger import get_ledger_rows  # noqa: PLC0415 -- deferred: keeps the reenqueue<->pipeline cycle broken
+            from phaze.tasks.reenqueue import (  # noqa: PLC0415 -- deferred: reenqueue is control-only + imports FROM this module (cycle)
+                _build_done_sets,
+                _in_flight_cloud_job_ids,
+                _ledger_fids,
+                _natural_id,
+                is_domain_completed,
+            )
+
+            rows = await get_ledger_rows(session)
+            live = await get_live_job_keys(session)
+            done_sets = await _build_done_sets(session, _ledger_fids(rows))
+            in_flight = await _in_flight_cloud_job_ids(session)
+            for row in rows:
+                stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
+                if stage is None:
+                    continue  # push_file / scan_live_set / controller rows are not enrich badges
+                if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight:
+                    continue
+                out[stage] += 1
+    except Exception:
+        logger.warning("stage_orphan_counts_degraded", exc_info=True)
+        return {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    return out
+
+
 # Search-tracklist in-flight gate (Phase 39, REQ-39-3). search_tracklist is a CONTROLLER task --
 # NOT one of the three agent stages -- so it is deliberately ABSENT from get_stage_busy_counts's
 # {metadata,analyze,fingerprint} contract (that function + its tests stay untouched). The

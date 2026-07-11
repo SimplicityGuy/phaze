@@ -144,7 +144,12 @@
                 // the dag.items() OOB loop in stats_bar.html pushes the real values each 5s.
                 metadataPaused: 0, metadataPriority: 0,
                 analyzePaused: 0, analyzePriority: 0,
-                fingerprintPaused: 0, fingerprintPriority: 0
+                fingerprintPaused: 0, fingerprintPriority: 0,
+                // Phase 87 (87-08, UI-05 / D-05): per-enrich-stage orphaned/stuck
+                // (recovery-candidate) count. Seeded to int 0 so the amber rail badge's
+                // x-show reads a number (never undefined) before the first poll; the
+                // dag.items() OOB loop in stats_bar.html pushes the real values each 5s.
+                metadataOrphan: 0, analyzeOrphan: 0, fingerprintOrphan: 0
             });
         });
     </script>

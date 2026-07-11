@@ -63,6 +63,7 @@ from phaze.services.pipeline import (
     get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
+    get_stage_orphan_counts,
     get_stage_progress,
     get_straggler_count,
     get_untracked_files,
@@ -236,6 +237,17 @@ async def _build_dag_context(
     for stage_name in ("metadata", "analyze", "fingerprint"):
         dag[f"{stage_name}Paused"] = int(controls[stage_name]["paused"])
         dag[f"{stage_name}Priority"] = int(controls[stage_name]["priority"])
+
+    # Phase 87 (87-08, UI-05 / D-05): per-enrich-stage orphaned/stuck (recovery-candidate) count --
+    # the exact number recover_orphaned_work would re-enqueue for the stage (ledger minus live minus
+    # domain-completed minus in-flight-cloud). get_stage_orphan_counts owns the never-500 SAVEPOINT degrade
+    # (all-zeros on any DB error), so NO try/except here; the ints ride the same dag.items() OOB seed
+    # loop onto the amber rail badges (no self-poll, no stats_bar.html edit -- the badge just needs the
+    # store key present, seeded to 0 in base.html so x-show reads a number before the first poll).
+    orphans = await get_stage_orphan_counts(session)
+    dag["metadataOrphan"] = int(orphans["metadata"])
+    dag["analyzeOrphan"] = int(orphans["analyze"])
+    dag["fingerprintOrphan"] = int(orphans["fingerprint"])
 
     # t7k FIX2 (REQ-260613-t7k-FIX2): per-stage in-flight busy counts REPLACE the single global
     # agentBusy gate so the three agent enqueue buttons gate independently (run in parallel).
