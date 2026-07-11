@@ -274,7 +274,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
-| 86. Proposals Cutover | 2026.7.5 | 0/0 | Not started | - |
+| 86. Proposals Cutover | 2026.7.5 | 2/3 | In Progress|  |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
@@ -534,8 +534,8 @@ Plans:
 **Plans**: 3 plans (2 waves)
 **Wave 1**
 
-- [ ] 86-01-PLAN.md — Delete the service-layer proposal→file.state cascade (proposal.py + proposal_queries.py) + mutation-verified D-03 regression test
-- [ ] 86-02-PLAN.md — Rework the apply-PATCH contract (agent_proposals.py) to echo the request + drop the file.state mirror + adapt router tests
+- [x] 86-01-PLAN.md — Delete the service-layer proposal→file.state cascade (proposal.py + proposal_queries.py) + mutation-verified D-03 regression test
+- [x] 86-02-PLAN.md — Rework the apply-PATCH contract (agent_proposals.py) to echo the request + drop the file.state mirror + adapt router tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
