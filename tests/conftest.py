@@ -24,7 +24,23 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test")
+def _coerce_async_dsn(dsn: str) -> str:
+    """Coerce a libpq / psycopg2 Postgres DSN to the asyncpg driver the async fixtures need.
+
+    ``async_engine`` feeds ``TEST_DATABASE_URL`` straight to ``create_async_engine``. A bare
+    ``postgresql://`` (or explicit ``postgresql+psycopg2://``) URL resolves SQLAlchemy's default
+    ``psycopg2`` sync dialect, which is not installed (the async stack uses asyncpg) — every
+    DB-fixture test then dies at setup with a cryptic ``No module named 'psycopg2'``. Operators
+    naturally export the libpq form (it matches ``PHAZE_QUEUE_URL``), so normalize it here rather
+    than leaking the footgun into each fixture.
+    """
+    for sync_prefix in ("postgresql+psycopg2://", "postgresql+psycopg://", "postgresql://"):
+        if dsn.startswith(sync_prefix):
+            return "postgresql+asyncpg://" + dsn[len(sync_prefix) :]
+    return dsn
+
+
+TEST_DATABASE_URL = _coerce_async_dsn(os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"))
 
 DB_FIXTURES = {"async_engine", "session", "client", "authenticated_client", "seed_test_agent"}
 

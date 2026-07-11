@@ -4,14 +4,19 @@ Out-of-scope discoveries logged during execution (SCOPE BOUNDARY). Not fixed by 
 
 ## From Plan 02 (Wave 2)
 
-- **`tests/integration/test_drain_double_dispatch.py` — 3 setup errors: `ModuleNotFoundError: No module named 'psycopg2'`.**
+- **RESOLVED (orchestrator, mid-phase): `tests/integration/test_drain_double_dispatch.py` — 3 setup errors: `ModuleNotFoundError: No module named 'psycopg2'`.**
   - Discovered while running clause-consumer no-regression tests (Plan 02, Task 2).
-  - Root cause: the SAQ Postgres-broker `scoped_runner` fixture resolves a sync `postgresql://` DSN
-    (SQLAlchemy's psycopg2 dialect) during SETUP; `psycopg2` is not installed in this worktree venv.
-    The failure occurs before any test body / any Plan-02 code runs.
+  - Corrected root cause: NOT a SAQ `scoped_runner` fixture. The three tests consume the shared
+    `async_engine` fixture (`tests/conftest.py`), which feeds `TEST_DATABASE_URL` straight to
+    `create_async_engine`. When an operator exports a **bare** `postgresql://` DSN (the natural form —
+    it matches `PHAZE_QUEUE_URL`), SQLAlchemy resolves its default **psycopg2** sync dialect, which the
+    async-only stack does not install → every DB-fixture test dies at setup. Reproduced deterministically
+    with `TEST_DATABASE_URL=postgresql://…`.
   - NOT caused by Plan 02: changes were purely additive ORM `ColumnElement` builders + a new `Status`
-    member (asyncpg path only). File last touched by Phase 83 (`6855cfe2`). The direct consumers of
-    `eligible_clause` / `domain_completed_clause` (test_domain_completed_contract,
-    test_awaiting_candidate_clause, test_pending_set_source_scan, test_pending_set_divergence) all pass.
-  - Suggested fix (separate task): add `psycopg2-binary` to the dev/test dependency group, OR point the
-    SAQ broker test fixture at the asyncpg driver, so the drain double-dispatch suite can set up locally.
+    member (asyncpg path only). Latent footgun in shared test infra.
+  - Fix applied: `_coerce_async_dsn()` in `tests/conftest.py` normalizes bare `postgresql://`,
+    `postgresql+psycopg2://`, and `postgresql+psycopg://` DSNs to `postgresql+asyncpg://` before the
+    engine is built (only the leading driver token is rewritten). Rejected the "add psycopg2-binary"
+    option — it violates the project's async-only driver rule (CLAUDE.md: psycopg2 is a sync driver to
+    avoid). Regression guard: `tests/shared/test_conftest_dsn_coercion.py`. Verified the drain suite now
+    passes under a bare `postgresql://` DSN.
