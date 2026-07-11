@@ -1125,6 +1125,7 @@ def _make_discovered_file() -> FileRecord:
     """Build a standalone FileRecord in the DISCOVERED state (counts toward stats.discovered)."""
     path = f"/data/music/{uuid.uuid4().hex}.mp3"
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex[:32],
         original_path=path,
@@ -1169,6 +1170,7 @@ def _make_batch_file(batch_id: uuid.UUID, suffix: str) -> FileRecord:
     """Build a FileRecord belonging to a batch (unique path)."""
     path = f"/data/music/{uuid.uuid4().hex}-{suffix}.mp3"
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex[:32],
         original_path=path,

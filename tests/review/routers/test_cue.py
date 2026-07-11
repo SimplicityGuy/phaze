@@ -41,6 +41,7 @@ async def _create_approved_tracklist_with_file(
     """
     file_id = uuid.uuid4()
     file_record = FileRecord(
+        agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
         original_path=f"/music/{uuid.uuid4().hex}/{artist}.mp3",
@@ -416,6 +417,7 @@ async def test_generate_cue_not_approved(client: AsyncClient, session: AsyncSess
     """POST /cue/{id}/generate with non-approved tracklist returns error toast."""
     file_id = uuid.uuid4()
     file_record = FileRecord(
+        agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
         original_path="/music/test.mp3",
@@ -496,6 +498,7 @@ async def test_generate_cue_no_latest_version(client: AsyncClient, session: Asyn
     """POST /cue/{id}/generate with tracklist lacking latest_version_id returns error."""
     file_id = uuid.uuid4()
     file_record = FileRecord(
+        agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
         original_path="/music/test.mp3",

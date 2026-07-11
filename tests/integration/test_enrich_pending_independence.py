@@ -84,7 +84,7 @@ if not _TARGET_DB.endswith("_test"):
         allow_module_level=True,
     )
 
-_LEGACY_AGENT_ID = "legacy-application-server"
+_LEGACY_AGENT_ID = "test-fileserver"
 
 _STAGES = ("metadata", "fingerprint", "analyze")
 
@@ -127,7 +127,7 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         # Idempotent FK-agent seed: the shared ``*_test`` DB may already carry a committed
-        # ``legacy-application-server`` agent (a sibling bucket's committing test) -- re-adding it would
+        # ``test-fileserver`` agent (a sibling bucket's committing test) -- re-adding it would
         # raise UniqueViolationError at flush (82-01 SUMMARY environmental note). Only add if absent.
         if await session.get(Agent, _LEGACY_AGENT_ID) is None:
             session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
@@ -143,6 +143,7 @@ async def _file(session: AsyncSession, *, file_type: str = "mp3", state: str = F
     """Seed a bare FileRecord (``file_type`` music by default); return the ORM object (id is set)."""
     fid = uuid.uuid4()
     rec = FileRecord(
+        agent_id="test-fileserver",
         id=fid,
         sha256_hash=uuid.uuid4().hex,
         original_path=f"/media/{fid}.{file_type}",

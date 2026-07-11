@@ -39,6 +39,7 @@ def _make_file(marker: str) -> FileRecord:
     """A FileRecord whose current_path carries a distinctive ``marker`` so we can assert row presence."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{marker}-{uid.hex}.mp3",

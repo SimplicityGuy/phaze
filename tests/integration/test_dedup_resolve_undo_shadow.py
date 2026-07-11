@@ -59,7 +59,7 @@ if not _TARGET_DB.endswith("_test"):
         allow_module_level=True,
     )
 
-_LEGACY_AGENT_ID = "legacy-application-server"
+_LEGACY_AGENT_ID = "test-fileserver"
 HASH_A = "a" * 64
 
 
@@ -93,6 +93,7 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
 async def _file(session: AsyncSession, *, sha256: str = HASH_A, state: str = FileState.DISCOVERED.value) -> FileRecord:
     fid = uuid.uuid4()
     rec = FileRecord(
+        agent_id="test-fileserver",
         id=fid,
         sha256_hash=sha256,
         original_path=f"/media/{fid}.mp3",

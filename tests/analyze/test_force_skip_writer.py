@@ -46,6 +46,7 @@ async def _seed_file(session: AsyncSession) -> uuid.UUID:
     file_id = uuid.uuid4()
     session.add(
         FileRecord(
+            agent_id="test-fileserver",
             id=file_id,
             sha256_hash=f"{uuid.uuid4().hex}{uuid.uuid4().hex}",
             original_path=f"/test/music/{file_id}.mp3",

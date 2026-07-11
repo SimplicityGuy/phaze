@@ -29,6 +29,7 @@ def _file(i: int) -> FileRecord:
     """Build a minimal FileRecord seed (CloudJob.file_id is a unique FK to files.id)."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",

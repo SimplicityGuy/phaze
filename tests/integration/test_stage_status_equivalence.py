@@ -73,7 +73,7 @@ BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE
 )
 SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
 
-_LEGACY_AGENT_ID = "legacy-application-server"
+_LEGACY_AGENT_ID = "test-fileserver"
 
 
 @pytest_asyncio.fixture
@@ -118,6 +118,7 @@ async def _new_file(session: AsyncSession) -> uuid.UUID:
     fid = uuid.uuid4()
     session.add(
         FileRecord(
+            agent_id="test-fileserver",
             id=fid,
             sha256_hash=uuid.uuid4().hex,
             original_path=f"/media/{fid}.mp3",

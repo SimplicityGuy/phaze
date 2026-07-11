@@ -127,6 +127,7 @@ async def _seed_applied_tagwrite_file(session: AsyncSession, *, completed_log: b
     filename = "Some Artist - Some Title.mp3"
     session.add(
         FileRecord(
+            agent_id="test-fileserver",
             id=file_id,
             sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
             original_path=f"/dest/{uuid.uuid4().hex}/{filename}",

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 def _make_file(i: int, *, file_type: str = "mp3", state: FileState = FileState.DISCOVERED) -> FileRecord:
     """Build a FileRecord with a unique path/hash (agent_id defaults to the seeded legacy agent)."""
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=f"{i:064d}"[:64],
         original_path=f"/music/f{i}.{file_type}",

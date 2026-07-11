@@ -201,6 +201,7 @@ def _make_file(*, state: str = FileState.PUSHED) -> FileRecord:
     """
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.flac",

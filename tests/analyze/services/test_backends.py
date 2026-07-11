@@ -166,6 +166,7 @@ def _kueue_with_buckets(backends_toml_env: Any, *, bucket_ids: list[str], backen
 def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3") -> FileRecord:
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.{file_type}",

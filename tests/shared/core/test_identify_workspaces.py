@@ -70,6 +70,7 @@ async def _seed_file(
     """
     file_id = uuid.uuid4()
     record = FileRecord(
+        agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,  # 64 hex chars
         original_path=f"/test/music/{original_filename}",

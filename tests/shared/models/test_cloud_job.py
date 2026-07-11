@@ -23,6 +23,7 @@ from phaze.models.file import FileRecord, FileState
 def _make_file(*, file_type: str = "flac", state: str = FileState.AWAITING_CLOUD) -> FileRecord:
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.{file_type}",
