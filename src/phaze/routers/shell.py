@@ -213,6 +213,12 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None)
         context["active_stage"] = None
         context["active_bucket"] = None
+        # 87-09 gap-fix: mounted as a WORKSPACE, so host the shared OOB seed-target placeholders (like
+        # every other workspace via _workspace_scaffold) — else the single chrome /pipeline/stats poll's
+        # OOB seeds (rail orphan badge, priority store, agent-busy gating) land nowhere on /s/files and log
+        # htmx:oobErrorNoTarget every 5s. The pipeline_files() filter/pagination endpoint omits this flag,
+        # so the fragment it swaps into #files-table-view never re-emits (and never duplicates) the seeds.
+        context["include_poll_seeds"] = True
         context["stage"] = stage
         context["stage_partial"] = STAGE_PARTIALS[stage]
         context["oob_counts"] = False

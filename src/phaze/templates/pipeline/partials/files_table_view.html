@@ -44,6 +44,14 @@
    fingerprint is DELIBERATELY absent: a failed fingerprint self-retries via the eligible_clause
    pending set (ELIG-04), so it has NO manual retry backend and NO per-row/bulk control (RESEARCH). #}
 {% set _retry_endpoints = {'metadata': 'metadata-failed', 'analyze': 'analysis-failed'} %}
+{# Phase 87 (87-09 gap-fix): when this partial is mounted as the /s/files WORKSPACE (shell._render_stage
+   sets include_poll_seeds), it must host the shared OOB seed-target placeholders like every other
+   workspace — otherwise the single chrome /pipeline/stats poll's OOB seeds (rail orphan badge, priority
+   store, agent-busy gating, cloud-card sinks) land nowhere and log htmx:oobErrorNoTarget every 5s while
+   the badges stick at 0. A SIBLING of #files-table-view (not inside it), so the inner filter/pagination
+   swaps that target #files-table-view never duplicate the seed ids. The pipeline_files() filter endpoint
+   omits the flag, so the fragment it returns carries no seeds. #}
+{% if include_poll_seeds %}{% include "pipeline/partials/_workspace_poll_seeds.html" %}{% endif %}
 <div id="files-table-view">
     {# One legend per surface (D-01) -- single-sourced in _stage_matrix.html's legend_only branch. #}
     <div class="px-6 pt-2">{% with legend_only=True %}{% include "pipeline/partials/_stage_matrix.html" %}{% endwith %}</div>
