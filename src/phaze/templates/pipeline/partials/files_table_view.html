@@ -1,0 +1,91 @@
+{# Phase 87 (87-04, UI-01 / D-02 / PERF-01): the scannable files overview -- the per-row stage matrix.
+
+   Retires the raw-enum "State" string: every stage column is a DERIVED stage_status_case bucket
+   rendered through _stage_pill.html (never FileRecord.state -- the anti-feature table forbids
+   "rendering raw internal status strings"). The page is bounded + per-row-derived + degrade-safe at
+   the service layer (get_files_page): it NEVER scans the whole corpus per poll and NEVER emits an
+   unbounded COUNT (has_next rides a LIMIT+1 sentinel).
+
+   Why this partial builds its OWN table rather than reusing _file_table.html: that partial's cell
+   contract is text-only ({{ cell.text }}, autoescaped) and cannot host the _stage_pill COMPONENT
+   markup each stage cell requires. So we mirror _file_table.html's structure verbatim -- empty-state,
+   thead/tbody idiom, the D-06 inert-but-present rows, and the Phase-61 row_file_ids record slide-in
+   binding -- while hosting a _stage_pill in each of the six stage cells.
+
+   Context contract:
+     * files_page   -- phaze.services.pipeline.FilesPage (rows / page / page_size / has_next).
+                       Each row: .file (FileRecord) + .buckets (dict keyed by Stage value).
+     * active_stage -- optional current stage filter (Plan 05); carried in pagination links.
+     * active_bucket-- optional current bucket filter (Plan 05); carried in pagination links.
+
+   The file path crosses the DB->render trust boundary: it is ALWAYS autoescaped, NEVER `| safe`
+   (T-87-13 XSS). file.id is a UUID (safe) used only for the record slide-in hx-get.
+
+   NO self-poll: no hx-trigger / setInterval here. Pagination clicks are user-initiated navigation.
+#}
+{# The 7-stage -> 6-pill remap LANDMINE, single-sourced here for the header + cell loop:
+   Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown. #}
+{% set _stage_cols = [
+    ('Meta', 'metadata'),
+    ('FP', 'fingerprint'),
+    ('Analyze', 'analyze'),
+    ('Prop', 'propose'),
+    ('Appr', 'review'),
+    ('Exec', 'apply'),
+] %}
+{% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') %}
+<div id="files-table-view">
+    {# One legend per surface (D-01) -- single-sourced in _stage_matrix.html's legend_only branch. #}
+    <div class="px-6 pt-2">{% with legend_only=True %}{% include "pipeline/partials/_stage_matrix.html" %}{% endwith %}</div>
+    {% if not files_page.rows %}
+    <div class="px-6 py-12 text-center">
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No files yet</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Discovered files appear here with their per-stage status.</p>
+    </div>
+    {% else %}
+    <div class="overflow-x-auto" x-data>
+        {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);
+           the shell root has no x-data (x-data on <html> is inert). #}
+        <table class="w-full text-left text-sm">
+            <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
+                <tr>
+                    <th scope="col" class="px-6 py-2.5 font-medium">File</th>
+                    <th scope="col" class="px-6 py-2.5 font-medium">Type</th>
+                    {% for stage_label, _key in _stage_cols %}
+                    <th scope="col" class="px-6 py-2.5 font-medium">{{ stage_label }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+                {% for row in files_page.rows %}
+                <tr id="files-row-{{ loop.index }}" class="cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5" hx-get="/record/{{ row.file.id }}" hx-target="#record-body" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']" tabindex="0" @click="$dispatch('record:open', { el: $el })" @keydown.enter="$dispatch('record:open', { el: $el })">
+                    <td class="px-6 py-3 max-w-md truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
+                    <td class="px-6 py-3 text-gray-500 dark:text-gray-400">{{ row.file.file_type }}</td>
+                    {% for stage_label, key in _stage_cols %}
+                    <td class="px-6 py-3">{% with stage_label=stage_label, bucket=row.buckets[key] %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if files_page.page > 1 or files_page.has_next %}
+    {# Cursor-style Prev/Next -- no whole-corpus COUNT (the T-87-11 DoS mitigation). #}
+    <nav aria-label="Files pagination" class="flex items-center justify-between mt-6 px-6">
+        <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ files_page.page }}</p>
+        <div class="flex gap-1">
+            {% if files_page.page > 1 %}
+            <button hx-get="/pipeline/files?page={{ files_page.page - 1 }}{{ _qs }}" hx-target="#files-table-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
+            {% else %}
+            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Previous</span>
+            {% endif %}
+            {% if files_page.has_next %}
+            <button hx-get="/pipeline/files?page={{ files_page.page + 1 }}{{ _qs }}" hx-target="#files-table-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
+            {% else %}
+            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Next</span>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
+    {% endif %}
+</div>
