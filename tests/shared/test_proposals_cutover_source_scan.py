@@ -400,6 +400,43 @@ def test_guard_flags_positional_where_read() -> None:
     assert {getattr(n, "attr", None) for n in violations} == {"state", "MOVED"}
 
 
+def test_guard_flags_chained_attr_string_write() -> None:
+    """MUTATION #4c (RED / WR-01): ``proposal.file.state = "approved"`` -- the chained-attribute cascade.
+
+    Re-encodes the EXACT literal shape Plan 01 deleted from ``update_proposal_status``
+    (``proposal.file.state = FileState.APPROVED.value``, reintroduced here in its string-value form). The
+    assignment target is ``Attribute(value=Attribute(value=Name('proposal'), attr='file'), attr='state')`` --
+    its base is an ``ast.Attribute`` (``proposal.file``), NOT a bare ``ast.Name``, so the OLD bare-Name-only
+    scanner returned ``[]`` (the WR-01 blind spot). There is NO ``FileState`` node here, so coverage rests
+    ENTIRELY on the base-kind-agnostic ``.state``-write scan added in Task 1. Mutation-verified RED->GREEN
+    (revert the broadening -> ``_violations`` returns ``[]`` -> this asserts fail); see 86-05-SUMMARY.md.
+    """
+    source = 'proposal.file.state = "approved"\n'
+    violations = _violations(source)
+    assert violations != []
+    writes = [n for n in violations if isinstance(n, ast.Attribute) and n.attr == "state" and isinstance(n.ctx, ast.Store)]
+    assert len(writes) == 1
+    assert isinstance(writes[0].value, ast.Attribute)  # the chained ``proposal.file`` base
+
+
+def test_guard_flags_two_step_orm_idiom_write() -> None:
+    """MUTATION #4d (RED / WR-01 factor 1): the two-step ORM idiom ``store_proposals`` itself used.
+
+    Re-encodes ``file_record = result.scalar_one_or_none()`` then ``file_record.state = "moved"`` -- the exact
+    idiom the deleted ``store_proposals`` code used. ``file_record``'s binding RHS is ``result.scalar_one_or_none()``,
+    which does NOT textually contain ``FileRecord``, so the OLD ``_filerecord_bound_names`` never bound it and
+    the write was invisible. This proves the ``_orm_row_bound_names`` binding added in Task 1 has teeth: the
+    bare-Name base ``file_record`` is recognised as a FileRecord row via the row-fetch idiom. Mutation-verified
+    RED->GREEN (revert the broadening -> ``_violations`` returns ``[]``); see 86-05-SUMMARY.md.
+    """
+    source = 'file_record = result.scalar_one_or_none()\nfile_record.state = "moved"\n'
+    violations = _violations(source)
+    assert violations != []
+    writes = [n for n in violations if isinstance(n, ast.Attribute) and n.attr == "state" and isinstance(n.ctx, ast.Store)]
+    assert len(writes) == 1
+    assert isinstance(writes[0].value, ast.Name)  # bare ``file_record`` bound via the ORM row-fetch idiom
+
+
 # ---------------------------------------------------------------------------
 # Explicit Call.args + Call.keywords coverage (the Phase-83 blind-spot closure)
 # ---------------------------------------------------------------------------
