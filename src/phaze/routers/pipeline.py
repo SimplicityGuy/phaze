@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import exists, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
 from phaze.config import settings
@@ -1316,13 +1317,22 @@ async def force_skip_stage(
     """
     if stage not in STAGE_TO_FUNCTION:  # D-10 enrich-only — mirror pipeline_stages._validate_stage
         raise HTTPException(status_code=422, detail="stage not force-skippable")
-    if not reason.strip():  # D-09 reason required — inline validation, NO write
+    # Sanitize BEFORE the blank check (WR-01): str.strip() alone does not remove NUL / control chars, so a
+    # NUL-only reason would slip past a raw-input gate and then persist as "". Validate the SANITIZED value.
+    clean_reason = sanitize_pg_text(reason).strip()  # project memory: NUL aborts the PG txn (services/pg_text.py)
+    if not clean_reason:  # D-09 reason required — inline validation on the sanitized value, NO write
         return HTMLResponse(
             '<p class="text-sm font-medium text-red-600 dark:text-red-400" role="alert">A reason is required.</p>',
             status_code=422,
         )
-    clean_reason = sanitize_pg_text(reason)  # project memory: NUL aborts the PG txn (services/pg_text.py)
-    session.add(StageSkip(file_id=file_id, stage=stage, reason=clean_reason))  # additive-only; never clears failed_at
+    # Idempotent additive write (CR-01): re-submitting a force-skip for the same (file, stage) is a NORMAL
+    # path — `_force_skip_dialog.html` is not hidden after success — and the UNIQUE(file_id, stage) constraint
+    # would turn a bare INSERT into an unhandled IntegrityError → HTTP 500. on_conflict_do_nothing mirrors
+    # `insert_ledger_if_absent`: the marker's existence IS the desired end state, so a duplicate is a no-op
+    # success. Never clears failed_at (additive-only, T-87-20).
+    await session.execute(
+        pg_insert(StageSkip).values(file_id=file_id, stage=stage, reason=clean_reason).on_conflict_do_nothing(index_elements=["file_id", "stage"])
+    )
     await session.commit()  # get_session does NOT auto-commit (Pitfall 7)
     logger.info("force_skip_stage wrote marker", file_id=str(file_id), stage=stage)
     # HTMX ack: the success toast (oob to #toast-container). stage is allowlisted (safe to interpolate);

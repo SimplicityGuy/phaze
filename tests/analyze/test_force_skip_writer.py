@@ -109,6 +109,44 @@ async def test_valid_skip_is_committed_and_readable_from_independent_session(
 
 
 @pytest.mark.asyncio
+async def test_duplicate_force_skip_is_idempotent_not_500(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+    """CR-01: re-submitting a force-skip for the same (file, stage) is a no-op success, never a 500.
+
+    ``_force_skip_dialog.html`` is not hidden after a successful skip, so a re-submit is a NORMAL path.
+    A bare INSERT would hit UNIQUE(file_id, stage) and raise an unhandled IntegrityError → HTTP 500;
+    ``on_conflict_do_nothing`` makes it idempotent. The first-writer's reason is preserved (do-nothing).
+    """
+    file_id = await _seed_file(session)
+
+    first = await client.post(f"/pipeline/files/{file_id}/skip/fingerprint", data={"reason": "first reason"})
+    second = await client.post(f"/pipeline/files/{file_id}/skip/fingerprint", data={"reason": "second reason"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200  # would be 500 with a bare INSERT
+
+    # Exactly one row survives (scalar_one_or_none raises MultipleResultsFound if the conflict duplicated).
+    marker = await _read_skip(async_engine, file_id, "fingerprint")
+    assert marker is not None
+    assert marker.reason == "first reason"  # do-nothing keeps the original, does not overwrite
+
+
+@pytest.mark.asyncio
+async def test_nul_only_reason_returns_422_and_writes_nothing(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+    """WR-01: a NUL/control-only reason is empty AFTER sanitize, so it must fail the D-09 gate with NO write.
+
+    ``str.strip()`` does not remove NUL, so a raw-input blank check would let ``"\\x00"`` through and then
+    persist ``""``. The gate now validates the SANITIZED value, so a NUL-only reason returns 422.
+    """
+    file_id = await _seed_file(session)
+
+    response = await client.post(f"/pipeline/files/{file_id}/skip/metadata", data={"reason": "\x00\x00"})
+
+    assert response.status_code == 422
+    assert "A reason is required." in response.text
+    assert await _read_skip(async_engine, file_id, "metadata") is None
+
+
+@pytest.mark.asyncio
 async def test_nul_in_reason_is_sanitized_and_round_trips(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
     """A NUL byte is stripped before persist (no PG txn abort) and the sanitized text round-trips (T-87-19)."""
     file_id = await _seed_file(session)
