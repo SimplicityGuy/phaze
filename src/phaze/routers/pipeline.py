@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, update
@@ -20,12 +20,14 @@ from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
+from phaze.models.stage_skip import StageSkip
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
 from phaze.services.backends import get_backend_lane_snapshot, hold_awaiting_cloud, resolved_non_local_kind
 from phaze.services.fingerprint import get_fingerprint_progress
+from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
@@ -63,6 +65,7 @@ from phaze.services.pipeline import (
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import insert_ledger_if_absent
+from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
 
 
@@ -1116,6 +1119,64 @@ async def retry_metadata_failed(
         request=request,
         name="pipeline/partials/metadata_retry_response.html",
         context={"request": request, "count": len(files), "no_active_agent": False},
+    )
+
+
+# --------------------------------------------------------------------------------------------------
+# Force-skip writer (UI-04 / D-08/D-09/D-10): the right-pane escape hatch that lets the ``failed``
+# bucket converge for genuinely-unprocessable files. The correctness-sensitive mutating endpoint of
+# this phase: enrich-only (approval-bypass hazard, D-10), additive (never clears a failure marker, so
+# the Phase-79 shadow-compare gate stays green), reason required + sanitized (NUL-abort footgun), and
+# committed (get_session NEVER auto-commits).
+# --------------------------------------------------------------------------------------------------
+@router.post("/pipeline/files/{file_id}/skip/{stage}", response_class=HTMLResponse)
+async def force_skip_stage(
+    file_id: uuid.UUID,
+    stage: str,
+    reason: Annotated[str, Form()],
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Force-skip an ENRICH stage for one file: write a distinct ``skipped`` marker (UI-04, D-08/D-09/D-10).
+
+    The escape hatch that lets the ``failed`` bucket converge for genuinely-unprocessable files. It is
+    deliberately NOT ``done``: a ``stage_skip`` marker row derives the honest ``skipped`` bucket, which
+    stays distinguishable from real completion forever (D-08). Discipline (mirrors the retry endpoints +
+    ``pipeline_stages._validate_stage``):
+
+    - ENRICH-ONLY (D-10, T-87-18): ``stage`` must be in :data:`STAGE_TO_FUNCTION`
+      (metadata/analyze/fingerprint) — a ``propose``/``review``/``apply`` skip is an approval-bypass
+      hazard and returns 422 BEFORE any write, backstopped by the Plan-01 DB CHECK.
+    - REASON REQUIRED (D-09, T-87-22): a blank/whitespace reason returns the inline validation fragment
+      with NO write.
+    - SANITIZED (T-87-19): ``sanitize_pg_text`` strips NUL / lone surrogates before persist — a NUL in
+      free text passes pydantic then aborts the PG txn (the unbounded-recovery-loop footgun).
+    - ADDITIVE-ONLY (T-87-20): the writer ONLY adds the marker row; it NEVER clears ``analysis.failed_at``
+      or any failure marker, so a terminally-failed stage keeps its failure fact and the shadow-compare
+      gate stays green. Precedence (``done ≻ skipped ≻ failed``) — not the writer — decides the bucket.
+    - COMMITTED (Pitfall 7): ``get_session`` does NOT auto-commit, so the writer commits itself.
+
+    The pill flips to ``⊘ skipped`` on the NEXT poll tick (not optimistic) — the ack is a toast only.
+    ``reason`` is never echoed back into the response (T-87-21 — no XSS surface via the free text).
+    """
+    if stage not in STAGE_TO_FUNCTION:  # D-10 enrich-only — mirror pipeline_stages._validate_stage
+        raise HTTPException(status_code=422, detail="stage not force-skippable")
+    if not reason.strip():  # D-09 reason required — inline validation, NO write
+        return HTMLResponse(
+            '<p class="text-sm font-medium text-red-600 dark:text-red-400" role="alert">A reason is required.</p>',
+            status_code=422,
+        )
+    clean_reason = sanitize_pg_text(reason)  # project memory: NUL aborts the PG txn (services/pg_text.py)
+    session.add(StageSkip(file_id=file_id, stage=stage, reason=clean_reason))  # additive-only; never clears failed_at
+    await session.commit()  # get_session does NOT auto-commit (Pitfall 7)
+    logger.info("force_skip_stage wrote marker", file_id=str(file_id), stage=stage)
+    # HTMX ack: the success toast (oob to #toast-container). stage is allowlisted (safe to interpolate);
+    # the operator reason is NOT echoed (T-87-21). The pill flips ⊘ skipped on the next 5s poll.
+    return HTMLResponse(
+        f'<div hx-swap-oob="beforeend:#toast-container">'
+        f'<div role="status" aria-live="polite" x-data="{{ show: true }}" x-show="show" '
+        f'x-init="setTimeout(() => show = false, 5000)" x-transition '
+        f'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
+        f"Skipped {stage} — reason recorded.</div></div>"
     )
 
 
