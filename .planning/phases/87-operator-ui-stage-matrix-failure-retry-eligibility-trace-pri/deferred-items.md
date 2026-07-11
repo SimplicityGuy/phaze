@@ -60,7 +60,15 @@ Out-of-scope discoveries logged during execution (SCOPE BOUNDARY). Not fixed by 
 
 ---
 
-## [87-08] Pre-existing: `x-cloak` has no backing CSS rule (app-wide, cosmetic)
+## [87-08] RESOLVED (orchestrator, mid-phase) — Pre-existing: `x-cloak` has no backing CSS rule (app-wide, cosmetic)
+
+- **Fix applied:** added `[x-cloak] { display: none !important; }` to `assets/src/app.css` (after the
+  `htmx-indicator` rules) and rebuilt via `just tailwind` — verified the rule compiles into the
+  gitignored `src/phaze/static/css/app.css` (`[x-cloak]{display:none!important}`). Regression guard:
+  `tests/shared/test_x_cloak_css_rule.py` asserts the source rule exists (the compiled output is
+  gitignored + rebuilt at image-build, so the source is the durable artifact). App-wide fix: every
+  existing `x-cloak` (theme toggle, header, cmdk modal, record host, agents table) now cloaks correctly.
+- **Original finding below (kept for the record):**
 
 - **Found during:** 87-08 Task 2 (rail orphan badge + priority/pause controls).
 - **Issue:** Alpine v3 does NOT auto-inject the `[x-cloak]{display:none}` rule — the app must define
