@@ -72,9 +72,9 @@
 
 *Folded in from the #222 post-deploy backlog. Data-model-migration twin of this milestone; part (a) directly removes two `FileState` writers. See memory `project_legacy_sentinel_retirement`.*
 
-- [ ] **LEGACY-01**: The orphaned legacy scan path is deleted — `POST /api/v1/scan` (`routers/scan.py`), `run_scan`, and `discover_and_hash_files` (`services/ingestion.py`) are removed, so no new `files`/`scan_batches` row is ever attributed to `legacy-application-server` (and two `FileState`-writing upsert sites disappear from the migration surface). The FK ownership model (`agent_id` = owning fileserver) is preserved.
-- [ ] **LEGACY-02**: A data-migration reattributes all historical `legacy-application-server`-owned `files` and `scan_batches` to a designated real `kind='fileserver'` agent (e.g. nox), with a backfill-verification check.
-- [ ] **LEGACY-03**: After reattribution, the `agent_id` column `default=` is dropped and the `legacy-application-server` sentinel `Agent` row is deleted (the `ondelete=RESTRICT` FK is satisfiable only because LEGACY-02 reattributed first).
+- [x] **LEGACY-01**: The orphaned legacy scan path is deleted — `POST /api/v1/scan` (`routers/scan.py`), `run_scan`, and `discover_and_hash_files` (`services/ingestion.py`) are removed, so no new `files`/`scan_batches` row is ever attributed to `legacy-application-server` (and two `FileState`-writing upsert sites disappear from the migration surface). The FK ownership model (`agent_id` = owning fileserver) is preserved.
+- [x] **LEGACY-02**: A data-migration reattributes all historical `legacy-application-server`-owned `files` and `scan_batches` to a designated real `kind='fileserver'` agent (e.g. nox), with a backfill-verification check.
+- [x] **LEGACY-03**: After reattribution, the `agent_id` column `default=` is dropped and the `legacy-application-server` sentinel `Agent` row is deleted (the `ondelete=RESTRICT` FK is satisfiable only because LEGACY-02 reattributed first).
 
 ### Priority UI Control (PRIO)
 
@@ -160,9 +160,9 @@
 | MIG-02 | Phase 79 | Complete |
 | MIG-03 | Phase 77 | Complete |
 | MIG-04 | Phase 90 | Pending |
-| LEGACY-01 | Phase 89 | Pending |
-| LEGACY-02 | Phase 89 | Pending |
-| LEGACY-03 | Phase 89 | Pending |
+| LEGACY-01 | Phase 89 | Complete |
+| LEGACY-02 | Phase 89 | Complete |
+| LEGACY-03 | Phase 89 | Complete |
 | PRIO-01 | Phase 87 | Complete |
 | DRILL-01 | Phase 88 | Complete |
 | DRILL-02 | Phase 88 | Complete |
