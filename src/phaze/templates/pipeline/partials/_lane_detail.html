@@ -1,0 +1,124 @@
+{# Phase 88 (88-02, DRILL-01 / D-06 / D-07 / D-00b / D-03): the lane-detail body slot.
+
+   Served by GET /pipeline/lanes/{backend_id} and innerHTML-swapped into the shared #detail-pane host
+   (the frozen 88-01 _detail_pane.html shell). This body renders inside that shell's <section x-data>
+   scope, so it reads the shell's Alpine `open` state for the own-tick lifecycle below.
+
+   Context:
+     * lane              -- one get_backend_lane_snapshot dict {id,kind,rank,cap,in_flight,available,
+                            quota_wait,inadmissible}; None -> the friendly "Lane offline" empty state.
+     * recent_completions -- up to recent_n succeeded CloudJob rows, newest-first (D-07); [] on a local
+                            lane or a degraded read -> the "No completions in the last N" empty state.
+     * queue_depths      -- per-lane-tier {analyze,fingerprint,meta,io} depth; each degrades to 0 (D-00b).
+     * refreshed_at      -- server render time for the "Updated HH:MM:SS" liveness caption.
+     * recent_n          -- the D-07 last-N cap (LANE_RECENT_N).
+
+   Kind identity tokens are REUSED verbatim from _lane_card.html (never hue-only -- word + glyph, WCAG
+   1.4.1). D-06: quota-waiting + Inadmissible render ONLY for a kueue lane; NO fabricated n/a rows on
+   local/compute. All ids/kinds stay Jinja-autoescaped (operator-declared, never |safe -- T-88-05). #}
+{% if lane %}
+    {% set _kind = lane.kind %}
+    {% if _kind == 'local' %}
+        {% set lane_glyph = "🖥️" %}
+        {% set lane_color = "text-emerald-600 dark:text-emerald-300" %}
+        {% set lane_bar = "bg-emerald-400" %}
+    {% elif _kind == 'compute' %}
+        {% set lane_glyph = "☁️" %}
+        {% set lane_color = "text-blue-600 dark:text-blue-300" %}
+        {% set lane_bar = "bg-blue-400" %}
+    {% elif _kind == 'kueue' %}
+        {% set lane_glyph = "⎈" %}
+        {% set lane_color = "text-amber-600 dark:text-amber-300" %}
+        {% set lane_bar = "bg-amber-400" %}
+    {% else %}
+        {% set lane_glyph = "▪" %}
+        {% set lane_color = "text-gray-600 dark:text-gray-300" %}
+        {% set lane_bar = "bg-gray-400" %}
+    {% endif %}
+    {% set _cap = lane.cap or 0 %}
+    {% set _pct = ((lane.in_flight / _cap * 100) if _cap else 0) %}
+    {% set _pct = 0 if _pct < 0 else (100 if _pct > 100 else _pct) %}
+    <div class="space-y-4{% if not lane.available %} opacity-60{% endif %}">
+        {# Header: kind glyph/color + id + RANK micro-label (reused from _lane_card.html). #}
+        <div class="flex items-center justify-between gap-2">
+            <span class="text-sm text-gray-700 dark:text-gray-200">
+                {{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}
+                <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">RANK {{ lane.rank }}</span>
+            </span>
+            {% if lane.available %}
+            <span class="font-mono text-sm font-medium {{ lane_color }}">{{ lane.in_flight }}/{{ lane.cap }}</span>
+            {% else %}
+            <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-500">0</span>
+            {% endif %}
+        </div>
+
+        {# In-flight/cap capacity bar (frozen h-1.5 geometry, reused verbatim). #}
+        <div class="h-1.5 rounded-full bg-gray-200 dark:bg-phaze-border">
+            {% if lane.available and _pct > 0 %}
+            <div class="h-full rounded-full {{ lane_bar }}" style="width: {{ _pct }}%"></div>
+            {% endif %}
+        </div>
+
+        {# Availability (word-labelled, never hue-only). #}
+        <p class="text-xs {% if lane.available %}text-gray-500 dark:text-gray-400{% else %}text-amber-600 dark:text-amber-400{% endif %}">
+            {% if lane.available %}Available — accepting work.{% else %}offline — no live queue data on this poll.{% endif %}
+        </p>
+
+        {# D-06 kueue-only admission: quota-waiting + Inadmissible. NO n/a rows on local/compute.
+           The inadmissible segment goes amber + role="alert" when > 0 (a misconfigured queue). #}
+        {% if _kind == 'kueue' %}
+        <p class="text-xs text-gray-600 dark:text-gray-300">
+            <span>{{ lane.quota_wait }} waiting</span> ·
+            {% if lane.inadmissible > 0 %}
+            <span role="alert" class="text-amber-600 dark:text-amber-400">{{ lane.inadmissible }} inadmissible</span>
+            {% else %}
+            <span>{{ lane.inadmissible }} inadmissible</span>
+            {% endif %}
+        </p>
+        {% endif %}
+
+        {# Per-lane-tier queue depths (analyze N · io N ...); each degrade-safe to 0. #}
+        <div>
+            <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Queue depth</p>
+            <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-200">
+                {% for tier, depth in queue_depths.items() %}{{ tier }} {{ depth }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}
+            </p>
+        </div>
+
+        {# Recent completions: last-N newest-first (D-07), else the empty state (local / degraded read). #}
+        <div>
+            <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Recent completions</p>
+            {% if recent_completions %}
+            <ul class="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-200">
+                {% for c in recent_completions %}
+                <li>✓ <span class="font-mono">{{ c.file_id.hex[:8] }}</span> · {{ c.updated_at.strftime('%Y-%m-%d %H:%M:%S') if c.updated_at else '—' }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">No completions in the last {{ recent_n | default(20) }}.</p>
+            {% endif %}
+        </div>
+
+        {# Liveness caption — re-rendered every 5s by the own-tick below (server-rendered, no setInterval). #}
+        <p class="text-xs text-gray-400 dark:text-gray-500">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
+
+        {# D-03 own-tick: the loaded body carries its OWN bounded 5s self-refresh scoped to this lane,
+           re-swapping itself into #detail-pane. It is REMOVED on dismiss (no orphan loop): once the pane
+           has opened (armed), if the shell's `open` flips false (✕/Esc), the tick element removes itself
+           so it can never re-open a dismissed pane. `armed` skips the pre-open initTree pass. #}
+        <div hx-get="/pipeline/lanes/{{ lane.id }}"
+             hx-trigger="every 5s"
+             hx-target="#detail-pane"
+             hx-swap="innerHTML"
+             x-data="{ armed: false }"
+             x-init="$nextTick(() => { armed = true })"
+             x-effect="if (armed && !open && window.htmx) window.htmx.remove($el)"></div>
+    </div>
+{% else %}
+    {# Unknown/offline backend_id -> friendly empty state (T-88-03), never a 500. No own-tick: there is
+       no lane id to poll; dismiss returns the pane to its resting state. #}
+    <div class="rounded-xl border border-amber-500/30 p-4 opacity-60">
+        <p role="status" class="text-sm text-amber-600 dark:text-amber-400">Lane offline — no live queue data on this poll.</p>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">This lane is not in the live registry snapshot.</p>
+    </div>
+{% endif %}
