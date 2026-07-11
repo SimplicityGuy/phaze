@@ -11,7 +11,7 @@ import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uui
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 import structlog
 
 from phaze.config import settings
@@ -1123,6 +1123,146 @@ async def retry_metadata_failed(
         request=request,
         name="pipeline/partials/metadata_retry_response.html",
         context={"request": request, "count": len(files), "no_active_agent": False},
+    )
+
+
+# --------------------------------------------------------------------------------------------------
+# Per-file scoped retry variants (87-07 / UI-02 / D-04): the console's per-row Retry on a failed
+# enrich cell. Each re-drives ONE file through the SAME Phase-30-hardened guarded funnel the bulk
+# endpoints use (``enqueue_router.resolve_queue_for_task`` -> ``NoActiveAgentError`` guard ->
+# enqueue), filtered to a single ``file_id`` instead of the whole failed set, and reuses the bulk
+# response partials VERBATIM (a count of 1 / 0). The analyze variant preserves the manual-only
+# terminal-analyze path (``ELIGIBLE_AFTER_FAILURE[ANALYZE]=False``): it flips ANALYSIS_FAILED ->
+# FINGERPRINTED + clears ``analysis.failed_at`` in ONE transaction and commits BEFORE enqueue (the
+# Phase-81 CR-01 rule) so the file leaves the failed disjunct -- it NEVER creates an auto-retry loop
+# (the 44.5K over-enqueue guard, behavior 8).
+# --------------------------------------------------------------------------------------------------
+@router.post("/pipeline/files/{file_id}/analysis-failed/retry", response_class=HTMLResponse)
+async def retry_analysis_failed_file(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: operator-gated PER-FILE retry of ONE ANALYSIS_FAILED file (87-07, UI-02 / D-04).
+
+    The scoped twin of :func:`retry_analysis_failed`: it re-drives EXACTLY ONE file through the
+    identical guarded funnel (per-agent routing -> ``NoActiveAgentError`` guard ->
+    :func:`enqueue_process_file` with the COMPLETE ``ProcessFilePayload`` + deterministic
+    ``process_file:<id>`` key), scoped by ``id == file_id AND state == ANALYSIS_FAILED`` so a
+    non-failed (or unknown) file is a safe no-op ack (T-87-27 input validation — a UUID path param +
+    the state guard, never an unscoped enqueue).
+
+    MANUAL-ONLY, no auto-loop (D-00b, behavior 8, T-87-24): analyze is the ONLY enrich carve-out
+    (``ELIGIBLE_AFTER_FAILURE[ANALYZE]=False``) — a FAILED analyze is terminal and is NEVER
+    auto-retried by ``recover_orphaned_work`` / the derived pending set. This endpoint is that
+    invariant's deliberate operator-gated counterpart: it flips ANALYSIS_FAILED -> FINGERPRINTED AND
+    clears the ``analysis.failed_at`` / ``error_message`` marker in the SAME transaction, then
+    ``commit`` BEFORE the enqueue (``get_session`` does NOT auto-commit) so the file leaves the failed
+    disjunct immediately and derives ``not_started`` for a fresh re-analysis. The deterministic key
+    dedups a live in-flight job to a no-op (T-87-26). The ack is count/bool-only — no operator
+    free-text crosses into Jinja (T-d79-04).
+    """
+    file = (
+        await session.execute(select(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.ANALYSIS_FAILED))
+    ).scalar_one_or_none()
+    if file is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False},
+        )
+
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        # Do NOT flip state, do NOT enqueue, do NOT fall through to the default queue (Phase-30, T-87-25).
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": True},
+        )
+
+    # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
+
+    # CR-01 (Phase 81): clear BOTH halves of the FAIL-01 dual-write and COMMIT before the enqueue, so
+    # the row leaves the failed disjunct and derives not_started (a fresh re-analysis) rather than
+    # stranding as `state='fingerprinted' AND analysis.failed_at IS NOT NULL` (a shadow-compare
+    # divergence + a domain_completed(ANALYZE) "un-processable" that Phase 80 recovery would skip).
+    file.state = FileState.FINGERPRINTED
+    await session.execute(
+        update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(failed_at=None, error_message=None),
+    )
+    await session.commit()
+
+    # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
+    await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+
+    logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/retry_failed_response.html",
+        context={"request": request, "count": 1, "no_active_agent": False},
+    )
+
+
+@router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
+async def retry_metadata_failed_file(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: operator-gated PER-FILE retry of ONE terminally-failed metadata file (87-07, UI-02 / D-04).
+
+    The scoped twin of :func:`retry_metadata_failed`: it re-drives EXACTLY ONE file through the
+    identical guarded funnel (per-agent routing -> ``NoActiveAgentError`` guard ->
+    :func:`_enqueue_extraction_jobs` with the COMPLETE ``ExtractMetadataPayload`` + the central
+    ``extract_file_metadata:<id>`` dedup key), scoped by ``id == file_id AND EXISTS(a metadata row
+    with failed_at)`` so a non-failed (or unknown) file is a safe no-op ack (T-87-27).
+
+    D-11: NO ``f.state`` flip and NO ``failed_at`` clear — metadata has no terminal FileState and the
+    failure lives only in the ``metadata`` row; clearing it here would make a zero-metadata file read
+    DONE forever. ``put_metadata``'s clear-on-success wipes the marker only when real metadata lands.
+    With no state mutation there is nothing to commit before the enqueue. The deterministic key dedups
+    a live in-flight job to a no-op (T-87-26). The ack is count/bool-only (T-d79-04).
+    """
+    file = (
+        await session.execute(
+            select(FileRecord).where(
+                FileRecord.id == file_id,
+                exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None))),
+            ),
+        )
+    ).scalar_one_or_none()
+    if file is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/metadata_retry_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False},
+        )
+
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        # Do NOT enqueue, do NOT mutate state, do NOT fall through to the default queue (Phase-30, T-87-25).
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/metadata_retry_response.html",
+            context={"request": request, "count": 0, "no_active_agent": True},
+        )
+
+    # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
+
+    # D-11: no state flip, so no pre-enqueue commit. The shared producer builds the COMPLETE payload
+    # and the central extract_file_metadata:<file_id> key dedups an in-flight job.
+    await _enqueue_extraction_jobs(routed.queue, [file], agent_id)
+
+    logger.info("retry_metadata_failed_file re-queued", file_id=str(file_id))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/metadata_retry_response.html",
+        context={"request": request, "count": 1, "no_active_agent": False},
     )
 
 
