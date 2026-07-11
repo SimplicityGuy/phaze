@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
@@ -31,12 +31,6 @@ logger = structlog.get_logger(__name__)
 
 # Module constant: max chars for companion file content sent to LLM
 MAX_COMPANION_CHARS = 3000
-
-# File states whose lifecycle is past PROPOSAL_GENERATED -- a re-run of generate_proposals
-# (the deterministic key dedups in-flight work, not historical batches) must NEVER yank these
-# backward. The partial unique index already protects the approved proposal ROW; this protects
-# the FILE STATE so the two cannot drift out of sync (35-REVIEW WR-04).
-_TERMINAL_FILE_STATES: frozenset[FileState] = frozenset({FileState.APPROVED, FileState.REJECTED, FileState.EXECUTED, FileState.DUPLICATE_RESOLVED})
 
 # Path to the prompts directory (sibling of services/)
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -287,8 +281,6 @@ async def store_proposals(
     conflict target and is structurally protected from being overwritten -- human
     approvals survive any number of re-runs.
 
-    Also transitions each file's state to ``PROPOSAL_GENERATED``.
-
     PK-STAMP GOTCHA: ``RenameProposal.id`` declares only a Python-side
     ``default=uuid.uuid4``, which fires through ORM ``session.add()`` but NOT
     through ``pg_insert(...).values()``. We therefore stamp ``id`` explicitly on
@@ -362,15 +354,6 @@ async def store_proposals(
             },
         )
         await session.execute(stmt)
-
-        # Update file state -- forward-only (WR-04). A stale/duplicated batch can still carry a
-        # file that has since reached a terminal state (APPROVED/EXECUTED/...); the partial index
-        # already protects its approved proposal row, so the file state must not regress to
-        # PROPOSAL_GENERATED and desync from the proposal.
-        result = await session.execute(select(FileRecord).where(FileRecord.id == uuid.UUID(fid)))
-        file_record = result.scalar_one_or_none()
-        if file_record is not None and file_record.state not in _TERMINAL_FILE_STATES:
-            file_record.state = FileState.PROPOSAL_GENERATED
 
         count += 1
     return count
