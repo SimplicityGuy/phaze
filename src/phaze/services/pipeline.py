@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -1675,3 +1676,107 @@ async def get_straggler_count(session: AsyncSession, threshold_sec: int) -> int:
         if started_ms is not None and (now_ms - started_ms) / 1000 > threshold_sec:
             count += 1
     return count
+
+
+# --------------------------------------------------------------------------------------------------
+# Phase 87 (87-04, UI-01 / D-02 / PERF-01): the scannable, per-row-derived files page.
+#
+# The operator's "where's this file at?" overview. Two anti-features are forbidden by the phase's
+# anti-feature table and BOTH are honoured here: (1) "rendering raw internal status strings" -- every
+# per-stage cell is the DERIVED stage_status_case bucket, never FileRecord.state; (2) "a stats poll
+# that scans the whole corpus" -- the query is LIMIT-bounded, keyset/offset-paginated, and NEVER emits
+# an unbounded whole-corpus COUNT (the +1 sentinel below computes has_next instead). The six correlated
+# stage_status_case CASE columns evaluate for the N page rows ONLY (they correlate to FileRecord), so
+# the per-page derivation cost is O(page_size), never O(corpus) -- the T-87-11 DoS mitigation.
+# --------------------------------------------------------------------------------------------------
+
+# The six pills the UI shows, in matrix order. The 7-stage -> 6-pill remap LANDMINE lives HERE and in
+# _stage_matrix.html: tracklist is omitted; Appr = REVIEW, Exec = APPLY. `.value` keys the row dict so
+# the template reads buckets.review for the Appr pill and buckets.apply for the Exec pill.
+_FILES_PAGE_STAGES: tuple[Stage, ...] = (
+    Stage.METADATA,
+    Stage.FINGERPRINT,
+    Stage.ANALYZE,
+    Stage.PROPOSE,
+    Stage.REVIEW,
+    Stage.APPLY,
+)
+
+
+@dataclass
+class FilesPageRow:
+    """One rendered file row: the ORM record + its six DERIVED per-stage buckets (keyed by Stage value)."""
+
+    file: FileRecord
+    buckets: dict[str, str]
+
+
+@dataclass
+class FilesPage:
+    """A bounded, derive-per-row page of files. ``has_next`` comes from a +1 sentinel row -- never a COUNT."""
+
+    rows: list[FilesPageRow] = field(default_factory=list)
+    page: int = 1
+    page_size: int = 25
+    has_next: bool = False
+
+
+def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None) -> Select[Any]:
+    """Build the bounded per-page derivation SELECT (extracted so the EXPLAIN test can probe it directly).
+
+    ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by the
+    ``FileRecord.id`` PK index and LIMITed to ``page_size + 1`` (the sentinel that yields ``has_next``
+    with NO COUNT). Each ``stage_status_case`` is a correlated CASE over the Phase-77 partial indexes
+    (``ix_metadata_failed`` / ``ix_analysis_completed`` / ``ix_analysis_failed`` / ``ix_fprint_success``),
+    so the derivation touches only the page rows. The optional ``stage``+``bucket`` filter is applied as
+    ``stage_status_case(stage) == bucket`` -- a pure ORM bound-param comparison (never f-string SQL,
+    T-87-14); the caller validates ``stage``/``bucket`` against the ``Stage``/``Status`` allowlists.
+    """
+    offset = (page - 1) * page_size
+    cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
+    stmt = select(FileRecord, *cols).order_by(FileRecord.id)
+    if stage is not None and bucket is not None:
+        stmt = stmt.where(stage_status_case(stage) == bucket)
+    # +1 sentinel -> has_next WITHOUT a whole-corpus COUNT (the T-87-11 DoS mitigation).
+    return stmt.offset(offset).limit(page_size + 1)
+
+
+async def get_files_page(
+    session: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    stage: Stage | None = None,
+    bucket: str | None = None,
+) -> FilesPage:
+    """Return one bounded, per-row-derived page of files -- SAVEPOINT degrade-safe, never a whole-corpus scan.
+
+    Clamps ``page`` (>=1) and ``page_size`` (10..100), builds the bounded :func:`_files_page_stmt`, and
+    runs it inside a ``begin_nested()`` SAVEPOINT so ANY error (a DB hiccup, an aborted transaction, a
+    build-time raise) rolls back the nested scope ALONE, logs a warning, and returns a safe EMPTY page --
+    it NEVER 500s the poll (INFLIGHT-02 / D-00c / T-87-12). ``has_next`` is derived from the LIMIT+1
+    sentinel row, so pagination costs no COUNT. The six correlated ``stage_status_case`` columns are read
+    back into each row's ``buckets`` dict keyed by ``Stage`` value (metadata/fingerprint/analyze/propose/
+    review/apply) -- the derived buckets the ``_stage_pill`` cells render (never ``FileRecord.state``).
+
+    ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so Plan 05 -- which
+    wires the status filter bar -- is templates-only. Passing only one of the pair is a no-op filter.
+    """
+    page = max(page, 1)
+    page_size = min(max(page_size, 10), 100)
+    try:
+        async with session.begin_nested():
+            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket)
+            result = (await session.execute(stmt)).all()
+    except Exception:
+        logger.warning("files_page_degraded", page=page, page_size=page_size, exc_info=True)
+        return FilesPage(rows=[], page=page, page_size=page_size, has_next=False)
+    has_next = len(result) > page_size
+    rows = [
+        FilesPageRow(
+            file=row[0],
+            buckets={stage_member.value: row[idx + 1] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)},
+        )
+        for row in result[:page_size]
+    ]
+    return FilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next)

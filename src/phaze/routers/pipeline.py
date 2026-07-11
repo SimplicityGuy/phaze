@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, update
@@ -16,6 +16,7 @@ import structlog
 
 from phaze.config import settings
 from phaze.database import async_session, get_session
+from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord, FileState
@@ -35,6 +36,7 @@ from phaze.services.pipeline import (
     get_backfill_candidates,
     get_cloud_phase_counts,
     get_discovered_files_with_duration,
+    get_files_page,
     get_fingerprint_pending_files,
     get_global_reconciliation,
     get_inadmissible_count,
@@ -743,6 +745,47 @@ async def pipeline_stats_partial(
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
+        },
+    )
+
+
+_VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
+
+
+@router.get("/pipeline/files", response_class=HTMLResponse)
+async def pipeline_files(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=10, le=100),
+    stage: str | None = Query(None),
+    bucket: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render the paginated, per-row-derived files table (UI-01 / D-02).
+
+    The scannable "where's this file at?" overview: each row carries the six-pill stage matrix
+    derived per page (never the raw ``FileRecord.state`` string, never a whole-corpus scan per poll
+    -- see :func:`phaze.services.pipeline.get_files_page`). The ``stage``+``bucket`` query params are
+    validated against the ``Stage`` / ``Status`` allowlists (T-87-14 -- an unknown value degrades to
+    an unfiltered page rather than 422-ing the poll) and plumbed through NOW so Plan 05's status-filter
+    bar is templates-only. The read is SAVEPOINT degrade-safe at the service layer, so NO router
+    try/except -- a DB hiccup renders a safe empty page, never a 500.
+    """
+    stage_enum: Stage | None = None
+    if stage:
+        try:
+            stage_enum = Stage(stage)
+        except ValueError:
+            stage_enum = None
+    bucket_val = bucket if bucket in _VALID_BUCKETS else None
+    files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/files_table_view.html",
+        context={
+            "files_page": files_page,
+            "active_stage": stage_enum.value if stage_enum is not None else None,
+            "active_bucket": bucket_val,
         },
     )
 
