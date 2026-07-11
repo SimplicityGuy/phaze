@@ -1,0 +1,46 @@
+{# Phase 87 (87-04, UI-01 / D-01): the six-pill stage matrix row -- the screen's primary visual
+   anchor (the operator's eye lands on the row of glyphed, coloured pills to answer "where's this
+   file at?").
+
+   THE 7-STAGE -> 6-PILL REMAP LANDMINE (RESEARCH): phaze has seven Stage members but the matrix
+   shows SIX pills. tracklist is OMITTED, and the last two pills are RE-LABELLED:
+     Meta = metadata · FP = fingerprint · Analyze = analyze · Prop = propose ·
+     Appr = Stage.REVIEW · Exec = Stage.APPLY
+   Getting Appr/Exec backwards silently mislabels every row -- the loop below reads
+   buckets.review for the Appr pill and buckets.apply for the Exec pill ON PURPOSE.
+
+   Params:
+     * buckets     -- dict keyed by Stage value ('metadata','fingerprint','analyze','propose',
+                      'review','apply') -> derived bucket string. Required unless legend_only.
+     * legend      -- when truthy, append the one-line legend after the pills.
+     * legend_only -- when truthy, render ONLY the legend (for a surface that hosts individual
+                      _stage_pill cells per column but wants ONE shared legend -- D-01 "one legend
+                      per surface"). The files-table view uses this so the legend is single-sourced
+                      HERE and never repeated per row.
+
+   Container wraps on narrow screens (flex flex-wrap gap-2, D-01). Pure template: no HTMX.
+#}
+{% set _matrix_stages = [
+    ('Meta', buckets.metadata if buckets else none),
+    ('FP', buckets.fingerprint if buckets else none),
+    ('Analyze', buckets.analyze if buckets else none),
+    ('Prop', buckets.propose if buckets else none),
+    ('Appr', buckets.review if buckets else none),
+    ('Exec', buckets.apply if buckets else none),
+] %}
+{% if not legend_only %}
+<div class="flex flex-wrap gap-2">
+    {% for stage_label, bucket in _matrix_stages %}
+    {% with stage_label=stage_label, bucket=bucket %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
+    {% endfor %}
+</div>
+{% endif %}
+{% if legend or legend_only %}
+<p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400" aria-hidden="true">
+    <span>✓ done</span>
+    <span>● in-flight</span>
+    <span>— not-started</span>
+    <span>✗ failed</span>
+    <span>⊘ skipped</span>
+</p>
+{% endif %}
