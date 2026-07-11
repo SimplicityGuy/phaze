@@ -384,10 +384,13 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert resp.status_code == 200
     body = resp.text
 
-    # Bare fragment + exactly one scaffold focus target.
+    # Bare fragment + focus targets: the scaffold <h1 tabindex="-1"> PLUS the Phase-88 (88-01, DRILL-03
+    # / D-09) shared #detail-pane header <h2 tabindex="-1">, which the pane focuses on drill-in open to
+    # park focus off the poll-doomed lane trigger (Pitfall 1). Both are intentional focus targets.
     assert "<html" not in body
     assert "<head" not in body
-    assert body.count('tabindex="-1"') == 1
+    assert body.count('tabindex="-1"') == 2
+    assert 'id="detail-pane-heading"' in body  # the pane's D-09 focus target is hosted in the fragment
 
     # D-05: the lane grid host id is stable; one card per seeded lane.
     assert 'id="analyze-lanes"' in body

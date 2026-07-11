@@ -17,6 +17,9 @@
    driven by classify_compute_lanes). Both live inside this SINGLE #agents-table-section
    so the existing 5s self-poll refreshes both with NO new loop (RESEARCH OQ-1). Two
    sibling swap roots would duplicate on outerHTML — hence one root wrapping both. #}
+{# Phase 88 (88-01, DRILL-03 / D-02): the ?agent= selected-row highlight id, threaded by page/table_partial
+   and re-read every poll so it survives the outerHTML swap. Defaults to none (unknown/absent = no highlight). #}
+{% set selected_agent = selected_agent | default(none) %}
 <section id="agents-table-section"
          hx-get="/admin/agents/_table"
          hx-trigger="every 5s"
@@ -52,7 +55,22 @@
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
                 {% for agent in agents %}
-                <tr class="hover:bg-gray-50 dark:hover:bg-phaze-panel">
+                {# Phase 88 (88-01, DRILL-03 / D-09): the row is the keyboard-accessible drill-in trigger.
+                   selected_agent is re-derived from ?agent= by the #agents-table-section self-poll (D-02)
+                   so the ring survives every 5s outerHTML swap; unknown/absent id highlights nothing.
+                   agent.id/name stay Jinja-autoescaped (never |safe). #}
+                <tr id="agent-trigger-{{ agent.id }}"
+                    role="button"
+                    tabindex="0"
+                    aria-label="Open agent {{ agent.name }} activity"
+                    {% if selected_agent == agent.id %}aria-current="true"{% endif %}
+                    hx-get="/admin/agents/{{ agent.id }}/_activity"
+                    hx-target="#detail-pane"
+                    hx-swap="innerHTML"
+                    hx-push-url="/admin/agents?agent={{ agent.id }}"
+                    hx-trigger="click, keyup[key=='Enter']"
+                    onkeydown="if(event.key===' '){event.preventDefault();this.dispatchEvent(new Event('click'));}"
+                    class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-phaze-panel{% if selected_agent == agent.id %} ring-2 ring-blue-500{% endif %}">
                     <td class="px-4 py-3">
                         <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 block" title="{{ agent.id }}">{{ agent.name }}</span>
                         <span class="font-mono text-xs text-gray-500 dark:text-gray-400 block">{{ agent.id }}</span>

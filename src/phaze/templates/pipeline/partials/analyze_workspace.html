@@ -43,8 +43,20 @@
     {# (a) the N-lane grid (BEUI-01 / D-05/D-06): _analyze_lanes.html loops _lane_card.html over the seeded
        `lanes` list, rank-ascending. NO `oob` here -> the initial full-page grid (the #analyze-lanes id host
        is present so the poll's OOB grid-swap lands). The stats poll re-includes the SAME partial with
-       oob=True. Degrades to the muted "Lane status unavailable" panel on []. #}
-    {% include "pipeline/partials/_analyze_lanes.html" %}
+       oob=True. Degrades to the muted "Lane status unavailable" panel on [].
+
+       Phase 88 (88-01, DRILL-03 / D-01): the shared #detail-pane is hosted here as a SIBLING of
+       #analyze-lanes but OUTSIDE it — a right-side column on lg+ (col-span-1 of 3), stacked BELOW the
+       grid on < lg. The wrapper leaves the OOB-swapped #analyze-lanes element untouched (htmx matches it
+       by id inside the wrapper), so the 5s poll re-renders the grid without ever touching the pane. #}
+    <div class="lg:grid lg:grid-cols-3 lg:items-start lg:gap-4">
+        <div class="lg:col-span-2">
+            {% include "pipeline/partials/_analyze_lanes.html" %}
+        </div>
+        <div class="px-6 pb-6 lg:col-span-1 lg:pl-0">
+            {% with pane_kind = 'lane' %}{% include "pipeline/partials/_detail_pane.html" %}{% endwith %}
+        </div>
+    </div>
 
     {# (b) the SIX existing cloud-state cards VERBATIM (do NOT restyle). They carry their own ids so the
        /pipeline/stats OOB swaps land here, and they encode the quota-wait-vs-Inadmissible alert
