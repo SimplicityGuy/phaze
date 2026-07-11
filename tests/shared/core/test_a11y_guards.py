@@ -167,3 +167,40 @@ def test_shell_has_no_dead_detail_pane_aside() -> None:
     assert 'aria-label="Detail pane"' not in html, (
         'the dead empty right detail-pane <aside aria-label="Detail pane"> was superseded by the Phase 61 record slide-in — remove it (deferred from Phase 61)'
     )
+
+
+# --- Phase 88 detail-pane after-swap scope (browser-caught regression) -------------
+
+# `onLoaded` / `hide` are Alpine METHODS on the `<section x-data>` in _detail_pane.html.
+# hx-on::after-swap evaluates in the GLOBAL scope, so a bare `onLoaded()` there is a
+# ReferenceError — `open` never flips true, the ✕/Esc dismiss and the body's self-removing
+# own-tick all silently break. This was invisible to markup/httpx tests (the string
+# `onLoaded()` was present either way) and to the source-reading verifier; only a live
+# browser (Phase 88 UAT) surfaced it. The fix reaches the component scope via
+# `Alpine.$data(this).onLoaded()`. Guard: the after-swap MUST go through Alpine.$data, and
+# MUST NOT call a bare `onLoaded()` in the global hx-on scope.
+_DETAIL_PANE = _TEMPLATES / "pipeline" / "partials" / "_detail_pane.html"
+# The `hx-on::after-swap="..."` attribute value (no `"` inside the expression, so `[^"]*` bounds it).
+_AFTER_SWAP = re.compile(r'hx-on::after-swap="([^"]*)"')
+
+
+def test_detail_pane_after_swap_reaches_alpine_scope() -> None:
+    """The #detail-pane after-swap must call onLoaded() through Alpine.$data, never bare (global-scope ReferenceError)."""
+    html = _strip_comments(_DETAIL_PANE.read_text())
+    m = _AFTER_SWAP.search(html)
+    assert m, "expected an hx-on::after-swap handler on the #detail-pane swap target"
+    expr = m.group(1)
+    # Must reach the Alpine component scope explicitly.
+    assert "Alpine.$data(this).onLoaded()" in expr, (
+        "hx-on::after-swap must invoke Alpine.$data(this).onLoaded() — hx-on evaluates in the GLOBAL "
+        f"scope where the Alpine method onLoaded is undefined. Got: {expr!r}"
+    )
+    # Must NOT call a bare onLoaded() (the broken global-scope form). Remove the reachable
+    # `.onLoaded()` occurrences, then assert no stray `onLoaded(` identifier remains.
+    residual = expr.replace("Alpine.$data(this).onLoaded()", "")
+    assert "onLoaded(" not in residual, f"bare global-scope onLoaded() call is a ReferenceError: {expr!r}"
+
+
+def _strip_comments(text: str) -> str:
+    """Blank out ``{# ... #}`` Jinja comment regions before scanning (prose may mention onLoaded)."""
+    return _JINJA_COMMENT.sub("", text)

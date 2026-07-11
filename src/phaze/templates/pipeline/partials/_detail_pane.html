@@ -87,10 +87,16 @@
 
     {# The innerHTML swap target: the trigger hx-get lands the wave-2 body HERE (hx-target="#detail-pane").
        hx-on::after-swap re-inits any Alpine islands in the swapped body (record_host.html:71 idiom) and
-       fires onLoaded() to open + focus the pane. When no ?param is set, the resting empty state shows. #}
+       fires onLoaded() to open + focus the pane. When no ?param is set, the resting empty state shows.
+
+       onLoaded() is an Alpine METHOD on the enclosing <section x-data> — hx-on evaluates in the GLOBAL
+       scope, where a bare `onLoaded()` is undefined (ReferenceError → open never flips true → the ✕/Esc
+       dismiss and the body's self-removing own-tick all break). Reach the component scope explicitly via
+       Alpine.$data(this) (this = #detail-pane, inside the section) so the method runs with the right
+       `this`. Guarded on window.Alpine so a pre-hydration swap degrades to the innerHTML render. #}
     <div id="detail-pane"
          class="mt-3"
-         hx-on::after-swap="if (window.Alpine) Alpine.initTree(this); onLoaded()">
+         hx-on::after-swap="if (window.Alpine) { Alpine.initTree(this); Alpine.$data(this).onLoaded(); }">
         <div class="rounded-xl border border-gray-200 p-4 dark:border-phaze-border" x-show="!open">
             <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ _empty_head }}</p>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ _empty_body }}</p>
