@@ -504,9 +504,18 @@ the old templates; build fresh rail-node steppers against the still-live endpoin
 | A4 | Orphan/stuck count = ledger rows − live saq_jobs keys − domain_completed | UI-05 | MEDIUM — the exact "no progress" definition is a discretion call; verify against how `recover_orphaned_work` classifies candidates. |
 | A5 | `sanitize_pg_text` applies to the skip reason | Writer example | LOW — project memory + `services/pg_text.py` precedent for persisted free text. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does force-skipping analyze need to actually unblock propose? (the "downstream unblocking" fork)**
+> **RESOLVED 2026-07-11 during plan-phase** (orchestrator, adopting the recommendations below):
+> **OQ-1 → RESOLVED: SCOPE-MINIMAL** (option i) — force-skip converges the `failed` bucket + enrich
+> pending sets + recovery, but does NOT wire propose-unblock; full-unblock is explicitly deferred to
+> Phase 90. No plan touches `get_proposal_pending_batches`.
+> **OQ-2 → RESOLVED: recovery-candidate count** — orphan/stuck = per-stage `(ledger − live − domain_completed)`,
+> degrade-safe, matching what `recover_orphaned_work` would re-enqueue (no drift). Implemented in 87-08.
+> **OQ-3 → RESOLVED: YES** — `stage_skip.stage` carries a CHECK restricting to the 3 enrich values.
+> Implemented in 87-01.
+
+1. **RESOLVED (SCOPE-MINIMAL): Does force-skipping analyze need to actually unblock propose? (the "downstream unblocking" fork)**
    - What we know: `eligible_clause` + `domain_completed_clause` extensions make skipped satisfy
      *eligibility* and *recovery*. But `get_proposal_pending_batches` (pipeline.py:1520) — the propose
      convergence reader — reads `state.in_([ANALYZED, METADATA_EXTRACTED])` AND
@@ -523,7 +532,7 @@ the old templates; build fresh rail-node steppers against the still-live endpoin
      `get_proposal_pending_batches` (a bigger blast radius touching the propose reader, which is Phase-90
      territory). Recommend (i) for this phase's small-blast-radius rule, with (ii) explicitly deferred.
 
-2. **Exact "orphaned/stuck" definition for UI-05.**
+2. **RESOLVED (recovery-candidate count): Exact "orphaned/stuck" definition for UI-05.**
    - What we know: in_flight authority is `scheduling_ledger` (78 D-01); live jobs are `get_live_job_keys`
      (pipeline.py:566); recovery classifies candidates via `domain_completed_clause`.
    - What's unclear: whether "stuck" = "ledger row, no live saq_jobs job, not domain-completed" (= recovery
@@ -532,7 +541,7 @@ the old templates; build fresh rail-node steppers against the still-live endpoin
      degrade-safe via `_safe_count`, rendered per-stage on the rail. Confirm the definition matches what
      `recover_orphaned_work` would actually re-enqueue so the badge and recovery agree (no drift).
 
-3. **Should `stage_skip.stage` carry a CHECK constraint restricting to the 3 enrich values?**
+3. **RESOLVED (YES): Should `stage_skip.stage` carry a CHECK constraint restricting to the 3 enrich values?**
    - Recommendation: yes (belt-and-suspenders on D-10) — a DB CHECK `stage IN ('metadata','analyze','fingerprint')`
      backstops the writer's `STAGE_TO_FUNCTION` allowlist. Low cost; encodes the D-10 invariant durably.
 
