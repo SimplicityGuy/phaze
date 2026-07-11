@@ -29,7 +29,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 83: Cloud-Routing Sidecar Cutover** — cloud routing (`AWAITING_CLOUD`/`PUSHING`/`PUSHED`/`LOCAL_ANALYZING`) via the `cloud_job` sidecar / derived `in_flight(analyze)`, one atomic consistency domain, CAS-guard collapse (closes the missing `/upload-failed` guard) (SIDECAR-01) (completed 2026-07-09)
 - [x] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02) (completed 2026-07-10)
 - [x] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05) (completed 2026-07-10)
-- [ ] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03)
+- [x] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03) (completed 2026-07-11)
 - [ ] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01)
 - [ ] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03)
 - [ ] **Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution** — delete the orphaned legacy scan path (removes two `FileState` writers), reattribute historical `legacy-application-server`-owned rows to a real fileserver agent, then drop the `agent_id` default + delete the sentinel row (RESTRICT-FK-ordered) (LEGACY-01..03)
@@ -274,7 +274,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
-| 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete   | 2026-07-11 |
+| 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
