@@ -51,6 +51,42 @@
             </div>
         </div>
 
+        {# 2.5 — Expanded stage matrix (trace triggers) + enrich-only force-skip (UI-03 / UI-04,
+           D-02/D-06..D-10): the right-pane half of the D-02 dual home. Each stage is a keyboard-
+           accessible trace TRIGGER — a real <button> (native Enter/Space → click) that hx-gets the
+           single-row eligibility trace and reveals _eligibility_trace.html BENEATH the clicked pill.
+           The three ENRICH stages ALSO carry the force-skip control (_force_skip_dialog.html); the
+           downstream propose/review/apply pills carry NO skip affordance (approval-bypass hazard,
+           D-10). Per-stage status COLOUR is intentionally the files-table's job (the scannable
+           overview, Plan 04) — this pane is the diagnostic; the trace verdict tints green/amber. #}
+        <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <p class="{{ _eyebrow }} mb-3">Stage eligibility · click a stage to trace</p>
+            <div class="space-y-2">
+            {% for stage_value, stage_label, is_enrich in [
+                    ('metadata', 'Meta', true), ('fingerprint', 'FP', true), ('analyze', 'Analyze', true),
+                    ('propose', 'Prop', false), ('review', 'Appr', false), ('apply', 'Exec', false)] %}
+                <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button"
+                                aria-label="Show {{ stage_label }} eligibility trace for this file"
+                                hx-get="/pipeline/files/{{ file.id }}/trace/{{ stage_value }}"
+                                hx-target="#trace-{{ stage_value }}-{{ file.id }}"
+                                hx-swap="innerHTML"
+                                class="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white px-3 py-0.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-200 dark:hover:bg-white/5">
+                            {{ stage_label }}
+                        </button>
+                        {% if is_enrich %}
+                            {% with stage_value=stage_value, stage_label=stage_label, file_id=file.id %}
+                                {% include "pipeline/partials/_force_skip_dialog.html" %}
+                            {% endwith %}
+                        {% endif %}
+                    </div>
+                    <div id="trace-{{ stage_value }}-{{ file.id }}" class="empty:hidden"></div>
+                </div>
+            {% endfor %}
+            </div>
+        </div>
+
         {# 3 — Windowed multi-lane timeline (reuse analysis_timeline.html; it renders a <td>, so it
            is wrapped in a table row whose id its own reveal script keys on). #}
         <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">

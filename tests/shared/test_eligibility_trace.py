@@ -151,3 +151,51 @@ async def test_unknown_stage_degrades_safely(client: AsyncClient, session: Async
 
     assert response.status_code == 200
     assert "Trace unavailable this tick." in response.text
+
+
+# --------------------------------------------------------------------------------------------------
+# Task 3 render assertions: the right-pane expanded matrix (6 trace triggers) + enrich-only force-skip.
+# Rendered through the REAL record slide-in endpoint (GET /record/{id} -> record_body.html), so the
+# composition is verified end-to-end without touching record.py.
+# --------------------------------------------------------------------------------------------------
+
+_ENRICH = ("metadata", "fingerprint", "analyze")
+_DOWNSTREAM = ("propose", "review", "apply")
+
+
+@pytest.mark.asyncio
+async def test_record_body_renders_six_trace_triggers(client: AsyncClient, session: AsyncSession) -> None:
+    """All six matrix stages render as trace triggers (hx-get to the Task-2 endpoint)."""
+    file_id = await _seed_file(session)
+
+    body = (await client.get(f"/record/{file_id}")).text
+
+    for stage in (*_ENRICH, *_DOWNSTREAM):
+        assert f"/pipeline/files/{file_id}/trace/{stage}" in body, f"missing trace trigger for {stage}"
+
+
+@pytest.mark.asyncio
+async def test_force_skip_appears_only_on_enrich_pills(client: AsyncClient, session: AsyncSession) -> None:
+    """The force-skip dialog is rendered for enrich stages ONLY — never for propose/review/apply (D-10)."""
+    file_id = await _seed_file(session)
+
+    body = (await client.get(f"/record/{file_id}")).text
+
+    for stage in _ENRICH:
+        assert f"/pipeline/files/{file_id}/skip/{stage}" in body, f"missing force-skip for enrich {stage}"
+        assert f"Force {stage} complete for this file?" in body  # verbatim UI-SPEC confirm heading
+    for stage in _DOWNSTREAM:
+        assert f"/pipeline/files/{file_id}/skip/{stage}" not in body, f"approval-bypass: skip affordance on {stage}"
+
+
+@pytest.mark.asyncio
+async def test_force_skip_dialog_copy_and_required_reason(client: AsyncClient, session: AsyncSession) -> None:
+    """The dialog carries the verbatim UI-SPEC copy and a REQUIRED reason textarea."""
+    file_id = await _seed_file(session)
+
+    body = (await client.get(f"/record/{file_id}")).text
+
+    assert "Why are you skipping this? (required)" in body  # reason label
+    assert 'placeholder="e.g. corrupt source file, analyze crashes on this set"' in body
+    assert 'name="reason" required' in body  # the textarea is required (browser-side gate)
+    assert "Force complete / skip" in body  # the CTA label
