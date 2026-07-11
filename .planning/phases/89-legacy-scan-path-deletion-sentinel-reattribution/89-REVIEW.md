@@ -17,8 +17,25 @@ findings:
   warning: 3
   info: 2
   total: 7
-status: issues_found
+status: resolved
 ---
+
+## Disposition (orchestrator, 2026-07-11)
+
+- **CR-01** (composite-UQ reattribution collision) — **FIXED**. Added a pre-flight guard
+  (step 1.5) in `038_retire_legacy_sentinel.py` that aborts with clear operator guidance +
+  rollback when the target already owns a file at a legacy file's `original_path`, plus a
+  mutation-verified regression test (Scenario 4b). Commit `fix(89-02): guard migration 038
+  against target original_path collision (CR-01)`.
+- **CR-02** (038 aborts `upgrade head` on a fresh DB with no fileserver) — **ACCEPTED as
+  designed**. The operator made an explicit, informed decision to keep migration 038 strict
+  (locked decision D-01: 0 fileservers → abort) and reconcile only the test layer (seed a
+  fileserver in `migrated_engine`, pin sentinel-dependent tests to revision 037 via
+  `pre_retire_engine`). Fresh-deploy / auto-migrate boot on an agent-less DB remains a known,
+  accepted constraint. Not changed.
+- **WR-01/02/03, IN-01/02** — advisory; left as-is for a future polish pass (WR-02 anti-f-string
+  guard tightening, IN-01 `transaction_per_migration` docstring accuracy). None affect
+  correctness of the shipped migration.
 
 # Phase 89: Code Review Report
 
