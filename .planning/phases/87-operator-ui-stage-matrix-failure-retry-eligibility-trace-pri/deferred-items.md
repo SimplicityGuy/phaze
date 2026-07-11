@@ -57,3 +57,23 @@ Out-of-scope discoveries logged during execution (SCOPE BOUNDARY). Not fixed by 
     `tests/analyze/tasks/test_recovery.py::test_skipped_fingerprint_row_is_excluded_from_recovery`. It
     asserts the DESIRED behavior and currently xfails; when the fix lands it XPASSes and (strict) turns
     the suite RED — remove the marker then.
+
+---
+
+## [87-08] Pre-existing: `x-cloak` has no backing CSS rule (app-wide, cosmetic)
+
+- **Found during:** 87-08 Task 2 (rail orphan badge + priority/pause controls).
+- **Issue:** Alpine v3 does NOT auto-inject the `[x-cloak]{display:none}` rule — the app must define
+  it. Neither `assets/src/app.css` nor the compiled `src/phaze/static/css/app.css` defines it, so every
+  `x-cloak` in the codebase (base.html theme-toggle SVGs, header, cmdk_modal, record_host, agents_table,
+  and now the rail orphan badge / Resume / Paused caption) is INERT. Elements meant to be hidden-until-
+  Alpine-inits instead flash their fallback content for a few ms on first paint (e.g. a brief amber "0"
+  orphan pill, or a brief "Resume" button, before the store default hides them via `x-show`).
+- **Blast radius:** cosmetic only, sub-100ms, on initial page load; no functional impact (the store
+  defaults to 0 / not-paused, so `x-show` hides them the instant Alpine initializes).
+- **Why deferred (not fixed inline):** the fix is a one-line rule in `assets/src/app.css`
+  (`[x-cloak]{display:none !important;}`) — NOT a declared file for this plan, and the compiled CSS is
+  gitignored + rebuilt at image-build (`just tailwind`), so verifying the fix requires a CSS rebuild
+  outside this plan's scope. It is a pre-existing, app-wide latent issue, not introduced by 87-08.
+- **Proposed fix (when a CSS-owning change can take it):** add `[x-cloak] { display: none !important; }`
+  to `assets/src/app.css` (after the `htmx-indicator` rules) and rebuild via `just tailwind`.
