@@ -256,21 +256,12 @@ async def test_update_proposal_status_approve(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_proposal_status_approve_sets_file_state(session: AsyncSession) -> None:
-    """Approving a proposal transitions FileRecord.state to APPROVED (APR-02)."""
-    proposal = await _create_proposal(session)
-    result = await update_proposal_status(session, proposal.id, ProposalStatus.APPROVED)
-    assert result is not None
-    assert result.file.state == FileState.APPROVED
-
-
-@pytest.mark.asyncio
-async def test_update_proposal_status_reject_sets_file_state(session: AsyncSession) -> None:
-    """Rejecting a proposal transitions FileRecord.state to REJECTED (APR-02)."""
+async def test_update_proposal_status_reject(session: AsyncSession) -> None:
+    """Rejecting a proposal writes proposals.status = REJECTED (no FileRecord.state cascade)."""
     proposal = await _create_proposal(session)
     result = await update_proposal_status(session, proposal.id, ProposalStatus.REJECTED)
     assert result is not None
-    assert result.file.state == FileState.REJECTED
+    assert result.status == ProposalStatus.REJECTED
 
 
 @pytest.mark.asyncio
@@ -298,22 +289,18 @@ async def test_bulk_update_status(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bulk_update_status_sets_file_state(session: AsyncSession) -> None:
-    """Bulk approve transitions FileRecord.state to APPROVED for all affected files."""
+async def test_bulk_update_status_approve(session: AsyncSession) -> None:
+    """Bulk approve writes proposals.status = APPROVED for all ids (no FileRecord.state cascade)."""
     p1 = await _create_proposal(session, original_filename="bulk1.mp3")
     p2 = await _create_proposal(session, original_filename="bulk2.mp3")
 
-    await bulk_update_status(session, [p1.id, p2.id], ProposalStatus.APPROVED)
+    count = await bulk_update_status(session, [p1.id, p2.id], ProposalStatus.APPROVED)
+    assert count == 2
 
-    # Refresh file records and check state
-    from sqlalchemy import select
-
-    stmt = select(FileRecord).where(FileRecord.id.in_([p1.file_id, p2.file_id]))
-    result = await session.execute(stmt)
-    files = list(result.scalars().all())
-    assert len(files) == 2
-    for f in files:
-        assert f.state == FileState.APPROVED
+    for pid in (p1.id, p2.id):
+        updated = await session.get(RenameProposal, pid)
+        assert updated is not None
+        assert updated.status == ProposalStatus.APPROVED
 
 
 @pytest.mark.asyncio
