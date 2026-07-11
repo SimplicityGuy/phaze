@@ -275,7 +275,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
-| 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 4/8 | In Progress|  |
+| 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 6/8 | In Progress|  |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
@@ -576,8 +576,8 @@ Plans:
 
 **Wave 4** *(depends on 87-04 / 87-02)*
 
-- [ ] 87-05-PLAN.md — Status/failure filter bar (URL-carried) + retire raw-enum "State" + grep guard (UI-01, UI-02) [wave 4]
-- [ ] 87-06-PLAN.md — Force-skip writer + single-row eligibility trace + right-pane matrix/dialog (UI-03, UI-04; behaviors 6/9/10) [wave 4]
+- [x] 87-05-PLAN.md — Status/failure filter bar (URL-carried) + retire raw-enum "State" + grep guard (UI-01, UI-02) [wave 4]
+- [x] 87-06-PLAN.md — Force-skip writer + single-row eligibility trace + right-pane matrix/dialog (UI-03, UI-04; behaviors 6/9/10) [wave 4]
 
 **Wave 5** *(depends on 87-04/05/06)*
 
