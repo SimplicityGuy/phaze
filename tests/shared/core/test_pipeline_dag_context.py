@@ -160,6 +160,7 @@ def _make_file_with_metadata() -> tuple[FileRecord, FileMetadata]:
     """A discovered FileRecord plus a FileMetadata row (drives metadata.done == 1)."""
     uid = uuid.uuid4()
     file_rec = FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",
@@ -368,6 +369,7 @@ def _window_file(i: int, state: FileState) -> FileRecord:
     """A FileRecord seed in the given state (unique hash/path per ``i``)."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=f"w{i:063d}"[:64],
         original_path=f"/music/win{i}.mp3",

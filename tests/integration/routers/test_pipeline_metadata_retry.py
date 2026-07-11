@@ -46,6 +46,7 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
     """Create a FileRecord with a unique id/path (mirrors the shared pipeline test helper)."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",

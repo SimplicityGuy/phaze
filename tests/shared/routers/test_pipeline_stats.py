@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 def _music_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",

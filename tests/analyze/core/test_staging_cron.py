@@ -143,6 +143,7 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3",
     if created_at is not None:
         kwargs["created_at"] = created_at
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.{file_type}",

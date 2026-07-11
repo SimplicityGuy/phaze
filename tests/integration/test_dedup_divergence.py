@@ -74,7 +74,7 @@ if not _TARGET_DB.endswith("_test"):
         allow_module_level=True,
     )
 
-_LEGACY_AGENT_ID = "legacy-application-server"
+_LEGACY_AGENT_ID = "test-fileserver"
 
 HASH_1 = "1" * 64
 HASH_2 = "2" * 64
@@ -111,6 +111,7 @@ async def _file(session: AsyncSession, *, sha256: str, state: str) -> FileRecord
     """Seed a bare FileRecord at ``state`` on ``sha256``; return the ORM object (id is set)."""
     fid = uuid.uuid4()
     rec = FileRecord(
+        agent_id="test-fileserver",
         id=fid,
         sha256_hash=sha256,
         original_path=f"/media/{fid}.mp3",

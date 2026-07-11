@@ -26,7 +26,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.tasks.scan_reaper import reap_stalled_scans
 
@@ -65,7 +64,7 @@ async def _seed(
     session.add(
         ScanBatch(
             id=batch_id,
-            agent_id=LEGACY_AGENT_ID,
+            agent_id="test-fileserver",
             scan_path=scan_path,
             status=status.value,
             total_files=0,

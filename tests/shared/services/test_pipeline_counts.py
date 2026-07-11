@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 def _file(i: int) -> FileRecord:
     """Build a minimal FileRecord seed (CloudJob.file_id is a unique FK to files.id)."""
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=f"c{i:063d}"[:64],
         original_path=f"/music/cloud{i}.mp3",

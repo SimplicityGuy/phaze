@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 async def test_get_files_by_state(session: AsyncSession):
     """get_files_by_state returns only files in the requested state."""
     f1 = FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash="a" * 64,
         original_path="/music/a.mp3",
@@ -68,6 +69,7 @@ async def test_get_files_by_state(session: AsyncSession):
         state=FileState.DISCOVERED,
     )
     f2 = FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash="b" * 64,
         original_path="/music/b.mp3",
@@ -92,6 +94,7 @@ async def test_get_files_by_state(session: AsyncSession):
 def _failed_file(i: int, state: FileState = FileState.ANALYSIS_FAILED) -> FileRecord:
     """Build a FileRecord seed in the given state (default ANALYSIS_FAILED)."""
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=f"f{i:063d}"[:64],
         original_path=f"/music/failed{i}.mp3",
@@ -762,6 +765,7 @@ def _make_pipeline_file(*, file_type: str = "mp3", state: str = FileState.DISCOV
     """Build a fully-populated FileRecord row for the pending-set helper tests."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.{file_type}",
@@ -1298,6 +1302,7 @@ async def test_get_agent_reconciliations_degrades_when_rollback_also_fails() -> 
 def _file(i: int, state: FileState) -> FileRecord:
     """Build a FileRecord seed in the given state (unique hash/path per ``i``)."""
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=f"d{i:063d}"[:64],
         original_path=f"/music/dur{i}.mp3",

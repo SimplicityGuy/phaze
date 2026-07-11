@@ -33,6 +33,7 @@ async def create_searchable_file(
     """Create FileRecord + FileMetadata + AnalysisResult for search testing."""
     file_id = uuid.uuid4()
     file_record = FileRecord(
+        agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
         original_path=f"/music/{uuid.uuid4().hex}/{original_filename}",

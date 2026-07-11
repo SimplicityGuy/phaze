@@ -72,7 +72,7 @@ if not _TARGET_DB.endswith("_test"):
         allow_module_level=True,
     )
 
-_LEGACY_AGENT_ID = "legacy-application-server"
+_LEGACY_AGENT_ID = "test-fileserver"
 
 _ENRICH_STAGES = ("metadata", "fingerprint", "analyze")
 _FOUR_BUCKETS = (Status.NOT_STARTED.value, Status.IN_FLIGHT.value, Status.DONE.value, Status.FAILED.value)
@@ -112,6 +112,7 @@ async def _file(session: AsyncSession, *, file_type: str = "mp3") -> FileRecord:
     """Seed a bare music/video FileRecord and return the ORM object (id is set)."""
     fid = uuid.uuid4()
     rec = FileRecord(
+        agent_id="test-fileserver",
         id=fid,
         sha256_hash=uuid.uuid4().hex,
         original_path=f"/media/{fid}.{file_type}",

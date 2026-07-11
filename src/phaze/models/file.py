@@ -89,7 +89,6 @@ class FileRecord(TimestampMixin, Base):
         String(64),
         ForeignKey("agents.id", ondelete="RESTRICT"),
         nullable=False,
-        default="legacy-application-server",
     )
 
     file_metadata: Mapped[FileMetadata | None] = relationship("FileMetadata", foreign_keys="FileMetadata.file_id", uselist=False, lazy="noload")

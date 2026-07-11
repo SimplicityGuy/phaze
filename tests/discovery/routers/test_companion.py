@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 async def test_associate_creates_links(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/associate should create links between companion and media files in same directory."""
     media = FileRecord(
+        agent_id="test-fileserver",
         sha256_hash="a" * 64,
         original_path="/music/album/track1.mp3",
         original_filename="track1.mp3",
@@ -26,6 +27,7 @@ async def test_associate_creates_links(client: AsyncClient, session: AsyncSessio
         file_size=5000000,
     )
     companion = FileRecord(
+        agent_id="test-fileserver",
         sha256_hash="b" * 64,
         original_path="/music/album/cover.jpg",
         original_filename="cover.jpg",
@@ -58,6 +60,7 @@ async def test_associate_no_unlinked(client: AsyncClient) -> None:
 async def test_associate_idempotent(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/associate called twice should return 0 on the second call."""
     media = FileRecord(
+        agent_id="test-fileserver",
         sha256_hash="c" * 64,
         original_path="/music/album2/song.mp3",
         original_filename="song.mp3",
@@ -66,6 +69,7 @@ async def test_associate_idempotent(client: AsyncClient, session: AsyncSession) 
         file_size=4000000,
     )
     companion = FileRecord(
+        agent_id="test-fileserver",
         sha256_hash="d" * 64,
         original_path="/music/album2/artwork.jpg",
         original_filename="artwork.jpg",
@@ -92,6 +96,7 @@ async def test_duplicates_returns_groups(client: AsyncClient, session: AsyncSess
     """GET /api/v1/duplicates should return duplicate groups when files share sha256 hashes."""
     dup_hash = "d" * 64
     file1 = FileRecord(
+        agent_id="test-fileserver",
         sha256_hash=dup_hash,
         original_path="/music/dir1/track.mp3",
         original_filename="track.mp3",
@@ -100,6 +105,7 @@ async def test_duplicates_returns_groups(client: AsyncClient, session: AsyncSess
         file_size=3000000,
     )
     file2 = FileRecord(
+        agent_id="test-fileserver",
         sha256_hash=dup_hash,
         original_path="/music/dir2/track_copy.mp3",
         original_filename="track_copy.mp3",
@@ -141,6 +147,7 @@ async def test_duplicates_pagination(client: AsyncClient, session: AsyncSession)
     session.add_all(
         [
             FileRecord(
+                agent_id="test-fileserver",
                 sha256_hash=hash_a,
                 original_path="/music/g1/file1.mp3",
                 original_filename="file1.mp3",
@@ -149,6 +156,7 @@ async def test_duplicates_pagination(client: AsyncClient, session: AsyncSession)
                 file_size=1000000,
             ),
             FileRecord(
+                agent_id="test-fileserver",
                 sha256_hash=hash_a,
                 original_path="/music/g1/file1_dup.mp3",
                 original_filename="file1_dup.mp3",
@@ -163,6 +171,7 @@ async def test_duplicates_pagination(client: AsyncClient, session: AsyncSession)
     session.add_all(
         [
             FileRecord(
+                agent_id="test-fileserver",
                 sha256_hash=hash_b,
                 original_path="/music/g2/file2.mp3",
                 original_filename="file2.mp3",
@@ -171,6 +180,7 @@ async def test_duplicates_pagination(client: AsyncClient, session: AsyncSession)
                 file_size=2000000,
             ),
             FileRecord(
+                agent_id="test-fileserver",
                 sha256_hash=hash_b,
                 original_path="/music/g2/file2_dup.mp3",
                 original_filename="file2_dup.mp3",

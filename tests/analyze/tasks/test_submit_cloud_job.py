@@ -85,6 +85,7 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD) -> FileRecord:
     """Build a fully-populated FileRecord (the cloud_job FK target)."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.flac",

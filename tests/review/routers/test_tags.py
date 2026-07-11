@@ -42,6 +42,7 @@ async def _create_executed_file(
     """
     file_id = uuid.uuid4()
     file_record = FileRecord(
+        agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
         original_path=f"/dest/{uuid.uuid4().hex}/{filename}",
