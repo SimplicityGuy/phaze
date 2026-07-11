@@ -89,7 +89,9 @@ async def test_executed_joint_update(session: AsyncSession, seed_test_agent: tup
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
     f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert p.status == ProposalStatus.EXECUTED.value
-    assert f.state == FileState.MOVED.value
+    # SIDECAR-03: the proposal->file.state cascade is gone. Positive guard -- state stays at the
+    # seeded default (APPROVED), proving the cascade write is removed, not merely absent.
+    assert f.state == FileState.APPROVED.value
     assert f.current_path == "/new/proposed.mp3"
 
 
@@ -111,7 +113,8 @@ async def test_failed_joint_update(session: AsyncSession, seed_test_agent: tuple
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
     f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert p.status == ProposalStatus.FAILED.value
-    assert f.state == FileState.UNCHANGED.value
+    # SIDECAR-03: file.state stays at the seeded default (APPROVED); no cascade write.
+    assert f.state == FileState.APPROVED.value
 
 
 async def test_same_state_idempotent_no_op(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
@@ -129,6 +132,8 @@ async def test_same_state_idempotent_no_op(session: AsyncSession, seed_test_agen
         )
     assert r1.status_code == 200
     assert r2.status_code == 200
+    # SIDECAR-03: pure replay (no file_state in body) echoes file_state=None; no file.state read.
+    assert r2.json()["file_state"] is None
     # Row stays EXECUTED
     await session.commit()
     session.expire_all()

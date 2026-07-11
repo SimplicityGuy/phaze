@@ -1,11 +1,14 @@
-"""PATCH /api/internal/agent/proposals/{proposal_id}/state -- joint Proposal+FileRecord state transition (Phase 26 D-28).
+"""PATCH /api/internal/agent/proposals/{proposal_id}/state -- proposal-status transition (Phase 26 D-28; Phase 86 SIDECAR-03 cutover).
 
 Allowed transitions (single source of truth):
   ProposalStatus.APPROVED -> {EXECUTED, FAILED}
 
-Side effects on the FileRecord (when body.file_state is provided):
-  EXECUTED + file_state="moved"     -> FileRecord.state=MOVED, current_path=body.current_path
-  FAILED + file_state="unchanged"   -> FileRecord.state=UNCHANGED, current_path preserved
+Side effect on the FileRecord (when body.file_state is provided):
+  EXECUTED + file_state="moved"     -> FileRecord.current_path=body.current_path (the real move destination)
+The proposal->FileRecord.state cascade was removed in Phase 86 (SIDECAR-03): the handler no
+longer mirrors the proposal outcome into FileRecord.state. The response `file_state` is now a
+byte-for-byte echo of the request's `body.file_state` (the only caller discards it), so the wire
+contract is unchanged.
 
 Same-state PATCH (e.g., EXECUTED -> EXECUTED): 200 idempotent no-op (per D-28).
 Other transitions: 409 with detail `"illegal transition {cur} -> {new}"`.
@@ -28,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_proposals import ProposalStatePatch, ProposalStateResponse
@@ -40,13 +43,6 @@ router = APIRouter(prefix="/api/internal/agent/proposals", tags=["agent-internal
 # D-28 allowed transitions. Single source of truth -- exhaustive over from-states.
 _PROPOSAL_TRANSITIONS: dict[ProposalStatus, frozenset[ProposalStatus]] = {
     ProposalStatus.APPROVED: frozenset({ProposalStatus.EXECUTED, ProposalStatus.FAILED}),
-}
-
-# Maps proposal_state -> expected file_state (informational; the caller MUST supply
-# file_state in the body, and the validator on the schema enforces moved+path coupling).
-_FILE_FOLLOW: dict[ProposalStatus, FileState] = {
-    ProposalStatus.EXECUTED: FileState.MOVED,
-    ProposalStatus.FAILED: FileState.UNCHANGED,
 }
 
 
@@ -82,15 +78,16 @@ async def patch_proposal_state(
     # state without DB writes -- the SAQ retry's previous successful PATCH already
     # persisted the canonical state, so we just report it back.
     if cur == new:
-        file_state_str: str | None = None
+        # Pure replay: no outcome was requested, so echo file_state=None (SIDECAR-03 cutover --
+        # the handler no longer reads the FileRecord row's state). current_path is a real path, not a
+        # cascade, so it MAY still be echoed from the row.
         current_path_str: str | None = None
         if file_record is not None:
-            file_state_str = file_record.state
             current_path_str = file_record.current_path
         return ProposalStateResponse(
             proposal_id=proposal_id,
             proposal_state=cur.value,
-            file_state=file_state_str,
+            file_state=None,
             current_path=current_path_str,
         )
 
@@ -111,9 +108,10 @@ async def patch_proposal_state(
     response_current_path: str | None = None
 
     if body.file_state is not None and file_record is not None:
-        new_file_state = FileState(body.file_state)
-        file_record.state = new_file_state.value
-        response_file_state = new_file_state.value
+        # SIDECAR-03 cutover: the proposal outcome is NO LONGER mirrored into the FileRecord row's state.
+        # The response echoes the request's file_state (byte-identical wire contract, D-02);
+        # current_path is the real move destination and IS still persisted (Pitfall 3).
+        response_file_state = body.file_state
         if body.current_path is not None:
             file_record.current_path = body.current_path
             response_current_path = body.current_path
