@@ -26,6 +26,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.enqueue_router import LANES
 from phaze.services.stage_status import awaiting_candidate_clause, dedup_resolved_clause, eligible_clause, stage_status_case
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -359,6 +360,108 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
         except Exception:
             logger.warning("stage_bucket_rollback_failed", stage=stage.value, exc_info=True)
     return out
+
+
+async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stage) -> dict[str, int]:
+    """Per-agent five-way ``{not_started, in_flight, done, skipped, failed}`` count for ``stage``, degrade-safe.
+
+    A one-conjunct clone of :func:`_safe_bucket_counts` (DRILL-02 / D-04): the SAME GroupingError-safe
+    inner-subquery-then-``GROUP BY``-scalar-label shape, with the SINGLE addition of
+    ``.where(FileRecord.agent_id == agent_id)`` on the inner subquery so the aggregate counts ONLY the
+    music/video files THIS agent owns. Reuses the LOCKED :func:`phaze.services.stage_status.stage_status_case`
+    ``CASE`` ladder verbatim (D-00a / DERIV-04) -- NEVER a fresh ``CASE`` -- so the per-agent buckets can
+    never drift from the single derivation (and, transitively, the Python resolver).
+
+    Because every one of the agent's music/video files resolves to exactly one of the five
+    ``stage_status_case`` buckets (precedence ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``), the
+    five counts SUM to the agent's music/video total on a HEALTHY query -- a healthy-path property only,
+    NEVER a runtime assertion in the poll path (Pitfall 3). On ANY query error this mirrors the
+    :func:`_safe_bucket_counts` degrade discipline (INFLIGHT-02 / D-00b): it logs a warning, guarded-
+    rolls-back the aborted transaction (so a Postgres "current transaction is aborted" state cannot
+    poison the later per-stage COUNTs on the same 5s tick), and returns the all-zero dict -- it NEVER
+    raises into the hot ``/admin/agents/{id}/_activity`` poll. On that fail-safe degrade the five buckets
+    intentionally do NOT sum to the total.
+    """
+    out: dict[str, int] = {s.value: 0 for s in Status}
+    # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the scalar label in
+    # the outer query -- grouping directly by ``stage_status_case(stage)`` fails on Postgres (the CASE
+    # ladder embeds correlated ``exists(... == FileRecord.id)`` subqueries; a top-level GROUP BY re-projects
+    # the ungrouped ``files.id`` -> "subquery uses ungrouped column" GroupingError). The ONLY delta from
+    # :func:`_safe_bucket_counts` is the ``FileRecord.agent_id == agent_id`` conjunct (D-04).
+    status_subq = (
+        select(stage_status_case(stage).label("status"))
+        .where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+        .where(FileRecord.agent_id == agent_id)
+        .subquery()
+    )
+    stmt = select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+    try:
+        for status_label, n in (await session.execute(stmt)).all():
+            if status_label in out:
+                out[status_label] = int(n)
+    except Exception:
+        logger.warning("agent_stage_bucket_degraded", stage=stage.value, agent_id=agent_id, exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("agent_stage_bucket_rollback_failed", stage=stage.value, agent_id=agent_id, exc_info=True)
+    return out
+
+
+# Recent-scan-batches cap for the agent-activity pane (D-05 / D-00b). A small fixed LIMIT keeps the
+# per-poll read bounded -- the agent pane shows the most recent handful, scroll for depth is unnecessary.
+_AGENT_RECENT_SCANS_N = 10
+
+
+async def get_agent_lane_depths(app_state: Any, agent_id: str) -> dict[str, int]:
+    """Return the agent's per-lane in-flight depth ``{analyze, fingerprint, meta, io}``, degrade-safe (D-05 / D-00b).
+
+    Sums ``count("queued") + count("active")`` across each of the agent's four
+    :data:`phaze.services.enqueue_router.LANES` queues (the same ``all_lane_queues`` seam
+    :func:`get_queue_activity` uses), keyed by lane name so the agent pane can render
+    ``analyze N · fingerprint N · meta N · io N``. The legacy base queue is deliberately EXCLUDED
+    here -- this pane shows the live per-lane split, not the migration-drain total.
+
+    Failure isolation mirrors :func:`get_queue_activity`: a missing ``app.state.task_router`` (the test
+    client skips the lifespan, so the queue handles are absent) or a broker hiccup degrades the whole
+    dict to all-zero; a single dead lane degrades THAT lane to 0 without zeroing the others. It NEVER
+    raises into the 5s ``/admin/agents/{id}/_activity`` poll (D-00b).
+    """
+    out: dict[str, int] = dict.fromkeys(LANES, 0)
+    try:
+        queues = app_state.task_router.all_lane_queues(agent_id)
+    except Exception:
+        # Broad by design: a missing app.state attr (test lifespan-skip) or any broker hiccup must
+        # degrade every lane to 0, never 500 the 5s agent-pane poll.
+        logger.warning("agent_lane_depths_degraded", agent_id=agent_id, exc_info=True)
+        return out
+    for lane, q in zip(LANES, queues, strict=False):
+        try:
+            out[lane] = await q.count("queued") + await q.count("active")
+        except Exception:
+            logger.warning("agent_lane_depth_degraded", agent_id=agent_id, lane=lane, exc_info=True)
+            out[lane] = 0
+    return out
+
+
+async def get_agent_recent_scans(session: AsyncSession, agent_id: str, *, limit: int = _AGENT_RECENT_SCANS_N) -> list[ScanBatch]:
+    """Return the agent's most-recent ``ScanBatch`` rows (newest-first, bounded), degrade-safe (D-05 / D-00b).
+
+    One indexed read over ``ix_scan_batches_agent_id`` (``models/scan_batch.py``): the agent's scan
+    batches ordered ``created_at DESC`` with a fixed small ``LIMIT`` so the per-poll cost stays bounded
+    (T-88-08). The read runs inside a SAVEPOINT (``begin_nested``) so ANY DB error rolls back the nested
+    scope ALONE -- recovering the aborted transaction WITHOUT expiring the caller's already-loaded
+    ``agent`` ORM object (a plain ``session.rollback()`` would expire it and 500 the render on the next
+    lazy load) -- and the function returns ``[]``. It NEVER raises into the 5s agent-pane poll.
+    """
+    try:
+        async with session.begin_nested():
+            stmt = select(ScanBatch).where(ScanBatch.agent_id == agent_id).order_by(ScanBatch.created_at.desc()).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+        return list(rows)
+    except Exception:
+        logger.warning("agent_recent_scans_degraded", agent_id=agent_id, exc_info=True)
+        return []
 
 
 async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:

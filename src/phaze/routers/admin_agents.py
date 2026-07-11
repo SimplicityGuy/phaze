@@ -34,9 +34,17 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.database import get_session
+from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.services.agent_liveness import classify, classify_compute_lanes, sort_key
+from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
+
+
+# The six pipeline stages surfaced in the agent-activity COUNT matrix (DRILL-02 / D-04). TRACKLIST is
+# OMITTED (the 7-stage -> 6-pill remap, RESEARCH Pitfall 3); REVIEW renders under "Appr" and APPLY under
+# "Exec" in the template. Ordered for the matrix's left-to-right column order.
+_ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
 
 
 logger = structlog.get_logger(__name__)
@@ -166,5 +174,61 @@ async def table_partial(
             "compute_lane_state": compute_lane_state,
             "compute_lane_count": compute_lane_count,
             "selected_agent": _resolve_selected_agent(agent, agents),
+        },
+    )
+
+
+@router.get("/{agent_id}/_activity", response_class=HTMLResponse)
+async def agent_activity(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_id: str,
+) -> HTMLResponse:
+    """Render the agent-activity body fragment swapped into the shared ``#detail-pane`` shell (DRILL-02).
+
+    The wave-2 body for plan 88-01's non-modal detail pane: the agent-row trigger's
+    ``hx-get="/admin/agents/{id}/_activity"`` innerHTML-swaps THIS fragment into ``#detail-pane``, and
+    the fragment carries its OWN bounded ``hx-trigger="every 5s"`` self-refresh (D-03) — so the endpoint
+    returns the body directly, NOT the shell (the 88-01 shell is a static host with no body slot).
+
+    For a found agent the fragment stacks (D-05): liveness header (``classify`` transient ``_status`` +
+    kind badge + last-seen) → a per-agent 6-stage COUNT matrix (one indexed ``GROUP BY stage_status_case``
+    per stage scoped to ``agent_id`` via :func:`_agent_stage_buckets`, D-04/D-00a) → per-lane queue depths
+    → recent scan batches. Every read is bounded + degrade-safe (D-00b): an unknown ``agent_id`` renders
+    a friendly empty fragment with a 404 status (record.py idiom, T-88-07) — NEVER an ``HTTPException`` /
+    JSON / 500 — and an agent owning 0 files renders the "owns no files yet" empty state.
+
+    Read-only: ``get_session`` never commits and this handler issues no writes (T-88-10 — it reads ONLY
+    the derived ``stage_status_case``, never ``FileRecord.state``).
+    """
+    now = datetime.now(UTC)
+    agent = await session.get(Agent, agent_id)
+    if agent is None:
+        # Friendly empty fragment (T-88-07 IDOR guard): a raw/unknown/hostile id renders a benign body,
+        # never a raw-param-driven 500. 404 status is advisory — the swapped fragment still renders.
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/partials/_agent_activity.html",
+            context={"request": request, "agent": None, "now": now},
+            status_code=404,
+        )
+
+    agent._status = classify(agent, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
+    # D-04: a per-agent 6-stage matrix of COUNTS — one indexed GROUP BY per stage, keyed by Stage VALUE
+    # ('metadata'..'apply') so the template's Appr=review / Exec=apply remap resolves (RESEARCH Pitfall 3).
+    buckets = {stage.value: await _agent_stage_buckets(session, agent_id, stage) for stage in _ACTIVITY_STAGES}
+    queue_depths = await get_agent_lane_depths(request.app.state, agent_id)
+    recent_scans = await get_agent_recent_scans(session, agent_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/partials/_agent_activity.html",
+        context={
+            "request": request,
+            "agent": agent,
+            "now": now,
+            "buckets": buckets,
+            "queue_depths": queue_depths,
+            "recent_scans": recent_scans,
+            "refreshed_at_iso": now.isoformat(),
         },
     )

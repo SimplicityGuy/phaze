@@ -1,0 +1,155 @@
+{# Phase 88 (88-03, DRILL-02 / D-04 / D-05 / D-03): the agent-activity BODY fragment.
+
+   The wave-2 body for plan 88-01's shared non-modal #detail-pane shell. The agent-row trigger
+   (agents_table.html) hx-get="/admin/agents/{id}/_activity" innerHTML-swaps THIS fragment into
+   #detail-pane; the shell's #detail-pane hx-on::after-swap re-inits Alpine + fires onLoaded()
+   (open + heading-focus). This fragment therefore renders the body ONLY (never the shell chrome).
+
+   D-05 stacked section order (everything visible on open, scroll for depth):
+     (1) liveness header  — kind badge + status pill + last-seen
+     (2) 6-stage COUNT matrix — per-agent GROUP BY stage_status_case counts (D-04), one NUMERAL cell
+         per (stage × bucket) with the _stage_pill.html color token + WORD + GLYPH + aria-label
+     (3) per-lane queue depths — analyze · fingerprint · meta · io
+     (4) recent scan batches — newest-first, bounded
+
+   D-03 own-tick: the root carries its OWN bounded hx-trigger="every 5s" re-fetching this endpoint
+   into #detail-pane (removed with the pane on dismiss — no orphan loop). "Last refreshed Ns ago"
+   reuses the agents_table.html:82-86 Alpine setInterval countdown.
+
+   THE 7-STAGE -> 6-PILL REMAP LANDMINE (RESEARCH Pitfall 3): tracklist is OMITTED and the last two
+   columns are RE-LABELLED — Appr reads buckets.review and Exec reads buckets.apply ON PURPOSE.
+
+   T-88-09 / T-88-10: agent.name / agent.id / agent.kind stay Jinja-autoescaped (never |safe); the
+   body reads ONLY the derived stage_status_case buckets — NEVER FileRecord.state. #}
+{% if agent is none %}
+{# T-88-07: unknown/hostile agent_id -> friendly empty fragment (never a 500, never a raw-param query). #}
+<div class="rounded-xl border border-gray-200 p-4 dark:border-phaze-border">
+    <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">Agent not found</p>
+    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">This agent is not registered (it may have been revoked or never existed).</p>
+</div>
+{% else %}
+{# Bucket token table (single-sourced from _stage_pill.html:19-28): (key, glyph, word, classes). #}
+{% set _bucket_tokens = [
+    ('done', '✓', 'done', 'bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400'),
+    ('in_flight', '●', 'in flight', 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400'),
+    ('not_started', '—', 'not started', 'bg-gray-100 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400'),
+    ('failed', '✗', 'failed', 'bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400'),
+    ('skipped', '⊘', 'skipped', 'bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300 ring-1 ring-dashed ring-violet-400/60'),
+] %}
+{# The 6-pill stage order + Appr=review / Exec=apply remap (from _stage_matrix.html:29-36). #}
+{% set _matrix_stages = [
+    ('Meta', buckets.metadata),
+    ('FP', buckets.fingerprint),
+    ('Analyze', buckets.analyze),
+    ('Prop', buckets.propose),
+    ('Appr', buckets.review),
+    ('Exec', buckets.apply),
+] %}
+{# Music/video total = sum of the metadata buckets (every owned music/video file resolves to exactly
+   one bucket). 0 -> the agent owns no files yet. #}
+{% set _mv_total = (buckets.metadata.values() | sum) if buckets and buckets.metadata else 0 %}
+<div id="agent-activity-body"
+     hx-get="/admin/agents/{{ agent.id }}/_activity"
+     hx-trigger="every 5s"
+     hx-target="#detail-pane"
+     hx-swap="innerHTML"
+     class="space-y-5">
+
+    {# (1) Liveness header (D-05). #}
+    <div>
+        <div class="flex flex-wrap items-center gap-2">
+            <span class="text-sm font-semibold text-gray-900 dark:text-gray-100" title="{{ agent.id }}">{{ agent.name }}</span>
+            {% include "admin/partials/_kind_badge.html" %}
+            {% include "admin/partials/_status_pill.html" %}
+        </div>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Last seen {{ humanize_relative_time(agent.last_seen_at, now=now) }}
+            <span class="font-mono">· {{ agent.id }}</span>
+        </p>
+    </div>
+
+    {# (2) Per-agent 6-stage COUNT matrix (D-04). Each (stage × bucket) cell is a NUMERAL with the
+       _stage_pill.html color token + WORD + GLYPH + aria-label (WCAG 1.4.1 — colour is never the sole
+       channel). NOT the pill-include as-is (which renders one bucket string). #}
+    <div>
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Owned files by stage</h3>
+        {% if _mv_total == 0 %}
+        <p class="text-sm text-gray-500 dark:text-gray-400">This agent owns no files yet.</p>
+        {% else %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left">
+                <caption class="sr-only">Per-stage file-status counts for {{ agent.name }}</caption>
+                <thead class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase border-b border-gray-200 dark:border-phaze-border">
+                    <tr>
+                        <th scope="col" class="px-2 py-2">Stage</th>
+                        {% for _key, _glyph, _word, _cls in _bucket_tokens %}
+                        <th scope="col" class="px-2 py-2 text-center"><span aria-hidden="true">{{ _glyph }}</span> {{ _word }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
+                    {% for _stage_label, _stage_buckets in _matrix_stages %}
+                    <tr>
+                        <th scope="row" class="px-2 py-2 font-medium text-gray-700 dark:text-gray-300">{{ _stage_label }}</th>
+                        {% for _key, _glyph, _word, _cls in _bucket_tokens %}
+                        {% set _n = (_stage_buckets[_key] if _stage_buckets else 0) or 0 %}
+                        <td class="px-2 py-2 text-center">
+                            <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded-full {{ _cls }}"
+                                  aria-label="{{ _stage_label }} {{ _word }}: {{ _n }}"><span aria-hidden="true">{{ _glyph }}</span> {{ _n }}</span>
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {# Single shared legend (D-01 "one legend per surface") reused from _stage_matrix.html:45-51. #}
+        <p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400" aria-hidden="true">
+            <span>✓ done</span>
+            <span>● in-flight</span>
+            <span>— not-started</span>
+            <span>✗ failed</span>
+            <span>⊘ skipped</span>
+        </p>
+        {% endif %}
+    </div>
+
+    {# (3) Per-lane queue depths (D-05). analyze · fingerprint · meta · io — degrade-safe to 0. #}
+    <div>
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Queue depth by lane</h3>
+        <p class="text-sm text-gray-700 dark:text-gray-300">
+            {% for _lane, _depth in (queue_depths | default({})).items() %}
+            <span class="mr-1">{{ _lane }} <span class="font-semibold">{{ _depth }}</span></span>{% if not loop.last %}<span class="text-gray-400 dark:text-gray-500 mr-1">·</span>{% endif %}
+            {% else %}
+            <span class="text-gray-500 dark:text-gray-400">Lane depths unavailable — retrying on the next tick.</span>
+            {% endfor %}
+        </p>
+    </div>
+
+    {# (4) Recent scan batches (D-05), newest-first + bounded. #}
+    <div>
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Recent scan batches</h3>
+        {% if recent_scans %}
+        <ul class="space-y-1 text-sm">
+            {% for _scan in recent_scans %}
+            <li class="flex flex-wrap items-baseline gap-x-2">
+                <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ _scan.status }}</span>
+                <span class="text-gray-700 dark:text-gray-300 truncate">{{ _scan.scan_path }}</span>
+                <span class="text-xs text-gray-400 dark:text-gray-500">{{ humanize_relative_time(_scan.created_at, now=now) }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-gray-500 dark:text-gray-400">No recent scan batches.</p>
+        {% endif %}
+    </div>
+
+    {# D-03 own-tick "Last refreshed Ns ago" countdown (agents_table.html:82-86 idiom). The 5s poll is
+       carried by the #agent-activity-body root above; this only advances the visible countdown. #}
+    <p class="text-xs text-gray-500 dark:text-gray-400"
+       x-data="{ refreshedAt: new Date('{{ refreshed_at_iso }}'), now: new Date(), get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); } }"
+       x-init="setInterval(() => now = new Date(), 1000)">
+        Last refreshed <span x-text="secondsAgo + 's ago'"></span>
+    </p>
+</div>
+{% endif %}
