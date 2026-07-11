@@ -275,7 +275,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
-| 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 6/8 | In Progress|  |
+| 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 7/8 | In Progress|  |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
@@ -581,7 +581,7 @@ Plans:
 
 **Wave 5** *(depends on 87-04/05/06)*
 
-- [ ] 87-07-PLAN.md — Per-file + bulk retry affordances (analyze manual-only) (UI-02; behavior 8) [wave 5]
+- [x] 87-07-PLAN.md — Per-file + bulk retry affordances (analyze manual-only) (UI-02; behavior 8) [wave 5]
 
 **Wave 6** *(depends on 87-07 / 87-02)*
 
