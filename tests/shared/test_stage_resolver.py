@@ -20,7 +20,7 @@ import textwrap
 
 import pytest
 
-from phaze.enums.stage import Stage, Status, resolve_status
+from phaze.enums.stage import Stage, Status, domain_completed, eligible, resolve_status
 
 
 _TS = "2026-07-08T00:00:00+00:00"  # any non-None sentinel timestamp scalar
@@ -120,6 +120,48 @@ def test_downstream_stage_four_way(stage: Stage) -> None:
 def test_every_stage_reaches_in_flight(stage: Stage) -> None:
     # Every stage's twin applies the ladder with inflight first.
     assert resolve_status(stage, {"inflight": True}) is Status.IN_FLIGHT
+
+
+# --------------------------------------------------------------------------------------
+# D-08 — force-skip marker: SKIPPED bucket + precedence (in_flight ≻ done ≻ skipped ≻ failed)
+# --------------------------------------------------------------------------------------
+def test_skipped_wins_over_failed() -> None:
+    # skipped ≻ failed: a terminally-failed analyze marked skipped reads SKIPPED (the writer is
+    # additive and never clears failed_at, so the resolver ordering — not the writer — decides).
+    got = resolve_status(Stage.ANALYZE, {"inflight": False, "completed_at": None, "failed_at": _TS, "skipped": True})
+    assert got is Status.SKIPPED
+
+
+def test_done_wins_over_skipped() -> None:
+    # done ≻ skipped: a completed analyze marked skipped still reads DONE.
+    assert resolve_status(Stage.ANALYZE, {"completed_at": _TS, "skipped": True}) is Status.DONE
+
+
+def test_inflight_wins_over_skipped() -> None:
+    # in_flight ≻ skipped: the SAQ ledger still wins the whole ladder.
+    assert resolve_status(Stage.ANALYZE, {"inflight": True, "skipped": True}) is Status.IN_FLIGHT
+
+
+@pytest.mark.parametrize("stage", [Stage.METADATA, Stage.ANALYZE, Stage.FINGERPRINT])
+def test_skipped_bucket_each_enrich_stage(stage: Stage) -> None:
+    # Every enrich twin threads the skipped scalar (after done, before failed).
+    assert resolve_status(stage, {"skipped": True}) is Status.SKIPPED
+
+
+def test_skipped_stage_is_not_eligible() -> None:
+    # A skipped enrich stage leaves the pending set (ELIG-01 / D-08).
+    assert eligible({Stage.ANALYZE: Status.SKIPPED}, Stage.ANALYZE) is False
+
+
+def test_skipped_stage_is_domain_completed() -> None:
+    # A skipped enrich stage is domain-complete — recovery must NOT re-enqueue it (READ-03 precedent).
+    assert domain_completed({Stage.ANALYZE: Status.SKIPPED}, Stage.ANALYZE) is True
+
+
+def test_downstream_stage_ignores_skipped_scalar() -> None:
+    # resolve_status passes `skipped` to the enrich branches ONLY; a downstream stage never buckets SKIPPED.
+    assert resolve_status(Stage.PROPOSE, {"skipped": True}) is Status.NOT_STARTED
+    assert resolve_status(Stage.PROPOSE, {"row_present": True, "skipped": True}) is Status.DONE
 
 
 # --------------------------------------------------------------------------------------
