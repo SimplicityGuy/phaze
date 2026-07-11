@@ -361,6 +361,52 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     return out
 
 
+async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stage) -> dict[str, int]:
+    """Per-agent five-way ``{not_started, in_flight, done, skipped, failed}`` count for ``stage``, degrade-safe.
+
+    A one-conjunct clone of :func:`_safe_bucket_counts` (DRILL-02 / D-04): the SAME GroupingError-safe
+    inner-subquery-then-``GROUP BY``-scalar-label shape, with the SINGLE addition of
+    ``.where(FileRecord.agent_id == agent_id)`` on the inner subquery so the aggregate counts ONLY the
+    music/video files THIS agent owns. Reuses the LOCKED :func:`phaze.services.stage_status.stage_status_case`
+    ``CASE`` ladder verbatim (D-00a / DERIV-04) -- NEVER a fresh ``CASE`` -- so the per-agent buckets can
+    never drift from the single derivation (and, transitively, the Python resolver).
+
+    Because every one of the agent's music/video files resolves to exactly one of the five
+    ``stage_status_case`` buckets (precedence ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``), the
+    five counts SUM to the agent's music/video total on a HEALTHY query -- a healthy-path property only,
+    NEVER a runtime assertion in the poll path (Pitfall 3). On ANY query error this mirrors the
+    :func:`_safe_bucket_counts` degrade discipline (INFLIGHT-02 / D-00b): it logs a warning, guarded-
+    rolls-back the aborted transaction (so a Postgres "current transaction is aborted" state cannot
+    poison the later per-stage COUNTs on the same 5s tick), and returns the all-zero dict -- it NEVER
+    raises into the hot ``/admin/agents/{id}/_activity`` poll. On that fail-safe degrade the five buckets
+    intentionally do NOT sum to the total.
+    """
+    out: dict[str, int] = {s.value: 0 for s in Status}
+    # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the scalar label in
+    # the outer query -- grouping directly by ``stage_status_case(stage)`` fails on Postgres (the CASE
+    # ladder embeds correlated ``exists(... == FileRecord.id)`` subqueries; a top-level GROUP BY re-projects
+    # the ungrouped ``files.id`` -> "subquery uses ungrouped column" GroupingError). The ONLY delta from
+    # :func:`_safe_bucket_counts` is the ``FileRecord.agent_id == agent_id`` conjunct (D-04).
+    status_subq = (
+        select(stage_status_case(stage).label("status"))
+        .where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+        .where(FileRecord.agent_id == agent_id)
+        .subquery()
+    )
+    stmt = select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+    try:
+        for status_label, n in (await session.execute(stmt)).all():
+            if status_label in out:
+                out[status_label] = int(n)
+    except Exception:
+        logger.warning("agent_stage_bucket_degraded", stage=stage.value, agent_id=agent_id, exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("agent_stage_bucket_rollback_failed", stage=stage.value, agent_id=agent_id, exc_info=True)
+    return out
+
+
 async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:
     """Authoritative per-DAG-node reconcile source (D-03) -- counts each stage's OUTPUT table.
 
