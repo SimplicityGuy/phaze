@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -57,6 +57,15 @@ def _is_htmx(request: Request) -> bool:
     ("Search UI: HTMX partial detection via truthy HX-Request header check").
     """
     return request.headers.get("hx-request") == "true"
+
+
+def _resolve_selected_agent(agent: str | None, agents: list[Agent]) -> str | None:
+    """Resolve the pushed ``?agent=`` id by lookup-in-known-set (DRILL-03 / D-02, T-88-01).
+
+    Returns the id only when it names a currently-loaded agent, so an unknown/absent/hostile id
+    highlights nothing and can never reach a template as a trusted value. Kept ASCII/autoescaped.
+    """
+    return agent if agent is not None and any(a.id == agent for a in agents) else None
 
 
 async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
@@ -91,6 +100,7 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
 async def page(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    agent: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Render either the full ``admin/agents.html`` page or the partial.
 
@@ -117,6 +127,10 @@ async def page(
             "refreshed_at_iso": now.isoformat(),
             "compute_lane_state": compute_lane_state,
             "compute_lane_count": compute_lane_count,
+            # Phase 88 (88-01, DRILL-03 / D-02): seed the selected-agent highlight from ?agent= so a
+            # reload re-opens the row selection; the self-poll re-applies it thereafter. Lookup-in-
+            # known-set (T-88-01) — unknown/absent id highlights nothing, never errors.
+            "selected_agent": _resolve_selected_agent(agent, agents),
             "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
         },
     )
@@ -126,12 +140,18 @@ async def page(
 async def table_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    agent: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Return the agents_table partial UNCONDITIONALLY.
 
     This is the HTMX poll target. The partial re-emits its own
     ``hx-trigger="every 5s"`` attribute so the next tick fires automatically
     after the outerHTML swap (UI-SPEC §Polling LOCKED — never halts).
+
+    Phase 88 (88-01, DRILL-03 / D-02): the ``#agents-table-section`` self-poll carries the pushed
+    ``?agent=`` via ``hx-vals`` (agents_table.html), so this tick re-emits the selected-row highlight
+    (aria-current + ring) on the matching row. Resolved by lookup-in-known-set (T-88-01) — an
+    unknown/absent id highlights nothing, never a 422/500 into the poll.
     """
     agents, now = await _load_agents(session)
     compute_lane_state, compute_lane_count = await classify_compute_lanes(session)
@@ -145,5 +165,6 @@ async def table_partial(
             "refreshed_at_iso": now.isoformat(),
             "compute_lane_state": compute_lane_state,
             "compute_lane_count": compute_lane_count,
+            "selected_agent": _resolve_selected_agent(agent, agents),
         },
     )

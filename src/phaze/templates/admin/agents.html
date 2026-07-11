@@ -15,7 +15,18 @@
        inside the polled #agents-table-section partial below, so BOTH sections refresh on the
        existing 5s self-poll with no new loop (RESEARCH OQ-1). The prior Phase-56 STATIC k8s
        note is superseded by that LIVE Section 2. #}
-    {% include "admin/partials/agents_table.html" %}
+    {# Phase 88 (88-01, DRILL-03 / D-01): the polled #agents-table-section and the shared #detail-pane sit
+       side by side on lg+ (col-span-2 / col-span-1 of 3), stacked on < lg. The pane lives OUTSIDE the
+       #agents-table-section outerHTML poll root (wrapping div only), so the 5s self-poll re-renders the
+       table without touching the pane. Same _detail_pane.html partial as the Analyze host, pane_kind='agent'. #}
+    <div class="lg:grid lg:grid-cols-3 lg:items-start lg:gap-4">
+        <div class="lg:col-span-2">
+            {% include "admin/partials/agents_table.html" %}
+        </div>
+        <div class="lg:col-span-1">
+            {% with pane_kind = 'agent' %}{% include "pipeline/partials/_detail_pane.html" %}{% endwith %}
+        </div>
+    </div>
 </div>
 
 {# CLEAN-01 (D-09/D-10/D-11): discreet flag-gated footer link to the still-mounted /saq SAQ

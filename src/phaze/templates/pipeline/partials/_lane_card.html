@@ -51,7 +51,24 @@
 {% set _cap = lane.cap or 0 %}
 {% set _pct = ((lane.in_flight / _cap * 100) if _cap else 0) %}
 {% set _pct = 0 if _pct < 0 else (100 if _pct > 100 else _pct) %}
-<div class="rounded-xl border {{ lane_border }} bg-white p-4 dark:bg-phaze-panel{% if not lane.available %} opacity-60{% endif %}">
+{# Phase 88 (88-01, DRILL-03 / D-09): the card ROOT is the keyboard-accessible drill-in trigger.
+   selected_lane is re-derived from ?lane= by the poll (D-02) so the ring survives every 5s swap; it
+   defaults to none on any render that does not thread it (an unknown/absent id highlights nothing).
+   The box model (rounded-xl border / p-4 / mt-3 / h-1.5) and kind tokens are UNCHANGED — only the
+   trigger a11y + selection classes are appended. lane.id/kind stay Jinja-autoescaped (never |safe). #}
+{% set selected_lane = selected_lane | default(none) %}
+<div id="lane-trigger-{{ lane.id }}"
+     role="button"
+     tabindex="0"
+     aria-label="Open lane {{ lane.kind }} {{ lane.id }} detail"
+     {% if selected_lane == lane.id %}aria-current="true"{% endif %}
+     hx-get="/pipeline/lanes/{{ lane.id }}"
+     hx-target="#detail-pane"
+     hx-swap="innerHTML"
+     hx-push-url="/s/analyze?lane={{ lane.id }}"
+     hx-trigger="click, keyup[key=='Enter']"
+     onkeydown="if(event.key===' '){event.preventDefault();this.dispatchEvent(new Event('click'));}"
+     class="rounded-xl border {{ lane_border }} bg-white p-4 dark:bg-phaze-panel cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ring-offset-2 dark:ring-offset-phaze-bg{% if selected_lane == lane.id %} ring-2 ring-blue-500{% endif %}{% if not lane.available %} opacity-60{% endif %}">
     <div class="flex items-center justify-between gap-2">
         <span class="text-sm text-gray-700 dark:text-gray-200">
             {{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}
