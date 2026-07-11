@@ -34,14 +34,36 @@
     ('Exec', 'apply'),
 ] %}
 {% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') %}
+{# Human stage name for the filter-aware empty-state copy (the Copywriting Contract's {stage} token). #}
+{% set _stage_names = {'metadata': 'Metadata', 'fingerprint': 'Fingerprint', 'analyze': 'Analyze', 'propose': 'Propose', 'review': 'Approve', 'apply': 'Execute'} %}
+{% set _stage_display = _stage_names.get(active_stage, active_stage) %}
 <div id="files-table-view">
     {# One legend per surface (D-01) -- single-sourced in _stage_matrix.html's legend_only branch. #}
     <div class="px-6 pt-2">{% with legend_only=True %}{% include "pipeline/partials/_stage_matrix.html" %}{% endwith %}</div>
+    {# Per-stage status filter lens (87-05, UI-02 / D-03) -- URL-carried, failure-inclusive; ONE canonical
+       surface (no separate failures page). Rendered ABOVE the table and OUTSIDE the rows guard so the
+       operator can always clear a filter that returned nothing. #}
+    {% include "pipeline/partials/_status_filter_bar.html" %}
     {% if not files_page.rows %}
+    {% if active_bucket == 'failed' and active_stage %}
+    {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
+    <div class="px-6 py-12 text-center">
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No failed files in {{ _stage_display }}</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Nothing is stuck in {{ _stage_display }} right now.</p>
+    </div>
+    {% elif active_stage or active_bucket %}
+    {# Any other active filter that matched nothing -- point the operator at Clear filter above. #}
+    <div class="px-6 py-12 text-center">
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No files match this filter</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Try a different stage or status, or clear the filter above.</p>
+    </div>
+    {% else %}
+    {# Unfiltered empty state (Copywriting Contract). #}
     <div class="px-6 py-12 text-center">
         <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No files yet</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Discovered files appear here with their per-stage status.</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Discovered files will appear here with their per-stage status.</p>
     </div>
+    {% endif %}
     {% else %}
     <div class="overflow-x-auto" x-data>
         {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);

@@ -1,0 +1,64 @@
+{# Phase 87 (87-05, UI-02 / D-03): the per-stage status filter lens over the ONE files table.
+
+   D-03 makes "show me the files where {stage} = failed" just another LENS on the single canonical
+   files list -- NOT a third page to maintain. The bar expresses "Show files where {stage} = {bucket}"
+   as two selects (stage x bucket), including the `failed` bucket (UI-02 failure visibility as a filter).
+
+   URL-carried state (D-03): the form hx-gets /pipeline/files with `stage`+`bucket` in the query and
+   `hx-push-url="true"`, so the filter survives the record slide-in AND browser back/forward (the same
+   push-url idiom the rail nav uses). An empty option (value="") clears that axis -- the route validates
+   both params against the Stage / Status allowlists (Plan 04), so an empty/unknown value degrades to an
+   unfiltered page, never a 422 into the poll (T-87-16).
+
+   Context contract (both already supplied by GET /pipeline/files, Plan 04):
+     * active_stage  -- the current stage filter value (Stage enum value) or None.
+     * active_bucket -- the current bucket filter value (Status enum value) or None.
+
+   Pure filter control: no self-poll (no hx-trigger="every ..."). The only hx-trigger is `change`,
+   a user-initiated navigation, exactly like the rail.
+#}
+{# The six matrix stages (tracklist is never a matrix column -- the 7->6 remap, mirrored from
+   _stage_matrix.html); Appr = review, Exec = apply. #}
+{% set _filter_stages = [
+    ('metadata', 'Meta'),
+    ('fingerprint', 'FP'),
+    ('analyze', 'Analyze'),
+    ('propose', 'Prop'),
+    ('review', 'Appr'),
+    ('apply', 'Exec'),
+] %}
+{% set _filter_buckets = [
+    ('done', 'done'),
+    ('in_flight', 'in flight'),
+    ('not_started', 'not started'),
+    ('failed', 'failed'),
+    ('skipped', 'skipped'),
+] %}
+{% set _select = 'text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500' %}
+<form id="status-filter-bar"
+      hx-get="/pipeline/files" hx-target="#files-table-view" hx-swap="innerHTML"
+      hx-push-url="true" hx-trigger="change"
+      class="flex flex-wrap items-center gap-2 px-6 py-3">
+    <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Show files where</span>
+    <label class="sr-only" for="filter-stage">Stage</label>
+    <select id="filter-stage" name="stage" aria-label="Filter by stage" class="{{ _select }}">
+        <option value=""{% if not active_stage %} selected{% endif %}>any stage</option>
+        {% for val, label in _filter_stages %}
+        <option value="{{ val }}"{% if active_stage == val %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+    </select>
+    <span class="text-sm text-gray-400 dark:text-gray-500" aria-hidden="true">=</span>
+    <label class="sr-only" for="filter-bucket">Status</label>
+    <select id="filter-bucket" name="bucket" aria-label="Filter by status" class="{{ _select }}">
+        <option value=""{% if not active_bucket %} selected{% endif %}>any status</option>
+        {% for val, label in _filter_buckets %}
+        <option value="{{ val }}"{% if active_bucket == val %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+    </select>
+    {% if active_stage or active_bucket %}
+    {# Clear both axes -- a bare hx-get with no query, same target + push-url (URL returns to /pipeline/files). #}
+    <a href="/pipeline/files"
+       hx-get="/pipeline/files" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true"
+       class="text-sm px-2 py-1 rounded text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</a>
+    {% endif %}
+</form>
