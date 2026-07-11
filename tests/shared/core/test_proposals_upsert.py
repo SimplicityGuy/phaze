@@ -30,6 +30,7 @@ from phaze.services.proposal import (
     FileProposalResponse,
     store_proposals,
 )
+from phaze.services.stage_status import is_applied
 
 
 if TYPE_CHECKING:
@@ -154,10 +155,6 @@ async def test_fresh_insert_stamps_pk(session: AsyncSession) -> None:
     # Path normalization (strip + collapse) is preserved through the upsert path.
     assert row.proposed_path == "perf/artist"
 
-    # The file's state is advanced to PROPOSAL_GENERATED.
-    file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_record.state == FileState.PROPOSAL_GENERATED
-
 
 @pytest.mark.asyncio
 async def test_out_of_range_file_index_is_skipped(session: AsyncSession) -> None:
@@ -183,20 +180,36 @@ async def test_out_of_range_file_index_is_skipped(session: AsyncSession) -> None
 
 
 @pytest.mark.asyncio
-async def test_rerun_does_not_regress_terminal_file_state(session: AsyncSession) -> None:
-    """WR-04: a file already in a terminal state (APPROVED) is not yanked back to PROPOSAL_GENERATED.
+async def test_stale_batch_does_not_disturb_executed_file(session: AsyncSession) -> None:
+    """D-03: a stale store_proposals batch on an already-applied file leaves the executed proposal
+    row untouched and ``is_applied()`` True (the MOVED-regression bug is gone).
 
-    A stale/duplicated batch can carry a file that has since been approved. The partial index
-    protects the approved proposal row; this asserts the FILE STATE is likewise forward-only so
-    the two cannot desync.
+    Authority for "this file has been applied" now lives entirely in ``proposals.status``; the
+    ``file.state`` mirror that the ``_TERMINAL_FILE_STATES`` frozenset guarded (and whose omission
+    of MOVED/UNCHANGED was the bug) is deleted. A stale/duplicated batch re-running
+    ``store_proposals`` must not disturb the executed proposal — proven by an independent read after
+    commit (the conftest override reads uncommitted rows — ``project_get_session_never_commits``).
     """
     file_id = await _seed_file(session)
-    file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    file_record.state = FileState.APPROVED
+    executed_id = uuid.uuid4()
+    session.add(
+        RenameProposal(
+            id=executed_id,
+            file_id=file_id,
+            proposed_filename="done.mp3",
+            proposed_path="done/path",
+            confidence=1.0,
+            status=ProposalStatus.EXECUTED,
+            context_used={},
+            reason="applied",
+        )
+    )
     await session.commit()
 
     await store_proposals(session, [str(file_id)], _batch("regen.mp3", reasoning="regen"), [{"ctx": "regen"}])
     await session.commit()
 
-    file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_record.state == FileState.APPROVED
+    # The executed proposal row is untouched, and is_applied() (reads proposals, never file.state) stays True.
+    executed = (await session.execute(select(RenameProposal).where(RenameProposal.id == executed_id))).scalar_one()
+    assert executed.status == ProposalStatus.EXECUTED
+    assert await is_applied(session, file_id) is True
