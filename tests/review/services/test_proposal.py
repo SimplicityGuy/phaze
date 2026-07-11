@@ -669,10 +669,10 @@ class TestStoreProposals:
             count = await store_proposals(session, [file_id], batch, files_context)
 
         assert count == 1
-        # The upsert is issued (one pg_insert per proposal) and the file state advances.
+        # store_proposals issues the upsert only (one pg_insert per proposal); it does NOT
+        # touch FileRecord.state anymore (SIDECAR-03 cutover removed the file.state cascade).
         mock_pg_insert.assert_called_once()
         session.execute.assert_awaited()
-        assert file_record.state == "proposal_generated"
 
     @pytest.mark.asyncio
     async def test_clamps_confidence_before_storing(self):
